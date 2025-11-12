@@ -1,0 +1,23 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.0.0">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UserSecretsId>9aa57b5b-ff55-4e72-b5b7-744f91408cdb</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.0.0" />
+    <PackageReference Include="Aspire.Hosting.Redis" Version="13.0.0" />
+    <PackageReference Include="CommunityToolkit.Aspire.Hosting.Minio" Version="9.9.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HVO.SkyMonitor\HVO.SkyMonitor.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.CameraAgent.Simulator\HVO.SkyMonitor.CameraAgent.Simulator.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.CameraAgent.ZWO\HVO.SkyMonitor.CameraAgent.ZWO.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,7 +1,6 @@
 {
-  "name": "C# (.NET 10)",
+  "name": "C# (.NET 10) with Aspire",
   "image": "mcr.microsoft.com/devcontainers/dotnet:1-10.0",
-  
   "features": {
     "ghcr.io/devcontainers/features/git:1": {
       "ppa": true,
@@ -24,9 +23,16 @@
       "version": "10.0",
       "installUsingApt": true,
       "dotnetRuntimeVersions": "10.0"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": true,
+      "azureDnsAutoDetection": true,
+      "installDockerBuildx": true,
+      "installDockerComposeSwitch": true,
+      "version": "latest",
+      "dockerDashComposeVersion": "v2"
     }
   },
-
   "customizations": {
     "vscode": {
       "extensions": [
@@ -54,10 +60,33 @@
       }
     }
   },
-
-  "forwardPorts": [5000, 5001],
-
-  "postCreateCommand": "dotnet --version",
-
-  "remoteUser": "vscode"
+  // Port mappings:
+  // 5000-5001: Main HVO.SkyMonitor app (HTTP/HTTPS)
+  // 5010-5011: Simulator Camera Agent (HTTP/HTTPS)
+  // 5020-5021: ZWO Camera Agent (HTTP/HTTPS)
+  // 6379: Redis
+  // 5432: PostgreSQL
+  // 9000-9001: MinIO (API/Console)
+  // 15201: Aspire Dashboard
+  "forwardPorts": [
+    5000,
+    5001,
+    5010,
+    5011,
+    5020,
+    5021,
+    6379,
+    5432,
+    9000,
+    9001,
+    15201
+  ],
+  "postCreateCommand": "bash -c 'dotnet --version && dotnet new install Aspire.ProjectTemplates && sudo usermod -aG docker vscode && sudo chmod 666 /var/run/docker.sock && docker --version'",
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
+  "runArgs": [
+    "--privileged"
+  ]
 }

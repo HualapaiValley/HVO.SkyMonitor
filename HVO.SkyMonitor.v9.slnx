@@ -1,0 +1,13 @@
+<Solution>
+    <Project Path="src/HVO.SkyMonitor.AppHost/HVO.SkyMonitor.AppHost.csproj" />
+    <Project Path="src/HVO.SkyMonitor.CameraAgent.Simulator/HVO.SkyMonitor.CameraAgent.Simulator.csproj" />
+    <Project Path="src/HVO.SkyMonitor.CameraAgent.ZWO/HVO.SkyMonitor.CameraAgent.ZWO.csproj" />
+    <Project Path="src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj" />
+    <Project Path="src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj" />
+    <Project Path="src/HVO.SkyMonitor.ServiceDefaults/HVO.SkyMonitor.ServiceDefaults.csproj" />
+    <Project Path="src/HVO.SkyMonitor/HVO.SkyMonitor.csproj" />
+    <Project Path="src/HVO.Common/HVO.Common.csproj" />
+    <Folder Name="/Tests/">
+        <Project Path="src/HVO.Common.Tests/HVO.Common.Tests.csproj" />
+    </Folder>
+</Solution>
