@@ -1,0 +1,63 @@
+{
+  "name": "C# (.NET 10)",
+  "image": "mcr.microsoft.com/devcontainers/dotnet:1-10.0",
+  
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {
+      "ppa": true,
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {
+      "installDirectlyFromGitHubRelease": true,
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "installOhMyZsh": true,
+      "configureZshAsDefaultShell": true,
+      "username": "vscode",
+      "userUid": "automatic",
+      "userGid": "automatic",
+      "upgradePackages": true
+    },
+    "ghcr.io/devcontainers/features/dotnet:2": {
+      "version": "10.0",
+      "installUsingApt": true,
+      "dotnetRuntimeVersions": "10.0"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-dotnettools.csdevkit",
+        "ms-dotnettools.csharp",
+        "ms-dotnettools.vscode-dotnet-runtime",
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "ms-vscode.vscode-js-profile-flame",
+        "visualstudioexptteam.vscodeintellicode",
+        "visualstudioexptteam.intellicode-api-usage-examples"
+      ],
+      "settings": {
+        "dotnet.defaultSolution": "disable",
+        "omnisharp.enableRoslynAnalyzers": true,
+        "omnisharp.enableEditorConfigSupport": true,
+        "omnisharp.enableImportCompletion": true,
+        "csharp.semanticHighlighting.enabled": true,
+        "editor.formatOnSave": true,
+        "editor.formatOnType": true,
+        "editor.codeActionsOnSave": {
+          "source.fixAll": "explicit",
+          "source.organizeImports": "explicit"
+        }
+      }
+    }
+  },
+
+  "forwardPorts": [5000, 5001],
+
+  "postCreateCommand": "dotnet --version",
+
+  "remoteUser": "vscode"
+}
