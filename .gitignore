@@ -9,7 +9,14 @@
 *.user
 *.userosscache
 *.sln.docstates
+
+# Environment files with secrets
 *.env
+!.env.template
+!.env.development
+.env.local
+.env.production
+.env.staging
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
@@ -281,6 +288,20 @@ ServiceFabricBackup/
 *.mdf
 *.ldf
 *.ndf
+
+# Secrets and credentials - NEVER commit
+**/appsettings.*.secrets.json
+secrets.json
+*.key
+*.pem
+*.pfx
+*.p12
+*.jks
+*.keystore
+
+# User Secrets are already excluded by being outside the project directory
+# But explicitly document that they should never be committed
+# Location: %APPDATA%\Microsoft\UserSecrets (Windows) or ~/.microsoft/usersecrets (Linux/Mac)
 
 # Business Intelligence projects
 *.rdl.data

@@ -57,6 +57,14 @@
       }
     }
   },
+  // Environment variables for dev container (non-sensitive only)
+  "containerEnv": {
+    "ASPNETCORE_ENVIRONMENT": "Development",
+    "DOTNET_ENVIRONMENT": "Development",
+    "USE_CONTAINERS": "true",
+    "ASPIRE_ALLOW_UNSECURED_TRANSPORT": "true",
+    "DOCKER_HOST_ADDRESS": "0.0.0.0"
+  },
   // Port mappings with allInterfaces for Docker-from-Docker accessibility
   // 5000-5001: Main HVO.SkyMonitor app (HTTP/HTTPS)
   // 5010-5011: Simulator Camera Agent (HTTP/HTTPS)
@@ -65,6 +73,9 @@
   // 5432: PostgreSQL
   // 9000-9001: MinIO (API/Console)
   // 15201: Aspire Dashboard
+  // 5174: SkyMonitor container mode
+  // 5130: Simulator agent container mode
+  // 5232: ZWO agent container mode
   "forwardPorts": [
     5000,
     5001,
@@ -76,7 +87,10 @@
     5432,
     9000,
     9001,
-    15201
+    15201,
+    5174,
+    5130,
+    5232
   ],
   "portsAttributes": {
     "5000": {
@@ -117,8 +131,22 @@
     },
     "15201": {
       "onAutoForward": "openBrowser"
+    },
+    "5174": {
+      "onAutoForward": "notify"
+    },
+    "5130": {
+      "onAutoForward": "silent"
+    },
+    "5232": {
+      "onAutoForward": "silent"
     }
   },
+  // Mount user secrets from host into container
+  // Allows dev container to access locally stored secrets
+  "mounts": [
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.microsoft/usersecrets,target=/home/vscode/.microsoft/usersecrets,type=bind,consistency=cached"
+  ],
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "remoteUser": "vscode"
 }
