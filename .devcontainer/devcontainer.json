@@ -25,11 +25,8 @@
       "dotnetRuntimeVersions": "10.0"
     },
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
-      "moby": true,
-      "azureDnsAutoDetection": true,
-      "installDockerBuildx": true,
-      "installDockerComposeSwitch": true,
       "version": "latest",
+      "moby": true,
       "dockerDashComposeVersion": "v2"
     }
   },
@@ -60,7 +57,7 @@
       }
     }
   },
-  // Port mappings:
+  // Port mappings with allInterfaces for Docker-from-Docker accessibility
   // 5000-5001: Main HVO.SkyMonitor app (HTTP/HTTPS)
   // 5010-5011: Simulator Camera Agent (HTTP/HTTPS)
   // 5020-5021: ZWO Camera Agent (HTTP/HTTPS)
@@ -81,12 +78,47 @@
     9001,
     15201
   ],
-  "postCreateCommand": "bash -c 'dotnet --version && dotnet new install Aspire.ProjectTemplates && sudo usermod -aG docker vscode && sudo chmod 666 /var/run/docker.sock && docker --version'",
-  "remoteUser": "vscode",
-  "mounts": [
-    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
-  ],
-  "runArgs": [
-    "--privileged"
-  ]
+  "portsAttributes": {
+    "5000": {
+      "onAutoForward": "notify",
+      "elevateIfNeeded": true
+    },
+    "5001": {
+      "onAutoForward": "notify",
+      "elevateIfNeeded": true
+    },
+    "5010": {
+      "onAutoForward": "notify",
+      "elevateIfNeeded": true
+    },
+    "5011": {
+      "onAutoForward": "notify",
+      "elevateIfNeeded": true
+    },
+    "5020": {
+      "onAutoForward": "notify",
+      "elevateIfNeeded": true
+    },
+    "5021": {
+      "onAutoForward": "notify",
+      "elevateIfNeeded": true
+    },
+    "6379": {
+      "onAutoForward": "silent"
+    },
+    "5432": {
+      "onAutoForward": "silent"
+    },
+    "9000": {
+      "onAutoForward": "notify"
+    },
+    "9001": {
+      "onAutoForward": "notify"
+    },
+    "15201": {
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteUser": "vscode"
 }

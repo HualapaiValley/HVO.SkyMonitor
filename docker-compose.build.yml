@@ -1,0 +1,48 @@
+# Docker Compose for building multi-arch container images locally
+# This file is used to build images for multiple architectures (amd64, arm64, arm/v7)
+# without needing to push to a registry.
+#
+# Prerequisites:
+#   docker buildx create --use --name hvo-builder
+#
+# Build all images:
+#   docker-compose -f docker-compose.build.yml build
+#
+# Build specific service:
+#   docker-compose -f docker-compose.build.yml build skymonitor
+#
+# Build for specific platform:
+#   DOCKER_DEFAULT_PLATFORM=linux/arm64 docker-compose -f docker-compose.build.yml build
+
+version: '3.8'
+
+services:
+  skymonitor:
+    build:
+      context: .
+      dockerfile: src/HVO.SkyMonitor/Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+        - linux/arm/v7
+    image: hvo-skymonitor:latest
+
+  simulator-agent:
+    build:
+      context: .
+      dockerfile: src/HVO.SkyMonitor.CameraAgent.Simulator/Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+        - linux/arm/v7
+    image: hvo-cameraagent-simulator:latest
+
+  zwo-agent:
+    build:
+      context: .
+      dockerfile: src/HVO.SkyMonitor.CameraAgent.ZWO/Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+        - linux/arm/v7
+    image: hvo-cameraagent-zwo:latest
