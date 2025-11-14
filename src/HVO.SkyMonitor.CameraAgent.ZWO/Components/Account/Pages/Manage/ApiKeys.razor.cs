@@ -1,8 +1,9 @@
+using System;
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
-using System.Collections.Generic;
-using System.Linq;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.AspNetCore.Http;
@@ -23,7 +24,7 @@ public partial class ApiKeys
     private List<ApiKeyListItem> apiKeys = new();
     private string? statusMessage;
     private string? generatedPlaintextKey;
-    private Guid? _busyKeyId;
+    private string? _busyKeyId;
     private bool createInProgress;
 
     [Inject]
@@ -93,12 +94,12 @@ public partial class ApiKeys
             var plainKey = GenerateApiKeySecret();
             var hashedKey = KeyHasher.Hash(plainKey);
 
-            var entity = new ApplicationUserApiKey
+            var entity = new ApiKey
             {
-                Id = Guid.NewGuid(),
+                Id = Guid.NewGuid().ToString("n"),
                 UserId = user.Id,
-                KeyHash = hashedKey,
-                DisplayName = string.IsNullOrWhiteSpace(model.DisplayName) ? null : model.DisplayName.Trim(),
+                HashedKey = hashedKey,
+                DisplayName = string.IsNullOrWhiteSpace(model.DisplayName) ? string.Empty : model.DisplayName.Trim(),
                 AccessLevel = model.AccessLevel,
                 IsActive = true,
                 CreatedUtc = now,
@@ -126,7 +127,7 @@ public partial class ApiKeys
         }
     }
 
-    private async Task DeleteKeyAsync(Guid keyId)
+    private async Task DeleteKeyAsync(string keyId)
     {
         if (user is null)
         {
@@ -166,7 +167,7 @@ public partial class ApiKeys
         }
     }
 
-    private async Task ToggleKeyAsync(Guid keyId, bool desiredState)
+    private async Task ToggleKeyAsync(string keyId, bool desiredState)
     {
         if (user is null)
         {
@@ -258,7 +259,7 @@ public partial class ApiKeys
         => expiration.HasValue ? expiration.Value.ToLocalTime().ToString("g") : "Never";
 
     private sealed record ApiKeyListItem(
-        Guid Id,
+        string Id,
         string? DisplayName,
         ApiKeyAccessLevel AccessLevel,
         bool IsActive,

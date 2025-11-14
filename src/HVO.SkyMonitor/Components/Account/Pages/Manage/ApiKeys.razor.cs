@@ -1,3 +1,4 @@
+using System;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using System.Security.Cryptography;
@@ -74,18 +75,19 @@ public partial class ApiKeys
 
         try
         {
-            var now = DateTime.UtcNow;
-            DateTime? expiresUtc = null;
+            var now = DateTimeOffset.UtcNow;
+            DateTimeOffset? expiresUtc = null;
             if (model.ExpiresOnUtc.HasValue)
             {
                 var candidate = DateTime.SpecifyKind(model.ExpiresOnUtc.Value, DateTimeKind.Utc);
-                if (candidate <= now)
+                var expiresOffset = new DateTimeOffset(candidate);
+                if (expiresOffset <= now)
                 {
                     statusMessage = "Error: Expiration must be in the future.";
                     return;
                 }
 
-                expiresUtc = candidate;
+                expiresUtc = expiresOffset;
             }
 
             var plainKey = GenerateApiKeySecret();
@@ -95,11 +97,12 @@ public partial class ApiKeys
             {
                 Id = Guid.NewGuid().ToString("n"),
                 UserId = user.Id,
-                Name = GetDisplayName(model.DisplayName, now),
+                DisplayName = GetDisplayName(model.DisplayName, now),
                 AccessLevel = model.AccessLevel,
                 HashedKey = hashedKey,
-                CreatedAt = now,
-                ExpiresAt = expiresUtc,
+                CreatedUtc = now,
+                ExpiresUtc = expiresUtc,
+                CreatedBy = user.Email ?? user.UserName ?? user.Id,
                 IsActive = true
             };
 
@@ -221,11 +224,11 @@ public partial class ApiKeys
             .AsNoTracking()
             .Select(key => new ApiKeyListItem(
                 key.Id,
-                key.Name,
+                key.DisplayName,
                 key.AccessLevel,
                 key.IsActive,
-                key.CreatedAt,
-                key.ExpiresAt))
+                key.CreatedUtc,
+                key.ExpiresUtc))
             .ToListAsync(cancellationToken);
 
         apiKeys = items.OrderByDescending(key => key.CreatedAtUtc).ToList();
@@ -245,34 +248,24 @@ public partial class ApiKeys
         _ => level.ToString()
     };
 
-    private static string FormatTimestamp(DateTime timestamp)
-    {
-        var utc = DateTime.SpecifyKind(timestamp, DateTimeKind.Utc);
-        return utc.ToLocalTime().ToString("g");
-    }
+    private static string FormatTimestamp(DateTimeOffset timestamp)
+        => timestamp.ToLocalTime().ToString("g");
 
-    private static string FormatExpiration(DateTime? expiration)
-    {
-        if (expiration is null)
-        {
-            return "Never";
-        }
+    private static string FormatExpiration(DateTimeOffset? expiration)
+        => expiration.HasValue ? expiration.Value.ToLocalTime().ToString("g") : "Never";
 
-        return FormatTimestamp(expiration.Value);
-    }
-
-    private static string GetDisplayName(string? candidate, DateTime nowUtc)
+    private static string GetDisplayName(string? candidate, DateTimeOffset nowUtc)
         => string.IsNullOrWhiteSpace(candidate)
             ? $"Unnamed key ({nowUtc:yyyyMMddHHmmss})"
             : candidate.Trim();
 
     private sealed record ApiKeyListItem(
         string Id,
-        string Name,
+        string DisplayName,
         ApiKeyAccessLevel AccessLevel,
         bool IsActive,
-        DateTime CreatedAtUtc,
-        DateTime? ExpiresAtUtc);
+        DateTimeOffset CreatedAtUtc,
+        DateTimeOffset? ExpiresAtUtc);
 
     private sealed class CreateApiKeyInput
     {

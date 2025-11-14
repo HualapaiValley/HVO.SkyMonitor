@@ -7,22 +7,22 @@ namespace HVO.SkyMonitor.CameraAgent.Simulator.Data;
 
 public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : IdentityDbContext<ApplicationUser>(options)
 {
-	public DbSet<ApplicationUserApiKey> ApiKeys => Set<ApplicationUserApiKey>();
+	public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
 
 	protected override void OnModelCreating(ModelBuilder builder)
 	{
 		base.OnModelCreating(builder);
 
-		ConfigureApiKeys(builder.Entity<ApplicationUserApiKey>());
+		ConfigureApiKeys(builder.Entity<ApiKey>());
 	}
 
-	private static void ConfigureApiKeys(EntityTypeBuilder<ApplicationUserApiKey> entity)
+	private static void ConfigureApiKeys(EntityTypeBuilder<ApiKey> entity)
 	{
 		entity.ToTable("ApiKeys");
 
-		entity.HasIndex(key => key.KeyHash).IsUnique();
+		entity.HasIndex(key => key.HashedKey).IsUnique();
 
-		entity.Property(key => key.KeyHash)
+		entity.Property(key => key.HashedKey)
 			.HasMaxLength(64)
 			.IsRequired();
 
@@ -44,7 +44,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
 		entity.Property(key => key.CreatedBy)
 			.HasMaxLength(256);
 
-		entity.HasOne(key => key.User)
+		entity.HasOne<ApplicationUser>()
 			.WithMany(user => user.ApiKeys)
 			.HasForeignKey(key => key.UserId)
 			.OnDelete(DeleteBehavior.Cascade)

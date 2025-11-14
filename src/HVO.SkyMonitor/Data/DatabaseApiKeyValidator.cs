@@ -30,7 +30,7 @@ public class DatabaseApiKeyValidator : IApiKeyValidator
             return new ApiKeyValidationResult { IsValid = false };
         }
 
-        if (key.ExpiresAt.HasValue && key.ExpiresAt.Value < DateTime.UtcNow)
+        if (key.ExpiresUtc.HasValue && key.ExpiresUtc.Value < DateTime.UtcNow)
         {
             return new ApiKeyValidationResult { IsValid = false };
         }
@@ -39,8 +39,8 @@ public class DatabaseApiKeyValidator : IApiKeyValidator
         {
             IsValid = true,
             KeyId = key.Id,
-            KeyName = key.Name,
-            DisplayName = key.Name,
+            KeyName = key.DisplayName,
+            DisplayName = key.DisplayName,
             NameIdentifier = key.UserId,
             Email = key.User?.Email,
             AccessLevel = key.AccessLevel

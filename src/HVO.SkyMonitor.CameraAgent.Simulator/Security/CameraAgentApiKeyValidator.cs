@@ -32,7 +32,7 @@ public sealed class CameraAgentApiKeyValidator : IApiKeyValidator
             .Include(key => key.User)
             .AsNoTracking()
             .FirstOrDefaultAsync(key =>
-                key.KeyHash == hashedKey &&
+                key.HashedKey == hashedKey &&
                 key.IsActive);
 
         if (keyEntity is null)
@@ -59,7 +59,7 @@ public sealed class CameraAgentApiKeyValidator : IApiKeyValidator
         return new ApiKeyValidationResult
         {
             IsValid = true,
-            KeyId = keyEntity.Id.ToString(),
+            KeyId = keyEntity.Id,
             KeyName = keyEntity.DisplayName,
             DisplayName = keyEntity.DisplayName ?? keyEntity.User.UserName ?? keyEntity.User.Email ?? keyEntity.User.Id,
             NameIdentifier = keyEntity.User.Id,

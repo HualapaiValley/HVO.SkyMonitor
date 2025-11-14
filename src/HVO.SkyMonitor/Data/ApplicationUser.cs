@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Identity;
 
 namespace HVO.SkyMonitor.Data;
