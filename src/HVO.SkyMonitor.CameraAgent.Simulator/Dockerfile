@@ -9,10 +9,7 @@ WORKDIR /src
 # Copy solution and project files
 COPY HVO.SkyMonitor.v9.slnx .
 COPY src/HVO.Common/HVO.Common.csproj src/HVO.Common/
-COPY src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj src/HVO.SkyMonitor.Common/
-COPY src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj src/HVO.SkyMonitor.CameraAgent/
 COPY src/HVO.SkyMonitor.CameraAgent.Simulator/HVO.SkyMonitor.CameraAgent.Simulator.csproj src/HVO.SkyMonitor.CameraAgent.Simulator/
-COPY src/HVO.SkyMonitor.ServiceDefaults/HVO.SkyMonitor.ServiceDefaults.csproj src/HVO.SkyMonitor.ServiceDefaults/
 
 # Restore dependencies
 RUN dotnet restore src/HVO.SkyMonitor.CameraAgent.Simulator/HVO.SkyMonitor.CameraAgent.Simulator.csproj
@@ -27,6 +24,9 @@ RUN dotnet publish HVO.SkyMonitor.CameraAgent.Simulator.csproj -c Release -o /ap
 # Stage 2: Runtime
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
+
+# Install curl for health checks
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 # Copy published application
 COPY --from=build /app/publish .

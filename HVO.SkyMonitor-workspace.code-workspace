@@ -1,0 +1,24 @@
+{
+	"folders": [
+		{
+			"name": "HVO.SkyMonitor",
+			"path": "."
+		},
+		{
+			"name": "HVOv9-SkyMonitorv6",
+			"path": "/workspaces/HVOv9-SkyMonitorv6-readonly"
+		}
+	],
+	"settings": {
+		// Workspace-level settings (override folder settings)
+		"files.exclude": {
+			"**/bin": true,
+			"**/obj": true
+		}
+	},
+	"extensions": {
+		"recommendations": [
+			// Inherit from .vscode/extensions.json
+		]
+	}
+}

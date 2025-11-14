@@ -3,6 +3,10 @@ set -e
 
 echo "Running post-create setup..."
 
+# Fix .dotnet directory ownership
+echo "Fixing .dotnet directory ownership..."
+sudo chown -R vscode:vscode /home/vscode/.dotnet || true
+
 # Display .NET version
 echo "Checking .NET version..."
 dotnet --version

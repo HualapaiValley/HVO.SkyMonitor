@@ -145,7 +145,23 @@
   // Mount user secrets from host into container
   // Allows dev container to access locally stored secrets
   "mounts": [
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.microsoft/usersecrets,target=/home/vscode/.microsoft/usersecrets,type=bind,consistency=cached"
+    {
+      "type": "volume",
+      "source": "x509stores",
+      "target": "/home/vscode/.dotnet/corefx/cryptography/x509stores"
+    },
+    {
+      "type": "bind",
+      "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.microsoft/usersecrets",
+      "target": "/home/vscode/.microsoft/usersecrets"
+    },
+    // Bind mount for HVOv9 reference repository (local dev only)
+    // This will fail gracefully in Codespaces where HVOv9 doesn't exist as a sibling
+    {
+      "type": "bind",
+      "source": "${localWorkspaceFolder}/../HVOv9-SkyMonitorv6",
+      "target": "/workspaces/HVOv9-SkyMonitorv6-readonly"
+    }
   ],
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "remoteUser": "vscode"
