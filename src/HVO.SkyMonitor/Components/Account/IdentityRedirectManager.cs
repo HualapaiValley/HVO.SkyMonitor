@@ -1,4 +1,7 @@
+using HVO.SkyMonitor.Data;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Identity;
 
 namespace HVO.SkyMonitor.Components.Account;
 
@@ -47,4 +50,10 @@ internal sealed class IdentityRedirectManager(NavigationManager navigationManage
 
     public void RedirectToCurrentPageWithStatus(string message, HttpContext httpContext)
         => RedirectToWithStatus(CurrentPath, message, httpContext);
+
+    public void RedirectToInvalidUser(UserManager<ApplicationUser> userManager, HttpContext httpContext)
+    {
+        var userId = userManager.GetUserId(httpContext.User) ?? "unknown";
+        RedirectToWithStatus("Account/InvalidUser", $"Error: Unable to load user with ID '{userId}'.", httpContext);
+    }
 }

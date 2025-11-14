@@ -1,54 +1,74 @@
-using Microsoft.AspNetCore.Builder;
+using System.Collections.Generic;
+using System.Diagnostics;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
 
-/// <summary>
-/// Middleware that ensures every request has a correlation ID for distributed tracing.
-/// </summary>
-public class CorrelationIdMiddleware
+public sealed class CorrelationIdMiddleware
 {
     public const string HeaderName = "X-Correlation-ID";
-    private const string ContextKey = "CorrelationId";
+    internal const string CorrelationItemKey = "__CorrelationId";
 
     private readonly RequestDelegate _next;
+    private readonly ILogger<CorrelationIdMiddleware> _logger;
 
-    public CorrelationIdMiddleware(RequestDelegate next)
+    public CorrelationIdMiddleware(RequestDelegate next, ILogger<CorrelationIdMiddleware> logger)
     {
         _next = next;
+        _logger = logger;
     }
 
     public async Task InvokeAsync(HttpContext context)
     {
-        // Get or generate correlation ID
-        var correlationId = context.Request.Headers[HeaderName].FirstOrDefault()
-            ?? Guid.NewGuid().ToString();
+        ArgumentNullException.ThrowIfNull(context);
 
-        // Store in context
-        context.Items[ContextKey] = correlationId;
+        var correlationId = GetOrCreateCorrelationId(context);
 
-        // Add to response headers
-        context.Response.Headers.Append(HeaderName, correlationId);
+        context.Items[CorrelationItemKey] = correlationId;
+        context.Response.Headers[HeaderName] = correlationId;
 
-        await _next(context);
+        if (Activity.Current is not null)
+        {
+            Activity.Current.SetTag("correlation.id", correlationId);
+        }
+
+        using (_logger.BeginScope(new Dictionary<string, object>
+        {
+            ["CorrelationId"] = correlationId
+        }))
+        {
+            await _next(context).ConfigureAwait(false);
+        }
     }
 
-    /// <summary>
-    /// Gets the correlation ID from the HTTP context.
-    /// </summary>
     public static string? GetCorrelationId(HttpContext? context)
     {
-        return context?.Items[ContextKey] as string;
-    }
-}
+        if (context is null)
+        {
+            return null;
+        }
 
-/// <summary>
-/// Extension methods for correlation ID middleware.
-/// </summary>
-public static class CorrelationIdMiddlewareExtensions
-{
-    public static IApplicationBuilder UseCorrelationId(this IApplicationBuilder builder)
+        if (context.Items.TryGetValue(CorrelationItemKey, out var value) && value is string correlationId)
+        {
+            return correlationId;
+        }
+
+        return context.TraceIdentifier;
+    }
+
+    private static string GetOrCreateCorrelationId(HttpContext context)
     {
-        return builder.UseMiddleware<CorrelationIdMiddleware>();
+        if (context.Request.Headers.TryGetValue(HeaderName, out var headerValue) && !string.IsNullOrWhiteSpace(headerValue))
+        {
+            return headerValue.ToString();
+        }
+
+        if (Activity.Current is not null && Activity.Current.TraceId != default)
+        {
+            return Activity.Current.TraceId.ToString();
+        }
+
+        return context.TraceIdentifier;
     }
 }

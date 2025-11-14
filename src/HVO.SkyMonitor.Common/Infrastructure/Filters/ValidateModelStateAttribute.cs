@@ -1,18 +1,39 @@
+using System.Diagnostics;
+using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 
 namespace HVO.SkyMonitor.Common.Infrastructure.Filters;
 
-/// <summary>
-/// Action filter that validates model state and returns ProblemDetails for validation errors.
-/// </summary>
-public class ValidateModelStateAttribute : ActionFilterAttribute
+public sealed class ValidateModelStateAttribute : ActionFilterAttribute
 {
     public override void OnActionExecuting(ActionExecutingContext context)
     {
-        if (!context.ModelState.IsValid)
+        if (context.ModelState.IsValid)
         {
-            context.Result = new BadRequestObjectResult(context.ModelState);
+            return;
         }
+
+        var problemDetails = new ValidationProblemDetails(context.ModelState)
+        {
+            Status = StatusCodes.Status400BadRequest,
+            Title = "The request could not be processed due to validation errors.",
+            Detail = "Review the errors and try again.",
+            Instance = context.HttpContext.Request.Path
+        };
+
+        var correlationId = CorrelationIdMiddleware.GetCorrelationId(context.HttpContext);
+        if (!string.IsNullOrWhiteSpace(correlationId))
+        {
+            problemDetails.Extensions["correlationId"] = correlationId;
+        }
+
+        problemDetails.Extensions["traceId"] = Activity.Current?.TraceId.ToString() ?? context.HttpContext.TraceIdentifier;
+
+        context.Result = new ObjectResult(problemDetails)
+        {
+            StatusCode = problemDetails.Status
+        };
     }
 }

@@ -19,7 +19,7 @@ public class DatabaseApiKeyValidator : IApiKeyValidator
 
     public async Task<ApiKeyValidationResult> ValidateAsync(string apiKey)
     {
-        var hashedKey = _hasher.HashApiKey(apiKey);
+        var hashedKey = _hasher.Hash(apiKey);
 
         var key = await _context.ApiKeys
             .Include(k => k.User)

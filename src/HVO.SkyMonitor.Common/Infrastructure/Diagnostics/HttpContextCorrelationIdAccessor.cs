@@ -2,10 +2,7 @@ using Microsoft.AspNetCore.Http;
 
 namespace HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
 
-/// <summary>
-/// Accesses the correlation ID from the current HTTP context.
-/// </summary>
-public class HttpContextCorrelationIdAccessor : ICorrelationIdAccessor
+public sealed class HttpContextCorrelationIdAccessor : ICorrelationIdAccessor
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
 
@@ -14,6 +11,9 @@ public class HttpContextCorrelationIdAccessor : ICorrelationIdAccessor
         _httpContextAccessor = httpContextAccessor;
     }
 
-    public string? CorrelationId =>
-        CorrelationIdMiddleware.GetCorrelationId(_httpContextAccessor.HttpContext);
+    public string? GetCorrelationId()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        return CorrelationIdMiddleware.GetCorrelationId(httpContext);
+    }
 }

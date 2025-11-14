@@ -12,7 +12,9 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Metrics;
 using Scalar.AspNetCore;
 
@@ -59,8 +61,8 @@ public class Program
             };
         });
 
-        // Global exception handler
-        builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+        // Global exception handler with HTML + API awareness
+        builder.Services.AddExceptionHandler<HvoServiceExceptionHandler>();
 
         // HTTP logging
         builder.Services.AddHttpLogging(logging =>
@@ -114,6 +116,11 @@ public class Program
                 metrics.AddPrometheusExporter();
             });
 
+        builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
+        {
+            options.RecordException = true;
+        });
+
         // Add services to the container
         builder.Services.AddRazorComponents()
             .AddInteractiveServerComponents();
@@ -143,6 +150,7 @@ public class Program
 
         // Data Protection - persist keys to avoid cookie invalidation on restart
         var dataProtectionPath = Path.Combine(builder.Environment.ContentRootPath, "DataProtection-Keys");
+        Directory.CreateDirectory(dataProtectionPath);
         builder.Services.AddDataProtection()
             .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath))
             .SetApplicationName("HVO.SkyMonitor");
@@ -214,13 +222,13 @@ public class Program
         var app = builder.Build();
 
         // Configure the HTTP request pipeline
-        if (!app.Environment.IsDevelopment())
+
+        if (app.Environment.IsDevelopment())
         {
-            // Use error page for non-API routes
-            app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api"), appBuilder =>
-            {
-                appBuilder.UseExceptionHandler("/Error");
-            });
+            app.UseDeveloperExceptionPage();
+        }
+        else
+        {
             app.UseHsts();
         }
 
@@ -281,6 +289,8 @@ public class Program
         // Blazor
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
+
+        app.MapAdditionalIdentityEndpoints();
 
         // Prometheus metrics
         app.MapPrometheusScrapingEndpoint();

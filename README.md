@@ -166,6 +166,9 @@ The devcontainer configuration includes:
 - **Git & GitHub CLI** - Version control and GitHub integration
 - **Zsh with Oh My Zsh** - Enhanced terminal experience
 - **IntelliCode** - AI-assisted development with usage examples
+- **Identity & API infrastructure parity** - The main `HVO.SkyMonitor` site now runs the same Identity, passkey, and API key pipeline previously used by the camera-agent simulator, backed by shared middleware and helpers in `HVO.SkyMonitor.Common`.
+- **Shared diagnostics/security library** - Cross-cutting middleware (correlation IDs, exception handling, antiforgery helpers) and API-key primitives live in `src/HVO.SkyMonitor.Common`, consumed by the main site and reusable by future services.
+- **Camera-agent independence** - Projects under `HVO.SkyMonitor.CameraAgent.*` only reference `HVO.Common`, keeping edge agents lightweight while still registering their own diagnostics/security components.
 
 ### Extensions
 
@@ -302,3 +305,10 @@ All Dockerfiles:
 - Support multi-arch builds (amd64, arm64, arm/v7)
 - Include health checks
 - Expose port 8080
+
+## Recent Identity & Infrastructure Work
+
+- Migrated diagnostics middleware, correlation ID plumbing, and API-key primitives into `src/HVO.SkyMonitor.Common` so the main site and future microservices share a single implementation.
+- Cloned the camera-agent simulator's complete Identity experience (Blazor pages, passkey WebAuthn flows, external login + email management, scoped CSS/JS) into `src/HVO.SkyMonitor/Components/Account`, ensuring parity with the hardened simulator stack.
+- Added minimal API endpoints in `Program.cs` via `MapAdditionalIdentityEndpoints()` to support passkey creation/request, external login linking, and personal-data download routes.
+- Updated dependency wiring so only the main site references `HVO.SkyMonitor.Common`; camera-agent projects remain standalone and continue using their own infrastructure packages, preventing circular dependencies.
