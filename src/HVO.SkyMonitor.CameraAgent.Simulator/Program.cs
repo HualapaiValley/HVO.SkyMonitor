@@ -1,10 +1,11 @@
 using System.Diagnostics;
 using Asp.Versioning;
+using HVO.SkyMonitor.CameraAgent.Infrastructure.Diagnostics;
+using HVO.SkyMonitor.CameraAgent.Infrastructure.Filters;
+using HVO.SkyMonitor.CameraAgent.Security;
 using HVO.SkyMonitor.CameraAgent.Simulator.Components;
 using HVO.SkyMonitor.CameraAgent.Simulator.Components.Account;
 using HVO.SkyMonitor.CameraAgent.Simulator.Data;
-using HVO.SkyMonitor.CameraAgent.Simulator.Infrastructure.Diagnostics;
-using HVO.SkyMonitor.CameraAgent.Simulator.Infrastructure.Filters;
 using HVO.SkyMonitor.CameraAgent.Simulator.Security;
 using HVO.SkyMonitor.CameraAgent.Simulator.Services;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -61,7 +62,7 @@ public class Program
             };
         });
 
-        builder.Services.AddExceptionHandler<CameraAgentSimulatorExceptionHandler>();
+        builder.Services.AddExceptionHandler<CameraAgentExceptionHandler>();
 
         builder.Services.AddHttpLogging(logging =>
         {
@@ -125,7 +126,7 @@ public class Program
         });
 
         authenticationBuilder.AddIdentityCookies();
-        authenticationBuilder.AddApiKeySupport();
+        authenticationBuilder.AddApiKeySupport<ApiKeyAuthenticationHandler>();
 
         builder.Services.AddAuthorization(options =>
         {

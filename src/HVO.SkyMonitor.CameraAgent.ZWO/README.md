@@ -1,69 +1,49 @@
 # HVO.SkyMonitor.CameraAgent.ZWO
 
-ZWO camera hardware agent for controlling ZWO astronomical cameras.
+Blazor Server application that emulates a SkyMonitor camera agent, mirroring the SkyMonitor V6 SampleApp layout, API pipeline, and security model. It is powered by ASP.NET Core Identity, API key policies, OpenAPI/Scalar, and a locally hosted copy of the `hvo-dark` theme.
 
-## Features
+## Highlights
 
-- **Authentication**: ASP.NET Core Identity with cookie authentication
-- **Database**: SQLite (local file: `cameraagent_zwo.db`)
-- **API Versioning**: URL-based versioning (v1.0)
-- **Documentation**: OpenAPI + Scalar UI
-- **Observability**: OpenTelemetry, Prometheus metrics, structured JSON logging
-- **Health Checks**: Database connectivity
+- **Modern UI**: Main layout, reconnect modal, scoped CSS/JS, and shared components copied from the V6 SampleApp while loading the theme from `wwwroot/css/themes/hvo-dark.css`.
+- **Identity + API Keys**: Full ASP.NET Core Identity scaffolding with passkey support, API key management, and reusable authorization policies (`ApiKeyOrCookie`, `ApiKeyRead`, `ApiKeyReadWrite`).
+- **Sample APIs**: Versioned `/api/v1.0/sample/*` endpoints backed by `Result<T>` services for deterministic ZWO agent responses.
+- **Diagnostics**: Structured JSON logging, custom correlation-id middleware, ProblemDetails enrichment, OpenTelemetry metrics/traces, Scalar UI, Prometheus scraping, and health checks.
+- **SQLite Storage**: Identity + API key tables managed through EF Core migrations stored under `Data/Migrations`.
 
-## Running with Aspire AppHost
+## Run It
 
-By default, the AppHost runs this project as a .NET project for full debugging and telemetry integration.
-
-## Docker Container Support
-
-The project includes a `Dockerfile` for containerized deployment. To run as a Docker container in the AppHost, add the following to `HVO.SkyMonitor.AppHost/Program.cs`:
-
-### Replace the ZWO Agent project definition with:
-
-```csharp
-// Camera Agent: ZWO
-builder.AddDockerfile("zwo-agent", "../../", "src/HVO.SkyMonitor.CameraAgent.ZWO/Dockerfile")
-    .WithHttpEndpoint(port: 5232, targetPort: 8080, name: "http")
-    .WithEnvironment("SkyMonitor__BaseUrl", skymonitor.GetEndpoint("http"))
-    .WithLifetime(ContainerLifetime.Session)
-    .WaitFor(skymonitor)
-    .WithExternalHttpEndpoints();
+```bash
+cd /workspaces/HVO.SkyMonitor/src/HVO.SkyMonitor.CameraAgent.ZWO
+dotnet run
 ```
 
-**Note**: Make sure the `skymonitor` variable references the correct resource (project or container).
+- UI: `http://localhost:5130/`
+- API: `http://localhost:5130/api/v1.0/sample/status`
+- Health: `http://localhost:5130/health`
+- Scalar UI: `http://localhost:5130/scalar/v1`
+- Prometheus: `http://localhost:5130/metrics`
 
-## Endpoints
+## Database & Migrations
 
-- **Web UI**: Dynamic port (when running as project) or `http://localhost:5232` (when running as container)
-- **API**: `/api/v1.0/status`
-- **Health Check**: `/health`
-- **Metrics**: `/metrics`
-- **API Documentation**: `/scalar/v1`
-- **OpenAPI Spec**: `/openapi/v1.json`
+SQLite lives under `Data/cameraagentzwo.db`. Apply or create migrations with:
+
+```bash
+dotnet ef database update --project src/HVO.SkyMonitor.CameraAgent.ZWO
+
+dotnet ef migrations add <MigrationName> --project src/HVO.SkyMonitor.CameraAgent.ZWO
+```
+
+The app applies pending migrations automatically on startup.
 
 ## Configuration
 
-See `appsettings.json` and `appsettings.Development.json` for configuration options.
+- `appsettings.json` contains the `DefaultConnection` string pointing at `Data/cameraagentzwo.db` plus standard logging configuration.
+- Data-protection keys persist under `DataProtection-Keys/` so browser sessions survive restarts.
 
-The `SkyMonitor__BaseUrl` environment variable is set by the AppHost to connect to the main SkyMonitor application.
+## Theme Usage
 
-## Database
+`Components/App.razor` references the local copy of the HVO Dark theme. Scoped CSS files under `Components/**/*.razor.css` build on that palette to keep parity with SkyMonitor V6.
 
-The SQLite database file (`cameraagent_zwo.db`) is created automatically on first run.
+## Docker
 
-Apply migrations:
-
-```bash
-dotnet ef database update
-```
-
-Create new migration:
-
-```bash
-dotnet ef migrations add MigrationName
-```
-
-## ZWO SDK
-
-This project is designed to integrate with the ZWO ASI camera SDK. SDK integration code will be added in future development.
+The existing `Dockerfile` still works for container builds. Run `docker build -t hvo-cameraagent-zwo -f src/HVO.SkyMonitor.CameraAgent.ZWO/Dockerfile .` from the repo root when you need an image.

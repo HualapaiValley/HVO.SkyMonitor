@@ -1,16 +1,14 @@
-using HVO.SkyMonitor.CameraAgent.ZWO.Data;
-using Microsoft.AspNetCore.Components;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Server;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Options;
-using System.Security.Claims;
+using HVO.SkyMonitor.CameraAgent.ZWO.Data;
 
 namespace HVO.SkyMonitor.CameraAgent.ZWO.Components.Account;
 
 // This is a server-side AuthenticationStateProvider that revalidates the security stamp for the connected user
-// every 30 minutes an interactive circuit is connected. It also uses PersistentComponentState to flow the
-// authentication state to the client which is then fixed for the lifetime of the WebAssembly application.
+// every 30 minutes an interactive circuit is connected.
 internal sealed class IdentityRevalidatingAuthenticationStateProvider(
         ILoggerFactory loggerFactory,
         IServiceScopeFactory scopeFactory,

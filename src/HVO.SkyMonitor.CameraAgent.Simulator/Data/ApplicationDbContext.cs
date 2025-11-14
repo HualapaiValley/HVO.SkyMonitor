@@ -1,4 +1,4 @@
-using HVO.SkyMonitor.CameraAgent.Simulator.Security;
+using HVO.SkyMonitor.CameraAgent.Security;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;

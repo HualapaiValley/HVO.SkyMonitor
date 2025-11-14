@@ -1,18 +1,22 @@
 using System.Diagnostics;
 using Asp.Versioning;
+using HVO.SkyMonitor.CameraAgent.Infrastructure.Diagnostics;
+using HVO.SkyMonitor.CameraAgent.Infrastructure.Filters;
+using HVO.SkyMonitor.CameraAgent.Security;
 using HVO.SkyMonitor.CameraAgent.ZWO.Components;
 using HVO.SkyMonitor.CameraAgent.ZWO.Components.Account;
 using HVO.SkyMonitor.CameraAgent.ZWO.Data;
-using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
-using HVO.SkyMonitor.Common.Infrastructure.Filters;
+using HVO.SkyMonitor.CameraAgent.ZWO.Security;
+using HVO.SkyMonitor.CameraAgent.ZWO.Services;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
-using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
+using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Metrics;
 using Scalar.AspNetCore;
 
@@ -24,230 +28,243 @@ public class Program
     {
         var builder = WebApplication.CreateBuilder(args);
 
-        // Ensure SQLite database directory exists
-        var dataDirectory = Path.Combine(builder.Environment.ContentRootPath, "data");
-        Directory.CreateDirectory(dataDirectory);
-
-        // Update SQLite connection string to use data directory
-        var sqliteConnection = builder.Configuration.GetConnectionString("SqliteConnection");
-        if (!string.IsNullOrEmpty(sqliteConnection) && !sqliteConnection.Contains("Data Source=/"))
-        {
-            // Replace relative path with absolute path in data directory
-            var dbFileName = Path.GetFileName(sqliteConnection.Replace("Data Source=", "").Split(';')[0]);
-            sqliteConnection = $"Data Source={Path.Combine(dataDirectory, dbFileName)};Cache=Shared";
-        }
-
-        // Enhanced logging with JSON console formatting and activity tracking
-        builder.Logging.AddJsonConsole(options =>
-        {
-            options.IncludeScopes = true;
-            options.TimestampFormat = "yyyy-MM-dd HH:mm:ss ";
-        });
-
+        builder.Logging.ClearProviders();
+        builder.Logging.AddJsonConsole();
+        builder.Logging.AddDebug();
         builder.Logging.Configure(options =>
         {
-            options.ActivityTrackingOptions = ActivityTrackingOptions.SpanId
-                | ActivityTrackingOptions.TraceId
-                | ActivityTrackingOptions.ParentId
-                | ActivityTrackingOptions.Baggage
-                | ActivityTrackingOptions.Tags;
+            options.ActivityTrackingOptions = ActivityTrackingOptions.SpanId |
+                ActivityTrackingOptions.TraceId |
+                ActivityTrackingOptions.ParentId |
+                ActivityTrackingOptions.Baggage |
+                ActivityTrackingOptions.Tags;
         });
 
-        // Add service defaults & Aspire client integrations
         builder.AddServiceDefaults();
 
-        // Correlation ID support for distributed tracing
+        builder.Services.AddHttpContextAccessor();
         builder.Services.AddSingleton<ICorrelationIdAccessor, HttpContextCorrelationIdAccessor>();
 
-        // Problem Details with correlation tracking
         builder.Services.AddProblemDetails(options =>
         {
             options.CustomizeProblemDetails = context =>
             {
-                context.ProblemDetails.Extensions["traceId"] =
-                    Activity.Current?.TraceId.ToString() ?? context.HttpContext.TraceIdentifier;
-
-                var correlationId = context.HttpContext.Items["CorrelationId"] as string;
+                var correlationId = CorrelationIdMiddleware.GetCorrelationId(context.HttpContext);
                 if (!string.IsNullOrWhiteSpace(correlationId))
                 {
                     context.ProblemDetails.Extensions["correlationId"] = correlationId;
                 }
+
+                context.ProblemDetails.Extensions["traceId"] =
+                    Activity.Current?.TraceId.ToString() ?? context.HttpContext.TraceIdentifier;
             };
         });
 
-        // Global exception handler
-        builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+        builder.Services.AddExceptionHandler<CameraAgentExceptionHandler>();
 
-        // HTTP logging with correlation header
-        builder.Services.AddHttpLogging(options =>
+        builder.Services.AddHttpLogging(logging =>
         {
-            options.LoggingFields = HttpLoggingFields.RequestMethod
-                | HttpLoggingFields.RequestPath
-                | HttpLoggingFields.ResponseStatusCode
-                | HttpLoggingFields.Duration;
-            options.RequestHeaders.Add(CorrelationIdMiddleware.HeaderName);
+            logging.LoggingFields = HttpLoggingFields.RequestMethod |
+                                    HttpLoggingFields.RequestPath |
+                                    HttpLoggingFields.ResponseStatusCode |
+                                    HttpLoggingFields.Duration;
+            logging.RequestHeaders.Add(CorrelationIdMiddleware.HeaderName);
+            logging.ResponseHeaders.Add(CorrelationIdMiddleware.HeaderName);
         });
 
-        // Time provider for testability
         builder.Services.AddSingleton(TimeProvider.System);
 
-        // API Controllers with automatic model state validation
         builder.Services.AddControllers(options =>
         {
             options.Filters.Add<ValidateModelStateAttribute>();
         });
-
-        // Health checks
-        builder.Services.AddHealthChecks()
-            .AddDbContextCheck<ApplicationDbContext>("database");
-
-        // OpenAPI support
+        builder.Services.Configure<ApiBehaviorOptions>(options =>
+        {
+            options.SuppressModelStateInvalidFilter = true;
+        });
+        builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddOpenApi();
 
-        // API Versioning
-        builder.Services.AddApiVersioning(options =>
-        {
-            options.DefaultApiVersion = new ApiVersion(1, 0);
-            options.AssumeDefaultVersionWhenUnspecified = true;
-            options.ReportApiVersions = true;
-            options.ApiVersionReader = new Asp.Versioning.UrlSegmentApiVersionReader();
-        }).AddApiExplorer(options =>
-        {
-            options.GroupNameFormat = "'v'VVV";
-            options.SubstituteApiVersionInUrl = true;
-        });
+        builder.Services.AddRazorComponents()
+            .AddInteractiveServerComponents();
 
-        // Prometheus metrics
+        builder.Services.AddApiVersioning(options =>
+            {
+                options.DefaultApiVersion = new ApiVersion(1, 0);
+                options.AssumeDefaultVersionWhenUnspecified = true;
+                options.ReportApiVersions = true;
+            })
+            .AddApiExplorer(options =>
+                {
+                    options.GroupNameFormat = "'v'VVV";
+                    options.SubstituteApiVersionInUrl = true;
+                });
+
+        builder.Services.AddHealthChecks()
+            .AddDbContextCheck<ApplicationDbContext>("database");
         builder.Services.AddOpenTelemetry()
             .WithMetrics(metrics =>
             {
                 metrics.AddPrometheusExporter();
             });
 
-        // SQLite database with Aspire integration - using data directory for persistence
-        builder.Configuration["ConnectionStrings:SqliteConnection"] = sqliteConnection;
-        builder.AddSqliteDbContext<ApplicationDbContext>("SqliteConnection");
+        builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
+        {
+            options.RecordException = true;
+        });
 
-        builder.Services.AddDatabaseDeveloperPageExceptionFilter();
-
-        // Identity with cookie authentication
         builder.Services.AddCascadingAuthenticationState();
-        builder.Services.AddScoped<IdentityUserAccessor>();
         builder.Services.AddScoped<IdentityRedirectManager>();
-        builder.Services.AddScoped<IdentityRevalidatingAuthenticationStateProvider>();
         builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuthenticationStateProvider>();
 
-        builder.Services.AddIdentityCore<ApplicationUser>(options =>
+        var authenticationBuilder = builder.Services.AddAuthentication(options =>
         {
-            options.SignIn.RequireConfirmedAccount = true;
-        })
-        .AddEntityFrameworkStores<ApplicationDbContext>()
-        .AddSignInManager()
-        .AddDefaultTokenProviders();
+            options.DefaultScheme = IdentityConstants.ApplicationScheme;
+            options.DefaultSignInScheme = IdentityConstants.ExternalScheme;
+        });
+
+        authenticationBuilder.AddIdentityCookies();
+        authenticationBuilder.AddApiKeySupport<ApiKeyAuthenticationHandler>();
+
+        builder.Services.AddAuthorization(options =>
+        {
+            options.AddPolicy(AuthorizationPolicyNames.ApiKeyOrCookie, policy =>
+            {
+                policy.AddAuthenticationSchemes(
+                    IdentityConstants.ApplicationScheme,
+                    ApiKeyAuthenticationOptions.AuthenticationScheme);
+                policy.RequireAuthenticatedUser();
+            });
+
+            options.AddPolicy(AuthorizationPolicyNames.ApiKeyRead, policy =>
+            {
+                policy.AddAuthenticationSchemes(
+                    IdentityConstants.ApplicationScheme,
+                    ApiKeyAuthenticationOptions.AuthenticationScheme);
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                {
+                    var authScheme = context.User.FindFirst(ApiKeyClaims.AuthenticationType);
+                    if (authScheme is null)
+                    {
+                        return true;
+                    }
+
+                    var accessLevel = context.User.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
+                    return accessLevel is not null &&
+                        (accessLevel == ApiKeyAccessLevel.Read.ToString() || accessLevel == ApiKeyAccessLevel.ReadWrite.ToString());
+                });
+            });
+
+            options.AddPolicy(AuthorizationPolicyNames.ApiKeyReadWrite, policy =>
+            {
+                policy.AddAuthenticationSchemes(
+                    IdentityConstants.ApplicationScheme,
+                    ApiKeyAuthenticationOptions.AuthenticationScheme);
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                {
+                    var authScheme = context.User.FindFirst(ApiKeyClaims.AuthenticationType);
+                    if (authScheme is null)
+                    {
+                        return true;
+                    }
+
+                    var accessLevel = context.User.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
+                    return accessLevel == ApiKeyAccessLevel.ReadWrite.ToString();
+                });
+            });
+        });
+
+        var dataDirectory = Path.Combine(builder.Environment.ContentRootPath, "Data");
+        Directory.CreateDirectory(dataDirectory);
+        var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+            ?? $"DataSource={Path.Combine(dataDirectory, "cameraagentzwo.db")};Cache=Shared";
+
+        builder.Configuration["ConnectionStrings:DefaultConnection"] = connectionString;
+        builder.AddSqliteDbContext<ApplicationDbContext>("DefaultConnection");
+        builder.Services.AddDatabaseDeveloperPageExceptionFilter();
+
+        builder.Services.AddIdentityCore<ApplicationUser>(options =>
+            {
+                options.SignIn.RequireConfirmedAccount = true;
+                options.Stores.SchemaVersion = IdentitySchemaVersions.Version3;
+            })
+            .AddEntityFrameworkStores<ApplicationDbContext>()
+            .AddSignInManager()
+            .AddDefaultTokenProviders();
 
         builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
+        builder.Services.AddSingleton<IApiKeyHasher, ApiKeyHasher>();
+        builder.Services.AddScoped<ISampleStatusService, SampleStatusService>();
 
-        // Data Protection - persist keys to avoid cookie invalidation on restart
         var dataProtectionPath = Path.Combine(builder.Environment.ContentRootPath, "DataProtection-Keys");
         builder.Services.AddDataProtection()
             .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath))
             .SetApplicationName("HVO.SkyMonitor.CameraAgent.ZWO");
 
-        // Authentication: Identity cookies only
-        builder.Services.AddAuthentication(options =>
-        {
-            options.DefaultScheme = IdentityConstants.ApplicationScheme;
-            options.DefaultSignInScheme = IdentityConstants.ExternalScheme;
-        })
-        .AddIdentityCookies();
-
-        // Authorization
-        builder.Services.AddAuthorization();
-
-        // Blazor components
-        builder.Services.AddRazorComponents()
-            .AddInteractiveServerComponents();
-
-        // Scalar API documentation
-        builder.Services.AddEndpointsApiExplorer();
-
         var app = builder.Build();
 
-        // Configure the HTTP request pipeline
-        if (!app.Environment.IsDevelopment())
+        if (app.Environment.IsDevelopment())
         {
-            // Use error page for non-API routes
-            app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api"), appBuilder =>
-            {
-                appBuilder.UseExceptionHandler("/Error");
-            });
+            app.UseDeveloperExceptionPage();
+            app.UseMigrationsEndPoint();
+        }
+        else
+        {
             app.UseHsts();
         }
 
-        // Correlation ID middleware (first to ensure all requests have correlation IDs)
         app.UseCorrelationId();
 
-        // Status code pages for non-API routes only (browsers get HTML, APIs get ProblemDetails)
-        app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api"), appBuilder =>
-        {
-            appBuilder.UseStatusCodePagesWithReExecute("/Error", "?statusCode={0}");
-        });
-
-        // Exception handler
         app.UseExceptionHandler();
 
-        // HTTP logging
         app.UseHttpLogging();
 
-        // Apply database migrations automatically on startup
+        app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api"), appBuilder =>
+            {
+                appBuilder.UseStatusCodePagesWithReExecute("/not-found", "?statusCode={0}");
+            }
+        );
+
+        app.UseStaticFiles();
+
+        app.UseRouting();
+
+        app.UseAuthentication();
+        app.UseAuthorization();
+
+        app.UseAntiforgery();
+
+        app.MapOpenApi();
+        app.MapScalarApiReference(options =>
+        {
+            options.Title = "SkyMonitor Camera Agent ZWO";
+        });
+
+        app.MapControllers();
+        app.MapRazorComponents<App>()
+            .AddInteractiveServerRenderMode();
+        app.MapPrometheusScrapingEndpoint();
+
+        app.MapAdditionalIdentityEndpoints();
+        app.MapDefaultEndpoints();
+
         using (var scope = app.Services.CreateScope())
         {
             var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
             try
             {
-                logger.LogInformation("Applying database migrations...");
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 db.Database.Migrate();
-                logger.LogInformation("Database migrations applied successfully");
+                logger.LogInformation("Database migrations applied successfully.");
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "An error occurred while applying database migrations");
+                logger.LogError(ex, "Failed to apply database migrations.");
                 throw;
             }
         }
-
-        // Static files and antiforgery
-        app.UseStaticFiles();
-        app.UseAntiforgery();
-
-        // Authentication & Authorization
-        app.UseAuthentication();
-        app.UseAuthorization();
-
-        // Map OpenAPI and Scalar
-        app.MapOpenApi();
-        app.MapScalarApiReference(options =>
-        {
-            options.Title = "Camera Agent ZWO API";
-            options.Theme = ScalarTheme.Mars;
-        });
-
-        // Map API controllers
-        app.MapControllers();
-
-        // Health checks
-        app.MapHealthChecks("/health");
-
-        // Map Blazor components
-        app.MapRazorComponents<App>()
-            .AddInteractiveServerRenderMode();
-
-        // Map Prometheus metrics endpoint
-        app.MapPrometheusScrapingEndpoint();
-
-        // Map default endpoints (health checks, etc.)
-        app.MapDefaultEndpoints();
 
         app.Run();
     }

@@ -11,7 +11,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using HVO.SkyMonitor.CameraAgent.Simulator.Components.Account;
 using HVO.SkyMonitor.CameraAgent.Simulator.Data;
-using HVO.SkyMonitor.CameraAgent.Simulator.Security;
+using HVO.SkyMonitor.CameraAgent.Security;
 
 namespace HVO.SkyMonitor.CameraAgent.Simulator.Components.Account.Pages.Manage;
 

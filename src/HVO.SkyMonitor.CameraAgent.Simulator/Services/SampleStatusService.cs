@@ -1,7 +1,7 @@
 using System.Security.Claims;
 using HVO;
+using HVO.SkyMonitor.CameraAgent.Security;
 using HVO.SkyMonitor.CameraAgent.Simulator.Models.Sample;
-using HVO.SkyMonitor.CameraAgent.Simulator.Security;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging;
 

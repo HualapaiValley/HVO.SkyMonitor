@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
-using HVO.SkyMonitor.CameraAgent.Simulator.Infrastructure.Diagnostics;
+using HVO.SkyMonitor.CameraAgent.Infrastructure.Diagnostics;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Http;

@@ -1,4 +1,4 @@
-using HVO.SkyMonitor.CameraAgent.Simulator.Security;
+using HVO.SkyMonitor.CameraAgent.Security;
 
 namespace HVO.SkyMonitor.CameraAgent.Simulator.Data;
 

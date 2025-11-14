@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Identity;
+using HVO.SkyMonitor.CameraAgent.ZWO.Data;
 
 namespace HVO.SkyMonitor.CameraAgent.ZWO.Components.Account;
 
@@ -24,8 +26,7 @@ internal sealed class IdentityRedirectManager(NavigationManager navigationManage
             uri = navigationManager.ToBaseRelativePath(uri);
         }
 
-        // Use forceLoad to ensure a full page reload, which works in both static and interactive modes
-        navigationManager.NavigateTo(uri, forceLoad: true);
+        navigationManager.NavigateTo(uri);
     }
 
     public void RedirectTo(string uri, Dictionary<string, object?> queryParameters)
@@ -35,9 +36,9 @@ internal sealed class IdentityRedirectManager(NavigationManager navigationManage
         RedirectTo(newUri);
     }
 
-    public void RedirectToWithStatus(string uri, string message, HttpContext httpContext)
+    public void RedirectToWithStatus(string uri, string message, HttpContext context)
     {
-        httpContext.Response.Cookies.Append(StatusCookieName, message, StatusCookieBuilder.Build(httpContext));
+        context.Response.Cookies.Append(StatusCookieName, message, StatusCookieBuilder.Build(context));
         RedirectTo(uri);
     }
 
@@ -45,6 +46,9 @@ internal sealed class IdentityRedirectManager(NavigationManager navigationManage
 
     public void RedirectToCurrentPage() => RedirectTo(CurrentPath);
 
-    public void RedirectToCurrentPageWithStatus(string message, HttpContext httpContext)
-        => RedirectToWithStatus(CurrentPath, message, httpContext);
+    public void RedirectToCurrentPageWithStatus(string message, HttpContext context)
+        => RedirectToWithStatus(CurrentPath, message, context);
+
+    public void RedirectToInvalidUser(UserManager<ApplicationUser> userManager, HttpContext context)
+        => RedirectToWithStatus("Account/InvalidUser", $"Error: Unable to load user with ID '{userManager.GetUserId(context.User)}'.", context);
 }
