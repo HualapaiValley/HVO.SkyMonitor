@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using Asp.Versioning;
-using HVO.SkyMonitor.CameraAgent.Infrastructure.Diagnostics;
-using HVO.SkyMonitor.CameraAgent.Infrastructure.Filters;
-using HVO.SkyMonitor.CameraAgent.Security;
+using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
+using HVO.SkyMonitor.Common.Infrastructure.Filters;
+using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.CameraAgent.ZWO.Components;
 using HVO.SkyMonitor.CameraAgent.ZWO.Components.Account;
 using HVO.SkyMonitor.CameraAgent.ZWO.Data;
@@ -60,7 +60,7 @@ public class Program
             };
         });
 
-        builder.Services.AddExceptionHandler<CameraAgentExceptionHandler>();
+        builder.Services.AddExceptionHandler<HvoServiceExceptionHandler>();
 
         builder.Services.AddHttpLogging(logging =>
         {
@@ -124,7 +124,7 @@ public class Program
         });
 
         authenticationBuilder.AddIdentityCookies();
-        authenticationBuilder.AddApiKeySupport<ApiKeyAuthenticationHandler>();
+        authenticationBuilder.AddApiKeySupport();
 
         builder.Services.AddAuthorization(options =>
         {
@@ -196,6 +196,7 @@ public class Program
 
         builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
         builder.Services.AddSingleton<IApiKeyHasher, ApiKeyHasher>();
+        builder.Services.AddScoped<IApiKeyValidator, CameraAgentApiKeyValidator>();
         builder.Services.AddScoped<ISampleStatusService, SampleStatusService>();
 
         var dataProtectionPath = Path.Combine(builder.Environment.ContentRootPath, "DataProtection-Keys");

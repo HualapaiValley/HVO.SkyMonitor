@@ -1,7 +1,7 @@
 using System.Security.Claims;
 using Asp.Versioning;
 using HVO;
-using HVO.SkyMonitor.CameraAgent.Security;
+using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.CameraAgent.ZWO.Models.Sample;
 using HVO.SkyMonitor.CameraAgent.ZWO.Services;
 using Microsoft.AspNetCore.Authorization;

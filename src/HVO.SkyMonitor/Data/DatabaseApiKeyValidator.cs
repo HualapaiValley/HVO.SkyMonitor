@@ -40,6 +40,9 @@ public class DatabaseApiKeyValidator : IApiKeyValidator
             IsValid = true,
             KeyId = key.Id,
             KeyName = key.Name,
+            DisplayName = key.Name,
+            NameIdentifier = key.UserId,
+            Email = key.User?.Email,
             AccessLevel = key.AccessLevel
         };
     }

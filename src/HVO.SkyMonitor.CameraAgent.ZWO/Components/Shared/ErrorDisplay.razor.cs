@@ -1,4 +1,4 @@
-using HVO.SkyMonitor.CameraAgent.Infrastructure.Diagnostics;
+using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
 using Microsoft.AspNetCore.Components;
 
 namespace HVO.SkyMonitor.CameraAgent.ZWO.Components.Shared;

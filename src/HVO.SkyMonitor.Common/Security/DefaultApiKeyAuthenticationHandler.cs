@@ -44,11 +44,21 @@ public sealed class DefaultApiKeyAuthenticationHandler : AuthenticationHandler<A
 
         var claims = new List<Claim>
         {
-            new(ClaimTypes.Name, validationResult.KeyName ?? validationResult.KeyId ?? "API Key"),
+            new(ClaimTypes.Name, validationResult.DisplayName ?? validationResult.KeyName ?? validationResult.KeyId ?? "API Key"),
             new(ApiKeyClaims.ApiKeyId, validationResult.KeyId ?? string.Empty),
             new(ApiKeyClaims.AccessLevel, validationResult.AccessLevel.ToString()),
             new(ApiKeyClaims.AuthenticationType, ApiKeyAuthenticationOptions.AuthenticationScheme)
         };
+
+        if (!string.IsNullOrWhiteSpace(validationResult.NameIdentifier))
+        {
+            claims.Add(new Claim(ClaimTypes.NameIdentifier, validationResult.NameIdentifier));
+        }
+
+        if (!string.IsNullOrWhiteSpace(validationResult.Email))
+        {
+            claims.Add(new Claim(ClaimTypes.Email, validationResult.Email));
+        }
 
         var identity = new ClaimsIdentity(claims, ApiKeyAuthenticationOptions.AuthenticationScheme);
         var principal = new ClaimsPrincipal(identity);
@@ -63,6 +73,9 @@ public sealed class ApiKeyValidationResult
     public bool IsValid { get; init; }
     public string? KeyId { get; init; }
     public string? KeyName { get; init; }
+    public string? DisplayName { get; init; }
+    public string? NameIdentifier { get; init; }
+    public string? Email { get; init; }
     public ApiKeyAccessLevel AccessLevel { get; init; } = ApiKeyAccessLevel.Read;
 }
 
