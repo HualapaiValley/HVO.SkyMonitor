@@ -55,7 +55,9 @@ public class CentralAuthenticationServiceTests
         var httpClientFactory = new Mock<IHttpClientFactory>();
         httpClientFactory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(httpClient);
 
-        var service = new CentralAuthenticationService(options, mockLogger.Object, httpClientFactory.Object);
+        var timeProvider = TimeProvider.System;
+
+        var service = new CentralAuthenticationService(options, httpClientFactory.Object, mockLogger.Object, timeProvider);
 
         // Act
         var token1 = await service.GetAccessTokenAsync();
@@ -116,7 +118,9 @@ public class CentralAuthenticationServiceTests
         var httpClientFactory = new Mock<IHttpClientFactory>();
         httpClientFactory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(httpClient);
 
-        var service = new CentralAuthenticationService(options, mockLogger.Object, httpClientFactory.Object);
+        var timeProvider = TimeProvider.System;
+
+        var service = new CentralAuthenticationService(options, httpClientFactory.Object, mockLogger.Object, timeProvider);
         var targetClient = new HttpClient();
 
         // Act
@@ -144,8 +148,9 @@ public class CentralAuthenticationServiceTests
 
         var mockLogger = new Mock<ILogger<CentralAuthenticationService>>();
         var mockHttpClientFactory = new Mock<IHttpClientFactory>();
+        var timeProvider = TimeProvider.System;
 
-        var service = new CentralAuthenticationService(options, mockLogger.Object, mockHttpClientFactory.Object);
+        var service = new CentralAuthenticationService(options, mockHttpClientFactory.Object, mockLogger.Object, timeProvider);
 
         // Act
         var apiKey = service.GetApiKey();
