@@ -1,5 +1,4 @@
 using System;
-using Microsoft.AspNetCore.Identity;
 
 namespace HVO.SkyMonitor.Common.Security;
 
@@ -11,8 +10,6 @@ public sealed class ApiKey
     public string Id { get; set; } = Guid.NewGuid().ToString("n");
 
     public string UserId { get; set; } = string.Empty;
-
-    public IdentityUser? User { get; set; }
 
     public string DisplayName { get; set; } = string.Empty;
 

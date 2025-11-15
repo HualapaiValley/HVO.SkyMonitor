@@ -18,6 +18,7 @@ using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Metrics;
 using Scalar.AspNetCore;
+using OpenIddict.Validation.AspNetCore;
 
 namespace HVO.SkyMonitor;
 
@@ -83,6 +84,10 @@ public class Program
         builder.Services.AddControllers(options =>
         {
             options.Filters.Add<ValidateModelStateAttribute>();
+        })
+        .AddJsonOptions(options =>
+        {
+            options.JsonSerializerOptions.PropertyNamingPolicy = null;
         });
 
         // Health checks
@@ -227,6 +232,10 @@ public class Program
 
         authenticationBuilder.AddIdentityCookies();
         authenticationBuilder.AddApiKeySupport();
+        authenticationBuilder.AddPolicyScheme("Bearer", "Bearer", options =>
+        {
+            options.ForwardDefaultSelector = _ => OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme;
+        });
 
         // Authorization policies
         builder.Services.AddAuthorization(options =>

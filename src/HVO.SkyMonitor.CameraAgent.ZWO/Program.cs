@@ -109,6 +109,7 @@ public class Program
 
         // Central Identity authentication for outbound calls
         builder.Services.AddCentralIdentityAuthentication(builder.Configuration);
+        builder.Services.AddSkyMonitorApiClient(builder.Configuration);
 
         // JWT Bearer authentication for inbound API calls
         builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

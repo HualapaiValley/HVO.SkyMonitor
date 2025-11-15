@@ -276,6 +276,7 @@ For deploying camera agents to Raspberry Pi:
    docker load < /tmp/zwo-agent.tar.gz
    docker run -d --name zwo-agent \
      -e SkyMonitor__BaseUrl=http://your-server:5174 \
+     -e CentralIdentity__ServiceUrl=http://your-server:5174 \
      -p 8080:8080 \
      --restart unless-stopped \
      hvo-cameraagent-zwo:latest
@@ -287,6 +288,7 @@ For deploying camera agents to Raspberry Pi:
      --device /dev/bus/usb:/dev/bus/usb \
      --privileged \
      -e SkyMonitor__BaseUrl=http://your-server:5174 \
+     -e CentralIdentity__ServiceUrl=http://your-server:5174 \
      -p 8080:8080 \
      --restart unless-stopped \
      hvo-cameraagent-zwo:latest

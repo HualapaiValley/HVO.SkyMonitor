@@ -54,12 +54,14 @@ public class Program
         // Camera Agent: Simulator
         builder.AddProject<Projects.HVO_SkyMonitor_CameraAgent_Simulator>("simulator-agent")
             .WithEnvironment("SkyMonitor__BaseUrl", skymonitor.GetEndpoint("http"))
+            .WithEnvironment("CentralIdentity__ServiceUrl", skymonitor.GetEndpoint("http"))
             .WaitFor(skymonitor)
             .WithExternalHttpEndpoints();
 
         // Camera Agent: ZWO
         builder.AddProject<Projects.HVO_SkyMonitor_CameraAgent_ZWO>("zwo-agent")
             .WithEnvironment("SkyMonitor__BaseUrl", skymonitor.GetEndpoint("http"))
+            .WithEnvironment("CentralIdentity__ServiceUrl", skymonitor.GetEndpoint("http"))
             .WaitFor(skymonitor)
             .WithExternalHttpEndpoints();
 

@@ -242,6 +242,7 @@ var skymonitor = builder.AddProject<Projects.HVO_SkyMonitor>("skymonitor")
 
 var simulatorAgent = builder.AddProject<Projects.HVO_SkyMonitor_CameraAgent_Simulator>("simulator-agent")
     .WithEnvironment("SkyMonitor__BaseUrl", skymonitor.GetEndpoint("http"))
+  .WithEnvironment("CentralIdentity__ServiceUrl", skymonitor.GetEndpoint("http"))
     .WaitFor(skymonitor)               // Wait for main app to be ready
     .WithExternalHttpEndpoints();
 ```

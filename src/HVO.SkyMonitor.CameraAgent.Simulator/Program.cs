@@ -106,6 +106,7 @@ public class Program
 
         // Central authentication - no local Identity
         builder.Services.AddCentralIdentityAuthentication(builder.Configuration);
+        builder.Services.AddSkyMonitorApiClient(builder.Configuration);
 
         builder.Services.AddAuthentication(options =>
         {

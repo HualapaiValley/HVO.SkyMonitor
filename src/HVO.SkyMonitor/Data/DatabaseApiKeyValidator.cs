@@ -22,7 +22,7 @@ public class DatabaseApiKeyValidator : IApiKeyValidator
         var hashedKey = _hasher.Hash(apiKey);
 
         var key = await _context.ApiKeys
-            .Include(k => k.User)
+            .AsNoTracking()
             .FirstOrDefaultAsync(k => k.HashedKey == hashedKey && k.IsActive);
 
         if (key == null)
@@ -35,7 +35,14 @@ public class DatabaseApiKeyValidator : IApiKeyValidator
             return new ApiKeyValidationResult { IsValid = false };
         }
 
-        var user = key.User as ApplicationUser;
+        var user = await _context.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Id == key.UserId);
+
+        if (user == null)
+        {
+            return new ApiKeyValidationResult { IsValid = false };
+        }
 
         return new ApiKeyValidationResult
         {
@@ -44,9 +51,9 @@ public class DatabaseApiKeyValidator : IApiKeyValidator
             KeyName = key.DisplayName,
             DisplayName = key.DisplayName,
             NameIdentifier = key.UserId,
-            Email = key.User?.Email,
+            Email = user.Email,
             AccessLevel = key.AccessLevel,
-            AccountType = user?.AccountType.ToString() ?? "User"
+            AccountType = user.AccountType.ToString()
         };
     }
 }

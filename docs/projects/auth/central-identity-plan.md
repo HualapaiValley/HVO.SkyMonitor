@@ -150,6 +150,7 @@
 
 **Tasks**
 - [ ] Implement MSTest-based coverage for Identity (AccountType rules), OpenIddict flows, API-key policies, signed-URL services, and agent auth integrations.
+- [ ] Add Aspire integration test that boots the simulator camera agent with default SYSTEM credentials, acquires a real token/API key from SkyMonitor, and calls a protected endpoint (serves as the template for ZWO once mirrored).
 - [ ] Add end-to-end workflows (user login → token issuance → signed URL consumption, agent credential flows, etc.).
 - [ ] Wire tests into CI (`dotnet test` with coverage) and enforce pass/fail gates.
 - [ ] Update documentation to reference the new automated tests and how to run them locally.
