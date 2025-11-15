@@ -125,13 +125,79 @@
 - Productionize the auth system with proper secret storage, logging, metrics, rate limiting, and runbooks.
 
 **Tasks**
-- [ ] Move OpenIddict signing keys, API-key hashing keys, and signed-URL HMAC keys into the designated secret store (document retrieval & rotation).
+- [x] Move OpenIddict signing keys, API-key hashing keys, and signed-URL HMAC keys into the designated secret store (document retrieval & rotation).
+  - [x] Documented OpenIddict signing/encryption certificate management (development auto-generated, production from Azure Key Vault)
+  - [x] Documented API-key hashing salt configuration (optional enhancement for production)
+  - [x] Documented signed-URL HMAC secret requirements (256-bit minimum, stored in User Secrets/Key Vault)
+  - [x] Created comprehensive secret management guide (PHASE6_SECRETS.md)
+  - [x] Documented secret generation procedures (openssl commands)
+  - [x] Documented secret rotation schedules and procedures
+  - [x] Updated .env.template with all Phase 6 environment variables
+  - [x] Updated devcontainer.json with Phase 6 non-sensitive configuration
+  - [x] Updated GitHub Actions secrets documentation with Phase 6 requirements
+- [x] Define key rotation/incident response procedures, including overlap windows where old and new keys are accepted.
+  - [x] Created operational runbooks (PHASE6_RUNBOOKS.md) with:
+  - [x] OpenIddict signing certificate rotation (zero-downtime, 12-month schedule)
+  - [x] Signed URL HMAC secret rotation (overlap window, 90-day schedule)
+  - [x] API key hashing salt rotation (destructive, annual or on breach)
+  - [x] Emergency access revocation procedures
+  - [x] Security incident response workflow (detection, containment, investigation, remediation, post-incident)
+- [x] Produce runbooks for onboarding accounts, issuing/rotating keys, revoking access, and handling 401/403 scenarios across services.
+  - [x] User account onboarding procedures (interactive USER accounts)
+  - [x] System account onboarding procedures (service/agent SYSTEM accounts)
+  - [x] API key lifecycle management (creation, rotation, revocation)
+  - [x] Access revocation procedures (standard offboarding and emergency)
+  - [x] Troubleshooting guide for 401/403 errors (comprehensive diagnostic steps)
+  - [x] Certificate management and renewal (Let's Encrypt automation)
+  - [x] Monitoring, metrics, and alerting guidelines
 - [ ] Configure production-grade TLS for HVO.SkyMonitor and any public endpoints.
+  - [x] Documented TLS certificate requirements and storage options
+  - [x] Documented Let's Encrypt certificate renewal automation
+  - [x] Documented certificate expiration monitoring
+  - [ ] Code changes to load certificates from Azure Key Vault in production
+  - [ ] Configure Kestrel HTTPS endpoints in appsettings.Production.json
 - [ ] Implement structured logging for login success/failure, token issuance, API-key usage, and signed-URL validation failures (avoid sensitive payloads).
+  - [x] Existing: ApiKeyAuditLogger for API key lifecycle events
+  - [ ] Add structured logging for login success/failure events
+  - [ ] Add structured logging for OAuth2 token issuance events
+  - [ ] Enhance API-key authentication handler with usage logging
+  - [ ] Add structured logging for signed-URL validation failures
+  - [ ] Review and ensure no sensitive data (passwords, tokens) is logged
+  - [ ] Document log structure, fields, and example queries
 - [ ] Publish metrics (token requests per client, API-key auth success/failure, signed-URL rejection counts, latency/error rates per key API) via Prometheus/App Insights exporters.
+  - [x] Existing: Prometheus metrics endpoint configured (Program.cs)
+  - [ ] Add custom metrics for token requests per client (OpenIddict)
+  - [ ] Add custom metrics for API-key authentication success/failure
+  - [ ] Add custom metrics for signed-URL validation success/failure
+  - [ ] Add latency/error rate metrics for authentication endpoints
+  - [ ] Configure metrics exporters (Prometheus already enabled)
+  - [ ] Document available metrics and how to access them
+  - [ ] Create sample Grafana dashboards or query examples
 - [ ] Add rate limiting/IP throttling to `/connect/token` and other sensitive endpoints; re-validate CSRF protections for cookie flows.
-- [ ] Define key rotation/incident response procedures, including overlap windows where old and new keys are accepted.
-- [ ] Produce runbooks for onboarding accounts, issuing/rotating keys, revoking access, and handling 401/403 scenarios across services.
+  - [x] Documented rate limiting configuration in .env.template and devcontainer.json
+  - [ ] Add ASP.NET Core rate limiting middleware
+  - [ ] Configure rate limits for /connect/token endpoint
+  - [ ] Configure rate limits for /connect/authorize endpoint
+  - [ ] Configure rate limits for API endpoints
+  - [ ] Add IP-based throttling for sensitive endpoints
+  - [ ] Re-validate CSRF protections for Blazor/cookie flows
+  - [ ] Test rate limiting behavior with load testing
+  - [ ] Document rate limiting configuration and behavior
+
+**Documentation Status**
+- ✅ PHASE6_SECRETS.md created (17.5 KB) - Comprehensive secret management guide
+- ✅ PHASE6_RUNBOOKS.md created (24.7 KB) - Operational procedures and incident response
+- ✅ .env.template updated with Phase 6 configuration
+- ✅ .devcontainer/devcontainer.json updated with Phase 6 environment variables
+- ✅ .github/workflows/README.md updated with Phase 6 GitHub Actions secrets
+- ✅ SECRETS_MANAGEMENT.md updated with Phase 6 reference
+
+**Implementation Status**
+- 🔄 Documentation: Complete
+- 🔄 TLS Configuration: Documented, implementation pending
+- 🔄 Structured Logging: Partially implemented (API keys done), auth events pending
+- 🔄 Metrics: Infrastructure ready, custom metrics pending
+- 🔄 Rate Limiting: Documented, implementation pending
 
 ## Phase 7 – Adaptive Enhancements & Discoveries
 **Goals**
