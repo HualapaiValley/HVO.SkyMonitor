@@ -38,12 +38,10 @@
         "ms-dotnettools.vscode-dotnet-runtime",
         "GitHub.copilot",
         "GitHub.copilot-chat",
-        "ms-vscode.vscode-js-profile-flame",
-        "visualstudioexptteam.vscodeintellicode",
-        "visualstudioexptteam.intellicode-api-usage-examples"
+        "github.vscode-github-actions",
+        "ms-vscode.vscode-js-profile-flame"
       ],
       "settings": {
-        "dotnet.defaultSolution": "disable",
         "omnisharp.enableRoslynAnalyzers": true,
         "omnisharp.enableEditorConfigSupport": true,
         "omnisharp.enableImportCompletion": true,
