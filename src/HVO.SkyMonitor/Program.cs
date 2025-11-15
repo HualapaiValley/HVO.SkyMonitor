@@ -22,7 +22,7 @@ namespace HVO.SkyMonitor;
 
 public class Program
 {
-    public static void Main(string[] args)
+    public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
 
@@ -260,10 +260,15 @@ public class Program
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 db.Database.Migrate();
                 logger.LogInformation("Database migrations applied successfully");
+
+                // Seed initial data
+                logger.LogInformation("Seeding database...");
+                await DatabaseSeeder.SeedAsync(scope.ServiceProvider, logger);
+                logger.LogInformation("Database seeding completed");
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "An error occurred while applying database migrations");
+                logger.LogError(ex, "An error occurred while applying database migrations or seeding");
                 throw;
             }
         }
@@ -300,6 +305,6 @@ public class Program
         // Default health/diagnostics endpoints
         app.MapDefaultEndpoints();
 
-        app.Run();
+        await app.RunAsync();
     }
 }
