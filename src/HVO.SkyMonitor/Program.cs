@@ -275,6 +275,27 @@ public class Program
                     return accessLevel == ApiKeyAccessLevel.ReadWrite.ToString();
                 });
             });
+
+            // Phase 3: Account type-based policies
+            options.AddPolicy("RequireSystemAccount", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                {
+                    var accountType = context.User.FindFirst("account_type")?.Value;
+                    return accountType == "System";
+                });
+            });
+
+            options.AddPolicy("RequireUserAccount", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                {
+                    var accountType = context.User.FindFirst("account_type")?.Value;
+                    return accountType == "User" || accountType == null; // null for backward compatibility
+                });
+            });
         });
 
         // Application services
