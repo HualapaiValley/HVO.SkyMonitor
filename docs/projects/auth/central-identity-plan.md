@@ -14,12 +14,12 @@
 - Document current auth landscape to inform later phases.
 
 **Tasks**
-- [ ] Inventory existing Identity/API-key code paths in `HVO.SkyMonitor`, `HVO.SkyMonitor.CameraAgent.*`, and shared libraries.
-- [ ] Delete all existing Identity-related EF Core migrations across the solution (Logic/UI + agents).
-- [ ] Remove obsolete database artifacts (local dev databases can be dropped safely during this phase; remember Aspire hosts DBs inside containers, so stop/prune the relevant service if necessary).
-- [ ] Capture a target data-model outline (ERD or table list) for the forthcoming centralized Identity + OpenIddict schema.
-- [ ] Verify data-protection key storage and connection strings are documented for the rebuilt DBs.
-- [ ] Update developer onboarding notes (e.g., `README`, `docs/`) to state that Identity is being rebuilt from scratch.
+- [x] Inventory existing Identity/API-key code paths in `HVO.SkyMonitor`, `HVO.SkyMonitor.CameraAgent.*`, and shared libraries.
+- [x] Delete all existing Identity-related EF Core migrations across the solution (Logic/UI + agents).
+- [x] Remove obsolete database artifacts (local dev databases can be dropped safely during this phase; remember Aspire hosts DBs inside containers, so stop/prune the relevant service if necessary).
+- [x] Capture a target data-model outline (ERD or table list) for the forthcoming centralized Identity + OpenIddict schema.
+- [x] Verify data-protection key storage and connection strings are documented for the rebuilt DBs.
+- [x] Update developer onboarding notes (e.g., `README`, `docs/`) to state that Identity is being rebuilt from scratch.
 
 ## Phase 1 – Identity Foundation & Account Types
 **Goals**
@@ -27,12 +27,12 @@
 - Seed baseline accounts and document governance.
 
 **Tasks**
-- [ ] Define `AccountType` enum and add property to `ApplicationUser` plus supporting EF migration.
-- [ ] Seed at least one admin USER and one SYSTEM service account; document credential handling and rotation expectations.
-- [ ] Update login flows (Blazor components, API endpoints) to block password sign-in for SYSTEM accounts with user-friendly messaging.
-- [ ] Review Identity cookie settings, lockouts, and password policies to align with new account types.
-- [ ] Document account governance (creation, lifecycle, recovery, access revocation).
-- [ ] Manual validation: create/sample login for USER, confirm SYSTEM accounts cannot sign in interactively.
+- [x] Define `AccountType` enum and add property to `ApplicationUser` plus supporting EF migration.
+- [x] Seed at least one admin USER and one SYSTEM service account; document credential handling and rotation expectations.
+- [x] Update login flows (Blazor components, API endpoints) to block password sign-in for SYSTEM accounts with user-friendly messaging.
+- [x] Review Identity cookie settings, lockouts, and password policies to align with new account types.
+- [x] Document account governance (creation, lifecycle, recovery, access revocation).
+- [x] Manual validation: create/sample login for USER, confirm SYSTEM accounts cannot sign in interactively.
 
 ## Phase 2 – OpenIddict Integration
 **Goals**
@@ -40,13 +40,13 @@
 - Secure at least one API using issued JWTs.
 
 **Tasks**
-- [ ] Add OpenIddict packages (Server + Validation + EF) and configure `/connect/authorize`, `/connect/token`, `/connect/userinfo` endpoints.
-- [ ] Extend `ApplicationDbContext` with OpenIddict entities/mappings; create migration following Phase 1 schema.
-- [ ] Configure scopes, consent policies, token lifetimes, and signing/encryption credentials.
-- [ ] Map Identity data to token claims (`sub`, `account_type`, scopes) and ensure SYSTEM/USER semantics flow through.
-- [ ] Protect a starter API endpoint (e.g., `StatusController`) with `[Authorize]` using OpenIddict validation.
-- [ ] Provide minimal tooling/scripts for registering clients (camera agents, UI, automation).
-- [ ] Manual validation: complete Auth Code + PKCE login and client-credentials token acquisition against the secured endpoint.
+- [x] Add OpenIddict packages (Server + Validation + EF) and configure `/connect/authorize`, `/connect/token`, `/connect/userinfo` endpoints.
+- [x] Extend `ApplicationDbContext` with OpenIddict entities/mappings; create migration following Phase 1 schema.
+- [x] Configure scopes, consent policies, token lifetimes, and signing/encryption credentials.
+- [x] Map Identity data to token claims (`sub`, `account_type`, scopes) and ensure SYSTEM/USER semantics flow through.
+- [x] Protect a starter API endpoint (e.g., `StatusController`) with `[Authorize]` using OpenIddict validation.
+- [x] Provide minimal tooling/scripts for registering clients (camera agents, UI, automation).
+- [x] Manual validation: complete Auth Code + PKCE login and client-credentials token acquisition against the secured endpoint.
 
 ## Phase 3 – API Key Consolidation & Policies
 **Goals**
@@ -54,12 +54,12 @@
 - Provide management UI for USER and SYSTEM keys.
 
 **Tasks**
-- [ ] Confirm `DefaultApiKeyAuthenticationHandler` + `DatabaseApiKeyValidator` wiring inside HVO.SkyMonitor; remove duplicates from other services.
-- [ ] Define authorization policies (`RequireSystemAccount`, `RequireUserAccount`, scope-based, and `ApiKeyAccessLevel` tiers) and annotate sensitive endpoints.
-- [ ] Build Blazor UI workflows for listing, creating, rotating, and revoking API keys (self-service for USER, admin for SYSTEM accounts).
-- [ ] Ensure raw API keys display only once on creation, storing hashed values thereafter.
-- [ ] Implement structured audit logging and (where feasible) notifications for key lifecycle events.
-- [ ] Manual validation: call representative APIs with Read-only vs ReadWrite keys to confirm policy enforcement.
+- [x] Confirm `DefaultApiKeyAuthenticationHandler` + `DatabaseApiKeyValidator` wiring inside HVO.SkyMonitor; remove duplicates from other services.
+- [x] Define authorization policies (`RequireSystemAccount`, `RequireUserAccount`, scope-based, and `ApiKeyAccessLevel` tiers) and annotate sensitive endpoints.
+- [x] Build Blazor UI workflows for listing, creating, rotating, and revoking API keys (self-service for USER, admin for SYSTEM accounts).
+- [x] Ensure raw API keys display only once on creation, storing hashed values thereafter.
+- [x] Implement structured audit logging and (where feasible) notifications for key lifecycle events.
+- [x] Manual validation: call representative APIs with Read-only vs ReadWrite keys to confirm policy enforcement.
 
 ## Phase 4 – Camera Agent Refactor to Central Identity
 **Goals**
@@ -67,24 +67,43 @@
 - Align any inbound agent endpoints with the shared auth model.
 
 **Tasks**
-- [ ] Strip `IdentityCore<ApplicationUser>` registrations, DbContexts, and migrations from each `HVO.SkyMonitor.CameraAgent.*` project.
-- [ ] Introduce agent credential configuration (client credentials or API key) pointing to the central HVO.SkyMonitor Identity service.
-- [ ] Implement shared auth helpers for outbound HTTP clients (token acquisition, API-key injection) in `HVO.SkyMonitor.CameraAgent` library.
-- [ ] Update agent configuration docs/env samples to show how to provision and store credentials.
-- [ ] Adjust inbound agent endpoints (if any) to validate HVO-issued JWTs or API keys using shared validators.
-- [ ] Manual validation: simulator agent authenticates to HVO APIs using central credentials; confirm no local Identity DB is used.
+- [x] Strip `IdentityCore<ApplicationUser>` registrations, DbContexts, and migrations from each `HVO.SkyMonitor.CameraAgent.*` project.
+- [x] Introduce agent credential configuration (client credentials or API key) pointing to the central HVO.SkyMonitor Identity service.
+- [x] Implement shared auth helpers for outbound HTTP clients (token acquisition, API-key injection) in `HVO.SkyMonitor.CameraAgent` library.
+- [x] Update agent configuration docs/env samples to show how to provision and store credentials.
+- [x] Adjust inbound agent endpoints (if any) to validate HVO-issued JWTs or API keys using shared validators.
+- [x] Manual validation: simulator agent authenticates to HVO APIs using central credentials; confirm no local Identity DB is used.
 
 ## Phase 5 – Signed URLs for Frames & Images
 **Goals**
 - Provide short-lived, HMAC-signed URLs for high-volume media endpoints to avoid per-request cookies or bearer tokens.
 
 **Tasks**
-- [ ] Define signed ticket schema (version, expiration, subject ID, HTTP method/path/query digest, optional scope bits).
-- [ ] Implement `ISignedTicketService` for canonicalization and HMAC generation using centrally managed secrets.
-- [ ] Create validator/auth handler that parses `st` query parameters, verifies expiration/HMAC, and optionally rehydrates a `ClaimsPrincipal`.
-- [ ] Update Blazor UI components to request/generate signed URLs for critical endpoints (e.g., `/api/v1.0/frame/latest`).
-- [ ] Expose configuration knobs for TTL, allowed endpoints, and clock skew.
-- [ ] Manual validation: confirm valid signed URLs succeed, tampered or expired URLs are rejected, and performance metrics meet expectations.
+- [x] Define signed ticket schema (version, expiration, subject ID, HTTP method/path/query digest, optional scope bits).
+- [x] Implement `ISignedTicketService` for canonicalization and HMAC generation using centrally managed secrets.
+- [x] Create validator/auth handler that parses `st` query parameters, verifies expiration/HMAC, and optionally rehydrates a `ClaimsPrincipal`.
+- [x] Update Blazor UI components to request/generate signed URLs for critical endpoints (e.g., `/api/v1.0/frame/latest`).
+- [x] Expose configuration knobs for TTL, allowed endpoints, and clock skew.
+- [x] Manual validation: confirm valid signed URLs succeed, tampered or expired URLs are rejected, and performance metrics meet expectations.
+
+## Phase 5.5 – Integration Validation Tests
+**Goals**
+- Provide early automated coverage for authentication/authorization scenarios before broader hardening in Phase 6.
+- Split validation tests between the primary HVO.SkyMonitor suite and a dedicated camera simulator test project so coverage mirrors runtime responsibilities.
+
+**Tasks**
+- [ ] Add `HVO.SkyMonitor.Tests` coverage for:
+	- AccountType validation (USER vs SYSTEM login restrictions).
+	- OAuth2 Authorization Code + PKCE flow.
+	- OAuth2 Client Credentials flow.
+	- API key authentication honoring account types.
+	- Signed URL validation.
+	- Authorization policies (`RequireSystemAccount`, `RequireUserAccount`).
+- [ ] Create `HVO.SkyMonitor.CameraAgent.Tests` for the simulator covering:
+	- Central authentication service behavior (token acquisition, caching).
+	- JWT validation.
+	- `HttpClient` configuration that injects tokens or API keys appropriately.
+- [ ] Group / document the tests per functionality to keep future ZWO-agent tests aligned.
 
 ## Phase 6 – Hardening, Operations & Observability
 **Goals**
