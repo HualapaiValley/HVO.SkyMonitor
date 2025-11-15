@@ -20,6 +20,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     {
         base.OnModelCreating(modelBuilder);
 
+        // Configure ApiKey entity
         modelBuilder.Entity<ApiKey>(entity =>
         {
             entity.HasKey(e => e.Id);
