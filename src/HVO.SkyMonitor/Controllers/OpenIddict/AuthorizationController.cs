@@ -1,10 +1,13 @@
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Security.Claims;
 using HVO.SkyMonitor.Data;
+using HVO.SkyMonitor.Services;
 using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 using OpenIddict.Abstractions;
 using OpenIddict.Server.AspNetCore;
@@ -15,6 +18,7 @@ namespace HVO.SkyMonitor.Controllers.OpenIddict;
 /// <summary>
 /// Handles OAuth2/OpenID Connect authorization and token issuance.
 /// Supports Authorization Code + PKCE and Client Credentials flows.
+/// Phase 6: Enhanced with rate limiting, metrics, and logging.
 /// </summary>
 public class AuthorizationController : Controller
 {
@@ -23,19 +27,25 @@ public class AuthorizationController : Controller
     private readonly IOpenIddictScopeManager _scopeManager;
     private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly UserManager<ApplicationUser> _userManager;
+    private readonly AuthenticationMetrics _metrics;
+    private readonly IAuthenticationEventLogger _eventLogger;
 
     public AuthorizationController(
         IOpenIddictApplicationManager applicationManager,
         IOpenIddictAuthorizationManager authorizationManager,
         IOpenIddictScopeManager scopeManager,
         SignInManager<ApplicationUser> signInManager,
-        UserManager<ApplicationUser> userManager)
+        UserManager<ApplicationUser> userManager,
+        AuthenticationMetrics metrics,
+        IAuthenticationEventLogger eventLogger)
     {
         _applicationManager = applicationManager;
         _authorizationManager = authorizationManager;
         _scopeManager = scopeManager;
         _signInManager = signInManager;
         _userManager = userManager;
+        _metrics = metrics;
+        _eventLogger = eventLogger;
     }
 
     [HttpGet("~/connect/authorize")]
@@ -105,90 +115,125 @@ public class AuthorizationController : Controller
     [HttpPost("~/connect/token")]
     [IgnoreAntiforgeryToken]
     [Produces("application/json")]
+    [EnableRateLimiting("token")] // Phase 6: Rate limiting for token endpoint
     public async Task<IActionResult> Exchange()
     {
+        // Phase 6: Track token request timing
+        var stopwatch = Stopwatch.StartNew();
+        
         var request = HttpContext.GetOpenIddictServerRequest() ??
             throw new InvalidOperationException("The OpenID Connect request cannot be retrieved.");
 
         ClaimsPrincipal claimsPrincipal;
+        string grantType = "unknown";
+        string clientId = request.ClientId ?? "unknown";
+        bool success = false;
 
-        if (request.IsAuthorizationCodeGrantType() || request.IsRefreshTokenGrantType())
+        try
         {
-            // Retrieve the claims principal stored in the authorization code/refresh token
-            var result = await HttpContext.AuthenticateAsync(OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
-
-            // Retrieve the user profile corresponding to the authorization code/refresh token
-            var user = await _userManager.FindByIdAsync(result.Principal!.GetClaim(Claims.Subject)!);
-            if (user == null)
+            if (request.IsAuthorizationCodeGrantType() || request.IsRefreshTokenGrantType())
             {
-                return Forbid(
-                    authenticationSchemes: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme,
-                    properties: new AuthenticationProperties(new Dictionary<string, string?>
-                    {
-                        [OpenIddictServerAspNetCoreConstants.Properties.Error] = Errors.InvalidGrant,
-                        [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] = "The token is no longer valid."
-                    }));
+                grantType = request.IsAuthorizationCodeGrantType() ? "authorization_code" : "refresh_token";
+                
+                // Retrieve the claims principal stored in the authorization code/refresh token
+                var result = await HttpContext.AuthenticateAsync(OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
+
+                // Retrieve the user profile corresponding to the authorization code/refresh token
+                var user = await _userManager.FindByIdAsync(result.Principal!.GetClaim(Claims.Subject)!);
+                if (user == null)
+                {
+                    return Forbid(
+                        authenticationSchemes: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme,
+                        properties: new AuthenticationProperties(new Dictionary<string, string?>
+                        {
+                            [OpenIddictServerAspNetCoreConstants.Properties.Error] = Errors.InvalidGrant,
+                            [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] = "The token is no longer valid."
+                        }));
+                }
+
+                // Ensure the user is still allowed to sign in
+                if (!await _signInManager.CanSignInAsync(user))
+                {
+                    return Forbid(
+                        authenticationSchemes: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme,
+                        properties: new AuthenticationProperties(new Dictionary<string, string?>
+                        {
+                            [OpenIddictServerAspNetCoreConstants.Properties.Error] = Errors.InvalidGrant,
+                            [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] = "The user is no longer allowed to sign in."
+                        }));
+                }
+
+                var identity = new ClaimsIdentity(result.Principal!.Claims,
+                    authenticationType: TokenValidationParameters.DefaultAuthenticationType,
+                    nameType: Claims.Name,
+                    roleType: Claims.Role);
+
+                // Override claims in case they changed since the authorization grant
+                identity.SetClaim(Claims.Subject, await _userManager.GetUserIdAsync(user))
+                        .SetClaim(Claims.Email, await _userManager.GetEmailAsync(user))
+                        .SetClaim(Claims.Name, await _userManager.GetUserNameAsync(user));
+
+                identity.SetClaim("account_type", user.AccountType.ToString());
+                identity.SetDestinations(GetDestinations);
+
+                claimsPrincipal = new ClaimsPrincipal(identity);
+
+                // Phase 6: Log token issuance
+                success = true;
+                var scopes = identity.GetScopes().ToArray();
+                _eventLogger.LogTokenIssued(clientId, grantType, user.Id, scopes);
+                
+                if (request.IsRefreshTokenGrantType())
+                {
+                    _eventLogger.LogTokenRefreshed(clientId, user.Id);
+                }
+
+                return SignIn(claimsPrincipal, OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
             }
 
-            // Ensure the user is still allowed to sign in
-            if (!await _signInManager.CanSignInAsync(user))
+            if (request.IsClientCredentialsGrantType())
             {
-                return Forbid(
-                    authenticationSchemes: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme,
-                    properties: new AuthenticationProperties(new Dictionary<string, string?>
-                    {
-                        [OpenIddictServerAspNetCoreConstants.Properties.Error] = Errors.InvalidGrant,
-                        [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] = "The user is no longer allowed to sign in."
-                    }));
+                grantType = "client_credentials";
+                
+                // Note: the client credentials are automatically validated by OpenIddict
+                var application = await _applicationManager.FindByClientIdAsync(request.ClientId!) ??
+                    throw new InvalidOperationException("The application details cannot be found in the database.");
+
+                // Create a new ClaimsIdentity containing the claims for a service account
+                var identity = new ClaimsIdentity(
+                    authenticationType: TokenValidationParameters.DefaultAuthenticationType,
+                    nameType: Claims.Name,
+                    roleType: Claims.Role);
+
+                // Use the client_id as the subject identifier
+                identity.SetClaim(Claims.Subject, (await _applicationManager.GetClientIdAsync(application))!)
+                        .SetClaim(Claims.Name, (await _applicationManager.GetDisplayNameAsync(application)) ?? "Unknown");
+
+                // Add account_type claim for SYSTEM accounts (client credentials is always SYSTEM)
+                identity.SetClaim("account_type", AccountType.System.ToString());
+
+                identity.SetScopes(request.GetScopes());
+                identity.SetResources(await _scopeManager.ListResourcesAsync(identity.GetScopes()).ToListAsync());
+                identity.SetDestinations(GetDestinations);
+
+                claimsPrincipal = new ClaimsPrincipal(identity);
+
+                // Phase 6: Log token issuance for system account
+                success = true;
+                var scopes = identity.GetScopes().ToArray();
+                _eventLogger.LogTokenIssued(clientId, grantType, null, scopes);
+
+                return SignIn(claimsPrincipal, OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
             }
 
-            var identity = new ClaimsIdentity(result.Principal!.Claims,
-                authenticationType: TokenValidationParameters.DefaultAuthenticationType,
-                nameType: Claims.Name,
-                roleType: Claims.Role);
-
-            // Override claims in case they changed since the authorization grant
-            identity.SetClaim(Claims.Subject, await _userManager.GetUserIdAsync(user))
-                    .SetClaim(Claims.Email, await _userManager.GetEmailAsync(user))
-                    .SetClaim(Claims.Name, await _userManager.GetUserNameAsync(user));
-
-            identity.SetClaim("account_type", user.AccountType.ToString());
-            identity.SetDestinations(GetDestinations);
-
-            claimsPrincipal = new ClaimsPrincipal(identity);
-
-            return SignIn(claimsPrincipal, OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
+            throw new InvalidOperationException("The specified grant type is not supported.");
         }
-
-        if (request.IsClientCredentialsGrantType())
+        finally
         {
-            // Note: the client credentials are automatically validated by OpenIddict
-            var application = await _applicationManager.FindByClientIdAsync(request.ClientId!) ??
-                throw new InvalidOperationException("The application details cannot be found in the database.");
-
-            // Create a new ClaimsIdentity containing the claims for a service account
-            var identity = new ClaimsIdentity(
-                authenticationType: TokenValidationParameters.DefaultAuthenticationType,
-                nameType: Claims.Name,
-                roleType: Claims.Role);
-
-            // Use the client_id as the subject identifier
-            identity.SetClaim(Claims.Subject, (await _applicationManager.GetClientIdAsync(application))!)
-                    .SetClaim(Claims.Name, (await _applicationManager.GetDisplayNameAsync(application)) ?? "Unknown");
-
-            // Add account_type claim for SYSTEM accounts (client credentials is always SYSTEM)
-            identity.SetClaim("account_type", AccountType.System.ToString());
-
-            identity.SetScopes(request.GetScopes());
-            identity.SetResources(await _scopeManager.ListResourcesAsync(identity.GetScopes()).ToListAsync());
-            identity.SetDestinations(GetDestinations);
-
-            claimsPrincipal = new ClaimsPrincipal(identity);
-
-            return SignIn(claimsPrincipal, OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
+            // Phase 6: Record token request metrics
+            stopwatch.Stop();
+            _metrics.RecordTokenRequest(clientId, grantType, success, stopwatch.Elapsed.TotalMilliseconds);
         }
-
-        throw new InvalidOperationException("The specified grant type is not supported.");
     }
 
     private static IEnumerable<string> GetDestinations(Claim claim)
