@@ -1,52 +1,67 @@
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace HVO.SkyMonitor.Data;
 
 /// <summary>
-/// Application database context with PostgreSQL (via Aspire).
+/// Application database context with SQLite (will migrate to PostgreSQL in Phase 8).
 /// </summary>
-public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
+public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : IdentityDbContext<ApplicationUser>(options)
 {
-    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
-        : base(options)
-    {
-    }
-
     public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
 
-    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    protected override void OnModelCreating(ModelBuilder builder)
     {
-        base.OnModelCreating(modelBuilder);
+        base.OnModelCreating(builder);
 
-        // Configure ApiKey entity
-        modelBuilder.Entity<ApiKey>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.DisplayName)
-                .HasColumnName("Name")
-                .IsRequired()
-                .HasMaxLength(200);
-            entity.Property(e => e.HashedKey)
-                .HasColumnName("HashedKey")
-                .IsRequired();
-            entity.Property(e => e.AccessLevel).IsRequired();
-            entity.Property(e => e.CreatedUtc)
-                .HasColumnName("CreatedAt")
-                .IsRequired();
-            entity.Property(e => e.IsActive).IsRequired();
-            entity.Property(e => e.CreatedBy).HasMaxLength(256);
-            entity.Property(e => e.ExpiresUtc)
-                .HasColumnName("ExpiresAt");
+        ConfigureApiKeys(builder.Entity<ApiKey>());
+    }
 
-            entity.HasOne<ApplicationUser>()
-                .WithMany(u => u.ApiKeys)
-                .HasForeignKey(e => e.UserId)
-                .OnDelete(DeleteBehavior.Cascade);
+    private static void ConfigureApiKeys(EntityTypeBuilder<ApiKey> entity)
+    {
+        entity.ToTable("ApiKeys");
 
-            entity.HasIndex(e => e.UserId);
-            entity.HasIndex(e => new { e.IsActive, e.ExpiresUtc });
-        });
+        entity.HasIndex(key => key.HashedKey).IsUnique();
+
+        entity.Property(key => key.HashedKey)
+            .HasMaxLength(64)
+            .IsRequired();
+
+        entity.Property(key => key.DisplayName)
+            .HasColumnName("Name")
+            .HasMaxLength(200)
+            .IsRequired();
+
+        entity.Property(key => key.AccessLevel)
+            .HasConversion<string>()
+            .HasMaxLength(32)
+            .IsRequired();
+
+        entity.Property(key => key.IsActive)
+            .HasDefaultValue(true)
+            .IsRequired();
+
+        entity.Property(key => key.CreatedUtc)
+            .HasColumnName("CreatedAt")
+            .IsRequired();
+
+        entity.Property(key => key.CreatedBy)
+            .HasMaxLength(256);
+
+        entity.Property(key => key.ExpiresUtc)
+            .HasColumnName("ExpiresAt");
+
+        entity.Property(key => key.LastUsedUtc);
+
+        entity.HasOne<ApplicationUser>()
+            .WithMany(user => user.ApiKeys)
+            .HasForeignKey(key => key.UserId)
+            .OnDelete(DeleteBehavior.Cascade)
+            .IsRequired();
+
+        entity.HasIndex(key => key.UserId);
+        entity.HasIndex(key => new { key.IsActive, key.ExpiresUtc });
     }
 }

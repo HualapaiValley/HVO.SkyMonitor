@@ -125,8 +125,10 @@ public class Program
         builder.Services.AddRazorComponents()
             .AddInteractiveServerComponents();
 
-        // Database with PostgreSQL (via Aspire)
-        builder.AddNpgsqlDbContext<ApplicationDbContext>("skymonitordb");
+        // Database with SQLite (temporary for Phase 0-7, will switch to PostgreSQL before Phase 8)
+        var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? "DataSource=Data/skymonitor.db;Cache=Shared";
+        builder.Services.AddDbContext<ApplicationDbContext>(options =>
+            options.UseSqlite(connectionString));
 
         builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
