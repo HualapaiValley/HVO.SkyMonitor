@@ -81,6 +81,17 @@ public partial class Login : ComponentBase
 
         if (result.Succeeded)
         {
+            // Check if the account is a SYSTEM account (which should not allow interactive login)
+            var user = await UserManager.FindByEmailAsync(Input.Email);
+            if (user != null && user.AccountType == AccountType.System)
+            {
+                // Sign out the user immediately
+                await SignInManager.SignOutAsync();
+                Logger.LogWarning("System account attempted interactive login: {Email}", Input.Email);
+                errorMessage = "Error: System accounts cannot sign in interactively. Please use API key authentication.";
+                return;
+            }
+
             Logger.LogInformation("User logged in.");
             RedirectManager.RedirectTo(ReturnUrl);
             return;
