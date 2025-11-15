@@ -306,7 +306,34 @@ All Dockerfiles:
 - Include health checks
 - Expose port 8080
 
-## Recent Identity & Infrastructure Work
+## Identity System Rebuild (In Progress)
+
+**⚠️ IMPORTANT: The identity and authentication system is being rebuilt from scratch.**
+
+The application is undergoing a major refactor to implement a centralized identity and authorization system. This affects:
+
+- **Identity Storage:** Transitioning from per-service databases to a single centralized PostgreSQL database
+- **Authentication:** Adding OpenIddict for OAuth2/OIDC flows (Authorization Code + PKCE, Client Credentials)
+- **Account Types:** Introducing USER vs SYSTEM account distinction
+- **Camera Agents:** Will authenticate to central HVO.SkyMonitor service (no local Identity)
+- **API Keys:** Centralized management with enhanced policies and audit logging
+- **Signed URLs:** New capability for high-volume media endpoints
+
+**Current Status:** Phase 0 (Environment Reset) - All existing Identity migrations have been removed. New schema is being implemented.
+
+**Documentation:**
+- Implementation Plan: `docs/projects/auth/central-identity-plan.md`
+- Current State Inventory: `docs/projects/auth/phase0-inventory.md`
+- Target Schema: `docs/projects/auth/target-schema.md`
+- Connection Strings & Keys: `docs/projects/auth/data-protection-and-connections.md`
+
+**For Developers:**
+- Database migrations have been reset - the database schema will be rebuilt during Phase 1
+- If you encounter authentication errors, this is expected during the transition
+- Camera agents will retain local Identity temporarily until Phase 4
+- See `docs/projects/auth/central-identity-plan.md` for the full 8-phase implementation plan
+
+## Recent Identity & Infrastructure Work (Pre-Rebuild)
 
 - Migrated diagnostics middleware, correlation ID plumbing, and API-key primitives into `src/HVO.SkyMonitor.Common` so the main site and future microservices share a single implementation.
 - Cloned the camera-agent simulator's complete Identity experience (Blazor pages, passkey WebAuthn flows, external login + email management, scoped CSS/JS) into `src/HVO.SkyMonitor/Components/Account`, ensuring parity with the hardened simulator stack.
