@@ -42,7 +42,7 @@ public class SignedUrlTests
 
         // Assert
         Assert.IsNotNull(signedTicket);
-        Assert.IsTrue(signedTicket.Contains("."));
+        Assert.Contains(".", signedTicket);
     }
 
     [TestMethod]

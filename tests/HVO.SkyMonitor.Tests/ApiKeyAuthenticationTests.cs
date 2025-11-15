@@ -13,7 +13,7 @@ public class ApiKeyAuthenticationTests
         var keyWithPrefix = "smk_test123";
         
         // Assert
-        Assert.IsTrue(keyWithPrefix.StartsWith("smk_"));
+        Assert.StartsWith("smk_", keyWithPrefix);
     }
 
     [TestMethod]
@@ -23,8 +23,8 @@ public class ApiKeyAuthenticationTests
         var result = new ApiKeyValidationResult
         {
             IsValid = true,
-            UserId = "user123",
-            AccessLevel = AccessLevel.Read,
+            NameIdentifier = "user123",
+            AccessLevel = ApiKeyAccessLevel.Read,
             AccountType = "User"
         };
 
@@ -40,13 +40,13 @@ public class ApiKeyAuthenticationTests
         var result = new ApiKeyValidationResult
         {
             IsValid = true,
-            UserId = "service123",
-            AccessLevel = AccessLevel.ReadWrite,
+            NameIdentifier = "service123",
+            AccessLevel = ApiKeyAccessLevel.ReadWrite,
             AccountType = "System"
         };
 
         // Assert
         Assert.AreEqual("System", result.AccountType);
-        Assert.AreEqual(AccessLevel.ReadWrite, result.AccessLevel);
+        Assert.AreEqual(ApiKeyAccessLevel.ReadWrite, result.AccessLevel);
     }
 }

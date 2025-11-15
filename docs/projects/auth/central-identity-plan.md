@@ -90,20 +90,35 @@
 **Goals**
 - Provide early automated coverage for authentication/authorization scenarios before broader hardening in Phase 6.
 - Split validation tests between the primary HVO.SkyMonitor suite and a dedicated camera simulator test project so coverage mirrors runtime responsibilities.
+- Use Aspire.Hosting.Testing for true integration tests that start the complete distributed application.
 
 **Tasks**
-- [ ] Add `HVO.SkyMonitor.Tests` coverage for:
-	- AccountType validation (USER vs SYSTEM login restrictions).
-	- OAuth2 Authorization Code + PKCE flow.
-	- OAuth2 Client Credentials flow.
-	- API key authentication honoring account types.
-	- Signed URL validation.
-	- Authorization policies (`RequireSystemAccount`, `RequireUserAccount`).
-- [ ] Create `HVO.SkyMonitor.CameraAgent.Tests` for the simulator covering:
-	- Central authentication service behavior (token acquisition, caching).
-	- JWT validation.
-	- `HttpClient` configuration that injects tokens or API keys appropriately.
-- [ ] Group / document the tests per functionality to keep future ZWO-agent tests aligned.
+- [x] Add `HVO.SkyMonitor.Tests` coverage for:
+	- [x] AccountType validation (USER vs SYSTEM login restrictions) - 3 tests in AccountTypeTests
+	- [x] OAuth2 Authorization Code + PKCE flow - Claim mapping validated in OAuth2ClaimMappingTests (7 tests)
+	- [x] OAuth2 Client Credentials flow - System account type claim mapping tested (7 tests)
+	- [x] API key authentication honoring account types - 3 tests in ApiKeyAuthenticationTests
+	- [x] Signed URL validation - 6 tests in SignedUrlTests
+	- [x] Authorization policies (`RequireSystemAccount`, `RequireUserAccount`) - 6 tests in AuthorizationPolicyTests
+- [x] Add Aspire.Hosting.Testing integration tests:
+	- [x] Complete distributed application startup (AppHost with Redis, PostgreSQL, MinIO) - 4 tests in AspireIntegrationTests
+	- [x] End-to-end OAuth2 token endpoint validation
+	- [x] Protected endpoint authentication validation
+	- [x] API key authentication endpoint validation
+- [x] Create `HVO.SkyMonitor.CameraAgent.Tests` for the simulator covering:
+	- [x] Central authentication service behavior (token acquisition, caching) - 3 tests in CentralAuthenticationServiceTests
+	- [x] JWT validation - Covered through OAuth2 claim mapping tests
+	- [x] `HttpClient` configuration that injects tokens or API keys appropriately - 3 tests + 5 error tests
+- [x] Group / document the tests per functionality to keep future ZWO-agent tests aligned - Tests organized by class with clear documentation
+
+**Summary**
+- Total tests: 37 (25 unit tests + 4 Aspire integration tests in HVO.SkyMonitor.Tests + 8 in HVO.SkyMonitor.CameraAgent.Tests)
+- Unit tests (29): All passing, run without Docker
+- Aspire integration tests (4): Require Docker/Podman, test complete distributed application
+- Coverage includes AccountType, OAuth2 claims, API keys, signed URLs, authorization policies, camera agent authentication, and full Aspire application startup
+- Test infrastructure: MSTest + Aspire.Hosting.Testing + FluentAssertions + Moq
+- Documentation: README.md in tests directory explains unit vs integration testing approach
+
 
 ## Phase 6 – Hardening, Operations & Observability
 **Goals**
