@@ -56,4 +56,31 @@ public class StatusController : ControllerBase
             User = User.Identity?.Name ?? "Anonymous"
         });
     }
+
+    /// <summary>
+    /// Get protected information using OAuth2/OpenID Connect token (requires valid access token).
+    /// </summary>
+    [HttpGet("protected")]
+    [Authorize(AuthenticationSchemes = "Bearer")]
+    public IActionResult GetProtectedStatus()
+    {
+        var accountType = User.FindFirst("account_type")?.Value ?? "Unknown";
+        var subject = User.FindFirst("sub")?.Value ?? "Unknown";
+        
+        return Ok(new
+        {
+            Service = "HVO.SkyMonitor",
+            Status = "Protected Resource Accessed",
+            Timestamp = _timeProvider.GetUtcNow(),
+            Version = "1.0.0",
+            User = new
+            {
+                Subject = subject,
+                Name = User.Identity?.Name ?? "Anonymous",
+                AccountType = accountType,
+                IsAuthenticated = User.Identity?.IsAuthenticated ?? false,
+                AuthenticationType = User.Identity?.AuthenticationType ?? "None"
+            }
+        });
+    }
 }
