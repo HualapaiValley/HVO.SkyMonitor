@@ -114,7 +114,7 @@
 **Summary**
 - Total tests: 37 (25 unit tests + 4 Aspire integration tests in HVO.SkyMonitor.Tests + 8 in HVO.SkyMonitor.CameraAgent.Tests)
 - Unit tests (29): All passing, run without Docker
-- Aspire integration tests (4): Require Docker/Podman, test complete distributed application
+- Aspire integration tests (4): Require Docker/Podman and start the full AppHost (Redis, PostgreSQL, MinIO, SkyMonitor) to validate `/connect/token`, protected endpoints, and API-key auth end-to-end
 - Coverage includes AccountType, OAuth2 claims, API keys, signed URLs, authorization policies, camera agent authentication, and full Aspire application startup
 - Test infrastructure: MSTest + Aspire.Hosting.Testing + FluentAssertions + Moq
 - Documentation: README.md in tests directory explains unit vs integration testing approach
