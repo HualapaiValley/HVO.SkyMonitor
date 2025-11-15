@@ -150,6 +150,66 @@ public class Program
 
         builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
 
+        // OpenIddict Configuration (Phase 2)
+        builder.Services.AddOpenIddict()
+            // Register the OpenIddict core components
+            .AddCore(options =>
+            {
+                // Configure OpenIddict to use the Entity Framework Core stores and models
+                options.UseEntityFrameworkCore()
+                    .UseDbContext<ApplicationDbContext>();
+            })
+            // Register the OpenIddict server components
+            .AddServer(options =>
+            {
+                // Enable the authorization and token endpoints
+                options.SetAuthorizationEndpointUris("/connect/authorize")
+                       .SetTokenEndpointUris("/connect/token");
+
+                // Enable the authorization code flow with PKCE
+                options.AllowAuthorizationCodeFlow()
+                       .RequireProofKeyForCodeExchange();
+
+                // Enable the client credentials flow
+                options.AllowClientCredentialsFlow();
+
+                // Enable the refresh token flow
+                options.AllowRefreshTokenFlow();
+
+                // Register the signing and encryption credentials
+                if (builder.Environment.IsDevelopment())
+                {
+                    options.AddDevelopmentEncryptionCertificate()
+                           .AddDevelopmentSigningCertificate();
+                }
+                else
+                {
+                    // In production, use proper certificates from Key Vault or certificate store
+                    // options.AddEncryptionCertificate(encryptionCert)
+                    //        .AddSigningCertificate(signingCert);
+                }
+
+                // Register the ASP.NET Core host and configure the ASP.NET Core-specific options
+                options.UseAspNetCore()
+                       .EnableAuthorizationEndpointPassthrough()
+                       .EnableTokenEndpointPassthrough()
+                       .EnableStatusCodePagesIntegration();
+
+                // Configure token lifetimes
+                options.SetAccessTokenLifetime(TimeSpan.FromMinutes(30))
+                       .SetRefreshTokenLifetime(TimeSpan.FromDays(14))
+                       .SetAuthorizationCodeLifetime(TimeSpan.FromMinutes(5));
+            })
+            // Register the OpenIddict validation components
+            .AddValidation(options =>
+            {
+                // Import the configuration from the local OpenIddict server instance
+                options.UseLocalServer();
+
+                // Register the ASP.NET Core host
+                options.UseAspNetCore();
+            });
+
         // Data Protection - persist keys to avoid cookie invalidation on restart
         var dataProtectionPath = Path.Combine(builder.Environment.ContentRootPath, "DataProtection-Keys");
         Directory.CreateDirectory(dataProtectionPath);

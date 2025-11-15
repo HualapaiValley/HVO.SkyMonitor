@@ -25,6 +25,9 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <!-- OpenIddict packages for Phase 2 - OAuth2/OIDC support -->
+    <PackageReference Include="OpenIddict.AspNetCore" Version="5.9.0" />
+    <PackageReference Include="OpenIddict.EntityFrameworkCore" Version="5.9.0" />
     <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.14.0-beta.1" />
     <PackageReference Include="Scalar.AspNetCore" Version="2.10.3" />
   </ItemGroup>

@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.Data;
 
 /// <summary>
 /// Application database context with SQLite (will migrate to PostgreSQL in Phase 8).
+/// Includes Identity tables, API keys, and OpenIddict entities.
 /// </summary>
 public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : IdentityDbContext<ApplicationUser>(options)
 {
@@ -17,6 +18,9 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
         base.OnModelCreating(builder);
 
         ConfigureApiKeys(builder.Entity<ApiKey>());
+        
+        // Configure OpenIddict entities to use the default Entity Framework Core conventions
+        builder.UseOpenIddict();
     }
 
     private static void ConfigureApiKeys(EntityTypeBuilder<ApiKey> entity)
