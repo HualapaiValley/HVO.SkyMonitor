@@ -9,14 +9,17 @@ HVO.SkyMonitor uses a layered approach to manage configuration and secrets:
 3. **Production secrets** → Azure Key Vault or environment variables
 4. **CI/CD secrets** → GitHub Secrets
 
+**Phase 6 Enhancement:** For comprehensive Phase 6-specific secrets documentation (OpenIddict keys, signed URL HMAC, rate limiting, etc.), see [PHASE6_SECRETS.md](PHASE6_SECRETS.md).
+
 ## Security Principles
 
 - **Never commit secrets to source control**
 - Use User Secrets for local development
 - Use Azure Key Vault or managed secrets in production
 - Use GitHub Secrets for CI/CD pipelines
-- Rotate secrets regularly
+- Rotate secrets regularly (every 90 days for Phase 6 auth secrets)
 - Use different secrets for each environment
+- Use minimum key lengths: 256 bits for HMAC, 4096 bits for RSA
 
 ## Environment Variables
 
