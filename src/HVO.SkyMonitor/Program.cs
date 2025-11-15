@@ -6,6 +6,7 @@ using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.Components;
 using HVO.SkyMonitor.Components.Account;
 using HVO.SkyMonitor.Data;
+using HVO.SkyMonitor.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -22,7 +23,7 @@ namespace HVO.SkyMonitor;
 
 public class Program
 {
-    public static void Main(string[] args)
+    public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
 
@@ -125,8 +126,10 @@ public class Program
         builder.Services.AddRazorComponents()
             .AddInteractiveServerComponents();
 
-        // Database with PostgreSQL (via Aspire)
-        builder.AddNpgsqlDbContext<ApplicationDbContext>("skymonitordb");
+        // Database with SQLite (temporary for Phase 0-7, will switch to PostgreSQL before Phase 8)
+        var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? "DataSource=Data/skymonitor.db;Cache=Shared";
+        builder.Services.AddDbContext<ApplicationDbContext>(options =>
+            options.UseSqlite(connectionString));
 
         builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
@@ -147,6 +150,66 @@ public class Program
         .AddDefaultTokenProviders();
 
         builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
+
+        // OpenIddict Configuration (Phase 2)
+        builder.Services.AddOpenIddict()
+            // Register the OpenIddict core components
+            .AddCore(options =>
+            {
+                // Configure OpenIddict to use the Entity Framework Core stores and models
+                options.UseEntityFrameworkCore()
+                    .UseDbContext<ApplicationDbContext>();
+            })
+            // Register the OpenIddict server components
+            .AddServer(options =>
+            {
+                // Enable the authorization and token endpoints
+                options.SetAuthorizationEndpointUris("/connect/authorize")
+                       .SetTokenEndpointUris("/connect/token");
+
+                // Enable the authorization code flow with PKCE
+                options.AllowAuthorizationCodeFlow()
+                       .RequireProofKeyForCodeExchange();
+
+                // Enable the client credentials flow
+                options.AllowClientCredentialsFlow();
+
+                // Enable the refresh token flow
+                options.AllowRefreshTokenFlow();
+
+                // Register the signing and encryption credentials
+                if (builder.Environment.IsDevelopment())
+                {
+                    options.AddDevelopmentEncryptionCertificate()
+                           .AddDevelopmentSigningCertificate();
+                }
+                else
+                {
+                    // In production, use proper certificates from Key Vault or certificate store
+                    // options.AddEncryptionCertificate(encryptionCert)
+                    //        .AddSigningCertificate(signingCert);
+                }
+
+                // Register the ASP.NET Core host and configure the ASP.NET Core-specific options
+                options.UseAspNetCore()
+                       .EnableAuthorizationEndpointPassthrough()
+                       .EnableTokenEndpointPassthrough()
+                       .EnableStatusCodePagesIntegration();
+
+                // Configure token lifetimes
+                options.SetAccessTokenLifetime(TimeSpan.FromMinutes(30))
+                       .SetRefreshTokenLifetime(TimeSpan.FromDays(14))
+                       .SetAuthorizationCodeLifetime(TimeSpan.FromMinutes(5));
+            })
+            // Register the OpenIddict validation components
+            .AddValidation(options =>
+            {
+                // Import the configuration from the local OpenIddict server instance
+                options.UseLocalServer();
+
+                // Register the ASP.NET Core host
+                options.UseAspNetCore();
+            });
 
         // Data Protection - persist keys to avoid cookie invalidation on restart
         var dataProtectionPath = Path.Combine(builder.Environment.ContentRootPath, "DataProtection-Keys");
@@ -213,11 +276,33 @@ public class Program
                     return accessLevel == ApiKeyAccessLevel.ReadWrite.ToString();
                 });
             });
+
+            // Phase 3: Account type-based policies
+            options.AddPolicy("RequireSystemAccount", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                {
+                    var accountType = context.User.FindFirst("account_type")?.Value;
+                    return accountType == "System";
+                });
+            });
+
+            options.AddPolicy("RequireUserAccount", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                {
+                    var accountType = context.User.FindFirst("account_type")?.Value;
+                    return accountType == "User" || accountType == null; // null for backward compatibility
+                });
+            });
         });
 
         // Application services
         builder.Services.AddSingleton<IApiKeyHasher, ApiKeyHasher>();
         builder.Services.AddScoped<IApiKeyValidator, DatabaseApiKeyValidator>();
+        builder.Services.AddScoped<IApiKeyAuditLogger, ApiKeyAuditLogger>();
 
         var app = builder.Build();
 
@@ -258,10 +343,15 @@ public class Program
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 db.Database.Migrate();
                 logger.LogInformation("Database migrations applied successfully");
+
+                // Seed initial data
+                logger.LogInformation("Seeding database...");
+                await DatabaseSeeder.SeedAsync(scope.ServiceProvider, logger);
+                logger.LogInformation("Database seeding completed");
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "An error occurred while applying database migrations");
+                logger.LogError(ex, "An error occurred while applying database migrations or seeding");
                 throw;
             }
         }
@@ -298,6 +388,6 @@ public class Program
         // Default health/diagnostics endpoints
         app.MapDefaultEndpoints();
 
-        app.Run();
+        await app.RunAsync();
     }
 }

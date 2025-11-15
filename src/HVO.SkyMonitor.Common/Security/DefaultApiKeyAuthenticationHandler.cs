@@ -47,7 +47,8 @@ public sealed class DefaultApiKeyAuthenticationHandler : AuthenticationHandler<A
             new(ClaimTypes.Name, validationResult.DisplayName ?? validationResult.KeyName ?? validationResult.KeyId ?? "API Key"),
             new(ApiKeyClaims.ApiKeyId, validationResult.KeyId ?? string.Empty),
             new(ApiKeyClaims.AccessLevel, validationResult.AccessLevel.ToString()),
-            new(ApiKeyClaims.AuthenticationType, ApiKeyAuthenticationOptions.AuthenticationScheme)
+            new(ApiKeyClaims.AuthenticationType, ApiKeyAuthenticationOptions.AuthenticationScheme),
+            new("account_type", validationResult.AccountType) // Add account type claim
         };
 
         if (!string.IsNullOrWhiteSpace(validationResult.NameIdentifier))
@@ -77,6 +78,7 @@ public sealed class ApiKeyValidationResult
     public string? NameIdentifier { get; init; }
     public string? Email { get; init; }
     public ApiKeyAccessLevel AccessLevel { get; init; } = ApiKeyAccessLevel.Read;
+    public string AccountType { get; init; } = "User"; // Default to User for backward compatibility
 }
 
 public interface IApiKeyValidator

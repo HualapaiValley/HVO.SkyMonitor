@@ -35,6 +35,8 @@ public class DatabaseApiKeyValidator : IApiKeyValidator
             return new ApiKeyValidationResult { IsValid = false };
         }
 
+        var user = key.User as ApplicationUser;
+
         return new ApiKeyValidationResult
         {
             IsValid = true,
@@ -43,7 +45,8 @@ public class DatabaseApiKeyValidator : IApiKeyValidator
             DisplayName = key.DisplayName,
             NameIdentifier = key.UserId,
             Email = key.User?.Email,
-            AccessLevel = key.AccessLevel
+            AccessLevel = key.AccessLevel,
+            AccountType = user?.AccountType.ToString() ?? "User"
         };
     }
 }
