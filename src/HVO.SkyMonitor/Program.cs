@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
+using System.Threading.RateLimiting;
 using Asp.Versioning;
 using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
 using HVO.SkyMonitor.Common.Infrastructure.Filters;
@@ -13,6 +15,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Instrumentation.AspNetCore;
@@ -120,11 +123,94 @@ public class Program
             .WithMetrics(metrics =>
             {
                 metrics.AddPrometheusExporter();
+                metrics.AddMeter("HVO.SkyMonitor.Authentication");
+                metrics.AddAspNetCoreInstrumentation();
             });
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
             options.RecordException = true;
+        });
+
+        // Phase 6: Custom metrics for authentication
+        builder.Services.AddSingleton<Meter>(sp => new Meter("HVO.SkyMonitor.Authentication", "1.0.0"));
+        builder.Services.AddSingleton<AuthenticationMetrics>();
+
+        // Phase 6: Rate Limiting
+        builder.Services.AddRateLimiter(options =>
+        {
+            // Default policy for general requests
+            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+            {
+                var endpoint = context.GetEndpoint();
+                
+                // Check if endpoint has custom rate limit policy
+                var policyName = endpoint?.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName;
+                
+                if (policyName != null)
+                {
+                    return RateLimitPartition.GetNoLimiter<string>("bypass");
+                }
+
+                // Global rate limit: 10,000 requests per minute per IP
+                var ipAddress = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                return RateLimitPartition.GetFixedWindowLimiter(ipAddress, _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = builder.Configuration.GetValue<int>("RateLimiting:Global:PermitsPerMinute", 10000),
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    QueueLimit = 0
+                });
+            });
+
+            // Token endpoint rate limit: 60 requests per minute per IP
+            options.AddFixedWindowLimiter("token", options =>
+            {
+                options.PermitLimit = builder.Configuration.GetValue<int>("RateLimiting:TokenEndpoint:PermitsPerMinute", 60);
+                options.Window = TimeSpan.FromMinutes(1);
+                options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+                options.QueueLimit = builder.Configuration.GetValue<int>("RateLimiting:TokenEndpoint:QueueLimit", 10);
+            });
+
+            // API endpoint rate limit: 1000 requests per minute per user
+            options.AddFixedWindowLimiter("api", options =>
+            {
+                options.PermitLimit = builder.Configuration.GetValue<int>("RateLimiting:ApiEndpoint:PermitsPerMinute", 1000);
+                options.Window = TimeSpan.FromMinutes(1);
+                options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+                options.QueueLimit = 10;
+            });
+
+            options.OnRejected = async (context, cancellationToken) =>
+            {
+                var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+                var ipAddress = context.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                var path = context.HttpContext.Request.Path;
+                
+                logger.LogWarning(
+                    "Rate limit exceeded: IP={IpAddress}, Path={Path}, RetryAfter={RetryAfter}",
+                    ipAddress, path, context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter) ? retryAfter : null);
+
+                context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                
+                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retry))
+                {
+                    context.HttpContext.Response.Headers.RetryAfter = retry.TotalSeconds.ToString();
+                }
+
+                object? retryAfterValue = null;
+                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var ra))
+                {
+                    retryAfterValue = ra.TotalSeconds;
+                }
+
+                await context.HttpContext.Response.WriteAsJsonAsync(new
+                {
+                    error = "too_many_requests",
+                    message = "Rate limit exceeded. Please try again later.",
+                    retryAfter = retryAfterValue
+                }, cancellationToken);
+            };
         });
 
         // Add services to the container
@@ -312,6 +398,7 @@ public class Program
         builder.Services.AddSingleton<IApiKeyHasher, ApiKeyHasher>();
         builder.Services.AddScoped<IApiKeyValidator, DatabaseApiKeyValidator>();
         builder.Services.AddScoped<IApiKeyAuditLogger, ApiKeyAuditLogger>();
+        builder.Services.AddScoped<IAuthenticationEventLogger, AuthenticationEventLogger>();
 
         var app = builder.Build();
 
@@ -367,6 +454,9 @@ public class Program
 
         app.MapStaticAssets();
         app.UseRouting();
+
+        // Phase 6: Rate limiting
+        app.UseRateLimiter();
 
         app.UseAuthentication();
         app.UseAuthorization();
