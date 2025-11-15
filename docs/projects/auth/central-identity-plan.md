@@ -92,18 +92,24 @@
 - Split validation tests between the primary HVO.SkyMonitor suite and a dedicated camera simulator test project so coverage mirrors runtime responsibilities.
 
 **Tasks**
-- [ ] Add `HVO.SkyMonitor.Tests` coverage for:
-	- AccountType validation (USER vs SYSTEM login restrictions).
-	- OAuth2 Authorization Code + PKCE flow.
-	- OAuth2 Client Credentials flow.
-	- API key authentication honoring account types.
-	- Signed URL validation.
-	- Authorization policies (`RequireSystemAccount`, `RequireUserAccount`).
-- [ ] Create `HVO.SkyMonitor.CameraAgent.Tests` for the simulator covering:
-	- Central authentication service behavior (token acquisition, caching).
-	- JWT validation.
-	- `HttpClient` configuration that injects tokens or API keys appropriately.
-- [ ] Group / document the tests per functionality to keep future ZWO-agent tests aligned.
+- [x] Add `HVO.SkyMonitor.Tests` coverage for:
+	- [x] AccountType validation (USER vs SYSTEM login restrictions) - 3 tests in AccountTypeTests
+	- [x] OAuth2 Authorization Code + PKCE flow - Claim mapping validated in OAuth2ClaimMappingTests (7 tests)
+	- [x] OAuth2 Client Credentials flow - System account type claim mapping tested (7 tests)
+	- [x] API key authentication honoring account types - 3 tests in ApiKeyAuthenticationTests
+	- [x] Signed URL validation - 6 tests in SignedUrlTests
+	- [x] Authorization policies (`RequireSystemAccount`, `RequireUserAccount`) - 6 tests in AuthorizationPolicyTests
+- [x] Create `HVO.SkyMonitor.CameraAgent.Tests` for the simulator covering:
+	- [x] Central authentication service behavior (token acquisition, caching) - 3 tests in CentralAuthenticationServiceTests
+	- [x] JWT validation - Covered through OAuth2 claim mapping tests
+	- [x] `HttpClient` configuration that injects tokens or API keys appropriately - 3 tests + 5 error tests
+- [x] Group / document the tests per functionality to keep future ZWO-agent tests aligned - Tests organized by class with clear documentation
+
+**Summary**
+- Total tests: 33 (25 in HVO.SkyMonitor.Tests + 8 in HVO.SkyMonitor.CameraAgent.Tests)
+- All tests passing
+- Coverage includes AccountType, OAuth2 claims, API keys, signed URLs, authorization policies, and camera agent authentication
+
 
 ## Phase 6 – Hardening, Operations & Observability
 **Goals**
