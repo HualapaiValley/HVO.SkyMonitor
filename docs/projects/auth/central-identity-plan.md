@@ -90,6 +90,7 @@
 **Goals**
 - Provide early automated coverage for authentication/authorization scenarios before broader hardening in Phase 6.
 - Split validation tests between the primary HVO.SkyMonitor suite and a dedicated camera simulator test project so coverage mirrors runtime responsibilities.
+- Use Aspire.Hosting.Testing for true integration tests that start the complete distributed application.
 
 **Tasks**
 - [x] Add `HVO.SkyMonitor.Tests` coverage for:
@@ -99,6 +100,11 @@
 	- [x] API key authentication honoring account types - 3 tests in ApiKeyAuthenticationTests
 	- [x] Signed URL validation - 6 tests in SignedUrlTests
 	- [x] Authorization policies (`RequireSystemAccount`, `RequireUserAccount`) - 6 tests in AuthorizationPolicyTests
+- [x] Add Aspire.Hosting.Testing integration tests:
+	- [x] Complete distributed application startup (AppHost with Redis, PostgreSQL, MinIO) - 4 tests in AspireIntegrationTests
+	- [x] End-to-end OAuth2 token endpoint validation
+	- [x] Protected endpoint authentication validation
+	- [x] API key authentication endpoint validation
 - [x] Create `HVO.SkyMonitor.CameraAgent.Tests` for the simulator covering:
 	- [x] Central authentication service behavior (token acquisition, caching) - 3 tests in CentralAuthenticationServiceTests
 	- [x] JWT validation - Covered through OAuth2 claim mapping tests
@@ -106,9 +112,12 @@
 - [x] Group / document the tests per functionality to keep future ZWO-agent tests aligned - Tests organized by class with clear documentation
 
 **Summary**
-- Total tests: 33 (25 in HVO.SkyMonitor.Tests + 8 in HVO.SkyMonitor.CameraAgent.Tests)
-- All tests passing
-- Coverage includes AccountType, OAuth2 claims, API keys, signed URLs, authorization policies, and camera agent authentication
+- Total tests: 37 (25 unit tests + 4 Aspire integration tests in HVO.SkyMonitor.Tests + 8 in HVO.SkyMonitor.CameraAgent.Tests)
+- Unit tests (29): All passing, run without Docker
+- Aspire integration tests (4): Require Docker/Podman, test complete distributed application
+- Coverage includes AccountType, OAuth2 claims, API keys, signed URLs, authorization policies, camera agent authentication, and full Aspire application startup
+- Test infrastructure: MSTest + Aspire.Hosting.Testing + FluentAssertions + Moq
+- Documentation: README.md in tests directory explains unit vs integration testing approach
 
 
 ## Phase 6 – Hardening, Operations & Observability

@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.Testing" Version="13.0.0" />
     <PackageReference Include="FluentAssertions" Version="8.8.0" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />
     <PackageReference Include="MSTest" Version="4.0.1" />
@@ -19,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\HVO.SkyMonitor\HVO.SkyMonitor.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.AppHost\HVO.SkyMonitor.AppHost.csproj" />
   </ItemGroup>
 
 </Project>
