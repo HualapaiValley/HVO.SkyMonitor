@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.Components.Account.Shared;
 using HVO.SkyMonitor.Data;
+using HVO.SkyMonitor.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.AspNetCore.Http;
@@ -39,6 +40,9 @@ public partial class ApiKeys
 
     [Inject]
     private ILogger<ApiKeys> Logger { get; set; } = default!;
+
+    [Inject]
+    private IApiKeyAuditLogger AuditLogger { get; set; } = default!;
 
     [CascadingParameter]
     private HttpContext HttpContext { get; set; } = default!;
@@ -109,6 +113,9 @@ public partial class ApiKeys
             DbContext.ApiKeys.Add(entity);
             await DbContext.SaveChangesAsync(HttpContext.RequestAborted);
 
+            // Audit log the key creation
+            AuditLogger.LogKeyCreated(entity.Id, user.Id, entity.DisplayName, entity.AccessLevel.ToString(), entity.ExpiresUtc);
+
             generatedPlaintextKey = plainKey;
             statusMessage = "New API key created. Copy it now before navigating away.";
             Input = new();
@@ -151,6 +158,9 @@ public partial class ApiKeys
 
             DbContext.ApiKeys.Remove(key);
             await DbContext.SaveChangesAsync(HttpContext.RequestAborted);
+
+            // Audit log the key deletion
+            AuditLogger.LogKeyDeleted(key.Id, user.Id, key.DisplayName);
 
             statusMessage = "API key deleted.";
             await LoadKeysAsync(HttpContext.RequestAborted);
@@ -197,6 +207,16 @@ public partial class ApiKeys
 
             key.IsActive = desiredState;
             await DbContext.SaveChangesAsync(HttpContext.RequestAborted);
+
+            // Audit log the key state change
+            if (desiredState)
+            {
+                AuditLogger.LogKeyActivated(key.Id, user.Id, key.DisplayName);
+            }
+            else
+            {
+                AuditLogger.LogKeyDeactivated(key.Id, user.Id, key.DisplayName);
+            }
 
             statusMessage = desiredState ? "API key activated." : "API key deactivated.";
             await LoadKeysAsync(HttpContext.RequestAborted);

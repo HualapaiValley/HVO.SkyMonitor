@@ -6,6 +6,7 @@ using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.Components;
 using HVO.SkyMonitor.Components.Account;
 using HVO.SkyMonitor.Data;
+using HVO.SkyMonitor.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -301,6 +302,7 @@ public class Program
         // Application services
         builder.Services.AddSingleton<IApiKeyHasher, ApiKeyHasher>();
         builder.Services.AddScoped<IApiKeyValidator, DatabaseApiKeyValidator>();
+        builder.Services.AddScoped<IApiKeyAuditLogger, ApiKeyAuditLogger>();
 
         var app = builder.Build();
 
