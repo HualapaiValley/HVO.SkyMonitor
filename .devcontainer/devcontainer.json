@@ -1,5 +1,5 @@
 {
-  "name": "C# (.NET 10) with Aspire",
+  "name": "HVO.SkyMonitor Dev Container",
   "image": "mcr.microsoft.com/devcontainers/dotnet:1-10.0",
   "features": {
     "ghcr.io/devcontainers/features/git:1": {
@@ -56,24 +56,23 @@
     }
   },
   // Environment variables for dev container (non-sensitive only)
-  // Secrets should be set via User Secrets (mounted from host)
-  // See docs/PHASE6_SECRETS.md for comprehensive secret management
+  // Secrets should be provided via User Secrets or .devcontainer/devcontainer.local.env (gitignored)
+  // See docs/security/secrets-guide.md for comprehensive secret management
   "containerEnv": {
     "ASPNETCORE_ENVIRONMENT": "Development",
     "DOTNET_ENVIRONMENT": "Development",
     "USE_CONTAINERS": "true",
-    "ASPIRE_ALLOW_UNSECURED_TRANSPORT": "true",
     "DOCKER_HOST_ADDRESS": "0.0.0.0",
-    // Phase 6 - Rate Limiting Configuration (non-sensitive)
+    // Identity Hardening - Rate Limiting Configuration (non-sensitive)
     "RATE_LIMIT_TOKEN_ENDPOINT_PERMITS_PER_MINUTE": "60",
     "RATE_LIMIT_TOKEN_ENDPOINT_QUEUE_LIMIT": "10",
     "RATE_LIMIT_API_ENDPOINT_PERMITS_PER_MINUTE": "1000",
     "RATE_LIMIT_GLOBAL_PERMITS_PER_MINUTE": "10000",
-    // Phase 6 - Signed URL Configuration (non-sensitive)
+    // Identity Hardening - Signed URL Configuration (non-sensitive)
     "SIGNED_TICKET_DEFAULT_TTL_SECONDS": "300",
     "SIGNED_TICKET_MAX_CLOCK_SKEW_SECONDS": "30",
     "SIGNED_TICKET_ENFORCE_ALLOWED_PATHS": "true",
-    // Phase 6 - Logging Configuration (non-sensitive)
+    // Identity Hardening - Logging Configuration (non-sensitive)
     "LOGGING_LOGLEVEL_DEFAULT": "Information",
     "LOGGING_LOGLEVEL_MICROSOFT_ASPNETCORE": "Warning"
   },
@@ -81,10 +80,8 @@
   // 5000-5001: Main HVO.SkyMonitor app (HTTP/HTTPS)
   // 5010-5011: Simulator Camera Agent (HTTP/HTTPS)
   // 5020-5021: ZWO Camera Agent (HTTP/HTTPS)
-  // 6379: Redis
-  // 5432: PostgreSQL
+  // 5432: PostgreSQL, 6379: Redis
   // 9000-9001: MinIO (API/Console)
-  // 15201: Aspire Dashboard
   // 5174: SkyMonitor container mode
   // 5130: Simulator agent container mode
   // 5232: ZWO agent container mode
@@ -95,11 +92,10 @@
     5011,
     5020,
     5021,
-    6379,
     5432,
+    6379,
     9000,
     9001,
-    15201,
     5174,
     5130,
     5232
@@ -140,9 +136,6 @@
     },
     "9001": {
       "onAutoForward": "notify"
-    },
-    "15201": {
-      "onAutoForward": "openBrowser"
     },
     "5174": {
       "onAutoForward": "notify"

@@ -5,40 +5,31 @@
 
 ## Connection Strings
 
-### Development Environment (Aspire)
+### Development Environment (Docker Compose / Testcontainers)
 
 #### HVO.SkyMonitor (PostgreSQL)
-**Managed by:** .NET Aspire orchestration
-**Configuration:** Automatic via Aspire's `AddNpgsqlDbContext` extension
+**Managed by:** `docker-compose.dev.yml` + helper scripts in `./scripts/infra:*`
+**Configuration:** Explicit environment variables injected into the app container (and mirrored for local `dotnet run` via `.env`/User Secrets)
 
-```csharp
-// In Program.cs
-builder.AddNpgsqlDbContext<ApplicationDbContext>("skymonitordb");
+```yaml
+# docker-compose.dev.yml
+skymonitor:
+    environment:
+        ConnectionStrings__skymonitordb: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-skymonitordb};Username=${POSTGRES_USER:-skymonitor};Password=${POSTGRES_PASSWORD:-skymonitor_dev_password}"
 ```
 
-**Aspire AppHost Configuration:**
-```csharp
-// In HVO.SkyMonitor.AppHost/Program.cs
-var postgresPasswordParam = builder.AddParameter("postgres-password", secret: true);
-
-var postgres = builder.AddPostgres("postgres")
-    .WithPassword(postgresPasswordParam)
-    .WithDataVolume()  // Persistent storage
-    .WithLifetime(ContainerLifetime.Session);
-
-var postgressDatabase = postgres.AddDatabase("skymonitordb");
-```
+Within `Program.cs`, `builder.Configuration.GetConnectionString("skymonitordb")` resolves to the same value whether you're running with Compose, Testcontainers, or `dotnet run` locally.
 
 **Effective Connection String (Development):**
 ```
-Host=localhost;Port=5432;Database=skymonitordb;Username=postgres;Password={aspire-managed}
+Host=localhost;Port=5432;Database=skymonitordb;Username=skymonitor;Password=skymonitor_dev_password
 ```
 
 **How to Access:**
-1. Start Aspire AppHost: `dotnet run --project src/HVO.SkyMonitor.AppHost --launch-profile http`
-2. PostgreSQL runs on `localhost:5432` (forwarded from container)
-3. Database name: `skymonitordb`
-4. Aspire manages credentials via secure parameter system
+1. Start infrastructure: `./scripts/infra:start postgres`
+2. PostgreSQL listens on `${POSTGRES_PORT:-5432}` (default 5432)
+3. Database name: `${POSTGRES_DB:-skymonitordb}`
+4. Credentials supplied via `.env`, `.devcontainer/devcontainer.local.env`, or User Secrets
 
 #### Camera Agents (SQLite) - TO BE REMOVED
 **Simulator Agent:**
@@ -106,7 +97,7 @@ ASP.NET Core Data Protection is used for:
 
 ### Development Environment
 
-**Storage:** PostgreSQL (via Aspire)
+**Storage:** PostgreSQL provisioned through Docker Compose/Testcontainers
 
 **Configuration:**
 ```csharp
@@ -279,23 +270,22 @@ builder.Services.Configure<SignedUrlOptions>(options =>
 
 ### Development Environment
 
-**Stop Aspire and Clean Containers:**
+**Stop Compose Stack and Clean Containers:**
 ```bash
-# Stop AppHost (Ctrl+C)
-# Then clean up Docker resources:
-docker ps -a | grep -E "postgres|skymonitor" | awk '{print $1}' | xargs -r docker rm -f
-docker volume ls | grep -E "postgres|skymonitor" | awk '{print $2}' | xargs -r docker volume rm
+docker compose -f docker-compose.dev.yml down
+docker volume rm skymonitor-postgres-data skymonitor-minio-data skymonitor-redis-data 2>/dev/null || true
 ```
 
 **Verify Cleanup:**
 ```bash
-docker ps -a  # Should show no Aspire containers
-docker volume ls  # Should show no Aspire volumes
+docker ps -a  # Should not list skymonitor-* services
+docker volume ls | grep skymonitor  # Optional sanity check
 ```
 
 **Restart Fresh:**
 ```bash
-dotnet run --project src/HVO.SkyMonitor.AppHost --launch-profile http
+./scripts/infra:start postgres minio redis smtp
+dotnet run --project src/HVO.SkyMonitor --configuration Debug
 ```
 
 ### Camera Agent SQLite Files
@@ -319,8 +309,8 @@ find ./src -name "*.db-wal" -type f -delete
 
 **Create Migration:**
 ```bash
-# Ensure Aspire is running (database container must be available)
-dotnet run --project src/HVO.SkyMonitor.AppHost --launch-profile http
+# Ensure PostgreSQL is running (Compose or Testcontainers)
+./scripts/infra:start postgres
 
 # In another terminal:
 dotnet ef migrations add InitialCentralIdentity \
@@ -356,7 +346,7 @@ dotnet ef migrations add AddSignedUrlSecrets \
     --context ApplicationDbContext
 ```
 
-**Phase 6 - Audit Logging:**
+**Identity Hardening - Audit Logging:**
 ```bash
 dotnet ef migrations add AddSecurityAuditLog \
     --project src/HVO.SkyMonitor \
@@ -367,11 +357,11 @@ dotnet ef migrations add AddSecurityAuditLog \
 
 ### Development Backup
 ```bash
-# Backup PostgreSQL from Aspire container
-docker exec $(docker ps -q -f name=postgres) pg_dump -U postgres skymonitordb > backup.sql
+# Backup PostgreSQL from the compose container
+docker exec skymonitor-postgres pg_dump -U ${POSTGRES_USER:-skymonitor} ${POSTGRES_DB:-skymonitordb} > backup.sql
 
 # Restore
-docker exec -i $(docker ps -q -f name=postgres) psql -U postgres skymonitordb < backup.sql
+docker exec -i skymonitor-postgres psql -U ${POSTGRES_USER:-skymonitor} ${POSTGRES_DB:-skymonitordb} < backup.sql
 ```
 
 ### Production Backup
@@ -382,11 +372,13 @@ Use PostgreSQL's standard backup tools:
 
 ## Environment Variables
 
-### Development (Aspire)
+### Development (Docker Compose / Testcontainers)
 ```bash
-# Aspire manages these automatically
+# Managed via .env and docker-compose.dev.yml
 ASPNETCORE_ENVIRONMENT=Development
-ConnectionStrings__skymonitordb={managed-by-aspire}
+ConnectionStrings__skymonitordb=Host=localhost;Port=5432;Database=skymonitordb;Username=skymonitor;Password=skymonitor_dev_password
+POSTGRES_USER=skymonitor
+POSTGRES_PASSWORD=skymonitor_dev_password
 ```
 
 ### Production
@@ -412,9 +404,9 @@ OpenIddict__EncryptionCertificate__Thumbprint={cert-thumbprint}
 ## Troubleshooting
 
 ### "Cannot connect to database" Error
-1. Verify Aspire AppHost is running
-2. Check PostgreSQL container: `docker ps | grep postgres`
-3. Test connection: `docker exec -it {container-id} psql -U postgres -d skymonitordb`
+1. Verify the compose stack is running: `./scripts/infra:status`
+2. Check PostgreSQL container: `docker ps | grep skymonitor-postgres`
+3. Test connection: `docker exec -it skymonitor-postgres psql -U ${POSTGRES_USER:-skymonitor} -d ${POSTGRES_DB:-skymonitordb}`
 
 ### "Pending migrations" Warning
 1. Ensure database container is healthy

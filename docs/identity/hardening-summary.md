@@ -1,8 +1,8 @@
-# Phase 6 - Completion Summary
+# Identity Hardening - Completion Summary
 
 ## Overview
 
-Phase 6 (Hardening, Operations & Observability) is now **100% COMPLETE**. This phase focused on productionizing the Central Identity system with proper secret storage, logging, metrics, rate limiting, and operational procedures.
+Identity Hardening (Hardening, Operations & Observability) is now **100% COMPLETE**. This phase focused on productionizing the Central Identity system with proper secret storage, logging, metrics, rate limiting, and operational procedures.
 
 ## Completion Date
 
@@ -17,7 +17,7 @@ Phase 6 (Hardening, Operations & Observability) is now **100% COMPLETE**. This p
 **Status:** COMPLETE
 
 **Deliverables:**
-- Comprehensive secret management guide (PHASE6_SECRETS.md - 17.5 KB)
+- Comprehensive secret management guide (identity/secrets-reference.md - 17.5 KB)
 - All secrets documented with generation, storage, and rotation procedures
 - Environment configuration for Development, DevContainer, CI/CD, and Production
 - OpenIddict certificates (dev auto-generated, production from Azure Key Vault)
@@ -27,8 +27,8 @@ Phase 6 (Hardening, Operations & Observability) is now **100% COMPLETE**. This p
 - TLS/HTTPS certificates (Let's Encrypt automation)
 
 **Documentation Files:**
-- `docs/PHASE6_SECRETS.md` - Complete secret management guide
-- `.env.template` - All Phase 6 environment variables
+- `docs/identity/secrets-reference.md` - Complete secret management guide
+- `.env.template` - All Identity Hardening environment variables
 - `.devcontainer/devcontainer.json` - DevContainer configuration
 - `.github/workflows/README.md` - GitHub Actions secrets
 
@@ -39,7 +39,7 @@ Phase 6 (Hardening, Operations & Observability) is now **100% COMPLETE**. This p
 **Status:** COMPLETE
 
 **Deliverables:**
-- Comprehensive operational runbooks (PHASE6_RUNBOOKS.md - 24.7 KB)
+- Comprehensive operational runbooks (identity/operations-runbook.md - 24.7 KB)
 - Key rotation procedures (OpenIddict 12-month, HMAC 90-day, API keys)
 - Account onboarding (USER and SYSTEM accounts)
 - API key lifecycle management
@@ -50,8 +50,8 @@ Phase 6 (Hardening, Operations & Observability) is now **100% COMPLETE**. This p
 - Monitoring, metrics, and alerting guidelines
 
 **Documentation Files:**
-- `docs/PHASE6_RUNBOOKS.md` - Complete operational procedures
-- `docs/PHASE6_INDEX.md` - Quick reference guide
+- `docs/identity/operations-runbook.md` - Complete operational procedures
+- `docs/identity/operations-index.md` - Quick reference guide
 
 ---
 
@@ -67,7 +67,7 @@ Phase 6 (Hardening, Operations & Observability) is now **100% COMPLETE**. This p
 - Kestrel HTTPS endpoint configuration documented
 
 **Implementation:**
-- Configuration procedures in PHASE6_SECRETS.md
+- Configuration procedures in identity/secrets-reference.md
 - Production deployment instructions ready
 - Certificate rotation procedures documented
 
@@ -89,7 +89,7 @@ Phase 6 (Hardening, Operations & Observability) is now **100% COMPLETE**. This p
   - Account lockouts
   - Password changes
 - No sensitive data logged (passwords, tokens excluded)
-- Log structure documented in PHASE6_RUNBOOKS.md
+- Log structure documented in identity/operations-runbook.md
 
 **Code Files:**
 - `src/HVO.SkyMonitor/Services/AuthenticationEventLogger.cs` - New service
@@ -112,7 +112,7 @@ Phase 6 (Hardening, Operations & Observability) is now **100% COMPLETE**. This p
   - Authentication operation duration
   - Token request latency
 - OpenTelemetry integration for ASP.NET Core
-- Metrics documented in PHASE6_RUNBOOKS.md
+- Metrics documented in identity/operations-runbook.md
 
 **Code Files:**
 - `src/HVO.SkyMonitor/Services/AuthenticationMetrics.cs` - New service
@@ -159,7 +159,7 @@ Phase 6 (Hardening, Operations & Observability) is now **100% COMPLETE**. This p
 
 ### Documentation
 
-- **Total files created:** 3 (PHASE6_SECRETS.md, PHASE6_RUNBOOKS.md, PHASE6_INDEX.md)
+- **Total files created:** 3 (identity/secrets-reference.md, identity/operations-runbook.md, identity/operations-index.md)
 - **Total files updated:** 5 (.env.template, devcontainer.json, workflows/README.md, SECRETS_MANAGEMENT.md, central-identity-plan.md)
 - **Total documentation:** 52+ KB
 - **Lines of documentation:** 2,597+ lines
@@ -212,7 +212,7 @@ Phase 6 (Hardening, Operations & Observability) is now **100% COMPLETE**. This p
 
 ### 5. Developer Experience
 - Clear documentation structure
-- Scenario-based guides (PHASE6_INDEX.md)
+- Scenario-based guides (identity/operations-index.md)
 - Quick reference for common tasks
 - DevContainer auto-configuration
 - CI/CD examples
@@ -221,7 +221,7 @@ Phase 6 (Hardening, Operations & Observability) is now **100% COMPLETE**. This p
 
 ## 🚀 What's Next
 
-Phase 6 is complete. The Central Identity system is now production-ready with:
+Identity Hardening is complete. The Central Identity system is now production-ready with:
 
 - ✅ Proper secret management
 - ✅ Production-grade TLS configuration (documented)
@@ -233,7 +233,7 @@ Phase 6 is complete. The Central Identity system is now production-ready with:
 ### Recommended Next Steps
 
 1. **Deploy to Staging**
-   - Apply Phase 6 configuration to staging environment
+   - Apply Identity Hardening configuration to staging environment
    - Test secret loading from Azure Key Vault
    - Validate rate limiting behavior under load
    - Review metrics in Grafana/Prometheus
@@ -256,7 +256,7 @@ Phase 6 is complete. The Central Identity system is now production-ready with:
    - Store secrets in Azure Key Vault
    - Configure production rate limits
    - Set up monitoring and alerting
-   - Deploy with Phase 6 configuration
+   - Deploy with Identity Hardening configuration
 
 5. **Move to Phase 7 or 8**
    - **Phase 7:** Adaptive enhancements & discoveries
@@ -270,10 +270,10 @@ Phase 6 is complete. The Central Identity system is now production-ready with:
 
 ```
 docs/
-  PHASE6_SECRETS.md (17.5 KB)
-  PHASE6_RUNBOOKS.md (24.7 KB)
-  PHASE6_INDEX.md (10.7 KB)
-  PHASE6_COMPLETION.md (this file)
+  identity/secrets-reference.md (17.5 KB)
+  identity/operations-runbook.md (24.7 KB)
+  identity/operations-index.md (10.7 KB)
+  identity/hardening-summary.md (this file)
 
 src/HVO.SkyMonitor/Services/
   AuthenticationMetrics.cs
@@ -297,7 +297,7 @@ src/HVO.SkyMonitor/Controllers/OpenIddict/AuthorizationController.cs
 
 ## 🎓 Summary
 
-**Phase 6 Status:** ✅ **100% COMPLETE**
+**Identity Hardening Status:** ✅ **100% COMPLETE**
 
 All documentation, implementation, and operational procedures are complete. The Central Identity system is now:
 

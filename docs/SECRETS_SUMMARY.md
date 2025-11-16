@@ -1,7 +1,7 @@
 # Secrets and Environment Configuration Summary
 
-> [!NOTE]
-> References to `HVO.SkyMonitor.AppHost` remain for historical record only. The Aspire AppHost was removed; follow the Docker Compose workflow described in `README.md` for current setups.
+> [!IMPORTANT]
+> HVO.SkyMonitor now runs using Docker Compose/Testcontainers plus direct project executions (no Aspire AppHost). The summaries below reference `./scripts/infra:*`, `.env`, and `src/HVO.SkyMonitor` as the authoritative entry points.
 
 ## ✅ What Was Implemented
 
@@ -19,17 +19,10 @@
 
 ### 3. Code Changes
 
-**`src/HVO.SkyMonitor.AppHost/Program.cs`:**
-- Removed hardcoded credentials
-- Added configuration-based secret loading
-- Falls back to environment variables, then defaults
-- Credentials load priority: User Secrets → Environment Variables → Defaults
-
-```csharp
-var minioUsername = builder.Configuration["MinIO:Username"] 
-    ?? Environment.GetEnvironmentVariable("MINIO_ROOT_USER") 
-    ?? "minioadmin";
-```
+**`src/HVO.SkyMonitor/Program.cs`:**
+- Loads configuration through the standard ASP.NET Core builder stack
+- Pulls secrets from User Secrets, `.env`, devcontainer env, or Azure Key Vault depending on environment
+- Default credentials (minioadmin/postgres) apply only when no overrides are provided
 
 ### 4. DevContainer Updates
 
@@ -40,9 +33,9 @@ var minioUsername = builder.Configuration["MinIO:Username"]
 
 ### 5. Project Configuration
 
-**`src/HVO.SkyMonitor.AppHost/HVO.SkyMonitor.AppHost.csproj`:**
-- Already has `UserSecretsId` configured: `9aa57b5b-ff55-4e72-b5b7-744f91408cdb`
-- Ready to use with `dotnet user-secrets` commands
+**`src/HVO.SkyMonitor/HVO.SkyMonitor.csproj`:**
+- Configure `UserSecretsId` via `dotnet user-secrets init` if you need per-developer secrets
+- Ready to use with `dotnet user-secrets` commands or environment variables supplied by Compose/Testcontainers
 
 ## 🔐 Secrets Classification
 
@@ -90,18 +83,21 @@ ENCRYPTION_KEY=<key>
 
 2. **Open in Dev Container** (VS Code)
    - Press `F1` → "Dev Containers: Reopen in Container"
-   - Wait for container to build
+   - Wait for container to build and install dependencies
 
-3. **Set secrets** (optional - has defaults)
+3. **Optional: Configure secrets**
    ```bash
-   cd src/HVO.SkyMonitor.AppHost
-   dotnet user-secrets set "MinIO:Username" "myuser"
-   dotnet user-secrets set "MinIO:Password" "mypassword"
+   cd src/HVO.SkyMonitor
+   dotnet user-secrets init
+   dotnet user-secrets set "MinIO:AccessKey" "dev-minio"
+   dotnet user-secrets set "MinIO:SecretKey" "dev-minio-secret"
    ```
+   _or_ create `.devcontainer/devcontainer.local.env` with the same values.
 
-4. **Run the application**
+4. **Start infrastructure and run the app**
    ```bash
-   dotnet run --project src/HVO.SkyMonitor.AppHost --launch-profile http
+   ./scripts/infra:start postgres minio redis smtp
+   dotnet run --project src/HVO.SkyMonitor --configuration Debug
    ```
 
 ### Default Credentials
@@ -127,19 +123,21 @@ Secrets are loaded in this order (later overrides earlier):
 ### Local Development
 
 ```bash
-# Option 1: Use defaults (no setup needed)
-dotnet run --project src/HVO.SkyMonitor.AppHost --launch-profile http
+# Option 1: Use defaults (Docker Compose stack + direct run)
+./scripts/infra:start
+dotnet run --project src/HVO.SkyMonitor --configuration Debug
 
 # Option 2: Use custom user secrets
-cd src/HVO.SkyMonitor.AppHost
-dotnet user-secrets set "MinIO:Username" "custom-user"
-dotnet user-secrets set "MinIO:Password" "custom-pass"
-dotnet run --launch-profile http
+cd src/HVO.SkyMonitor
+dotnet user-secrets set "MinIO:AccessKey" "custom-user"
+dotnet user-secrets set "MinIO:SecretKey" "custom-pass"
+dotnet run --configuration Debug
 
-# Option 3: Use environment variables
+# Option 3: Use environment variables/.env overrides
 export MINIO_ROOT_USER=env-user
 export MINIO_ROOT_PASSWORD=env-pass
-dotnet run --project src/HVO.SkyMonitor.AppHost --launch-profile http
+./scripts/infra:start
+dotnet run --project src/HVO.SkyMonitor
 ```
 
 ### CI/CD (GitHub Actions)

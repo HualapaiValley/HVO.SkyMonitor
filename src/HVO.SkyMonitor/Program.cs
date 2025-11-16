@@ -141,11 +141,11 @@ public sealed partial class Program
             options.RecordException = true;
         });
 
-        // Phase 6: Custom metrics for authentication
+        // Identity Hardening: Custom metrics for authentication
         builder.Services.AddSingleton<Meter>(sp => new Meter("HVO.SkyMonitor.Authentication", "1.0.0"));
         builder.Services.AddSingleton<AuthenticationMetrics>();
 
-        // Phase 6: Rate Limiting
+        // Identity Hardening: Rate Limiting
         builder.Services.AddRateLimiter(options =>
         {
             // Default policy for general requests
@@ -548,7 +548,7 @@ public sealed partial class Program
         app.MapStaticAssets();
         app.UseRouting();
 
-        // Phase 6: Rate limiting
+        // Identity Hardening: Rate limiting
         app.UseRateLimiter();
 
         app.UseAuthentication();

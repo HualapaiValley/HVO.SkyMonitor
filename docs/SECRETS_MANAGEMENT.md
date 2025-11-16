@@ -1,7 +1,7 @@
 # Secrets and Environment Variables Management
 
-> [!NOTE]
-> Sections referencing `HVO.SkyMonitor.AppHost` describe the retired Aspire workflow. Use the Docker Compose scripts in `./scripts` for current setup; keep this document for historical context.
+> [!IMPORTANT]
+> This guide reflects the current Docker Compose + Testcontainers workflow. Use the scripts under `./scripts` (for example `./scripts/infra:start`) together with direct project runs (`src/HVO.SkyMonitor`, camera agents) when applying the steps below.
 
 ## Overview
 
@@ -12,7 +12,7 @@ HVO.SkyMonitor uses a layered approach to manage configuration and secrets:
 3. **Production secrets** → Azure Key Vault or environment variables
 4. **CI/CD secrets** → GitHub Secrets
 
-**Phase 6 Enhancement:** For comprehensive Phase 6-specific secrets documentation (OpenIddict keys, signed URL HMAC, rate limiting, etc.), see [PHASE6_SECRETS.md](PHASE6_SECRETS.md).
+**Identity Hardening Reference:** For comprehensive identity-specific secrets documentation (OpenIddict keys, signed URL HMAC, rate limiting, etc.), see [identity/secrets-reference.md](identity/secrets-reference.md).
 
 ## Security Principles
 
@@ -20,7 +20,7 @@ HVO.SkyMonitor uses a layered approach to manage configuration and secrets:
 - Use User Secrets for local development
 - Use Azure Key Vault or managed secrets in production
 - Use GitHub Secrets for CI/CD pipelines
-- Rotate secrets regularly (every 90 days for Phase 6 auth secrets)
+- Rotate secrets regularly (every 90 days for Identity Hardening auth secrets)
 - Use different secrets for each environment
 - Use minimum key lengths: 256 bits for HMAC, 4096 bits for RSA
 
@@ -67,28 +67,37 @@ User Secrets provide secure local storage for development secrets outside the pr
 
 ### Setup User Secrets
 
-Initialize user secrets for the AppHost project:
+Initialize User Secrets for the primary web app or any agent you need to run locally:
 
 ```bash
-cd src/HVO.SkyMonitor.AppHost
+cd src/HVO.SkyMonitor
+dotnet user-secrets init
+
+# Optional: initialize secrets for a camera agent
+cd ../HVO.SkyMonitor.CameraAgent
 dotnet user-secrets init
 ```
 
-This adds a `UserSecretsId` to the `.csproj` file (already configured).
+This adds/updates the `UserSecretsId` property inside the corresponding `.csproj` file.
 
 ### Setting Secrets
 
 ```bash
 # MinIO Credentials
-dotnet user-secrets set "MinIO:AccessKey" "your-access-key"
-dotnet user-secrets set "MinIO:SecretKey" "your-secret-key"
+dotnet user-secrets set "MinIO:AccessKey" "your-access-key" \
+  --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+dotnet user-secrets set "MinIO:SecretKey" "your-secret-key" \
+  --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
 
 # PostgreSQL Credentials  
-dotnet user-secrets set "PostgreSQL:Username" "your-db-user"
-dotnet user-secrets set "PostgreSQL:Password" "your-db-password"
+dotnet user-secrets set "PostgreSQL:Username" "your-db-user" \
+  --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+dotnet user-secrets set "PostgreSQL:Password" "your-db-password" \
+  --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
 
-# Other Secrets
-dotnet user-secrets set "JwtSettings:SecretKey" "your-jwt-secret"
+# Other Secrets (example)
+dotnet user-secrets set "JwtSettings:SecretKey" "your-jwt-secret" \
+  --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
 ```
 
 ### Listing Secrets
@@ -125,8 +134,7 @@ The `.devcontainer/devcontainer.json` includes non-sensitive environment variabl
 "containerEnv": {
   "ASPNETCORE_ENVIRONMENT": "Development",
   "DOTNET_ENVIRONMENT": "Development",
-  "USE_CONTAINERS": "true",
-  "ASPIRE_ALLOW_UNSECURED_TRANSPORT": "true"
+  "USE_CONTAINERS": "true"
 }
 ```
 
@@ -238,13 +246,13 @@ jobs:
 When running in container mode, secrets must be passed as environment variables:
 
 ```bash
-# Pass secrets to containers
+# Pass secrets to containers (simplified example)
 docker run -e MINIO__ACCESSKEY="your-key" \
            -e MINIO__SECRETKEY="your-secret" \
            hvo-skymonitor:latest
 ```
 
-**Aspire AppHost** automatically passes configuration to containers via `WithEnvironment`.
+The `scripts/infra:*` helpers wrap `docker compose -f docker-compose.dev.yml ...` and forward values from `.env`, `.devcontainer/devcontainer.local.env`, and your shell session so you don't have to specify them manually for local development.
 
 ## Secret Rotation
 

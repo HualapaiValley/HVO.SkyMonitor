@@ -1,4 +1,4 @@
-# Phase 6 - Operational Runbooks
+# Identity Hardening - Operational Runbooks
 
 This document provides step-by-step procedures for common operational tasks related to the Central Identity system's security and authentication infrastructure.
 
@@ -911,7 +911,7 @@ AppEvents
 
 ## Summary
 
-This runbook covers the essential operational procedures for Phase 6:
+This runbook covers the essential operational procedures for Identity Hardening:
 
 - ✅ Key rotation for OpenIddict, signed URLs, API keys
 - ✅ Account onboarding for users and system accounts
@@ -923,7 +923,7 @@ This runbook covers the essential operational procedures for Phase 6:
 - ✅ Monitoring, metrics, and alerting
 
 For additional information:
-- See [PHASE6_SECRETS.md](PHASE6_SECRETS.md) for secret management
+- See [secrets-reference.md](secrets-reference.md) for secret management
 - See [SECRETS_MANAGEMENT.md](SECRETS_MANAGEMENT.md) for general secrets guidance
 - See logs and metrics dashboards for real-time monitoring
 

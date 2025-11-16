@@ -1,10 +1,10 @@
-# Phase 6 - Secrets and Configuration Guide
+# Identity Secrets & Configuration Guide
 
-This document provides comprehensive guidance for all secrets, keys, and configuration values required for Phase 6 (Hardening, Operations & Observability) of the Central Identity Program.
+This document provides comprehensive guidance for all secrets, keys, and configuration values required for identity hardening (Central Identity security, operations, and observability).
 
 ## Overview
 
-Phase 6 introduces production-grade security measures including:
+Identity hardening introduces production-grade security measures including:
 - Proper secret storage for OpenIddict signing/encryption keys
 - API key hashing with configurable salt/secret
 - Signed URL HMAC key management
@@ -99,7 +99,7 @@ openssl pkcs12 -export -out encryption-cert.pfx \
 
 **Current Implementation:** Uses SHA256 without additional salt (basic security).
 
-**Security Note:** The current `ApiKeyHasher` implementation uses plain SHA256 hashing without a salt. For Phase 6, we document the current approach but recommend adding a configurable salt for enhanced security.
+**Security Note:** The current `ApiKeyHasher` implementation uses plain SHA256 hashing without a salt. For Identity Hardening, we document the current approach but recommend adding a configurable salt for enhanced security.
 
 **Optional Enhancement Configuration:**
 
@@ -588,7 +588,7 @@ if (signedTicketOptions.Secret.Length < 32)
 
 ## Summary
 
-Phase 6 introduces several secrets and configuration values:
+Identity Hardening introduces several secrets and configuration values:
 
 **Secrets (must be stored securely):**
 1. OpenIddict signing/encryption certificate passwords (production only)

@@ -4,7 +4,7 @@
 
 This document describes all secrets required for CI/CD workflows in the HVO.SkyMonitor project.
 
-**Phase 6 Enhancement:** For comprehensive Phase 6-specific secrets (OpenIddict keys, signed URL HMAC, etc.), see [PHASE6_SECRETS.md](../docs/PHASE6_SECRETS.md).
+**Identity Hardening Enhancement:** For comprehensive Identity Hardening-specific secrets (OpenIddict keys, signed URL HMAC, etc.), see [../docs/identity/secrets-reference.md](../docs/identity/secrets-reference.md).
 
 ## Required Repository Secrets
 
@@ -48,7 +48,7 @@ Description: PostgreSQL admin password for production
 
 ---
 
-### Phase 6 - Authentication & Security Secrets
+### Identity Hardening - Authentication & Security Secrets
 
 #### OpenIddict Certificates (Production Only)
 
@@ -151,7 +151,7 @@ Description: Azure Container Registry for images
 
 ---
 
-### Phase 6 - TLS/HTTPS Certificates (Production)
+### Identity Hardening - TLS/HTTPS Certificates (Production)
 
 ```
 Name: HTTPS_CERT_PASSWORD_PROD
@@ -232,7 +232,7 @@ jobs:
           MINIO_ROOT_USER: ${{ secrets.MINIO_ROOT_USER_DEV }}
           MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD_DEV }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD_DEV }}
-          # Phase 6 secrets for auth integration tests
+          # Identity Hardening secrets for auth integration tests
           SIGNED_TICKET_SECRET: ${{ secrets.SIGNED_TICKET_SECRET_DEV }}
         run: dotnet test --no-build --configuration Release
 ```
@@ -297,7 +297,7 @@ jobs:
             ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent-zwo:${{ github.sha }}
 ```
 
-### Deploy with Environment Secrets (Phase 6 Enhanced)
+### Deploy with Environment Secrets (Identity Hardening Enhanced)
 
 ```yaml
 name: Deploy to Production
@@ -327,14 +327,14 @@ jobs:
           MINIO_ROOT_USER: ${{ secrets.MINIO_ROOT_USER_PROD }}
           MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD_PROD }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD_PROD }}
-          # Phase 6 authentication secrets
+          # Identity Hardening authentication secrets
           OPENIDDICT_SIGNING_CERT_PATH: /tmp/signing-cert.pfx
           OPENIDDICT_SIGNING_CERT_PASSWORD: ${{ secrets.OPENIDDICT_SIGNING_CERT_PASSWORD_PROD }}
           OPENIDDICT_ENCRYPTION_CERT_PATH: /tmp/encryption-cert.pfx
           OPENIDDICT_ENCRYPTION_CERT_PASSWORD: ${{ secrets.OPENIDDICT_ENCRYPTION_CERT_PASSWORD_PROD }}
           SIGNED_TICKET_SECRET: ${{ secrets.SIGNED_TICKET_SECRET_PROD }}
           API_KEY_HASHING_SALT: ${{ secrets.API_KEY_HASHING_SALT_PROD }}
-          # Phase 6 TLS/HTTPS secrets
+          # Identity Hardening TLS/HTTPS secrets
           KESTREL_CERTIFICATES_DEFAULT_PATH: /tmp/https-cert.pfx
           KESTREL_CERTIFICATES_DEFAULT_PASSWORD: ${{ secrets.HTTPS_CERT_PASSWORD_PROD }}
           # Azure credentials
@@ -420,7 +420,7 @@ jobs:
    - Use GitHub OIDC with Azure for keyless authentication
    - Minimize secret lifetime
 
-### Phase 6 Specific
+### Identity Hardening Specific
 
 7. **Certificate management**
    - Store certificates in Azure Key Vault (production)
@@ -458,7 +458,7 @@ To verify secrets are set correctly without exposing them:
     fi
     echo "✅ All required infrastructure secrets are set"
 
-- name: Verify Phase 6 production secrets exist
+- name: Verify Identity Hardening production secrets exist
   if: github.ref == 'refs/heads/main'
   run: |
     if [ -z "${{ secrets.OPENIDDICT_SIGNING_CERT_PASSWORD_PROD }}" ]; then
@@ -469,7 +469,7 @@ To verify secrets are set correctly without exposing them:
       echo "ERROR: SIGNED_TICKET_SECRET_PROD secret is not set"
       exit 1
     fi
-    echo "✅ All required Phase 6 production secrets are set"
+    echo "✅ All required Identity Hardening production secrets are set"
 
 - name: Verify secret minimum lengths
   run: |
@@ -552,8 +552,8 @@ base64 -d cert.base64 | openssl pkcs12 -info -nodes -passin pass:PASSWORD
 - [GitHub Actions Secrets Documentation](https://docs.github.com/actions/security-guides/encrypted-secrets)
 - [GitHub Environments Documentation](https://docs.github.com/actions/deployment/targeting-different-environments/using-environments-for-deployment)
 - [Security Hardening for GitHub Actions](https://docs.github.com/actions/security-guides/security-hardening-for-github-actions)
-- [Phase 6 Secrets Guide](../docs/PHASE6_SECRETS.md)
-- [Phase 6 Operational Runbooks](../docs/PHASE6_RUNBOOKS.md)
+- [Identity Hardening Secrets Guide](../docs/identity/secrets-reference.md)
+- [Identity Hardening Operational Runbooks](../docs/identity/operations-runbook.md)
 
 ---
 
@@ -575,7 +575,7 @@ base64 -d cert.base64 | openssl pkcs12 -info -nodes -passin pass:PASSWORD
 8. `HTTPS_CERT_PASSWORD_PROD`
 9. Plus Azure credentials if deploying to Azure
 
-All Phase 6 secrets are documented with:
+All Identity Hardening secrets are documented with:
 - ✅ Generation procedures
 - ✅ Minimum requirements
 - ✅ Rotation schedules

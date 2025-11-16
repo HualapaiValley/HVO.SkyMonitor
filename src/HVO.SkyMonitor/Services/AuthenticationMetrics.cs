@@ -4,7 +4,7 @@ namespace HVO.SkyMonitor.Services;
 
 /// <summary>
 /// Provides custom metrics for authentication and authorization events.
-/// Phase 6: Metrics & Observability
+/// Identity Hardening: Metrics & Observability
 /// </summary>
 public sealed class AuthenticationMetrics
 {

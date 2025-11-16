@@ -1,7 +1,7 @@
 # Quick Start: Secrets Setup
 
-> [!NOTE]
-> Steps that mention `HVO.SkyMonitor.AppHost` were written for the deprecated Aspire AppHost. Replace those commands with the Docker Compose scripts in `./scripts` when working with the current environment.
+> [!IMPORTANT]
+> HVO.SkyMonitor now relies on Docker Compose/Testcontainers infrastructure plus direct project runs (no Aspire AppHost). Use the scripts under `./scripts` to provision dependencies and run the application from `src/HVO.SkyMonitor`.
 
 ## Initial Development Setup
 
@@ -11,105 +11,110 @@
 cp .env.template .env
 ```
 
-The `.env` file is git-ignored and can contain your local overrides.
+`.env` stays git-ignored and holds non-sensitive overrides (ports, Docker contexts, etc.). Secrets belong in User Secrets or a private env file such as `.devcontainer/devcontainer.local.env`.
 
-### 2. Set User Secrets (Recommended for Custom Credentials)
+### 2. Provide Secrets
 
-```bash
-cd src/HVO.SkyMonitor.AppHost
+Pick one (or mix) of the following options:
 
-# Initialize user secrets (already done - UserSecretsId in .csproj)
-dotnet user-secrets init
+**Option A – `.devcontainer/devcontainer.local.env`**
 
-# Set MinIO credentials (optional - defaults to minioadmin)
-dotnet user-secrets set "MinIO:Username" "your-username"
-dotnet user-secrets set "MinIO:Password" "your-password"
-
-# Set PostgreSQL credentials (optional - defaults to postgres)
-# IMPORTANT: Use Parameters:postgres-password for Aspire's parameter system
-dotnet user-secrets set "Parameters:postgres-password" "your-secure-password"
+```env
+# Example – never commit this file
+MINIO_ROOT_USER=dev-minio
+MINIO_ROOT_PASSWORD=super-secret
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres-pass
+SIGNED_TICKET_SECRET="$(openssl rand -base64 32)"
 ```
 
-### 3. Verify Secrets
+The file is already git-ignored; VS Code loads it automatically through `devcontainer.json`.
+
+**Option B – .NET User Secrets for `HVO.SkyMonitor`**
 
 ```bash
-# List all secrets
-dotnet user-secrets list
-
-# Should show:
-# MinIO:Username = your-username
-# MinIO:Password = [hidden]
-# Parameters:postgres-password = [hidden]
+cd src/HVO.SkyMonitor
+dotnet user-secrets init          # creates/updates UserSecretsId
+dotnet user-secrets set "MinIO:AccessKey" "your-username"
+dotnet user-secrets set "MinIO:SecretKey" "your-password"
+dotnet user-secrets set "PostgreSQL:Username" "postgres"
+dotnet user-secrets set "PostgreSQL:Password" "strong-password"
 ```
+
+Use `dotnet user-secrets list --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj` to confirm values.
+
+### 3. Start Infrastructure
+
+```bash
+./scripts/infra:start postgres minio redis smtp
+# or ./scripts/infra:start          # starts everything, including camera agents
+```
+
+The script loads `.env`, provisions bind-mount directories, and brings up the compose stack defined in `docker-compose.dev.yml`.
 
 ### 4. Run the Application
 
 ```bash
-# From repository root
-dotnet run --project src/HVO.SkyMonitor.AppHost --launch-profile http
+dotnet run --project src/HVO.SkyMonitor --configuration Debug
+# Optional: dotnet watch --project src/HVO.SkyMonitor run
 ```
 
-The application will use:
-1. Your user secrets (if set)
-2. Or environment variables from `.env` (if present)
-3. Or fallback to development defaults (minioadmin/minioadmin)
+The runtime pulls secrets from User Secrets → environment variables (`.env`, devcontainer) → configuration files.
+
+### 5. Access Services
+
+- **Main App:** http://localhost:5174 (from `SKYMONITOR_HTTP_PORT`)
+- **MinIO Console:** http://localhost:9001
+- **MailHog (SMTP):** http://localhost:8025 (if exposed in compose)
+- **Simulator Agent:** http://localhost:5130 (when started)
+- **ZWO Agent:** http://localhost:5232 (when started)
 
 ## Default Credentials
 
-If you don't set custom secrets, the following defaults are used:
+When no secrets are supplied, local defaults apply:
 
 - **MinIO:** `minioadmin` / `minioadmin`
 - **PostgreSQL:** `postgres` / `postgres`
 
-These are safe for local development but **should be changed for any shared or production environment**.
-
-## Access Services
-
-Once running:
-
-- **Aspire Dashboard:** http://localhost:15201
-- **MinIO Console:** http://localhost:9001 (use MinIO credentials to log in)
-- **Main App:** http://localhost:5174 (container mode) or dynamic port (project mode)
+Change these for any shared or remote environment.
 
 ## Troubleshooting
 
 ### Secrets Not Loading
 
-If your custom secrets aren't being used:
-
 ```bash
-# Verify user secrets are set
-cd src/HVO.SkyMonitor.AppHost
+cd src/HVO.SkyMonitor
 dotnet user-secrets list
 
-# Check that UserSecretsId exists in .csproj
-grep UserSecretsId HVO.SkyMonitor.AppHost.csproj
+grep UserSecretsId HVO.SkyMonitor.csproj   # ensures the project is linked
 ```
 
-### Can't Access MinIO Console
+If you rely on `.devcontainer/devcontainer.local.env`, confirm the file exists and VS Code prompted you to reload the container.
 
-If you see authentication errors in MinIO console:
+### Infrastructure Issues
 
-1. Check MinIO container logs in Aspire Dashboard
-2. Verify credentials match between:
-   - Container environment variables
-   - Your user secrets or .env file
-   - MinIO console login attempt
+```bash
+./scripts/infra:status                     # quick health summary
+docker compose -f docker-compose.dev.yml logs -f minio
+./scripts/infra:start --reset postgres     # recreate a failing service
+```
 
-### Dev Container Can't Find Secrets
+### Dev Container Cannot See Secrets
 
-User secrets should be mounted into the dev container. If not working:
+The dev container binds your host user-secrets directory automatically. If secrets are missing:
 
-1. Rebuild the dev container
-2. Verify mount in `.devcontainer/devcontainer.json`:
+1. Rebuild the container (`Dev Containers: Rebuild and Reopen`)
+2. Verify the mount entry in `.devcontainer/devcontainer.json`:
    ```jsonc
-   "mounts": [
-     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.microsoft/usersecrets,target=/home/vscode/.microsoft/usersecrets,type=bind,consistency=cached"
-   ]
+   {
+     "type": "bind",
+     "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.microsoft/usersecrets",
+     "target": "/home/vscode/.microsoft/usersecrets"
+   }
    ```
 
 ## Next Steps
 
-- Read [SECRETS_MANAGEMENT.md](./SECRETS_MANAGEMENT.md) for complete documentation
-- Set up GitHub Secrets for CI/CD (see workflow below)
-- Configure Azure Key Vault for production deployments
+- Review [SECRETS_MANAGEMENT.md](./SECRETS_MANAGEMENT.md) for policy details
+- Configure GitHub Secrets for CI/CD as described in `.github/workflows/README.md`
+- Follow [identity/secrets-reference.md](identity/secrets-reference.md) when generating OpenIddict keys, API keys, and signed URL secrets

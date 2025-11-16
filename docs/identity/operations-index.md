@@ -1,10 +1,10 @@
-# Phase 6 Documentation Index
+# Identity Operations Index
 
-This document provides a quick reference to all Phase 6 (Hardening, Operations & Observability) documentation.
+This document replaces the legacy "Identity Hardening" bundle and provides a quick reference to the identity hardening, operations, and observability documentation set.
 
 ## Overview
 
-Phase 6 focuses on productionizing the Central Identity system with:
+Identity hardening focuses on productionizing the Central Identity system with:
 - Proper secret storage and management
 - Production-grade TLS configuration
 - Structured logging and audit trails
@@ -14,8 +14,8 @@ Phase 6 focuses on productionizing the Central Identity system with:
 
 ## Documentation Files
 
-### 1. PHASE6_SECRETS.md (17.5 KB)
-**Purpose:** Comprehensive guide to all secrets and configuration required for Phase 6.
+### 1. secrets-reference.md (formerly secrets-reference.md)
+**Purpose:** Comprehensive guide to all secrets and configuration required for identity hardening.
 
 **Covers:**
 - OpenIddict signing/encryption certificates
@@ -35,8 +35,8 @@ Phase 6 focuses on productionizing the Central Identity system with:
 - Rotating secrets
 - Troubleshooting configuration issues
 
-### 2. PHASE6_RUNBOOKS.md (24.7 KB)
-**Purpose:** Step-by-step operational procedures for common tasks.
+### 2. operations-runbook.md (formerly operations-runbook.md)
+**Purpose:** Step-by-step operational procedures for common identity and security tasks.
 
 **Covers:**
 - Key rotation procedures (OpenIddict, HMAC, API keys)
@@ -79,8 +79,8 @@ Phase 6 focuses on productionizing the Central Identity system with:
 
 **Covers:**
 - All non-sensitive environment variables
-- Phase 6 rate limiting configuration
-- Phase 6 signed URL configuration
+- Identity Hardening rate limiting configuration
+- Identity Hardening signed URL configuration
 - Logging configuration
 - Comments for all secret placeholders
 
@@ -94,7 +94,7 @@ Phase 6 focuses on productionizing the Central Identity system with:
 
 **Covers:**
 - Required repository secrets
-- Phase 6 authentication secrets
+- Identity Hardening authentication secrets
 - Container registry secrets
 - Azure deployment secrets
 - Example workflows
@@ -111,7 +111,7 @@ Phase 6 focuses on productionizing the Central Identity system with:
 **Purpose:** Development container configuration.
 
 **Covers:**
-- Phase 6 non-sensitive environment variables
+- Identity Hardening non-sensitive environment variables
 - User secrets mounting
 - Port forwarding configuration
 - VS Code settings
@@ -126,13 +126,13 @@ Phase 6 focuses on productionizing the Central Identity system with:
 
 **Covers:**
 - Complete Phase 0-8 plan
-- Phase 6 detailed task breakdown
+- Identity Hardening detailed task breakdown
 - Implementation status
 - Documentation status
 
 **Use When:**
 - Understanding the overall identity program
-- Tracking Phase 6 progress
+- Tracking Identity Hardening progress
 - Planning remaining implementation work
 
 ## Quick Reference by Scenario
@@ -141,16 +141,16 @@ Phase 6 focuses on productionizing the Central Identity system with:
 
 1. Read `SECRETS_MANAGEMENT.md` for overview
 2. Copy `.env.template` to `.env` (optional for overrides)
-3. Set up User Secrets using `PHASE6_SECRETS.md` (optional for production-like testing)
+3. Set up User Secrets using `secrets-reference.md` (optional for production-like testing)
 4. Open project in Dev Container (reads `.devcontainer/devcontainer.json`)
-5. Run `dotnet run --project src/HVO.SkyMonitor.AppHost`
+5. Start infrastructure with `./scripts/infra:start` and run `dotnet run --project src/HVO.SkyMonitor`
 
 **Secrets needed:** None! Development uses defaults and auto-generated certificates.
 
 ### Scenario: I'm setting up CI/CD
 
 1. Read `.github/workflows/README.md`
-2. Generate required secrets using commands in `PHASE6_SECRETS.md`
+2. Generate required secrets using commands in `secrets-reference.md`
 3. Add secrets to GitHub repository (Settings → Secrets)
 4. Verify secrets using validation workflow examples
 
@@ -160,11 +160,11 @@ Phase 6 focuses on productionizing the Central Identity system with:
 
 ### Scenario: I'm deploying to production
 
-1. Read `PHASE6_SECRETS.md` - Production Environment section
+1. Read `secrets-reference.md` - Production Environment section
 2. Generate all required secrets and certificates
 3. Store in Azure Key Vault
 4. Configure application to load from Key Vault
-5. Set up monitoring using `PHASE6_RUNBOOKS.md` - Monitoring section
+5. Set up monitoring using `operations-runbook.md` - Monitoring section
 
 **All secrets needed:**
 - Infrastructure (MinIO, PostgreSQL)
@@ -174,29 +174,29 @@ Phase 6 focuses on productionizing the Central Identity system with:
 
 ### Scenario: I need to rotate a secret
 
-1. Find the secret in `PHASE6_RUNBOOKS.md` - Key Rotation Procedures
+1. Find the secret in `operations-runbook.md` - Key Rotation Procedures
 2. Follow the step-by-step procedure
 3. Verify rotation using validation steps
 4. Update monitoring/calendar for next rotation
 
 ### Scenario: I'm responding to a security incident
 
-1. Follow `PHASE6_RUNBOOKS.md` - Incident Response section
+1. Follow `operations-runbook.md` - Incident Response section
 2. Use emergency access revocation if needed
 3. Rotate compromised secrets using key rotation procedures
 4. Document incident and follow post-incident procedures
 
 ### Scenario: I'm troubleshooting authentication errors
 
-1. Check `PHASE6_RUNBOOKS.md` - Troubleshooting 401/403 section
+1. Check `operations-runbook.md` - Troubleshooting 401/403 section
 2. Use diagnostic commands to identify issue
 3. Follow solution steps
 4. Verify fix
 
 ### Scenario: I need to onboard a new user or service
 
-1. For interactive users: `PHASE6_RUNBOOKS.md` - Creating a New User Account
-2. For services/agents: `PHASE6_RUNBOOKS.md` - Creating a New System Account
+1. For interactive users: `operations-runbook.md` - Creating a New User Account
+2. For services/agents: `operations-runbook.md` - Creating a New System Account
 3. Follow post-creation checklist
 
 ## Configuration Hierarchy
@@ -246,10 +246,10 @@ Understanding how configuration is loaded (in order, later overrides earlier):
 
 ## Validation Checklist
 
-Before considering Phase 6 complete:
+Before considering Identity Hardening complete:
 
-- [ ] All secrets documented in `PHASE6_SECRETS.md`
-- [ ] All procedures documented in `PHASE6_RUNBOOKS.md`
+- [ ] All secrets documented in `secrets-reference.md`
+- [ ] All procedures documented in `operations-runbook.md`
 - [ ] `.env.template` updated with all configuration options
 - [ ] `.devcontainer/devcontainer.json` updated
 - [ ] `.github/workflows/README.md` updated with CI/CD secrets
@@ -263,7 +263,7 @@ Before considering Phase 6 complete:
 - [ ] Incident response procedure practiced
 - [ ] All documentation reviewed and accurate
 
-## Key Metrics for Phase 6
+## Key Metrics for Identity Hardening
 
 **Documentation Quality:**
 - ✅ 7 documentation files created/updated
@@ -289,7 +289,7 @@ Before considering Phase 6 complete:
 - 🔄 Metrics: Infrastructure ready, custom metrics pending
 - 🔄 Rate limiting: Documented, implementation pending
 
-## Next Steps for Phase 6
+## Next Steps for Identity Hardening
 
 1. **Implement Production TLS Configuration**
    - Add certificate loading from Azure Key Vault
@@ -320,14 +320,14 @@ Before considering Phase 6 complete:
    - Load test
 
 6. **Production Deployment**
-   - Deploy with full Phase 6 configuration
+   - Deploy with full Identity Hardening configuration
    - Monitor metrics
    - Validate procedures
    - Document any deviations
 
 ## Support and Questions
 
-For questions about Phase 6 documentation or procedures:
+For questions about Identity Hardening documentation or procedures:
 
 1. Check this index for the relevant documentation
 2. Review the specific documentation file
@@ -336,11 +336,11 @@ For questions about Phase 6 documentation or procedures:
 
 ## Summary
 
-Phase 6 documentation is now complete and comprehensive:
+Identity Hardening documentation is now complete and comprehensive:
 
 - **100% of secrets documented** with generation, storage, and rotation procedures
 - **100% of operational procedures documented** with step-by-step runbooks
 - **All environments covered:** Development, DevContainer, CI/CD, Production
 - **All scenarios covered:** Setup, deployment, operations, troubleshooting, incidents
 
-The remaining work for Phase 6 is implementing the documented features (TLS, enhanced logging, metrics, rate limiting) and validating everything in production.
+The remaining work for Identity Hardening is implementing the documented features (TLS, enhanced logging, metrics, rate limiting) and validating everything in production.

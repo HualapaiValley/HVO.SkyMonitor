@@ -11,9 +11,16 @@ sudo chown -R vscode:vscode /home/vscode/.dotnet || true
 echo "Checking .NET version..."
 dotnet --version
 
-# Install Aspire project templates
-echo "Installing Aspire project templates..."
-dotnet new install Aspire.ProjectTemplates
+# Ensure handy CLI tools are available (ripgrep and python alias)
+echo "Installing development CLI utilities..."
+sudo apt-get update -y
+sudo apt-get install -y ripgrep python-is-python3
+
+# Install EF Core CLI matching the repo packages
+EF_TOOLS_VERSION="10.0.0"
+echo "Installing dotnet-ef $EF_TOOLS_VERSION..."
+dotnet tool update --global dotnet-ef --version "$EF_TOOLS_VERSION" 2>/dev/null \
+	|| dotnet tool install --global dotnet-ef --version "$EF_TOOLS_VERSION"
 
 # Add vscode user to docker group
 echo "Adding vscode user to docker group..."

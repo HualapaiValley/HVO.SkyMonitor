@@ -4,7 +4,7 @@ namespace HVO.SkyMonitor.Services;
 
 /// <summary>
 /// Provides structured logging for authentication and authorization events.
-/// Phase 6: Structured Logging
+/// Identity Hardening: Structured Logging
 /// </summary>
 public interface IAuthenticationEventLogger
 {

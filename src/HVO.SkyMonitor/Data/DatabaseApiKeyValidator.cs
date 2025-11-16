@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.Data;
 
 /// <summary>
 /// Validates API keys against the database.
-/// Phase 6: Enhanced with metrics and logging.
+/// Identity Hardening: Enhanced with metrics and logging.
 /// </summary>
 internal sealed class DatabaseApiKeyValidator : IApiKeyValidator
 {
@@ -40,14 +40,14 @@ internal sealed class DatabaseApiKeyValidator : IApiKeyValidator
 
         if (key == null)
         {
-            // Phase 6: Record failed API key authentication
+            // Identity Hardening: Record failed API key authentication
             _metrics?.RecordApiKeyAuthentication(null, success: false);
             return new ApiKeyValidationResult { IsValid = false };
         }
 
         if (key.ExpiresUtc.HasValue && key.ExpiresUtc.Value < DateTime.UtcNow)
         {
-            // Phase 6: Record expired API key attempt
+            // Identity Hardening: Record expired API key attempt
             _metrics?.RecordApiKeyAuthentication(key.Id, success: false);
             return new ApiKeyValidationResult { IsValid = false };
         }
@@ -58,12 +58,12 @@ internal sealed class DatabaseApiKeyValidator : IApiKeyValidator
 
         if (user == null)
         {
-            // Phase 6: Record orphaned API key (user deleted)
+            // Identity Hardening: Record orphaned API key (user deleted)
             _metrics?.RecordApiKeyAuthentication(key.Id, success: false);
             return new ApiKeyValidationResult { IsValid = false };
         }
 
-        // Phase 6: Record successful API key authentication and log usage
+        // Identity Hardening: Record successful API key authentication and log usage
         _metrics?.RecordApiKeyAuthentication(key.Id, success: true, key.AccessLevel.ToString());
 
         var endpoint = _httpContextAccessor?.HttpContext?.Request.Path.Value ?? "unknown";

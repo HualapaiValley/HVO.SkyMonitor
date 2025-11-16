@@ -119,7 +119,7 @@ Available OAuth2 scopes (e.g., `skymonitor:read`, `skymonitor:write`, `skymonito
 ### OpenIddictTokens
 Issued access tokens, refresh tokens, authorization codes
 
-## Audit/Logging Tables (Phase 6)
+## Audit/Logging Tables (Identity Hardening)
 
 ### SecurityAuditLog (Future)
 Security event logging for compliance and forensics
@@ -178,7 +178,7 @@ Uses ASP.NET Core Data Protection with PostgreSQL storage:
 ### Phase 5 Migration
 1. Add SignedUrlSecrets table
 
-### Phase 6 Migration
+### Identity Hardening Migration
 1. Add SecurityAuditLog table
 
 ## Connection Strings

@@ -159,19 +159,12 @@ Plus additional pages for:
 **Camera Agents:**
 - Uses local filesystem or SQLite (needs verification)
 
-## Aspire Container Management
+## Docker Compose / Testcontainers Management
 
-**AppHost Configuration:** `src/HVO.SkyMonitor.AppHost/Program.cs`
-
-**Infrastructure Containers:**
-- PostgreSQL: `skymonitordb` database
-- Redis: Distributed cache
-- MinIO: Object storage
-
-**Container Lifecycle:**
-- Session lifetime (stops when AppHost stops)
-- Persistent volumes for PostgreSQL data
-- Managed credentials via Aspire parameters
+- **Entry Points:** `docker-compose.dev.yml` plus helper scripts in `./scripts/infra:*`
+- **Infrastructure Containers:** PostgreSQL (`skymonitordb`), Redis, MinIO, SMTP/MailHog
+- **Lifecycle:** Compose stack runs independently of the .NET process; Testcontainers spin up per integration test suite
+- **Credential Flow:** Secrets supplied through User Secrets, `.env`, `.devcontainer/devcontainer.local.env`, or CI/CD variables
 
 ## To Be Removed (Phase 0 Tasks)
 
@@ -181,7 +174,7 @@ Plus additional pages for:
 3. All files in `src/HVO.SkyMonitor.CameraAgent.ZWO/Data/Migrations/`
 
 ### Database Cleanup
-- Stop Aspire AppHost to remove PostgreSQL container
+- Stop the Compose stack (`docker compose -f docker-compose.dev.yml down`) before removing data
 - Remove any local SQLite files from camera agents
 - Prune Docker volumes if needed: `docker volume prune`
 
@@ -193,7 +186,7 @@ Plus additional pages for:
 ## Target Architecture (Post Phase 0)
 
 ### Central Identity (HVO.SkyMonitor)
-- Single PostgreSQL database via Aspire
+- Single PostgreSQL database provisioned via Docker Compose/Testcontainers
 - ASP.NET Identity + OpenIddict entities
 - `ApplicationUser` with `AccountType` enum (USER vs SYSTEM)
 - Centralized API key management
@@ -212,7 +205,7 @@ Plus additional pages for:
 2. **API Key Duplication:** Each service validates keys against its own database
 3. **UI Duplication:** Complete Identity UI exists in all three projects
 4. **Shared Infrastructure:** HVO.SkyMonitor.Common has good foundation for shared auth
-5. **Aspire Ready:** PostgreSQL container infrastructure is in place
+5. **Compose/Testcontainers Ready:** PostgreSQL, Redis, MinIO scaffolding already exists
 6. **No OpenIddict:** No OAuth2/OIDC infrastructure exists yet
 7. **No AccountType:** No distinction between user and system accounts
 8. **No Signed URLs:** No implementation for high-volume media endpoints
@@ -229,5 +222,5 @@ Plus additional pages for:
 ## References
 
 - Central Identity Plan: `docs/projects/auth/central-identity-plan.md`
-- Aspire Setup: `docs/ASPIRE_SETUP.md` (if exists)
+- Aspire setup notes were removed (see git history for `docs/ASPIRE_SETUP.md` if needed)
 - Project README: `README.md`

@@ -19,7 +19,7 @@ namespace HVO.SkyMonitor.Controllers.OpenIddict;
 /// <summary>
 /// Handles OAuth2/OpenID Connect authorization and token issuance.
 /// Supports Authorization Code + PKCE and Client Credentials flows.
-/// Phase 6: Enhanced with rate limiting, metrics, and logging.
+/// Identity Hardening: Enhanced with rate limiting, metrics, and logging.
 /// </summary>
 [SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controllers must remain public for routing.")]
 public sealed class AuthorizationController : Controller
@@ -117,10 +117,10 @@ public sealed class AuthorizationController : Controller
     [HttpPost("~/connect/token")]
     [IgnoreAntiforgeryToken]
     [Produces("application/json")]
-    [EnableRateLimiting("token")] // Phase 6: Rate limiting for token endpoint
+    [EnableRateLimiting("token")] // Identity Hardening: Rate limiting for token endpoint
     public async Task<IActionResult> Exchange()
     {
-        // Phase 6: Track token request timing
+        // Identity Hardening: Track token request timing
         var stopwatch = Stopwatch.StartNew();
 
         var request = HttpContext.GetOpenIddictServerRequest() ??
@@ -180,7 +180,7 @@ public sealed class AuthorizationController : Controller
 
                 claimsPrincipal = new ClaimsPrincipal(identity);
 
-                // Phase 6: Log token issuance
+                // Identity Hardening: Log token issuance
                 success = true;
                 var scopes = identity.GetScopes().ToArray();
                 _eventLogger.LogTokenIssued(clientId, grantType, user.Id, scopes);
@@ -220,7 +220,7 @@ public sealed class AuthorizationController : Controller
 
                 claimsPrincipal = new ClaimsPrincipal(identity);
 
-                // Phase 6: Log token issuance for system account
+                // Identity Hardening: Log token issuance for system account
                 success = true;
                 var scopes = identity.GetScopes().ToArray();
                 _eventLogger.LogTokenIssued(clientId, grantType, null, scopes);
@@ -284,7 +284,7 @@ public sealed class AuthorizationController : Controller
         }
         finally
         {
-            // Phase 6: Record token request metrics
+            // Identity Hardening: Record token request metrics
             stopwatch.Stop();
             _metrics.RecordTokenRequest(clientId, grantType, success, stopwatch.Elapsed.TotalMilliseconds);
         }

@@ -32,7 +32,7 @@ This repository is configured to work with Visual Studio Code Dev Containers and
 
 ### Running the Application
 
-The application can be run using **Docker Compose** (recommended) or **.NET Aspire** (legacy).
+The application runs using **Docker Compose** for infrastructure and optionally via direct `dotnet run`/`dotnet watch` for faster inner-loop development.
 
 #### Option 1: Docker Compose (Recommended)
 
@@ -104,7 +104,7 @@ The `.devcontainer/devcontainer.json` includes:
 **Post-create script** (`.devcontainer/post-create.sh`):
 - Adds `vscode` user to the `docker` group
 - Sets Docker socket permissions (`chmod 666 /var/run/docker.sock`)
-- Installs Aspire project templates
+- Installs the pinned `dotnet-ef` CLI tool for Entity Framework migrations
 - Generates HTTPS developer certificate (`dotnet dev-certs https`)
 - Verifies Docker installation
 
@@ -117,12 +117,14 @@ The devcontainer configuration includes:
 
 - **.NET 10 SDK** - Latest .NET SDK for building and running applications
 - **Docker-in-Docker** - Run and manage Docker containers inside the dev container
-- **Aspire Project Templates** - Automatically installed during container creation
+- **dotnet-ef CLI** - Pinned Entity Framework Core tooling installed automatically
+- **ripgrep & python alias** - `rg` and `python` commands available via ripgrep and python-is-python3 packages
 - **C# Dev Kit** - Complete C# development experience with IntelliSense, debugging, and more
 - **GitHub Copilot** - AI-powered code completion and chat
 - **Git & GitHub CLI** - Version control and GitHub integration
 - **Zsh with Oh My Zsh** - Enhanced terminal experience
 - **IntelliCode** - AI-assisted development with usage examples
+- **Secret management plumbing** - `.env.template`, `.devcontainer/devcontainer.local.env`, and .NET user secrets support keep credentials out of git
 - **Identity & API infrastructure parity** - The main `HVO.SkyMonitor` site now runs the same Identity, passkey, and API key pipeline previously used by the camera-agent simulator, backed by shared middleware and helpers in `HVO.SkyMonitor.Common`.
 - **Shared diagnostics/security library** - Cross-cutting middleware (correlation IDs, exception handling, antiforgery helpers) and API-key primitives live in `src/HVO.SkyMonitor.Common`, consumed by the main site and reusable by future services.
 - **Camera-agent independence** - Projects under `HVO.SkyMonitor.CameraAgent.*` only reference `HVO.Common`, keeping edge agents lightweight while still registering their own diagnostics/security components.
@@ -147,10 +149,20 @@ The following ports are automatically forwarded and accessible from your host ma
 - **5000-5001** - HVO.SkyMonitor main application (HTTP/HTTPS)
 - **5010-5011** - Simulator Camera Agent (HTTP/HTTPS)
 - **5020-5021** - ZWO Camera Agent (HTTP/HTTPS)
+- **5174** - SkyMonitor container profile (Docker Compose build)
+- **5130** - Simulator agent container profile
+- **5232** - ZWO agent container profile
 - **6379** - Redis
 - **5432** - PostgreSQL
 - **9000** - MinIO API
 - **9001** - MinIO Console
+
+### Environment Variables & Secrets
+
+- Copy `.env.template` to `.env` for Docker Compose. Only non-secret defaults live in version control.
+- Place per-developer overrides in `.devcontainer/devcontainer.local.env` (gitignored) and map them via the `remoteEnv` block in `.devcontainer/devcontainer.json`.
+- Use `.NET` [user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets?view=aspnetcore-8.0&tabs=linux) for local debugging outside containers. The devcontainer mounts your host secrets folder automatically.
+- See `docs/SECRETS_MANAGEMENT.md` and `docs/SECRETS_QUICKSTART.md` for detailed workflows covering Testcontainers, Docker Compose, and production deployments.
 
 ## Container Support
 
@@ -257,6 +269,7 @@ The application is undergoing a major refactor to implement a centralized identi
 - Current State Inventory: `docs/projects/auth/phase0-inventory.md`
 - Target Schema: `docs/projects/auth/target-schema.md`
 - Connection Strings & Keys: `docs/projects/auth/data-protection-and-connections.md`
+- Identity Operations Index: `docs/identity/operations-index.md`
 
 **For Developers:**
 - Database migrations have been reset - the database schema will be rebuilt during Phase 1

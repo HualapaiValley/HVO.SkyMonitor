@@ -107,7 +107,7 @@ _Phase status: ⚙️ In progress (only item 13 outstanding)_
    - [x] Update `.vscode/launch.json` and tasks to reference direct project runs (`HVO.SkyMonitor`, camera agents) instead of the AppHost.
 
 13. Update or remove Aspire-related documentation  
-   - [x] Review `docs/ASPIRE_SETUP.md` and other Aspire references.  
+   - [x] Remove the legacy `docs/ASPIRE_SETUP.md` file and scrub other Aspire references.  
    - [x] Remove or move to an archive, replacing guidance with Docker/Testcontainers-based workflow (add prominent archival notes where legacy content remains).  
    - [x] Ensure `README.md` files no longer describe Aspire-based startup; point to new infra scripts and runbooks.  
    - [ ] Re-scan remaining docs (auth guides, secrets quickstart/summary) and replace legacy instructions entirely with Docker/Testcontainers equivalents. _This is the final outstanding action for Phase 3._
@@ -157,7 +157,7 @@ _Phase status: 🔜 Planned_
 
 ---
 
-### Phase 6 – CI Integration and Runbooks
+### Identity Hardening – CI Integration and Runbooks
 
 _Phase status: ⚙️ Partially complete_
 
@@ -171,7 +171,7 @@ _Phase status: ⚙️ Partially complete_
    - [ ] `docs/runbooks/infra-operations.md`: reset flows, data locations, and troubleshooting.
 
 21. Clean outdated docs at completion  
-   - [ ] Re-scan `docs/` for Aspire or SQLite-specific instructions that are no longer valid.  
+   - [x] Re-scan `docs/` for Aspire or SQLite-specific instructions that are no longer valid.  
    - [ ] Update or remove them, linking to the new runbooks and PostgreSQL-based workflow.
 
 ---

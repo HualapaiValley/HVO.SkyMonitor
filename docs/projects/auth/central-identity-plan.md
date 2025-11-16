@@ -88,7 +88,7 @@
 
 ## Phase 5.5 – Integration Validation Tests
 **Goals**
-- Provide early automated coverage for authentication/authorization scenarios before broader hardening in Phase 6.
+- Provide early automated coverage for authentication/authorization scenarios before broader hardening in Identity Hardening.
 - Split validation tests between the primary HVO.SkyMonitor suite and a dedicated camera simulator test project so coverage mirrors runtime responsibilities.
 - Use Aspire.Hosting.Testing for true integration tests that start the complete distributed application.
 
@@ -120,7 +120,7 @@
 - Documentation: README.md in tests directory explains unit vs integration testing approach
 
 
-## Phase 6 – Hardening, Operations & Observability
+## Identity Hardening – Hardening, Operations & Observability
 **Goals**
 - Productionize the auth system with proper secret storage, logging, metrics, rate limiting, and runbooks.
 
@@ -129,14 +129,14 @@
   - [x] Documented OpenIddict signing/encryption certificate management (development auto-generated, production from Azure Key Vault)
   - [x] Documented API-key hashing salt configuration (optional enhancement for production)
   - [x] Documented signed-URL HMAC secret requirements (256-bit minimum, stored in User Secrets/Key Vault)
-  - [x] Created comprehensive secret management guide (PHASE6_SECRETS.md)
+  - [x] Created comprehensive secret management guide (identity/secrets-reference.md)
   - [x] Documented secret generation procedures (openssl commands)
   - [x] Documented secret rotation schedules and procedures
-  - [x] Updated .env.template with all Phase 6 environment variables
-  - [x] Updated devcontainer.json with Phase 6 non-sensitive configuration
-  - [x] Updated GitHub Actions secrets documentation with Phase 6 requirements
+  - [x] Updated .env.template with all Identity Hardening environment variables
+  - [x] Updated devcontainer.json with Identity Hardening non-sensitive configuration
+  - [x] Updated GitHub Actions secrets documentation with Identity Hardening requirements
 - [x] Define key rotation/incident response procedures, including overlap windows where old and new keys are accepted.
-  - [x] Created operational runbooks (PHASE6_RUNBOOKS.md) with:
+  - [x] Created operational runbooks (identity/operations-runbook.md) with:
   - [x] OpenIddict signing certificate rotation (zero-downtime, 12-month schedule)
   - [x] Signed URL HMAC secret rotation (overlap window, 90-day schedule)
   - [x] API key hashing salt rotation (destructive, annual or on breach)
@@ -154,8 +154,8 @@
   - [x] Documented TLS certificate requirements and storage options
   - [x] Documented Let's Encrypt certificate renewal automation
   - [x] Documented certificate expiration monitoring
-  - [x] Code changes to load certificates from Azure Key Vault in production (documented in PHASE6_SECRETS.md)
-  - [x] Configure Kestrel HTTPS endpoints in appsettings.Production.json (documented in PHASE6_SECRETS.md)
+  - [x] Code changes to load certificates from Azure Key Vault in production (documented in identity/secrets-reference.md)
+  - [x] Configure Kestrel HTTPS endpoints in appsettings.Production.json (documented in identity/secrets-reference.md)
 - [x] Implement structured logging for login success/failure, token issuance, API-key usage, and signed-URL validation failures (avoid sensitive payloads).
   - [x] Existing: ApiKeyAuditLogger for API key lifecycle events
   - [x] Add structured logging for login success/failure events (AuthenticationEventLogger)
@@ -163,7 +163,7 @@
   - [x] Enhance API-key authentication handler with usage logging (DatabaseApiKeyValidator)
   - [x] Add structured logging for signed-URL validation failures (AuthenticationEventLogger)
   - [x] Review and ensure no sensitive data (passwords, tokens) is logged
-  - [x] Document log structure, fields, and example queries (in PHASE6_RUNBOOKS.md)
+  - [x] Document log structure, fields, and example queries (in identity/operations-runbook.md)
 - [x] Publish metrics (token requests per client, API-key auth success/failure, signed-URL rejection counts, latency/error rates per key API) via Prometheus/App Insights exporters.
   - [x] Existing: Prometheus metrics endpoint configured (Program.cs)
   - [x] Add custom metrics for token requests per client (OpenIddict) - AuthenticationMetrics
@@ -171,8 +171,8 @@
   - [x] Add custom metrics for signed-URL validation success/failure - AuthenticationMetrics (service ready)
   - [x] Add latency/error rate metrics for authentication endpoints - AuthenticationMetrics
   - [x] Configure metrics exporters (Prometheus already enabled)
-  - [x] Document available metrics and how to access them (in PHASE6_RUNBOOKS.md)
-  - [x] Create sample Grafana dashboards or query examples (documented in PHASE6_RUNBOOKS.md)
+  - [x] Document available metrics and how to access them (in identity/operations-runbook.md)
+  - [x] Create sample Grafana dashboards or query examples (documented in identity/operations-runbook.md)
 - [x] Add rate limiting/IP throttling to `/connect/token` and other sensitive endpoints; re-validate CSRF protections for cookie flows.
   - [x] Documented rate limiting configuration in .env.template and devcontainer.json
   - [x] Add ASP.NET Core rate limiting middleware (Program.cs)
@@ -182,16 +182,16 @@
   - [x] Add IP-based throttling for sensitive endpoints (global rate limiter)
   - [x] Re-validate CSRF protections for Blazor/cookie flows (antiforgery middleware in place)
   - [x] Test rate limiting behavior with load testing (ready for manual testing)
-  - [x] Document rate limiting configuration and behavior (in PHASE6_SECRETS.md and code comments)
+  - [x] Document rate limiting configuration and behavior (in identity/secrets-reference.md and code comments)
 
 **Documentation Status**
-- ✅ PHASE6_SECRETS.md created (17.5 KB) - Comprehensive secret management guide
-- ✅ PHASE6_RUNBOOKS.md created (24.7 KB) - Operational procedures and incident response
-- ✅ PHASE6_INDEX.md created (10.7 KB) - Quick reference guide
-- ✅ .env.template updated with Phase 6 configuration
-- ✅ .devcontainer/devcontainer.json updated with Phase 6 environment variables
-- ✅ .github/workflows/README.md updated with Phase 6 GitHub Actions secrets
-- ✅ SECRETS_MANAGEMENT.md updated with Phase 6 reference
+- ✅ identity/secrets-reference.md created (17.5 KB) - Comprehensive secret management guide
+- ✅ identity/operations-runbook.md created (24.7 KB) - Operational procedures and incident response
+- ✅ identity/operations-index.md created (10.7 KB) - Quick reference guide
+- ✅ .env.template updated with Identity Hardening configuration
+- ✅ .devcontainer/devcontainer.json updated with Identity Hardening environment variables
+- ✅ .github/workflows/README.md updated with Identity Hardening GitHub Actions secrets
+- ✅ SECRETS_MANAGEMENT.md updated with Identity Hardening reference
 
 **Implementation Status**
 - ✅ Documentation: Complete
@@ -200,7 +200,7 @@
 - ✅ Metrics: Complete (AuthenticationMetrics service with Prometheus export)
 - ✅ Rate Limiting: Complete (ASP.NET Core rate limiter middleware)
 
-**Code Changes - Phase 6**
+**Code Changes - Identity Hardening**
 - ✅ Program.cs: Added rate limiting middleware, metrics configuration, service registration
 - ✅ AuthenticationMetrics.cs: New service for custom authentication metrics
 - ✅ AuthenticationEventLogger.cs: New service for structured auth event logging
