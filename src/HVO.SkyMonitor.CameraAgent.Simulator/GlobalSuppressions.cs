@@ -22,5 +22,8 @@ using System.Diagnostics.CodeAnalysis;
 // CA1307: Explicit StringComparison added where needed; remaining cases use default ordinal comparison intentionally
 [assembly: SuppressMessage("Globalization", "CA1307:Specify StringComparison for clarity", Justification = "Remaining path comparisons intentionally use default ordinal comparison.", Scope = "module")]
 
+// CA1052: Program class with Main method cannot be static in .NET applications
+[assembly: SuppressMessage("Design", "CA1052:Static holder types should be Static or NotInheritable", Justification = "Program class with Main method cannot be static per .NET requirements.", Scope = "type", Target = "~T:HVO.SkyMonitor.CameraAgent.Simulator.Program")]
+
 // SampleStatusService validates principal properties inline; null validation happens via framework model binding
 [assembly: SuppressMessage("Design", "CA1062:Validate arguments of public methods", Justification = "Framework ensures principal is non-null through authentication middleware.", Scope = "member", Target = "~M:HVO.SkyMonitor.CameraAgent.Simulator.Services.SampleStatusService.GetAuthenticatedStatus(System.Security.Claims.ClaimsPrincipal)~HVO.Result{HVO.SkyMonitor.CameraAgent.Simulator.Models.v1.SampleAuthenticatedResponse}")]

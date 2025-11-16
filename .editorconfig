@@ -11,21 +11,39 @@ dotnet_diagnostic.CA1812.severity = none
 dotnet_diagnostic.CA1822.severity = none
 dotnet_diagnostic.CA1863.severity = none
 dotnet_diagnostic.CA1308.severity = none
+dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA2227.severity = none
+dotnet_diagnostic.CA1819.severity = none
 
 # Blazor components and layout files - CA1515 (internal types) conflicts with Blazor's partial class generation
 # These components are not meant to be referenced outside the assembly but Blazor requires public accessibility
 [src/**/Components/**.cs]
 dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA1848.severity = none
 
 # CA1716 (reserved keywords) - Some Blazor component namespaces and names use reserved keywords intentionally
 # for routing and framework conventions (e.g., Shared, Error)
 [src/**/Components/Shared/**.cs]
 dotnet_diagnostic.CA1716.severity = none
 
+# CameraAgent projects - intentionally use simpler patterns, many similar to demo code
+[src/HVO.SkyMonitor.CameraAgent/**.cs]
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.CA1001.severity = none
+
 # Demo and simulator projects use Random for non-security-critical scenarios
 # CA5394 warnings about insecure random are intentional for demo data generation
 [src/HVO.SkyMonitor.CameraAgent.Simulator/Components/Pages/Weather.razor.cs]
 dotnet_diagnostic.CA5394.severity = none
+dotnet_diagnostic.CA1062.severity = none
+[src/HVO.SkyMonitor.CameraAgent.ZWO/Services/SampleStatusService.cs]
+dotnet_diagnostic.CA1062.severity = none
 [src/HVO.SkyMonitor/Components/Pages/Weather.razor]
 dotnet_diagnostic.CA5394.severity = none
 
@@ -69,10 +87,22 @@ dotnet_diagnostic.CA1716.severity = none
 [src/HVO.Common/NamedOneOfAttribute.cs]
 dotnet_diagnostic.CA1019.severity = none
 
+# TestSupport project - uses nested types, Uri strings, and other patterns appropriate for test utilities
+[src/HVO.SkyMonitor.TestSupport/**.cs]
+dotnet_diagnostic.CA1034.severity = none
+dotnet_diagnostic.CA1056.severity = none
+dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.CA1716.severity = none
+dotnet_diagnostic.CA1819.severity = none
+dotnet_diagnostic.CA2227.severity = none
+dotnet_diagnostic.CA2234.severity = none
+dotnet_diagnostic.CA1869.severity = none
+
 # Test projects intentionally have public types and may create disposable objects in test setup
 [tests/HVO.SkyMonitor.IntegrationTests/**.cs]
 dotnet_diagnostic.CA1515.severity = none
 dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.CA2007.severity = none
 dotnet_diagnostic.CA1812.severity = none
 dotnet_diagnostic.MSTEST0001.severity = none
 dotnet_diagnostic.MSTEST0002.severity = none
