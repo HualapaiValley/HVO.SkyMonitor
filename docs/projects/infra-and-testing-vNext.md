@@ -217,9 +217,9 @@ docker compose -f docker-compose.dev.yml down -v
 - [ ] Update `.vscode/launch.json` and tasks to reference direct project runs instead of AppHost
 
 ### 13. Update or remove Aspire-related documentation
-- [ ] Review `docs/ASPIRE_SETUP.md` and other Aspire references
-- [ ] Remove or move to an archive, replacing guidance with Docker/Testcontainers workflow
-- [ ] Ensure `README.md` no longer describes Aspire-based startup; point to new infra scripts
+- [x] Review `docs/ASPIRE_SETUP.md` and other Aspire references
+- [x] Update `README.md` to describe Docker Compose workflow as recommended approach
+- [ ] Archive `docs/ASPIRE_SETUP.md` (kept for reference, marked as legacy)
 
 ---
 
