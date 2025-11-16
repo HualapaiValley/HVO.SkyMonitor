@@ -115,33 +115,81 @@ All test projects follow these naming patterns:
 ## Phase 2 – Docker Compose Dev Stack & Infra Scripts
 
 ### 6. Add `docker-compose.dev.yml` at repository root
-- [ ] Define infra services: `postgres`, `minio`, `redis`, `smtp`
-- [ ] Define app services: `skymonitor`, `cameraagent-sim`, `cameraagent-zwo` (built from `src/`)
-- [ ] Use named volumes for Postgres, MinIO, Redis, SMTP data
-- [ ] Add bind mounts to host data directories accessible from dev container
-- [ ] Ensure ports and environment variables match application config expectations
+- [x] Define infra services: `postgres`, `minio`, `redis`, `smtp`
+- [x] Define app services: `skymonitor`, `cameraagent-sim`, `cameraagent-zwo` (built from `src/`)
+- [x] Use named volumes for Postgres, MinIO, Redis, SMTP data
+- [x] Add bind mounts to host data directories accessible from dev container
+- [x] Ensure ports and environment variables match application config expectations
 
 ### 7. Configure per-service Docker contexts via environment variables
-- [ ] In `.env.template` (and devcontainer env mapping), add:
+- [x] In `.env.template` (and devcontainer env mapping), add:
   - `POSTGRES_DOCKER_CONTEXT`, `MINIO_DOCKER_CONTEXT`, `REDIS_DOCKER_CONTEXT`, `SMTP_DOCKER_CONTEXT`
   - `SKYMONITOR_DOCKER_CONTEXT`, `CAMERAAGENT_SIM_DOCKER_CONTEXT`, `CAMERAAGENT_ZWO_DOCKER_CONTEXT`
-- [ ] Document defaults as `default`, and how to override to target remote Docker contexts
+- [x] Document defaults as `default`, and how to override to target remote Docker contexts
 
 ### 8. Implement infra scripts in `scripts/`
-- [ ] `scripts/infra:start`
+- [x] `scripts/infra:start`
   - Starts requested services or all (`postgres`, `minio`, `redis`, `smtp`, `skymonitor`, `cameraagent-*`)
   - Supports `--reset all|postgres|minio|redis|smtp` to reset data then start
   - Uses per-service Docker context env vars to run `docker --context <ctx> compose ...`
-- [ ] `scripts/infra:status`
+- [x] `scripts/infra:status`
   - Shows status for each service via `docker --context <ctx> compose ps <service>`
-- [ ] `scripts/infra:reset`
+- [x] `scripts/infra:reset`
   - Performs data reset only (no start), following the same per-service semantics
 
 ### 9. Document dev infra workflow
-- [ ] In this plan and a runbook, add examples:
+- [x] In this plan and a runbook, add examples:
   - Start all deps: `./scripts/infra:start`
   - Reset Postgres + MinIO: `./scripts/infra:start --reset postgres minio`
   - Check status: `./scripts/infra:status`
+
+#### Dev Infrastructure Workflow Examples
+
+**Start all services:**
+```bash
+./scripts/infra:start
+```
+
+**Start only infrastructure services:**
+```bash
+./scripts/infra:start postgres minio redis smtp
+```
+
+**Reset all data and start:**
+```bash
+./scripts/infra:start --reset all
+```
+
+**Reset specific services and start all:**
+```bash
+./scripts/infra:start --reset postgres minio
+```
+
+**Check service status:**
+```bash
+./scripts/infra:status
+```
+
+**Reset services without starting:**
+```bash
+./scripts/infra:reset postgres minio
+```
+
+**View logs:**
+```bash
+docker compose -f docker-compose.dev.yml logs -f
+docker compose -f docker-compose.dev.yml logs -f skymonitor
+```
+
+**Stop all services:**
+```bash
+docker compose -f docker-compose.dev.yml down
+```
+
+**Stop and remove volumes (full cleanup):**
+```bash
+docker compose -f docker-compose.dev.yml down -v
+```
 
 ---
 
