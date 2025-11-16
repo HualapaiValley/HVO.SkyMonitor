@@ -18,6 +18,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
 
     public SmtpEmailNotificationService(IOptions<SmtpOptions> options, ILogger<SmtpEmailNotificationService> logger)
     {
+        ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
         _logger = logger;
     }

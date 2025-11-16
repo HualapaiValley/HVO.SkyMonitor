@@ -16,6 +16,7 @@ public sealed class AuthenticationMetrics
 
     public AuthenticationMetrics(Meter meter)
     {
+        ArgumentNullException.ThrowIfNull(meter);
         _tokenRequestsCounter = meter.CreateCounter<long>(
             "auth.token_requests",
             description: "Total number of OAuth2 token requests by client and grant type");
