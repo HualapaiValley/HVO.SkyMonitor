@@ -196,15 +196,21 @@ docker compose -f docker-compose.dev.yml down -v
 ## Phase 3 – Replace Aspire, Move from SQLite to PostgreSQL, and Clean Docs
 
 ### 10. Replace SQLite with PostgreSQL for the main host (where appropriate)
-- [ ] Audit `HVO.SkyMonitor` and related projects for SQLite usage
-- [ ] Update configuration to use PostgreSQL in dev/test and docker environments
-- [ ] Update EF provider packages/config (switch from SQLite to Npgsql)
+- [x] Audit `HVO.SkyMonitor` and related projects for SQLite usage
+- [ ] Update configuration to use PostgreSQL in dev/test and docker environments *(Deferred: waiting for EF 10-compatible Npgsql release)*
+- [ ] Update EF provider packages/config (switch from SQLite to Npgsql) *(Deferred: waiting for EF 10-compatible Npgsql release)*
 - [ ] Ensure existing migrations are compatible or add new migrations for PostgreSQL
 
+**Note**: PostgreSQL migration is deferred until Npgsql.EntityFrameworkCore.PostgreSQL releases an EF 10-compatible version. Currently using SQLite with direct Microsoft packages (removed Aspire wrappers).
+
 ### 11. Identify and remove Aspire dependencies
+- [x] In `src/HVO.SkyMonitor/HVO.SkyMonitor.csproj`, remove Aspire packages, replace with direct equivalents
+  - Removed: `CommunityToolkit.Aspire.Microsoft.Data.Sqlite`, `CommunityToolkit.Aspire.Microsoft.EntityFrameworkCore.Sqlite`
+  - Removed: `Aspire.StackExchange.Redis` → Replaced with `StackExchange.Redis`
+  - Removed: `CommunityToolkit.Aspire.Minio.Client` → Replaced with `Minio`
+  - Added: `Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore` for health checks
+- [x] In `tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj`, remove `Aspire.Hosting.Testing`
 - [ ] In `src/HVO.SkyMonitor.AppHost/HVO.SkyMonitor.AppHost.csproj`, remove Aspire packages (or remove project)
-- [ ] In `src/HVO.SkyMonitor/HVO.SkyMonitor.csproj`, remove Aspire packages, replace with direct equivalents
-- [ ] In `tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj`, remove `Aspire.Hosting.Testing`
 
 ### 12. Update solution and launch configs
 - [ ] Remove `HVO.SkyMonitor.AppHost` from `HVO.SkyMonitor.v9.slnx` if no longer needed
