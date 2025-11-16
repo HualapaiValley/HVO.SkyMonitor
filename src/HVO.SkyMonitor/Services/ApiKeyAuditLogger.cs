@@ -5,7 +5,7 @@ namespace HVO.SkyMonitor.Services;
 /// <summary>
 /// Provides structured audit logging for API key lifecycle events.
 /// </summary>
-public interface IApiKeyAuditLogger
+internal interface IApiKeyAuditLogger
 {
     void LogKeyCreated(string keyId, string userId, string displayName, string accessLevel, DateTimeOffset? expiresUtc);
     void LogKeyDeleted(string keyId, string userId, string displayName);
@@ -14,7 +14,7 @@ public interface IApiKeyAuditLogger
     void LogKeyRotated(string oldKeyId, string newKeyId, string userId, string displayName);
 }
 
-public class ApiKeyAuditLogger : IApiKeyAuditLogger
+internal sealed class ApiKeyAuditLogger : IApiKeyAuditLogger
 {
     private readonly ILogger<ApiKeyAuditLogger> _logger;
 

@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Identity;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class Index : ComponentBase
+public sealed partial class Index : ComponentBase
 {
     private ApplicationUser? user;
     private string? username;

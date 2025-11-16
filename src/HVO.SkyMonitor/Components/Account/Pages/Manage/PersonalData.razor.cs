@@ -5,7 +5,7 @@ using HVO.SkyMonitor.Data;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class PersonalData
+public sealed partial class PersonalData
 {
     [Inject]
     private UserManager<ApplicationUser> UserManager { get; set; } = default!;

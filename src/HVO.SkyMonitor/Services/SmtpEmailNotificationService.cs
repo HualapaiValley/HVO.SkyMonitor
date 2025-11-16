@@ -11,7 +11,7 @@ namespace HVO.SkyMonitor.Services;
 /// <summary>
 /// SMTP-backed implementation used by diagnostics tests.
 /// </summary>
-public sealed class SmtpEmailNotificationService : IEmailNotificationService
+internal sealed class SmtpEmailNotificationService : IEmailNotificationService
 {
     private readonly SmtpOptions _options;
     private readonly ILogger<SmtpEmailNotificationService> _logger;

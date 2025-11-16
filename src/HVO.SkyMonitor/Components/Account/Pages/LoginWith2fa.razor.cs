@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.Components.Account.Pages;
 
-public partial class LoginWith2fa : ComponentBase
+public sealed partial class LoginWith2fa : ComponentBase
 {
     private string? message;
     private ApplicationUser user = default!;

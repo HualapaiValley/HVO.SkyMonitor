@@ -6,9 +6,9 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace HVO.SkyMonitor.Components.Account.Shared;
+namespace HVO.SkyMonitor.Components.Account.IdentityShared;
 
-public partial class PasskeySubmit : ComponentBase
+public sealed partial class PasskeySubmit : ComponentBase
 {
     private AntiforgeryTokenSet? tokens;
 

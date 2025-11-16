@@ -4,7 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.Common.Security;
-using HVO.SkyMonitor.Components.Account.Shared;
+using HVO.SkyMonitor.Components.Account.IdentityShared;
 using HVO.SkyMonitor.Data;
 using HVO.SkyMonitor.Services;
 using Microsoft.AspNetCore.Components;
@@ -16,7 +16,7 @@ using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class ApiKeys
+public sealed partial class ApiKeys
 {
     private static readonly ApiKeyAccessLevel[] AccessLevelOptions = Enum.GetValues<ApiKeyAccessLevel>();
 

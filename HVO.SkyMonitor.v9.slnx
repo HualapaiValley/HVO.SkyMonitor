@@ -5,11 +5,10 @@
     <Project Path="src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj" />
     <Project Path="src/HVO.SkyMonitor/HVO.SkyMonitor.csproj" />
     <Project Path="src/HVO.Common/HVO.Common.csproj" />
-    <Folder Name="/src/">
         <Project Path="src/HVO.SkyMonitor.TestSupport/HVO.SkyMonitor.TestSupport.csproj" />
-    </Folder>
     <Folder Name="/Tests/">
         <Project Path="tests/HVO.Common.Tests/HVO.Common.Tests.csproj" />
+        <Project Path="tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj" />
         <Project Path="tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj" />
     </Folder>
 </Solution>

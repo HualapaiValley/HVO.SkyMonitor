@@ -7,7 +7,7 @@ using HVO.SkyMonitor.Data;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class GenerateRecoveryCodes
+public sealed partial class GenerateRecoveryCodes
 {
     private string? message;
     private ApplicationUser? user;

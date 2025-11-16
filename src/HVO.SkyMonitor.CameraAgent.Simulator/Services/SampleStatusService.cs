@@ -1,3 +1,4 @@
+using System;
 using System.Security.Claims;
 using HVO;
 using HVO.SkyMonitor.Common.Security;
@@ -27,6 +28,7 @@ public sealed class SampleStatusService(TimeProvider timeProvider, ILogger<Sampl
 
     public Result<SampleAuthenticatedResponse> GetAuthenticatedStatus(ClaimsPrincipal principal)
     {
+        ArgumentNullException.ThrowIfNull(principal);
         if (principal.Identity?.IsAuthenticated != true)
         {
             _logger.LogWarning("Attempted to build authenticated sample response without an authenticated identity.");

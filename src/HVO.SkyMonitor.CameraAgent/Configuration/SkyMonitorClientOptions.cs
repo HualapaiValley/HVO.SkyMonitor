@@ -1,3 +1,4 @@
+using System;
 using System.Diagnostics.CodeAnalysis;
 
 namespace HVO.SkyMonitor.CameraAgent.Configuration;
@@ -15,28 +16,20 @@ public sealed class SkyMonitorClientOptions
     /// <summary>
     /// Base URL for the SkyMonitor service (e.g., https://skymonitor.local:5174).
     /// </summary>
-    public string BaseUrl { get; set; } = DefaultBaseUrl;
+    public Uri BaseUrl { get; set; } = new(DefaultBaseUrl, UriKind.Absolute);
 
     /// <summary>
     /// Attempts to resolve <see cref="BaseUrl"/> into an absolute URI.
     /// </summary>
     public bool TryResolveBaseUri([NotNullWhen(true)] out Uri? baseUri)
     {
-        if (string.IsNullOrWhiteSpace(BaseUrl))
+        if (BaseUrl is null)
         {
             baseUri = null;
             return false;
         }
-
-        var normalized = BaseUrl.Trim();
-        if (!Uri.TryCreate(normalized, UriKind.Absolute, out var parsed))
-        {
-            baseUri = null;
-            return false;
-        }
-
-        baseUri = parsed;
-        return true;
+        baseUri = BaseUrl.IsAbsoluteUri ? BaseUrl : null;
+        return baseUri is not null;
     }
 
     /// <summary>

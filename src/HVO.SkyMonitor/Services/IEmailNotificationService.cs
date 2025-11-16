@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.Services;
 /// <summary>
 /// Sends email notifications via SMTP.
 /// </summary>
-public interface IEmailNotificationService
+internal interface IEmailNotificationService
 {
     Task SendAsync(string recipient, string subject, string body, CancellationToken cancellationToken = default);
 }

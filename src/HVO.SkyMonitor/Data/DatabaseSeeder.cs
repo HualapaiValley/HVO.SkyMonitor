@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.Data;
 /// <summary>
 /// Seeds the database with initial data for development and production.
 /// </summary>
-public static class DatabaseSeeder
+internal static class DatabaseSeeder
 {
     /// <summary>
     /// Seeds the database with default accounts, scopes, and OAuth2 clients.

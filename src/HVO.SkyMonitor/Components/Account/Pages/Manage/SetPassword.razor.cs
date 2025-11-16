@@ -8,7 +8,7 @@ using HVO.SkyMonitor.Data;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class SetPassword
+public sealed partial class SetPassword
 {
     private string? message;
     private ApplicationUser? user;

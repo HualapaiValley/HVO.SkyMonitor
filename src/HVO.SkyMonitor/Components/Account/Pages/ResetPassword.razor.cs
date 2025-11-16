@@ -13,7 +13,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.Components.Account.Pages;
 
-public partial class ResetPassword : ComponentBase
+public sealed partial class ResetPassword : ComponentBase
 {
     private IEnumerable<IdentityError>? identityErrors;
 

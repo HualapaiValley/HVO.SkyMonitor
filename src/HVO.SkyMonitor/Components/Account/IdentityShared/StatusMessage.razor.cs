@@ -3,9 +3,9 @@ using HVO.SkyMonitor.Components.Account;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Http;
 
-namespace HVO.SkyMonitor.Components.Account.Shared;
+namespace HVO.SkyMonitor.Components.Account.IdentityShared;
 
-public partial class StatusMessage : ComponentBase
+public sealed partial class StatusMessage : ComponentBase
 {
     private string? messageFromCookie;
 

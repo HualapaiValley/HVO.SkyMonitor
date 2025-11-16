@@ -9,7 +9,7 @@ using HVO.SkyMonitor.Data;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class ChangePassword
+public sealed partial class ChangePassword
 {
     private string? message;
     private ApplicationUser? user;

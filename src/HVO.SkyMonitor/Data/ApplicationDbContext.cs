@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.Data;
 /// Application database context backed by PostgreSQL.
 /// Includes Identity tables, API keys, and OpenIddict entities.
 /// </summary>
-public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : IdentityDbContext<ApplicationUser>(options)
+public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : IdentityDbContext<ApplicationUser>(options)
 {
     public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
 

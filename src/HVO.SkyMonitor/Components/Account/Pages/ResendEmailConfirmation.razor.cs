@@ -13,7 +13,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.Components.Account.Pages;
 
-public partial class ResendEmailConfirmation : ComponentBase
+public sealed partial class ResendEmailConfirmation : ComponentBase
 {
     private string? message;
 

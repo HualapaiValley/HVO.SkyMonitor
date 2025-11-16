@@ -1,24 +1,27 @@
+using System;
+using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Net;
 using System.Net.Http.Headers;
 using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Http;
 using Microsoft.Extensions.Logging.Abstractions;
-using System.Linq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
+[SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "MSTest test classes must be public.")]
 [TestClass]
 public class CentralIdentityDelegatingHandlerTests
 {
     [TestMethod]
-    public async Task SendAsync_AttachesBearerToken_WhenMissing()
+    public async Task SendAsyncAttachesBearerTokenWhenMissing()
     {
         var auth = new FakeAuthenticationService("token-123", null);
         var recording = new RecordingHandler();
         using var handler = CreateHandler(auth, recording);
         using var client = new HttpClient(handler, disposeHandler: false);
 
-        var response = await client.GetAsync("https://example.com/api/status");
+        using var response = await client.GetAsync(new Uri("https://example.com/api/status", UriKind.Absolute)).ConfigureAwait(false);
 
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
         Assert.AreEqual("Bearer", recording.LastRequest?.Headers.Authorization?.Scheme);
@@ -28,14 +31,14 @@ public class CentralIdentityDelegatingHandlerTests
     }
 
     [TestMethod]
-    public async Task SendAsync_AttachesApiKey_WhenTokenUnavailable()
+    public async Task SendAsyncAttachesApiKeyWhenTokenUnavailable()
     {
         var auth = new FakeAuthenticationService(null, "smk_test");
         var recording = new RecordingHandler();
         using var handler = CreateHandler(auth, recording);
         using var client = new HttpClient(handler, disposeHandler: false);
 
-        var response = await client.GetAsync("https://example.com/api/status");
+        using var response = await client.GetAsync(new Uri("https://example.com/api/status", UriKind.Absolute)).ConfigureAwait(false);
 
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
         Assert.IsTrue(recording.LastRequest?.Headers.Contains("X-API-Key"));
@@ -46,7 +49,7 @@ public class CentralIdentityDelegatingHandlerTests
     }
 
     [TestMethod]
-    public async Task SendAsync_DoesNotOverrideExistingAuthorization()
+    public async Task SendAsyncDoesNotOverrideExistingAuthorization()
     {
         var auth = new FakeAuthenticationService("token-ignored", "api-ignored");
         var recording = new RecordingHandler();
@@ -55,7 +58,7 @@ public class CentralIdentityDelegatingHandlerTests
 
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://example.com/api/status");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "existing-token");
-        var response = await client.SendAsync(request);
+        using var response = await client.SendAsync(request).ConfigureAwait(false);
 
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
         Assert.AreEqual("existing-token", recording.LastRequest?.Headers.Authorization?.Parameter);
@@ -79,6 +82,7 @@ public class CentralIdentityDelegatingHandlerTests
     {
         public HttpRequestMessage? LastRequest { get; private set; }
 
+        [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "HttpClient callers dispose the returned HttpResponseMessage instances.")]
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             LastRequest = request;

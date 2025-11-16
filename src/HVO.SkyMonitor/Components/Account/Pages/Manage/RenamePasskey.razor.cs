@@ -7,7 +7,7 @@ using HVO.SkyMonitor.Data;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class RenamePasskey
+public sealed partial class RenamePasskey
 {
     private ApplicationUser? user;
     private UserPasskeyInfo? passkey;

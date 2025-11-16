@@ -6,7 +6,7 @@ using HVO.SkyMonitor.Data;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class ResetAuthenticator
+public sealed partial class ResetAuthenticator
 {
     [Inject]
     private UserManager<ApplicationUser> UserManager { get; set; } = default!;

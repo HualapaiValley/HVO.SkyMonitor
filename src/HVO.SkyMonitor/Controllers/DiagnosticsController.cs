@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text;
 using Asp.Versioning;
@@ -17,6 +18,7 @@ namespace HVO.SkyMonitor.Controllers;
 /// <summary>
 /// Diagnostics endpoints that exercise Redis, MinIO, and SMTP infrastructure.
 /// </summary>
+[SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controllers must remain public for routing.")]
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/diagnostics")]

@@ -34,7 +34,7 @@ using static OpenIddict.Abstractions.OpenIddictConstants;
 
 namespace HVO.SkyMonitor;
 
-public class Program
+public sealed partial class Program
 {
     public static async Task Main(string[] args)
     {

@@ -6,9 +6,9 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Identity;
 
-namespace HVO.SkyMonitor.Components.Account.Shared;
+namespace HVO.SkyMonitor.Components.Account.IdentityShared;
 
-public partial class ExternalLoginPicker : ComponentBase
+public sealed partial class ExternalLoginPicker : ComponentBase
 {
     private AuthenticationScheme[] externalLogins = Array.Empty<AuthenticationScheme>();
 

@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.Components.Account.Pages;
 
-public partial class Login : ComponentBase
+public sealed partial class Login : ComponentBase
 {
     private string? errorMessage;
     private EditContext editContext = default!;

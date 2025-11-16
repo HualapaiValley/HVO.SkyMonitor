@@ -1,3 +1,5 @@
+using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
@@ -49,7 +51,7 @@ public class CentralAuthenticationService(
 
             logger.LogInformation("Acquiring new access token from {ServiceUrl}", _options.ServiceUrl);
             var token = await AcquireTokenAsync(cancellationToken);
-            
+
             _cachedToken = new TokenCacheEntry
             {
                 AccessToken = token.AccessToken,
@@ -104,9 +106,9 @@ public class CentralAuthenticationService(
         }
 
         var client = httpClientFactory.CreateClient();
-        var tokenEndpoint = $"{_options.ServiceUrl.TrimEnd('/')}/connect/token";
+        var tokenEndpoint = new Uri(_options.ServiceUrl, "/connect/token");
 
-        var requestContent = new FormUrlEncodedContent(new Dictionary<string, string>
+        using var requestContent = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["grant_type"] = "client_credentials",
             ["client_id"] = _options.ClientCredentials.ClientId,
@@ -117,11 +119,12 @@ public class CentralAuthenticationService(
         logger.LogDebug("Requesting token from {TokenEndpoint} with client_id {ClientId}",
             tokenEndpoint, _options.ClientCredentials.ClientId);
 
-        var response = await client.PostAsync(tokenEndpoint, requestContent, cancellationToken);
+        using var response = await client.PostAsync(tokenEndpoint, requestContent, cancellationToken)
+            .ConfigureAwait(false);
 
         if (!response.IsSuccessStatusCode)
         {
-            var error = await response.Content.ReadAsStringAsync(cancellationToken);
+            var error = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             logger.LogError("Token acquisition failed with status {StatusCode}: {Error}",
                 response.StatusCode, error);
             throw new HttpRequestException(
@@ -129,6 +132,7 @@ public class CentralAuthenticationService(
         }
 
         var tokenResponse = await response.Content.ReadFromJsonAsync<TokenResponse>(cancellationToken)
+            .ConfigureAwait(false)
             ?? throw new InvalidOperationException("Token response was null");
 
         return tokenResponse;
@@ -148,6 +152,7 @@ public class CentralAuthenticationService(
         public required DateTimeOffset AcquiredAt { get; init; }
     }
 
+    [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Type is materialized by System.Text.Json deserialization.")]
     private sealed class TokenResponse
     {
         [JsonPropertyName("access_token")]

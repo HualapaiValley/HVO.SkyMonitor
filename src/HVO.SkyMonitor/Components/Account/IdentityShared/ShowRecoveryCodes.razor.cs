@@ -1,9 +1,9 @@
 using System;
 using Microsoft.AspNetCore.Components;
 
-namespace HVO.SkyMonitor.Components.Account.Shared;
+namespace HVO.SkyMonitor.Components.Account.IdentityShared;
 
-public partial class ShowRecoveryCodes : ComponentBase
+public sealed partial class ShowRecoveryCodes : ComponentBase
 {
     [Parameter]
     public string[] RecoveryCodes { get; set; } = Array.Empty<string>();

@@ -10,7 +10,7 @@ using HVO.SkyMonitor.Data;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class Email
+public sealed partial class Email
 {
     private string? message;
     private ApplicationUser? user;

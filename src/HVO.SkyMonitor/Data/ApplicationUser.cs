@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.Data;
 /// <summary>
 /// Application user with API key support and account type distinction.
 /// </summary>
-public class ApplicationUser : IdentityUser
+public sealed class ApplicationUser : IdentityUser
 {
     /// <summary>
     /// Type of account (User or System).
@@ -17,5 +17,5 @@ public class ApplicationUser : IdentityUser
     /// <summary>
     /// API keys associated with this user.
     /// </summary>
-    public ICollection<ApiKey> ApiKeys { get; set; } = new List<ApiKey>();
+    public ICollection<ApiKey> ApiKeys { get; } = new List<ApiKey>();
 }

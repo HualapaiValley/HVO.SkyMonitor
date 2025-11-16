@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.Components.Account.Pages;
 
-public partial class LoginWithRecoveryCode : ComponentBase
+public sealed partial class LoginWithRecoveryCode : ComponentBase
 {
     private string? message;
     private ApplicationUser user = default!;

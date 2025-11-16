@@ -2,9 +2,9 @@ using HVO.SkyMonitor.Data;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Identity;
 
-namespace HVO.SkyMonitor.Components.Account.Shared;
+namespace HVO.SkyMonitor.Components.Account.IdentityShared;
 
-public partial class ManageNavMenu : ComponentBase
+public sealed partial class ManageNavMenu : ComponentBase
 {
     private bool hasExternalLogins;
 

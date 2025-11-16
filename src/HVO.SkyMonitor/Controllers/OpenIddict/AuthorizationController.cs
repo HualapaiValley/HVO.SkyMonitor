@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
 using HVO.SkyMonitor.Data;
 using HVO.SkyMonitor.Services;
@@ -20,7 +21,8 @@ namespace HVO.SkyMonitor.Controllers.OpenIddict;
 /// Supports Authorization Code + PKCE and Client Credentials flows.
 /// Phase 6: Enhanced with rate limiting, metrics, and logging.
 /// </summary>
-public class AuthorizationController : Controller
+[SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controllers must remain public for routing.")]
+public sealed class AuthorizationController : Controller
 {
     private readonly IOpenIddictApplicationManager _applicationManager;
     private readonly IOpenIddictAuthorizationManager _authorizationManager;

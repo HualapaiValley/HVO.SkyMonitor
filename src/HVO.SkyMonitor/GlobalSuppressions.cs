@@ -18,3 +18,28 @@ using System.Diagnostics.CodeAnalysis;
 // CancellationToken forwarding - SmtpClient.SendMailAsync doesn't have an overload that accepts CancellationToken directly
 // We use WaitAsync(cancellationToken) as a workaround which is the recommended pattern
 [assembly: SuppressMessage("Reliability", "CA2016:Forward the CancellationToken parameter", Justification = "SmtpClient.SendMailAsync has no CancellationToken overload; we use WaitAsync as recommended pattern.", Scope = "member", Target = "~M:HVO.SkyMonitor.Services.SmtpEmailNotificationService.SendAsync(System.String,System.String,System.String,System.Threading.CancellationToken)~System.Threading.Tasks.Task")]
+
+// Blazor components must remain public for routing and markup discovery
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Blazor components must remain public for routing and Razor usage.", Scope = "namespaceanddescendants", Target = "HVO.SkyMonitor.Components")]
+
+// Diagnostics API contracts are part of the public HTTP surface
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Diagnostics request/response types are serialized over the public API.", Scope = "namespaceanddescendants", Target = "HVO.SkyMonitor.Models.Diagnostics")]
+
+// Configuration option types participate in DI and controller constructors
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Options are injected into public controllers via IOptions<T> and must remain public.", Scope = "type", Target = "HVO.SkyMonitor.Configuration.MinioOptions")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Options are injected into public controllers via IOptions<T> and must remain public.", Scope = "type", Target = "HVO.SkyMonitor.Configuration.RedisOptions")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Options are injected into public controllers via IOptions<T> and must remain public.", Scope = "type", Target = "HVO.SkyMonitor.Configuration.SmtpOptions")]
+
+// Identity data types are exposed through ASP.NET Core Identity services and public controllers
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Identity types participate in public controller signatures and DI.", Scope = "type", Target = "HVO.SkyMonitor.Data.ApplicationUser")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Identity types participate in public controller signatures and DI.", Scope = "type", Target = "HVO.SkyMonitor.Data.ApplicationDbContext")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Identity types participate in public controller signatures and DI.", Scope = "type", Target = "HVO.SkyMonitor.Data.AccountType")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Migrations are generated public types for EF Core scaffolding.", Scope = "namespaceanddescendants", Target = "HVO.SkyMonitor.Data.Migrations")]
+
+// Authentication services surface in controller constructors for observability
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Authentication logging abstractions are injected into public controllers.", Scope = "type", Target = "HVO.SkyMonitor.Services.AuthenticationMetrics")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Authentication logging abstractions are injected into public controllers.", Scope = "type", Target = "HVO.SkyMonitor.Services.AuthenticationEventLogger")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Authentication logging abstractions are injected into public controllers.", Scope = "type", Target = "HVO.SkyMonitor.Services.IAuthenticationEventLogger")]
+
+// Host builder needs Program to remain public for logging and testing hooks
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Program is instantiated by hosting and referenced by logging infrastructure.", Scope = "type", Target = "HVO.SkyMonitor.Program")]

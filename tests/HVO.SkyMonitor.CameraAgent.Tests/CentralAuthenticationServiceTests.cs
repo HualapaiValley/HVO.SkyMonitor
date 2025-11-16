@@ -1,37 +1,42 @@
-using HVO.SkyMonitor.CameraAgent.Authentication;
-using HVO.SkyMonitor.CameraAgent.Configuration;
-using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Logging;
-using Moq;
-using Moq.Protected;
+using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Text.Json;
+using HVO.SkyMonitor.CameraAgent.Authentication;
+using HVO.SkyMonitor.CameraAgent.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Moq;
+using Moq.Protected;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
+[SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "MSTest test classes must be public.")]
 [TestClass]
 public class CentralAuthenticationServiceTests
 {
     [TestMethod]
-    public async Task GetAccessTokenAsync_ReturnsTokenFromCache()
+    public async Task GetAccessTokenAsyncReturnsTokenFromCache()
     {
         // Arrange
-        var options = Options.Create(new CentralIdentityOptions
+        var identityOptions = new CentralIdentityOptions
         {
-            ServiceUrl = "https://localhost:5001",
+            ServiceUrl = new Uri("https://localhost:5001", UriKind.Absolute),
             Mode = AuthenticationMode.ClientCredentials,
             ClientCredentials = new ClientCredentialsOptions
             {
                 ClientId = "test-client",
-                ClientSecret = "test-secret",
-                Scopes = new[] { "api" }
+                ClientSecret = "test-secret"
             },
             TokenCacheDurationSeconds = 300
-        });
+        };
+        identityOptions.ClientCredentials!.Scopes.Clear();
+        identityOptions.ClientCredentials!.Scopes.Add("api");
+        var options = Options.Create(identityOptions);
 
         var mockLogger = new Mock<ILogger<CentralAuthenticationService>>();
         var mockHttpMessageHandler = new Mock<HttpMessageHandler>();
-        
+
         var tokenResponse = new
         {
             access_token = "test-token-12345",
@@ -45,13 +50,9 @@ public class CentralAuthenticationServiceTests
                 ItExpr.IsAny<HttpRequestMessage>(),
                 ItExpr.IsAny<CancellationToken>()
             )
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = HttpStatusCode.OK,
-                Content = new StringContent(JsonSerializer.Serialize(tokenResponse))
-            });
+            .ReturnsAsync(() => CreateJsonResponse(tokenResponse));
 
-        var httpClient = new HttpClient(mockHttpMessageHandler.Object);
+        using var httpClient = new HttpClient(mockHttpMessageHandler.Object, disposeHandler: false);
         var httpClientFactory = new Mock<IHttpClientFactory>();
         httpClientFactory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(httpClient);
 
@@ -60,13 +61,13 @@ public class CentralAuthenticationServiceTests
         var service = new CentralAuthenticationService(options, httpClientFactory.Object, mockLogger.Object, timeProvider);
 
         // Act
-        var token1 = await service.GetAccessTokenAsync();
-        var token2 = await service.GetAccessTokenAsync(); // Should come from cache
+        var token1 = await service.GetAccessTokenAsync().ConfigureAwait(false);
+        var token2 = await service.GetAccessTokenAsync().ConfigureAwait(false); // Should come from cache
 
         // Assert
         Assert.IsNotNull(token1);
         Assert.AreEqual(token1, token2);
-        
+
         // Verify HTTP call was made only once (second call used cache)
         mockHttpMessageHandler.Protected().Verify(
             "SendAsync",
@@ -77,24 +78,26 @@ public class CentralAuthenticationServiceTests
     }
 
     [TestMethod]
-    public async Task ConfigureHttpClientAsync_AddsAuthorizationHeader()
+    public async Task ConfigureHttpClientAsyncAddsAuthorizationHeader()
     {
         // Arrange
-        var options = Options.Create(new CentralIdentityOptions
+        var identityOptions = new CentralIdentityOptions
         {
-            ServiceUrl = "https://localhost:5001",
+            ServiceUrl = new Uri("https://localhost:5001", UriKind.Absolute),
             Mode = AuthenticationMode.ClientCredentials,
             ClientCredentials = new ClientCredentialsOptions
             {
                 ClientId = "test-client",
-                ClientSecret = "test-secret",
-                Scopes = new[] { "api" }
+                ClientSecret = "test-secret"
             }
-        });
+        };
+        identityOptions.ClientCredentials!.Scopes.Clear();
+        identityOptions.ClientCredentials!.Scopes.Add("api");
+        var options = Options.Create(identityOptions);
 
         var mockLogger = new Mock<ILogger<CentralAuthenticationService>>();
         var mockHttpMessageHandler = new Mock<HttpMessageHandler>();
-        
+
         var tokenResponse = new
         {
             access_token = "test-token-12345",
@@ -108,23 +111,19 @@ public class CentralAuthenticationServiceTests
                 ItExpr.IsAny<HttpRequestMessage>(),
                 ItExpr.IsAny<CancellationToken>()
             )
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = HttpStatusCode.OK,
-                Content = new StringContent(JsonSerializer.Serialize(tokenResponse))
-            });
+            .ReturnsAsync(() => CreateJsonResponse(tokenResponse));
 
-        var httpClient = new HttpClient(mockHttpMessageHandler.Object);
+        using var httpClient = new HttpClient(mockHttpMessageHandler.Object, disposeHandler: false);
         var httpClientFactory = new Mock<IHttpClientFactory>();
         httpClientFactory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(httpClient);
 
         var timeProvider = TimeProvider.System;
 
         var service = new CentralAuthenticationService(options, httpClientFactory.Object, mockLogger.Object, timeProvider);
-        var targetClient = new HttpClient();
+        using var targetClient = new HttpClient();
 
         // Act
-        await service.ConfigureHttpClientAsync(targetClient);
+        await service.ConfigureHttpClientAsync(targetClient).ConfigureAwait(false);
 
         // Assert
         Assert.IsNotNull(targetClient.DefaultRequestHeaders.Authorization);
@@ -133,12 +132,12 @@ public class CentralAuthenticationServiceTests
     }
 
     [TestMethod]
-    public void GetApiKey_ReturnsConfiguredKey()
+    public void GetApiKeyReturnsConfiguredKey()
     {
         // Arrange
         var options = Options.Create(new CentralIdentityOptions
         {
-            ServiceUrl = "https://localhost:5001",
+            ServiceUrl = new Uri("https://localhost:5001", UriKind.Absolute),
             Mode = AuthenticationMode.ApiKey,
             ApiKey = new ApiKeyOptions
             {
@@ -157,5 +156,13 @@ public class CentralAuthenticationServiceTests
 
         // Assert
         Assert.AreEqual("test-api-key-12345", apiKey);
+    }
+    private static HttpResponseMessage CreateJsonResponse(object payload)
+    {
+        return new HttpResponseMessage
+        {
+            StatusCode = HttpStatusCode.OK,
+            Content = new StringContent(JsonSerializer.Serialize(payload))
+        };
     }
 }

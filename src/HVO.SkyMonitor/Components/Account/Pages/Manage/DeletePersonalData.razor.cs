@@ -8,7 +8,7 @@ using HVO.SkyMonitor.Data;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class DeletePersonalData
+public sealed partial class DeletePersonalData
 {
     private string? message;
     private ApplicationUser? user;

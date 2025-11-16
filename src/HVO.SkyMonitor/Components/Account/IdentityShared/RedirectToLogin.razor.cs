@@ -1,8 +1,8 @@
 using Microsoft.AspNetCore.Components;
 
-namespace HVO.SkyMonitor.Components.Account.Shared;
+namespace HVO.SkyMonitor.Components.Account.IdentityShared;
 
-public partial class RedirectToLogin : ComponentBase
+public sealed partial class RedirectToLogin : ComponentBase
 {
     [Inject]
     private NavigationManager NavigationManager { get; set; } = default!;

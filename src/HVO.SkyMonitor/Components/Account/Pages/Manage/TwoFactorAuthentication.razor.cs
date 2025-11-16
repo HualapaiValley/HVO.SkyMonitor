@@ -6,7 +6,7 @@ using HVO.SkyMonitor.Data;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class TwoFactorAuthentication
+public sealed partial class TwoFactorAuthentication
 {
     private bool canTrack;
     private bool hasAuthenticator;

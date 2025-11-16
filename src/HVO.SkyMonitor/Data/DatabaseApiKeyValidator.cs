@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.Data;
 /// Validates API keys against the database.
 /// Phase 6: Enhanced with metrics and logging.
 /// </summary>
-public class DatabaseApiKeyValidator : IApiKeyValidator
+internal sealed class DatabaseApiKeyValidator : IApiKeyValidator
 {
     private readonly ApplicationDbContext _context;
     private readonly IApiKeyHasher _hasher;
@@ -17,7 +17,7 @@ public class DatabaseApiKeyValidator : IApiKeyValidator
     private readonly IHttpContextAccessor? _httpContextAccessor;
 
     public DatabaseApiKeyValidator(
-        ApplicationDbContext context, 
+        ApplicationDbContext context,
         IApiKeyHasher hasher,
         AuthenticationMetrics? metrics = null,
         IAuthenticationEventLogger? eventLogger = null,
@@ -65,7 +65,7 @@ public class DatabaseApiKeyValidator : IApiKeyValidator
 
         // Phase 6: Record successful API key authentication and log usage
         _metrics?.RecordApiKeyAuthentication(key.Id, success: true, key.AccessLevel.ToString());
-        
+
         var endpoint = _httpContextAccessor?.HttpContext?.Request.Path.Value ?? "unknown";
         _eventLogger?.LogApiKeyUsed(key.Id, key.UserId, key.AccessLevel.ToString(), endpoint);
 

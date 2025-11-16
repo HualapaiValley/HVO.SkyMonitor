@@ -17,7 +17,7 @@ using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.Components.Account.Pages;
 
-public partial class ExternalLogin : ComponentBase
+public sealed partial class ExternalLogin : ComponentBase
 {
     public const string LoginCallbackAction = "LoginCallback";
 

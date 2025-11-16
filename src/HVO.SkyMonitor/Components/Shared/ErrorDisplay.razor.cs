@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Components;
 
 namespace HVO.SkyMonitor.Components.Shared;
 
-public partial class ErrorDisplay : ComponentBase
+public sealed partial class ErrorDisplay : ComponentBase
 {
     private string? CorrelationId => CorrelationIdAccessor.GetCorrelationId();
 

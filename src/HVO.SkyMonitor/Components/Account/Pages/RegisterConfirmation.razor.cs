@@ -12,7 +12,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.Components.Account.Pages;
 
-public partial class RegisterConfirmation : ComponentBase
+public sealed partial class RegisterConfirmation : ComponentBase
 {
     private string? emailConfirmationLink;
     private string? statusMessage;

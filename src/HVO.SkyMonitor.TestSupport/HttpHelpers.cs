@@ -47,10 +47,12 @@ public static class HttpHelpers
             request["scope"] = scope;
         }
 
-        var response = await httpClient.PostAsync(tokenEndpoint, new FormUrlEncodedContent(request));
+        using var content = new FormUrlEncodedContent(request);
+        using var response = await httpClient.PostAsync(tokenEndpoint, content).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
-        var tokenResponse = await response.Content.ReadFromJsonAsync<TokenResponse>(DefaultJsonOptions);
+        var tokenResponse = await response.Content.ReadFromJsonAsync<TokenResponse>(DefaultJsonOptions)
+            .ConfigureAwait(false);
         return tokenResponse ?? throw new InvalidOperationException("Failed to deserialize token response");
     }
 
@@ -85,10 +87,12 @@ public static class HttpHelpers
             request["scope"] = scope;
         }
 
-        var response = await httpClient.PostAsync(tokenEndpoint, new FormUrlEncodedContent(request));
+        using var content = new FormUrlEncodedContent(request);
+        using var response = await httpClient.PostAsync(tokenEndpoint, content).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
-        var tokenResponse = await response.Content.ReadFromJsonAsync<TokenResponse>(DefaultJsonOptions);
+        var tokenResponse = await response.Content.ReadFromJsonAsync<TokenResponse>(DefaultJsonOptions)
+            .ConfigureAwait(false);
         return tokenResponse ?? throw new InvalidOperationException("Failed to deserialize token response");
     }
 

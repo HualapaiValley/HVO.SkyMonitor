@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace HVO.SkyMonitor.CameraAgent.Configuration;
 
 /// <summary>
@@ -9,7 +12,7 @@ public class CentralIdentityOptions
     /// The base URL of the central HVO.SkyMonitor identity service.
     /// Example: "https://localhost:5001" or "https://skymonitor.example.com"
     /// </summary>
-    public string ServiceUrl { get; set; } = string.Empty;
+    public Uri ServiceUrl { get; set; } = new("https://localhost:5001", UriKind.Absolute);
 
     /// <summary>
     /// The authentication mode to use for this camera agent.
@@ -80,7 +83,7 @@ public class ClientCredentialsOptions
     /// Scopes to request when obtaining tokens.
     /// Default: ["api", "camera"]
     /// </summary>
-    public string[] Scopes { get; set; } = ["api", "camera"];
+    public IList<string> Scopes { get; } = new List<string> { "api", "camera" };
 }
 
 /// <summary>

@@ -17,7 +17,7 @@ using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.Components.Account.Pages;
 
-public partial class Register : ComponentBase
+public sealed partial class Register : ComponentBase
 {
     private IEnumerable<IdentityError>? identityErrors;
 

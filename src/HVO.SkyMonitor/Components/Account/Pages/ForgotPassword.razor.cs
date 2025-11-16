@@ -14,7 +14,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.Components.Account.Pages;
 
-public partial class ForgotPassword : ComponentBase
+public sealed partial class ForgotPassword : ComponentBase
 {
     [SupplyParameterFromForm]
     private InputModel Input { get; set; } = default!;

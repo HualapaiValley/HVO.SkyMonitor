@@ -3,12 +3,12 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using HVO.SkyMonitor.Components.Account;
-using HVO.SkyMonitor.Components.Account.Shared;
+using HVO.SkyMonitor.Components.Account.IdentityShared;
 using HVO.SkyMonitor.Data;
 
 namespace HVO.SkyMonitor.Components.Account.Pages.Manage;
 
-public partial class Passkeys
+public sealed partial class Passkeys
 {
     private const int MaxPasskeyCount = 100;
 

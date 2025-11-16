@@ -7,7 +7,7 @@ using HVO.SkyMonitor.Components.Shared;
 
 namespace HVO.SkyMonitor.Components;
 
-public partial class App : ComponentBase
+public sealed partial class App : ComponentBase
 {
     private AppErrorBoundary? _appErrorBoundary;
 

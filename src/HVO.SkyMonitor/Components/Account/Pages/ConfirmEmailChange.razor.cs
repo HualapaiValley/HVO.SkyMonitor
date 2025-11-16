@@ -9,7 +9,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.Components.Account.Pages;
 
-public partial class ConfirmEmailChange : ComponentBase
+public sealed partial class ConfirmEmailChange : ComponentBase
 {
     private string? message;
 

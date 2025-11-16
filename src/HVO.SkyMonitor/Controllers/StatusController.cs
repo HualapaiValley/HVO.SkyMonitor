@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Asp.Versioning;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
@@ -8,10 +9,11 @@ namespace HVO.SkyMonitor.Controllers;
 /// <summary>
 /// Status and health information for the SkyMonitor application.
 /// </summary>
+[SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controllers must remain public for routing.")]
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/[controller]")]
-public class StatusController : ControllerBase
+public sealed class StatusController : ControllerBase
 {
     private readonly ILogger<StatusController> _logger;
     private readonly TimeProvider _timeProvider;
@@ -66,7 +68,7 @@ public class StatusController : ControllerBase
     {
         var accountType = User.FindFirst("account_type")?.Value ?? "Unknown";
         var subject = User.FindFirst("sub")?.Value ?? "Unknown";
-        
+
         return Ok(new
         {
             Service = "HVO.SkyMonitor",

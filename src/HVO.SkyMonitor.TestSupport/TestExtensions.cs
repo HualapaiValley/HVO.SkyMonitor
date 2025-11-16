@@ -84,7 +84,7 @@ public static class TestExtensions
                 return true;
             }
 
-            await Task.Delay(interval);
+            await Task.Delay(interval).ConfigureAwait(false);
         }
 
         return false;
@@ -103,12 +103,12 @@ public static class TestExtensions
 
         while (DateTime.UtcNow < deadline)
         {
-            if (await condition())
+            if (await condition().ConfigureAwait(false))
             {
                 return true;
             }
 
-            await Task.Delay(interval);
+            await Task.Delay(interval).ConfigureAwait(false);
         }
 
         return false;
