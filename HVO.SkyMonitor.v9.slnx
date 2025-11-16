@@ -7,6 +7,9 @@
     <Project Path="src/HVO.SkyMonitor.ServiceDefaults/HVO.SkyMonitor.ServiceDefaults.csproj" />
     <Project Path="src/HVO.SkyMonitor/HVO.SkyMonitor.csproj" />
     <Project Path="src/HVO.Common/HVO.Common.csproj" />
+    <Folder Name="/src/">
+        <Project Path="src/HVO.SkyMonitor.TestSupport/HVO.SkyMonitor.TestSupport.csproj" />
+    </Folder>
     <Folder Name="/Tests/">
         <Project Path="src/HVO.Common.Tests/HVO.Common.Tests.csproj" />
     </Folder>
