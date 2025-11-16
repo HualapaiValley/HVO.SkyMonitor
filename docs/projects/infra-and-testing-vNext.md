@@ -226,17 +226,18 @@ docker compose -f docker-compose.dev.yml down -v
 ## Phase 4 – HVO.SkyMonitor Integration Tests (HTTP-only, Testcontainers)
 
 ### 14. Create `HVO.SkyMonitor.IntegrationTests` project
-- [ ] Add project under `tests/` directory
-- [ ] Reference `HVO.SkyMonitor` and `HVO.SkyMonitor.TestSupport`
-- [ ] Add Testcontainers packages for Postgres, MinIO, Redis, SMTP
+- [x] Add project under `tests/` directory
+- [x] Reference `HVO.SkyMonitor` and `HVO.SkyMonitor.TestSupport`
+- [x] Add Testcontainers packages for Postgres, MinIO, Redis, SMTP
 
 ### 15. Implement shared integration test fixture
-- [ ] Fixture starts Testcontainers for Postgres, MinIO, Redis, SMTP with random ports
-- [ ] Builds configuration for `HVO.SkyMonitor` using those endpoints
-- [ ] Uses `WebApplicationFactory<Program>` to host `HVO.SkyMonitor` in-process over HTTP
+- [x] Fixture starts Testcontainers for Postgres, MinIO, Redis, SMTP with random ports
+- [x] Builds configuration for `HVO.SkyMonitor` using those endpoints
+- [x] Uses `WebApplicationFactory<Program>` to host `HVO.SkyMonitor` in-process over HTTP
 - [ ] After startup and migrations, runs test seeding routine to insert test users, clients, API keys
 
 ### 16. Implement initial integration test suites
+- [x] Basic health check tests to verify infrastructure
 - [ ] Token issuance tests (`/connect/token`) for system clients and user principals
 - [ ] Protected API tests: successful access and authorization failures
 - [ ] MinIO tests: verify endpoint can write/read objects

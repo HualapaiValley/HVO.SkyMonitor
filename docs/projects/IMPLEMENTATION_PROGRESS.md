@@ -4,6 +4,8 @@
 
 This document summarizes the implementation progress for the infrastructure and testing modernization plan described in `plan-infraAndTestingVNext.prompt.md`.
 
+**Last Updated**: 2025-11-16
+
 ### ✅ Phase 0: Planning & Documentation Skeleton (Complete)
 
 **Deliverables:**
@@ -200,9 +202,9 @@ All changes have been verified:
 ## Next Steps
 
 1. **Review and Merge**: Review this PR and merge to main branch
-2. **Plan Phase 3**: Schedule Aspire removal and PostgreSQL migration
-3. **Plan Phase 4**: Design integration test strategy
-4. **Iterative Implementation**: Continue with remaining phases
+2. **Complete Phase 3**: Remove AppHost, update launch configs, update documentation
+3. **Complete Phase 4**: Add more integration test suites (auth, API, MinIO, Redis tests)
+4. **PostgreSQL Migration**: Wait for EF 10-compatible Npgsql release, then migrate from SQLite
 
 ## Notes
 
@@ -211,9 +213,32 @@ All changes have been verified:
 - TestSupport library is framework-agnostic and reusable
 - Infrastructure can run independently of application code
 - Documentation provides clear usage examples
+- PostgreSQL migration deferred until Npgsql.EntityFrameworkCore.PostgreSQL supports EF Core 10.0
+
+## Recent Updates (2025-11-16)
+
+### Phase 3 Progress
+- ✅ Removed Aspire wrapper packages (Redis, MinIO, SQLite)
+- ✅ Replaced with direct packages: `StackExchange.Redis`, `Minio`, `Microsoft.EntityFrameworkCore.Sqlite`
+- ✅ Added `Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore`
+- ✅ Removed `Aspire.Hosting.Testing` from test project
+- ⏸️ PostgreSQL migration deferred (waiting for EF 10-compatible Npgsql)
+- ⏳ AppHost removal pending
+- ⏳ Launch config updates pending
+- ⏳ Documentation updates pending
+
+### Phase 4 Progress
+- ✅ Created `HVO.SkyMonitor.IntegrationTests` project
+- ✅ Added Testcontainers packages (PostgreSQL, Redis, MinIO)
+- ✅ Implemented `IntegrationTestFixture` with Testcontainers orchestration
+- ✅ Created basic health check integration tests
+- ⏳ Token issuance tests pending
+- ⏳ Protected API tests pending
+- ⏳ MinIO integration tests pending
+- ⏳ Redis integration tests pending
 
 ---
 
 **Author**: GitHub Copilot  
 **Date**: 2025-11-16  
-**Status**: Phases 0-2 Complete
+**Status**: Phases 0-2 Complete, Phases 3-4 In Progress
