@@ -1,0 +1,169 @@
+version: '3.8'
+
+# Docker Compose development stack for HVO.SkyMonitor
+# Provides infrastructure services and application containers
+# See docs/projects/infra-and-testing-vNext.md for usage details
+
+services:
+  # Infrastructure Services
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: skymonitor-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-skymonitor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-skymonitor_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-skymonitordb}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ${POSTGRES_DATA_DIR:-./data/postgres}:/host-data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-skymonitor}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - skymonitor-network
+
+  minio:
+    image: minio/minio:latest
+    container_name: skymonitor-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+      - ${MINIO_DATA_DIR:-./data/minio}:/host-data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - skymonitor-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: skymonitor-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+      - ${REDIS_DATA_DIR:-./data/redis}:/host-data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - skymonitor-network
+
+  smtp:
+    image: mailhog/mailhog:latest
+    container_name: skymonitor-smtp
+    ports:
+      - "${SMTP_PORT:-1025}:1025"      # SMTP server
+      - "${SMTP_WEB_PORT:-8025}:8025"  # Web UI
+    restart: unless-stopped
+    networks:
+      - skymonitor-network
+
+  # Application Services
+
+  skymonitor:
+    build:
+      context: .
+      dockerfile: src/HVO.SkyMonitor/Dockerfile
+    container_name: skymonitor-app
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__skymonitordb: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-skymonitordb};Username=${POSTGRES_USER:-skymonitor};Password=${POSTGRES_PASSWORD:-skymonitor_dev_password}"
+      ConnectionStrings__redis: "redis:6379"
+      MinIO__Endpoint: "minio:9000"
+      MinIO__AccessKey: ${MINIO_ROOT_USER:-minioadmin}
+      MinIO__SecretKey: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MinIO__UseSSL: "false"
+      Smtp__Host: smtp
+      Smtp__Port: 1025
+      Smtp__From: ${SMTP_FROM:-no-reply@skymonitor.local}
+    ports:
+      - "${SKYMONITOR_HTTP_PORT:-5174}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      smtp:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - skymonitor-network
+
+  cameraagent-sim:
+    build:
+      context: .
+      dockerfile: src/HVO.SkyMonitor.CameraAgent.Simulator/Dockerfile
+    container_name: skymonitor-cameraagent-sim
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      SkyMonitor__BaseUrl: http://skymonitor:8080
+      CentralIdentity__ServiceUrl: http://skymonitor:8080
+    ports:
+      - "${SIMULATOR_AGENT_HTTP_PORT:-5130}:8080"
+    depends_on:
+      skymonitor:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - skymonitor-network
+
+  cameraagent-zwo:
+    build:
+      context: .
+      dockerfile: src/HVO.SkyMonitor.CameraAgent.ZWO/Dockerfile
+    container_name: skymonitor-cameraagent-zwo
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      SkyMonitor__BaseUrl: http://skymonitor:8080
+      CentralIdentity__ServiceUrl: http://skymonitor:8080
+    ports:
+      - "${ZWO_AGENT_HTTP_PORT:-5232}:8080"
+    depends_on:
+      skymonitor:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - skymonitor-network
+    # Uncomment for hardware access (requires host with ZWO camera)
+    # devices:
+    #   - /dev/bus/usb:/dev/bus/usb
+    # privileged: true
+
+volumes:
+  postgres-data:
+    name: skymonitor-postgres-data
+  minio-data:
+    name: skymonitor-minio-data
+  redis-data:
+    name: skymonitor-redis-data
+
+networks:
+  skymonitor-network:
+    name: skymonitor-network
+    driver: bridge

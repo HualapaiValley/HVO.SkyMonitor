@@ -217,7 +217,7 @@ public class Program
         builder.Services.AddRazorComponents()
             .AddInteractiveServerComponents();
 
-        // Database with SQLite (temporary for Phase 0-7, will switch to PostgreSQL before Phase 8)
+        // Database with SQLite (will migrate to PostgreSQL when EF 10-compatible Npgsql is released)
         var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? "DataSource=Data/skymonitor.db;Cache=Shared";
         builder.Services.AddDbContext<ApplicationDbContext>(options =>
             options.UseSqlite(connectionString));

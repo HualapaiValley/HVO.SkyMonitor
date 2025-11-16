@@ -8,15 +8,12 @@
 
   <ItemGroup>
     <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="8.1.0" />
-    <!-- PostgreSQL packages - commented out for Phase 0-7, will restore in Phase 8 -->
-    <!-- <PackageReference Include="Aspire.Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.5.2" /> -->
-    <!-- <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0-rc.2" /> -->
-    <!-- SQLite packages - temporary for Phase 0-7 development -->
-    <PackageReference Include="CommunityToolkit.Aspire.Microsoft.Data.Sqlite" Version="9.9.0" />
-    <PackageReference Include="CommunityToolkit.Aspire.Microsoft.EntityFrameworkCore.Sqlite" Version="9.7.2" />
+    <!-- SQLite packages - will migrate to PostgreSQL when EF 10-compatible Npgsql is released -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.0" />
-    <PackageReference Include="Aspire.StackExchange.Redis" Version="13.0.0" />
-    <PackageReference Include="CommunityToolkit.Aspire.Minio.Client" Version="9.9.0" />
+    <!-- Direct package references (replaced Aspire wrappers) -->
+    <PackageReference Include="StackExchange.Redis" Version="2.8.16" />
+    <PackageReference Include="Minio" Version="6.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore" Version="10.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.0" />
@@ -25,7 +22,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <!-- OpenIddict packages for Phase 2 - OAuth2/OIDC support -->
+    <!-- OpenIddict packages for OAuth2/OIDC support -->
     <PackageReference Include="OpenIddict.AspNetCore" Version="5.9.0" />
     <PackageReference Include="OpenIddict.EntityFrameworkCore" Version="5.9.0" />
     <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.14.0-beta.1" />

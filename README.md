@@ -1,10 +1,10 @@
 # HVO.SkyMonitor
 
-Sky monitoring application built with .NET Aspire, featuring distributed architecture for camera control, data processing, and real-time visualization.
+Sky monitoring application built with .NET 10, featuring distributed architecture for camera control, data processing, and real-time visualization.
 
 ## Development Environment
 
-This repository is configured to work with Visual Studio Code Dev Containers and GitHub Codespaces, with **Docker-in-Docker** support for running .NET Aspire orchestration.
+This repository is configured to work with Visual Studio Code Dev Containers and GitHub Codespaces, with **Docker-in-Docker** support for running containers and infrastructure services.
 
 ### Prerequisites
 
@@ -32,7 +32,45 @@ This repository is configured to work with Visual Studio Code Dev Containers and
 
 ### Running the Application
 
-The application uses **.NET Aspire** for orchestration. To start all services:
+The application can be run using **Docker Compose** (recommended) or **.NET Aspire** (legacy).
+
+#### Option 1: Docker Compose (Recommended)
+
+Use the infrastructure management scripts to start services:
+
+**Start all infrastructure and application services:**
+```bash
+./scripts/infra:start
+```
+
+**Start only infrastructure services (for running app in IDE):**
+```bash
+./scripts/infra:start postgres redis minio smtp
+```
+
+**Reset data and start:**
+```bash
+./scripts/infra:start --reset all
+```
+
+**Check service status:**
+```bash
+./scripts/infra:status
+```
+
+**Services Started:**
+- **PostgreSQL** - tcp://localhost:5432 with `skymonitordb` database
+- **Redis** - tcp://localhost:6379
+- **MinIO** - API: http://localhost:9000, Console: http://localhost:9001 (minioadmin/minioadmin)
+- **SMTP (MailHog)** - SMTP: tcp://localhost:1025, Web UI: http://localhost:8025
+- **HVO.SkyMonitor** - Main application: http://localhost:5174
+- **Camera Agents** - Simulator: http://localhost:5130, ZWO: http://localhost:5232
+
+See `docs/projects/infra-and-testing-vNext.md` for detailed Docker Compose workflow documentation.
+
+#### Option 2: .NET Aspire (Legacy)
+
+The application was originally built with **.NET Aspire** for orchestration. This approach is being phased out in favor of Docker Compose.
 
 **Default - Container Mode:**
 ```bash
@@ -60,11 +98,7 @@ Services start in dependency order using `WaitFor` constraints to ensure proper 
 
 ### Docker-in-Docker Architecture
 
-This project uses **Docker-in-Docker** to run .NET Aspire container orchestration inside the dev container. Key configuration details:
-
-#### Why Docker-in-Docker?
-
-.NET Aspire orchestrates multiple containers (Redis, PostgreSQL, MinIO) and coordinates service dependencies. Running Aspire inside a dev container requires the ability to manage Docker containers, which is achieved through Docker-in-Docker.
+This project uses **Docker-in-Docker** to run container orchestration inside the dev container.
 
 #### DevContainer Configuration
 
