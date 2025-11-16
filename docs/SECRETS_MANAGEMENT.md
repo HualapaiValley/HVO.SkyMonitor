@@ -1,5 +1,8 @@
 # Secrets and Environment Variables Management
 
+> [!NOTE]
+> Sections referencing `HVO.SkyMonitor.AppHost` describe the retired Aspire workflow. Use the Docker Compose scripts in `./scripts` for current setup; keep this document for historical context.
+
 ## Overview
 
 HVO.SkyMonitor uses a layered approach to manage configuration and secrets:

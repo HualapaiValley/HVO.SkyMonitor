@@ -3,7 +3,6 @@
   <ItemGroup>
     <ProjectReference Include="..\HVO.Common\HVO.Common.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Common\HVO.SkyMonitor.Common.csproj" />
-    <ProjectReference Include="..\HVO.SkyMonitor.ServiceDefaults\HVO.SkyMonitor.ServiceDefaults.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
   </ItemGroup>
 
@@ -34,5 +33,14 @@
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
     <NoWarn>$(NoWarn);NU1603</NoWarn>
   </PropertyGroup>
+
+  <!-- Identity scaffolding files intentionally use awaitable patterns and direct ILogger extensions.
+       Suppress CA2007/CA1848 for those generated components to avoid noisy diagnostics while
+       keeping the rest of the project at warning-free settings. -->
+  <ItemGroup>
+    <Compile Update="Components/Account/**/*.cs">
+      <NoWarn>$(NoWarn);CA2007;CA1848;CA1863;CA1308;CA1822;CA1812</NoWarn>
+    </Compile>
+  </ItemGroup>
 
 </Project>

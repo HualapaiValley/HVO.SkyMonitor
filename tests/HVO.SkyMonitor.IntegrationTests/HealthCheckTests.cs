@@ -1,10 +1,12 @@
+using System;
+
 namespace HVO.SkyMonitor.IntegrationTests;
 
 /// <summary>
 /// Basic health check integration tests to verify the test infrastructure works.
 /// </summary>
 [TestClass]
-public class HealthCheckTests
+public sealed class HealthCheckTests
 {
     private HttpClient? _client;
 
@@ -21,13 +23,13 @@ public class HealthCheckTests
     }
 
     [TestMethod]
-    public async Task HealthCheck_ReturnsHealthy()
+    public async Task HealthCheckReturnsHealthyAsync()
     {
         // Arrange
-        var request = "/health";
+        var request = new Uri("/health", UriKind.Relative);
 
         // Act
-        var response = await _client!.GetAsync(request);
+        var response = await _client!.GetAsync(request).ConfigureAwait(false);
 
         // Assert
         response.EnsureSuccessStatusCode();
@@ -35,13 +37,13 @@ public class HealthCheckTests
     }
 
     [TestMethod]
-    public async Task AliveCheck_ReturnsHealthy()
+    public async Task AliveCheckReturnsHealthyAsync()
     {
         // Arrange
-        var request = "/alive";
+        var request = new Uri("/alive", UriKind.Relative);
 
         // Act
-        var response = await _client!.GetAsync(request);
+        var response = await _client!.GetAsync(request).ConfigureAwait(false);
 
         // Assert
         response.EnsureSuccessStatusCode();

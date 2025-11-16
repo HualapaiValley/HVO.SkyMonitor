@@ -6,6 +6,9 @@ using Microsoft.EntityFrameworkCore;
 using OpenIddict.Abstractions;
 using static OpenIddict.Abstractions.OpenIddictConstants;
 
+#pragma warning disable CA1848 // Database seeding logs run rarely; LoggerMessage delegates add noise
+#pragma warning disable CA2007 // ConfigureAwait(false) not required in startup-only seeding helpers
+
 namespace HVO.SkyMonitor.Data;
 
 /// <summary>
@@ -364,3 +367,6 @@ public static class DatabaseSeeder
 
     private sealed record ApiKeyDescriptor(string UserId, string RawKey, string DisplayName, ApiKeyAccessLevel AccessLevel);
 }
+
+#pragma warning restore CA2007
+#pragma warning restore CA1848

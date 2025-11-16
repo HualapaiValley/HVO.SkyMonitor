@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.Common.Security;
@@ -269,14 +270,14 @@ public partial class ApiKeys
     };
 
     private static string FormatTimestamp(DateTimeOffset timestamp)
-        => timestamp.ToLocalTime().ToString("g");
+        => timestamp.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
 
     private static string FormatExpiration(DateTimeOffset? expiration)
-        => expiration.HasValue ? expiration.Value.ToLocalTime().ToString("g") : "Never";
+        => expiration.HasValue ? expiration.Value.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) : "Never";
 
     private static string GetDisplayName(string? candidate, DateTimeOffset nowUtc)
         => string.IsNullOrWhiteSpace(candidate)
-            ? $"Unnamed key ({nowUtc:yyyyMMddHHmmss})"
+            ? string.Format(CultureInfo.InvariantCulture, "Unnamed key ({0:yyyyMMddHHmmss})", nowUtc)
             : candidate.Trim();
 
     private sealed record ApiKeyListItem(

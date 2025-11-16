@@ -86,20 +86,21 @@ _Phase status: ✅ Complete_
 
 ### Phase 3 – Replace Aspire, Move from SQLite to PostgreSQL, and Clean Docs
 
-_Phase status: ⚙️ In progress_
+_Phase status: ⚙️ In progress (only item 13 outstanding)_
 
 10. Replace SQLite with PostgreSQL for the main host (where appropriate)  
-   - [ ] Audit `HVO.SkyMonitor` and related projects for SQLite usage (connection strings, EF providers).  
-   - [ ] Update configuration to use PostgreSQL in dev/test and docker environments (e.g., `ConnectionStrings__skymonitordb` pointing to Postgres).  
-   - [ ] Update EF provider packages/config (e.g., switch from SQLite provider to Npgsql provider where the main host should use PostgreSQL).  
-   - [ ] Ensure existing migrations are compatible or add new migrations for PostgreSQL schema where needed.
+   - [x] Audit `HVO.SkyMonitor` and related projects for SQLite usage (connection strings, EF providers).  
+   - [x] Update configuration to use PostgreSQL in dev/test and docker environments (e.g., `ConnectionStrings__skymonitordb` pointing to Postgres).  
+   - [x] Update EF provider packages/config (e.g., switch from SQLite provider to Npgsql provider where the main host should use PostgreSQL).  
+   - [x] Ensure existing migrations are compatible or add new migrations for PostgreSQL schema where needed.
 
-   _Notes_: This work is intentionally **deferred** until an EF Core 10-compatible Npgsql provider is available. The actual PostgreSQL migration will be tracked and executed in **Phase 7** once the ecosystem is ready.
+   _Notes_: Originally deferred pending EF Core 10-compatible Npgsql, but the work was completed alongside the integration test bring-up that now runs fully against PostgreSQL.
 
 11. Identify and remove Aspire dependencies  
-   - [x] In `src/HVO.SkyMonitor.AppHost/HVO.SkyMonitor.AppHost.csproj`, remove Aspire SDK and packages (or keep the project clearly marked as legacy-only).  
+   - [x] Remove `src/HVO.SkyMonitor.AppHost` and associated Aspire SDK references.  
    - [x] In `src/HVO.SkyMonitor/HVO.SkyMonitor.csproj`, remove Aspire/CommunityToolkit Aspire packages and replace them with direct equivalents (e.g., Npgsql, MinIO client, StackExchange.Redis).  
-   - [x] In `tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj`, remove `Aspire.Hosting.Testing` and related dependencies.
+   - [x] In `tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj`, remove `Aspire.Hosting.Testing` and related dependencies.  
+   - [x] Delete `HVO.SkyMonitor.ServiceDefaults` and move observability wiring into shared helpers.
 
 12. Update solution and launch configs  
    - [x] Remove or clearly mark `HVO.SkyMonitor.AppHost` as legacy-only in `HVO.SkyMonitor.v9.slnx`.  
@@ -107,8 +108,9 @@ _Phase status: ⚙️ In progress_
 
 13. Update or remove Aspire-related documentation  
    - [x] Review `docs/ASPIRE_SETUP.md` and other Aspire references.  
-   - [x] Remove or move to an archive, replacing guidance with Docker/Testcontainers-based workflow.  
-   - [x] Ensure `README.md` no longer describes Aspire-based startup; point to new infra scripts and runbooks.
+   - [x] Remove or move to an archive, replacing guidance with Docker/Testcontainers-based workflow (add prominent archival notes where legacy content remains).  
+   - [x] Ensure `README.md` files no longer describe Aspire-based startup; point to new infra scripts and runbooks.  
+   - [ ] Re-scan remaining docs (auth guides, secrets quickstart/summary) and replace legacy instructions entirely with Docker/Testcontainers equivalents. _This is the final outstanding action for Phase 3._
 
 ---
 

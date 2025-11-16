@@ -68,33 +68,20 @@ Use the infrastructure management scripts to start services:
 
 See `docs/projects/infra-and-testing-vNext.md` for detailed Docker Compose workflow documentation.
 
-#### Option 2: .NET Aspire (Legacy)
+#### Option 2: Run projects directly (Debug)
 
-The application was originally built with **.NET Aspire** for orchestration. This approach is being phased out in favor of Docker Compose.
+You can also run each project with `dotnet run` once the infrastructure containers are up (e.g., `./scripts/infra:start postgres redis minio`).
 
-**Default - Container Mode:**
 ```bash
-dotnet run --project src/HVO.SkyMonitor.AppHost --launch-profile http
+# Main site
+dotnet run --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+
+# Camera agents
+dotnet run --project src/HVO.SkyMonitor.CameraAgent.Simulator/HVO.SkyMonitor.CameraAgent.Simulator.csproj
+dotnet run --project src/HVO.SkyMonitor.CameraAgent.ZWO/HVO.SkyMonitor.CameraAgent.ZWO.csproj
 ```
 
-Applications run in containers built automatically by Aspire from Dockerfiles.
-
-**Project Mode - For Debugging:**
-```bash
-USE_CONTAINERS=false dotnet run --project src/HVO.SkyMonitor.AppHost --launch-profile http
-```
-
-Applications run as .NET projects with hot reload enabled for faster development iteration.
-
-**Services Started:**
-- **Aspire Dashboard** - http://localhost:15201 (no authentication required in development)
-- **Redis** - tcp://localhost:6379
-- **PostgreSQL** - tcp://localhost:5432 with `skymonitordb` database
-- **MinIO** - API: http://localhost:9000, Console: http://localhost:9001 (minioadmin/minioadmin)
-- **HVO.SkyMonitor** - Main application (port 5174 in container mode)
-- **Camera Agents** - Simulator (5130) and ZWO (5232) agents
-
-Services start in dependency order using `WaitFor` constraints to ensure proper initialization. All containers stop automatically when you press Ctrl+C.
+This mode keeps hot reload and a faster edit/run cycle while still talking to the same Postgres, Redis, and MinIO containers.
 
 ### Docker-in-Docker Architecture
 
@@ -121,72 +108,8 @@ The `.devcontainer/devcontainer.json` includes:
 - Generates HTTPS developer certificate (`dotnet dev-certs https`)
 - Verifies Docker installation
 
-**Note:** We use the HTTP launch profile by default to avoid certificate trust issues in Linux containers. See `docs/ASPIRE_SETUP.md` for HTTPS configuration details.
+**Note:** We default to HTTP endpoints inside the dev container to avoid certificate trust issues. HTTPS runbooks live under `docs/projects/infra/` if you need certificates locally.
 
-#### AppHost Container Accessibility
-
-To make containers accessible from the host and between services in a dev container environment:
-
-**`WithContainerRuntimeArgs`** binds container ports to `0.0.0.0`:
-
-```csharp
-// Infrastructure containers with Session lifetime
-var redis = builder.AddRedis("redis")
-    .WithLifetime(ContainerLifetime.Session)
-    .WithContainerRuntimeArgs("--publish", "0.0.0.0:6379:6379");
-
-var postgres = builder.AddPostgres("postgres")
-    .WithLifetime(ContainerLifetime.Session)
-    .WithContainerRuntimeArgs("--publish", "0.0.0.0:5432:5432");
-
-var minio = builder.AddContainer("minio", "minio/minio", "latest")
-    .WithLifetime(ContainerLifetime.Session)
-    .WithContainerRuntimeArgs("--publish", "0.0.0.0:9000:9000", "--publish", "0.0.0.0:9001:9001");
-
-// Application containers built from Dockerfiles
-var skymonitor = builder.AddDockerfile("skymonitor", "../../", "src/HVO.SkyMonitor/Dockerfile")
-    .WithHttpEndpoint(targetPort: 8080, name: "http")
-    .WithContainerRuntimeArgs("--publish", "0.0.0.0:5174:8080");
-```
-
-This ensures:
-- Containers are accessible from the host machine through forwarded ports
-- Services can communicate with each other using localhost within the dev container
-- The Aspire dashboard can properly monitor and manage all resources
-- All containers stop automatically when AppHost stops (Session lifetime)
-
-**Configuration in `appsettings.Development.json`**:
-
-```json
-{
-  "Aspire": {
-    "Hosting": {
-      "ContainerHostAddress": "0.0.0.0"
-    }
-  },
-  "Dashboard": {
-    "Frontend": {
-      "AuthMode": "Unsecured"
-    }
-  }
-}
-```
-
-#### Service Dependencies with WaitFor
-
-The AppHost uses `.WaitFor()` to ensure proper startup order:
-
-```csharp
-var skymonitor = builder.AddProject<Projects.HVO_SkyMonitor>("skymonitor")
-    .WaitFor(redis)
-    .WaitFor(postgres)
-    .WaitFor(minio);
-
-var simulatorAgent = builder.AddProject<Projects.HVO_SkyMonitor_CameraAgent_Simulator>("simulator-agent")
-    .WaitFor(skymonitor);
-```
-
-This prevents services from starting before their dependencies are ready.
 
 ### What's Included
 
@@ -228,23 +151,17 @@ The following ports are automatically forwarded and accessible from your host ma
 - **5432** - PostgreSQL
 - **9000** - MinIO API
 - **9001** - MinIO Console
-- **15201** - Aspire Dashboard (opens automatically)
 
 ## Container Support
 
-The application runs in containers by default, with automatic Docker image building by Aspire. You can switch to project mode for easier debugging.
+The Docker Compose workflow (via `scripts/infra:start`) runs infrastructure services and the ASP.NET/Blazor applications. Compose rebuilds the app images whenever the Dockerfiles or project assets change, so you rarely need manual `docker build` commands.
 
 ### Automatic Container Building
 
-Aspire automatically builds Docker images from Dockerfiles when starting in container mode (default):
-- No manual `docker build` commands needed
-- Images rebuild automatically when you restart the AppHost
-- Built from Dockerfiles in each project directory
-
-**To run:**
-```bash
-dotnet run --project src/HVO.SkyMonitor.AppHost --launch-profile http
-```
+`./scripts/infra:start` shells out to `docker compose -f docker-compose.apps.yml up --build`, ensuring:
+- Images are rebuilt locally whenever dependencies change
+- The latest binaries are published before containers start
+- Each project uses the Dockerfile checked into `src/<Project>/Dockerfile`
 
 ### Manual Multi-Architecture Builds
 
@@ -265,28 +182,6 @@ This creates local images:
 - `hvo-skymonitor:latest`
 - `hvo-cameraagent-simulator:latest`
 - `hvo-cameraagent-zwo:latest`
-
-### Development vs Container Mode
-
-**Container Mode (Default):**
-- Runs applications in Docker containers
-- Aspire builds images automatically from Dockerfiles
-- Matches deployment environment
-- Tests containerized behavior
-- Multi-arch support (ARM/x64)
-- Recommended for normal development and deployment testing
-
-**Project Mode (USE_CONTAINERS=false):**
-- Runs projects directly with `dotnet run`
-- Hot reload enabled
-- Faster iteration for code changes
-- Easier debugging with breakpoints
-- Use only when debugging specific issues
-
-```bash
-# Switch to project mode
-USE_CONTAINERS=false dotnet run --project src/HVO.SkyMonitor.AppHost --launch-profile http
-```
 
 ### Deployment to Raspberry Pi
 

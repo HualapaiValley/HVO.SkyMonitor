@@ -2,32 +2,60 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch AppHost (dotnet run - HTTP)",
+            "name": "Launch HVO.SkyMonitor",
             "type": "coreclr",
             "request": "launch",
-            "preLaunchTask": "build",
             "program": "dotnet",
             "args": [
                 "run",
                 "--project",
-                "${workspaceFolder}/src/HVO.SkyMonitor.AppHost/HVO.SkyMonitor.AppHost.csproj",
-                "--launch-profile",
-                "http"
+                "${workspaceFolder}/src/HVO.SkyMonitor/HVO.SkyMonitor.csproj"
             ],
-            "cwd": "${workspaceFolder}/src/HVO.SkyMonitor.AppHost",
+            "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "console": "integratedTerminal",
             "internalConsoleOptions": "neverOpen",
             "env": {
                 "ASPNETCORE_ENVIRONMENT": "Development",
-                "DOTNET_ENVIRONMENT": "Development",
-                "ASPIRE_ALLOW_UNSECURED_TRANSPORT": "true",
-                "DOCKER_HOST_ADDRESS": "0.0.0.0"
-            },
-            "serverReadyAction": {
-                "action": "openExternally",
-                "pattern": "(?:Now listening on:|Login to the dashboard at) https?://\\S+",
-                "uriFormat": "http://localhost:15201"
+                "DOTNET_ENVIRONMENT": "Development"
+            }
+        },
+        {
+            "name": "Launch Camera Agent (Simulator)",
+            "type": "coreclr",
+            "request": "launch",
+            "program": "dotnet",
+            "args": [
+                "run",
+                "--project",
+                "${workspaceFolder}/src/HVO.SkyMonitor.CameraAgent.Simulator/HVO.SkyMonitor.CameraAgent.Simulator.csproj"
+            ],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "console": "integratedTerminal",
+            "internalConsoleOptions": "neverOpen",
+            "env": {
+                "ASPNETCORE_ENVIRONMENT": "Development",
+                "DOTNET_ENVIRONMENT": "Development"
+            }
+        },
+        {
+            "name": "Launch Camera Agent (ZWO)",
+            "type": "coreclr",
+            "request": "launch",
+            "program": "dotnet",
+            "args": [
+                "run",
+                "--project",
+                "${workspaceFolder}/src/HVO.SkyMonitor.CameraAgent.ZWO/HVO.SkyMonitor.CameraAgent.ZWO.csproj"
+            ],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "console": "integratedTerminal",
+            "internalConsoleOptions": "neverOpen",
+            "env": {
+                "ASPNETCORE_ENVIRONMENT": "Development",
+                "DOTNET_ENVIRONMENT": "Development"
             }
         },
         {
@@ -54,12 +82,11 @@
     ],
     "compounds": [
         {
-            "name": "AppHost + Attach to Projects",
+            "name": "Run All SkyMonitor Services",
             "configurations": [
-                "Launch AppHost (dotnet run - HTTP)",
-                "Attach -> HVO.SkyMonitor (pick)",
-                "Attach -> Simulator Agent (pick)",
-                "Attach -> ZWO Agent (pick)"
+                "Launch HVO.SkyMonitor",
+                "Launch Camera Agent (Simulator)",
+                "Launch Camera Agent (ZWO)"
             ]
         }
     ]

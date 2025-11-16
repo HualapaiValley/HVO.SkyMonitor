@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent;
 using HVO.SkyMonitor.CameraAgent.Extensions;
 using HVO.SkyMonitor.CameraAgent.ZWO.Components;
 using HVO.SkyMonitor.CameraAgent.ZWO.Services;
+using HVO.SkyMonitor.Common.Observability;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.Mvc;
@@ -35,7 +36,7 @@ public class Program
                 ActivityTrackingOptions.Tags;
         });
 
-        builder.AddServiceDefaults();
+        builder.AddSkyMonitorObservability();
 
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddSingleton<ICorrelationIdAccessor, HttpContextCorrelationIdAccessor>();
@@ -95,7 +96,7 @@ public class Program
                     options.SubstituteApiVersionInUrl = true;
                 });
 
-        builder.Services.AddHealthChecks();
+        builder.Services.AddSkyMonitorHealthChecks();
         builder.Services.AddOpenTelemetry()
             .WithMetrics(metrics =>
             {
@@ -174,7 +175,7 @@ public class Program
             .AddInteractiveServerRenderMode();
         app.MapPrometheusScrapingEndpoint();
 
-        app.MapDefaultEndpoints();
+        app.MapSkyMonitorHealthEndpoints();
 
         app.Run();
     }

@@ -1,5 +1,8 @@
 # Secrets and Environment Configuration Summary
 
+> [!NOTE]
+> References to `HVO.SkyMonitor.AppHost` remain for historical record only. The Aspire AppHost was removed; follow the Docker Compose workflow described in `README.md` for current setups.
+
 ## ✅ What Was Implemented
 
 ### 1. Configuration Files Created

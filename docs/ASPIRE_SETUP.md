@@ -1,5 +1,8 @@
 # .NET Aspire Setup for HVO.SkyMonitor
 
+> [!NOTE]
+> The .NET Aspire AppHost was removed from this repository in November 2025. This document is retained for historical reference only; follow the Docker Compose scripts under `scripts/` for the supported workflow.
+
 ## Overview
 
 HVO.SkyMonitor uses **.NET Aspire** for orchestrating distributed services in both development and production environments. This document details the setup, configuration, and troubleshooting for running Aspire in a dev container environment.

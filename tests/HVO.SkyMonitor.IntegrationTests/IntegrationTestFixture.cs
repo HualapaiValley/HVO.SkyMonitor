@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
@@ -64,16 +65,16 @@ public sealed class IntegrationTestFixture : IDisposable
     /// <summary>
     /// Gets the MinIO access key.
     /// </summary>
-    public string MinioAccessKey => "minioadmin";
+    public const string MinioAccessKey = "minioadmin";
 
     /// <summary>
     /// Gets the MinIO secret key.
     /// </summary>
-    public string MinioSecretKey => "minioadmin";
+    public const string MinioSecretKey = "minioadmin";
 
-    private string RedisHost => "127.0.0.1";
-    private string MinioHost => "127.0.0.1";
-    private string SmtpHost => "127.0.0.1";
+    private const string RedisHost = "127.0.0.1";
+    private const string MinioHost = "127.0.0.1";
+    private const string SmtpHost = "127.0.0.1";
 
     /// <summary>
     /// Initializes Testcontainers and the application factory.
@@ -93,7 +94,7 @@ public sealed class IntegrationTestFixture : IDisposable
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(5432))
             .Build();
 
-        await _postgresContainer.StartAsync();
+        await _postgresContainer.StartAsync().ConfigureAwait(false);
         var postgresPort = _postgresContainer.GetMappedPublicPort(5432);
         PostgresConnectionString =
             $"Host=127.0.0.1;Port={postgresPort};Username={PostgresUsername};Password={PostgresPassword};Database={PostgresDatabase};Include Error Detail=true";
@@ -104,7 +105,7 @@ public sealed class IntegrationTestFixture : IDisposable
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(6379))
             .Build();
 
-        await _redisContainer.StartAsync();
+        await _redisContainer.StartAsync().ConfigureAwait(false);
         var redisPort = _redisContainer.GetMappedPublicPort(6379);
         RedisConnectionString = $"{RedisHost}:{redisPort}";
 
@@ -121,7 +122,7 @@ public sealed class IntegrationTestFixture : IDisposable
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(9000))
             .Build();
 
-        await _minioContainer.StartAsync();
+        await _minioContainer.StartAsync().ConfigureAwait(false);
         var minioPort = _minioHostPort;
         MinioEndpoint = $"{MinioHost}:{minioPort}";
 
@@ -133,7 +134,7 @@ public sealed class IntegrationTestFixture : IDisposable
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(1025))
             .Build();
 
-        await _smtpContainer.StartAsync();
+        await _smtpContainer.StartAsync().ConfigureAwait(false);
         var smtpPort = _smtpContainer.GetMappedPublicPort(1025);
         var smtpHttpPort = _smtpContainer.GetMappedPublicPort(8025);
         SmtpHttpEndpoint = $"http://{SmtpHost}:{smtpHttpPort}";
@@ -153,12 +154,12 @@ public sealed class IntegrationTestFixture : IDisposable
                         ["Redis:Configuration"] = RedisConnectionString,
                         ["Redis:InstanceName"] = "integration-tests",
                         ["Minio:Endpoint"] = MinioHost,
-                        ["Minio:Port"] = minioPort.ToString(),
+                        ["Minio:Port"] = minioPort.ToString(CultureInfo.InvariantCulture),
                         ["Minio:AccessKey"] = MinioAccessKey,
                         ["Minio:SecretKey"] = MinioSecretKey,
                         ["Minio:DefaultBucket"] = "skymonitor-diagnostics",
                         ["Smtp:Host"] = SmtpHost,
-                        ["Smtp:Port"] = smtpPort.ToString(),
+                        ["Smtp:Port"] = smtpPort.ToString(CultureInfo.InvariantCulture),
                         ["Smtp:From"] = TestEmail.FromAddress,
                         ["Smtp:FromDisplayName"] = TestEmail.FromDisplayName
                     };
@@ -183,7 +184,7 @@ public sealed class IntegrationTestFixture : IDisposable
             });
 
         // Seed test data
-        await SeedTestDataAsync();
+        await SeedTestDataAsync().ConfigureAwait(false);
 
         _initialized = true;
     }
@@ -194,15 +195,15 @@ public sealed class IntegrationTestFixture : IDisposable
     private async Task SeedTestDataAsync()
     {
         // Ensure default diagnostics bucket exists
-        var client = new MinioClient()
+        using var client = new MinioClient()
             .WithEndpoint(MinioHost, _minioHostPort)
             .WithCredentials(MinioAccessKey, MinioSecretKey)
             .Build();
 
-        var bucketExists = await client.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-diagnostics"));
+        var bucketExists = await client.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-diagnostics")).ConfigureAwait(false);
         if (!bucketExists)
         {
-            await client.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-diagnostics"));
+            await client.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-diagnostics")).ConfigureAwait(false);
         }
     }
 
@@ -218,29 +219,29 @@ public sealed class IntegrationTestFixture : IDisposable
 
         if (_postgresContainer != null)
         {
-            _postgresContainer.DisposeAsync().GetAwaiter().GetResult();
+            _postgresContainer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
 
         if (_redisContainer != null)
         {
-            _redisContainer.DisposeAsync().GetAwaiter().GetResult();
+            _redisContainer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
 
         if (_minioContainer != null)
         {
-            _minioContainer.DisposeAsync().GetAwaiter().GetResult();
+            _minioContainer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
 
         if (_smtpContainer != null)
         {
-            _smtpContainer.DisposeAsync().GetAwaiter().GetResult();
+            _smtpContainer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
 
     }
 
     private static int GetFreeTcpPort()
     {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
         listener.Stop();

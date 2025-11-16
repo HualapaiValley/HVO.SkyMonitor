@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Globalization;
 using System.Threading.RateLimiting;
 using Asp.Versioning;
 using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
@@ -10,6 +11,7 @@ using HVO.SkyMonitor.Components.Account;
 using HVO.SkyMonitor.Configuration;
 using HVO.SkyMonitor.Data;
 using HVO.SkyMonitor.Services;
+using HVO.SkyMonitor.Common.Observability;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -51,8 +53,8 @@ public class Program
                 ActivityTrackingOptions.Tags;
         });
 
-        // Add service defaults & Aspire client integrations (includes OpenTelemetry)
-        builder.AddServiceDefaults();
+        // Configure shared observability (OpenTelemetry + health defaults)
+        builder.AddSkyMonitorObservability();
 
         // Correlation ID support
         builder.Services.AddHttpContextAccessor();
@@ -101,7 +103,7 @@ public class Program
         });
 
         // Health checks
-        builder.Services.AddHealthChecks()
+        builder.Services.AddSkyMonitorHealthChecks()
             .AddDbContextCheck<ApplicationDbContext>("database");
         builder.Services.Configure<ApiBehaviorOptions>(options =>
         {
@@ -192,23 +194,26 @@ public class Program
             {
                 var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
                 var ipAddress = context.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-                var path = context.HttpContext.Request.Path;
+                var path = context.HttpContext.Request.Path.Value ?? string.Empty;
+                double? retryAfterSeconds = null;
+                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfterSpan))
+                {
+                    retryAfterSeconds = retryAfterSpan.TotalSeconds;
+                }
 
-                logger.LogWarning(
-                    "Rate limit exceeded: IP={IpAddress}, Path={Path}, RetryAfter={RetryAfter}",
-                    ipAddress, path, context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter) ? retryAfter : null);
+                Log.RateLimitExceeded(logger, ipAddress, path, retryAfterSeconds);
 
                 context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
 
-                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retry))
+                if (retryAfterSeconds.HasValue)
                 {
-                    context.HttpContext.Response.Headers.RetryAfter = retry.TotalSeconds.ToString();
+                    context.HttpContext.Response.Headers.RetryAfter = retryAfterSeconds.Value.ToString(CultureInfo.InvariantCulture);
                 }
 
                 object? retryAfterValue = null;
-                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var ra))
+                if (retryAfterSeconds.HasValue)
                 {
-                    retryAfterValue = ra.TotalSeconds;
+                    retryAfterValue = retryAfterSeconds;
                 }
 
                 await context.HttpContext.Response.WriteAsJsonAsync(new
@@ -216,7 +221,7 @@ public class Program
                     error = "too_many_requests",
                     message = "Rate limit exceeded. Please try again later.",
                     retryAfter = retryAfterValue
-                }, cancellationToken);
+                }, cancellationToken).ConfigureAwait(false);
             };
         });
 
@@ -504,7 +509,7 @@ public class Program
         app.UseCorrelationId();
 
         // Status code pages for non-API routes only (browsers get HTML, APIs get ProblemDetails)
-        app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api"), appBuilder =>
+        app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase), appBuilder =>
         {
             appBuilder.UseStatusCodePagesWithReExecute("/Error", "?statusCode={0}");
         });
@@ -523,19 +528,19 @@ public class Program
             var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
             try
             {
-                logger.LogInformation("Applying database migrations...");
+                Log.ApplyingMigrations(logger);
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                db.Database.Migrate();
-                logger.LogInformation("Database migrations applied successfully");
+                await db.Database.MigrateAsync().ConfigureAwait(false);
+                Log.MigrationsApplied(logger);
 
                 // Seed initial data
-                logger.LogInformation("Seeding database...");
-                await DatabaseSeeder.SeedAsync(scope.ServiceProvider, logger);
-                logger.LogInformation("Database seeding completed");
+                Log.SeedingDatabase(logger);
+                await DatabaseSeeder.SeedAsync(scope.ServiceProvider, logger).ConfigureAwait(false);
+                Log.SeedingCompleted(logger);
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "An error occurred while applying database migrations or seeding");
+                Log.MigrationError(logger, ex);
                 throw;
             }
         }
@@ -570,8 +575,65 @@ public class Program
         app.MapPrometheusScrapingEndpoint();
 
         // Default health/diagnostics endpoints
-        app.MapDefaultEndpoints();
+        app.MapSkyMonitorHealthEndpoints();
 
-        await app.RunAsync();
+        await app.RunAsync().ConfigureAwait(false);
+    }
+
+    private static partial class Log
+    {
+        private static readonly Action<ILogger, string, string, double?, Exception?> RateLimitExceededLog =
+            LoggerMessage.Define<string, string, double?>(
+                LogLevel.Warning,
+                new EventId(1000, nameof(RateLimitExceeded)),
+                "Rate limit exceeded: IP={IpAddress}, Path={Path}, RetryAfter={RetryAfter}");
+
+        private static readonly Action<ILogger, Exception?> ApplyingMigrationsLog =
+            LoggerMessage.Define(
+                LogLevel.Information,
+                new EventId(1001, nameof(ApplyingMigrations)),
+                "Applying database migrations...");
+
+        private static readonly Action<ILogger, Exception?> MigrationsAppliedLog =
+            LoggerMessage.Define(
+                LogLevel.Information,
+                new EventId(1002, nameof(MigrationsApplied)),
+                "Database migrations applied successfully");
+
+        private static readonly Action<ILogger, Exception?> SeedingDatabaseLog =
+            LoggerMessage.Define(
+                LogLevel.Information,
+                new EventId(1003, nameof(SeedingDatabase)),
+                "Seeding database...");
+
+        private static readonly Action<ILogger, Exception?> SeedingCompletedLog =
+            LoggerMessage.Define(
+                LogLevel.Information,
+                new EventId(1004, nameof(SeedingCompleted)),
+                "Database seeding completed");
+
+        private static readonly Action<ILogger, Exception?> MigrationErrorLog =
+            LoggerMessage.Define(
+                LogLevel.Error,
+                new EventId(1005, nameof(MigrationError)),
+                "An error occurred while applying database migrations or seeding");
+
+        public static void RateLimitExceeded(ILogger logger, string ipAddress, string path, double? retryAfterSeconds) =>
+            RateLimitExceededLog(logger, ipAddress, path, retryAfterSeconds, null);
+
+        public static void ApplyingMigrations(ILogger logger) =>
+            ApplyingMigrationsLog(logger, null);
+
+        public static void MigrationsApplied(ILogger logger) =>
+            MigrationsAppliedLog(logger, null);
+
+        public static void SeedingDatabase(ILogger logger) =>
+            SeedingDatabaseLog(logger, null);
+
+        public static void SeedingCompleted(ILogger logger) =>
+            SeedingCompletedLog(logger, null);
+
+        public static void MigrationError(ILogger logger, Exception exception) =>
+            MigrationErrorLog(logger, exception);
     }
 }

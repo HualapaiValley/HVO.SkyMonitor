@@ -11,7 +11,6 @@ COPY HVO.SkyMonitor.v9.slnx .
 COPY src/HVO.Common/HVO.Common.csproj src/HVO.Common/
 COPY src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj src/HVO.SkyMonitor.Common/
 COPY src/HVO.SkyMonitor/HVO.SkyMonitor.csproj src/HVO.SkyMonitor/
-COPY src/HVO.SkyMonitor.ServiceDefaults/HVO.SkyMonitor.ServiceDefaults.csproj src/HVO.SkyMonitor.ServiceDefaults/
 
 # Restore dependencies
 RUN dotnet restore src/HVO.SkyMonitor/HVO.SkyMonitor.csproj

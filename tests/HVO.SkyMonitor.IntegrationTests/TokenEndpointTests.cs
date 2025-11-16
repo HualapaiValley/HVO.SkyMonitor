@@ -4,7 +4,7 @@ using HVO.SkyMonitor.TestSupport;
 namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
-public class TokenEndpointTests
+public sealed class TokenEndpointTests
 {
     private HttpClient? _client;
 
@@ -21,7 +21,7 @@ public class TokenEndpointTests
     }
 
     [TestMethod]
-    public async Task ClientCredentials_WithSystemClient_ReturnsToken()
+    public async Task ClientCredentialsWithSystemClientReturnsTokenAsync()
     {
         var scope = string.Join(' ', TestClients.SystemCameraAgent.Scopes);
         var token = await HttpHelpers.GetClientCredentialsTokenAsync(
@@ -29,13 +29,13 @@ public class TokenEndpointTests
             "/connect/token",
             TestClients.SystemCameraAgent.ClientId,
             TestClients.SystemCameraAgent.ClientSecret,
-            scope);
+            scope).ConfigureAwait(false);
 
         Assert.IsFalse(string.IsNullOrEmpty(token.AccessToken), "Access token should not be empty.");
     }
 
     [TestMethod]
-    public async Task PasswordGrant_WithAdminUser_ReturnsToken()
+    public async Task PasswordGrantWithAdminUserReturnsTokenAsync()
     {
         var scope = string.Join(' ', TestClients.WebUI.Scopes);
         var token = await HttpHelpers.GetPasswordTokenAsync(
@@ -44,7 +44,7 @@ public class TokenEndpointTests
             TestUsers.Admin.Username,
             TestUsers.Admin.Password,
             TestClients.WebUI.ClientId,
-            scope);
+            scope).ConfigureAwait(false);
 
         Assert.IsFalse(string.IsNullOrEmpty(token.AccessToken), "Access token should not be empty.");
     }

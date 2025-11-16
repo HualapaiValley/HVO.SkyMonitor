@@ -14,7 +14,7 @@ public sealed class AssemblyHooks
     public static async Task AssemblyInitialize(TestContext context)
     {
         Fixture = new IntegrationTestFixture();
-        await Fixture.InitializeAsync();
+        await Fixture.InitializeAsync().ConfigureAwait(false);
     }
 
     [AssemblyCleanup]

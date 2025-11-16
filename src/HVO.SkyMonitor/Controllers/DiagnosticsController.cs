@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Text;
 using Asp.Versioning;
@@ -47,6 +48,8 @@ public sealed class DiagnosticsController : ControllerBase
         [FromBody] CacheDiagnosticsRequest request,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         var key = string.IsNullOrWhiteSpace(request.Key) ? $"diagnostics:{Guid.NewGuid():N}" : request.Key;
         var options = new DistributedCacheEntryOptions();
         if (request.ExpirationSeconds is { } ttl && ttl > 0)
@@ -71,6 +74,8 @@ public sealed class DiagnosticsController : ControllerBase
         [FromBody] StorageDiagnosticsRequest request,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         var minioClient = ResolveMinioClient();
         if (minioClient is null)
         {
@@ -121,6 +126,8 @@ public sealed class DiagnosticsController : ControllerBase
         [FromBody] EmailDiagnosticsRequest request,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         var emailService = _serviceProvider.GetService<IEmailNotificationService>();
         if (emailService is null)
         {

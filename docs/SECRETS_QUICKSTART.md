@@ -1,5 +1,8 @@
 # Quick Start: Secrets Setup
 
+> [!NOTE]
+> Steps that mention `HVO.SkyMonitor.AppHost` were written for the deprecated Aspire AppHost. Replace those commands with the Docker Compose scripts in `./scripts` when working with the current environment.
+
 ## Initial Development Setup
 
 ### 1. Copy Environment Template

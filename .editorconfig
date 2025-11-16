@@ -1,0 +1,23 @@
+root = true
+
+# Default severity inherits from analyzer settings; specific folders override below.
+
+# Identity scaffolding has numerous async/ILogger patterns that intentionally diverge from analyzer guidance.
+# Suppress the noisy rules only within the identity components folder.
+[src/HVO.SkyMonitor/Components/Account/**.cs]
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1812.severity = none
+dotnet_diagnostic.CA1822.severity = none
+dotnet_diagnostic.CA1863.severity = none
+dotnet_diagnostic.CA1308.severity = none
+
+[tests/HVO.SkyMonitor.IntegrationTests/**.cs]
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.CA1812.severity = none
+dotnet_diagnostic.MSTEST0001.severity = none
+dotnet_diagnostic.MSTEST0002.severity = none
+dotnet_diagnostic.MSTEST0003.severity = none
+dotnet_diagnostic.MSTEST0008.severity = none
+dotnet_diagnostic.MSTEST0009.severity = none

@@ -19,7 +19,6 @@
   <ItemGroup>
     <ProjectReference Include="..\HVO.SkyMonitor.Common\HVO.SkyMonitor.Common.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.CameraAgent\HVO.SkyMonitor.CameraAgent.csproj" />
-    <ProjectReference Include="..\HVO.SkyMonitor.ServiceDefaults\HVO.SkyMonitor.ServiceDefaults.csproj" />
     <ProjectReference Include="..\HVO.Common\HVO.Common.csproj" />
   </ItemGroup>
 

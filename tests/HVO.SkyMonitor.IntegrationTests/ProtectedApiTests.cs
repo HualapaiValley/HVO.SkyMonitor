@@ -1,3 +1,4 @@
+using System;
 using System.Net;
 using System.Net.Http.Json;
 using System.Threading.Tasks;
@@ -7,7 +8,7 @@ using HVO.SkyMonitor.TestSupport;
 namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
-public class ProtectedApiTests
+public sealed class ProtectedApiTests
 {
     private HttpClient? _client;
 
@@ -24,7 +25,7 @@ public class ProtectedApiTests
     }
 
     [TestMethod]
-    public async Task ProtectedStatus_WithBearerToken_Succeeds()
+    public async Task ProtectedStatusWithBearerTokenSucceedsAsync()
     {
         var scope = string.Join(' ', TestClients.WebUI.Scopes);
         var token = await HttpHelpers.GetPasswordTokenAsync(
@@ -33,36 +34,36 @@ public class ProtectedApiTests
             TestUsers.Operator.Username,
             TestUsers.Operator.Password,
             TestClients.WebUI.ClientId,
-            scope);
+            scope).ConfigureAwait(false);
 
         var authedClient = HttpHelpers.WithBearerToken(_client!, token.AccessToken);
-        var response = await authedClient.GetAsync("/api/v1.0/status/protected");
+        var response = await authedClient.GetAsync(new Uri("/api/v1.0/status/protected", UriKind.Relative)).ConfigureAwait(false);
 
         response.EnsureSuccessStatusCode();
     }
 
     [TestMethod]
-    public async Task ProtectedStatus_MissingToken_ReturnsUnauthorized()
+    public async Task ProtectedStatusMissingTokenReturnsUnauthorizedAsync()
     {
-        var response = await _client!.GetAsync("/api/v1.0/status/protected");
+        var response = await _client!.GetAsync(new Uri("/api/v1.0/status/protected", UriKind.Relative)).ConfigureAwait(false);
 
         Assert.AreEqual(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [TestMethod]
-    public async Task DetailedStatus_WithValidApiKey_Succeeds()
+    public async Task DetailedStatusWithValidApiKeySucceedsAsync()
     {
         var authedClient = HttpHelpers.WithApiKey(_client!, TestApiKeys.InternalService.Key);
-        var response = await authedClient.GetAsync("/api/v1.0/status/detailed");
+        var response = await authedClient.GetAsync(new Uri("/api/v1.0/status/detailed", UriKind.Relative)).ConfigureAwait(false);
 
         response.EnsureSuccessStatusCode();
     }
 
     [TestMethod]
-    public async Task DetailedStatus_WithInvalidApiKey_ReturnsUnauthorized()
+    public async Task DetailedStatusWithInvalidApiKeyReturnsUnauthorizedAsync()
     {
         _client!.DefaultRequestHeaders.Add(ApiKeyAuthenticationOptions.HeaderName, "invalid-key");
-        var response = await _client.GetAsync("/api/v1.0/status/detailed");
+        var response = await _client.GetAsync(new Uri("/api/v1.0/status/detailed", UriKind.Relative)).ConfigureAwait(false);
 
         Assert.AreEqual(HttpStatusCode.Unauthorized, response.StatusCode);
     }
