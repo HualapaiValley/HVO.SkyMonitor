@@ -2,6 +2,8 @@
 
 Sky monitoring application built with .NET Aspire, featuring distributed architecture for camera control, data processing, and real-time visualization.
 
+> **🚀 Modernization in Progress**: We are currently migrating from .NET Aspire to a Docker Compose + Testcontainers architecture. See the [Infrastructure and Testing Modernization Plan](docs/projects/plan-infraAndTestingVNext.prompt.md) and [Branch Structure](docs/projects/BRANCH_STRUCTURE.md) for details.
+
 ## Development Environment
 
 This repository is configured to work with Visual Studio Code Dev Containers and GitHub Codespaces, with **Docker-in-Docker** support for running .NET Aspire orchestration.
