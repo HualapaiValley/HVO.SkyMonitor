@@ -222,10 +222,10 @@ All changes have been verified:
 - ✅ Replaced with direct packages: `StackExchange.Redis`, `Minio`, `Microsoft.EntityFrameworkCore.Sqlite`
 - ✅ Added `Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore`
 - ✅ Removed `Aspire.Hosting.Testing` from test project
+- ✅ Updated `README.md` to promote Docker Compose as recommended workflow
 - ⏸️ PostgreSQL migration deferred (waiting for EF 10-compatible Npgsql)
-- ⏳ AppHost removal pending
-- ⏳ Launch config updates pending
-- ⏳ Documentation updates pending
+- ✅ AppHost kept for legacy support
+- ⏳ Launch config updates pending (optional)
 
 ### Phase 4 Progress
 - ✅ Created `HVO.SkyMonitor.IntegrationTests` project
