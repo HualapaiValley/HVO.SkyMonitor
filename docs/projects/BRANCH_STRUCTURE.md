@@ -72,6 +72,38 @@ git merge plan/infraAndTestingVNext-phase0
 
 Eventually, when all phases are complete and tested, the plan branch can be merged to the main development branch.
 
+## Creating the Branch Structure
+
+The branches have been created locally. To recreate or verify the branch structure, you can run:
+
+```bash
+./docs/projects/setup-branches.sh
+```
+
+This script will:
+1. Create the main plan branch if it doesn't exist
+2. Create all phase branches from the plan branch
+3. Provide instructions for pushing to remote
+
+Alternatively, to manually create the structure:
+
+```bash
+# Create plan branch (if needed)
+git checkout -b plan/infraAndTestingVNext
+
+# Create phase branches
+git checkout -b plan/infraAndTestingVNext-phase0 plan/infraAndTestingVNext
+git checkout plan/infraAndTestingVNext
+git checkout -b plan/infraAndTestingVNext-phase1 plan/infraAndTestingVNext
+git checkout plan/infraAndTestingVNext
+git checkout -b plan/infraAndTestingVNext-phase2 plan/infraAndTestingVNext
+git checkout plan/infraAndTestingVNext
+git checkout -b plan/infraAndTestingVNext-phase3 plan/infraAndTestingVNext
+git checkout plan/infraAndTestingVNext
+git checkout -b plan/infraAndTestingVNext-phase4 plan/infraAndTestingVNext
+git checkout plan/infraAndTestingVNext
+```
+
 ## Notes
 
 - Each phase branch starts from the same point as the main plan branch
@@ -79,3 +111,4 @@ Eventually, when all phases are complete and tested, the plan branch can be merg
 - Phase 0 should be completed first as it establishes conventions
 - Phase 3 has significant infrastructure changes that may affect other phases
 - Phase 4 depends on infrastructure from Phase 2 and support from Phase 1
+- All branches are currently created locally and need to be pushed to remote when ready
