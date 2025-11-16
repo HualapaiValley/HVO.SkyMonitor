@@ -10,6 +10,7 @@ public sealed class ValidateModelStateAttribute : ActionFilterAttribute
 {
     public override void OnActionExecuting(ActionExecutingContext context)
     {
+        ArgumentNullException.ThrowIfNull(context);
         if (context.ModelState.IsValid)
         {
             return;

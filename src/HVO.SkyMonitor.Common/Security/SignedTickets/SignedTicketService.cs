@@ -15,6 +15,7 @@ public sealed class SignedTicketService : ISignedTicketService
 
     public SignedTicketService(IOptions<SignedTicketOptions> options)
     {
+        ArgumentNullException.ThrowIfNull(options);
         _options = options.Value ?? throw new ArgumentNullException(nameof(options));
 
         if (string.IsNullOrWhiteSpace(_options.Secret))
@@ -34,10 +35,7 @@ public sealed class SignedTicketService : ISignedTicketService
 
     public string GenerateSignedTicket(SignedTicket ticket)
     {
-        if (ticket == null)
-        {
-            throw new ArgumentNullException(nameof(ticket));
-        }
+        ArgumentNullException.ThrowIfNull(ticket);
 
         // Canonicalize the ticket data
         var canonicalPayload = CanonicalizeTicket(ticket);
@@ -156,7 +154,7 @@ public sealed class SignedTicketService : ISignedTicketService
         }
     }
 
-    private string CanonicalizeTicket(SignedTicket ticket)
+    private static string CanonicalizeTicket(SignedTicket ticket)
     {
         // Create canonical representation for HMAC signing
         // Format: v={version}|exp={expiresUtc}|sub={subjectId}|m={method}|p={path}|q={query}|s={scopes}
@@ -172,7 +170,7 @@ public sealed class SignedTicketService : ISignedTicketService
                $"s={ticket.Scopes}";
     }
 
-    private string NormalizePath(string path)
+    private static string NormalizePath(string path)
     {
         if (string.IsNullOrEmpty(path))
         {
@@ -184,7 +182,7 @@ public sealed class SignedTicketService : ISignedTicketService
         return path.ToLowerInvariant();
     }
 
-    private string CanonicalizeQuery(string? query)
+    private static string CanonicalizeQuery(string? query)
     {
         if (string.IsNullOrWhiteSpace(query))
         {
