@@ -6,26 +6,12 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestClass]
 public class HealthCheckTests
 {
-    private static IntegrationTestFixture? _fixture;
     private HttpClient? _client;
-
-    [ClassInitialize]
-    public static async Task ClassInitialize(TestContext context)
-    {
-        _fixture = new IntegrationTestFixture();
-        await _fixture.InitializeAsync();
-    }
-
-    [ClassCleanup]
-    public static void ClassCleanup()
-    {
-        _fixture?.Dispose();
-    }
 
     [TestInitialize]
     public void TestInitialize()
     {
-        _client = _fixture!.Factory.CreateClient();
+        _client = AssemblyHooks.Fixture.Factory.CreateClient();
     }
 
     [TestCleanup]

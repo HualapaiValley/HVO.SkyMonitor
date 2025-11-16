@@ -7,6 +7,7 @@ using HVO.SkyMonitor.Common.Infrastructure.Filters;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.Components;
 using HVO.SkyMonitor.Components.Account;
+using HVO.SkyMonitor.Configuration;
 using HVO.SkyMonitor.Data;
 using HVO.SkyMonitor.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -17,11 +18,17 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Caching.StackExchangeRedis;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Metrics;
 using Scalar.AspNetCore;
 using OpenIddict.Validation.AspNetCore;
+using OpenIddict.Server.AspNetCore;
+using Minio;
+using Microsoft.Extensions.Options;
+using static OpenIddict.Abstractions.OpenIddictConstants;
 
 namespace HVO.SkyMonitor;
 
@@ -143,10 +150,10 @@ public class Program
             options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
             {
                 var endpoint = context.GetEndpoint();
-                
+
                 // Check if endpoint has custom rate limit policy
                 var policyName = endpoint?.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName;
-                
+
                 if (policyName != null)
                 {
                     return RateLimitPartition.GetNoLimiter<string>("bypass");
@@ -186,13 +193,13 @@ public class Program
                 var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
                 var ipAddress = context.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
                 var path = context.HttpContext.Request.Path;
-                
+
                 logger.LogWarning(
                     "Rate limit exceeded: IP={IpAddress}, Path={Path}, RetryAfter={RetryAfter}",
                     ipAddress, path, context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter) ? retryAfter : null);
 
                 context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
-                
+
                 if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retry))
                 {
                     context.HttpContext.Response.Headers.RetryAfter = retry.TotalSeconds.ToString();
@@ -217,10 +224,67 @@ public class Program
         builder.Services.AddRazorComponents()
             .AddInteractiveServerComponents();
 
-        // Database with SQLite (will migrate to PostgreSQL when EF 10-compatible Npgsql is released)
-        var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? "DataSource=Data/skymonitor.db;Cache=Shared";
+        builder.Services.AddOptions<MinioOptions>()
+            .Bind(builder.Configuration.GetSection("Minio"))
+            .ValidateOnStart();
+
+        builder.Services.AddOptions<SmtpOptions>()
+            .Bind(builder.Configuration.GetSection("Smtp"))
+            .ValidateOnStart();
+
+        builder.Services.AddOptions<RedisOptions>()
+            .Bind(builder.Configuration.GetSection("Redis"))
+            .ValidateOnStart();
+
+        var redisConfiguration = builder.Configuration.GetValue<string>("Redis:Configuration");
+        if (string.IsNullOrWhiteSpace(redisConfiguration))
+        {
+            builder.Services.AddDistributedMemoryCache();
+        }
+        else
+        {
+            builder.Services.AddStackExchangeRedisCache(options =>
+            {
+                options.Configuration = redisConfiguration;
+                options.InstanceName = builder.Configuration.GetValue<string>("Redis:InstanceName") ?? "skymonitor";
+            });
+        }
+
+        var minioEndpoint = builder.Configuration.GetValue<string>("Minio:Endpoint");
+        if (!string.IsNullOrWhiteSpace(minioEndpoint))
+        {
+            builder.Services.AddSingleton<IMinioClient>(sp =>
+            {
+                var options = sp.GetRequiredService<IOptions<MinioOptions>>().Value;
+                var client = new MinioClient()
+                    .WithEndpoint(options.Endpoint, options.Port)
+                    .WithCredentials(options.AccessKey, options.SecretKey);
+
+                if (options.UseSsl)
+                {
+                    client = client.WithSSL();
+                }
+
+                if (!string.IsNullOrWhiteSpace(options.Region))
+                {
+                    client = client.WithRegion(options.Region);
+                }
+
+                return client.Build();
+            });
+        }
+
+        builder.Services.AddSingleton<IEmailNotificationService, SmtpEmailNotificationService>();
+
+        // Database - prefer PostgreSQL (fallback to explicit connection string if config missing)
+        var connectionString = builder.Configuration.GetConnectionString("skymonitordb")
+            ?? builder.Configuration.GetConnectionString("DefaultConnection")
+            ?? builder.Configuration["ConnectionStrings:skymonitordb"]
+            ?? builder.Configuration["ConnectionStrings:DefaultConnection"]
+            ?? "Host=localhost;Port=5432;Database=skymonitordb;Username=postgres;Password=postgres";
+
         builder.Services.AddDbContext<ApplicationDbContext>(options =>
-            options.UseSqlite(connectionString));
+            options.UseNpgsql(connectionString));
 
         builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
@@ -260,16 +324,31 @@ public class Program
 
                 // Enable the authorization code flow with PKCE
                 options.AllowAuthorizationCodeFlow()
-                       .RequireProofKeyForCodeExchange();
+                    .RequireProofKeyForCodeExchange();
 
                 // Enable the client credentials flow
                 options.AllowClientCredentialsFlow();
 
+                // Enable the resource owner password flow (for integration testing scenarios)
+                options.AllowPasswordFlow();
+
                 // Enable the refresh token flow
                 options.AllowRefreshTokenFlow();
 
+                options.RegisterScopes(
+                    Scopes.Email,
+                    Scopes.Profile,
+                    Scopes.OpenId,
+                    Scopes.OfflineAccess,
+                    "api.admin",
+                    "api.camera",
+                    "api.frames",
+                    "api.images",
+                    "api.viewer",
+                    "api.webhooks");
+
                 // Register the signing and encryption credentials
-                if (builder.Environment.IsDevelopment())
+                if (builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Testing"))
                 {
                     options.AddDevelopmentEncryptionCertificate()
                            .AddDevelopmentSigningCertificate();
@@ -282,10 +361,16 @@ public class Program
                 }
 
                 // Register the ASP.NET Core host and configure the ASP.NET Core-specific options
-                options.UseAspNetCore()
-                       .EnableAuthorizationEndpointPassthrough()
-                       .EnableTokenEndpointPassthrough()
-                       .EnableStatusCodePagesIntegration();
+                var aspNetCoreBuilder = options.UseAspNetCore()
+                    .EnableAuthorizationEndpointPassthrough()
+                    .EnableTokenEndpointPassthrough()
+                    .EnableStatusCodePagesIntegration();
+
+                if (!builder.Environment.IsProduction())
+                {
+                    // Allow HTTP endpoints in development and integration testing
+                    aspNetCoreBuilder.DisableTransportSecurityRequirement();
+                }
 
                 // Configure token lifetimes
                 options.SetAccessTokenLifetime(TimeSpan.FromMinutes(30))
@@ -330,7 +415,8 @@ public class Program
             {
                 policy.AddAuthenticationSchemes(
                     IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationOptions.AuthenticationScheme);
+                    ApiKeyAuthenticationOptions.AuthenticationScheme,
+                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
                 policy.RequireAuthenticatedUser();
             });
 
@@ -338,7 +424,8 @@ public class Program
             {
                 policy.AddAuthenticationSchemes(
                     IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationOptions.AuthenticationScheme);
+                    ApiKeyAuthenticationOptions.AuthenticationScheme,
+                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context =>
                 {
@@ -358,7 +445,8 @@ public class Program
             {
                 policy.AddAuthenticationSchemes(
                     IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationOptions.AuthenticationScheme);
+                    ApiKeyAuthenticationOptions.AuthenticationScheme,
+                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context =>
                 {
@@ -471,9 +559,6 @@ public class Program
 
         // API Controllers
         app.MapControllers();
-
-        // Health checks
-        app.MapHealthChecks("/health");
 
         // Blazor
         app.MapRazorComponents<App>()

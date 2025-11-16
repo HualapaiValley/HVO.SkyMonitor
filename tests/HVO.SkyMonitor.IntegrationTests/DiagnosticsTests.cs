@@ -1,0 +1,149 @@
+using System;
+using System.Net.Http;
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using HVO.SkyMonitor.Models.Diagnostics;
+using HVO.SkyMonitor.TestSupport;
+
+namespace HVO.SkyMonitor.IntegrationTests;
+
+[TestClass]
+public class DiagnosticsTests
+{
+    private HttpClient? _client;
+
+    [TestInitialize]
+    public void SetUp()
+    {
+        _client = AssemblyHooks.Fixture.Factory.CreateClient();
+    }
+
+    [TestCleanup]
+    public void TearDown()
+    {
+        _client?.Dispose();
+    }
+
+    [TestMethod]
+    public async Task MinioDiagnostics_RoundTripsContent()
+    {
+        await AuthenticateAsSystemAsync();
+
+        var request = new StorageDiagnosticsRequest
+        {
+            Content = $"Payload-{Guid.NewGuid():N}"
+        };
+
+        var response = await _client!.PostAsJsonAsync("/api/v1.0/diagnostics/minio", request);
+        response.EnsureSuccessStatusCode();
+
+        var result = await response.Content.ReadFromJsonAsync<StorageDiagnosticsResponse>();
+        Assert.IsNotNull(result);
+        Assert.AreEqual(request.Content, result!.Content);
+    }
+
+    [TestMethod]
+    public async Task CacheDiagnostics_ReportsCacheHit()
+    {
+        await AuthenticateAsSystemAsync();
+
+        var key = $"diagnostics:{Guid.NewGuid():N}";
+        var request = new CacheDiagnosticsRequest
+        {
+            Key = key,
+            Value = "cached-value",
+            ExpirationSeconds = 60
+        };
+
+        var response = await _client!.PostAsJsonAsync("/api/v1.0/diagnostics/cache", request);
+        response.EnsureSuccessStatusCode();
+
+        var result = await response.Content.ReadFromJsonAsync<CacheDiagnosticsResponse>();
+        Assert.IsNotNull(result);
+        Assert.IsTrue(result!.CacheHit);
+        Assert.AreEqual(request.Value, result.RetrievedValue);
+    }
+
+    [TestMethod]
+    public async Task EmailDiagnostics_SendsMessageToSmtp()
+    {
+        await ClearMailboxAsync();
+        await AuthenticateAsSystemAsync();
+
+        var subject = $"Diagnostics-{Guid.NewGuid():N}";
+        var request = new EmailDiagnosticsRequest
+        {
+            Recipient = TestEmail.AdminRecipient,
+            Subject = subject,
+            Body = "Integration test message"
+        };
+
+        var response = await _client!.PostAsJsonAsync("/api/v1.0/diagnostics/email", request);
+        response.EnsureSuccessStatusCode();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var delivered = await WaitForEmailAsync(subject, cts.Token);
+        Assert.IsTrue(delivered, "Expected email to appear in SMTP capture.");
+    }
+
+    private async Task AuthenticateAsSystemAsync()
+    {
+        var scope = string.Join(' ', TestClients.SystemInternal.Scopes);
+        var token = await HttpHelpers.GetClientCredentialsTokenAsync(
+            _client!,
+            "/connect/token",
+            TestClients.SystemInternal.ClientId,
+            TestClients.SystemInternal.ClientSecret,
+            scope);
+
+        HttpHelpers.WithBearerToken(_client!, token.AccessToken);
+    }
+
+    private static async Task ClearMailboxAsync()
+    {
+        using var http = new HttpClient();
+        var endpoint = $"{AssemblyHooks.Fixture.SmtpHttpEndpoint}/api/v1/messages";
+        var response = await http.DeleteAsync(endpoint);
+        response.EnsureSuccessStatusCode();
+    }
+
+    private static async Task<bool> WaitForEmailAsync(string expectedSubject, CancellationToken cancellationToken)
+    {
+        using var http = new HttpClient();
+        var endpoint = $"{AssemblyHooks.Fixture.SmtpHttpEndpoint}/api/v2/messages";
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var response = await http.GetAsync(endpoint, cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+            if (document.RootElement.TryGetProperty("items", out var items))
+            {
+                foreach (var item in items.EnumerateArray())
+                {
+                    if (!item.TryGetProperty("Content", out var content) ||
+                        !content.TryGetProperty("Headers", out var headers))
+                    {
+                        continue;
+                    }
+
+                    if (headers.TryGetProperty("Subject", out var subjectArray) &&
+                        subjectArray.GetArrayLength() > 0 &&
+                        string.Equals(subjectArray[0].GetString(), expectedSubject, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            await Task.Delay(250, cancellationToken);
+        }
+
+        return false;
+    }
+}

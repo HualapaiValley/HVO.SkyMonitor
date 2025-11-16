@@ -120,7 +120,7 @@ public class AuthorizationController : Controller
     {
         // Phase 6: Track token request timing
         var stopwatch = Stopwatch.StartNew();
-        
+
         var request = HttpContext.GetOpenIddictServerRequest() ??
             throw new InvalidOperationException("The OpenID Connect request cannot be retrieved.");
 
@@ -134,7 +134,7 @@ public class AuthorizationController : Controller
             if (request.IsAuthorizationCodeGrantType() || request.IsRefreshTokenGrantType())
             {
                 grantType = request.IsAuthorizationCodeGrantType() ? "authorization_code" : "refresh_token";
-                
+
                 // Retrieve the claims principal stored in the authorization code/refresh token
                 var result = await HttpContext.AuthenticateAsync(OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
 
@@ -182,7 +182,7 @@ public class AuthorizationController : Controller
                 success = true;
                 var scopes = identity.GetScopes().ToArray();
                 _eventLogger.LogTokenIssued(clientId, grantType, user.Id, scopes);
-                
+
                 if (request.IsRefreshTokenGrantType())
                 {
                     _eventLogger.LogTokenRefreshed(clientId, user.Id);
@@ -194,7 +194,7 @@ public class AuthorizationController : Controller
             if (request.IsClientCredentialsGrantType())
             {
                 grantType = "client_credentials";
-                
+
                 // Note: the client credentials are automatically validated by OpenIddict
                 var application = await _applicationManager.FindByClientIdAsync(request.ClientId!) ??
                     throw new InvalidOperationException("The application details cannot be found in the database.");
@@ -222,6 +222,58 @@ public class AuthorizationController : Controller
                 success = true;
                 var scopes = identity.GetScopes().ToArray();
                 _eventLogger.LogTokenIssued(clientId, grantType, null, scopes);
+
+                return SignIn(claimsPrincipal, OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
+            }
+
+            if (request.IsPasswordGrantType())
+            {
+                grantType = "password";
+
+                if (string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))
+                {
+                    return Forbid(
+                        authenticationSchemes: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme,
+                        properties: new AuthenticationProperties(new Dictionary<string, string?>
+                        {
+                            [OpenIddictServerAspNetCoreConstants.Properties.Error] = Errors.InvalidRequest,
+                            [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] = "Username and password are required."
+                        }));
+                }
+
+                var user = await _userManager.FindByNameAsync(request.Username) ??
+                           await _userManager.FindByEmailAsync(request.Username);
+
+                if (user == null || !await _signInManager.CanSignInAsync(user) ||
+                    !await _userManager.CheckPasswordAsync(user, request.Password))
+                {
+                    return Forbid(
+                        authenticationSchemes: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme,
+                        properties: new AuthenticationProperties(new Dictionary<string, string?>
+                        {
+                            [OpenIddictServerAspNetCoreConstants.Properties.Error] = Errors.InvalidGrant,
+                            [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] = "The username/password is invalid."
+                        }));
+                }
+
+                var identity = new ClaimsIdentity(
+                    authenticationType: TokenValidationParameters.DefaultAuthenticationType,
+                    nameType: Claims.Name,
+                    roleType: Claims.Role);
+
+                identity.SetClaim(Claims.Subject, await _userManager.GetUserIdAsync(user))
+                        .SetClaim(Claims.Email, await _userManager.GetEmailAsync(user))
+                        .SetClaim(Claims.Name, await _userManager.GetUserNameAsync(user))
+                        .SetClaim("account_type", user.AccountType.ToString());
+
+                identity.SetScopes(request.GetScopes());
+                identity.SetResources(await _scopeManager.ListResourcesAsync(identity.GetScopes()).ToListAsync());
+                identity.SetDestinations(GetDestinations);
+
+                claimsPrincipal = new ClaimsPrincipal(identity);
+
+                success = true;
+                _eventLogger.LogTokenIssued(clientId, grantType, user.Id, identity.GetScopes().ToArray());
 
                 return SignIn(claimsPrincipal, OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
             }

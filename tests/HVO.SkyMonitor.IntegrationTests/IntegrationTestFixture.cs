@@ -1,12 +1,20 @@
+using System.Collections.Generic;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading.Tasks;
 using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Containers;
 using HVO.SkyMonitor.Data;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Testcontainers.Minio;
+using Minio;
+using Minio.DataModel.Args;
 using Testcontainers.PostgreSql;
 using Testcontainers.Redis;
 
@@ -18,9 +26,14 @@ namespace HVO.SkyMonitor.IntegrationTests;
 /// </summary>
 public sealed class IntegrationTestFixture : IDisposable
 {
+    private const string PostgresUsername = "skymonitor";
+    private const string PostgresPassword = "skymonitor_test";
+    private const string PostgresDatabase = "skymonitordb";
+    private readonly int _minioHostPort = GetFreeTcpPort();
     private PostgreSqlContainer? _postgresContainer;
     private RedisContainer? _redisContainer;
-    private MinioContainer? _minioContainer;
+    private IContainer? _minioContainer;
+    private IContainer? _smtpContainer;
     private bool _initialized;
 
     /// <summary>
@@ -44,6 +57,11 @@ public sealed class IntegrationTestFixture : IDisposable
     public string MinioEndpoint { get; private set; } = string.Empty;
 
     /// <summary>
+    /// Gets the SMTP HTTP endpoint (MailHog UI/API).
+    /// </summary>
+    public string SmtpHttpEndpoint { get; private set; } = string.Empty;
+
+    /// <summary>
     /// Gets the MinIO access key.
     /// </summary>
     public string MinioAccessKey => "minioadmin";
@@ -52,6 +70,10 @@ public sealed class IntegrationTestFixture : IDisposable
     /// Gets the MinIO secret key.
     /// </summary>
     public string MinioSecretKey => "minioadmin";
+
+    private string RedisHost => "127.0.0.1";
+    private string MinioHost => "127.0.0.1";
+    private string SmtpHost => "127.0.0.1";
 
     /// <summary>
     /// Initializes Testcontainers and the application factory.
@@ -63,17 +85,18 @@ public sealed class IntegrationTestFixture : IDisposable
             return;
         }
 
-        // Start PostgreSQL container
         _postgresContainer = new PostgreSqlBuilder()
             .WithImage("postgres:17-alpine")
-            .WithDatabase("skymonitordb")
-            .WithUsername("skymonitor")
-            .WithPassword("skymonitor_test")
+            .WithDatabase(PostgresDatabase)
+            .WithUsername(PostgresUsername)
+            .WithPassword(PostgresPassword)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(5432))
             .Build();
 
         await _postgresContainer.StartAsync();
-        PostgresConnectionString = _postgresContainer.GetConnectionString();
+        var postgresPort = _postgresContainer.GetMappedPublicPort(5432);
+        PostgresConnectionString =
+            $"Host=127.0.0.1;Port={postgresPort};Username={PostgresUsername};Password={PostgresPassword};Database={PostgresDatabase};Include Error Detail=true";
 
         // Start Redis container
         _redisContainer = new RedisBuilder()
@@ -82,18 +105,38 @@ public sealed class IntegrationTestFixture : IDisposable
             .Build();
 
         await _redisContainer.StartAsync();
-        RedisConnectionString = _redisContainer.GetConnectionString();
+        var redisPort = _redisContainer.GetMappedPublicPort(6379);
+        RedisConnectionString = $"{RedisHost}:{redisPort}";
 
         // Start MinIO container
-        _minioContainer = new MinioBuilder()
+        _minioContainer = new ContainerBuilder()
             .WithImage("minio/minio:latest")
-            .WithUsername(MinioAccessKey)
-            .WithPassword(MinioSecretKey)
+            .WithPortBinding(_minioHostPort, 9000)
+            .WithEnvironment(new Dictionary<string, string>
+            {
+                ["MINIO_ROOT_USER"] = MinioAccessKey,
+                ["MINIO_ROOT_PASSWORD"] = MinioSecretKey
+            })
+                .WithCommand("server", "/data", "--console-address", ":9001")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(9000))
             .Build();
 
         await _minioContainer.StartAsync();
-        MinioEndpoint = $"localhost:{_minioContainer.GetMappedPublicPort(9000)}";
+        var minioPort = _minioHostPort;
+        MinioEndpoint = $"{MinioHost}:{minioPort}";
+
+        // Start SMTP (MailHog) container
+        _smtpContainer = new ContainerBuilder()
+            .WithImage("mailhog/mailhog:v1.0.1")
+            .WithPortBinding(1025, true)
+            .WithPortBinding(8025, true)
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(1025))
+            .Build();
+
+        await _smtpContainer.StartAsync();
+        var smtpPort = _smtpContainer.GetMappedPublicPort(1025);
+        var smtpHttpPort = _smtpContainer.GetMappedPublicPort(8025);
+        SmtpHttpEndpoint = $"http://{SmtpHost}:{smtpHttpPort}";
 
         // Create the web application factory
         Factory = new WebApplicationFactory<Program>()
@@ -101,41 +144,42 @@ public sealed class IntegrationTestFixture : IDisposable
             {
                 builder.UseEnvironment("Testing");
 
+                builder.ConfigureAppConfiguration((context, config) =>
+                {
+                    var overrides = new Dictionary<string, string?>
+                    {
+                        ["ConnectionStrings:skymonitordb"] = PostgresConnectionString,
+                        ["ConnectionStrings:DefaultConnection"] = PostgresConnectionString,
+                        ["Redis:Configuration"] = RedisConnectionString,
+                        ["Redis:InstanceName"] = "integration-tests",
+                        ["Minio:Endpoint"] = MinioHost,
+                        ["Minio:Port"] = minioPort.ToString(),
+                        ["Minio:AccessKey"] = MinioAccessKey,
+                        ["Minio:SecretKey"] = MinioSecretKey,
+                        ["Minio:DefaultBucket"] = "skymonitor-diagnostics",
+                        ["Smtp:Host"] = SmtpHost,
+                        ["Smtp:Port"] = smtpPort.ToString(),
+                        ["Smtp:From"] = TestEmail.FromAddress,
+                        ["Smtp:FromDisplayName"] = TestEmail.FromDisplayName
+                    };
+
+                    config.AddInMemoryCollection(overrides!);
+                });
+
                 builder.ConfigureTestServices(services =>
                 {
                     // Remove the existing DbContext registration
                     services.RemoveAll<DbContextOptions<ApplicationDbContext>>();
                     services.RemoveAll<ApplicationDbContext>();
 
-                    // Use SQLite for now (until PostgreSQL migration is complete)
-                    // TODO: Switch to PostgreSQL when EF 10-compatible Npgsql is released
                     services.AddDbContext<ApplicationDbContext>(options =>
                     {
-                        options.UseSqlite("DataSource=:memory:");
+                        options.UseNpgsql(PostgresConnectionString);
                         options.EnableSensitiveDataLogging();
                         options.EnableDetailedErrors();
                     });
-
-                    // Configure Redis connection
-                    services.Configure<StackExchange.Redis.ConfigurationOptions>(options =>
-                    {
-                        options.EndPoints.Clear();
-                        options.EndPoints.Add(RedisConnectionString);
-                    });
-
-                    // Configure MinIO connection
-                    // TODO: Configure MinIO client with test container endpoint
-                    // This will be needed when MinIO integration is fully implemented
                 });
 
-                builder.ConfigureServices(services =>
-                {
-                    // Ensure database is created and migrations are applied
-                    var serviceProvider = services.BuildServiceProvider();
-                    using var scope = serviceProvider.CreateScope();
-                    var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                    dbContext.Database.EnsureCreated();
-                });
             });
 
         // Seed test data
@@ -149,13 +193,17 @@ public sealed class IntegrationTestFixture : IDisposable
     /// </summary>
     private async Task SeedTestDataAsync()
     {
-        using var scope = Factory.Services.CreateScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        // Ensure default diagnostics bucket exists
+        var client = new MinioClient()
+            .WithEndpoint(MinioHost, _minioHostPort)
+            .WithCredentials(MinioAccessKey, MinioSecretKey)
+            .Build();
 
-        // TODO: Seed test users, clients, API keys using HVO.SkyMonitor.TestSupport constants
-        // This will be implemented as integration tests are added
-
-        await dbContext.SaveChangesAsync();
+        var bucketExists = await client.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-diagnostics"));
+        if (!bucketExists)
+        {
+            await client.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-diagnostics"));
+        }
     }
 
     /// <summary>
@@ -182,5 +230,20 @@ public sealed class IntegrationTestFixture : IDisposable
         {
             _minioContainer.DisposeAsync().GetAwaiter().GetResult();
         }
+
+        if (_smtpContainer != null)
+        {
+            _smtpContainer.DisposeAsync().GetAwaiter().GetResult();
+        }
+
+    }
+
+    private static int GetFreeTcpPort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
     }
 }

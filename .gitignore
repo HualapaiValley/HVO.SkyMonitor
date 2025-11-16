@@ -438,3 +438,4 @@ FodyWeavers.xsd
 *.msm
 *.msp
 src.zip
+.DS_Store
