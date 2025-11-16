@@ -36,6 +36,8 @@ public sealed class DiagnosticsController : ControllerBase
         IServiceProvider serviceProvider,
         ILogger<DiagnosticsController> logger)
     {
+        ArgumentNullException.ThrowIfNull(minioOptions);
+        ArgumentNullException.ThrowIfNull(smtpOptions);
         _cache = cache;
         _logger = logger;
         _minioOptions = minioOptions.Value;

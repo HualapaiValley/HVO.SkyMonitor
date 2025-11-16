@@ -10,6 +10,7 @@ public sealed class NamedOneOfAttribute : Attribute
 
     public NamedOneOfAttribute(params object[] args)
     {
+        ArgumentNullException.ThrowIfNull(args);
         if (args.Length % 2 != 0)
             throw new ArgumentException("Arguments must be in (name, type) pairs");
 

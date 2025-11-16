@@ -36,7 +36,7 @@ public sealed class DefaultApiKeyAuthenticationHandler : AuthenticationHandler<A
             return AuthenticateResult.NoResult();
         }
 
-        var validationResult = await _apiKeyValidator.ValidateAsync(providedApiKey);
+        var validationResult = await _apiKeyValidator.ValidateAsync(providedApiKey).ConfigureAwait(false);
         if (!validationResult.IsValid)
         {
             return AuthenticateResult.Fail("Invalid API key");

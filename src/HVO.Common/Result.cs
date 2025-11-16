@@ -101,7 +101,12 @@ public readonly struct Result<T>
     /// <param name="success">Function to apply if the result is successful</param>
     /// <param name="failure">Function to apply if the result is a failure</param>
     /// <returns>The transformed result</returns>
-    public R Match<R>(Func<T, R> success, Func<Exception?, R> failure) => IsSuccessful ? success(Value) : failure(Error);
+    public R Match<R>(Func<T, R> success, Func<Exception?, R> failure)
+    {
+        ArgumentNullException.ThrowIfNull(success);
+        ArgumentNullException.ThrowIfNull(failure);
+        return IsSuccessful ? success(Value) : failure(Error);
+    }
 
     /// <summary>
     /// Creates a successful result containing the specified value
@@ -205,7 +210,12 @@ public readonly struct Result<T, TEnum> where TEnum : Enum
     /// <param name="success">Function to apply if the result is successful</param>
     /// <param name="failure">Function to apply if the result is a failure</param>
     /// <returns>The transformed result</returns>
-    public R Match<R>(Func<T, R> success, Func<(TEnum Code, string? Message), R> failure) => IsSuccessful ? success(Value) : failure(Error);
+    public R Match<R>(Func<T, R> success, Func<(TEnum Code, string? Message), R> failure)
+    {
+        ArgumentNullException.ThrowIfNull(success);
+        ArgumentNullException.ThrowIfNull(failure);
+        return IsSuccessful ? success(Value) : failure(Error);
+    }
 
     /// <summary>
     /// Creates a successful result containing the specified value

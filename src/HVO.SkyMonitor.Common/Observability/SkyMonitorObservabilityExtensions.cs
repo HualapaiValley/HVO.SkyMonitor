@@ -26,6 +26,7 @@ public static class SkyMonitorObservabilityExtensions
     /// </summary>
     public static IHostApplicationBuilder AddSkyMonitorObservability(this IHostApplicationBuilder builder)
     {
+        ArgumentNullException.ThrowIfNull(builder);
         builder.Logging.AddOpenTelemetry(logging =>
         {
             logging.IncludeFormattedMessage = true;
@@ -74,6 +75,7 @@ public static class SkyMonitorObservabilityExtensions
     /// </summary>
     public static WebApplication MapSkyMonitorHealthEndpoints(this WebApplication app)
     {
+        ArgumentNullException.ThrowIfNull(app);
         if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Testing"))
         {
             app.MapHealthChecks(HealthEndpointPath);
@@ -93,6 +95,7 @@ public static class SkyMonitorObservabilityExtensions
 
     private static bool IsHealthRequest(PathString path)
     {
-        return path.StartsWithSegments(HealthEndpointPath) || path.StartsWithSegments(AlivenessEndpointPath);
+        return path.StartsWithSegments(HealthEndpointPath, StringComparison.OrdinalIgnoreCase) || 
+               path.StartsWithSegments(AlivenessEndpointPath, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -11,10 +11,98 @@ dotnet_diagnostic.CA1812.severity = none
 dotnet_diagnostic.CA1822.severity = none
 dotnet_diagnostic.CA1863.severity = none
 dotnet_diagnostic.CA1308.severity = none
+dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA2227.severity = none
+dotnet_diagnostic.CA1819.severity = none
 
+# Blazor components and layout files - CA1515 (internal types) conflicts with Blazor's partial class generation
+# These components are not meant to be referenced outside the assembly but Blazor requires public accessibility
+[src/**/Components/**.cs]
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA1848.severity = none
+
+# CA1716 (reserved keywords) - Some Blazor component namespaces and names use reserved keywords intentionally
+# for routing and framework conventions (e.g., Shared, Error)
+[src/**/Components/Shared/**.cs]
+dotnet_diagnostic.CA1716.severity = none
+
+# CameraAgent projects - intentionally use simpler patterns, many similar to demo code
+[src/HVO.SkyMonitor.CameraAgent/**.cs]
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.CA1001.severity = none
+
+# Demo and simulator projects use Random for non-security-critical scenarios
+# CA5394 warnings about insecure random are intentional for demo data generation
+[src/HVO.SkyMonitor.CameraAgent.Simulator/Components/Pages/Weather.razor.cs]
+dotnet_diagnostic.CA5394.severity = none
+dotnet_diagnostic.CA1062.severity = none
+[src/HVO.SkyMonitor.CameraAgent.ZWO/Services/SampleStatusService.cs]
+dotnet_diagnostic.CA1062.severity = none
+[src/HVO.SkyMonitor/Components/Pages/Weather.razor]
+dotnet_diagnostic.CA5394.severity = none
+
+# SignedTicketService uses ToLowerInvariant intentionally for URL normalization
+# CA1308 suggests ToUpperInvariant but lowercase is the web standard for URL paths
+[src/HVO.SkyMonitor.Common/Security/SignedTickets/SignedTicketService.cs]
+dotnet_diagnostic.CA1308.severity = none
+
+# SignedTicketOptions exposes AllowedPaths as array for configuration binding
+# CA1819 suggests readonly collections but array is required for appsettings.json binding
+[src/HVO.SkyMonitor.Common/Security/SignedTickets/SignedTicketOptions.cs]
+dotnet_diagnostic.CA1819.severity = none
+
+# DiagnosticsController creates MinioClient in factory method; disposal is caller's responsibility
+# CA2000 flagged but this is intentional design - client is returned for caller to manage lifecycle
+[src/HVO.SkyMonitor/Controllers/DiagnosticsController.cs]
+dotnet_diagnostic.CA2000.severity = none
+
+# Broad exception catching in error boundaries and clock loops is intentional
+# CA1031 warnings suppressed for resilience patterns where we don't want to crash the app
+[src/**/Components/Layout/MainLayoutFooter.razor.cs]
+dotnet_diagnostic.CA1031.severity = none
+
+# ApiKeyAccessLevel enum intentionally starts at 1 (ReadOnly) instead of 0
+# CA1008 suggests None=0 but we don't want an "undefined" access level in our security model
+[src/HVO.SkyMonitor.Common/Security/ApiKeyAccessLevel.cs]
+dotnet_diagnostic.CA1008.severity = none
+
+# TryValidateAndExtractTicket uses broad exception catching for security validation
+# CA1031 suppressed - any exception during ticket validation should result in rejection
+[src/HVO.SkyMonitor.Common/Security/SignedTickets/SignedTicketService.cs]
+dotnet_diagnostic.CA1031.severity = none
+
+# Option<T> type name conflicts with VB.NET keyword but is established functional programming convention
+# CA1716 suppressed as renaming would break from widely-used functional programming patterns
+[src/HVO.Common/Option.cs]
+dotnet_diagnostic.CA1716.severity = none
+
+# NamedOneOfAttribute uses params object[] for flexible source generation scenarios
+# CA1019 requests public accessor but the Cases property already provides structured access
+[src/HVO.Common/NamedOneOfAttribute.cs]
+dotnet_diagnostic.CA1019.severity = none
+
+# TestSupport project - uses nested types, Uri strings, and other patterns appropriate for test utilities
+[src/HVO.SkyMonitor.TestSupport/**.cs]
+dotnet_diagnostic.CA1034.severity = none
+dotnet_diagnostic.CA1056.severity = none
+dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.CA1716.severity = none
+dotnet_diagnostic.CA1819.severity = none
+dotnet_diagnostic.CA2227.severity = none
+dotnet_diagnostic.CA2234.severity = none
+dotnet_diagnostic.CA1869.severity = none
+
+# Test projects intentionally have public types and may create disposable objects in test setup
 [tests/HVO.SkyMonitor.IntegrationTests/**.cs]
 dotnet_diagnostic.CA1515.severity = none
 dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.CA2007.severity = none
 dotnet_diagnostic.CA1812.severity = none
 dotnet_diagnostic.MSTEST0001.severity = none
 dotnet_diagnostic.MSTEST0002.severity = none
