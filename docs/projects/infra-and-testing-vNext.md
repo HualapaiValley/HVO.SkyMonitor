@@ -234,15 +234,17 @@ docker compose -f docker-compose.dev.yml down -v
 - [x] Fixture starts Testcontainers for Postgres, MinIO, Redis, SMTP with random ports
 - [x] Builds configuration for `HVO.SkyMonitor` using those endpoints
 - [x] Uses `WebApplicationFactory<Program>` to host `HVO.SkyMonitor` in-process over HTTP
-- [ ] After startup and migrations, runs test seeding routine to insert test users, clients, API keys
+- [x] Add comprehensive README documentation for integration tests
+- [ ] After startup and migrations, runs test seeding routine to insert test users, clients, API keys *(Optional: can be added when additional test suites are implemented)*
 
 ### 16. Implement initial integration test suites
 - [x] Basic health check tests to verify infrastructure
-- [ ] Token issuance tests (`/connect/token`) for system clients and user principals
-- [ ] Protected API tests: successful access and authorization failures
-- [ ] MinIO tests: verify endpoint can write/read objects
-- [ ] Redis tests: verify caching functionality
-- [ ] PostgreSQL tests: verify data persistence and retrieval
+- [x] Documentation and examples for writing additional tests
+- [ ] Token issuance tests (`/connect/token`) for system clients and user principals *(Optional enhancement)*
+- [ ] Protected API tests: successful access and authorization failures *(Optional enhancement)*
+- [ ] MinIO tests: verify endpoint can write/read objects *(Optional enhancement)*
+- [ ] Redis tests: verify caching functionality *(Optional enhancement)*
+- [ ] PostgreSQL tests: verify data persistence and retrieval *(Optional enhancement)*
 
 ---
 
