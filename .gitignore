@@ -17,6 +17,7 @@
 .env.local
 .env.production
 .env.staging
+.devcontainer/devcontainer.local.env
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs

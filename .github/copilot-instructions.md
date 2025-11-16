@@ -209,6 +209,11 @@ HVO.SkyMonitor is a sky monitoring application built with modern .NET technologi
 - Documentation completeness
 - Performance implications for astronomy calculations
 
+### Tooling Availability Policy
+- When a command-line tool is missing (for example `rg` or `python`), either install it via the devcontainer provisioning scripts or immediately document the supported alternative in `README.md`/these instructions.
+- Avoid repeatedly invoking known-missing commands—switch to the confirmed binary (for example `python3`) until the alias is installed.
+- After installing a new tool, update `.devcontainer/post-create.sh` (or equivalent) so future containers match the current environment.
+
 ## Common Patterns & Examples
 
 ### Strongly-Typed Configuration
