@@ -1,0 +1,11 @@
+﻿<Project Sdk="MSTest.Sdk/4.0.1">
+
+  <PropertyGroup>
+    <UseVSTest>true</UseVSTest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/HVO.Common/HVO.Common.csproj" />
+  </ItemGroup>
+
+</Project>

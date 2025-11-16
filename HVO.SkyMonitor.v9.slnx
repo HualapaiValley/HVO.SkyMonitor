@@ -11,7 +11,7 @@
         <Project Path="src/HVO.SkyMonitor.TestSupport/HVO.SkyMonitor.TestSupport.csproj" />
     </Folder>
     <Folder Name="/Tests/">
-        <Project Path="src/HVO.Common.Tests/HVO.Common.Tests.csproj" />
+        <Project Path="tests/HVO.Common.Tests/HVO.Common.Tests.csproj" />
         <Project Path="tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj" />
     </Folder>
 </Solution>
