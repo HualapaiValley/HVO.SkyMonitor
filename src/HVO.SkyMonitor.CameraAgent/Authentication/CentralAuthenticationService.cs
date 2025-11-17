@@ -19,6 +19,8 @@ public class CentralAuthenticationService(
     ILogger<CentralAuthenticationService> logger,
     TimeProvider timeProvider) : ICentralAuthenticationService
 {
+    public const string TokenClientName = "CentralIdentity.TokenClient";
+
     private readonly CentralIdentityOptions _options = options.Value;
     private TokenCacheEntry? _cachedToken;
     private readonly SemaphoreSlim _tokenLock = new(1, 1);
@@ -105,7 +107,7 @@ public class CentralAuthenticationService(
                 "ClientCredentials configuration is required when using ClientCredentials authentication mode");
         }
 
-        var client = httpClientFactory.CreateClient();
+        var client = httpClientFactory.CreateClient(TokenClientName);
         var tokenEndpoint = new Uri(_options.ServiceUrl, "/connect/token");
 
         using var requestContent = new FormUrlEncodedContent(new Dictionary<string, string>

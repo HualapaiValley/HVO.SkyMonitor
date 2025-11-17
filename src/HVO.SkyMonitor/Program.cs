@@ -365,6 +365,10 @@ public sealed partial class Program
                     //        .AddSigningCertificate(signingCert);
                 }
 
+                // Downstream services validate tokens via standard JwtBearer handlers, so emit
+                // signed (non-encrypted) access tokens until we support shared decryption keys.
+                options.DisableAccessTokenEncryption();
+
                 // Register the ASP.NET Core host and configure the ASP.NET Core-specific options
                 var aspNetCoreBuilder = options.UseAspNetCore()
                     .EnableAuthorizationEndpointPassthrough()

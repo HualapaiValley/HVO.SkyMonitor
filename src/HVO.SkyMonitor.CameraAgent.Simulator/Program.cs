@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Extensions;
 using HVO.SkyMonitor.CameraAgent.Simulator.Components;
 using HVO.SkyMonitor.CameraAgent.Simulator.Services;
 using HVO.SkyMonitor.Common.Observability;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.Mvc;
 using OpenTelemetry.Instrumentation.AspNetCore;
@@ -109,18 +110,34 @@ public class Program
         builder.Services.AddCentralIdentityAuthentication(builder.Configuration);
         builder.Services.AddSkyMonitorApiClient(builder.Configuration);
 
+        const string skyMonitorApiResource = "skymonitor_api";
         builder.Services.AddAuthentication(options =>
         {
             options.DefaultScheme = "Bearer";
         })
         .AddJwtBearer(options =>
         {
-            // Configure JWT validation for inbound requests (if needed)
-            // Will use OpenIddict validation from central service
-            options.Authority = builder.Configuration["CentralIdentity:ServiceUrl"];
-            options.Audience = "api";
+            options.Audience = skyMonitorApiResource;
             options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
         });
+
+        builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+            .Configure<IConfiguration>((options, configuration) =>
+            {
+                var centralIdentityAuthority = configuration["CentralIdentity:ServiceUrl"]?.TrimEnd('/') ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(centralIdentityAuthority))
+                {
+                    return;
+                }
+
+                var issuerWithTrailingSlash = string.Concat(centralIdentityAuthority, "/");
+                options.Authority = issuerWithTrailingSlash;
+                options.TokenValidationParameters.ValidIssuers = new[]
+                {
+                    issuerWithTrailingSlash,
+                    centralIdentityAuthority
+                };
+            });
 
         builder.Services.AddAuthorization(options =>
         {

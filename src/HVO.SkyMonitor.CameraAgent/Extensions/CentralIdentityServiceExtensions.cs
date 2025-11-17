@@ -23,8 +23,10 @@ public static class CentralIdentityServiceExtensions
     {
         services.Configure<CentralIdentityOptions>(
             configuration.GetSection("CentralIdentity"));
+        services.PostConfigure<CentralIdentityOptions>(ApplyDefaultScopes);
 
         services.AddHttpClient();
+        services.AddHttpClient(CentralAuthenticationService.TokenClientName);
         services.AddSingleton<ICentralAuthenticationService, CentralAuthenticationService>();
 
         return services;
@@ -41,9 +43,29 @@ public static class CentralIdentityServiceExtensions
         Action<CentralIdentityOptions> configureOptions)
     {
         services.Configure(configureOptions);
+        services.PostConfigure<CentralIdentityOptions>(ApplyDefaultScopes);
         services.AddHttpClient();
+        services.AddHttpClient(CentralAuthenticationService.TokenClientName);
         services.AddSingleton<ICentralAuthenticationService, CentralAuthenticationService>();
 
         return services;
+    }
+
+    private static void ApplyDefaultScopes(CentralIdentityOptions options)
+    {
+        if (options.ClientCredentials is not { } credentials)
+        {
+            return;
+        }
+
+        if (credentials.Scopes.Count > 0)
+        {
+            return;
+        }
+
+        foreach (var scope in ClientCredentialsOptions.DefaultScopes)
+        {
+            credentials.Scopes.Add(scope);
+        }
     }
 }

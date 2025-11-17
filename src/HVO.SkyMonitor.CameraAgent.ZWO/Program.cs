@@ -116,15 +116,30 @@ public class Program
         builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options =>
             {
-                var centralIdentityUrl = builder.Configuration["CentralIdentity:ServiceUrl"];
-                options.Authority = centralIdentityUrl;
                 options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
                 {
                     ValidateAudience = false,
-                    ValidateIssuer = true,
-                    ValidIssuer = centralIdentityUrl
+                    ValidateIssuer = true
                 };
-                options.RequireHttpsMetadata = false; // Development only
+                options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
+            });
+
+        builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+            .Configure<IConfiguration>((options, configuration) =>
+            {
+                var centralIdentityAuthority = configuration["CentralIdentity:ServiceUrl"]?.TrimEnd('/') ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(centralIdentityAuthority))
+                {
+                    return;
+                }
+
+                var issuerWithTrailingSlash = string.Concat(centralIdentityAuthority, "/");
+                options.Authority = issuerWithTrailingSlash;
+                options.TokenValidationParameters.ValidIssuers = new[]
+                {
+                    issuerWithTrailingSlash,
+                    centralIdentityAuthority
+                };
             });
 
         builder.Services.AddAuthorization();

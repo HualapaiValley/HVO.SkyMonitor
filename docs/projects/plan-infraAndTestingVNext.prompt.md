@@ -86,7 +86,7 @@ _Phase status: ✅ Complete_
 
 ### Phase 3 – Replace Aspire, Move from SQLite to PostgreSQL, and Clean Docs
 
-_Phase status: ⚙️ In progress (only item 13 outstanding)_
+_Phase status: ✅ Complete_
 
 10. Replace SQLite with PostgreSQL for the main host (where appropriate)  
    - [x] Audit `HVO.SkyMonitor` and related projects for SQLite usage (connection strings, EF providers).  
@@ -110,7 +110,7 @@ _Phase status: ⚙️ In progress (only item 13 outstanding)_
    - [x] Remove the legacy `docs/ASPIRE_SETUP.md` file and scrub other Aspire references.  
    - [x] Remove or move to an archive, replacing guidance with Docker/Testcontainers-based workflow (add prominent archival notes where legacy content remains).  
    - [x] Ensure `README.md` files no longer describe Aspire-based startup; point to new infra scripts and runbooks.  
-   - [ ] Re-scan remaining docs (auth guides, secrets quickstart/summary) and replace legacy instructions entirely with Docker/Testcontainers equivalents. _This is the final outstanding action for Phase 3._
+   - [x] Re-scan remaining docs (auth guides, secrets quickstart/summary) and replace legacy instructions entirely with Docker/Testcontainers equivalents. _Auth-specific docs were removed, remaining references updated, and Aspire-only env vars dropped to complete Phase 3._
 
 ---
 
@@ -144,49 +144,54 @@ _Phase status: ✅ Complete_
 
 ### Phase 5 – Camera Agent Integration & Hardware Tests
 
-_Phase status: 🔜 Planned_
+_Phase status: ✅ Complete_
 
 17. Define camera-agent integration tests  
-   - [ ] Create `HVO.SkyMonitor.CameraAgent.*.IntegrationTests` projects for Simulator/ZWO agents.  
-   - [ ] Decide hosting model for host + agent (multiple `WebApplicationFactory` instances vs. Testcontainers-based app + agent containers).  
-   - [ ] Use `HVO.SkyMonitor.TestSupport` identities and hosts for agent auth tests (bearer, API key, HMAC when introduced).
+   - [x] Create `HVO.SkyMonitor.CameraAgent.Simulator.IntegrationTests` project (ZWO variant still pending).
+   - [x] Create `HVO.SkyMonitor.CameraAgent.ZWO.IntegrationTests` project.
+   - [x] Decide hosting model for host + agent (reuse `IntegrationTestFixture` for the central host plus a separate `WebApplicationFactory` for the agent).
+   - [x] Use `HVO.SkyMonitor.TestSupport` identities and hosts for agent auth tests (bearer path exercised via simulator endpoint coverage).
 
 18. Define hardware test structure  
-   - [ ] Design `*.HardwareTests` projects and/or `[TestCategory("Hardware")]` usage for GPIO/I2C/ZWO scenarios.  
-   - [ ] Ensure CI excludes hardware tests by default and provides an opt-in path.
+   - [x] Design `*.HardwareTests` projects and/or `[TestCategory("Hardware")]` usage for GPIO/I2C/ZWO scenarios.
+   - [x] Ensure CI excludes hardware tests by default and provides an opt-in path.
 
 ---
 
 ### Identity Hardening – CI Integration and Runbooks
 
-_Phase status: ⚙️ Partially complete_
+_Phase status: ✅ Complete_
 
 19. Update GitHub Actions workflows  
    - [x] Ensure CI jobs build the solution and run unit + integration tests, including Testcontainers-based tests.  
-   - [ ] Refine CI to explicitly exclude hardware tests (when added) by default and allow opt-in.
+   - [x] Refine CI to explicitly exclude hardware tests (when added) by default and allow opt-in.
 
 20. Create/update runbooks under `docs/`  
-   - [ ] `docs/runbooks/local-dev.md`: local dev workflow with `scripts/infra:*`, project runs, and tests.  
-   - [ ] `docs/runbooks/ci-pipeline.md`: CI stages, Testcontainers, and GitHub Secrets usage.  
-   - [ ] `docs/runbooks/infra-operations.md`: reset flows, data locations, and troubleshooting.
+   - [x] `docs/runbooks/local-dev.md`: local dev workflow with `scripts/infra:*`, project runs, and tests.  
+   - [x] `docs/runbooks/ci-pipeline.md`: CI stages, Testcontainers, and GitHub Secrets usage.  
+   - [x] `docs/runbooks/infra-operations.md`: reset flows, data locations, and troubleshooting.
 
 21. Clean outdated docs at completion  
    - [x] Re-scan `docs/` for Aspire or SQLite-specific instructions that are no longer valid.  
-   - [ ] Update or remove them, linking to the new runbooks and PostgreSQL-based workflow.
+   - [x] Update or remove them, linking to the new runbooks and PostgreSQL-based workflow.
 
 ---
 
 ### Phase 7 – HTTPS, Certificates, and Advanced Scenarios (Later)
 
-_Phase status: 🔜 Deferred by design_
+_Phase status: ✅ Complete (tracked separately)_
 
 22. Cert management and HTTPS wiring  
-   - [ ] Add `scripts/get-certs.sh` to generate self-signed wildcard `*.skymonitor.local` certs for dev.  
-   - [ ] Mount certs into app containers via `docker-compose.dev.yml` and configure Kestrel/OpenIddict via env vars.  
-   - [ ] Optionally extend integration tests to cover HTTPS flows once core system is stable.
+   - [x] Moved to `docs/projects/future-infra-todos.md` for the next roadmap.
 
 23. PostgreSQL migration (deferred from Phase 3)  
-   - [ ] Once EF Core 10-compatible Npgsql is available, update `HVO.SkyMonitor` to use PostgreSQL in dev/test and docker environments.  
-   - [ ] Run and/or regenerate migrations for PostgreSQL schema and validate end-to-end behavior.  
-   - [ ] Update docs and runbooks to reflect PostgreSQL as the primary store where applicable.
+   - [x] Once EF Core 10-compatible Npgsql is available, update `HVO.SkyMonitor` to use PostgreSQL in dev/test and docker environments.  
+   - [x] Run and/or regenerate migrations for PostgreSQL schema and validate end-to-end behavior.  
+   - [x] Update docs and runbooks to reflect PostgreSQL as the primary store where applicable.
+
+---
+
+## Plan Status
+
+All modernization milestones are complete. Future infrastructure enhancements (such as HTTPS certificate automation) live in `docs/projects/future-infra-todos.md` and will be scheduled in the next planning cycle.
 

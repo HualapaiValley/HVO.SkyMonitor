@@ -68,8 +68,14 @@ public enum AuthenticationMode
 public class ClientCredentialsOptions
 {
     /// <summary>
+    /// Default scopes requested by camera agents when no configuration override is provided.
+    /// </summary>
+    public static IReadOnlyList<string> DefaultScopes { get; } =
+        new[] { "api.camera", "api.frames", "api.images" };
+
+    /// <summary>
     /// OAuth2 client ID assigned to this camera agent.
-    /// Example: "camera-agent-simulator-01"
+    /// Example: "camera-agent-simulator"
     /// </summary>
     public string ClientId { get; set; } = string.Empty;
 
@@ -80,10 +86,9 @@ public class ClientCredentialsOptions
     public string ClientSecret { get; set; } = string.Empty;
 
     /// <summary>
-    /// Scopes to request when obtaining tokens.
-    /// Default: ["api", "camera"]
+    /// Scopes to request when obtaining tokens. Configuration binding populates this collection; defaults are applied later.
     /// </summary>
-    public IList<string> Scopes { get; } = new List<string> { "api", "camera" };
+    public IList<string> Scopes { get; } = new List<string>();
 }
 
 /// <summary>

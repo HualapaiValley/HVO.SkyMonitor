@@ -349,8 +349,7 @@ dotnet user-secrets set "SignedTicket:Secret" "$(openssl rand -base64 32)"
   "containerEnv": {
     "ASPNETCORE_ENVIRONMENT": "Development",
     "DOTNET_ENVIRONMENT": "Development",
-    "USE_CONTAINERS": "true",
-    "ASPIRE_ALLOW_UNSECURED_TRANSPORT": "true"
+    "USE_CONTAINERS": "true"
   }
 }
 ```

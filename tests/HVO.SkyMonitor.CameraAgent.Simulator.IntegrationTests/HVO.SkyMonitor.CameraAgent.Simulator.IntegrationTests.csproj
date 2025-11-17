@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="MSTest" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Simulator\HVO.SkyMonitor.CameraAgent.Simulator.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.IntegrationTests\HVO.SkyMonitor.IntegrationTests.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
+  </ItemGroup>
+
+</Project>
