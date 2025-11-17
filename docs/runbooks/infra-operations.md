@@ -9,8 +9,8 @@ This runbook covers maintenance tasks for the local Docker-based development env
 - `postgres` — metadata database (volume: `skymonitor-postgres`).
 - `minio` — object storage (volume: `skymonitor-minio`).
 - `redis` — caching (volume: `skymonitor-redis`).
-- `smtp` — MailHog relay for email testing.
-- `skymonitor`, `cameraagent-sim`, `cameraagent-zwo` — application containers built from `src/`.
+- `smtp` — Mailpit relay for email testing.
+- `skymonitor`, `cameraagent` — application containers built from `src/`.
 
 ## Common Operations
 

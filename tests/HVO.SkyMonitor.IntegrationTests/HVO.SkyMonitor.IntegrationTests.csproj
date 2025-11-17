@@ -17,7 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\HVO.SkyMonitor\HVO.SkyMonitor.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor\HVO.SkyMonitor.LogicHost.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
   </ItemGroup>
 

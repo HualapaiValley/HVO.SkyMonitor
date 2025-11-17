@@ -32,8 +32,8 @@ This document describes the build and validation stages executed in GitHub Actio
    # Host integration suite
    dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj
 
-   # Camera agent simulator suite
-   dotnet test tests/HVO.SkyMonitor.CameraAgent.Simulator.IntegrationTests/HVO.SkyMonitor.CameraAgent.Simulator.IntegrationTests.csproj
+   # Camera agent test suite
+   dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj
    ```
 4. **Hardware tests (opt-in)**
    ```bash

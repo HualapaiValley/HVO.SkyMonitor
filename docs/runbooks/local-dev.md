@@ -36,20 +36,17 @@ This runbook describes the day-to-day workflow for developing and validating HVO
 1. Ensure infra is running.
 2. From `/workspaces/HVO.SkyMonitor` execute:
    ```bash
-   dotnet run --project src/HVO.SkyMonitor
+   dotnet run --project src/HVO.SkyMonitor.LogicHost
    ```
 3. The host listens on the standard HTTP ports defined in `appsettings.Development.json` (defaults: 5000/5001). Update `.env.development` for overrides.
 
 ### Running camera agents
 
-- **Simulator**:
+- **Camera Agent**:
   ```bash
-  dotnet run --project src/HVO.SkyMonitor.CameraAgent.Simulator
+   dotnet run --project src/HVO.SkyMonitor.CameraAgent
   ```
-- **ZWO** (requires hardware / SDK drivers):
-  ```bash
-  dotnet run --project src/HVO.SkyMonitor.CameraAgent.ZWO
-  ```
+
 
 Each agent reads central identity + MinIO endpoints from `appsettings.Development.json` or environment variables. When running side-by-side with the host, use the Docker-provided service names (e.g., `http://host.docker.internal:5000`).
 
@@ -63,7 +60,7 @@ Each agent reads central identity + MinIO endpoints from `appsettings.Developmen
 2. **Integration tests only**
    ```bash
    dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj
-   dotnet test tests/HVO.SkyMonitor.CameraAgent.Simulator.IntegrationTests/HVO.SkyMonitor.CameraAgent.Simulator.IntegrationTests.csproj
+   dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj
    ```
 
 3. **Full solution**

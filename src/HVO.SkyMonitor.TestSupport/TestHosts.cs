@@ -26,12 +26,7 @@ public static class TestHosts
     public const string HttpsDevelopmentUrl = "https://localhost:5175";
 
     /// <summary>
-    /// Camera Agent Simulator base URL.
+    /// Camera Agent base URL.
     /// </summary>
-    public const string SimulatorAgentUrl = "http://localhost:5130";
-
-    /// <summary>
-    /// Camera Agent ZWO base URL.
-    /// </summary>
-    public const string ZwoAgentUrl = "http://localhost:5232";
+    public const string CameraAgentUrl = "http://localhost:5130";
 }

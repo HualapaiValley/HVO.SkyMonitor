@@ -92,9 +92,9 @@ Identity Hardening (Hardening, Operations & Observability) is now **100% COMPLET
 - Log structure documented in identity/operations-runbook.md
 
 **Code Files:**
-- `src/HVO.SkyMonitor/Services/AuthenticationEventLogger.cs` - New service
-- `src/HVO.SkyMonitor/Data/DatabaseApiKeyValidator.cs` - Enhanced with logging
-- `src/HVO.SkyMonitor/Controllers/OpenIddict/AuthorizationController.cs` - Token logging
+- `src/HVO.SkyMonitor.LogicHost/Services/AuthenticationEventLogger.cs` - New service
+- `src/HVO.SkyMonitor.LogicHost/Data/DatabaseApiKeyValidator.cs` - Enhanced with logging
+- `src/HVO.SkyMonitor.LogicHost/Controllers/OpenIddict/AuthorizationController.cs` - Token logging
 
 ---
 
@@ -115,10 +115,10 @@ Identity Hardening (Hardening, Operations & Observability) is now **100% COMPLET
 - Metrics documented in identity/operations-runbook.md
 
 **Code Files:**
-- `src/HVO.SkyMonitor/Services/AuthenticationMetrics.cs` - New service
-- `src/HVO.SkyMonitor/Program.cs` - Metrics configuration
-- `src/HVO.SkyMonitor/Data/DatabaseApiKeyValidator.cs` - API key metrics
-- `src/HVO.SkyMonitor/Controllers/OpenIddict/AuthorizationController.cs` - Token metrics
+- `src/HVO.SkyMonitor.LogicHost/Services/AuthenticationMetrics.cs` - New service
+- `src/HVO.SkyMonitor.LogicHost/Program.cs` - Metrics configuration
+- `src/HVO.SkyMonitor.LogicHost/Data/DatabaseApiKeyValidator.cs` - API key metrics
+- `src/HVO.SkyMonitor.LogicHost/Controllers/OpenIddict/AuthorizationController.cs` - Token metrics
 
 **Available Metrics:**
 - `auth.token_requests` - Total OAuth2 token requests
@@ -145,8 +145,8 @@ Identity Hardening (Hardening, Operations & Observability) is now **100% COMPLET
 - CSRF protections validated (antiforgery middleware in place)
 
 **Code Files:**
-- `src/HVO.SkyMonitor/Program.cs` - Rate limiter configuration
-- `src/HVO.SkyMonitor/Controllers/OpenIddict/AuthorizationController.cs` - Token endpoint rate limiting
+- `src/HVO.SkyMonitor.LogicHost/Program.cs` - Rate limiter configuration
+- `src/HVO.SkyMonitor.LogicHost/Controllers/OpenIddict/AuthorizationController.cs` - Token endpoint rate limiting
 
 **Configuration:**
 - Rate limits configurable via environment variables
@@ -275,7 +275,7 @@ docs/
   identity/operations-index.md (10.7 KB)
   identity/hardening-summary.md (this file)
 
-src/HVO.SkyMonitor/Services/
+src/HVO.SkyMonitor.LogicHost/Services/
   AuthenticationMetrics.cs
   AuthenticationEventLogger.cs
 ```
@@ -288,9 +288,9 @@ src/HVO.SkyMonitor/Services/
 .github/workflows/README.md
 docs/SECRETS_MANAGEMENT.md
 docs/projects/auth/central-identity-plan.md
-src/HVO.SkyMonitor/Program.cs
-src/HVO.SkyMonitor/Data/DatabaseApiKeyValidator.cs
-src/HVO.SkyMonitor/Controllers/OpenIddict/AuthorizationController.cs
+src/HVO.SkyMonitor.LogicHost/Program.cs
+src/HVO.SkyMonitor.LogicHost/Data/DatabaseApiKeyValidator.cs
+src/HVO.SkyMonitor.LogicHost/Controllers/OpenIddict/AuthorizationController.cs
 ```
 
 ---

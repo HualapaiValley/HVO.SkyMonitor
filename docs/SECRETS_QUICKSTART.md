@@ -1,7 +1,7 @@
 # Quick Start: Secrets Setup
 
 > [!IMPORTANT]
-> HVO.SkyMonitor now relies on Docker Compose/Testcontainers infrastructure plus direct project runs (no Aspire AppHost). Use the scripts under `./scripts` to provision dependencies and run the application from `src/HVO.SkyMonitor`.
+> HVO.SkyMonitor now relies on Docker Compose/Testcontainers infrastructure plus direct project runs (no Aspire AppHost). Use the scripts under `./scripts` to provision dependencies and run the application from `src/HVO.SkyMonitor.LogicHost`.
 
 ## Initial Development Setup
 
@@ -30,10 +30,10 @@ SIGNED_TICKET_SECRET="$(openssl rand -base64 32)"
 
 The file is already git-ignored; VS Code loads it automatically through `devcontainer.json`.
 
-**Option B – .NET User Secrets for `HVO.SkyMonitor`**
+**Option B – .NET User Secrets for `HVO.SkyMonitor.LogicHost`**
 
 ```bash
-cd src/HVO.SkyMonitor
+cd src/HVO.SkyMonitor.LogicHost
 dotnet user-secrets init          # creates/updates UserSecretsId
 dotnet user-secrets set "MinIO:AccessKey" "your-username"
 dotnet user-secrets set "MinIO:SecretKey" "your-password"
@@ -41,7 +41,7 @@ dotnet user-secrets set "PostgreSQL:Username" "postgres"
 dotnet user-secrets set "PostgreSQL:Password" "strong-password"
 ```
 
-Use `dotnet user-secrets list --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj` to confirm values.
+Use `dotnet user-secrets list --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj` to confirm values.
 
 ### 3. Start Infrastructure
 
@@ -55,8 +55,8 @@ The script loads `.env`, provisions bind-mount directories, and brings up the co
 ### 4. Run the Application
 
 ```bash
-dotnet run --project src/HVO.SkyMonitor --configuration Debug
-# Optional: dotnet watch --project src/HVO.SkyMonitor run
+dotnet run --project src/HVO.SkyMonitor.LogicHost --configuration Debug
+# Optional: dotnet watch --project src/HVO.SkyMonitor.LogicHost run
 ```
 
 The runtime pulls secrets from User Secrets → environment variables (`.env`, devcontainer) → configuration files.
@@ -65,9 +65,9 @@ The runtime pulls secrets from User Secrets → environment variables (`.env`, d
 
 - **Main App:** http://localhost:5174 (from `SKYMONITOR_HTTP_PORT`)
 - **MinIO Console:** http://localhost:9001
-- **MailHog (SMTP):** http://localhost:8025 (if exposed in compose)
-- **Simulator Agent:** http://localhost:5130 (when started)
-- **ZWO Agent:** http://localhost:5232 (when started)
+- **Mailpit (SMTP):** http://localhost:8025 (if exposed in compose)
+- **Camera Agent:** http://localhost:5130 (when started)
+ 
 
 ## Default Credentials
 
@@ -83,10 +83,10 @@ Change these for any shared or remote environment.
 ### Secrets Not Loading
 
 ```bash
-cd src/HVO.SkyMonitor
+cd src/HVO.SkyMonitor.LogicHost
 dotnet user-secrets list
 
-grep UserSecretsId HVO.SkyMonitor.csproj   # ensures the project is linked
+grep UserSecretsId HVO.SkyMonitor.LogicHost.csproj   # ensures the project is linked
 ```
 
 If you rely on `.devcontainer/devcontainer.local.env`, confirm the file exists and VS Code prompted you to reload the container.

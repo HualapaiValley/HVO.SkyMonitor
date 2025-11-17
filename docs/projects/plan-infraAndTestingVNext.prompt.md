@@ -55,7 +55,7 @@ _Phase status: ✅ Complete_
 
 6. Add `docker-compose.dev.yml` at repository root  
    - [x] Define infra services: `postgres`, `minio`, `redis`, `smtp`.  
-   - [x] Define app services: `skymonitor`, `cameraagent-sim`, `cameraagent-zwo` (built from `src/`).  
+   - [x] Define app services: `skymonitor`, `cameraagent` (built from `src/`).  
    - [x] Use named volumes for Postgres, MinIO, Redis, SMTP data.  
    - [x] Add bind mounts to host data directories that are accessible from the dev container (e.g., `~/skymonitor-data/postgres`, `~/skymonitor-data/minio`, etc.).  
    - [x] Ensure ports and environment variables match application config expectations (connection strings, MinIO endpoint, Redis connection, SMTP host/port).
@@ -63,7 +63,7 @@ _Phase status: ✅ Complete_
 7. Configure per-service Docker contexts via environment variables  
    - [x] In `.env.template` (and devcontainer env mapping), add:  
      - `POSTGRES_DOCKER_CONTEXT`, `MINIO_DOCKER_CONTEXT`, `REDIS_DOCKER_CONTEXT`, `SMTP_DOCKER_CONTEXT`.  
-     - `SKYMONITOR_DOCKER_CONTEXT`, `CAMERAAGENT_SIM_DOCKER_CONTEXT`, `CAMERAAGENT_ZWO_DOCKER_CONTEXT`.  
+   - `SKYMONITOR_DOCKER_CONTEXT`, `CAMERAAGENT_DOCKER_CONTEXT`.  
    - [x] Document defaults as `default`, and how to override to target remote Docker contexts.
 
 8. Implement infra scripts in `scripts/`  
@@ -98,7 +98,7 @@ _Phase status: ✅ Complete_
 
 11. Identify and remove Aspire dependencies  
    - [x] Remove `src/HVO.SkyMonitor.AppHost` and associated Aspire SDK references.  
-   - [x] In `src/HVO.SkyMonitor/HVO.SkyMonitor.csproj`, remove Aspire/CommunityToolkit Aspire packages and replace them with direct equivalents (e.g., Npgsql, MinIO client, StackExchange.Redis).  
+   - [x] In `src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj`, remove Aspire/CommunityToolkit Aspire packages and replace them with direct equivalents (e.g., Npgsql, MinIO client, StackExchange.Redis).  
    - [x] In `tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj`, remove `Aspire.Hosting.Testing` and related dependencies.  
    - [x] Delete `HVO.SkyMonitor.ServiceDefaults` and move observability wiring into shared helpers.
 
@@ -147,13 +147,12 @@ _Phase status: ✅ Complete_
 _Phase status: ✅ Complete_
 
 17. Define camera-agent integration tests  
-   - [x] Create `HVO.SkyMonitor.CameraAgent.Simulator.IntegrationTests` project (ZWO variant still pending).
-   - [x] Create `HVO.SkyMonitor.CameraAgent.ZWO.IntegrationTests` project.
+   - [x] Create `HVO.SkyMonitor.CameraAgent.IntegrationTests` project.
    - [x] Decide hosting model for host + agent (reuse `IntegrationTestFixture` for the central host plus a separate `WebApplicationFactory` for the agent).
    - [x] Use `HVO.SkyMonitor.TestSupport` identities and hosts for agent auth tests (bearer path exercised via simulator endpoint coverage).
 
 18. Define hardware test structure  
-   - [x] Design `*.HardwareTests` projects and/or `[TestCategory("Hardware")]` usage for GPIO/I2C/ZWO scenarios.
+   - [x] Design `*.HardwareTests` projects and/or `[TestCategory("Hardware")]` usage for GPIO/I2C scenarios.
    - [x] Ensure CI excludes hardware tests by default and provides an opt-in path.
 
 ---

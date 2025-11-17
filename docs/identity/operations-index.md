@@ -143,7 +143,7 @@ Identity hardening focuses on productionizing the Central Identity system with:
 2. Copy `.env.template` to `.env` (optional for overrides)
 3. Set up User Secrets using `secrets-reference.md` (optional for production-like testing)
 4. Open project in Dev Container (reads `.devcontainer/devcontainer.json`)
-5. Start infrastructure with `./scripts/infra:start` and run `dotnet run --project src/HVO.SkyMonitor`
+5. Start infrastructure with `./scripts/infra:start` and run `dotnet run --project src/HVO.SkyMonitor.LogicHost`
 
 **Secrets needed:** None! Development uses defaults and auto-generated certificates.
 

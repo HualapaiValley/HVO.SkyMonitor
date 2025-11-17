@@ -54,7 +54,7 @@ OPENIDDICT_ENCRYPTION_CERT_PASSWORD=<secure-password>
 **User Secrets (Local Testing):**
 
 ```bash
-cd src/HVO.SkyMonitor
+cd src/HVO.SkyMonitor.LogicHost
 dotnet user-secrets set "OpenIddict:SigningCertificate:Path" "/path/to/signing-cert.pfx"
 dotnet user-secrets set "OpenIddict:SigningCertificate:Password" "cert-password"
 dotnet user-secrets set "OpenIddict:EncryptionCertificate:Path" "/path/to/encryption-cert.pfx"
@@ -117,7 +117,7 @@ API_KEY_HASHING_SALT=<random-256-bit-value>
 **User Secrets:**
 
 ```bash
-cd src/HVO.SkyMonitor
+cd src/HVO.SkyMonitor.LogicHost
 dotnet user-secrets set "ApiKey:HashingSalt" "<generate-random-value>"
 ```
 
@@ -163,7 +163,7 @@ SIGNED_TICKET_ALLOWED_PATHS=/api/v1.0/frame/,/api/v1.0/image/
 **User Secrets:**
 
 ```bash
-cd src/HVO.SkyMonitor
+cd src/HVO.SkyMonitor.LogicHost
 dotnet user-secrets set "SignedTicket:Secret" "<generate-random-256-bit-value>"
 dotnet user-secrets set "SignedTicket:DefaultTtlSeconds" "300"
 dotnet user-secrets set "SignedTicket:MaxClockSkewSeconds" "30"
@@ -336,7 +336,7 @@ RATE_LIMIT_GLOBAL_PERMITS_PER_MINUTE=10000
 
 **Optional (for production-like testing):**
 ```bash
-cd src/HVO.SkyMonitor
+cd src/HVO.SkyMonitor.LogicHost
 dotnet user-secrets set "SignedTicket:Secret" "$(openssl rand -base64 32)"
 ```
 
@@ -503,7 +503,7 @@ az keyvault secret set --vault-name hvo-skymonitor-prod \
 **Solution:**
 ```bash
 # Set the secret
-cd src/HVO.SkyMonitor
+cd src/HVO.SkyMonitor.LogicHost
 dotnet user-secrets set "SignedTicket:Secret" "$(openssl rand -base64 32)"
 ```
 
@@ -537,10 +537,10 @@ dotnet dev-certs https --trust
 **Solution:**
 ```bash
 # Verify UserSecretsId is set in .csproj
-grep UserSecretsId src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+grep UserSecretsId src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 
 # List all secrets to verify they're set
-cd src/HVO.SkyMonitor
+cd src/HVO.SkyMonitor.LogicHost
 dotnet user-secrets list
 
 # Re-initialize if needed

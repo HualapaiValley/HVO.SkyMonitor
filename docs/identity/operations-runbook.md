@@ -279,7 +279,7 @@ az keyvault secret set \
 2. **Create System Account**
    ```
    - Click "Create System Account"
-   - Enter account name (e.g., "camera-agent-zwo-01")
+   - Enter account name (e.g., "camera-agent-01")
    - Enter description
    - Select Account Type: SYSTEM
    - Assign scopes (api:read, api:write, frames:access)

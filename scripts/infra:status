@@ -29,7 +29,7 @@ if [ -f .env ]; then
 fi
 
 # Define all available services
-readonly ALL_SERVICES=(postgres minio redis smtp skymonitor cameraagent-sim cameraagent-zwo)
+readonly ALL_SERVICES=(postgres minio redis smtp logichost cameraagent)
 
 # Parse arguments
 SERVICES=("$@")
@@ -57,15 +57,13 @@ get_docker_context() {
         smtp)
             context_var="${SMTP_DOCKER_CONTEXT:-default}"
             ;;
-        skymonitor)
-            context_var="${SKYMONITOR_DOCKER_CONTEXT:-default}"
+        logichost)
+            context_var="${LOGICHOST_DOCKER_CONTEXT:-default}"
             ;;
-        cameraagent-sim)
-            context_var="${CAMERAAGENT_SIM_DOCKER_CONTEXT:-default}"
+        cameraagent)
+            context_var="${CAMERAAGENT_DOCKER_CONTEXT:-default}"
             ;;
-        cameraagent-zwo)
-            context_var="${CAMERAAGENT_ZWO_DOCKER_CONTEXT:-default}"
-            ;;
+        
         *)
             context_var="default"
             ;;

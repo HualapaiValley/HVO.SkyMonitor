@@ -1,6 +1,6 @@
 using System.Net;
 using System.Security.Claims;
-using HVO.SkyMonitor.Data;
+using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;

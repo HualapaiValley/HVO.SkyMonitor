@@ -1,7 +1,7 @@
 # Secrets and Environment Configuration Summary
 
 > [!IMPORTANT]
-> HVO.SkyMonitor now runs using Docker Compose/Testcontainers plus direct project executions (no Aspire AppHost). The summaries below reference `./scripts/infra:*`, `.env`, and `src/HVO.SkyMonitor` as the authoritative entry points.
+> HVO.SkyMonitor now runs using Docker Compose/Testcontainers plus direct project executions (no Aspire AppHost). The summaries below reference `./scripts/infra:*`, `.env`, and `src/HVO.SkyMonitor.LogicHost` as the authoritative entry points.
 
 ## ✅ What Was Implemented
 
@@ -19,7 +19,7 @@
 
 ### 3. Code Changes
 
-**`src/HVO.SkyMonitor/Program.cs`:**
+**`src/HVO.SkyMonitor.LogicHost/Program.cs`:**
 - Loads configuration through the standard ASP.NET Core builder stack
 - Pulls secrets from User Secrets, `.env`, devcontainer env, or Azure Key Vault depending on environment
 - Default credentials (minioadmin/postgres) apply only when no overrides are provided
@@ -33,7 +33,7 @@
 
 ### 5. Project Configuration
 
-**`src/HVO.SkyMonitor/HVO.SkyMonitor.csproj`:**
+**`src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj`:**
 - Configure `UserSecretsId` via `dotnet user-secrets init` if you need per-developer secrets
 - Ready to use with `dotnet user-secrets` commands or environment variables supplied by Compose/Testcontainers
 
@@ -87,7 +87,7 @@ ENCRYPTION_KEY=<key>
 
 3. **Optional: Configure secrets**
    ```bash
-   cd src/HVO.SkyMonitor
+   cd src/HVO.SkyMonitor.LogicHost
    dotnet user-secrets init
    dotnet user-secrets set "MinIO:AccessKey" "dev-minio"
    dotnet user-secrets set "MinIO:SecretKey" "dev-minio-secret"
@@ -97,7 +97,7 @@ ENCRYPTION_KEY=<key>
 4. **Start infrastructure and run the app**
    ```bash
    ./scripts/infra:start postgres minio redis smtp
-   dotnet run --project src/HVO.SkyMonitor --configuration Debug
+   dotnet run --project src/HVO.SkyMonitor.LogicHost --configuration Debug
    ```
 
 ### Default Credentials
@@ -125,10 +125,10 @@ Secrets are loaded in this order (later overrides earlier):
 ```bash
 # Option 1: Use defaults (Docker Compose stack + direct run)
 ./scripts/infra:start
-dotnet run --project src/HVO.SkyMonitor --configuration Debug
+dotnet run --project src/HVO.SkyMonitor.LogicHost --configuration Debug
 
 # Option 2: Use custom user secrets
-cd src/HVO.SkyMonitor
+cd src/HVO.SkyMonitor.LogicHost
 dotnet user-secrets set "MinIO:AccessKey" "custom-user"
 dotnet user-secrets set "MinIO:SecretKey" "custom-pass"
 dotnet run --configuration Debug
@@ -137,7 +137,7 @@ dotnet run --configuration Debug
 export MINIO_ROOT_USER=env-user
 export MINIO_ROOT_PASSWORD=env-pass
 ./scripts/infra:start
-dotnet run --project src/HVO.SkyMonitor
+dotnet run --project src/HVO.SkyMonitor.LogicHost
 ```
 
 ### CI/CD (GitHub Actions)

@@ -5,7 +5,7 @@ using System.Net.Sockets;
 using System.Threading.Tasks;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
-using HVO.SkyMonitor.Data;
+using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -20,6 +20,8 @@ using Testcontainers.PostgreSql;
 using Testcontainers.Redis;
 
 namespace HVO.SkyMonitor.IntegrationTests;
+
+using Program = HVO.SkyMonitor.LogicHost.Program;
 
 /// <summary>
 /// Integration test fixture that starts Testcontainers for PostgreSQL, Redis, and MinIO.
@@ -58,7 +60,7 @@ public sealed class IntegrationTestFixture : IDisposable
     public string MinioEndpoint { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the SMTP HTTP endpoint (MailHog UI/API).
+    /// Gets the SMTP HTTP endpoint (Mailpit UI/API).
     /// </summary>
     public string SmtpHttpEndpoint { get; private set; } = string.Empty;
 
@@ -126,9 +128,9 @@ public sealed class IntegrationTestFixture : IDisposable
         var minioPort = _minioHostPort;
         MinioEndpoint = $"{MinioHost}:{minioPort}";
 
-        // Start SMTP (MailHog) container
+        // Start SMTP (Mailpit) container
         _smtpContainer = new ContainerBuilder()
-            .WithImage("mailhog/mailhog:v1.0.1")
+            .WithImage("axllent/mailpit:latest")
             .WithPortBinding(1025, true)
             .WithPortBinding(8025, true)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(1025))

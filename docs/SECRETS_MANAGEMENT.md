@@ -1,7 +1,7 @@
 # Secrets and Environment Variables Management
 
 > [!IMPORTANT]
-> This guide reflects the current Docker Compose + Testcontainers workflow. Use the scripts under `./scripts` (for example `./scripts/infra:start`) together with direct project runs (`src/HVO.SkyMonitor`, camera agents) when applying the steps below.
+> This guide reflects the current Docker Compose + Testcontainers workflow. Use the scripts under `./scripts` (for example `./scripts/infra:start`) together with direct project runs (`src/HVO.SkyMonitor.LogicHost`, camera agents) when applying the steps below.
 
 ## Overview
 
@@ -70,7 +70,7 @@ User Secrets provide secure local storage for development secrets outside the pr
 Initialize User Secrets for the primary web app or any agent you need to run locally:
 
 ```bash
-cd src/HVO.SkyMonitor
+cd src/HVO.SkyMonitor.LogicHost
 dotnet user-secrets init
 
 # Optional: initialize secrets for a camera agent
@@ -85,19 +85,19 @@ This adds/updates the `UserSecretsId` property inside the corresponding `.csproj
 ```bash
 # MinIO Credentials
 dotnet user-secrets set "MinIO:AccessKey" "your-access-key" \
-  --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 dotnet user-secrets set "MinIO:SecretKey" "your-secret-key" \
-  --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 
 # PostgreSQL Credentials  
 dotnet user-secrets set "PostgreSQL:Username" "your-db-user" \
-  --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 dotnet user-secrets set "PostgreSQL:Password" "your-db-password" \
-  --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 
 # Other Secrets (example)
 dotnet user-secrets set "JwtSettings:SecretKey" "your-jwt-secret" \
-  --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 ```
 
 ### Listing Secrets

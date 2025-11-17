@@ -2,14 +2,14 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch HVO.SkyMonitor",
+            "name": "Launch Logic Host",
             "type": "coreclr",
             "request": "launch",
             "program": "dotnet",
             "args": [
                 "run",
                 "--project",
-                "${workspaceFolder}/src/HVO.SkyMonitor/HVO.SkyMonitor.csproj"
+                "${workspaceFolder}/src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj"
             ],
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
@@ -21,14 +21,14 @@
             }
         },
         {
-            "name": "Launch Camera Agent (Simulator)",
+            "name": "Launch Camera Agent",
             "type": "coreclr",
             "request": "launch",
             "program": "dotnet",
             "args": [
                 "run",
                 "--project",
-                "${workspaceFolder}/src/HVO.SkyMonitor.CameraAgent.Simulator/HVO.SkyMonitor.CameraAgent.Simulator.csproj"
+                "${workspaceFolder}/src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj"
             ],
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
@@ -40,53 +40,26 @@
             }
         },
         {
-            "name": "Launch Camera Agent (ZWO)",
-            "type": "coreclr",
-            "request": "launch",
-            "program": "dotnet",
-            "args": [
-                "run",
-                "--project",
-                "${workspaceFolder}/src/HVO.SkyMonitor.CameraAgent.ZWO/HVO.SkyMonitor.CameraAgent.ZWO.csproj"
-            ],
-            "cwd": "${workspaceFolder}",
-            "stopAtEntry": false,
-            "console": "integratedTerminal",
-            "internalConsoleOptions": "neverOpen",
-            "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development",
-                "DOTNET_ENVIRONMENT": "Development"
-            }
-        },
-        {
-            "name": "Attach -> HVO.SkyMonitor (pick)",
+            "name": "Attach -> Logic Host (pick)",
             "type": "coreclr",
             "request": "attach",
             "processId": "${command:pickProcess}",
             "justMyCode": false
         },
         {
-            "name": "Attach -> Simulator Agent (pick)",
+            "name": "Attach -> Camera Agent (pick)",
             "type": "coreclr",
             "request": "attach",
             "processId": "${command:pickProcess}",
             "justMyCode": false
         },
-        {
-            "name": "Attach -> ZWO Agent (pick)",
-            "type": "coreclr",
-            "request": "attach",
-            "processId": "${command:pickProcess}",
-            "justMyCode": false
-        }
     ],
     "compounds": [
         {
-            "name": "Run All SkyMonitor Services",
+            "name": "Run All Services",
             "configurations": [
-                "Launch HVO.SkyMonitor",
-                "Launch Camera Agent (Simulator)",
-                "Launch Camera Agent (ZWO)"
+                "Launch Logic Host",
+                "Launch Camera Agent"
             ]
         }
     ]

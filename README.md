@@ -53,6 +53,13 @@ Use the infrastructure management scripts to start services:
 ./scripts/infra:start --reset all
 ```
 
+**Force application containers to rebuild before start:**
+```bash
+./scripts/infra:start --rebuild
+```
+
+You can pass specific services to `--rebuild` (for example `--rebuild logichost`) and it will rebuild only those application images. Pair it with `--reset` to clear container state and refresh the image in a single command.
+
 **Check service status:**
 ```bash
 ./scripts/infra:status
@@ -62,23 +69,16 @@ Use the infrastructure management scripts to start services:
 - **PostgreSQL** - tcp://localhost:5432 with `skymonitordb` database
 - **Redis** - tcp://localhost:6379
 - **MinIO** - API: http://localhost:9000, Console: http://localhost:9001 (minioadmin/minioadmin)
-- **SMTP (MailHog)** - SMTP: tcp://localhost:1025, Web UI: http://localhost:8025
-- **HVO.SkyMonitor** - Main application: http://localhost:5174
-- **Camera Agents** - Simulator: http://localhost:5130, ZWO: http://localhost:5232
-
-See `docs/projects/infra-and-testing-vNext.md` for detailed Docker Compose workflow documentation.
-
-#### Option 2: Run projects directly (Debug)
-
-You can also run each project with `dotnet run` once the infrastructure containers are up (e.g., `./scripts/infra:start postgres redis minio`).
+- **SMTP (Mailpit)** - SMTP: tcp://localhost:1025, Web UI: http://localhost:8025
+- **Logic Host** - Main application: http://localhost:5174
+ - **Camera Agent** - http://localhost:5130
 
 ```bash
 # Main site
-dotnet run --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 
-# Camera agents
-dotnet run --project src/HVO.SkyMonitor.CameraAgent.Simulator/HVO.SkyMonitor.CameraAgent.Simulator.csproj
-dotnet run --project src/HVO.SkyMonitor.CameraAgent.ZWO/HVO.SkyMonitor.CameraAgent.ZWO.csproj
+# Camera agent
+dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 ```
 
 This mode keeps hot reload and a faster edit/run cycle while still talking to the same Postgres, Redis, and MinIO containers.
@@ -125,7 +125,7 @@ The devcontainer configuration includes:
 - **Zsh with Oh My Zsh** - Enhanced terminal experience
 - **IntelliCode** - AI-assisted development with usage examples
 - **Secret management plumbing** - `.env.template`, `.devcontainer/devcontainer.local.env`, and .NET user secrets support keep credentials out of git
-- **Identity & API infrastructure parity** - The main `HVO.SkyMonitor` site now runs the same Identity, passkey, and API key pipeline previously used by the camera-agent simulator, backed by shared middleware and helpers in `HVO.SkyMonitor.Common`.
+- **Identity & API infrastructure parity** - The main `HVO.SkyMonitor` site runs the same Identity, passkey, and API key pipeline used by the camera agent, backed by shared middleware and helpers in `HVO.SkyMonitor.Common`.
 - **Shared diagnostics/security library** - Cross-cutting middleware (correlation IDs, exception handling, antiforgery helpers) and API-key primitives live in `src/HVO.SkyMonitor.Common`, consumed by the main site and reusable by future services.
 - **Camera-agent independence** - Projects under `HVO.SkyMonitor.CameraAgent.*` only reference `HVO.Common`, keeping edge agents lightweight while still registering their own diagnostics/security components.
 
@@ -146,12 +146,10 @@ The following VS Code extensions are automatically installed:
 
 The following ports are automatically forwarded and accessible from your host machine:
 
-- **5000-5001** - HVO.SkyMonitor main application (HTTP/HTTPS)
-- **5010-5011** - Simulator Camera Agent (HTTP/HTTPS)
-- **5020-5021** - ZWO Camera Agent (HTTP/HTTPS)
+- **5000-5001** - Logic Host application (HTTP/HTTPS)
 - **5174** - SkyMonitor container profile (Docker Compose build)
-- **5130** - Simulator agent container profile
-- **5232** - ZWO agent container profile
+- **5130** - Camera Agent container profile
+  
 - **6379** - Redis
 - **5432** - PostgreSQL
 - **9000** - MinIO API
@@ -166,14 +164,11 @@ The following ports are automatically forwarded and accessible from your host ma
 
 ## Container Support
 
-The Docker Compose workflow (via `scripts/infra:start`) runs infrastructure services and the ASP.NET/Blazor applications. Compose rebuilds the app images whenever the Dockerfiles or project assets change, so you rarely need manual `docker build` commands.
+The Docker Compose workflow (via `scripts/infra:start`) runs infrastructure services and the ASP.NET/Blazor applications. Docker caches previously built images, so use the script's `--rebuild` flag whenever you need to force fresh LogicHost or Camera Agent binaries.
 
 ### Automatic Container Building
 
-`./scripts/infra:start` shells out to `docker compose -f docker-compose.apps.yml up --build`, ensuring:
-- Images are rebuilt locally whenever dependencies change
-- The latest binaries are published before containers start
-- Each project uses the Dockerfile checked into `src/<Project>/Dockerfile`
+`./scripts/infra:start --rebuild [logichost|cameraagent]` invokes `docker compose -f docker-compose.dev.yml build` for the selected application services before issuing `up -d`. Resetting those services (`--reset logichost cameraagent`) also triggers a rebuild automatically. This keeps each container aligned with the working tree without requiring manual `docker build` commands.
 
 ### Manual Multi-Architecture Builds
 
@@ -192,55 +187,17 @@ docker-compose -f docker-compose.build.yml build
 
 This creates local images:
 - `hvo-skymonitor:latest`
-- `hvo-cameraagent-simulator:latest`
-- `hvo-cameraagent-zwo:latest`
+- `hvo-cameraagent:latest`
 
 ### Deployment to Raspberry Pi
 
-For deploying camera agents to Raspberry Pi:
-
-1. **Build ARM images locally:**
-   ```bash
-   PLATFORMS=linux/arm64 ./build-images.sh
-   # or for older Pi: PLATFORMS=linux/arm/v7 ./build-images.sh
-   ```
-
-2. **Save and transfer images:**
-   ```bash
-   docker save hvo-cameraagent-zwo:latest | gzip > zwo-agent.tar.gz
-   scp zwo-agent.tar.gz pi@raspberrypi:/tmp/
-   ```
-
-3. **Load and run on Pi:**
-   ```bash
-   ssh pi@raspberrypi
-   docker load < /tmp/zwo-agent.tar.gz
-   docker run -d --name zwo-agent \
-     -e SkyMonitor__BaseUrl=http://your-server:5174 \
-     -e CentralIdentity__ServiceUrl=http://your-server:5174 \
-     -p 8080:8080 \
-     --restart unless-stopped \
-     hvo-cameraagent-zwo:latest
-   ```
-
-4. **For ZWO cameras with USB access:**
-   ```bash
-   docker run -d --name zwo-agent \
-     --device /dev/bus/usb:/dev/bus/usb \
-     --privileged \
-     -e SkyMonitor__BaseUrl=http://your-server:5174 \
-     -e CentralIdentity__ServiceUrl=http://your-server:5174 \
-     -p 8080:8080 \
-     --restart unless-stopped \
-     hvo-cameraagent-zwo:latest
-   ```
+For deploying the camera agent to Raspberry Pi (if desired), build an ARM image locally and push to a registry or load via tarball, using the `hvo-cameraagent` image.
 
 ### Dockerfiles
 
 Each project has a multi-stage Dockerfile:
-- `src/HVO.SkyMonitor/Dockerfile`
-- `src/HVO.SkyMonitor.CameraAgent.Simulator/Dockerfile`
-- `src/HVO.SkyMonitor.CameraAgent.ZWO/Dockerfile`
+- `src/HVO.SkyMonitor.LogicHost/Dockerfile`
+- `src/HVO.SkyMonitor.CameraAgent/Dockerfile`
 
 All Dockerfiles:
 - Use .NET 10 SDK for build
@@ -280,6 +237,6 @@ The application is undergoing a major refactor to implement a centralized identi
 ## Recent Identity & Infrastructure Work (Pre-Rebuild)
 
 - Migrated diagnostics middleware, correlation ID plumbing, and API-key primitives into `src/HVO.SkyMonitor.Common` so the main site and future microservices share a single implementation.
-- Cloned the camera-agent simulator's complete Identity experience (Blazor pages, passkey WebAuthn flows, external login + email management, scoped CSS/JS) into `src/HVO.SkyMonitor/Components/Account`, ensuring parity with the hardened simulator stack.
+- Cloned the camera agent's complete Identity experience (Blazor pages, passkey WebAuthn flows, external login + email management, scoped CSS/JS) into `src/HVO.SkyMonitor.LogicHost/Components/Account`, ensuring parity with the hardened agent stack.
 - Added minimal API endpoints in `Program.cs` via `MapAdditionalIdentityEndpoints()` to support passkey creation/request, external login linking, and personal-data download routes.
 - Updated dependency wiring so only the main site references `HVO.SkyMonitor.Common`; camera-agent projects remain standalone and continue using their own infrastructure packages, preventing circular dependencies.

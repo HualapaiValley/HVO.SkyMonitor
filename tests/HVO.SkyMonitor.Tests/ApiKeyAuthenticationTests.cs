@@ -1,5 +1,5 @@
 using HVO.SkyMonitor.Common.Security;
-using HVO.SkyMonitor.Data;
+using HVO.SkyMonitor.LogicHost.Data;
 
 namespace HVO.SkyMonitor.Tests;
 

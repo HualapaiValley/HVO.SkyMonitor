@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # infra:start - Start infrastructure and application services
-# Usage: ./scripts/infra:start [--reset SERVICE...] [SERVICE...]
+# Usage: ./scripts/infra:start [--reset SERVICE...] [--rebuild SERVICE...] [SERVICE...]
 # Examples:
-#   ./scripts/infra:start                    # Start all services
-#   ./scripts/infra:start postgres redis     # Start specific services
-#   ./scripts/infra:start --reset all        # Reset all data then start all
-#   ./scripts/infra:start --reset postgres   # Reset postgres data then start all
+#   ./scripts/infra:start                             # Start all services
+#   ./scripts/infra:start postgres redis              # Start specific services
+#   ./scripts/infra:start --reset all                 # Reset all data then start all
+#   ./scripts/infra:start --reset postgres            # Reset postgres data then start all
+#   ./scripts/infra:start --rebuild logichost         # Rebuild LogicHost image before start
+#   ./scripts/infra:start --reset logichost --rebuild # Reset and rebuild app containers
 
 set -euo pipefail
 
@@ -33,13 +35,15 @@ fi
 
 # Define all available services
 readonly INFRA_SERVICES=(postgres minio redis smtp)
-readonly APP_SERVICES=(skymonitor cameraagent-sim cameraagent-zwo)
+readonly APP_SERVICES=(logichost cameraagent)
 readonly ALL_SERVICES=("${INFRA_SERVICES[@]}" "${APP_SERVICES[@]}")
 
 # Parse arguments
 RESET_MODE=false
 RESET_SERVICES=()
 START_SERVICES=()
+REBUILD_MODE=false
+REBUILD_SERVICES=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -52,6 +56,19 @@ while [[ $# -gt 0 ]]; do
                     RESET_SERVICES=("${ALL_SERVICES[@]}")
                 else
                     RESET_SERVICES+=("$1")
+                fi
+                shift
+            done
+            ;;
+        --rebuild)
+            REBUILD_MODE=true
+            shift
+            # Collect services to rebuild
+            while [[ $# -gt 0 ]] && [[ ! $1 =~ ^-- ]]; do
+                if [[ "$1" == "all" ]]; then
+                    REBUILD_SERVICES=("${APP_SERVICES[@]}")
+                else
+                    REBUILD_SERVICES+=("$1")
                 fi
                 shift
             done
@@ -86,15 +103,13 @@ get_docker_context() {
         smtp)
             context_var="${SMTP_DOCKER_CONTEXT:-default}"
             ;;
-        skymonitor)
-            context_var="${SKYMONITOR_DOCKER_CONTEXT:-default}"
+        logichost)
+            context_var="${LOGICHOST_DOCKER_CONTEXT:-default}"
             ;;
-        cameraagent-sim)
-            context_var="${CAMERAAGENT_SIM_DOCKER_CONTEXT:-default}"
+        cameraagent)
+            context_var="${CAMERAAGENT_DOCKER_CONTEXT:-default}"
             ;;
-        cameraagent-zwo)
-            context_var="${CAMERAAGENT_ZWO_DOCKER_CONTEXT:-default}"
-            ;;
+        
         *)
             context_var="default"
             ;;
@@ -123,14 +138,15 @@ reset_service() {
             echo -e "${GREEN}✓ Reset $service data${NC}"
             ;;
         smtp)
-            # MailHog doesn't persist data, just restart it
+            # Mailpit doesn't persist data, just restart it
             docker --context "$context" compose -f docker-compose.dev.yml restart "$service" 2>/dev/null || true
             echo -e "${GREEN}✓ Reset $service (restarted)${NC}"
             ;;
-        skymonitor|cameraagent-sim|cameraagent-zwo)
+        logichost|cameraagent)
             # Application containers - just remove them
             docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" 2>/dev/null || true
-            echo -e "${GREEN}✓ Reset $service (removed container)${NC}"
+            docker --context "$context" compose -f docker-compose.dev.yml build "$service"
+            echo -e "${GREEN}✓ Reset $service (removed container and rebuilt image)${NC}"
             ;;
         *)
             echo -e "${RED}Unknown service: $service${NC}"
@@ -184,9 +200,33 @@ for service in "${INFRA_SERVICES[@]}"; do
 done
 
 # Start application services
-if [[ " ${START_SERVICES[*]} " =~ " skymonitor " ]] || \
-   [[ " ${START_SERVICES[*]} " =~ " cameraagent-sim " ]] || \
-   [[ " ${START_SERVICES[*]} " =~ " cameraagent-zwo " ]]; then
+if [[ "$REBUILD_MODE" == true ]]; then
+    echo -e "${BLUE}Rebuilding application images...${NC}"
+    rebuild_targets=()
+    if [[ ${#REBUILD_SERVICES[@]} -eq 0 ]]; then
+        rebuild_targets=("${APP_SERVICES[@]}")
+    else
+        rebuild_targets=("${REBUILD_SERVICES[@]}")
+    fi
+
+    filtered_targets=()
+    for service in "${rebuild_targets[@]}"; do
+        if [[ " ${APP_SERVICES[*]} " =~ " ${service} " ]]; then
+            if [[ ! " ${filtered_targets[*]} " =~ " ${service} " ]]; then
+                filtered_targets+=("$service")
+            fi
+        fi
+    done
+
+    if [[ ${#filtered_targets[@]} -gt 0 ]]; then
+        docker compose -f docker-compose.dev.yml build "${filtered_targets[@]}"
+    else
+        echo -e "${YELLOW}No application services matched for rebuild${NC}"
+    fi
+fi
+
+if [[ " ${START_SERVICES[*]} " =~ " logichost " ]] || \
+    [[ " ${START_SERVICES[*]} " =~ " cameraagent " ]]; then
     echo -e "${BLUE}Starting application services...${NC}"
     app_services_to_start=()
     for service in "${APP_SERVICES[@]}"; do
@@ -206,8 +246,7 @@ echo "To check status: ./scripts/infra:status"
 echo "To stop: docker compose -f docker-compose.dev.yml down"
 echo ""
 echo -e "${BLUE}Service URLs:${NC}"
-echo "  Main App:        http://localhost:${SKYMONITOR_HTTP_PORT:-5174}"
+echo "  Logic Host:      http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}"
 echo "  MinIO Console:   http://localhost:${MINIO_CONSOLE_PORT:-9001}"
-echo "  MailHog Web UI:  http://localhost:${SMTP_WEB_PORT:-8025}"
-echo "  Simulator Agent: http://localhost:${SIMULATOR_AGENT_HTTP_PORT:-5130}"
-echo "  ZWO Agent:       http://localhost:${ZWO_AGENT_HTTP_PORT:-5232}"
+echo "  Mailpit Web UI: http://localhost:${SMTP_WEB_PORT:-8025}"
+echo "  Camera Agent:   http://localhost:${CAMERA_AGENT_HTTP_PORT:-5130}"

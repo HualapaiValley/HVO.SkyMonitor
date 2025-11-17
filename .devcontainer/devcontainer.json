@@ -78,27 +78,22 @@
   },
   // Port mappings with allInterfaces for Docker-from-Docker accessibility
   // 5000-5001: Main HVO.SkyMonitor app (HTTP/HTTPS)
-  // 5010-5011: Simulator Camera Agent (HTTP/HTTPS)
-  // 5020-5021: ZWO Camera Agent (HTTP/HTTPS)
+  // 5010-5011: Camera Agent (HTTP/HTTPS)
   // 5432: PostgreSQL, 6379: Redis
   // 9000-9001: MinIO (API/Console)
   // 5174: SkyMonitor container mode
-  // 5130: Simulator agent container mode
-  // 5232: ZWO agent container mode
+  // 5130: Camera agent container mode
   "forwardPorts": [
     5000,
     5001,
     5010,
     5011,
-    5020,
-    5021,
     5432,
     6379,
     9000,
     9001,
     5174,
-    5130,
-    5232
+    5130
   ],
   "portsAttributes": {
     "5000": {
@@ -114,14 +109,6 @@
       "elevateIfNeeded": true
     },
     "5011": {
-      "onAutoForward": "notify",
-      "elevateIfNeeded": true
-    },
-    "5020": {
-      "onAutoForward": "notify",
-      "elevateIfNeeded": true
-    },
-    "5021": {
       "onAutoForward": "notify",
       "elevateIfNeeded": true
     },
@@ -141,9 +128,6 @@
       "onAutoForward": "notify"
     },
     "5130": {
-      "onAutoForward": "silent"
-    },
-    "5232": {
       "onAutoForward": "silent"
     }
   },

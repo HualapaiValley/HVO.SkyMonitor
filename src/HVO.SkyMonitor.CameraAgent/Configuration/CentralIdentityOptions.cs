@@ -75,7 +75,7 @@ public class ClientCredentialsOptions
 
     /// <summary>
     /// OAuth2 client ID assigned to this camera agent.
-    /// Example: "camera-agent-simulator"
+    /// Example: "camera-agent"
     /// </summary>
     public string ClientId { get; set; } = string.Empty;
 

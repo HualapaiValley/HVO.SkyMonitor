@@ -4,7 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using HVO.SkyMonitor.Models.Diagnostics;
+using HVO.SkyMonitor.LogicHost.Models.Diagnostics;
 using HVO.SkyMonitor.TestSupport;
 
 namespace HVO.SkyMonitor.IntegrationTests;

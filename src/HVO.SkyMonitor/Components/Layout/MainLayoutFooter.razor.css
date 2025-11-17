@@ -1,9 +1,0 @@
-.global-footer__section {
-    min-height: var(--sm-nav-pill-height);
-}
-
-.footer-chip {
-    min-height: var(--sm-nav-pill-height);
-    display: inline-flex;
-    align-items: center;
-}

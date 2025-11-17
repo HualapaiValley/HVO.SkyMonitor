@@ -1,5 +1,5 @@
 using System.Security.Claims;
-using HVO.SkyMonitor.Data;
+using HVO.SkyMonitor.LogicHost.Data;
 using OpenIddict.Abstractions;
 
 namespace HVO.SkyMonitor.Tests;

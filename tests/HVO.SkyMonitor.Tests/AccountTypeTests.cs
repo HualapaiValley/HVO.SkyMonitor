@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
-using HVO.SkyMonitor.Data;
+using HVO.SkyMonitor.LogicHost.Data;
 
 namespace HVO.SkyMonitor.Tests;
 

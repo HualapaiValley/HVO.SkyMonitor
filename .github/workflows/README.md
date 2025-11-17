@@ -267,34 +267,25 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: src/HVO.SkyMonitor/Dockerfile
+          file: src/HVO.SkyMonitor.LogicHost/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/hvo-skymonitor:latest
             ${{ secrets.DOCKER_USERNAME }}/hvo-skymonitor:${{ github.sha }}
       
-      - name: Build and push Simulator Agent
+      - name: Build and push Camera Agent
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: src/HVO.SkyMonitor.CameraAgent.Simulator/Dockerfile
+          file: src/HVO.SkyMonitor.CameraAgent/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent-simulator:latest
-            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent-simulator:${{ github.sha }}
+            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent:latest
+            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent:${{ github.sha }}
       
-      - name: Build and push ZWO Agent
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: src/HVO.SkyMonitor.CameraAgent.ZWO/Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent-zwo:latest
-            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent-zwo:${{ github.sha }}
+      
 ```
 
 ### Deploy with Environment Secrets (Identity Hardening Enhanced)
@@ -647,34 +638,25 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: src/HVO.SkyMonitor/Dockerfile
+          file: src/HVO.SkyMonitor.LogicHost/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/hvo-skymonitor:latest
             ${{ secrets.DOCKER_USERNAME }}/hvo-skymonitor:${{ github.sha }}
       
-      - name: Build and push Simulator Agent
+      - name: Build and push Camera Agent
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: src/HVO.SkyMonitor.CameraAgent.Simulator/Dockerfile
+          file: src/HVO.SkyMonitor.CameraAgent/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent-simulator:latest
-            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent-simulator:${{ github.sha }}
+            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent:latest
+            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent:${{ github.sha }}
       
-      - name: Build and push ZWO Agent
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: src/HVO.SkyMonitor.CameraAgent.ZWO/Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent-zwo:latest
-            ${{ secrets.DOCKER_USERNAME }}/hvo-cameraagent-zwo:${{ github.sha }}
+      
 ```
 
 ### Deploy with Environment Secrets

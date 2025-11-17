@@ -14,7 +14,7 @@ This library provides reusable test constants, utilities, and helpers to reduce 
 Shared test host URLs and domains:
 - `HttpDevelopmentUrl`: Base HTTP URL for development testing
 - `LogicalDomain`: Logical domain name for test scenarios
-- `SimulatorAgentUrl`, `ZwoAgentUrl`: Camera agent URLs
+- `CameraAgentUrl`: Camera agent URL
 
 #### `TestEmail`
 Email addresses and configuration for tests:
