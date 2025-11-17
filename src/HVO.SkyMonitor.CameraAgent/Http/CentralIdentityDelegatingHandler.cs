@@ -1,3 +1,4 @@
+using System;
 using System.Net.Http.Headers;
 using HVO.SkyMonitor.CameraAgent.Authentication;
 using Microsoft.Extensions.Logging;
@@ -12,11 +13,20 @@ public sealed class CentralIdentityDelegatingHandler(
     ILogger<CentralIdentityDelegatingHandler> logger) : DelegatingHandler
 {
     private const string ApiKeyHeader = "X-API-Key";
+    internal const string SkipAuthHeader = "X-Skip-CentralAuth";
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.Headers.Contains(SkipAuthHeader))
+        {
+            request.Headers.Remove(SkipAuthHeader);
+            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+
         if (!request.Headers.Contains(ApiKeyHeader) && request.Headers.Authorization is null)
         {
             var token = await authenticationService.GetAccessTokenAsync(cancellationToken);

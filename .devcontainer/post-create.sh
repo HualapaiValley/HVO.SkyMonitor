@@ -64,7 +64,7 @@ dotnet --info
 # Ensure handy CLI tools are available (ripgrep and python alias)
 echo "Installing development CLI utilities..."
 sudo apt-get update -y
-sudo apt-get install -y ripgrep python-is-python3
+sudo apt-get install -y ripgrep python-is-python3 xxd
 
 log_section "Tool versions (post CLI install)"
 log_tool_version "Python" python --version

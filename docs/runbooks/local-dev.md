@@ -23,11 +23,11 @@ This runbook describes the day-to-day workflow for developing and validating HVO
    ./scripts/infra:status
    ```
 
-3. **Stop everything** (if needed) with Docker directly:
+3. **Stop everything** using the matching helper:
    ```bash
-   docker compose -f docker-compose.dev.yml down
+   ./scripts/infra:stop
    ```
-   This mirrors what the scripts do and ensures networks/volumes remain intact.
+   Add `--clear-cache` plus service names (or `all`) to wipe their cached volumes/directories after the containers stop.
 
 ## Application Workflows
 

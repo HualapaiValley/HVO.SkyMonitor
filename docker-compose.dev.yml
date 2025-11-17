@@ -19,7 +19,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ${POSTGRES_DATA_DIR:-./data/postgres}:/host-data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-skymonitor}" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-skymonitor} -d ${POSTGRES_DB:-skymonitordb}" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -88,11 +88,13 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__skymonitordb: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-skymonitordb};Username=${POSTGRES_USER:-skymonitor};Password=${POSTGRES_PASSWORD:-skymonitor_dev_password}"
-      ConnectionStrings__redis: "redis:6379"
-      MinIO__Endpoint: "minio:9000"
-      MinIO__AccessKey: ${MINIO_ROOT_USER:-minioadmin}
-      MinIO__SecretKey: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      MinIO__UseSSL: "false"
+      Redis__Configuration: "redis:6379"
+      Redis__InstanceName: "skymonitor"
+      Minio__Endpoint: "minio"
+      Minio__Port: 9000
+      Minio__AccessKey: ${MINIO_ROOT_USER:-minioadmin}
+      Minio__SecretKey: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      Minio__UseSsl: "false"
       Smtp__Host: smtp
       Smtp__Port: 1025
       Smtp__From: ${SMTP_FROM:-no-reply@skymonitor.local}

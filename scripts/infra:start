@@ -44,13 +44,13 @@ RESET_SERVICES=()
 START_SERVICES=()
 REBUILD_MODE=false
 REBUILD_SERVICES=()
+USER_SPECIFIED_SERVICES=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --reset)
             RESET_MODE=true
             shift
-            # Collect services to reset
             while [[ $# -gt 0 ]] && [[ ! $1 =~ ^-- ]]; do
                 if [[ "$1" == "all" ]]; then
                     RESET_SERVICES=("${ALL_SERVICES[@]}")
@@ -63,7 +63,6 @@ while [[ $# -gt 0 ]]; do
         --rebuild)
             REBUILD_MODE=true
             shift
-            # Collect services to rebuild
             while [[ $# -gt 0 ]] && [[ ! $1 =~ ^-- ]]; do
                 if [[ "$1" == "all" ]]; then
                     REBUILD_SERVICES=("${APP_SERVICES[@]}")
@@ -74,76 +73,54 @@ while [[ $# -gt 0 ]]; do
             done
             ;;
         *)
-            START_SERVICES+=("$1")
+            USER_SPECIFIED_SERVICES=true
+            if [[ "$1" == "all" ]]; then
+                START_SERVICES=("${ALL_SERVICES[@]}")
+            else
+                START_SERVICES+=("$1")
+            fi
             shift
             ;;
     esac
 done
 
-# If no services specified, start all
 if [[ ${#START_SERVICES[@]} -eq 0 ]]; then
     START_SERVICES=("${ALL_SERVICES[@]}")
 fi
 
-# Function to get docker context for a service
 get_docker_context() {
     local service="$1"
-    local context_var=""
-    
+    local context_var="default"
     case "$service" in
-        postgres)
-            context_var="${POSTGRES_DOCKER_CONTEXT:-default}"
-            ;;
-        minio)
-            context_var="${MINIO_DOCKER_CONTEXT:-default}"
-            ;;
-        redis)
-            context_var="${REDIS_DOCKER_CONTEXT:-default}"
-            ;;
-        smtp)
-            context_var="${SMTP_DOCKER_CONTEXT:-default}"
-            ;;
-        logichost)
-            context_var="${LOGICHOST_DOCKER_CONTEXT:-default}"
-            ;;
-        cameraagent)
-            context_var="${CAMERAAGENT_DOCKER_CONTEXT:-default}"
-            ;;
-        
-        *)
-            context_var="default"
-            ;;
+        postgres) context_var="${POSTGRES_DOCKER_CONTEXT:-default}" ;;
+        minio) context_var="${MINIO_DOCKER_CONTEXT:-default}" ;;
+        redis) context_var="${REDIS_DOCKER_CONTEXT:-default}" ;;
+        smtp) context_var="${SMTP_DOCKER_CONTEXT:-default}" ;;
+        logichost) context_var="${LOGICHOST_DOCKER_CONTEXT:-default}" ;;
+        cameraagent) context_var="${CAMERAAGENT_DOCKER_CONTEXT:-default}" ;;
     esac
-    
     echo "$context_var"
 }
 
-# Function to reset service data
 reset_service() {
     local service="$1"
     local context
     context="$(get_docker_context "$service")"
-    
+
     echo -e "${YELLOW}Resetting $service data...${NC}"
-    
+
     case "$service" in
         postgres|minio|redis)
-            # Stop the service if running
             docker --context "$context" compose -f docker-compose.dev.yml stop "$service" 2>/dev/null || true
-            
-            # Remove the volume
             local volume_name="skymonitor-${service}-data"
             docker --context "$context" volume rm "$volume_name" 2>/dev/null || true
-            
             echo -e "${GREEN}✓ Reset $service data${NC}"
             ;;
         smtp)
-            # Mailpit doesn't persist data, just restart it
             docker --context "$context" compose -f docker-compose.dev.yml restart "$service" 2>/dev/null || true
             echo -e "${GREEN}✓ Reset $service (restarted)${NC}"
             ;;
         logichost|cameraagent)
-            # Application containers - just remove them
             docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" 2>/dev/null || true
             docker --context "$context" compose -f docker-compose.dev.yml build "$service"
             echo -e "${GREEN}✓ Reset $service (removed container and rebuilt image)${NC}"
@@ -155,7 +132,6 @@ reset_service() {
     esac
 }
 
-# Reset services if requested
 if [[ "$RESET_MODE" == true ]]; then
     echo -e "${BLUE}=== Resetting Services ===${NC}"
     for service in "${RESET_SERVICES[@]}"; do
@@ -164,45 +140,53 @@ if [[ "$RESET_MODE" == true ]]; then
     echo ""
 fi
 
-# Start services
 echo -e "${BLUE}=== Starting Services ===${NC}"
-
-# Create data directories if they don't exist
 mkdir -p data/postgres data/minio data/redis
 
-# Start infrastructure services first
-echo -e "${BLUE}Starting infrastructure services...${NC}"
-docker compose -f docker-compose.dev.yml up -d "${INFRA_SERVICES[@]}"
+infra_services_to_start=()
+for service in "${INFRA_SERVICES[@]}"; do
+    if [[ " ${START_SERVICES[*]} " =~ " ${service} " ]]; then
+        infra_services_to_start+=("$service")
+    fi
 
-# Wait a moment for infrastructure to stabilize
+done
+
+if [[ ${#infra_services_to_start[@]} -eq 0 ]] && [[ "$USER_SPECIFIED_SERVICES" == true ]]; then
+    if [[ " ${START_SERVICES[*]} " =~ " logichost " ]] || [[ " ${START_SERVICES[*]} " =~ " cameraagent " ]]; then
+        infra_services_to_start=("${INFRA_SERVICES[@]}")
+    fi
+fi
+
+if [[ ${#infra_services_to_start[@]} -eq 0 ]]; then
+    infra_services_to_start=("${INFRA_SERVICES[@]}")
+fi
+
+echo -e "${BLUE}Starting infrastructure services...${NC}"
+docker compose -f docker-compose.dev.yml up -d "${infra_services_to_start[@]}"
+
 echo -e "${BLUE}Waiting for infrastructure to be healthy...${NC}"
 sleep 3
 
-# Check health of infrastructure services
-for service in "${INFRA_SERVICES[@]}"; do
-    if [[ " ${START_SERVICES[*]} " =~ " ${service} " ]]; then
-        echo -n "Checking $service... "
-        # Wait for healthy status (timeout after 30 seconds)
-        timeout=30
-        while [[ $timeout -gt 0 ]]; do
-            status=$(docker compose -f docker-compose.dev.yml ps "$service" --format json 2>/dev/null | grep -o '"Health":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
-            if [[ "$status" == "healthy" ]] || [[ "$status" == "unknown" ]]; then
-                echo -e "${GREEN}✓${NC}"
-                break
-            fi
-            sleep 1
-            ((timeout--)) || true
-        done
-        if [[ $timeout -eq 0 ]]; then
-            echo -e "${YELLOW}⚠ (timeout, may still be starting)${NC}"
+for service in "${infra_services_to_start[@]}"; do
+    echo -n "Checking $service... "
+    timeout=30
+    while [[ $timeout -gt 0 ]]; do
+        status=$(docker compose -f docker-compose.dev.yml ps "$service" --format json 2>/dev/null | grep -o '"Health":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+        if [[ "$status" == "healthy" ]] || [[ "$status" == "unknown" ]]; then
+            echo -e "${GREEN}✓${NC}"
+            break
         fi
+        sleep 1
+        ((timeout--)) || true
+    done
+    if [[ $timeout -eq 0 ]]; then
+        echo -e "${YELLOW}⚠ (timeout, may still be starting)${NC}"
     fi
+
 done
 
-# Start application services
 if [[ "$REBUILD_MODE" == true ]]; then
     echo -e "${BLUE}Rebuilding application images...${NC}"
-    rebuild_targets=()
     if [[ ${#REBUILD_SERVICES[@]} -eq 0 ]]; then
         rebuild_targets=("${APP_SERVICES[@]}")
     else
@@ -212,9 +196,7 @@ if [[ "$REBUILD_MODE" == true ]]; then
     filtered_targets=()
     for service in "${rebuild_targets[@]}"; do
         if [[ " ${APP_SERVICES[*]} " =~ " ${service} " ]]; then
-            if [[ ! " ${filtered_targets[*]} " =~ " ${service} " ]]; then
-                filtered_targets+=("$service")
-            fi
+            filtered_targets+=("$service")
         fi
     done
 
@@ -225,8 +207,7 @@ if [[ "$REBUILD_MODE" == true ]]; then
     fi
 fi
 
-if [[ " ${START_SERVICES[*]} " =~ " logichost " ]] || \
-    [[ " ${START_SERVICES[*]} " =~ " cameraagent " ]]; then
+if [[ " ${START_SERVICES[*]} " =~ " logichost " ]] || [[ " ${START_SERVICES[*]} " =~ " cameraagent " ]]; then
     echo -e "${BLUE}Starting application services...${NC}"
     app_services_to_start=()
     for service in "${APP_SERVICES[@]}"; do
@@ -243,7 +224,7 @@ echo ""
 echo -e "${GREEN}=== Services Started ===${NC}"
 echo "To view logs: docker compose -f docker-compose.dev.yml logs -f"
 echo "To check status: ./scripts/infra:status"
-echo "To stop: docker compose -f docker-compose.dev.yml down"
+echo "To stop: ./scripts/infra:stop"
 echo ""
 echo -e "${BLUE}Service URLs:${NC}"
 echo "  Logic Host:      http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}"

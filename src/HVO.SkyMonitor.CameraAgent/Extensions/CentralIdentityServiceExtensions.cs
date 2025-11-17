@@ -1,3 +1,4 @@
+using System;
 using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using Microsoft.Extensions.Configuration;
@@ -21,6 +22,9 @@ public static class CentralIdentityServiceExtensions
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
         services.Configure<CentralIdentityOptions>(
             configuration.GetSection("CentralIdentity"));
         services.PostConfigure<CentralIdentityOptions>(ApplyDefaultScopes);
@@ -42,6 +46,9 @@ public static class CentralIdentityServiceExtensions
         this IServiceCollection services,
         Action<CentralIdentityOptions> configureOptions)
     {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configureOptions);
+
         services.Configure(configureOptions);
         services.PostConfigure<CentralIdentityOptions>(ApplyDefaultScopes);
         services.AddHttpClient();

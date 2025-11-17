@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -13,17 +14,18 @@ namespace HVO.SkyMonitor.CameraAgent.Authentication;
 /// Implementation of central authentication service for camera agents.
 /// Handles OAuth2 client credentials flow and API key authentication.
 /// </summary>
-public class CentralAuthenticationService(
+public sealed class CentralAuthenticationService(
     IOptions<CentralIdentityOptions> options,
     IHttpClientFactory httpClientFactory,
     ILogger<CentralAuthenticationService> logger,
-    TimeProvider timeProvider) : ICentralAuthenticationService
+    TimeProvider timeProvider) : ICentralAuthenticationService, IDisposable
 {
     public const string TokenClientName = "CentralIdentity.TokenClient";
 
     private readonly CentralIdentityOptions _options = options.Value;
     private TokenCacheEntry? _cachedToken;
     private readonly SemaphoreSlim _tokenLock = new(1, 1);
+    private bool _disposed;
 
     public async Task<string?> GetAccessTokenAsync(CancellationToken cancellationToken = default)
     {
@@ -79,6 +81,8 @@ public class CentralAuthenticationService(
 
     public async Task ConfigureHttpClientAsync(HttpClient client, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(client);
+
         if (_options.Mode == AuthenticationMode.ClientCredentials)
         {
             var token = await GetAccessTokenAsync(cancellationToken);
@@ -145,6 +149,18 @@ public class CentralAuthenticationService(
         var now = timeProvider.GetUtcNow();
         var refreshWindow = TimeSpan.FromSeconds(_options.TokenRefreshWindowSeconds);
         return entry.ExpiresAt - now <= refreshWindow;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _tokenLock.Dispose();
+        _disposed = true;
+        GC.SuppressFinalize(this);
     }
 
     private sealed class TokenCacheEntry

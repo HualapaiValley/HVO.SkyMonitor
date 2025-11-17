@@ -1,7 +1,6 @@
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Text;
-using System.Text.Encodings.Web;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.LogicHost.Components.Account;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -53,7 +52,7 @@ public sealed partial class ResendEmailConfirmation : ComponentBase
             NavigationManager.ToAbsoluteUri("Account/ConfirmEmail").AbsoluteUri,
             new Dictionary<string, object?> { ["userId"] = userId, ["code"] = code });
 
-        await EmailSender.SendConfirmationLinkAsync(user, Input.Email, HtmlEncoder.Default.Encode(callbackUrl));
+        await EmailSender.SendConfirmationLinkAsync(user, Input.Email, callbackUrl);
 
         message = "Verification email sent. Please check your email.";
     }

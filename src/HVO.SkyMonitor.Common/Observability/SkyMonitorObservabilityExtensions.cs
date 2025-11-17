@@ -1,3 +1,4 @@
+using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http;
@@ -76,16 +77,48 @@ public static class SkyMonitorObservabilityExtensions
     public static WebApplication MapSkyMonitorHealthEndpoints(this WebApplication app)
     {
         ArgumentNullException.ThrowIfNull(app);
-        if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Testing"))
+        app.MapHealthChecks(HealthEndpointPath, new HealthCheckOptions
         {
-            app.MapHealthChecks(HealthEndpointPath);
-            app.MapHealthChecks(AlivenessEndpointPath, new HealthCheckOptions
-            {
-                Predicate = registration => registration.Tags.Contains("live")
-            });
-        }
+            ResponseWriter = WriteDetailedHealthResponse
+        })
+            .AllowAnonymous();
+
+        app.MapHealthChecks(AlivenessEndpointPath, new HealthCheckOptions
+        {
+            Predicate = registration => registration.Tags.Contains("live"),
+            ResponseWriter = WriteLivenessResponse
+        })
+            .AllowAnonymous();
 
         return app;
+    }
+
+    private static Task WriteDetailedHealthResponse(HttpContext context, HealthReport report)
+    {
+        context.Response.ContentType = "application/json";
+        var payload = new
+        {
+            status = report.Status.ToString(),
+            duration = report.TotalDuration.TotalMilliseconds,
+            checks = report.Entries.Select(entry => new
+            {
+                name = entry.Key,
+                status = entry.Value.Status.ToString(),
+                description = entry.Value.Description,
+                duration = entry.Value.Duration.TotalMilliseconds,
+                error = entry.Value.Exception?.Message,
+                tags = entry.Value.Tags
+            })
+        };
+
+        return context.Response.WriteAsJsonAsync(payload);
+    }
+
+    private static Task WriteLivenessResponse(HttpContext context, HealthReport report)
+    {
+        context.Response.ContentType = "application/json";
+        var payload = new { status = report.Status.ToString() };
+        return context.Response.WriteAsJsonAsync(payload);
     }
 
     private static bool HasOtlpEndpointConfigured(IConfiguration configuration)
@@ -95,7 +128,7 @@ public static class SkyMonitorObservabilityExtensions
 
     private static bool IsHealthRequest(PathString path)
     {
-        return path.StartsWithSegments(HealthEndpointPath, StringComparison.OrdinalIgnoreCase) || 
+        return path.StartsWithSegments(HealthEndpointPath, StringComparison.OrdinalIgnoreCase) ||
                path.StartsWithSegments(AlivenessEndpointPath, StringComparison.OrdinalIgnoreCase);
     }
 }

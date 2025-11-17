@@ -6,6 +6,7 @@ using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.CameraAgent.Extensions;
 using HVO.SkyMonitor.CameraAgent.Components;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.HealthChecks;
 using HVO.SkyMonitor.Common.Observability;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpLogging;
@@ -94,7 +95,8 @@ public class Program
                     options.SubstituteApiVersionInUrl = true;
                 });
 
-        builder.Services.AddSkyMonitorHealthChecks();
+        var healthChecks = builder.Services.AddSkyMonitorHealthChecks();
+        healthChecks.AddCheck<LogicHostHealthCheck>("logic-host", tags: ["dependency"]);
         builder.Services.AddOpenTelemetry()
             .WithMetrics(metrics =>
             {

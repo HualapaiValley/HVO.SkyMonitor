@@ -1,6 +1,5 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text;
-using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.AspNetCore.Identity;
@@ -75,7 +74,7 @@ public sealed partial class Email
             NavigationManager.ToAbsoluteUri("Account/ConfirmEmailChange").AbsoluteUri,
             new Dictionary<string, object?> { ["userId"] = userId, ["email"] = model.NewEmail, ["code"] = code });
 
-        await EmailSender.SendConfirmationLinkAsync(currentUser, model.NewEmail, HtmlEncoder.Default.Encode(callbackUrl));
+        await EmailSender.SendConfirmationLinkAsync(currentUser, model.NewEmail, callbackUrl);
 
         message = "Confirmation link to change email sent. Please check your email.";
     }
@@ -100,7 +99,7 @@ public sealed partial class Email
             NavigationManager.ToAbsoluteUri("Account/ConfirmEmail").AbsoluteUri,
             new Dictionary<string, object?> { ["userId"] = userId, ["code"] = code });
 
-        await EmailSender.SendConfirmationLinkAsync(currentUser, email, HtmlEncoder.Default.Encode(callbackUrl));
+        await EmailSender.SendConfirmationLinkAsync(currentUser, email, callbackUrl);
 
         message = "Verification email sent. Please check your email.";
     }

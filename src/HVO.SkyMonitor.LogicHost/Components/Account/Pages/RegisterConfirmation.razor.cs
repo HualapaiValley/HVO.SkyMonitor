@@ -1,20 +1,13 @@
-using System;
-using System.Collections.Generic;
-using System.Text;
 using System.Threading.Tasks;
-using HVO.SkyMonitor.LogicHost.Components.Account;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
-using Microsoft.AspNetCore.Identity.UI.Services;
-using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.LogicHost.Components.Account.Pages;
 
 public sealed partial class RegisterConfirmation : ComponentBase
 {
-    private string? emailConfirmationLink;
     private string? statusMessage;
 
     [CascadingParameter]
@@ -28,12 +21,6 @@ public sealed partial class RegisterConfirmation : ComponentBase
 
     [Inject]
     private UserManager<ApplicationUser> UserManager { get; set; } = default!;
-
-    [Inject]
-    private IEmailSender<ApplicationUser> EmailSender { get; set; } = default!;
-
-    [Inject]
-    private NavigationManager NavigationManager { get; set; } = default!;
 
     [Inject]
     private IdentityRedirectManager RedirectManager { get; set; } = default!;
@@ -51,15 +38,6 @@ public sealed partial class RegisterConfirmation : ComponentBase
         {
             HttpContext.Response.StatusCode = StatusCodes.Status404NotFound;
             statusMessage = "Error finding user for unspecified email";
-        }
-        else if (EmailSender is IdentityNoOpEmailSender)
-        {
-            var userId = await UserManager.GetUserIdAsync(user);
-            var code = await UserManager.GenerateEmailConfirmationTokenAsync(user);
-            code = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(code));
-            emailConfirmationLink = NavigationManager.GetUriWithQueryParameters(
-                NavigationManager.ToAbsoluteUri("Account/ConfirmEmail").AbsoluteUri,
-                new Dictionary<string, object?> { ["userId"] = userId, ["code"] = code, ["returnUrl"] = ReturnUrl });
         }
     }
 }

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Text;
-using System.Text.Encodings.Web;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.LogicHost.Components.Account;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -51,7 +50,7 @@ public sealed partial class ForgotPassword : ComponentBase
             NavigationManager.ToAbsoluteUri("Account/ResetPassword").AbsoluteUri,
             new Dictionary<string, object?> { ["code"] = code });
 
-        await EmailSender.SendPasswordResetLinkAsync(user, Input.Email, HtmlEncoder.Default.Encode(callbackUrl));
+        await EmailSender.SendPasswordResetLinkAsync(user, Input.Email, callbackUrl);
 
         RedirectManager.RedirectTo("Account/ForgotPasswordConfirmation");
     }

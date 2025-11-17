@@ -12,6 +12,7 @@ using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Common.Observability;
+using HVO.SkyMonitor.LogicHost.HealthChecks;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -78,6 +79,11 @@ public sealed partial class Program
         // Global exception handler with HTML + API awareness
         builder.Services.AddExceptionHandler<HvoServiceExceptionHandler>();
 
+        // Common configuration values reused across services
+        var redisConfiguration = builder.Configuration.GetValue<string>("Redis:Configuration");
+        var minioEndpoint = builder.Configuration.GetValue<string>("Minio:Endpoint");
+        var smtpHost = builder.Configuration.GetValue<string>("Smtp:Host");
+
         // HTTP logging
         builder.Services.AddHttpLogging(logging =>
         {
@@ -103,8 +109,24 @@ public sealed partial class Program
         });
 
         // Health checks
-        builder.Services.AddSkyMonitorHealthChecks()
-            .AddDbContextCheck<ApplicationDbContext>("database");
+        var healthChecks = builder.Services.AddSkyMonitorHealthChecks()
+            .AddDbContextCheck<ApplicationDbContext>("database", tags: ["dependency"]);
+
+        if (!string.IsNullOrWhiteSpace(redisConfiguration))
+        {
+            healthChecks.AddCheck<RedisHealthCheck>("redis", tags: ["dependency"]);
+        }
+
+        if (!string.IsNullOrWhiteSpace(minioEndpoint))
+        {
+            healthChecks.AddCheck<MinioHealthCheck>("minio", tags: ["dependency"]);
+        }
+
+        if (!string.IsNullOrWhiteSpace(smtpHost))
+        {
+            healthChecks.AddCheck<SmtpHealthCheck>("smtp", tags: ["dependency"]);
+        }
+
         builder.Services.Configure<ApiBehaviorOptions>(options =>
         {
             options.SuppressModelStateInvalidFilter = true;
@@ -241,7 +263,6 @@ public sealed partial class Program
             .Bind(builder.Configuration.GetSection("Redis"))
             .ValidateOnStart();
 
-        var redisConfiguration = builder.Configuration.GetValue<string>("Redis:Configuration");
         if (string.IsNullOrWhiteSpace(redisConfiguration))
         {
             builder.Services.AddDistributedMemoryCache();
@@ -255,7 +276,6 @@ public sealed partial class Program
             });
         }
 
-        var minioEndpoint = builder.Configuration.GetValue<string>("Minio:Endpoint");
         if (!string.IsNullOrWhiteSpace(minioEndpoint))
         {
             builder.Services.AddSingleton<IMinioClient>(sp =>
@@ -309,7 +329,7 @@ public sealed partial class Program
         .AddSignInManager()
         .AddDefaultTokenProviders();
 
-        builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
+        builder.Services.AddSingleton<IEmailSender<ApplicationUser>, SmtpIdentityEmailSender>();
 
         // OpenIddict Configuration (Phase 2)
         builder.Services.AddOpenIddict()

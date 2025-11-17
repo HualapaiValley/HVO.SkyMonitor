@@ -47,6 +47,7 @@ Use the infrastructure management scripts to start services:
 ```bash
 ./scripts/infra:start postgres redis minio smtp
 ```
+Only the services you list are started now, so `./scripts/infra:start postgres` leaves MinIO, Redis, etc. untouched. If you request an application service (for example `logichost`), the script automatically starts all supporting infrastructure if you didn't list them explicitly.
 
 **Reset data and start:**
 ```bash
@@ -64,6 +65,17 @@ You can pass specific services to `--rebuild` (for example `--rebuild logichost`
 ```bash
 ./scripts/infra:status
 ```
+
+**Stop services:**
+```bash
+./scripts/infra:stop
+```
+
+**Stop and clear cached data (volumes/directories) for specific services:**
+```bash
+./scripts/infra:stop --clear-cache redis minio
+```
+When `--clear-cache` is supplied without explicit service names the script clears caches for everything you stop, wiping the corresponding Docker volumes (Postgres/Redis/MinIO) and removing the application containers so the next start is clean.
 
 **Services Started:**
 - **PostgreSQL** - tcp://localhost:5432 with `skymonitordb` database
