@@ -122,6 +122,9 @@ reset_service() {
             ;;
         logichost|cameraagent)
             docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" 2>/dev/null || true
+            if [[ "$service" == "cameraagent" ]]; then
+                ensure_cameraagent_networking "$context"
+            fi
             docker --context "$context" compose -f docker-compose.dev.yml build "$service"
             echo -e "${GREEN}✓ Reset $service (removed container and rebuilt image)${NC}"
             ;;
@@ -130,6 +133,52 @@ reset_service() {
             return 1
             ;;
     esac
+}
+
+sanitize_context_name() {
+    local context="${1:-default}"
+    context="${context^^}"
+    context="${context//[^A-Z0-9]/_}"
+    if [[ -z "$context" ]]; then
+        context="DEFAULT"
+    fi
+    printf '%s' "$context"
+}
+
+resolve_context_value() {
+    local base_key="$1"
+    local context="$2"
+    local default_value="${3:-}"
+
+    local sanitized_context
+    sanitized_context="$(sanitize_context_name "$context")"
+    local context_key="${base_key}_${sanitized_context}"
+
+    if [[ -n "${!context_key:-}" ]]; then
+        printf '%s' "${!context_key}"
+        return
+    fi
+
+    if [[ -n "${!base_key:-}" ]]; then
+        printf '%s' "${!base_key}"
+        return
+    fi
+
+    if [[ -n "$default_value" ]]; then
+        printf '%s' "$default_value"
+        return
+    fi
+
+    printf '%s' ""
+}
+
+ensure_cameraagent_networking() {
+    local context="${1:-default}"
+    export CAMERA_AGENT_LOGIC_BASEURL
+    export CAMERA_AGENT_IDENTITY_URL
+
+    CAMERA_AGENT_LOGIC_BASEURL="$(resolve_context_value "CAMERA_AGENT_LOGIC_BASEURL" "$context" "http://logichost:8080")"
+    CAMERA_AGENT_IDENTITY_URL="$(resolve_context_value "CAMERA_AGENT_IDENTITY_URL" "$context" "http://logichost:8080")"
 }
 
 if [[ "$RESET_MODE" == true ]]; then
@@ -162,7 +211,11 @@ if [[ ${#infra_services_to_start[@]} -eq 0 ]]; then
 fi
 
 echo -e "${BLUE}Starting infrastructure services...${NC}"
-docker compose -f docker-compose.dev.yml up -d "${infra_services_to_start[@]}"
+for service in "${infra_services_to_start[@]}"; do
+    context="$(get_docker_context "$service")"
+    echo -e "Starting ${service} via context '${context}'"
+    docker --context "$context" compose -f docker-compose.dev.yml up -d "$service"
+done
 
 echo -e "${BLUE}Waiting for infrastructure to be healthy...${NC}"
 sleep 3
@@ -170,8 +223,9 @@ sleep 3
 for service in "${infra_services_to_start[@]}"; do
     echo -n "Checking $service... "
     timeout=30
+    context="$(get_docker_context "$service")"
     while [[ $timeout -gt 0 ]]; do
-        status=$(docker compose -f docker-compose.dev.yml ps "$service" --format json 2>/dev/null | grep -o '"Health":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+        status=$(docker --context "$context" compose -f docker-compose.dev.yml ps "$service" --format json 2>/dev/null | grep -o '"Health":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
         if [[ "$status" == "healthy" ]] || [[ "$status" == "unknown" ]]; then
             echo -e "${GREEN}✓${NC}"
             break
@@ -201,7 +255,14 @@ if [[ "$REBUILD_MODE" == true ]]; then
     done
 
     if [[ ${#filtered_targets[@]} -gt 0 ]]; then
-        docker compose -f docker-compose.dev.yml build "${filtered_targets[@]}"
+        for service in "${filtered_targets[@]}"; do
+            context="$(get_docker_context "$service")"
+            if [[ "$service" == "cameraagent" ]]; then
+                ensure_cameraagent_networking "$context"
+            fi
+            echo -e "Rebuilding ${service} via context '${context}'"
+            docker --context "$context" compose -f docker-compose.dev.yml build "$service"
+        done
     else
         echo -e "${YELLOW}No application services matched for rebuild${NC}"
     fi
@@ -216,7 +277,18 @@ if [[ " ${START_SERVICES[*]} " =~ " logichost " ]] || [[ " ${START_SERVICES[*]} 
         fi
     done
     if [[ ${#app_services_to_start[@]} -gt 0 ]]; then
-        docker compose -f docker-compose.dev.yml up -d "${app_services_to_start[@]}"
+        for service in "${app_services_to_start[@]}"; do
+            context="$(get_docker_context "$service")"
+            compose_flags=()
+            if [[ "$service" == "cameraagent" ]]; then
+                ensure_cameraagent_networking "$context"
+                if [[ "$context" != "default" ]]; then
+                    compose_flags+=(--no-deps)
+                fi
+            fi
+            echo -e "Starting ${service} via context '${context}'"
+            docker --context "$context" compose -f docker-compose.dev.yml up -d "${compose_flags[@]}" "$service"
+        done
     fi
 fi
 

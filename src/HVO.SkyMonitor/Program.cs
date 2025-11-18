@@ -1,3 +1,4 @@
+using System;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Globalization;
@@ -54,7 +55,14 @@ public sealed partial class Program
         });
 
         // Configure shared observability (OpenTelemetry + health defaults)
-        builder.AddSkyMonitorObservability();
+        builder.AddSkyMonitorObservability(openTelemetryBuilder =>
+        {
+            openTelemetryBuilder.WithMetrics(metrics =>
+            {
+                metrics.AddPrometheusExporter();
+                metrics.AddMeter("HVO.SkyMonitor.Authentication");
+            });
+        });
 
         // Correlation ID support
         builder.Services.AddHttpContextAccessor();
@@ -105,6 +113,11 @@ public sealed partial class Program
         // Health checks
         builder.Services.AddSkyMonitorHealthChecks()
             .AddDbContextCheck<ApplicationDbContext>("database");
+
+        builder.Services.AddHttpClient<MinioHealthCheck>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(5);
+        });
         builder.Services.Configure<ApiBehaviorOptions>(options =>
         {
             options.SuppressModelStateInvalidFilter = true;
@@ -126,15 +139,6 @@ public sealed partial class Program
             options.GroupNameFormat = "'v'VVV";
             options.SubstituteApiVersionInUrl = true;
         });
-
-        // Prometheus metrics endpoint
-        builder.Services.AddOpenTelemetry()
-            .WithMetrics(metrics =>
-            {
-                metrics.AddPrometheusExporter();
-                metrics.AddMeter("HVO.SkyMonitor.Authentication");
-                metrics.AddAspNetCoreInstrumentation();
-            });
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {

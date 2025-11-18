@@ -6,7 +6,11 @@
 		},
 		{
 			"name": "HVOv9-SkyMonitorv6",
-			"path": "/workspaces/HVOv9-SkyMonitorv6-readonly"
+			"path": "/workspaces/HVOv9-SkyMonitorv6/src"
+		},
+		{
+			"name": "HVOv9",
+			"path": "/workspaces/HVOv9/src"
 		}
 	],
 	"settings": {

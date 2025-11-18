@@ -88,6 +88,44 @@ sudo chmod 666 /var/run/docker.sock
 echo "Verifying Docker installation..."
 docker --version
 
+log_section "SSH agent setup"
+SSH_AGENT_DIR="/tmp/devcontainer-ssh-agent"
+mkdir -p "$SSH_AGENT_DIR"
+eval "$(ssh-agent -s)"
+ln -sf "$SSH_AUTH_SOCK" "$SSH_AGENT_DIR/agent.sock"
+
+if compgen -G "/home/vscode/.ssh/id_*" >/dev/null 2>&1; then
+	for key in /home/vscode/.ssh/id_*; do
+		if [[ -f "$key" && "$key" != *.pub ]]; then
+			if ssh-add "$key" >/dev/null 2>&1; then
+				echo "Loaded SSH key: $key"
+			else
+				echo "Warning: Failed to load key $key"
+			fi
+		fi
+	done
+else
+	echo "No default SSH keys found under /home/vscode/.ssh. Add keys manually with ssh-add if needed."
+fi
+
+log_section "Configuring Docker contexts"
+ensure_docker_context() {
+	local name="$1"
+	local description="$2"
+	local host="$3"
+	if docker context inspect "$name" >/dev/null 2>&1; then
+		echo "Context '$name' already present."
+	else
+		echo "Creating docker context '$name' (${description})"
+		docker context create "$name" --description "$description" --docker "host=$host"
+	fi
+}
+
+ensure_docker_context "proxmox-home" "Remote engine on Home Proxmox" "ssh://roys@192.168.2.104"
+ensure_docker_context "rpi-home" "Remote engine on Home Raspberry Pi" "ssh://roys@192.168.2.21"
+
+echo
+
 # Generate HTTPS developer certificate
 echo "Generating HTTPS developer certificate..."
 dotnet dev-certs https --clean

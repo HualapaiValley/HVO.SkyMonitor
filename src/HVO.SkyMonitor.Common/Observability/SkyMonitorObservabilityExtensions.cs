@@ -25,7 +25,7 @@ public static class SkyMonitorObservabilityExtensions
     /// <summary>
     /// Configures OpenTelemetry logging, metrics, tracing, and optional OTLP export if configured.
     /// </summary>
-    public static IHostApplicationBuilder AddSkyMonitorObservability(this IHostApplicationBuilder builder)
+    public static IHostApplicationBuilder AddSkyMonitorObservability(this IHostApplicationBuilder builder, Action<IOpenTelemetryBuilder>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.Logging.AddOpenTelemetry(logging =>
@@ -52,6 +52,8 @@ public static class SkyMonitorObservabilityExtensions
                     })
                     .AddHttpClientInstrumentation();
             });
+
+        configure?.Invoke(openTelemetryBuilder);
 
         if (HasOtlpEndpointConfigured(builder.Configuration))
         {

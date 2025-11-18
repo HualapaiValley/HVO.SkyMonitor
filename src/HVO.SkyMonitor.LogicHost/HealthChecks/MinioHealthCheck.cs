@@ -14,11 +14,14 @@ namespace HVO.SkyMonitor.LogicHost.HealthChecks;
 internal sealed class MinioHealthCheck : IHealthCheck
 {
     private readonly MinioOptions _options;
+    private readonly HttpClient _httpClient;
 
-    public MinioHealthCheck(IOptions<MinioOptions> options)
+    public MinioHealthCheck(IOptions<MinioOptions> options, HttpClient httpClient)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(httpClient);
         _options = options.Value;
+        _httpClient = httpClient;
     }
 
     public async Task<HealthCheckResult> CheckHealthAsync(
@@ -40,12 +43,7 @@ internal sealed class MinioHealthCheck : IHealthCheck
             var scheme = _options.UseSsl ? "https" : "http";
             var uriBuilder = new UriBuilder(scheme, _options.Endpoint, _options.Port, "/minio/health/live");
 
-            using var httpClient = new HttpClient
-            {
-                Timeout = TimeSpan.FromSeconds(5)
-            };
-
-            using var response = await httpClient.GetAsync(uriBuilder.Uri, cancellationToken).ConfigureAwait(false);
+            using var response = await _httpClient.GetAsync(uriBuilder.Uri, cancellationToken).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
                 return HealthCheckResult.Healthy("MinIO endpoint responded to health probe.");

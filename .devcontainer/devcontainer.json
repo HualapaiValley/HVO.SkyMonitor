@@ -39,7 +39,8 @@
         "GitHub.copilot",
         "GitHub.copilot-chat",
         "github.vscode-github-actions",
-        "ms-vscode.vscode-js-profile-flame"
+        "ms-vscode.vscode-js-profile-flame",
+        "openai.chatgpt"
       ],
       "settings": {
         "omnisharp.enableRoslynAnalyzers": true,
@@ -75,6 +76,10 @@
     // Identity Hardening - Logging Configuration (non-sensitive)
     "LOGGING_LOGLEVEL_DEFAULT": "Information",
     "LOGGING_LOGLEVEL_MICROSOFT_ASPNETCORE": "Warning"
+  },
+  "remoteEnv": {
+    // Point to Docker Desktop's magic SSH bridge on macOS
+    "SSH_AUTH_SOCK": "/run/host-services/ssh-auth.sock"
   },
   // Port mappings with allInterfaces for Docker-from-Docker accessibility
   // 5000-5001: Main HVO.SkyMonitor app (HTTP/HTTPS)
@@ -131,9 +136,17 @@
       "onAutoForward": "silent"
     }
   },
+  // Ensure host-side SSH agent directory exists to avoid bind mount errors
+  "initializeCommand": "",
   // Mount user secrets from host into container
   // Allows dev container to access locally stored secrets
   "mounts": [
+    // SSH agent socket from host -> container
+    {
+      "source": "/run/host-services/ssh-auth.sock",
+      "target": "/run/host-services/ssh-auth.sock",
+      "type": "bind"
+    },
     {
       "type": "volume",
       "source": "x509stores",
@@ -149,9 +162,15 @@
     {
       "type": "bind",
       "source": "${localWorkspaceFolder}/../HVOv9-SkyMonitorv6",
-      "target": "/workspaces/HVOv9-SkyMonitorv6-readonly"
+      "target": "/workspaces/HVOv9-SkyMonitorv6"
+    },
+    {
+      "type": "bind",
+      "source": "${localWorkspaceFolder}/../HVOv9",
+      "target": "/workspaces/HVOv9"
     }
   ],
+  "postStartCommand": "sudo chgrp vscode /run/host-services/ssh-auth.sock && sudo chmod 660 /run/host-services/ssh-auth.sock",
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "remoteUser": "vscode"
 }

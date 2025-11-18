@@ -121,8 +121,8 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
-      SkyMonitor__BaseUrl: http://logichost:8080
-      CentralIdentity__ServiceUrl: http://logichost:8080
+      SkyMonitor__BaseUrl: ${CAMERA_AGENT_LOGIC_BASEURL:-http://logichost:8080}
+      CentralIdentity__ServiceUrl: ${CAMERA_AGENT_IDENTITY_URL:-http://logichost:8080}
     ports:
       - "${CAMERA_AGENT_HTTP_PORT:-5130}:8080"
     depends_on:
