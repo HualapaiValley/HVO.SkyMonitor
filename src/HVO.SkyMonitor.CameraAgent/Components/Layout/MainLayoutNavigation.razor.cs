@@ -12,7 +12,6 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
     [
         new NavigationLink("/", "Dashboard", "bi bi-house", NavLinkMatch.All),
         new NavigationLink("/weather", "Weather", "bi bi-cloud-moon", NavLinkMatch.Prefix),
-        new NavigationLink("/counter", "Counter", "bi bi-speedometer2", NavLinkMatch.Prefix),
         new NavigationLink("/auth", "Secure Area", "bi bi-shield-lock", NavLinkMatch.Prefix)
     ];
 

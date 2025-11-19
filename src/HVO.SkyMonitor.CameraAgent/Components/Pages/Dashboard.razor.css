@@ -1,0 +1,127 @@
+.dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    padding: 1rem 0 3rem;
+}
+
+.dashboard__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+}
+
+.status-pill {
+    border-radius: 999px;
+    padding: 0.4rem 1.2rem;
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.status-pill--live {
+    background: rgba(25, 135, 84, 0.15);
+    color: #7ddba0;
+    border: 1px solid rgba(25, 135, 84, 0.4);
+}
+
+.status-pill--stale {
+    background: rgba(255, 193, 7, 0.15);
+    color: #f9d47c;
+    border: 1px solid rgba(255, 193, 7, 0.3);
+}
+
+.status-pill--idle {
+    background: rgba(108, 117, 125, 0.15);
+    color: #cdd4da;
+    border: 1px solid rgba(108, 117, 125, 0.3);
+}
+
+.telemetry-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+}
+
+.telemetry-card {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 1rem;
+    padding: 1.1rem;
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.15);
+}
+
+.telemetry-card__label {
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.75rem;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.telemetry-card__value {
+    font-size: 1.75rem;
+    font-weight: 600;
+    display: block;
+    margin-top: 0.25rem;
+}
+
+.telemetry-card__hint {
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.latest-frame {
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 1.5rem;
+}
+
+.latest-frame__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1rem;
+}
+
+.latest-frame__preview-wrapper {
+    margin-top: 1.25rem;
+    display: flex;
+    justify-content: flex-start;
+}
+
+.latest-frame__preview {
+    width: 100%;
+    max-width: 420px;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+}
+
+.latest-frame__grid .label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.latest-frame__grid .value {
+    font-size: 1.2rem;
+    font-weight: 600;
+}
+
+.history {
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 1.5rem;
+}
+
+.history__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.badge+.badge {
+    margin-left: 0.25rem;
+}

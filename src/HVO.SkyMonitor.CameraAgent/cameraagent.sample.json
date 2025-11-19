@@ -1,0 +1,110 @@
+{
+    "module": {
+        "type": "HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage.RandomImageCameraModule, HVO.SkyMonitor.CameraAgent.Common",
+        "options": {
+            "pattern": "Noise",
+            "seed": 1234
+        }
+    },
+    "rig": {
+        "sensor": {
+            "name": "SampleSensor",
+            "widthPixels": 640,
+            "heightPixels": 480,
+            "pixelSizeMicrons": 3.76,
+            "colorMode": "Mono",
+            "pixelFormat": "Mono8"
+        },
+        "optics": {
+            "projectionModel": "EquidistantFisheye",
+            "focalLengthMillimeters": 3.0,
+            "fieldOfViewDegrees": 180.0,
+            "rollDegrees": 0.0
+        },
+        "orientation": {
+            "boresightAltitudeDegrees": 90.0,
+            "boresightAzimuthDegrees": 0.0,
+            "rollAdjustmentDegrees": 0.0
+        },
+        "pipeline": {
+            "captureInterval": "00:00:10",
+            "dayExposure": "00:00:00.1000000",
+            "nightExposure": "00:00:05",
+            "dayGain": 1.0,
+            "nightGain": 100.0,
+            "envelope": {
+                "minExposure": "00:00:00.0500000",
+                "maxExposure": "00:00:10",
+                "minGain": 1.0,
+                "maxGain": 400.0,
+                "dayDefaults": {
+                    "exposure": "00:00:00.1000000",
+                    "gain": 2.0
+                },
+                "nightDefaults": {
+                    "exposure": "00:00:05",
+                    "gain": 100.0
+                },
+                "targetAduLevel": 0.65
+            }
+        },
+        "controlPolicy": {
+            "temperature": {
+                "mode": "Target",
+                "targetC": -10.0
+            },
+            "autoGain": "Disabled",
+            "autoExposure": "Disabled"
+        }
+    },
+    "processingSteps": [
+        {
+            "id": "Calibration",
+            "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CalibrationCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+            "order": -1000,
+            "options": {
+                "enabled": true,
+                "calibrationPasses": 2,
+                "maxCalibrationSeconds": 45,
+                "strategy": "NightlyBias"
+            }
+        },
+        {
+            "id": "LocalStorage",
+            "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+            "order": 100,
+            "options": {
+                "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
+                "retentionDays": 7,
+                "updateLatestFrame": true
+            }
+        },
+        {
+            "id": "ArchiveStorage",
+            "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+            "order": 110,
+            "options": {
+                "storageRoot": "/workspaces/HVO.SkyMonitor/data/archive",
+                "retentionDays": 365,
+                "updateLatestFrame": false
+            }
+        },
+        {
+            "id": "Upload",
+            "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpUploadProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+            "order": 500,
+            "options": {
+                "enabled": true,
+                "uploadAllFrames": false,
+                "batchSize": 3,
+                "warmupSeconds": 10,
+                "endpoint": "https://example.invalid/api/upload"
+            }
+        },
+        {
+            "id": "Telemetry",
+            "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+            "order": 1000
+        }
+    ]
+}

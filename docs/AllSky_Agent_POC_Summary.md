@@ -169,13 +169,49 @@ public sealed record FrameMetadata(
     string? SourceId,
     IReadOnlyDictionary<string, string>? Extra);
 
+public sealed record CaptureRequest(
+  DateTimeOffset RequestedStartUtc,
+  TimeSpan TargetInterval,
+  CaptureMode Mode);
+
+public sealed record CaptureResult(
+  CameraFrame? Frame,
+  CaptureSetpoint NextSetpoint,
+  TimeSpan ProcessingLatency,
+  CaptureMode Mode,
+  bool RequiresImmediateUpload);
+
+public sealed record CaptureSetpoint(
+  TimeSpan Exposure,
+  double Gain,
+  TimeSpan? NextIntervalOverride,
+  double? TargetFps);
+
+public enum CaptureMode
+{
+  Still,
+  Video
+}
+
+[Flags]
+public enum CameraModuleCapabilities
+{
+  None = 0,
+  StillFrames = 1,
+  Video = 2,
+  AdaptiveGain = 4,
+  AdaptiveExposure = 8
+}
+
 public interface ICameraModule : IAsyncDisposable
 {
     string Id { get; }             // e.g., "Random1" or "SimAllSky"
     string DisplayName { get; }
+  string ModuleType { get; }
+  CameraModuleCapabilities Capabilities { get; }
 
     Task InitializeAsync(CameraModuleConfig config, CancellationToken ct);
-    Task<CameraFrame?> CaptureNextAsync(CancellationToken ct);
+  Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken ct);
 }
 ```
 
@@ -189,9 +225,10 @@ The **agent core** only depends on `ICameraModule` and `CameraFrame`. It does no
 
 The camera module receives configuration that includes:
 
-- Generic/common options.
+- Agent-level behavior (capture cadence, retention, storage root).
 - Rig description (sensor, optics, site, etc.).
-- Module-specific options.
+- Module descriptor (`type` + opaque `options`).
+- Optional processing pipeline steps configured per camera.
 
 Example JSON (conceptual):
 
@@ -200,11 +237,16 @@ Example JSON (conceptual):
   "agent": {
     "storageRoot": "/var/hvo/agent1",
     "retentionDays": 7,
-    "captureCadenceSeconds": 10,
-    "metricsIntervalSeconds": 60
+    "captureCadenceSeconds": 10
   },
   "camera": {
-    "type": "RandomImage",
+    "module": {
+      "type": "HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage.RandomImageCameraModule, HVO.SkyMonitor.CameraAgent.Common",
+      "options": {
+        "pattern": "Noise",
+        "seed": 42
+      }
+    },
     "common": {
       "width": 1920,
       "height": 1080,
@@ -217,40 +259,57 @@ Example JSON (conceptual):
       "observatory": { /* ObservatoryLocation */ },
       "pipeline": { /* PipelineExposureProfile */ }
     },
-    "specific": {
-      "pattern": "Noise",
-      "seed": 42
-    }
+    "processingSteps": [
+      {
+        "id": "LocalStorage",
+        "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+        "order": 100,
+        "options": {
+          "storageRoot": "/var/hvo/agent1",
+          "retentionDays": 7
+        }
+      },
+      {
+        "id": "Telemetry",
+        "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+        "order": 1000
+      }
+    ]
   }
 }
 ```
 
-In C#, this might look like:
+In C#, this looks like:
 
 ```csharp
-public sealed record AgentConfig(
+public sealed record CameraModuleConfig(
     AgentOptions Agent,
-    CameraConfig Camera);
+    CameraConfig Camera,
+    CapturePipelineConfig? Pipeline = null);
 
 public sealed record AgentOptions(
     string StorageRoot,
     int RetentionDays,
-    int CaptureCadenceSeconds,
-    int MetricsIntervalSeconds);
+    int CaptureCadenceSeconds);
 
 public sealed record CameraConfig(
-    string Type,
+    CameraModuleDescriptor Module,
     CameraCommonOptions Common,
     AgentRigConfig Rig,
-    JsonElement Specific);
+    IReadOnlyList<CaptureProcessingStepConfig>? ProcessingSteps = null);
 
-public sealed record CameraCommonOptions(
-    int Width,
-    int Height,
-    string PixelFormat);
+public sealed record CameraModuleDescriptor(
+    string Type,
+    JsonElement? Options = null);
+
+public sealed record CaptureProcessingStepConfig(
+    string Type,
+    string? Id = null,
+    int? Order = null,
+    JsonElement? Options = null);
 ```
 
-Each module parses `Specific` into its own strongly-typed options.
+Each module parses `Module.Options` into its own strongly-typed options, while processing steps deserialize their own `options` payloads.
 
 ### 4.3 `RandomImageCameraModule` (Phase 1.0)
 
@@ -259,7 +318,7 @@ For the first POC step:
 - `RandomImageCameraModule` will:
   - Read `width`, `height`, and `pixelFormat` from `CameraCommonOptions`.
   - Read optional `pattern`, `seed`, etc. from `Specific`.
-- On each call to `CaptureNextAsync`:
+- On each call to `CaptureAsync`:
   - Allocate a pixel buffer.
   - Fill it with:
     - Random noise, or
@@ -597,8 +656,9 @@ Here are the key decisions we’ve implicitly/explicitly made:
 4. **Separate configuration cleanly**:
    - `AgentOptions` for agent behavior (storage, retention, cadence).
    - `CameraConfig` containing:
-     - `Type` (which camera module to load).
-     - Common options (width/height/pixelFormat).
+  - `Module` descriptor (type + options blob).
+  - Common options (width/height/pixelFormat).
+  - Rig description + optional processing steps (per-camera pipeline overrides).
      - `AgentRigConfig` (sensor/optics/orientation/site/pipeline).
      - Module-specific config as JSON blob.
 5. **Use a time-based storage layout with 7-day retention**:

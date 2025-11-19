@@ -22,7 +22,7 @@
 ## 4. Camera Module & Rig Model Decisions
 - Introduce a generic `ICameraModule` abstraction returning `CameraFrame` objects (timestamp, pixel data, metadata). Modules can represent real hardware, simulators, or trivial generators.
 - Module configuration structure:
-  - `AgentOptions`: storage root, retention days, capture cadence, metrics cadence.
+   - `AgentOptions`: storage root, retention days, capture cadence.
   - `CameraConfig`: `type`, `common` (width, height, pixel format), `specific` (module-specific JSON blob).
 - **Rig Configuration** (mirrors existing Imaging rig concepts):
   - `SensorProfile`: pixel geometry, dimensions, color mode, capabilities.

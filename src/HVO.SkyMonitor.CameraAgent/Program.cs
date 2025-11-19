@@ -6,8 +6,10 @@ using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.CameraAgent.Extensions;
 using HVO.SkyMonitor.CameraAgent.Components;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
 using HVO.SkyMonitor.Common.Observability;
+using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.Mvc;
@@ -68,6 +70,11 @@ public class Program
         });
 
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
+        builder.Services.AddOptions<CapturePreviewOptions>()
+            .Bind(builder.Configuration.GetSection("CapturePreview"))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
 
         builder.Services.AddControllers(options =>
         {
@@ -163,6 +170,7 @@ public class Program
         });
 
         builder.Services.AddScoped<ISampleStatusService, SampleStatusService>();
+        builder.Services.AddSingleton<CaptureTelemetryDashboardService>();
 
         var app = builder.Build();
 
