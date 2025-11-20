@@ -16,7 +16,8 @@ public sealed record CaptureTelemetrySample(
     bool FrameStored,
     TimeSpan ProcessingLatency,
     TimeSpan LoopDuration,
-    IReadOnlyList<CaptureProcessingStepTelemetry> ProcessingSteps);
+    IReadOnlyList<CaptureProcessingStepTelemetry> ProcessingSteps,
+    double? TemperatureC = null);
 
 public sealed record CaptureTelemetryAggregate(
     double AverageIntervalMilliseconds,

@@ -84,21 +84,197 @@ get_docker_context() {
     echo "$context_var"
 }
 
+get_compose_file() {
+    local service="$1"
+    case "$service" in
+        postgres|minio|redis|smtp) echo "docker-compose.infrastructure.yml" ;;
+        logichost|cameraagent) echo "docker-compose.apps.yml" ;;
+        *) echo "docker-compose.apps.yml" ;;
+    esac
+}
+
+get_service_host_var() {
+    local service="$1"
+    case "$service" in
+        postgres) echo "POSTGRES_HOST" ;;
+        minio) echo "MINIO_HOST" ;;
+        redis) echo "REDIS_HOST" ;;
+        smtp) echo "SMTP_HOST" ;;
+        *) echo "" ;;
+    esac
+}
+
+get_service_data_dir_var() {
+    local service="$1"
+    case "$service" in
+        postgres) echo "POSTGRES_DATA_DIR" ;;
+        minio) echo "MINIO_DATA_DIR" ;;
+        redis) echo "REDIS_DATA_DIR" ;;
+        *) echo "" ;;
+    esac
+}
+
+get_service_data_dir_default() {
+    local service="$1"
+    case "$service" in
+        postgres) echo "./data/postgres" ;;
+        minio) echo "./data/minio" ;;
+        redis) echo "./data/redis" ;;
+        *) echo "" ;;
+    esac
+}
+
+resolve_data_dir_path() {
+    local raw_path="$1"
+    if [[ -z "$raw_path" ]]; then
+        printf '%s' ""
+        return
+    fi
+
+    case "$raw_path" in
+        ~)
+            printf '%s' "$HOME"
+            return
+            ;;
+        ~/*)
+            printf '%s' "$HOME/${raw_path#~/}"
+            return
+            ;;
+        /*)
+            printf '%s' "$raw_path"
+            return
+            ;;
+    esac
+
+    local trimmed="$raw_path"
+    trimmed="${trimmed#./}"
+    printf '%s' "$REPO_ROOT/$trimmed"
+}
+
+get_resolved_data_dir() {
+    local service="$1"
+    local dir_var
+    dir_var="$(get_service_data_dir_var "$service")"
+    if [[ -z "$dir_var" ]]; then
+        printf '%s' ""
+        return
+    fi
+
+    local configured_path
+    configured_path="${!dir_var:-}"
+    if [[ -z "$configured_path" ]]; then
+        configured_path="$(get_service_data_dir_default "$service")"
+    fi
+
+    if [[ -z "$configured_path" ]]; then
+        printf '%s' ""
+        return
+    fi
+
+    resolve_data_dir_path "$configured_path"
+}
+
+ensure_local_data_dir() {
+    local service="$1"
+    local context="$2"
+
+    if [[ "$context" != "default" ]]; then
+        return
+    fi
+
+    local resolved
+    resolved="$(get_resolved_data_dir "$service")"
+    if [[ -z "$resolved" ]]; then
+        return
+    fi
+
+    if [[ ! -d "$resolved" ]]; then
+        mkdir -p "$resolved"
+        echo -e "${GREEN}Created data directory for ${service}: ${resolved}${NC}"
+    fi
+}
+
+ensure_local_data_dir() {
+    local service="$1"
+    local context="$2"
+
+    if [[ "$context" != "default" ]]; then
+        return
+    fi
+
+    local dir_var
+    dir_var="$(get_service_data_dir_var "$service")"
+    if [[ -z "$dir_var" ]]; then
+        return
+    fi
+
+    local configured_path
+    configured_path="${!dir_var:-}"
+    if [[ -z "$configured_path" ]]; then
+        configured_path="$(get_service_data_dir_default "$service")"
+    fi
+
+    if [[ -z "$configured_path" ]]; then
+        return
+    fi
+
+    local resolved
+    resolved="$(resolve_data_dir_path "$configured_path")"
+    if [[ -z "$resolved" ]]; then
+        return
+    fi
+
+    if [[ ! -d "$resolved" ]]; then
+        mkdir -p "$resolved"
+        echo -e "${GREEN}Created data directory for ${service}: ${resolved}${NC}"
+    fi
+}
+
+ensure_remote_host_binding() {
+    local service="$1"
+    local context="$2"
+    local host_var
+    host_var="$(get_service_host_var "$service")"
+
+    if [[ -z "$host_var" ]] || [[ "$context" == "default" ]]; then
+        return
+    fi
+
+    local host_value="${!host_var:-}"
+    if [[ -z "$host_value" ]]; then
+        echo -e "${RED}Service '$service' uses docker context '$context' but ${host_var} is not set.${NC}"
+        echo -e "${YELLOW}Set ${host_var} to the reachable host (e.g., 192.168.2.104) before continuing.${NC}"
+        exit 1
+    fi
+
+    case "$host_value" in
+        localhost|127.0.0.1|0.0.0.0)
+            echo -e "${RED}${host_var}=${host_value} cannot reach remote context '$context'.${NC}"
+            echo -e "${YELLOW}Update ${host_var} to the remote host address and retry.${NC}"
+            exit 1
+            ;;
+    esac
+}
+
 # Function to reset service data
 reset_service() {
     local service="$1"
     local context
     context="$(get_docker_context "$service")"
-    
+    local compose_file
+    compose_file="$(get_compose_file "$service")"
+
+    ensure_remote_host_binding "$service" "$context"
+
     echo -e "${YELLOW}Resetting $service data...${NC}"
-    
+
     case "$service" in
         postgres|minio|redis)
             # Stop the service if running
-            docker --context "$context" compose -f docker-compose.dev.yml stop "$service" 2>/dev/null || true
+            docker --context "$context" compose -f "$compose_file" stop "$service" 2>/dev/null || true
             
             # Remove the container
-            docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" 2>/dev/null || true
+            docker --context "$context" compose -f "$compose_file" rm -f "$service" 2>/dev/null || true
             
             # Remove the volume
             local volume_name="skymonitor-${service}-data"
@@ -110,16 +286,17 @@ reset_service() {
             fi
             
             echo -e "${GREEN}✓ Reset $service data${NC}"
+            ensure_local_data_dir "$service" "$context"
             ;;
         smtp)
             # Mailpit doesn't persist data, just remove and restart
-            docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" 2>/dev/null || true
+            docker --context "$context" compose -f "$compose_file" rm -f "$service" 2>/dev/null || true
             echo -e "${GREEN}✓ Reset $service (removed container)${NC}"
             ;;
         logichost|cameraagent)
             # Application containers - remove container and rebuild
-            docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" 2>/dev/null || true
-            docker --context "$context" compose -f docker-compose.dev.yml build "$service"
+            docker --context "$context" compose -f "$compose_file" rm -f "$service" 2>/dev/null || true
+            docker --context "$context" compose -f "$compose_file" build "$service"
             echo -e "${GREEN}✓ Reset $service (removed container and rebuilt image)${NC}"
             ;;
         *)

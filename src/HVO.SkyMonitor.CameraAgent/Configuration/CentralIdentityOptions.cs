@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 
 namespace HVO.SkyMonitor.CameraAgent.Configuration;
 
@@ -42,6 +43,12 @@ public class CentralIdentityOptions
     /// Default: 60 seconds. This ensures we don't use tokens that are about to expire.
     /// </summary>
     public int TokenRefreshWindowSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Interactive client configuration for user sign-in.
+    /// </summary>
+    public InteractiveClientOptions? InteractiveClient { get; set; }
+        = new InteractiveClientOptions();
 }
 
 /// <summary>
@@ -101,4 +108,59 @@ public class ApiKeyOptions
     /// Should be prefixed with "smk_" and stored securely.
     /// </summary>
     public string Key { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Interactive OpenID Connect client configuration for user sign-in.
+/// </summary>
+public class InteractiveClientOptions
+{
+    private static readonly string[] DefaultScopes =
+    [
+        "openid",
+        "profile",
+        "email"
+    ];
+
+    /// <summary>
+    /// Publicly reachable authority base used for browser redirects.
+    /// Falls back to <see cref="CentralIdentityOptions.ServiceUrl"/> when not specified.
+    /// </summary>
+    public Uri? PublicAuthority { get; set; }
+
+    /// <summary>
+    /// OAuth2/OIDC client identifier registered with Central Identity.
+    /// </summary>
+    [Required]
+    public string ClientId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// OAuth2/OIDC client secret registered with Central Identity.
+    /// </summary>
+    [Required]
+    public string ClientSecret { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Scopes requested during sign-in.
+    /// Includes OpenID Connect defaults plus any API scopes required by the agent.
+    /// </summary>
+    public IList<string> Scopes { get; } = new List<string>(DefaultScopes);
+
+    /// <summary>
+    /// Callback path used by the OpenID Connect middleware.
+    /// </summary>
+    [Required]
+    public string CallbackPath { get; set; } = "/signin-central";
+
+    /// <summary>
+    /// Path invoked after a remote sign-out completes.
+    /// </summary>
+    [Required]
+    public string SignedOutCallbackPath { get; set; } = "/signout-callback-central";
+
+    /// <summary>
+    /// Remote sign-out coordination path.
+    /// </summary>
+    [Required]
+    public string RemoteSignOutPath { get; set; } = "/signout-central";
 }

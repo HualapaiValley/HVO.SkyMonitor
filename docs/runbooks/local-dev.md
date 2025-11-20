@@ -77,12 +77,18 @@ Hardware suites are opt-in. They are tagged with `TestCategory("Hardware")`—om
 | Symptom | Action |
 | --- | --- |
 | Database migration failures | Run `./scripts/infra:start --reset postgres` to recreate the database, then restart the host. |
-| MinIO credential errors | Verify `Minio:AccessKey`/`SecretKey` in `.env.development` match `docker-compose.dev.yml`. |
+| MinIO credential errors | Verify `Minio:AccessKey`/`SecretKey` in `.env.development` match `docker-compose.infrastructure.yml`. |
 | Redis connection timeouts | Ensure port `6379` is free; restart via `./scripts/infra:start redis`. |
-| SMTP emails missing | Use `./scripts/infra:status smtp` and check logs: `docker compose -f docker-compose.dev.yml logs smtp`. |
+| SMTP emails missing | Use `./scripts/infra:status smtp` and check logs: `docker compose -f docker-compose.infrastructure.yml logs smtp`. |
 
 ## Additional References
 
 - `docs/SECRETS_QUICKSTART.md` for onboarding secrets.
 - `docs/identity` for authentication deep dives.
-- `docs/runbooks/infra-operations.md` for production-like reset flows.
+- `docs/runbooks/infra-operations.md` for production-like reset flows and per-context Docker commands.
+
+### Docker contexts quick reference
+
+- Infrastructure services run on the `proxmox-home` context by default. Start them via `./scripts/infra:start postgres minio redis smtp` or directly with `docker --context proxmox-home compose -f docker-compose.infrastructure.yml up -d`.
+- Application containers (`logichost`, `cameraagent`) run locally via `./scripts/infra:start logichost cameraagent` or `docker compose -f docker-compose.apps.yml up -d`.
+- The helper scripts auto-create local bind directories for `POSTGRES_DATA_DIR`, `REDIS_DATA_DIR`, and `MINIO_DATA_DIR` whenever those services target the local Docker context, so no manual `mkdir` steps are needed.

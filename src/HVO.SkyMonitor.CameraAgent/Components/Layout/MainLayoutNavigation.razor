@@ -34,15 +34,53 @@
                         }
                     </div>
 
-                    <div class="nav-account-info d-flex align-items-center gap-2">
-                        <span class="nav-avatar">
-                            <i class="bi bi-hdd-network"></i>
-                        </span>
-                        <span class="nav-account-details text-start">
-                            <span class="nav-account-name">Camera Agent</span>
-                            <span class="nav-account-email text-muted small">(Service Account)</span>
-                        </span>
-                    </div>
+                    <AuthorizeView Context="authState">
+                        <Authorized>
+                            <div class="nav-account-info d-flex align-items-center gap-2 dropdown">
+                                <button class="nav-avatar-button dropdown-toggle d-flex align-items-center gap-2"
+                                    type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                    <span class="nav-avatar">@GetUserInitials(authState.User)</span>
+                                    <span class="nav-account-details text-start">
+                                        <span class="nav-account-name">@GetUserDisplayName(authState.User)</span>
+                                        <span
+                                            class="nav-account-email text-muted small">@GetUserEmail(authState.User)</span>
+                                    </span>
+                                </button>
+
+                                <ul class="dropdown-menu nav-account-menu dropdown-menu-end">
+                                    <li class="dropdown-header text-muted small">
+                                        Signed in as @GetUserEmail(authState.User)
+                                    </li>
+                                    <li>
+                                        <a class="dropdown-item d-flex align-items-center gap-2"
+                                            href="@AccountManagementUrl" target="_blank" rel="noreferrer">
+                                            <i class="bi bi-person-gear"></i>
+                                            Manage Account
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <hr class="dropdown-divider" />
+                                    </li>
+                                    <li>
+                                        <form class="nav-logout-form" method="post" action="auth/logout">
+                                            <AntiforgeryToken />
+                                            <input type="hidden" name="returnUrl" value="@CurrentReturnUrl" />
+                                            <button type="submit" class="dropdown-item nav-logout-button">
+                                                <i class="bi bi-box-arrow-right"></i>
+                                                Sign Out
+                                            </button>
+                                        </form>
+                                    </li>
+                                </ul>
+                            </div>
+                        </Authorized>
+                        <NotAuthorized>
+                            <a class="nav-login-pill" href="@SignInUrl">
+                                <i class="bi bi-box-arrow-in-right"></i>
+                                Sign In
+                            </a>
+                        </NotAuthorized>
+                    </AuthorizeView>
                 </div>
             </div>
         </div>

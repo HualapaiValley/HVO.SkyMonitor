@@ -82,7 +82,7 @@ When `--clear-cache` is supplied without explicit service names the script clear
 - **Redis** - tcp://localhost:6379
 - **MinIO** - API: http://localhost:9000, Console: http://localhost:9001 (minioadmin/minioadmin)
 - **SMTP (Mailpit)** - SMTP: tcp://localhost:1025, Web UI: http://localhost:8025
-- **Logic Host** - Main application: http://localhost:5174
+- **Logic Host** - HTTPS (dotnet run): https://localhost:7096, HTTP (container profile): http://localhost:5174
  - **Camera Agent** - http://localhost:5130
 
 ```bash
@@ -98,6 +98,10 @@ This mode keeps hot reload and a faster edit/run cycle while still talking to th
 ### Docker-in-Docker Architecture
 
 This project uses **Docker-in-Docker** to run container orchestration inside the dev container.
+
+### Architecture & Design Patterns
+
+We expect new services, features, and pipelines to lean on established industry patterns instead of ad-hoc custom wiring. When you need interchangeable behaviors (for example, alternate dependency-priming or diagnostics flows), model them with the Strategy pattern (an `IThingStrategy` interface and DI-registered implementations) or another well-known pattern that fits. Using recognizable patterns keeps the codebase self-documenting, simplifies reviews, and lets us swap implementations without risky refactors. If a scenario does not map to a standard pattern, call it out in the PR description and document the reasoning.
 
 #### DevContainer Configuration
 
@@ -158,8 +162,9 @@ The following VS Code extensions are automatically installed:
 
 The following ports are automatically forwarded and accessible from your host machine:
 
-- **5000-5001** - Logic Host application (HTTP/HTTPS)
-- **5174** - SkyMonitor container profile (Docker Compose build)
+- **5000-5001** - Logic Host application (HTTP/HTTPS when running via `dotnet run`)
+- **7096** - Logic Host HTTPS (dotnet run default secure port)
+- **5174** - SkyMonitor container profile (Docker Compose build, HTTP)
 - **5130** - Camera Agent container profile
   
 - **6379** - Redis
@@ -174,13 +179,69 @@ The following ports are automatically forwarded and accessible from your host ma
 - Use `.NET` [user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets?view=aspnetcore-8.0&tabs=linux) for local debugging outside containers. The devcontainer mounts your host secrets folder automatically.
 - See `docs/SECRETS_MANAGEMENT.md` and `docs/SECRETS_QUICKSTART.md` for detailed workflows covering Testcontainers, Docker Compose, and production deployments.
 
+#### Central Identity issuer
+
+OpenIddict now reads a single canonical issuer from `IdentityServer__Issuer`. Set it to whichever base address every part of the flow can reach:
+
+- **Docker Compose** (default): `.env` already exports `IDENTITYSERVER_ISSUER=http://logichost:8080/`, so all containers agree on that host.
+- **Running outside containers:** override before starting LogicHost so cookies and authorization codes are issued with the local URL you expose to browsers:
+
+```bash
+export IdentityServer__Issuer=http://localhost:5174/
+dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+```
+
+When the camera agent runs outside Docker, set `CentralIdentity__ServiceUrl` and `CAMERA_AGENT_IDENTITY_PUBLIC_URL` (or the corresponding config values) to the same origin so both the browser redirect and the server-side token exchange agree on the issuer.
+
+#### Shared Data Protection keys
+
+LogicHost and the Camera Agent now persist ASP.NET Core Data Protection keys in the PostgreSQL database (`security.dataprotectionkeys`). This lets antiforgery tokens and cookies survive container restarts and allows cross-host logout flows to function. **Keys are currently stored in plaintext for development convenience.** Before production, switch the repository to an encrypted backing store (Key Vault, envelope encryption, etc.) so the database never contains raw key material.
+
 ## Container Support
 
-The Docker Compose workflow (via `scripts/infra:start`) runs infrastructure services and the ASP.NET/Blazor applications. Docker caches previously built images, so use the script's `--rebuild` flag whenever you need to force fresh LogicHost or Camera Agent binaries.
+The Docker Compose workflow (via `scripts/infra:start`) now drives two stacks:
+
+- `docker-compose.infrastructure.yml` for PostgreSQL, Redis, MinIO, and Mailpit (typically via the `proxmox-home` context)
+- `docker-compose.apps.yml` for LogicHost and the Camera Agent (usually running locally)
+
+Infrastructure services default to the remote `proxmox-home` Docker context (`ssh://roys@192.168.2.104`). Override `POSTGRES_HOST`, `REDIS_HOST`, `MINIO_HOST`, and `SMTP_HOST` in `.env` if your environment uses different addresses.
+
+The helper scripts automatically create any bind-mount directories referenced by `POSTGRES_DATA_DIR`, `MINIO_DATA_DIR`, and `REDIS_DATA_DIR` whenever the associated service runs in the local (`default`) context.
+
+Docker caches previously built images, so use the script's `--rebuild` flag whenever you need to force fresh LogicHost or Camera Agent binaries.
 
 ### Automatic Container Building
 
-`./scripts/infra:start --rebuild [logichost|cameraagent]` invokes `docker compose -f docker-compose.dev.yml build` for the selected application services before issuing `up -d`. Resetting those services (`--reset logichost cameraagent`) also triggers a rebuild automatically. This keeps each container aligned with the working tree without requiring manual `docker build` commands.
+`./scripts/infra:start --rebuild [logichost|cameraagent]` invokes `docker compose -f docker-compose.apps.yml build` for the selected application services before issuing `up -d`. Resetting those services (`--reset logichost cameraagent`) also triggers a rebuild automatically. This keeps each container aligned with the working tree without requiring manual `docker build` commands.
+
+### Stack commands by context
+
+Use the scripts for day-to-day work, or call the compose files directly when you need to target a specific Docker context.
+
+| Stack | Default context | Start | Stop | Status | Logs |
+| --- | --- | --- | --- | --- | --- |
+| Infrastructure (`postgres`, `redis`, `minio`, `smtp`) | `proxmox-home` | <code>docker --context proxmox-home compose -f docker-compose.infrastructure.yml up -d postgres minio redis smtp</code> | <code>docker --context proxmox-home compose -f docker-compose.infrastructure.yml stop postgres minio redis smtp</code> | <code>docker --context proxmox-home compose -f docker-compose.infrastructure.yml ps</code> | <code>docker --context proxmox-home compose -f docker-compose.infrastructure.yml logs -f postgres</code> |
+| Application (`logichost`, `cameraagent`) | `default` (local) | <code>docker compose -f docker-compose.apps.yml up -d logichost cameraagent</code> | <code>docker compose -f docker-compose.apps.yml stop logichost cameraagent</code> | <code>docker compose -f docker-compose.apps.yml ps</code> | <code>docker compose -f docker-compose.apps.yml logs -f logichost</code> |
+
+Equivalent script commands (respecting the per-service context variables declared in `.env`):
+
+```bash
+# Start remote infra stack
+./scripts/infra:start postgres minio redis smtp
+
+# Start only application containers locally
+./scripts/infra:start logichost cameraagent
+
+# Stop everything (clears remote contexts too)
+./scripts/infra:stop all
+
+# Status overview (per service context)
+./scripts/infra:status
+
+# Tail logs for a stack
+docker --context proxmox-home compose -f docker-compose.infrastructure.yml logs -f redis
+docker compose -f docker-compose.apps.yml logs -f cameraagent
+```
 
 ### Manual Multi-Architecture Builds
 

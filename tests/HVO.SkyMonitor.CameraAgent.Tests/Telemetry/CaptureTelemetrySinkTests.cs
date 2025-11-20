@@ -59,7 +59,8 @@ public sealed class CaptureTelemetrySinkTests
         double exposureMilliseconds = 100,
         double gain = 2,
         bool frameStored = true,
-        bool requiresImmediateUpload = false) => new(
+        bool requiresImmediateUpload = false,
+        double? temperatureC = null) => new(
             StartedUtc: startedUtc,
             Interval: TimeSpan.FromSeconds(10),
             Exposure: TimeSpan.FromMilliseconds(exposureMilliseconds),
@@ -70,5 +71,6 @@ public sealed class CaptureTelemetrySinkTests
             FrameStored: frameStored,
             ProcessingLatency: TimeSpan.FromMilliseconds(25),
             LoopDuration: TimeSpan.FromSeconds(2),
-            ProcessingSteps: Array.Empty<CaptureProcessingStepTelemetry>());
+            ProcessingSteps: Array.Empty<CaptureProcessingStepTelemetry>(),
+            TemperatureC: temperatureC);
 }

@@ -50,7 +50,9 @@ Use `dotnet user-secrets list --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMoni
 # or ./scripts/infra:start          # starts everything, including camera agents
 ```
 
-The script loads `.env`, provisions bind-mount directories, and brings up the compose stack defined in `docker-compose.dev.yml`.
+The script loads `.env`, provisions bind-mount directories, and targets `docker-compose.infrastructure.yml` for the shared services (plus `docker-compose.apps.yml` whenever you include LogicHost or the Camera Agent).
+
+> The helpers automatically create local folders referenced by `POSTGRES_DATA_DIR`, `MINIO_DATA_DIR`, and `REDIS_DATA_DIR` whenever those services run in the `default` Docker context, so you no longer need to pre-create `./data/*` directories.
 
 ### 4. Run the Application
 
@@ -63,10 +65,11 @@ The runtime pulls secrets from User Secrets → environment variables (`.env`, d
 
 ### 5. Access Services
 
-- **Main App:** http://localhost:5174 (from `SKYMONITOR_HTTP_PORT`)
-- **MinIO Console:** http://localhost:9001
-- **Mailpit (SMTP):** http://localhost:8025 (if exposed in compose)
+- **Main App:** https://localhost:7096 (from `LOGIC_HOST_HTTPS_PORT`)
+- **MinIO Console:** `http://<MINIO_HOST>:<MINIO_CONSOLE_PORT>` (defaults to `http://192.168.2.104:9001` when using `proxmox-home`)
+- **Mailpit (SMTP):** `http://<SMTP_HOST>:<SMTP_WEB_PORT>` (defaults to `http://192.168.2.104:8025` in the remote stack)
 - **Camera Agent:** http://localhost:5130 (when started)
+- **Identity (public):** https://localhost:7096 (used for interactive redirects)
  
 
 ## Default Credentials
@@ -95,7 +98,7 @@ If you rely on `.devcontainer/devcontainer.local.env`, confirm the file exists a
 
 ```bash
 ./scripts/infra:status                     # quick health summary
-docker compose -f docker-compose.dev.yml logs -f minio
+docker compose -f docker-compose.infrastructure.yml logs -f minio
 ./scripts/infra:start --reset postgres     # recreate a failing service
 ```
 

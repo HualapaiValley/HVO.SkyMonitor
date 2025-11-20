@@ -189,6 +189,16 @@ internal static class DatabaseSeeder
             TestClients.SystemCameraAgent.DisplayName,
             TestClients.SystemCameraAgent.Scopes);
 
+        await EnsureInteractiveConfidentialClientAsync(
+            applicationManager,
+            logger,
+            TestClients.CameraAgentInteractive.ClientId,
+            TestClients.CameraAgentInteractive.ClientSecret,
+            TestClients.CameraAgentInteractive.DisplayName,
+            TestClients.CameraAgentInteractive.Scopes,
+            TestClients.CameraAgentInteractive.RedirectUris,
+            TestClients.CameraAgentInteractive.PostLogoutRedirectUris);
+
         await EnsureConfidentialClientAsync(
             applicationManager,
             logger,
@@ -248,6 +258,58 @@ internal static class DatabaseSeeder
 
         descriptor.Permissions.Add(Permissions.Endpoints.Token);
         descriptor.Permissions.Add(Permissions.GrantTypes.ClientCredentials);
+        foreach (var scope in scopes)
+        {
+            descriptor.Permissions.Add(Permissions.Prefixes.Scope + scope);
+        }
+
+        await applicationManager.CreateAsync(descriptor);
+        logger.LogInformation("Created OAuth2 client: {ClientId}", clientId);
+        logger.LogWarning("SECURITY: Client {ClientId} uses default secret. Change it in production!", clientId);
+    }
+
+    private static async Task EnsureInteractiveConfidentialClientAsync(
+        IOpenIddictApplicationManager applicationManager,
+        ILogger logger,
+        string clientId,
+        string clientSecret,
+        string displayName,
+        IReadOnlyCollection<string> scopes,
+        IReadOnlyCollection<Uri> redirectUris,
+        IReadOnlyCollection<Uri> postLogoutUris)
+    {
+        if (await applicationManager.FindByClientIdAsync(clientId) != null)
+        {
+            logger.LogInformation("OAuth2 client already exists: {ClientId}", clientId);
+            return;
+        }
+
+        var descriptor = new OpenIddictApplicationDescriptor
+        {
+            ClientId = clientId,
+            ClientSecret = clientSecret,
+            DisplayName = displayName,
+            ConsentType = ConsentTypes.Explicit,
+            ClientType = ClientTypes.Confidential
+        };
+
+        foreach (var redirectUri in redirectUris)
+        {
+            descriptor.RedirectUris.Add(redirectUri);
+        }
+
+        foreach (var postLogoutUri in postLogoutUris)
+        {
+            descriptor.PostLogoutRedirectUris.Add(postLogoutUri);
+        }
+
+        descriptor.Permissions.Add(Permissions.Endpoints.Authorization);
+        descriptor.Permissions.Add(Permissions.Endpoints.Token);
+        descriptor.Permissions.Add(Permissions.Endpoints.EndSession);
+        descriptor.Permissions.Add(Permissions.GrantTypes.AuthorizationCode);
+        descriptor.Permissions.Add(Permissions.ResponseTypes.Code);
+        descriptor.Requirements.Add(Requirements.Features.ProofKeyForCodeExchange);
+
         foreach (var scope in scopes)
         {
             descriptor.Permissions.Add(Permissions.Prefixes.Scope + scope);

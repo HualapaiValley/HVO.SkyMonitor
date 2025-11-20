@@ -1,8 +1,12 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Asp.Versioning;
+using HVO.SkyMonitor.Common.Observability;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Models.Diagnostics;
 using HVO.SkyMonitor.LogicHost.Services;
@@ -12,6 +16,7 @@ using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Options;
 using Minio;
 using Minio.DataModel.Args;
+using StackExchange.Redis;
 
 namespace HVO.SkyMonitor.LogicHost.Controllers;
 
@@ -29,10 +34,12 @@ public sealed class DiagnosticsController : ControllerBase
     private readonly ILogger<DiagnosticsController> _logger;
     private readonly MinioOptions _minioOptions;
     private readonly SmtpOptions _smtpOptions;
+    private readonly RedisOptions _redisOptions;
     private readonly IServiceProvider _serviceProvider;
 
     public DiagnosticsController(
         IDistributedCache cache,
+        IOptions<RedisOptions> redisOptions,
         IOptions<MinioOptions> minioOptions,
         IOptions<SmtpOptions> smtpOptions,
         IServiceProvider serviceProvider,
@@ -40,10 +47,12 @@ public sealed class DiagnosticsController : ControllerBase
     {
         ArgumentNullException.ThrowIfNull(minioOptions);
         ArgumentNullException.ThrowIfNull(smtpOptions);
+        ArgumentNullException.ThrowIfNull(redisOptions);
         _cache = cache;
         _logger = logger;
         _minioOptions = minioOptions.Value;
         _smtpOptions = smtpOptions.Value;
+        _redisOptions = redisOptions.Value;
         _serviceProvider = serviceProvider;
     }
 
@@ -61,16 +70,27 @@ public sealed class DiagnosticsController : ControllerBase
             options.SetAbsoluteExpiration(TimeSpan.FromSeconds(ttl));
         }
 
-        await _cache.SetStringAsync(key, request.Value, options, cancellationToken);
-        var retrieved = await _cache.GetStringAsync(key, cancellationToken);
+        var redisEndpoint = NormalizeRedisEndpoint(_redisOptions.Configuration);
+        using var activity = DependencyTelemetry.StartRedisActivity("Redis cache diagnostics", redisEndpoint, key);
 
-        return Ok(new CacheDiagnosticsResponse
+        try
         {
-            Key = key,
-            WrittenValue = request.Value,
-            RetrievedValue = retrieved,
-            CacheHit = retrieved is not null
-        });
+            await _cache.SetStringAsync(key, request.Value, options, cancellationToken);
+            var retrieved = await _cache.GetStringAsync(key, cancellationToken);
+
+            return Ok(new CacheDiagnosticsResponse
+            {
+                Key = key,
+                WrittenValue = request.Value,
+                RetrievedValue = retrieved,
+                CacheHit = retrieved is not null
+            });
+        }
+        catch (Exception ex)
+        {
+            DependencyTelemetry.RecordException(activity, ex);
+            throw;
+        }
     }
 
     [HttpPost("minio")]
@@ -94,6 +114,8 @@ public sealed class DiagnosticsController : ControllerBase
         await EnsureBucketExistsAsync(minioClient, bucket, cancellationToken);
 
         var payload = Encoding.UTF8.GetBytes(request.Content);
+        var endpoint = ResolveMinioEndpoint();
+
         using (var writeStream = new MemoryStream(payload, writable: false))
         {
             var putArgs = new PutObjectArgs()
@@ -103,7 +125,16 @@ public sealed class DiagnosticsController : ControllerBase
                 .WithStreamData(writeStream)
                 .WithObjectSize(writeStream.Length);
 
-            await minioClient.PutObjectAsync(putArgs, cancellationToken).ConfigureAwait(false);
+            using var putActivity = DependencyTelemetry.StartMinioActivity("MinIO PutObject", endpoint, bucket, objectName);
+            try
+            {
+                await minioClient.PutObjectAsync(putArgs, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                DependencyTelemetry.RecordException(putActivity, ex);
+                throw;
+            }
         }
 
         var buffer = new MemoryStream();
@@ -112,7 +143,18 @@ public sealed class DiagnosticsController : ControllerBase
             .WithObject(objectName)
             .WithCallbackStream(stream => stream.CopyTo(buffer));
 
-        await minioClient.GetObjectAsync(getArgs, cancellationToken).ConfigureAwait(false);
+        using (var getActivity = DependencyTelemetry.StartMinioActivity("MinIO GetObject", endpoint, bucket, objectName))
+        {
+            try
+            {
+                await minioClient.GetObjectAsync(getArgs, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                DependencyTelemetry.RecordException(getActivity, ex);
+                throw;
+            }
+        }
 
         buffer.Position = 0;
         var storedContent = Encoding.UTF8.GetString(buffer.ToArray());
@@ -191,5 +233,23 @@ public sealed class DiagnosticsController : ControllerBase
             await client.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket), cancellationToken)
                 .ConfigureAwait(false);
         }
+    }
+
+    private static string? NormalizeRedisEndpoint(string? configuration)
+    {
+        if (string.IsNullOrWhiteSpace(configuration))
+        {
+            return null;
+        }
+
+        var options = ConfigurationOptions.Parse(configuration);
+        var endpoint = options.EndPoints.FirstOrDefault();
+        return endpoint?.ToString();
+    }
+
+    private string ResolveMinioEndpoint()
+    {
+        var scheme = _minioOptions.UseSsl ? "https" : "http";
+        return $"{scheme}://{_minioOptions.Endpoint}:{_minioOptions.Port}";
     }
 }

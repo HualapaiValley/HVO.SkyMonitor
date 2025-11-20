@@ -1,3 +1,5 @@
+using System;
+
 namespace HVO.SkyMonitor.TestSupport;
 
 /// <summary>
@@ -14,6 +16,36 @@ public static class TestClients
         public const string ClientSecret = "test-camera-agent-secret-do-not-use-in-production";
         public const string DisplayName = "Camera Agent System Client";
         public static readonly string[] Scopes = ["api.camera", "api.frames", "api.images"];
+    }
+
+    /// <summary>
+    /// Interactive confidential client for the camera agent web UI (Authorization Code + PKCE).
+    /// </summary>
+    public static class CameraAgentInteractive
+    {
+        public const string ClientId = "camera-agent-interactive";
+        public const string ClientSecret = "test-camera-agent-interactive-secret-do-not-use-in-production";
+        public const string DisplayName = "Camera Agent Interactive Client";
+        public static readonly string[] Scopes = [
+            "openid",
+            "profile",
+            "email",
+            "api.camera",
+            "api.frames",
+            "api.images"
+        ];
+
+        public static readonly Uri[] RedirectUris =
+        [
+            new("https://localhost:7130/signin-central", UriKind.Absolute),
+            new("http://localhost:5130/signin-central", UriKind.Absolute)
+        ];
+
+        public static readonly Uri[] PostLogoutRedirectUris =
+        [
+            new("https://localhost:7130/signout-callback-central", UriKind.Absolute),
+            new("http://localhost:5130/signout-callback-central", UriKind.Absolute)
+        ];
     }
 
     /// <summary>

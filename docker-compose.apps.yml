@@ -1,0 +1,54 @@
+# Application services for HVO.SkyMonitor
+# Keep this stack separate from the shared infrastructure
+
+services:
+  logichost:
+    build:
+      context: .
+      dockerfile: src/HVO.SkyMonitor.LogicHost/Dockerfile
+    container_name: skymonitor-logichost
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__skymonitordb: "Host=${POSTGRES_HOST:-postgres};Port=${POSTGRES_PORT:-5432};Database=${POSTGRES_DB:-skymonitordb};Username=${POSTGRES_USER:-skymonitor};Password=${POSTGRES_PASSWORD:-skymonitor_dev_password}"
+      Redis__Configuration: "${REDIS_HOST:-redis}:${REDIS_PORT:-6379}"
+      Redis__InstanceName: "skymonitor"
+      Minio__Endpoint: "${MINIO_HOST:-minio}"
+      Minio__Port: ${MINIO_API_PORT:-9000}
+      Minio__AccessKey: ${MINIO_ROOT_USER:-minioadmin}
+      Minio__SecretKey: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      Minio__UseSsl: "false"
+      Smtp__Host: ${SMTP_HOST:-smtp}
+      Smtp__Port: ${SMTP_PORT:-1025}
+      Smtp__From: ${SMTP_FROM:-no-reply@skymonitor.local}
+      IdentityServer__Issuer: ${IDENTITYSERVER_ISSUER:-http://logichost:8080/}
+      APPLICATIONINSIGHTS_CONNECTION_STRING: ${APPLICATIONINSIGHTS_CONNECTION_STRING}
+    ports:
+      - "${LOGIC_HOST_HTTP_PORT:-5174}:8080"
+    restart: unless-stopped
+    networks:
+      - skymonitor-network
+
+  cameraagent:
+    build:
+      context: .
+      dockerfile: src/HVO.SkyMonitor.CameraAgent/Dockerfile
+    container_name: skymonitor-cameraagent
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__skymonitordb: "Host=${POSTGRES_HOST:-postgres};Port=${POSTGRES_PORT:-5432};Database=${POSTGRES_DB:-skymonitordb};Username=${POSTGRES_USER:-skymonitor};Password=${POSTGRES_PASSWORD:-skymonitor_dev_password}"
+      SkyMonitor__BaseUrl: ${CAMERA_AGENT_LOGIC_BASEURL:-http://logichost:8080}
+      CentralIdentity__ServiceUrl: ${CAMERA_AGENT_IDENTITY_URL:-http://logichost:8080}
+      CentralIdentity__InteractiveClient__PublicAuthority: ${CAMERA_AGENT_IDENTITY_PUBLIC_URL:-http://localhost:5174}
+      APPLICATIONINSIGHTS_CONNECTION_STRING: ${APPLICATIONINSIGHTS_CONNECTION_STRING}
+    ports:
+      - "${CAMERA_AGENT_HTTP_PORT:-5130}:8080"
+    restart: unless-stopped
+    networks:
+      - skymonitor-network
+
+networks:
+  skymonitor-network:
+    name: skymonitor-network
+    driver: bridge

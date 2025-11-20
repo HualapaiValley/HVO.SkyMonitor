@@ -14,7 +14,7 @@ public sealed class SkyMonitorClientOptions
     private const string DefaultBaseUrl = "https://localhost:5001";
 
     /// <summary>
-    /// Base URL for the SkyMonitor service (e.g., https://skymonitor.local:5174).
+    /// Base URL for the SkyMonitor service (e.g., https://skymonitor.local:7096).
     /// </summary>
     public Uri BaseUrl { get; set; } = new(DefaultBaseUrl, UriKind.Absolute);
 

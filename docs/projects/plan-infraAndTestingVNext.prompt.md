@@ -53,9 +53,9 @@ _Phase status: ✅ Complete_
 
 _Phase status: ✅ Complete_
 
-6. Add `docker-compose.dev.yml` at repository root  
-   - [x] Define infra services: `postgres`, `minio`, `redis`, `smtp`.  
-   - [x] Define app services: `skymonitor`, `cameraagent` (built from `src/`).  
+6. Add Docker Compose files at repository root  
+   - [x] `docker-compose.infrastructure.yml` for `postgres`, `minio`, `redis`, `smtp`.  
+   - [x] `docker-compose.apps.yml` for `skymonitor`/`cameraagent` (built from `src/`).  
    - [x] Use named volumes for Postgres, MinIO, Redis, SMTP data.  
    - [x] Add bind mounts to host data directories that are accessible from the dev container (e.g., `~/skymonitor-data/postgres`, `~/skymonitor-data/minio`, etc.).  
    - [x] Ensure ports and environment variables match application config expectations (connection strings, MinIO endpoint, Redis connection, SMTP host/port).

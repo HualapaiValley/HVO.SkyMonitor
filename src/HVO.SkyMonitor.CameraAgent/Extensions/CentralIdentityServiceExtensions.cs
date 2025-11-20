@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Services;
 
 namespace HVO.SkyMonitor.CameraAgent.Extensions;
 
@@ -32,6 +33,7 @@ public static class CentralIdentityServiceExtensions
         services.AddHttpClient();
         services.AddHttpClient(CentralAuthenticationService.TokenClientName);
         services.AddSingleton<ICentralAuthenticationService, CentralAuthenticationService>();
+        services.AddSingleton<ICentralIdentityNavigationService, CentralIdentityNavigationService>();
 
         return services;
     }
@@ -54,6 +56,7 @@ public static class CentralIdentityServiceExtensions
         services.AddHttpClient();
         services.AddHttpClient(CentralAuthenticationService.TokenClientName);
         services.AddSingleton<ICentralAuthenticationService, CentralAuthenticationService>();
+        services.AddSingleton<ICentralIdentityNavigationService, CentralIdentityNavigationService>();
 
         return services;
     }

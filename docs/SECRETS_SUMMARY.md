@@ -29,7 +29,8 @@
 **`.devcontainer/devcontainer.json`:**
 - Added `containerEnv` with non-sensitive environment variables
 - Mounted user secrets directory from host
-- Added container mode ports (5174, 5130, 5232)
+- Added container mode ports (5174, 5130, 5232) plus Logic Host HTTPS forwarding (7096)
+- Camera agent receives public identity authority env vars for interactive flows
 
 ### 5. Project Configuration
 
@@ -50,7 +51,8 @@ DOCKER_HOST_ADDRESS=0.0.0.0
 REDIS_PORT=6379
 POSTGRES_PORT=5432
 MINIO_API_PORT=9000
-SKYMONITOR_HTTP_PORT=5174
+LOGIC_HOST_HTTPS_PORT=7096
+CAMERA_AGENT_IDENTITY_PUBLIC_URL=https://localhost:7096
 ```
 
 ### Sensitive (Never Commit)

@@ -1,7 +1,9 @@
+using System;
 using System.Net;
 using System.Net.Mail;
 using System.Threading;
 using System.Threading.Tasks;
+using HVO.SkyMonitor.Common.Observability;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -56,7 +58,17 @@ internal sealed class SmtpEmailNotificationService : IEmailNotificationService
             _options.Host,
             _options.Port);
 
-        var sendTask = client.SendMailAsync(message);
-        await sendTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var activity = DependencyTelemetry.StartSmtpActivity(_options.Host, _options.Port, recipient);
+
+        try
+        {
+            var sendTask = client.SendMailAsync(message);
+            await sendTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            DependencyTelemetry.RecordException(activity, ex);
+            throw;
+        }
     }
 }

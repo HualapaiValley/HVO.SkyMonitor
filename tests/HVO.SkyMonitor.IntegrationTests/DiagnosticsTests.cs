@@ -112,7 +112,7 @@ public sealed class DiagnosticsTests
     private static async Task<bool> WaitForEmailAsync(string expectedSubject, CancellationToken cancellationToken)
     {
         using var http = new HttpClient();
-        var endpoint = new Uri($"{AssemblyHooks.Fixture.SmtpHttpEndpoint}/api/v2/messages", UriKind.Absolute);
+        var endpoint = new Uri($"{AssemblyHooks.Fixture.SmtpHttpEndpoint}/api/v1/messages?limit=50", UriKind.Absolute);
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -122,26 +122,65 @@ public sealed class DiagnosticsTests
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            if (document.RootElement.TryGetProperty("items", out var items))
+            if (document.RootElement.TryGetProperty("messages", out var v1Messages))
             {
-                foreach (var item in items.EnumerateArray())
+                if (ContainsSubject(v1Messages, expectedSubject))
                 {
-                    if (!item.TryGetProperty("Content", out var content) ||
-                        !content.TryGetProperty("Headers", out var headers))
-                    {
-                        continue;
-                    }
-
-                    if (headers.TryGetProperty("Subject", out var subjectArray) &&
-                        subjectArray.GetArrayLength() > 0 &&
-                        string.Equals(subjectArray[0].GetString(), expectedSubject, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return true;
-                    }
+                    return true;
+                }
+            }
+            else if (document.RootElement.TryGetProperty("items", out var legacyItems))
+            {
+                if (ContainsSubject(legacyItems, expectedSubject))
+                {
+                    return true;
                 }
             }
 
             await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+        }
+
+        return false;
+    }
+
+    private static bool ContainsSubject(JsonElement arrayElement, string expectedSubject)
+    {
+        foreach (var item in arrayElement.EnumerateArray())
+        {
+            if (TryMatchSubject(item, expectedSubject))
+            {
+                return true;
+            }
+
+            if (item.TryGetProperty("Content", out var content) &&
+                TryMatchSubject(content, expectedSubject))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryMatchSubject(JsonElement element, string expectedSubject)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (element.TryGetProperty("Subject", out var subjectValue) &&
+                string.Equals(subjectValue.GetString(), expectedSubject, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (element.TryGetProperty("Headers", out var headers) &&
+                headers.ValueKind == JsonValueKind.Object &&
+                headers.TryGetProperty("Subject", out var subjectArray) &&
+                subjectArray.ValueKind == JsonValueKind.Array &&
+                subjectArray.GetArrayLength() > 0 &&
+                string.Equals(subjectArray[0].GetString(), expectedSubject, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
         }
 
         return false;

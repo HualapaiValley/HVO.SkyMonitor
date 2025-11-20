@@ -14,9 +14,11 @@ internal sealed class TelemetryCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     TelemetryProcessingStepOptions options,
     ICaptureTelemetrySink telemetrySink,
+    CaptureTelemetryMetricsRecorder metricsRecorder,
     ILogger<TelemetryCaptureProcessingStep> logger) : ConfigurableCaptureProcessingStep<TelemetryProcessingStepOptions>(metadata, options)
 {
     private readonly ICaptureTelemetrySink _telemetrySink = telemetrySink;
+    private readonly CaptureTelemetryMetricsRecorder _metricsRecorder = metricsRecorder;
     private readonly ILogger<TelemetryCaptureProcessingStep> _logger = logger;
 
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
@@ -53,9 +55,11 @@ internal sealed class TelemetryCaptureProcessingStep(
             LoopDuration: context.Submission.LoopDuration,
             ProcessingSteps: context.StepTelemetry.Count == 0
                 ? Array.Empty<CaptureProcessingStepTelemetry>()
-                : context.StepTelemetry.ToArray());
+                : context.StepTelemetry.ToArray(),
+            TemperatureC: result.Frame?.Metadata.TemperatureC);
 
         _telemetrySink.Report(sample);
+        _metricsRecorder.Record(sample);
         return ValueTask.CompletedTask;
     }
 }

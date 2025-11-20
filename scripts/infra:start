@@ -102,30 +102,170 @@ get_docker_context() {
     echo "$context_var"
 }
 
+get_compose_file() {
+    local service="$1"
+    case "$service" in
+        postgres|minio|redis|smtp) echo "docker-compose.infrastructure.yml" ;;
+        logichost|cameraagent) echo "docker-compose.apps.yml" ;;
+        *) echo "docker-compose.apps.yml" ;;
+    esac
+}
+
+get_service_host_var() {
+    local service="$1"
+    case "$service" in
+        postgres) echo "POSTGRES_HOST" ;;
+        minio) echo "MINIO_HOST" ;;
+        redis) echo "REDIS_HOST" ;;
+        smtp) echo "SMTP_HOST" ;;
+        *) echo "" ;;
+    esac
+}
+
+get_service_data_dir_var() {
+    local service="$1"
+    case "$service" in
+        postgres) echo "POSTGRES_DATA_DIR" ;;
+        minio) echo "MINIO_DATA_DIR" ;;
+        redis) echo "REDIS_DATA_DIR" ;;
+        *) echo "" ;;
+    esac
+}
+
+get_service_data_dir_default() {
+    local service="$1"
+    case "$service" in
+        postgres) echo "./data/postgres" ;;
+        minio) echo "./data/minio" ;;
+        redis) echo "./data/redis" ;;
+        *) echo "" ;;
+    esac
+}
+
+resolve_data_dir_path() {
+    local raw_path="$1"
+    if [[ -z "$raw_path" ]]; then
+        printf '%s' ""
+        return
+    fi
+
+    case "$raw_path" in
+        ~)
+            printf '%s' "$HOME"
+            return
+            ;;
+        ~/*)
+            printf '%s' "$HOME/${raw_path#~/}"
+            return
+            ;;
+        /*)
+            printf '%s' "$raw_path"
+            return
+            ;;
+    esac
+
+    local trimmed="$raw_path"
+    trimmed="${trimmed#./}"
+    printf '%s' "$REPO_ROOT/$trimmed"
+}
+
+get_resolved_data_dir() {
+    local service="$1"
+    local dir_var
+    dir_var="$(get_service_data_dir_var "$service")"
+    if [[ -z "$dir_var" ]]; then
+        printf '%s' ""
+        return
+    fi
+
+    local configured_path
+    configured_path="${!dir_var:-}"
+    if [[ -z "$configured_path" ]]; then
+        configured_path="$(get_service_data_dir_default "$service")"
+    fi
+
+    if [[ -z "$configured_path" ]]; then
+        printf '%s' ""
+        return
+    fi
+
+    resolve_data_dir_path "$configured_path"
+}
+
+ensure_local_data_dir() {
+    local service="$1"
+    local context="$2"
+
+    if [[ "$context" != "default" ]]; then
+        return
+    fi
+
+    local resolved
+    resolved="$(get_resolved_data_dir "$service")"
+    if [[ -z "$resolved" ]]; then
+        return
+    fi
+
+    if [[ ! -d "$resolved" ]]; then
+        mkdir -p "$resolved"
+        echo -e "${GREEN}Created data directory for ${service}: ${resolved}${NC}"
+    fi
+}
+
+ensure_remote_host_binding() {
+    local service="$1"
+    local context="$2"
+    local host_var
+    host_var="$(get_service_host_var "$service")"
+    if [[ -z "$host_var" ]] || [[ "$context" == "default" ]]; then
+        return
+    fi
+
+    local host_value="${!host_var:-}"
+    if [[ -z "$host_value" ]]; then
+        echo -e "${RED}Service '$service' is configured to run in docker context '$context' but ${host_var} is not set.${NC}"
+        echo -e "${YELLOW}Set ${host_var} to the reachable IP/hostname of that service before continuing.${NC}"
+        exit 1
+    fi
+
+    case "$host_value" in
+        localhost|127.0.0.1|0.0.0.0)
+            echo -e "${RED}${host_var} is currently '${host_value}' but '$service' runs via docker context '$context'.${NC}"
+            echo -e "${YELLOW}Update ${host_var} to the remote host address (e.g., 192.168.2.104) and retry.${NC}"
+            exit 1
+            ;;
+    esac
+}
+
 reset_service() {
     local service="$1"
     local context
     context="$(get_docker_context "$service")"
+    local compose_file
+    compose_file="$(get_compose_file "$service")"
+
+    ensure_remote_host_binding "$service" "$context"
 
     echo -e "${YELLOW}Resetting $service data...${NC}"
 
     case "$service" in
         postgres|minio|redis)
-            docker --context "$context" compose -f docker-compose.dev.yml stop "$service" 2>/dev/null || true
+            docker --context "$context" compose -f "$compose_file" stop "$service" 2>/dev/null || true
             local volume_name="skymonitor-${service}-data"
             docker --context "$context" volume rm "$volume_name" 2>/dev/null || true
             echo -e "${GREEN}✓ Reset $service data${NC}"
+            ensure_local_data_dir "$service" "$context"
             ;;
         smtp)
-            docker --context "$context" compose -f docker-compose.dev.yml restart "$service" 2>/dev/null || true
+            docker --context "$context" compose -f "$compose_file" restart "$service" 2>/dev/null || true
             echo -e "${GREEN}✓ Reset $service (restarted)${NC}"
             ;;
         logichost|cameraagent)
-            docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" 2>/dev/null || true
+            docker --context "$context" compose -f "$compose_file" rm -f "$service" 2>/dev/null || true
             if [[ "$service" == "cameraagent" ]]; then
                 ensure_cameraagent_networking "$context"
             fi
-            docker --context "$context" compose -f docker-compose.dev.yml build "$service"
+            docker --context "$context" compose -f "$compose_file" build "$service"
             echo -e "${GREEN}✓ Reset $service (removed container and rebuilt image)${NC}"
             ;;
         *)
@@ -176,9 +316,11 @@ ensure_cameraagent_networking() {
     local context="${1:-default}"
     export CAMERA_AGENT_LOGIC_BASEURL
     export CAMERA_AGENT_IDENTITY_URL
+    export CAMERA_AGENT_IDENTITY_PUBLIC_URL
 
     CAMERA_AGENT_LOGIC_BASEURL="$(resolve_context_value "CAMERA_AGENT_LOGIC_BASEURL" "$context" "http://logichost:8080")"
     CAMERA_AGENT_IDENTITY_URL="$(resolve_context_value "CAMERA_AGENT_IDENTITY_URL" "$context" "http://logichost:8080")"
+    CAMERA_AGENT_IDENTITY_PUBLIC_URL="$(resolve_context_value "CAMERA_AGENT_IDENTITY_PUBLIC_URL" "$context" "http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}")"
 }
 
 if [[ "$RESET_MODE" == true ]]; then
@@ -190,7 +332,6 @@ if [[ "$RESET_MODE" == true ]]; then
 fi
 
 echo -e "${BLUE}=== Starting Services ===${NC}"
-mkdir -p data/postgres data/minio data/redis
 
 infra_services_to_start=()
 for service in "${INFRA_SERVICES[@]}"; do
@@ -213,8 +354,11 @@ fi
 echo -e "${BLUE}Starting infrastructure services...${NC}"
 for service in "${infra_services_to_start[@]}"; do
     context="$(get_docker_context "$service")"
+    compose_file="$(get_compose_file "$service")"
+    ensure_remote_host_binding "$service" "$context"
+    ensure_local_data_dir "$service" "$context"
     echo -e "Starting ${service} via context '${context}'"
-    docker --context "$context" compose -f docker-compose.dev.yml up -d "$service"
+    docker --context "$context" compose -f "$compose_file" up -d --remove-orphans "$service"
 done
 
 echo -e "${BLUE}Waiting for infrastructure to be healthy...${NC}"
@@ -225,7 +369,8 @@ for service in "${infra_services_to_start[@]}"; do
     timeout=30
     context="$(get_docker_context "$service")"
     while [[ $timeout -gt 0 ]]; do
-        status=$(docker --context "$context" compose -f docker-compose.dev.yml ps "$service" --format json 2>/dev/null | grep -o '"Health":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+        compose_file="$(get_compose_file "$service")"
+        status=$(docker --context "$context" compose -f "$compose_file" ps "$service" --format json 2>/dev/null | grep -o '"Health":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
         if [[ "$status" == "healthy" ]] || [[ "$status" == "unknown" ]]; then
             echo -e "${GREEN}✓${NC}"
             break
@@ -260,8 +405,9 @@ if [[ "$REBUILD_MODE" == true ]]; then
             if [[ "$service" == "cameraagent" ]]; then
                 ensure_cameraagent_networking "$context"
             fi
+            compose_file="$(get_compose_file "$service")"
             echo -e "Rebuilding ${service} via context '${context}'"
-            docker --context "$context" compose -f docker-compose.dev.yml build "$service"
+            docker --context "$context" compose -f "$compose_file" build "$service"
         done
     else
         echo -e "${YELLOW}No application services matched for rebuild${NC}"
@@ -279,6 +425,7 @@ if [[ " ${START_SERVICES[*]} " =~ " logichost " ]] || [[ " ${START_SERVICES[*]} 
     if [[ ${#app_services_to_start[@]} -gt 0 ]]; then
         for service in "${app_services_to_start[@]}"; do
             context="$(get_docker_context "$service")"
+            compose_file="$(get_compose_file "$service")"
             compose_flags=()
             if [[ "$service" == "cameraagent" ]]; then
                 ensure_cameraagent_networking "$context"
@@ -287,19 +434,21 @@ if [[ " ${START_SERVICES[*]} " =~ " logichost " ]] || [[ " ${START_SERVICES[*]} 
                 fi
             fi
             echo -e "Starting ${service} via context '${context}'"
-            docker --context "$context" compose -f docker-compose.dev.yml up -d "${compose_flags[@]}" "$service"
+            docker --context "$context" compose -f "$compose_file" up -d --remove-orphans "${compose_flags[@]}" "$service"
         done
     fi
 fi
 
 echo ""
 echo -e "${GREEN}=== Services Started ===${NC}"
-echo "To view logs: docker compose -f docker-compose.dev.yml logs -f"
+echo "To view infra logs: docker compose -f docker-compose.infrastructure.yml logs -f"
+echo "To view app logs: docker compose -f docker-compose.apps.yml logs -f"
 echo "To check status: ./scripts/infra:status"
 echo "To stop: ./scripts/infra:stop"
 echo ""
 echo -e "${BLUE}Service URLs:${NC}"
-echo "  Logic Host:      http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}"
-echo "  MinIO Console:   http://localhost:${MINIO_CONSOLE_PORT:-9001}"
-echo "  Mailpit Web UI: http://localhost:${SMTP_WEB_PORT:-8025}"
+echo "  Logic Host (HTTP container):  http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}"
+echo "  Logic Host (HTTPS dotnet):   https://localhost:${LOGIC_HOST_HTTPS_PORT:-7096}"
+echo "  MinIO Console:   http://${MINIO_HOST:-localhost}:${MINIO_CONSOLE_PORT:-9001}"
+echo "  Mailpit Web UI: http://${SMTP_HOST:-localhost}:${SMTP_WEB_PORT:-8025}"
 echo "  Camera Agent:   http://localhost:${CAMERA_AGENT_HTTP_PORT:-5130}"

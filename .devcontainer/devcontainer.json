@@ -27,7 +27,8 @@
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "version": "latest",
       "moby": true,
-      "dockerDashComposeVersion": "v2"
+      "dockerDashComposeVersion": "v2",
+      "installDockerComposeSwitch": false
     }
   },
   "customizations": {
@@ -64,6 +65,22 @@
     "DOTNET_ENVIRONMENT": "Development",
     "USE_CONTAINERS": "true",
     "DOCKER_HOST_ADDRESS": "0.0.0.0",
+    "POSTGRES_DOCKER_CONTEXT": "proxmox-home",
+    "MINIO_DOCKER_CONTEXT": "proxmox-home",
+    "REDIS_DOCKER_CONTEXT": "proxmox-home",
+    "SMTP_DOCKER_CONTEXT": "proxmox-home",
+    "POSTGRES_HOST": "192.168.2.104",
+    "POSTGRES_PORT": "5432",
+    "POSTGRES_DB": "skymonitordb",
+    "REDIS_HOST": "192.168.2.104",
+    "REDIS_PORT": "6379",
+    "MINIO_HOST": "192.168.2.104",
+    "MINIO_API_PORT": "9000",
+    "MINIO_CONSOLE_PORT": "9001",
+    "MINIO_ENDPOINT": "192.168.2.104:9000",
+    "SMTP_HOST": "192.168.2.104",
+    "SMTP_PORT": "1025",
+    "SMTP_WEB_PORT": "8025",
     // Identity Hardening - Rate Limiting Configuration (non-sensitive)
     "RATE_LIMIT_TOKEN_ENDPOINT_PERMITS_PER_MINUTE": "60",
     "RATE_LIMIT_TOKEN_ENDPOINT_QUEUE_LIMIT": "10",
@@ -75,7 +92,8 @@
     "SIGNED_TICKET_ENFORCE_ALLOWED_PATHS": "true",
     // Identity Hardening - Logging Configuration (non-sensitive)
     "LOGGING_LOGLEVEL_DEFAULT": "Information",
-    "LOGGING_LOGLEVEL_MICROSOFT_ASPNETCORE": "Warning"
+    "LOGGING_LOGLEVEL_MICROSOFT_ASPNETCORE": "Warning",
+    "APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=461820e1-768d-49c2-9ffa-dcadc6f8076a;IngestionEndpoint=https://westus3-1.in.applicationinsights.azure.com/;LiveEndpoint=https://westus3.livediagnostics.monitor.azure.com/;ApplicationId=ffe9f937-60da-4b07-8645-88b24d8f5e4f"
   },
   "remoteEnv": {
     // Point to Docker Desktop's magic SSH bridge on macOS
@@ -86,7 +104,8 @@
   // 5010-5011: Camera Agent (HTTP/HTTPS)
   // 5432: PostgreSQL, 6379: Redis
   // 9000-9001: MinIO (API/Console)
-  // 5174: SkyMonitor container mode
+  // 7096: Logic Host HTTPS (dotnet run)
+  // 5174: SkyMonitor container mode (HTTP)
   // 5130: Camera agent container mode
   "forwardPorts": [
     5000,
@@ -97,6 +116,7 @@
     6379,
     9000,
     9001,
+    7096,
     5174,
     5130
   ],
@@ -128,6 +148,10 @@
     },
     "9001": {
       "onAutoForward": "notify"
+    },
+    "7096": {
+      "onAutoForward": "notify",
+      "elevateIfNeeded": true
     },
     "5174": {
       "onAutoForward": "notify"

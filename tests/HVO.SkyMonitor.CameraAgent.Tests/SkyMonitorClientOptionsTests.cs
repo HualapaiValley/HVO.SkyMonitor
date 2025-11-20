@@ -13,12 +13,12 @@ public class SkyMonitorClientOptionsTests
     {
         var options = new SkyMonitorClientOptions
         {
-            BaseUrl = new Uri("https://example.com:5174/api", UriKind.Absolute)
+            BaseUrl = new Uri("https://example.com:7096/api", UriKind.Absolute)
         };
 
         var uri = options.ResolveBaseUri();
 
-        Assert.AreEqual("https://example.com:5174/api", uri.ToString());
+        Assert.AreEqual("https://example.com:7096/api", uri.ToString());
     }
 
     [TestMethod]

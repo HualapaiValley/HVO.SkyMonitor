@@ -15,9 +15,11 @@ Usage: ./scripts/run-cameraagent-remote.sh [options] [-- <infra:start args>]
 Options:
   -c, --context CONTEXT       Docker context name (default: "default")
   -l, --logic-host HOST       IP/hostname for the logic host (defaults to first non-loopback address)
-      --logic-port PORT       Port that the logic host listens on (default: 5174)
-      --identity-host HOST    IP/host for the identity service (defaults to logic host)
-      --identity-port PORT    Port for the identity service (default: 5174)
+    --logic-port PORT       Port that the logic host listens on (default: 7096)
+    --logic-scheme SCHEME   Scheme for the logic host (default: https)
+    --identity-host HOST    IP/host for the identity service (defaults to logic host)
+    --identity-port PORT    Port for the identity service (default: 7096)
+    --identity-scheme SCH   Scheme for the identity service (default: https)
       --dry-run               Print the resolved values instead of running infra:start
   -h, --help                  Show this message
 
@@ -27,9 +29,11 @@ EOF
 
 CONTEXT="default"
 LOGIC_HOST=""
-LOGIC_PORT="5174"
+LOGIC_PORT="7096"
+LOGIC_SCHEME="https"
 IDENTITY_HOST=""
-IDENTITY_PORT="5174"
+IDENTITY_PORT="7096"
+IDENTITY_SCHEME="https"
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -46,12 +50,20 @@ while [[ $# -gt 0 ]]; do
             LOGIC_PORT="$2"
             shift 2
             ;;
+        --logic-scheme)
+            LOGIC_SCHEME="$2"
+            shift 2
+            ;;
         --identity-host)
             IDENTITY_HOST="$2"
             shift 2
             ;;
         --identity-port)
             IDENTITY_PORT="$2"
+            shift 2
+            ;;
+        --identity-scheme)
+            IDENTITY_SCHEME="$2"
             shift 2
             ;;
         --dry-run)
@@ -100,15 +112,17 @@ sanitize_context() {
 }
 
 SANITIZED_CONTEXT="$(sanitize_context "$CONTEXT")"
-LOGIC_URL="http://${LOGIC_HOST}:${LOGIC_PORT}"
-IDENTITY_URL="http://${IDENTITY_HOST}:${IDENTITY_PORT}"
+LOGIC_URL="${LOGIC_SCHEME}://${LOGIC_HOST}:${LOGIC_PORT}"
+IDENTITY_URL="${IDENTITY_SCHEME}://${IDENTITY_HOST}:${IDENTITY_PORT}"
 
 export CAMERAAGENT_DOCKER_CONTEXT="$CONTEXT"
 export CAMERA_AGENT_LOGIC_BASEURL="${LOGIC_URL}"
 export CAMERA_AGENT_IDENTITY_URL="${IDENTITY_URL}"
+export CAMERA_AGENT_IDENTITY_PUBLIC_URL="${IDENTITY_URL}"
 
 export "CAMERA_AGENT_LOGIC_BASEURL_${SANITIZED_CONTEXT}=${LOGIC_URL}"
 export "CAMERA_AGENT_IDENTITY_URL_${SANITIZED_CONTEXT}=${IDENTITY_URL}"
+export "CAMERA_AGENT_IDENTITY_PUBLIC_URL_${SANITIZED_CONTEXT}=${IDENTITY_URL}"
 
 info() {
     echo "Context: $CONTEXT"

@@ -34,6 +34,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraModuleFactory, CameraModuleFactory>();
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
+        services.AddSingleton<CaptureTelemetryMetricsRecorder>();
         services.AddSingleton<CaptureTelemetrySink>();
         services.AddSingleton<ICaptureTelemetrySink>(sp => sp.GetRequiredService<CaptureTelemetrySink>());
         services.AddSingleton<ICaptureTelemetryProvider>(sp => sp.GetRequiredService<CaptureTelemetrySink>());

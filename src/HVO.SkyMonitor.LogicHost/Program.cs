@@ -3,6 +3,7 @@ using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Threading.RateLimiting;
 using Asp.Versioning;
+using Azure.Monitor.OpenTelemetry.AspNetCore;
 using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
 using HVO.SkyMonitor.Common.Infrastructure.Filters;
 using HVO.SkyMonitor.Common.Security;
@@ -13,6 +14,8 @@ using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Common.Observability;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
+using HVO.SkyMonitor.LogicHost.Diagnostics;
+using HVO.SkyMonitor.LogicHost.Observability;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -24,6 +27,8 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.EntityFrameworkCore;
+using OpenTelemetry;
+using OpenTelemetry.Extensions.Hosting;
 using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Metrics;
 using Scalar.AspNetCore;
@@ -31,6 +36,7 @@ using OpenIddict.Validation.AspNetCore;
 using OpenIddict.Server.AspNetCore;
 using Minio;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Configuration;
 using static OpenIddict.Abstractions.OpenIddictConstants;
 
 namespace HVO.SkyMonitor.LogicHost;
@@ -54,8 +60,26 @@ public sealed partial class Program
                 ActivityTrackingOptions.Tags;
         });
 
+        if (builder.Environment.IsDevelopment())
+        {
+            builder.Services.AddScoped<DependencyPrimer>();
+            builder.Services.AddHostedService<DevelopmentDependencyPrimingHostedService>();
+        }
+
         // Configure shared observability (OpenTelemetry + health defaults)
-        builder.AddSkyMonitorObservability();
+        builder.AddSkyMonitorObservability(otel =>
+        {
+            if (otel is OpenTelemetryBuilder concreteBuilder)
+            {
+                concreteBuilder.WithMetrics(metrics =>
+                {
+                    metrics.AddPrometheusExporter();
+                    metrics.AddMeter("HVO.SkyMonitor.Authentication");
+                    metrics.AddAspNetCoreInstrumentation();
+                })
+                .UseAzureMonitor();
+            }
+        });
 
         // Correlation ID support
         builder.Services.AddHttpContextAccessor();
@@ -95,11 +119,13 @@ public sealed partial class Program
             logging.ResponseHeaders.Add(CorrelationIdMiddleware.HeaderName);
         });
 
+        builder.Services.AddHttpClient();
+
         // Time provider for testability
         builder.Services.AddSingleton(TimeProvider.System);
 
         // API Controllers with automatic model state validation
-        builder.Services.AddControllers(options =>
+        builder.Services.AddControllersWithViews(options =>
         {
             options.Filters.Add<ValidateModelStateAttribute>();
         })
@@ -149,14 +175,7 @@ public sealed partial class Program
             options.SubstituteApiVersionInUrl = true;
         });
 
-        // Prometheus metrics endpoint
-        builder.Services.AddOpenTelemetry()
-            .WithMetrics(metrics =>
-            {
-                metrics.AddPrometheusExporter();
-                metrics.AddMeter("HVO.SkyMonitor.Authentication");
-                metrics.AddAspNetCoreInstrumentation();
-            });
+        // Prometheus metrics endpoint handled in AddSkyMonitorObservability configuration
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
@@ -308,8 +327,13 @@ public sealed partial class Program
             ?? builder.Configuration["ConnectionStrings:DefaultConnection"]
             ?? "Host=localhost;Port=5432;Database=skymonitordb;Username=postgres;Password=postgres";
 
-        builder.Services.AddDbContext<ApplicationDbContext>(options =>
-            options.UseNpgsql(connectionString));
+        builder.Services.AddSingleton<DbCommandTelemetryInterceptor>();
+
+        builder.Services.AddDbContext<ApplicationDbContext>((serviceProvider, options) =>
+        {
+            options.UseNpgsql(connectionString);
+            options.AddInterceptors(serviceProvider.GetRequiredService<DbCommandTelemetryInterceptor>());
+        });
 
         builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
@@ -332,6 +356,8 @@ public sealed partial class Program
         builder.Services.AddSingleton<IEmailSender<ApplicationUser>, SmtpIdentityEmailSender>();
 
         // OpenIddict Configuration (Phase 2)
+        var identityIssuer = ResolveIdentityIssuer(builder.Configuration);
+
         builder.Services.AddOpenIddict()
             // Register the OpenIddict core components
             .AddCore(options =>
@@ -343,6 +369,10 @@ public sealed partial class Program
             // Register the OpenIddict server components
             .AddServer(options =>
             {
+                if (identityIssuer is not null)
+                {
+                    options.SetIssuer(identityIssuer);
+                }
                 // Enable the authorization and token endpoints
                 options.SetAuthorizationEndpointUris("/connect/authorize")
                        .SetTokenEndpointUris("/connect/token");
@@ -416,11 +446,26 @@ public sealed partial class Program
                 options.UseAspNetCore();
             });
 
-        // Data Protection - persist keys to avoid cookie invalidation on restart
-        var dataProtectionPath = Path.Combine(builder.Environment.ContentRootPath, "DataProtection-Keys");
-        Directory.CreateDirectory(dataProtectionPath);
+        // Data Protection - persist keys to shared PostgreSQL store so cookies/antiforgery tokens remain valid across hosts
+        var dataProtectionConnectionString = builder.Configuration.GetConnectionString("DataProtection") ?? connectionString;
+        var dataProtectionSchema = builder.Configuration.GetValue<string>("DataProtection:Schema");
+        var dataProtectionTable = builder.Configuration.GetValue<string>("DataProtection:Table");
+
+        builder.Services.AddPostgresDataProtectionKeyRepository(options =>
+        {
+            options.ConnectionString = dataProtectionConnectionString;
+            if (!string.IsNullOrWhiteSpace(dataProtectionSchema))
+            {
+                options.SchemaName = dataProtectionSchema!;
+            }
+
+            if (!string.IsNullOrWhiteSpace(dataProtectionTable))
+            {
+                options.TableName = dataProtectionTable!;
+            }
+        });
+
         builder.Services.AddDataProtection()
-            .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath))
             .SetApplicationName("HVO.SkyMonitor");
 
         // Authentication
@@ -603,6 +648,28 @@ public sealed partial class Program
         app.MapSkyMonitorHealthEndpoints();
 
         await app.RunAsync().ConfigureAwait(false);
+    }
+
+    private static Uri? ResolveIdentityIssuer(ConfigurationManager configuration)
+    {
+        var configuredIssuer = configuration["IdentityServer:Issuer"];
+        if (string.IsNullOrWhiteSpace(configuredIssuer))
+        {
+            return null;
+        }
+
+        configuredIssuer = configuredIssuer.Trim();
+        if (configuredIssuer[^1] != '/')
+        {
+            configuredIssuer += "/";
+        }
+
+        if (!Uri.TryCreate(configuredIssuer, UriKind.Absolute, out var issuerUri))
+        {
+            throw new InvalidOperationException($"IdentityServer:Issuer value '{configuredIssuer}' is not a valid absolute URI.");
+        }
+
+        return issuerUri;
     }
 
     private static partial class Log

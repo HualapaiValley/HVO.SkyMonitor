@@ -252,7 +252,7 @@ docker run -e MINIO__ACCESSKEY="your-key" \
            hvo-skymonitor:latest
 ```
 
-The `scripts/infra:*` helpers wrap `docker compose -f docker-compose.dev.yml ...` and forward values from `.env`, `.devcontainer/devcontainer.local.env`, and your shell session so you don't have to specify them manually for local development.
+The `scripts/infra:*` helpers wrap the split compose stacks (`docker compose -f docker-compose.infrastructure.yml ...` and `docker compose -f docker-compose.apps.yml ...`) and forward values from `.env`, `.devcontainer/devcontainer.local.env`, and your shell session so you don't have to specify them manually for local development.
 
 ## Secret Rotation
 

@@ -23,7 +23,12 @@ public static class TestHosts
     /// <summary>
     /// HTTPS URL for development testing (when HTTPS is configured).
     /// </summary>
-    public const string HttpsDevelopmentUrl = "https://localhost:5175";
+    public const string HttpsDevelopmentUrl = "https://localhost:7096";
+
+    /// <summary>
+    /// Public identity authority used for interactive sign-in flows.
+    /// </summary>
+    public static Uri IdentityPublicAuthority { get; } = new("https://localhost:7096", UriKind.Absolute);
 
     /// <summary>
     /// Camera Agent base URL.

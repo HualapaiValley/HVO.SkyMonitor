@@ -32,14 +32,14 @@ dotnet run --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
 
 ## Endpoints
 
-- **Web UI**: `http://localhost:5174` (when running as container) or dynamic port (when running as project)
+- **Web UI**: `https://localhost:7096` (when running via `dotnet run`) or `http://localhost:5174` (container profile)
 - **API**: `/api/v1.0/status`
 - **Health Check**: `/health` (no auth required; reports database, Redis, MinIO, SMTP status)
 - **Metrics**: `/metrics`
 - **API Documentation**: `/scalar/v1`
 - **OpenAPI Spec**: `/openapi/v1.json`
 
-> Quick probe: `curl http://localhost:5174/health` returns a JSON payload with each dependency's state plus the overall status. `/alive` remains a lightweight liveness check used by container orchestrators.
+> Quick probe: `curl https://localhost:7096/health` (or `http://localhost:5174/health` for the container) returns a JSON payload with each dependency's state plus the overall status. `/alive` remains a lightweight liveness check used by container orchestrators.
 
 ## Configuration
 
@@ -80,6 +80,7 @@ During startup the `DatabaseSeeder` populates standard test identities, API keys
 | Client | Type | Client ID | Secret | Scopes | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Camera Agent | Confidential | `system-camera-agent` | `test-camera-agent-secret-do-not-use-in-production` | `api.camera`, `api.frames`, `api.images` | Client Credentials flow |
+| Camera Agent UI | Confidential | `camera-agent-interactive` | `test-camera-agent-interactive-secret-do-not-use-in-production` | `openid`, `profile`, `email`, `api.camera`, `api.frames`, `api.images` | Authorization Code + PKCE. Redirects to `https://localhost:7130/signin-central`, `http://localhost:5130/signin-central` |
 | Internal Service | Confidential | `system-internal` | `test-internal-secret-do-not-use-in-production` | `api.admin`, `api.camera`, `api.frames`, `api.images` | Client Credentials flow |
 | Web UI | Public (PKCE) | `web-ui` | _(none)_ | `openid`, `profile`, `email`, `api.viewer` | Redirect URIs `http://localhost:5000/signin-oidc`, `https://localhost:5001/signin-oidc` |
 | Mobile App | Public (PKCE) | `mobile-app` | _(none)_ | `openid`, `profile`, `email`, `api.viewer`, `offline_access` | Redirect `com.skymonitor.mobile://auth-callback` |
