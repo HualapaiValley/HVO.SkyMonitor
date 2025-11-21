@@ -1,0 +1,24 @@
+sequenceDiagram
+    autonumber
+    participant Agent as Camera Agent
+    participant LogicHost
+    participant Entra as Azure Entra (Tenant)
+
+    rect rgb(230,240,255)
+    Agent->>Agent: Load CentralIdentityOptions (ServiceUrl, Mode)
+    Agent->>Entra: Client credentials request (client_id, secret, scopes)
+    Entra-->>Agent: Access token (expires_in ~300s)
+    end
+
+    Agent->>LogicHost: API call with Bearer token (SkyMonitor.Api HttpClient)
+    LogicHost->>LogicHost: Validate issuer (Entra) & scopes (api.camera,...)
+    LogicHost-->>Agent: Response (frames/telemetry/etc.)
+
+    rect rgb(255,240,230)
+    Agent->>Agent: Local admin fallback configured? (Mode=ApiKey)
+    Agent-->>LogicHost: API call with X-API-Key header
+    LogicHost->>LogicHost: Hash compare & issue claims (local issuer)
+    LogicHost-->>Agent: Response
+    end
+
+    Note over Agent,LogicHost: Interactive operators use cookie + OIDC redirect (same Entra tenant) for UI login/logout.

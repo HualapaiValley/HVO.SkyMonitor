@@ -1,0 +1,22 @@
+flowchart TD
+    subgraph Config[Configuration Sources]
+        A1["cameraagent.sample.json"]
+        A2["appsettings.Development.json"]
+        A3["Environment (.env)"]
+    end
+
+    Config --> B["CameraAgentServiceCollectionExtensions\n(register services)"]
+    B --> C["FileCameraAgentConfigurationLoader\n(load + watch config)"]
+    C --> D["CameraCaptureService\n(capture loop)"]
+    D -->|CaptureRequest| E["ICameraModule (RandomImage now, hardware later)"]
+    E -->|CaptureResult| F["CapturePipelineRunner"]
+    F --> G1["FileSystemFrameStorageService\n(Write RAW + derived)"]
+    F --> G2["TelemetryCaptureProcessingStep\n(Push samples)"]
+    F --> G3["UploadProcessingStep (future)\n(NoOp placeholder)"]
+    G1 --> H["FrameRetentionWorker"]
+    G2 --> I["CaptureTelemetrySink + Metrics"]
+    I --> J["Blazor dashboard / API status"]
+    G3 -.-> K["LogicHost ingest queue/API\n(Future per contracts.md)"]
+
+    J --> L["Operators (UI + health checks)"]
+    K -.-> M["LogicHost FrameProcessingWorker\n(Legacy: HVOv9 FramesController)"]
