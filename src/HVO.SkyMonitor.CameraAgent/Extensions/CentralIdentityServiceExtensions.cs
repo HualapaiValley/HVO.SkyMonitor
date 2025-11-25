@@ -1,6 +1,6 @@
 using System;
 using HVO.SkyMonitor.CameraAgent.Authentication;
-using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.Common.Identity;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 

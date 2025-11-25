@@ -6,6 +6,7 @@ using Asp.Versioning;
 using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
 using HVO.SkyMonitor.Common.Infrastructure.Filters;
 using HVO.SkyMonitor.Common.Security;
+using HVO.SkyMonitor.Common.Identity;
 using HVO.SkyMonitor.LogicHost.Components;
 using HVO.SkyMonitor.LogicHost.Components.Account;
 using HVO.SkyMonitor.LogicHost.Configuration;
@@ -17,6 +18,7 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpLogging;
+using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -83,6 +85,15 @@ public sealed partial class Program
         var redisConfiguration = builder.Configuration.GetValue<string>("Redis:Configuration");
         var minioEndpoint = builder.Configuration.GetValue<string>("Minio:Endpoint");
         var smtpHost = builder.Configuration.GetValue<string>("Smtp:Host");
+
+        var centralIdentitySection = builder.Configuration.GetSection("CentralIdentity");
+        builder.Services.AddOptions<CentralIdentityOptions>()
+            .Bind(centralIdentitySection)
+            .ConfigureCentralIdentityDefaults();
+
+        var centralIdentitySettings = centralIdentitySection.Exists()
+            ? centralIdentitySection.Get<CentralIdentityOptions>()
+            : null;
 
         // HTTP logging
         builder.Services.AddHttpLogging(logging =>
@@ -296,6 +307,11 @@ public sealed partial class Program
                 }
 
                 return client.Build();
+            });
+
+            builder.Services.AddHttpClient<MinioHealthCheck>(client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(5);
             });
         }
 
@@ -516,6 +532,10 @@ public sealed partial class Program
         builder.Services.AddScoped<IApiKeyValidator, DatabaseApiKeyValidator>();
         builder.Services.AddScoped<IApiKeyAuditLogger, ApiKeyAuditLogger>();
         builder.Services.AddScoped<IAuthenticationEventLogger, AuthenticationEventLogger>();
+        builder.Services.AddScoped<IDeviceRegistrationService, DeviceRegistrationService>();
+        builder.Services.AddScoped<IDeviceRegistrationEnvelopeService, DeviceRegistrationEnvelopeService>();
+        builder.Services.AddScoped<IDeviceBootstrapService, DeviceBootstrapService>();
+        builder.Services.AddScoped<IDeviceRegistrationReadService, DeviceRegistrationReadService>();
 
         var app = builder.Build();
 
@@ -535,7 +555,49 @@ public sealed partial class Program
         // Status code pages for non-API routes only (browsers get HTML, APIs get ProblemDetails)
         app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase), appBuilder =>
         {
-            appBuilder.UseStatusCodePagesWithReExecute("/Error", "?statusCode={0}");
+            appBuilder.UseStatusCodePages(async statusCodeContext =>
+            {
+                var httpContext = statusCodeContext.HttpContext;
+                var response = httpContext.Response;
+
+                if (response.HasStarted)
+                {
+                    return;
+                }
+
+                var statusCode = response.StatusCode;
+
+                if (statusCode == StatusCodes.Status401Unauthorized)
+                {
+                    var returnUrl = Uri.EscapeDataString(UriHelper.GetEncodedPathAndQuery(httpContext.Request));
+                    var loginPath = $"/Account/Login?returnUrl={returnUrl}";
+
+                    if (!string.Equals(httpContext.Request.Path.Value, "/Account/Login", StringComparison.OrdinalIgnoreCase))
+                    {
+                        response.Redirect(loginPath);
+                    }
+
+                    return;
+                }
+
+                var targetPath = statusCode == StatusCodes.Status404NotFound ? "/not-found" : "/Error";
+                var targetQuery = statusCode == StatusCodes.Status404NotFound
+                    ? string.Empty
+                    : $"?statusCode={statusCode}";
+
+                var currentPath = httpContext.Request.Path.Value ?? string.Empty;
+                var currentQuery = httpContext.Request.QueryString.HasValue
+                    ? httpContext.Request.QueryString.Value!
+                    : string.Empty;
+
+                if (string.Equals(currentPath, targetPath, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(currentQuery, targetQuery, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                response.Redirect(string.Concat(targetPath, targetQuery));
+            });
         });
 
         app.UseExceptionHandler();

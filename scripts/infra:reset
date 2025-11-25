@@ -33,6 +33,12 @@ readonly INFRA_SERVICES=(postgres minio redis smtp)
 readonly APP_SERVICES=(logichost cameraagent)
 readonly ALL_SERVICES=("${INFRA_SERVICES[@]}" "${APP_SERVICES[@]}")
 
+clean_cameraagent_data() {
+    mkdir -p data/cameraagent/identity data/cameraagent/dataprotection
+    rm -f data/cameraagent/identity/* 2>/dev/null || true
+    rm -f data/cameraagent/dataprotection/* 2>/dev/null || true
+}
+
 # Parse arguments
 RESET_SERVICES=()
 
@@ -58,16 +64,16 @@ get_docker_context() {
     
     case "$service" in
         postgres)
-            context_var="${POSTGRES_DOCKER_CONTEXT:-default}"
+            context_var="${POSTGRES_DOCKER_CONTEXT:-proxmox-home}"
             ;;
         minio)
-            context_var="${MINIO_DOCKER_CONTEXT:-default}"
+            context_var="${MINIO_DOCKER_CONTEXT:-proxmox-home}"
             ;;
         redis)
-            context_var="${REDIS_DOCKER_CONTEXT:-default}"
+            context_var="${REDIS_DOCKER_CONTEXT:-proxmox-home}"
             ;;
         smtp)
-            context_var="${SMTP_DOCKER_CONTEXT:-default}"
+            context_var="${SMTP_DOCKER_CONTEXT:-proxmox-home}"
             ;;
         logichost)
             context_var="${LOGICHOST_DOCKER_CONTEXT:-default}"
@@ -84,21 +90,75 @@ get_docker_context() {
     echo "$context_var"
 }
 
+get_compose_file() {
+    local service="$1"
+    case "$service" in
+        postgres|minio|redis|smtp) echo "docker-compose.infrastructure.yml" ;;
+        logichost|cameraagent) echo "docker-compose.apps.yml" ;;
+        *) echo "docker-compose.infrastructure.yml" ;;
+    esac
+}
+
+sanitize_context_name() {
+    local context="${1:-default}"
+    context="${context^^}"
+    context="${context//[^A-Z0-9]/_}"
+    if [[ -z "$context" ]]; then
+        context="DEFAULT"
+    fi
+    printf '%s' "$context"
+}
+
+resolve_context_value() {
+    local base_key="$1"
+    local context="$2"
+    local default_value="${3:-}"
+
+    local sanitized_context
+    sanitized_context="$(sanitize_context_name "$context")"
+    local context_key="${base_key}_${sanitized_context}"
+
+    if [[ -n "${!context_key:-}" ]]; then
+        printf '%s' "${!context_key}"
+        return
+    fi
+
+    if [[ -n "${!base_key:-}" ]]; then
+        printf '%s' "${!base_key}"
+        return
+    fi
+
+    if [[ -n "$default_value" ]]; then
+        printf '%s' "$default_value"
+        return
+    fi
+
+    printf '%s' ""
+}
+
+ensure_cameraagent_networking() {
+    local context="${1:-default}"
+    export CAMERA_AGENT_LOGIC_BASEURL
+    export CAMERA_AGENT_IDENTITY_URL
+
+    CAMERA_AGENT_LOGIC_BASEURL="$(resolve_context_value "CAMERA_AGENT_LOGIC_BASEURL" "$context" "http://logichost:8080")"
+    CAMERA_AGENT_IDENTITY_URL="$(resolve_context_value "CAMERA_AGENT_IDENTITY_URL" "$context" "http://logichost:8080")"
+}
+
 # Function to reset service data
 reset_service() {
     local service="$1"
     local context
+    local compose_file
     context="$(get_docker_context "$service")"
+    compose_file="$(get_compose_file "$service")"
     
     echo -e "${YELLOW}Resetting $service data...${NC}"
     
     case "$service" in
         postgres|minio|redis)
-            # Stop the service if running
-            docker --context "$context" compose -f docker-compose.dev.yml stop "$service" 2>/dev/null || true
-            
-            # Remove the container
-            docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" 2>/dev/null || true
+            docker --context "$context" compose -f "$compose_file" stop "$service" 2>/dev/null || true
+            docker --context "$context" compose -f "$compose_file" rm -f "$service" 2>/dev/null || true
             
             # Remove the volume
             local volume_name="skymonitor-${service}-data"
@@ -112,14 +172,16 @@ reset_service() {
             echo -e "${GREEN}✓ Reset $service data${NC}"
             ;;
         smtp)
-            # Mailpit doesn't persist data, just remove and restart
-            docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" 2>/dev/null || true
+            docker --context "$context" compose -f "$compose_file" rm -f "$service" 2>/dev/null || true
             echo -e "${GREEN}✓ Reset $service (removed container)${NC}"
             ;;
         logichost|cameraagent)
-            # Application containers - remove container and rebuild
-            docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" 2>/dev/null || true
-            docker --context "$context" compose -f docker-compose.dev.yml build "$service"
+            docker --context "$context" compose -f "$compose_file" rm -f "$service" 2>/dev/null || true
+            if [[ "$service" == "cameraagent" ]]; then
+                ensure_cameraagent_networking "$context"
+                clean_cameraagent_data
+            fi
+            docker --context "$context" compose -f "$compose_file" build "$service"
             echo -e "${GREEN}✓ Reset $service (removed container and rebuilt image)${NC}"
             ;;
         *)

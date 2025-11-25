@@ -46,16 +46,16 @@ get_docker_context() {
     
     case "$service" in
         postgres)
-            context_var="${POSTGRES_DOCKER_CONTEXT:-default}"
+            context_var="${POSTGRES_DOCKER_CONTEXT:-proxmox-home}"
             ;;
         minio)
-            context_var="${MINIO_DOCKER_CONTEXT:-default}"
+            context_var="${MINIO_DOCKER_CONTEXT:-proxmox-home}"
             ;;
         redis)
-            context_var="${REDIS_DOCKER_CONTEXT:-default}"
+            context_var="${REDIS_DOCKER_CONTEXT:-proxmox-home}"
             ;;
         smtp)
-            context_var="${SMTP_DOCKER_CONTEXT:-default}"
+            context_var="${SMTP_DOCKER_CONTEXT:-proxmox-home}"
             ;;
         logichost)
             context_var="${LOGICHOST_DOCKER_CONTEXT:-default}"
@@ -70,6 +70,15 @@ get_docker_context() {
     esac
     
     echo "$context_var"
+}
+
+get_compose_file() {
+    local service="$1"
+    case "$service" in
+        postgres|minio|redis|smtp) echo "docker-compose.infrastructure.yml" ;;
+        logichost|cameraagent) echo "docker-compose.apps.yml" ;;
+        *) echo "docker-compose.infrastructure.yml" ;;
+    esac
 }
 
 # Function to format status with color
@@ -119,9 +128,10 @@ echo ""
 # Check each service
 for service in "${SERVICES[@]}"; do
     context="$(get_docker_context "$service")"
+    compose_file="$(get_compose_file "$service")"
     
     # Get container info
-    container_info=$(docker --context "$context" compose -f docker-compose.dev.yml ps "$service" --format json 2>/dev/null || echo "{}")
+    container_info=$(docker --context "$context" compose -f "$compose_file" ps "$service" --format json 2>/dev/null || echo "{}")
     
     if [[ -z "$container_info" ]] || [[ "$container_info" == "{}" ]]; then
         echo -e "${service}: ${RED}not found${NC}"
@@ -150,5 +160,5 @@ for service in "${SERVICES[@]}"; do
 done
 
 echo ""
-echo -e "${BLUE}Tip:${NC} Use 'docker compose -f docker-compose.dev.yml logs -f <service>' to view logs"
+echo -e "${BLUE}Tip:${NC} Use './scripts/infra:logs <service>' to view logs"
 echo -e "${BLUE}Tip:${NC} Use './scripts/infra:start' to start services"

@@ -1,0 +1,17 @@
+.device-registrations .mono {
+    font-family: var(--bs-font-monospace);
+    font-size: 0.875rem;
+}
+
+.device-registrations .envelope-card textarea {
+    font-family: var(--bs-font-monospace);
+}
+
+.device-registrations .envelope-card .envelope-text {
+    min-width: 20rem;
+}
+
+.device-registrations .table td,
+.device-registrations .table th {
+    vertical-align: middle;
+}

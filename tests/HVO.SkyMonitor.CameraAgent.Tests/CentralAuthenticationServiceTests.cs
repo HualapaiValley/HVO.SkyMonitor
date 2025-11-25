@@ -3,7 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Authentication;
-using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.Common.Identity;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;

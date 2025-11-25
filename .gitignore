@@ -440,3 +440,8 @@ FodyWeavers.xsd
 *.msp
 src.zip
 .DS_Store
+
+# CameraAgent runtime artifacts
+src/HVO.SkyMonitor.CameraAgent/App_Data/
+data/cameraagent/identity/
+data/cameraagent/dataprotection/

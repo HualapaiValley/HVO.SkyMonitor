@@ -1,0 +1,96 @@
+@page "/auth"
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Web
+@attribute [Authorize]
+
+<PageTitle>Secure Area</PageTitle>
+
+<div class="container py-4 secure-area">
+    <div class="row g-4">
+        <div class="col-12 col-lg-6">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <div class="d-flex flex-column gap-2">
+                        <div>
+                            <h1 class="h4 mb-1">Secure Area</h1>
+                            <p class="text-muted mb-0">Review your authenticated session and identity claims.</p>
+                        </div>
+                        @if (!IsProfileLoaded)
+                        {
+                            <div class="text-muted">
+                                <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                                Loading profile information...
+                            </div>
+                        }
+                        else
+                        {
+                            <dl class="row mb-0">
+                                <dt class="col-sm-4 text-muted">Signed in as</dt>
+                                <dd class="col-sm-8">@DisplayName</dd>
+                                <dt class="col-sm-4 text-muted">Email</dt>
+                                <dd class="col-sm-8">@Email</dd>
+                                <dt class="col-sm-4 text-muted">Authentication Type</dt>
+                                <dd class="col-sm-8">@AuthenticationType</dd>
+                                <dt class="col-sm-4 text-muted">Identity Provider</dt>
+                                <dd class="col-sm-8">@IdentityProvider</dd>
+                            </dl>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-6">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <div class="d-flex flex-column flex-lg-row align-items-lg-center gap-3 mb-3">
+                        <div>
+                            <h2 class="h5 mb-1">Claims</h2>
+                            <p class="text-muted mb-0">@Claims.Count claim(s) issued for this session.</p>
+                        </div>
+                        <div class="ms-lg-auto text-muted small">
+                            <i class="bi bi-shield-check me-1"></i>
+                            Data sourced from the current authentication ticket.
+                        </div>
+                    </div>
+                    @if (!IsProfileLoaded)
+                    {
+                        <div class="text-muted">
+                            <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                            Loading claims...
+                        </div>
+                    }
+                    else if (Claims.Count == 0)
+                    {
+                        <div class="alert alert-info" role="alert">
+                            <i class="bi bi-info-circle me-2"></i>
+                            No claims were issued for this identity.
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Type</th>
+                                        <th scope="col">Value</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var claim in Claims)
+                                    {
+                                        <tr>
+                                            <td class="text-muted">@claim.Type</td>
+                                            <td class="mono">@claim.Value</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

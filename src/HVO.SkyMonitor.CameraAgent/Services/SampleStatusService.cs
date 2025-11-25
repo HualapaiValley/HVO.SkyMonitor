@@ -1,7 +1,6 @@
 using System;
 using System.Security.Claims;
 using HVO;
-using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.CameraAgent.Models.Sample;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging;
@@ -41,8 +40,8 @@ public sealed class SampleStatusService(TimeProvider timeProvider, ILogger<Sampl
             userName = principal.FindFirstValue(ClaimTypes.Email) ?? principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? "unknown";
         }
 
-        var authenticationType = principal.FindFirstValue(ApiKeyClaims.AuthenticationType) ?? IdentityConstants.ApplicationScheme;
-        var accessLevel = principal.FindFirstValue(ApiKeyClaims.AccessLevel) ?? "InteractiveUser";
+        var authenticationType = principal.Identity?.AuthenticationType ?? IdentityConstants.ApplicationScheme;
+        const string accessLevel = "InteractiveUser";
 
         var response = new SampleAuthenticatedResponse(
             "Authenticated request.",

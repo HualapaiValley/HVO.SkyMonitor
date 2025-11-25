@@ -1,7 +1,6 @@
 using System.Security.Claims;
 using Asp.Versioning;
 using HVO;
-using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.CameraAgent.Models.Sample;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -50,7 +49,7 @@ public sealed class SampleController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-    [Authorize(Policy = AuthorizationPolicyNames.ApiKeyOrCookie)]
+    [Authorize]
     public ActionResult<SampleAuthenticatedResponse> AuthOnly()
     {
         var result = _sampleStatusService.GetAuthenticatedStatus(User);

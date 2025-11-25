@@ -1,7 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 
-namespace HVO.SkyMonitor.CameraAgent.Configuration;
+namespace HVO.SkyMonitor.Common.Identity;
 
 /// <summary>
 /// Configuration options for connecting to the central HVO.SkyMonitor identity service.
@@ -13,6 +14,12 @@ public class CentralIdentityOptions
     /// Example: "https://localhost:5001" or "https://skymonitor.example.com"
     /// </summary>
     public Uri ServiceUrl { get; set; } = new("https://localhost:5001", UriKind.Absolute);
+
+    /// <summary>
+    /// Optional absolute OAuth2 token endpoint override. When not specified, defaults to ServiceUrl + "/connect/token".
+    /// Useful for Azure Entra External ID tenants where the token endpoint lives on a different path than the authority.
+    /// </summary>
+    public Uri? TokenEndpoint { get; set; }
 
     /// <summary>
     /// The authentication mode to use for this camera agent.
@@ -42,6 +49,17 @@ public class CentralIdentityOptions
     /// Default: 60 seconds. This ensures we don't use tokens that are about to expire.
     /// </summary>
     public int TokenRefreshWindowSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Interactive client configuration for user sign-in.
+    /// </summary>
+    public InteractiveClientOptions? InteractiveClient { get; set; }
+        = new InteractiveClientOptions();
+
+    /// <summary>
+    /// Local system-owner fallback configuration for break-glass access.
+    /// </summary>
+    public LocalFallbackOptions LocalFallback { get; set; } = new();
 }
 
 /// <summary>
@@ -101,4 +119,85 @@ public class ApiKeyOptions
     /// Should be prefixed with "smk_" and stored securely.
     /// </summary>
     public string Key { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Interactive OpenID Connect client configuration for user sign-in.
+/// </summary>
+public class InteractiveClientOptions
+{
+    private static readonly string[] DefaultScopes =
+    [
+        "openid",
+        "profile",
+        "email"
+    ];
+
+    /// <summary>
+    /// Publicly reachable authority base used for browser redirects.
+    /// Falls back to <see cref="CentralIdentityOptions.ServiceUrl"/> when not specified.
+    /// </summary>
+    public Uri? PublicAuthority { get; set; }
+
+    /// <summary>
+    /// OAuth2/OIDC client identifier registered with Central Identity.
+    /// </summary>
+    [Required]
+    public string ClientId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// OAuth2/OIDC client secret registered with Central Identity.
+    /// </summary>
+    [Required]
+    public string ClientSecret { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Scopes requested during sign-in.
+    /// Includes OpenID Connect defaults plus any API scopes required by the agent.
+    /// </summary>
+    public IList<string> Scopes { get; } = new List<string>(DefaultScopes);
+
+    /// <summary>
+    /// Callback path used by the OpenID Connect middleware.
+    /// </summary>
+    [Required]
+    public string CallbackPath { get; set; } = "/signin-central";
+
+    /// <summary>
+    /// Path invoked after a remote sign-out completes.
+    /// </summary>
+    [Required]
+    public string SignedOutCallbackPath { get; set; } = "/signout-callback-central";
+
+    /// <summary>
+    /// Remote sign-out coordination path.
+    /// </summary>
+    [Required]
+    public string RemoteSignOutPath { get; set; } = "/signout-central";
+}
+
+/// <summary>
+/// Options controlling the local system-owner fallback access code.
+/// </summary>
+public sealed class LocalFallbackOptions
+{
+    /// <summary>
+    /// SHA-256 hash (uppercase hex) of the access code. Generated via <see cref="IApiKeyHasher"/> tooling.
+    /// </summary>
+    public string? AccessCodeHash { get; set; }
+
+    /// <summary>
+    /// Timestamp recorded when the access code was last rotated.
+    /// </summary>
+    public DateTimeOffset? LastRotatedUtc { get; set; }
+
+    /// <summary>
+    /// Desired rotation cadence in days. Used for telemetry/log reminders.
+    /// </summary>
+    public int RotationIntervalDays { get; set; } = 90;
+
+    /// <summary>
+    /// Indicates whether any fallback access code metadata is configured.
+    /// </summary>
+    public bool HasAccessCode => !string.IsNullOrWhiteSpace(AccessCodeHash);
 }

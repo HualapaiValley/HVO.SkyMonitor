@@ -1,0 +1,66 @@
+using System;
+using System.Net.Http.Json;
+using System.Security.Cryptography;
+using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.CameraAgent.Services.Models;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace HVO.SkyMonitor.CameraAgent.Services;
+
+internal sealed class DeviceBootstrapWorkflow(
+    IHttpClientFactory httpClientFactory,
+    IDeviceIdentityStore identityStore,
+    IDeviceSecretStore secretStore,
+    ILogger<DeviceBootstrapWorkflow> logger)
+{
+    public async Task<DeviceSecrets> BootstrapAsync(string envelope, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(envelope))
+        {
+            throw new ArgumentException("Envelope is required.", nameof(envelope));
+        }
+
+        var identity = await identityStore.GetOrCreateAsync(cancellationToken).ConfigureAwait(false);
+        var nonce = GenerateNonce();
+
+        var client = httpClientFactory.CreateClient(SkyMonitorClientOptions.HttpClientName);
+        var request = new DeviceBootstrapRequestDto(identity.DeviceId, envelope.Trim(), nonce);
+
+        using var response = await client.PostAsJsonAsync("api/device/bootstrap", request, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            var detail = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            logger.LogWarning("Device bootstrap failed with status {StatusCode}: {Detail}", response.StatusCode, detail);
+            response.EnsureSuccessStatusCode();
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<DeviceBootstrapResponseDto>(cancellationToken: cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("Bootstrap response could not be parsed.");
+
+        var secretsPayload = DeviceBootstrapCrypto.Decrypt(payload.Payload, payload.DeviceKey);
+
+        var secrets = new DeviceSecrets(
+            secretsPayload.DevicePublicId,
+            secretsPayload.ObservatoryId,
+            secretsPayload.FriendlyName,
+            secretsPayload.RegistrationToken,
+            secretsPayload.HeartbeatEndpoint,
+            secretsPayload.UploadEndpoint,
+            secretsPayload.HeartbeatIntervalSeconds,
+            secretsPayload.IssuedAtUtc,
+            secretsPayload.ExpiresAtUtc,
+            payload.DeviceKey,
+            secretsPayload.CentralIdentity);
+
+        await secretStore.SaveAsync(secrets, cancellationToken).ConfigureAwait(false);
+        return secrets;
+    }
+
+    private static string GenerateNonce()
+    {
+        Span<byte> buffer = stackalloc byte[16];
+        RandomNumberGenerator.Fill(buffer);
+        return Convert.ToBase64String(buffer);
+    }
+}

@@ -1,0 +1,147 @@
+@page "/devices"
+@using HVO.SkyMonitor.Common.Security
+@using HVO.SkyMonitor.LogicHost.Data
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Web
+@attribute [Authorize(Policy = AuthorizationPolicyNames.ApiKeyOrCookie)]
+
+<PageTitle>Device Registrations</PageTitle>
+
+<div class="container py-4 device-registrations">
+    <div class="d-flex flex-column flex-lg-row align-items-lg-center mb-4 gap-3">
+        <div>
+            <h1 class="h3 mb-1">Device Registrations</h1>
+            <p class="text-muted mb-0">Track pending camera agents and issue envelopes for operators.</p>
+        </div>
+        <div class="ms-lg-auto d-flex gap-2">
+            <button type="button" class="btn btn-outline-secondary" disabled="@IsLoading" @onclick="ReloadAsync">
+                <i class="bi bi-arrow-repeat me-1"></i>
+                Refresh
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(LoadError))
+    {
+        <div class="alert alert-danger" role="alert">
+            <i class="bi bi-exclamation-octagon me-2"></i>
+            @LoadError
+        </div>
+    }
+
+    @if (IsLoading)
+    {
+        <div class="text-muted">
+            <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+            Loading registrations...
+        </div>
+    }
+    else if (Registrations.Count == 0)
+    {
+        <div class="alert alert-info" role="alert">
+            <i class="bi bi-info-circle me-2"></i>
+            No devices have started registration yet.
+        </div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table align-middle">
+                <thead>
+                    <tr>
+                        <th scope="col">Friendly Name</th>
+                        <th scope="col">Device Id</th>
+                        <th scope="col">Observatory</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Issued</th>
+                        <th scope="col">Last Seen</th>
+                        <th scope="col" class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var registration in Registrations)
+                    {
+                        <tr>
+                            <td>@registration.FriendlyName</td>
+                            <td class="mono">@registration.DeviceId</td>
+                            <td class="mono">@registration.ObservatoryId</td>
+                            <td>
+                                <span class="badge @GetStatusBadgeClass(registration.Status)">@registration.Status</span>
+                            </td>
+                            <td>@FormatTimestamp(registration.IssuedAtUtc)</td>
+                            <td>@FormatTimestamp(registration.LastSeenUtc)</td>
+                            <td class="text-end">
+                                @if (registration.Status == DeviceRegistrationStatus.Pending)
+                                {
+                                    <button type="button" class="btn btn-primary btn-sm"
+                                        disabled="@IsEnvelopeBusy(registration.RegistrationId)"
+                                        @onclick="() => IssueEnvelopeAsync(registration)">
+                                        @if (IsEnvelopeBusy(registration.RegistrationId))
+                                        {
+                                            <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                                        }
+                                        <i class="bi bi-qr-code me-1"></i>
+                                        Issue Envelope
+                                    </button>
+                                }
+                                else
+                                {
+                                    <span class="text-muted small">--</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(EnvelopeError))
+    {
+        <div class="alert alert-warning mt-4" role="alert">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            @EnvelopeError
+        </div>
+    }
+
+    @if (ActiveEnvelope is not null)
+    {
+        <div class="card envelope-card mt-4">
+            <div class="card-header d-flex flex-column flex-lg-row gap-3 align-items-lg-center">
+                <div>
+                    <h2 class="h5 mb-1">Envelope Ready</h2>
+                    <p class="text-muted mb-0">Provide this payload to the operator within
+                        @FormatRelativeDuration(ActiveEnvelope.ExpiresAtUtc).</p>
+                </div>
+                <div class="ms-lg-auto text-lg-end">
+                    <div class="small text-muted">Expires</div>
+                    <div>@FormatTimestamp(ActiveEnvelope.ExpiresAtUtc)</div>
+                </div>
+            </div>
+            <div class="card-body">
+                <dl class="row mb-3">
+                    <dt class="col-sm-3 col-lg-2">Device</dt>
+                    <dd class="col-sm-9 col-lg-4 mono">@ActiveEnvelope.DeviceId</dd>
+                    <dt class="col-sm-3 col-lg-2">Registration</dt>
+                    <dd class="col-sm-9 col-lg-4 mono">@ActiveEnvelope.RegistrationId</dd>
+                </dl>
+                <div class="d-flex flex-column flex-lg-row gap-3">
+                    <textarea class="form-control envelope-text" rows="6" readonly>@ActiveEnvelope.Envelope</textarea>
+                    <div class="d-flex flex-column gap-2">
+                        <button type="button" class="btn btn-outline-secondary" @onclick="CopyEnvelopeAsync">
+                            <i class="bi bi-clipboard me-1"></i>
+                            Copy Envelope
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" @onclick="ClearEnvelope">
+                            <i class="bi bi-x-circle me-1"></i>
+                            Dismiss
+                        </button>
+                    </div>
+                </div>
+                <p class="text-muted small mt-3 mb-0">
+                    Keep this envelope offline; anyone with access can bootstrap the device until it expires.
+                </p>
+            </div>
+        </div>
+    }
+</div>

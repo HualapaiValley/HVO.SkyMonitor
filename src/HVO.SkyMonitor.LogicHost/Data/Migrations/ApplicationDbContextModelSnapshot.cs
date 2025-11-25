@@ -79,7 +79,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.ToTable("ApiKeys", (string)null);
                 });
 
-            modelBuilder.Entity("HVO.SkyMonitor.Data.ApplicationUser", b =>
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", b =>
                 {
                     b.Property<string>("Id")
                         .HasColumnType("text");
@@ -145,6 +145,82 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasDatabaseName("UserNameIndex");
 
                     b.ToTable("AspNetUsers", (string)null);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.DeviceRegistration", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("ActivatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DeviceId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("DeviceKeyHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<Guid?>("DevicePublicId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EnvelopeVersion")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("v1");
+
+                    b.Property<DateTimeOffset?>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FriendlyName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTimeOffset>("IssuedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastSeenUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("RegistrationTokenHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("RevokedReason")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("VerificationCodeHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceId");
+
+                    b.HasIndex("DevicePublicId");
+
+                    b.HasIndex("DeviceId", "Status");
+
+                    b.HasIndex("ObservatoryId", "Status");
+
+                    b.ToTable("DeviceRegistrations", (string)null);
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole", b =>
@@ -510,7 +586,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             modelBuilder.Entity("HVO.SkyMonitor.Common.Security.ApiKey", b =>
                 {
-                    b.HasOne("HVO.SkyMonitor.Data.ApplicationUser", null)
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", null)
                         .WithMany("ApiKeys")
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -528,7 +604,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<string>", b =>
                 {
-                    b.HasOne("HVO.SkyMonitor.Data.ApplicationUser", null)
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -537,7 +613,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<string>", b =>
                 {
-                    b.HasOne("HVO.SkyMonitor.Data.ApplicationUser", null)
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -546,7 +622,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserPasskey<string>", b =>
                 {
-                    b.HasOne("HVO.SkyMonitor.Data.ApplicationUser", null)
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -601,7 +677,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("HVO.SkyMonitor.Data.ApplicationUser", null)
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -610,7 +686,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<string>", b =>
                 {
-                    b.HasOne("HVO.SkyMonitor.Data.ApplicationUser", null)
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -641,7 +717,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Authorization");
                 });
 
-            modelBuilder.Entity("HVO.SkyMonitor.Data.ApplicationUser", b =>
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", b =>
                 {
                     b.Navigation("ApiKeys");
                 });

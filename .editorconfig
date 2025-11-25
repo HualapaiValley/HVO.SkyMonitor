@@ -15,6 +15,17 @@ dotnet_diagnostic.CA1062.severity = none
 dotnet_diagnostic.CA2227.severity = none
 dotnet_diagnostic.CA1819.severity = none
 
+[src/HVO.SkyMonitor.CameraAgent/Components/Account/**.cs]
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1812.severity = none
+dotnet_diagnostic.CA1822.severity = none
+dotnet_diagnostic.CA1863.severity = none
+dotnet_diagnostic.CA1308.severity = none
+dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.CA2227.severity = none
+dotnet_diagnostic.CA1819.severity = none
+
 # Blazor components and layout files - CA1515 (internal types) conflicts with Blazor's partial class generation
 # These components are not meant to be referenced outside the assembly but Blazor requires public accessibility
 [src/**/Components/**.cs]
@@ -98,3 +109,11 @@ dotnet_diagnostic.MSTEST0002.severity = none
 dotnet_diagnostic.MSTEST0003.severity = none
 dotnet_diagnostic.MSTEST0008.severity = none
 dotnet_diagnostic.MSTEST0009.severity = none
+
+# CameraAgent unit tests follow MSTest naming conventions (underscores) and require public types
+# The tests intentionally construct disposable services without disposing because each test owns the instance scope
+[tests/HVO.SkyMonitor.CameraAgent.Tests/**.cs]
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.MSTEST0037.severity = none

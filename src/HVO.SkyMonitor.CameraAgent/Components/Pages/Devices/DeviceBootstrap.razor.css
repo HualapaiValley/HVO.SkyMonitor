@@ -1,0 +1,12 @@
+.device-bootstrap .card {
+    box-shadow: var(--bs-box-shadow-sm);
+}
+
+.device-bootstrap .mono {
+    font-family: var(--bs-font-monospace);
+    word-break: break-all;
+}
+
+.device-bootstrap .envelope-input {
+    font-family: var(--bs-font-monospace);
+}

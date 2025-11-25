@@ -1,14 +1,14 @@
 # HVO.SkyMonitor.CameraAgent
 
-Blazor Server application that emulates a SkyMonitor camera agent, mirroring the SkyMonitor V6 SampleApp layout, API pipeline, and security model. It is powered by ASP.NET Core Identity, API key policies, OpenAPI/Scalar, and a locally hosted copy of the `hvo-dark` theme.
+Blazor Server application that emulates a SkyMonitor camera agent, mirroring the SkyMonitor V6 SampleApp layout, API pipeline, and security model. It is powered by ASP.NET Core Identity, passkey support, OpenAPI/Scalar, and a locally hosted copy of the `hvo-dark` theme.
 
 ## Highlights
 
 - **Modern UI**: Main layout, reconnect modal, scoped CSS/JS, and shared components copied from the V6 SampleApp while loading the theme from `wwwroot/css/themes/hvo-dark.css`.
-- **Identity + API Keys**: Full ASP.NET Core Identity scaffolding with passkey support, API key management, and reusable authorization policies (`ApiKeyOrCookie`, `ApiKeyRead`, `ApiKeyReadWrite`).
+- **Identity + Passkeys**: Full ASP.NET Core Identity scaffolding with passkey support, profile management, and reusable cookie-based authorization.
 - **Sample APIs**: Versioned `/api/v1.0/sample/*` endpoints backed by `Result<T>` services for deterministic sample responses.
 - **Diagnostics**: Structured JSON logging, custom correlation-id middleware, ProblemDetails enrichment, OpenTelemetry metrics/traces, Scalar UI, Prometheus scraping, and health checks.
-- **SQLite Storage**: Identity + API key tables managed through EF Core migrations stored under `Data/Migrations`.
+- **SQLite Storage**: Identity tables managed through EF Core migrations stored under `Data/Migrations`.
 
 ## Run It
 
@@ -25,7 +25,7 @@ dotnet run
 
 ## Database & Migrations
 
-SQLite lives under `Data/cameraagentsimulator.db`. Apply or create migrations with:
+SQLite lives under `App_Data/cameraagent_identity.db` by default (override via `LocalIdentity:DatabasePath`). Apply or create migrations with:
 
 ```bash
 dotnet ef database update --project src/HVO.SkyMonitor.CameraAgent
@@ -37,8 +37,8 @@ The app applies pending migrations automatically on startup.
 
 ## Configuration
 
-- `appsettings.json` contains the `DefaultConnection` string pointing at `Data/cameraagentsimulator.db` plus standard logging configuration.
-- Data-protection keys persist under `DataProtection-Keys/` so browser sessions survive restarts.
+- `appsettings.json` contains the `LocalIdentity` section (admin email/password/username) and optional `DatabasePath` override used during seeding.
+- Data-protection keys persist under `DataProtection-Keys/` (or the path you mount in Docker) so browser sessions survive restarts.
 
 ## Theme Usage
 

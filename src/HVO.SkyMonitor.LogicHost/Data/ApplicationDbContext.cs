@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.LogicHost.Data;
 public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : IdentityDbContext<ApplicationUser>(options)
 {
     public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
+    internal DbSet<DeviceRegistration> DeviceRegistrations => Set<DeviceRegistration>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -19,6 +20,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         base.OnModelCreating(builder);
 
         ConfigureApiKeys(builder.Entity<ApiKey>());
+        builder.ApplyConfiguration(new DeviceRegistrationConfiguration());
 
         // Configure OpenIddict entities to use the default Entity Framework Core conventions
         builder.UseOpenIddict();

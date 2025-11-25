@@ -38,6 +38,12 @@ readonly INFRA_SERVICES=(postgres minio redis smtp)
 readonly APP_SERVICES=(logichost cameraagent)
 readonly ALL_SERVICES=("${INFRA_SERVICES[@]}" "${APP_SERVICES[@]}")
 
+clean_cameraagent_data() {
+    mkdir -p data/cameraagent/identity data/cameraagent/dataprotection
+    rm -f data/cameraagent/identity/* 2>/dev/null || true
+    rm -f data/cameraagent/dataprotection/* 2>/dev/null || true
+}
+
 # Parse arguments
 RESET_MODE=false
 RESET_SERVICES=()
@@ -92,46 +98,22 @@ get_docker_context() {
     local service="$1"
     local context_var="default"
     case "$service" in
-        postgres) context_var="${POSTGRES_DOCKER_CONTEXT:-default}" ;;
-        minio) context_var="${MINIO_DOCKER_CONTEXT:-default}" ;;
-        redis) context_var="${REDIS_DOCKER_CONTEXT:-default}" ;;
-        smtp) context_var="${SMTP_DOCKER_CONTEXT:-default}" ;;
+        postgres) context_var="${POSTGRES_DOCKER_CONTEXT:-proxmox-home}" ;;
+        minio) context_var="${MINIO_DOCKER_CONTEXT:-proxmox-home}" ;;
+        redis) context_var="${REDIS_DOCKER_CONTEXT:-proxmox-home}" ;;
+        smtp) context_var="${SMTP_DOCKER_CONTEXT:-proxmox-home}" ;;
         logichost) context_var="${LOGICHOST_DOCKER_CONTEXT:-default}" ;;
         cameraagent) context_var="${CAMERAAGENT_DOCKER_CONTEXT:-default}" ;;
     esac
     echo "$context_var"
 }
 
-reset_service() {
+get_compose_file() {
     local service="$1"
-    local context
-    context="$(get_docker_context "$service")"
-
-    echo -e "${YELLOW}Resetting $service data...${NC}"
-
     case "$service" in
-        postgres|minio|redis)
-            docker --context "$context" compose -f docker-compose.dev.yml stop "$service" 2>/dev/null || true
-            local volume_name="skymonitor-${service}-data"
-            docker --context "$context" volume rm "$volume_name" 2>/dev/null || true
-            echo -e "${GREEN}✓ Reset $service data${NC}"
-            ;;
-        smtp)
-            docker --context "$context" compose -f docker-compose.dev.yml restart "$service" 2>/dev/null || true
-            echo -e "${GREEN}✓ Reset $service (restarted)${NC}"
-            ;;
-        logichost|cameraagent)
-            docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" 2>/dev/null || true
-            if [[ "$service" == "cameraagent" ]]; then
-                ensure_cameraagent_networking "$context"
-            fi
-            docker --context "$context" compose -f docker-compose.dev.yml build "$service"
-            echo -e "${GREEN}✓ Reset $service (removed container and rebuilt image)${NC}"
-            ;;
-        *)
-            echo -e "${RED}Unknown service: $service${NC}"
-            return 1
-            ;;
+        postgres|minio|redis|smtp) echo "docker-compose.infrastructure.yml" ;;
+        logichost|cameraagent) echo "docker-compose.apps.yml" ;;
+        *) echo "docker-compose.infrastructure.yml" ;;
     esac
 }
 
@@ -172,6 +154,48 @@ resolve_context_value() {
     printf '%s' ""
 }
 
+get_context_public_host() {
+    local context="$1"
+    local default_host="${DOCKER_CONTEXT_PUBLIC_HOST_DEFAULT:-localhost}"
+    printf '%s' "$(resolve_context_value "DOCKER_CONTEXT_PUBLIC_HOST" "$context" "$default_host")"
+}
+
+reset_service() {
+    local service="$1"
+    local context
+    local compose_file
+    context="$(get_docker_context "$service")"
+    compose_file="$(get_compose_file "$service")"
+
+    echo -e "${YELLOW}Resetting $service data...${NC}"
+
+    case "$service" in
+        postgres|minio|redis)
+            docker --context "$context" compose -f "$compose_file" stop "$service" 2>/dev/null || true
+            local volume_name="skymonitor-${service}-data"
+            docker --context "$context" volume rm "$volume_name" 2>/dev/null || true
+            echo -e "${GREEN}✓ Reset $service data${NC}"
+            ;;
+        smtp)
+            docker --context "$context" compose -f "$compose_file" restart "$service" 2>/dev/null || true
+            echo -e "${GREEN}✓ Reset $service (restarted)${NC}"
+            ;;
+        logichost|cameraagent)
+            docker --context "$context" compose -f "$compose_file" rm -f "$service" 2>/dev/null || true
+            if [[ "$service" == "cameraagent" ]]; then
+                ensure_cameraagent_networking "$context"
+                clean_cameraagent_data
+            fi
+            docker --context "$context" compose -f "$compose_file" build "$service"
+            echo -e "${GREEN}✓ Reset $service (removed container and rebuilt image)${NC}"
+            ;;
+        *)
+            echo -e "${RED}Unknown service: $service${NC}"
+            return 1
+            ;;
+    esac
+}
+
 ensure_cameraagent_networking() {
     local context="${1:-default}"
     export CAMERA_AGENT_LOGIC_BASEURL
@@ -179,6 +203,40 @@ ensure_cameraagent_networking() {
 
     CAMERA_AGENT_LOGIC_BASEURL="$(resolve_context_value "CAMERA_AGENT_LOGIC_BASEURL" "$context" "http://logichost:8080")"
     CAMERA_AGENT_IDENTITY_URL="$(resolve_context_value "CAMERA_AGENT_IDENTITY_URL" "$context" "http://logichost:8080")"
+}
+
+configure_service_endpoints() {
+    local postgres_context
+    local redis_context
+    local minio_context
+    local smtp_context
+
+    postgres_context="$(get_docker_context "postgres")"
+    redis_context="$(get_docker_context "redis")"
+    minio_context="$(get_docker_context "minio")"
+    smtp_context="$(get_docker_context "smtp")"
+
+    local default_pg_host="${POSTGRES_HOST_DEFAULT:-${POSTGRES_HOST:-postgres}}"
+    export POSTGRES_HOST="$(resolve_context_value "POSTGRES_HOST" "$postgres_context" "$default_pg_host")"
+    local default_pg_port="${POSTGRES_PORT_DEFAULT:-${POSTGRES_PORT:-5432}}"
+    export POSTGRES_PORT="$(resolve_context_value "POSTGRES_PORT" "$postgres_context" "$default_pg_port")"
+
+    local default_redis_host="${REDIS_HOST_DEFAULT:-${REDIS_HOST:-redis}}"
+    export REDIS_HOST="$(resolve_context_value "REDIS_HOST" "$redis_context" "$default_redis_host")"
+    local default_redis_port="${REDIS_PORT_DEFAULT:-${REDIS_PORT:-6379}}"
+    export REDIS_PORT="$(resolve_context_value "REDIS_PORT" "$redis_context" "$default_redis_port")"
+
+    local default_minio_host="${MINIO_HOST_DEFAULT:-${MINIO_HOST:-minio}}"
+    export MINIO_HOST="$(resolve_context_value "MINIO_HOST" "$minio_context" "$default_minio_host")"
+    local default_minio_port="${MINIO_API_PORT_DEFAULT:-${MINIO_API_PORT:-9000}}"
+    export MINIO_API_PORT="$(resolve_context_value "MINIO_API_PORT" "$minio_context" "$default_minio_port")"
+    local default_minio_endpoint="${MINIO_ENDPOINT_DEFAULT:-${MINIO_HOST}:${MINIO_API_PORT}}"
+    export MINIO_ENDPOINT="$(resolve_context_value "MINIO_ENDPOINT" "$minio_context" "$default_minio_endpoint")"
+
+    local default_smtp_host="${SMTP_HOST_DEFAULT:-${SMTP_HOST:-smtp}}"
+    export SMTP_HOST="$(resolve_context_value "SMTP_HOST" "$smtp_context" "$default_smtp_host")"
+    local default_smtp_port="${SMTP_PORT_DEFAULT:-${SMTP_PORT:-1025}}"
+    export SMTP_PORT="$(resolve_context_value "SMTP_PORT" "$smtp_context" "$default_smtp_port")"
 }
 
 if [[ "$RESET_MODE" == true ]]; then
@@ -190,7 +248,7 @@ if [[ "$RESET_MODE" == true ]]; then
 fi
 
 echo -e "${BLUE}=== Starting Services ===${NC}"
-mkdir -p data/postgres data/minio data/redis
+mkdir -p data/postgres data/minio data/redis data/cameraagent/identity data/cameraagent/dataprotection
 
 infra_services_to_start=()
 for service in "${INFRA_SERVICES[@]}"; do
@@ -213,8 +271,9 @@ fi
 echo -e "${BLUE}Starting infrastructure services...${NC}"
 for service in "${infra_services_to_start[@]}"; do
     context="$(get_docker_context "$service")"
+    compose_file="$(get_compose_file "$service")"
     echo -e "Starting ${service} via context '${context}'"
-    docker --context "$context" compose -f docker-compose.dev.yml up -d "$service"
+    docker --context "$context" compose -f "$compose_file" up -d "$service"
 done
 
 echo -e "${BLUE}Waiting for infrastructure to be healthy...${NC}"
@@ -224,8 +283,9 @@ for service in "${infra_services_to_start[@]}"; do
     echo -n "Checking $service... "
     timeout=30
     context="$(get_docker_context "$service")"
+    compose_file="$(get_compose_file "$service")"
     while [[ $timeout -gt 0 ]]; do
-        status=$(docker --context "$context" compose -f docker-compose.dev.yml ps "$service" --format json 2>/dev/null | grep -o '"Health":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+        status=$(docker --context "$context" compose -f "$compose_file" ps "$service" --format json 2>/dev/null | grep -o '"Health":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
         if [[ "$status" == "healthy" ]] || [[ "$status" == "unknown" ]]; then
             echo -e "${GREEN}✓${NC}"
             break
@@ -238,6 +298,8 @@ for service in "${infra_services_to_start[@]}"; do
     fi
 
 done
+
+configure_service_endpoints
 
 if [[ "$REBUILD_MODE" == true ]]; then
     echo -e "${BLUE}Rebuilding application images...${NC}"
@@ -257,11 +319,12 @@ if [[ "$REBUILD_MODE" == true ]]; then
     if [[ ${#filtered_targets[@]} -gt 0 ]]; then
         for service in "${filtered_targets[@]}"; do
             context="$(get_docker_context "$service")"
+            compose_file="$(get_compose_file "$service")"
             if [[ "$service" == "cameraagent" ]]; then
                 ensure_cameraagent_networking "$context"
             fi
             echo -e "Rebuilding ${service} via context '${context}'"
-            docker --context "$context" compose -f docker-compose.dev.yml build "$service"
+            docker --context "$context" compose -f "$compose_file" build "$service"
         done
     else
         echo -e "${YELLOW}No application services matched for rebuild${NC}"
@@ -279,6 +342,7 @@ if [[ " ${START_SERVICES[*]} " =~ " logichost " ]] || [[ " ${START_SERVICES[*]} 
     if [[ ${#app_services_to_start[@]} -gt 0 ]]; then
         for service in "${app_services_to_start[@]}"; do
             context="$(get_docker_context "$service")"
+            compose_file="$(get_compose_file "$service")"
             compose_flags=()
             if [[ "$service" == "cameraagent" ]]; then
                 ensure_cameraagent_networking "$context"
@@ -287,19 +351,29 @@ if [[ " ${START_SERVICES[*]} " =~ " logichost " ]] || [[ " ${START_SERVICES[*]} 
                 fi
             fi
             echo -e "Starting ${service} via context '${context}'"
-            docker --context "$context" compose -f docker-compose.dev.yml up -d "${compose_flags[@]}" "$service"
+            docker --context "$context" compose -f "$compose_file" up -d "${compose_flags[@]}" "$service"
         done
     fi
 fi
 
 echo ""
 echo -e "${GREEN}=== Services Started ===${NC}"
-echo "To view logs: docker compose -f docker-compose.dev.yml logs -f"
+echo "To view logs: ./scripts/infra:logs [service]"
 echo "To check status: ./scripts/infra:status"
 echo "To stop: ./scripts/infra:stop"
 echo ""
 echo -e "${BLUE}Service URLs:${NC}"
-echo "  Logic Host:      http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}"
-echo "  MinIO Console:   http://localhost:${MINIO_CONSOLE_PORT:-9001}"
-echo "  Mailpit Web UI: http://localhost:${SMTP_WEB_PORT:-8025}"
-echo "  Camera Agent:   http://localhost:${CAMERA_AGENT_HTTP_PORT:-5130}"
+logic_host_context="$(get_docker_context "logichost")"
+minio_context="$(get_docker_context "minio")"
+smtp_context="$(get_docker_context "smtp")"
+camera_agent_context="$(get_docker_context "cameraagent")"
+
+logic_host_host="$(get_context_public_host "$logic_host_context")"
+minio_host="$(get_context_public_host "$minio_context")"
+smtp_host="$(get_context_public_host "$smtp_context")"
+camera_agent_host="$(get_context_public_host "$camera_agent_context")"
+
+echo "  Logic Host:      http://${logic_host_host}:${LOGIC_HOST_HTTP_PORT:-5174}"
+echo "  MinIO Console:   http://${minio_host}:${MINIO_CONSOLE_PORT:-9001}"
+echo "  Mailpit Web UI: http://${smtp_host}:${SMTP_WEB_PORT:-8025}"
+echo "  Camera Agent:   http://${camera_agent_host}:${CAMERA_AGENT_HTTP_PORT:-5130}"

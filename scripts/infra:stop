@@ -30,6 +30,12 @@ readonly INFRA_SERVICES=(postgres minio redis smtp)
 readonly APP_SERVICES=(logichost cameraagent)
 readonly ALL_SERVICES=("${INFRA_SERVICES[@]}" "${APP_SERVICES[@]}")
 
+clean_cameraagent_data() {
+    mkdir -p data/cameraagent/identity data/cameraagent/dataprotection
+    rm -f data/cameraagent/identity/* 2>/dev/null || true
+    rm -f data/cameraagent/dataprotection/* 2>/dev/null || true
+}
+
 STOP_SERVICES=()
 CLEAR_CACHE=false
 CACHE_TARGETS=()
@@ -85,24 +91,35 @@ contains_service() {
 get_docker_context() {
     local service="$1"
     case "$service" in
-        postgres) echo "${POSTGRES_DOCKER_CONTEXT:-default}" ;;
-        minio) echo "${MINIO_DOCKER_CONTEXT:-default}" ;;
-        redis) echo "${REDIS_DOCKER_CONTEXT:-default}" ;;
-        smtp) echo "${SMTP_DOCKER_CONTEXT:-default}" ;;
+        postgres) echo "${POSTGRES_DOCKER_CONTEXT:-proxmox-home}" ;;
+        minio) echo "${MINIO_DOCKER_CONTEXT:-proxmox-home}" ;;
+        redis) echo "${REDIS_DOCKER_CONTEXT:-proxmox-home}" ;;
+        smtp) echo "${SMTP_DOCKER_CONTEXT:-proxmox-home}" ;;
         logichost) echo "${LOGICHOST_DOCKER_CONTEXT:-default}" ;;
         cameraagent) echo "${CAMERAAGENT_DOCKER_CONTEXT:-default}" ;;
         *) echo "default" ;;
     esac
 }
 
+get_compose_file() {
+    local service="$1"
+    case "$service" in
+        postgres|minio|redis|smtp) echo "docker-compose.infrastructure.yml" ;;
+        logichost|cameraagent) echo "docker-compose.apps.yml" ;;
+        *) echo "docker-compose.infrastructure.yml" ;;
+    esac
+}
+
 stop_service() {
     local service="$1"
     local context
+    local compose_file
     context="$(get_docker_context "$service")"
+    compose_file="$(get_compose_file "$service")"
 
     echo -e "${BLUE}Stopping ${service}...${NC}"
-    if docker --context "$context" compose -f docker-compose.dev.yml ps "$service" >/dev/null 2>&1; then
-        docker --context "$context" compose -f docker-compose.dev.yml stop "$service" >/dev/null 2>&1 || true
+    if docker --context "$context" compose -f "$compose_file" ps "$service" >/dev/null 2>&1; then
+        docker --context "$context" compose -f "$compose_file" stop "$service" >/dev/null 2>&1 || true
         echo -e "${GREEN}✓ Stopped $service${NC}"
     else
         echo -e "${YELLOW}⚠ $service container not found${NC}"
@@ -112,12 +129,14 @@ stop_service() {
 clear_cache_for_service() {
     local service="$1"
     local context
+    local compose_file
     context="$(get_docker_context "$service")"
+    compose_file="$(get_compose_file "$service")"
 
     echo -e "${BLUE}Clearing cache for ${service}...${NC}"
     case "$service" in
         postgres|minio|redis)
-            docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" >/dev/null 2>&1 || true
+            docker --context "$context" compose -f "$compose_file" rm -f "$service" >/dev/null 2>&1 || true
             local volume_name="skymonitor-${service}-data"
             if docker --context "$context" volume ls --format '{{.Name}}' | grep -q "^${volume_name}$"; then
                 docker --context "$context" volume rm "$volume_name" >/dev/null 2>&1 || true
@@ -132,10 +151,13 @@ clear_cache_for_service() {
             fi
             ;;
         smtp)
-            docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" >/dev/null 2>&1 || true
+            docker --context "$context" compose -f "$compose_file" rm -f "$service" >/dev/null 2>&1 || true
             ;;
         logichost|cameraagent)
-            docker --context "$context" compose -f docker-compose.dev.yml rm -f "$service" >/dev/null 2>&1 || true
+            docker --context "$context" compose -f "$compose_file" rm -f "$service" >/dev/null 2>&1 || true
+            if [[ "$service" == "cameraagent" ]]; then
+                clean_cameraagent_data
+            fi
             ;;
         *)
             echo -e "${RED}Unknown service: $service${NC}"

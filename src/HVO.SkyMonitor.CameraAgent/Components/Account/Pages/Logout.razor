@@ -1,0 +1,21 @@
+@page "/Account/Logout"
+@using Microsoft.AspNetCore.Identity
+@using HVO.SkyMonitor.CameraAgent.Data
+
+@inject SignInManager<ApplicationUser> SignInManager
+@inject IdentityRedirectManager RedirectManager
+
+<PageTitle>Log out</PageTitle>
+
+<h1>Log out</h1>
+
+@code {
+    [SupplyParameterFromQuery(Name = "returnUrl")]
+    public string? ReturnUrl { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await SignInManager.SignOutAsync();
+        RedirectManager.RedirectTo(ReturnUrl);
+    }
+}

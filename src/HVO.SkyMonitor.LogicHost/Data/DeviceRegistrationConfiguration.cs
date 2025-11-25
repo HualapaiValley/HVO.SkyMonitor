@@ -1,0 +1,64 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace HVO.SkyMonitor.LogicHost.Data;
+
+internal sealed class DeviceRegistrationConfiguration : IEntityTypeConfiguration<DeviceRegistration>
+{
+    public void Configure(EntityTypeBuilder<DeviceRegistration> builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+
+        builder.ToTable("DeviceRegistrations");
+
+        builder.HasKey(registration => registration.Id);
+
+        builder.Property(registration => registration.DeviceId)
+            .HasMaxLength(128)
+            .IsRequired();
+
+        builder.Property(registration => registration.ObservatoryId)
+            .IsRequired();
+
+        builder.Property(registration => registration.FriendlyName)
+            .HasMaxLength(200)
+            .IsRequired();
+
+        builder.Property(registration => registration.Status)
+            .HasConversion<string>()
+            .HasMaxLength(32)
+            .IsRequired();
+
+        builder.Property(registration => registration.VerificationCodeHash)
+            .HasMaxLength(64)
+            .IsRequired();
+
+        builder.Property(registration => registration.DevicePublicId);
+
+        builder.Property(registration => registration.RegistrationTokenHash)
+            .HasMaxLength(128);
+
+        builder.Property(registration => registration.DeviceKeyHash)
+            .HasMaxLength(128);
+
+        builder.Property(registration => registration.IssuedAtUtc)
+            .IsRequired();
+
+        builder.Property(registration => registration.ExpiresAtUtc);
+        builder.Property(registration => registration.LastSeenUtc);
+        builder.Property(registration => registration.ActivatedAtUtc);
+
+        builder.Property(registration => registration.RevokedReason)
+            .HasMaxLength(512);
+
+        builder.Property(registration => registration.EnvelopeVersion)
+            .HasMaxLength(16)
+            .HasDefaultValue("v1")
+            .IsRequired();
+
+        builder.HasIndex(registration => registration.DeviceId);
+        builder.HasIndex(registration => new { registration.DeviceId, registration.Status });
+        builder.HasIndex(registration => new { registration.ObservatoryId, registration.Status });
+        builder.HasIndex(registration => registration.DevicePublicId);
+    }
+}

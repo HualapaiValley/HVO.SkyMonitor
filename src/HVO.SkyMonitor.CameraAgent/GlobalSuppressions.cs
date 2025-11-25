@@ -25,3 +25,8 @@ using System.Diagnostics.CodeAnalysis;
 // CA1052: Program class with Main method cannot be static in .NET applications
 [assembly: SuppressMessage("Design", "CA1052:Static holder types should be Static or NotInheritable", Justification = "Program class with Main method cannot be static per .NET requirements.", Scope = "type", Target = "~T:HVO.SkyMonitor.CameraAgent.Program")]
 
+// Identity UI requires returnUrl to remain a string for LocalRedirect routing
+[assembly: SuppressMessage("Design", "CA1054:Uri parameters should not be strings", Justification = "Identity UI returnUrl needs to stay as a string for routing helpers.", Scope = "member", Target = "~M:HVO.SkyMonitor.CameraAgent.Areas.Identity.Pages.Account.LoginModel.OnGetAsync(System.String)")]
+[assembly: SuppressMessage("Design", "CA1054:Uri parameters should not be strings", Justification = "Identity UI returnUrl needs to stay as a string for routing helpers.", Scope = "member", Target = "~M:HVO.SkyMonitor.CameraAgent.Areas.Identity.Pages.Account.LoginModel.OnPostAsync(System.String)")]
+[assembly: SuppressMessage("Design", "CA1056:Uri properties should not be strings", Justification = "Identity UI returnUrl needs to stay as a string for routing helpers.", Scope = "member", Target = "~P:HVO.SkyMonitor.CameraAgent.Areas.Identity.Pages.Account.LoginModel.ReturnUrl")]
+
