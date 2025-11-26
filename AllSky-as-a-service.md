@@ -41,25 +41,27 @@
 - Because the projector is shared, the platform can reproduce or annotate any camera’s frame as long as the rig configuration is accurate.
 
 ## 6. POC Plan (Standalone Agent Track)
-### Phase 1.0 – Plumbing with Dummy Camera
-1. **Define Contracts**: `CameraFrame`, `FrameMetadata`, `ICameraModule`, `IImageProjector`, `AgentRigConfig` DTOs.
-2. **Implement RandomImageCameraModule**:
-   - Uses common settings (resolution, format) and simple `specific` options (pattern, seed).
-   - Returns deterministic frames (noise/gradient) with correct metadata.
-3. **Agent Core**:
-   - Capture loop pulling from module on configured cadence.
-   - Storage layout: `storageRoot/frames/YYYY/MM/DD/*.jpg|png` + derived products folder.
-   - Retention worker pruning data older than configured days.
-   - Simple processing pipeline interface (pluggable processors like stacking, overlays, detection stubs).
-4. **Simple UI**:
-   - Minimal ASP.NET Core/Blazor or Razor pages hosted in-agent.
-   - Views: latest image (auto-refresh), gallery by date, derived outputs list.
-   - Read-only config; metrics panel showing capture stats.
-5. **Metrics & Telemetry**:
-   - Log frames/minute, average encode time, disk consumption, CPU/RAM snapshots.
-   - Data guides bandwidth/compute planning before real hardware integration.
 
-### Phase 1.1 – Integrate Real Simulator
+### Phase 1.0 – Plumbing with Dummy Camera (Status)
+1. **Define Contracts** – ✅ Complete. `CameraFrame`, `FrameMetadata`, `ICameraModule`, `AgentRigConfig`, and related DTOs now live in `HVO.SkyMonitor.AgentCore` and are consumed by the new shared infrastructure.
+2. **Implement RandomImageCameraModule** – ✅ Complete. Module options (pattern/seed) round-trip via `cameraagent.sample.json`, providing deterministic gradient/noise output.
+3. **Agent Core** – ✅ Complete for capture + retention + processing telemetry:
+   - Capture loop, processing pipeline registration, storage layout, and retention worker operate through `HVO.SkyMonitor.CameraAgent.Common`.
+   - File-system storage currently writes RAW payloads + JSON metadata; derived products folder is stubbed for future processors.
+4. **Simple UI** – ⚠️ Partial:
+   - Blazor dashboard shows latest frame preview, capture telemetry, and refresh controls.
+   - Gallery-by-date view, derived output listing, and richer config display remain **TODO** for Phase 1.0 completion.
+5. **Metrics & Telemetry** – ⚠️ Partial:
+   - Capture loop emits cadence/exposure/gain telemetry and exposes Prometheus metrics.
+   - Disk consumption, CPU/RAM snapshots, and timelapse/derived-product latency metrics are **deferred**.
+
+**Phase 1.0 remaining work**
+- Add gallery & derived-output UI panels using existing storage metadata.
+- Surface disk usage + retention stats (can leverage storage index JSONL files).
+- Capture system resource metrics (CPU/RAM/disk) and persist simple trend lines for export.
+- Document operational playbook (config paths, telemetry endpoints) to close out the “simple UI/metrics” goals.
+
+### Phase 1.1 – Integrate Real Simulator (Not Started)
 1. **Refactor existing StarFieldEngine** into standalone `ISkyRenderer` that only depends on rig configuration and catalogs.
 2. **Add SimulatedSkyCameraModule**:
    - Uses `ISkyRenderer` + pipeline profile to render frames based on real time or simulated time.

@@ -4,7 +4,7 @@
 
 This document describes all secrets required for CI/CD workflows in the HVO.SkyMonitor project.
 
-**Identity Hardening Enhancement:** For comprehensive Identity Hardening-specific secrets (OpenIddict keys, signed URL HMAC, etc.), see [../docs/identity/secrets-reference.md](../docs/identity/secrets-reference.md).
+**Identity Hardening Enhancement:** For comprehensive Identity Hardening-specific secrets (OpenIddict keys, signed URL HMAC, etc.), see [../docs/security/secrets.md](../docs/security/secrets.md).
 
 ## Required Repository Secrets
 
@@ -543,7 +543,7 @@ base64 -d cert.base64 | openssl pkcs12 -info -nodes -passin pass:PASSWORD
 - [GitHub Actions Secrets Documentation](https://docs.github.com/actions/security-guides/encrypted-secrets)
 - [GitHub Environments Documentation](https://docs.github.com/actions/deployment/targeting-different-environments/using-environments-for-deployment)
 - [Security Hardening for GitHub Actions](https://docs.github.com/actions/security-guides/security-hardening-for-github-actions)
-- [Identity Hardening Secrets Guide](../docs/identity/secrets-reference.md)
+- [Identity Hardening Secrets Guide](../docs/security/secrets.md)
 - [Identity Hardening Operational Runbooks](../docs/identity/operations-runbook.md)
 
 ---

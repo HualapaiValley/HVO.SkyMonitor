@@ -1,5 +1,8 @@
 using System;
 using System.Globalization;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -72,10 +75,25 @@ public sealed partial class DeviceBootstrap : ComponentBase
             EnvelopeInput = string.Empty;
             SubmitSuccess = "Bootstrap completed successfully. Device secrets stored securely.";
         }
-        catch (Exception ex)
+        catch (HttpRequestException ex)
         {
-            Logger.LogError(ex, "Failed to bootstrap device");
+            Logger.LogError(ex, "Device bootstrap request failed.");
+            SubmitError = "Unable to reach LogicHost. Verify network connectivity and try again.";
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogError(ex, "Device bootstrap response was invalid.");
             SubmitError = ex.Message;
+        }
+        catch (CryptographicException ex)
+        {
+            Logger.LogError(ex, "Device bootstrap payload could not be decrypted.");
+            SubmitError = "Received device secrets could not be decrypted. Confirm the envelope and try again.";
+        }
+        catch (JsonException ex)
+        {
+            Logger.LogError(ex, "Device bootstrap response could not be parsed.");
+            SubmitError = "Bootstrap response was malformed. Check the service logs for more details.";
         }
         finally
         {

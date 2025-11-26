@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
@@ -44,6 +45,7 @@ public sealed partial class MainLayoutFooter : ComponentBase, IAsyncDisposable
         _clockTask = RunClockAsync(_clockCancellation.Token);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Footer clock must continue running even when InvokeAsync throws; exceptions are logged and the loop keeps ticking.")]
     private async Task RunClockAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)

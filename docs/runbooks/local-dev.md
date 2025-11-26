@@ -6,7 +6,7 @@ This runbook describes the day-to-day workflow for developing and validating HVO
 
 - Docker Engine with Compose plugin (the devcontainer already has both).
 - .NET SDK 10.x as pinned in `global.json`.
-- Access to repository secrets (see `docs/SECRETS_MANAGEMENT.md`).
+- Access to repository secrets (see `docs/security/secrets.md`).
 - Devcontainer recommended; if running locally ensure environment variables from `.env.template` are populated.
 
 ## Environment Setup
@@ -83,6 +83,6 @@ Hardware suites are opt-in. They are tagged with `TestCategory("Hardware")`—om
 
 ## Additional References
 
-- `docs/SECRETS_QUICKSTART.md` for onboarding secrets.
-- `docs/identity` for authentication deep dives.
+- `docs/security/secrets.md` for onboarding and rotation guidance.
+- `docs/identity/overview.md` for authentication deep dives.
 - `docs/runbooks/infra-operations.md` for production-like reset flows.

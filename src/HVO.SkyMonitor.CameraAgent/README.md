@@ -1,12 +1,12 @@
 # HVO.SkyMonitor.CameraAgent
 
-Blazor Server application that emulates a SkyMonitor camera agent, mirroring the SkyMonitor V6 SampleApp layout, API pipeline, and security model. It is powered by ASP.NET Core Identity, passkey support, OpenAPI/Scalar, and a locally hosted copy of the `hvo-dark` theme.
+Blazor Server application that emulates a SkyMonitor camera agent, mirroring the SkyMonitor V6 SampleApp layout, API pipeline, and security model. It is powered by ASP.NET Core Identity (email + password only), OpenAPI/Scalar, and a locally hosted copy of the `hvo-dark` theme.
 
 ## Highlights
 
 - **Modern UI**: Main layout, reconnect modal, scoped CSS/JS, and shared components copied from the V6 SampleApp while loading the theme from `wwwroot/css/themes/hvo-dark.css`.
-- **Identity + Passkeys**: Full ASP.NET Core Identity scaffolding with passkey support, profile management, and reusable cookie-based authorization.
-- **Sample APIs**: Versioned `/api/v1.0/sample/*` endpoints backed by `Result<T>` services for deterministic sample responses.
+- **Identity**: Local-only ASP.NET Core Identity with confirmation email flow, cookie auth, and profile/email/password management pages.
+- **Frame APIs**: Versioned `/api/v1.0/frames` endpoints that stream the most recent exposure from the simulated capture pipeline.
 - **Diagnostics**: Structured JSON logging, custom correlation-id middleware, ProblemDetails enrichment, OpenTelemetry metrics/traces, Scalar UI, Prometheus scraping, and health checks.
 - **SQLite Storage**: Identity tables managed through EF Core migrations stored under `Data/Migrations`.
 
@@ -18,7 +18,7 @@ dotnet run
 ```
 
 - UI: `http://localhost:5130/`
-- API: `http://localhost:5130/api/v1.0/sample/status`
+- API: `http://localhost:5130/api/v1.0/frames/latest`
 - Health: `http://localhost:5130/health`
 - Scalar UI: `http://localhost:5130/scalar/v1`
 - Prometheus: `http://localhost:5130/metrics`

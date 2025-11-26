@@ -11,7 +11,6 @@ public static class ReturnUrlHelper
 {
     private const string DefaultPath = "/";
     private const string LoginPath = "/Account/Login";
-    private const string ExternalLoginEndpoint = "/Account/ExternalLogin";
 
     /// <summary>
     /// Normalizes a return URL by ensuring it stays within the current site and always begins with a single slash.
@@ -67,14 +66,4 @@ public static class ReturnUrlHelper
         return QueryHelpers.AddQueryString(LoginPath, "returnUrl", normalizedReturnUrl);
     }
 
-    /// <summary>
-    /// Creates the external login endpoint path that initiates the OIDC challenge.
-    /// </summary>
-    /// <param name="normalizedReturnUrl">A normalized return URL produced by <see cref="NormalizeReturnUrl"/>.</param>
-    /// <returns>The external login path with the return URL query parameter appended.</returns>
-    [SuppressMessage("Design", "CA1054:Uri parameters should not be strings", Justification = "Normalized return URLs are represented as application-relative strings for routing.")]
-    public static string BuildExternalLoginPath(string normalizedReturnUrl)
-    {
-        return QueryHelpers.AddQueryString(ExternalLoginEndpoint, "returnUrl", normalizedReturnUrl);
-    }
 }

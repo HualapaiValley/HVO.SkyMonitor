@@ -39,10 +39,4 @@ public class ReturnUrlHelperTests
         Assert.AreEqual("/Account/Login?returnUrl=%2Fweather", result);
     }
 
-    [TestMethod]
-    public void BuildExternalLoginPath_AppendsReturnUrlQuery()
-    {
-        var result = ReturnUrlHelper.BuildExternalLoginPath("/dashboard");
-        Assert.AreEqual("/Account/ExternalLogin?returnUrl=%2Fdashboard", result);
-    }
 }

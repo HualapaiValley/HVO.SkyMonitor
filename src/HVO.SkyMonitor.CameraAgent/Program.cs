@@ -6,13 +6,15 @@ using Asp.Versioning;
 using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
 using HVO.SkyMonitor.Common.Infrastructure.Filters;
 using HVO.SkyMonitor.Common.Identity;
+using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Extensions;
 using HVO.SkyMonitor.CameraAgent.Components;
 using HVO.SkyMonitor.CameraAgent.Components.Account;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Configuration;
-using HVO.SkyMonitor.CameraAgent.HealthChecks;
 using HVO.SkyMonitor.Common.Observability;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -155,7 +157,6 @@ public class Program
 
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks();
         healthChecks.AddDbContextCheck<ApplicationDbContext>("identity-database", tags: ["dependency"]);
-        healthChecks.AddCheck<LogicHostHealthCheck>("logic-host", tags: ["dependency"]);
         builder.Services.AddOpenTelemetry()
             .WithMetrics(metrics =>
             {
@@ -174,7 +175,6 @@ public class Program
         var authenticationBuilder = builder.Services.AddAuthentication(options =>
         {
             options.DefaultScheme = IdentityConstants.ApplicationScheme;
-            options.DefaultSignInScheme = IdentityConstants.ExternalScheme;
         });
 
         authenticationBuilder.AddIdentityCookies();
@@ -201,7 +201,12 @@ public class Program
 
         builder.Services.AddAuthorization();
 
-        builder.Services.AddScoped<ISampleStatusService, SampleStatusService>();
+        builder.Services.AddOptions<CapturePreviewOptions>()
+            .Bind(builder.Configuration.GetSection("CapturePreview"))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
+        builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
 
         var app = builder.Build();
 

@@ -1,12 +1,9 @@
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Threading.Tasks;
-using HVO.SkyMonitor.CameraAgent.Components.Account;
 using HVO.SkyMonitor.CameraAgent.Data;
-using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging;
 
@@ -17,17 +14,11 @@ public sealed partial class Login : ComponentBase
     private string? errorMessage;
     private EditContext editContext = default!;
 
-    [CascadingParameter]
-    private HttpContext HttpContext { get; set; } = default!;
-
     [SupplyParameterFromForm]
     private InputModel Input { get; set; } = default!;
 
     [SupplyParameterFromQuery]
     private string? ReturnUrl { get; set; }
-
-    [Inject]
-    private UserManager<ApplicationUser> UserManager { get; set; } = default!;
 
     [Inject]
     private SignInManager<ApplicationUser> SignInManager { get; set; } = default!;
@@ -45,39 +36,22 @@ public sealed partial class Login : ComponentBase
         "Account/Register",
         new Dictionary<string, object?> { ["ReturnUrl"] = ReturnUrl });
 
-    protected override async Task OnInitializedAsync()
+    protected override Task OnInitializedAsync()
     {
         Input ??= new();
         editContext = new EditContext(Input);
 
-        if (HttpMethods.IsGet(HttpContext.Request.Method))
-        {
-            await HttpContext.SignOutAsync(IdentityConstants.ExternalScheme);
-        }
+        return Task.CompletedTask;
     }
 
     public async Task LoginUser()
     {
-        if (!string.IsNullOrEmpty(Input.Passkey?.Error))
+        if (!editContext.Validate())
         {
-            errorMessage = $"Error: {Input.Passkey.Error}";
             return;
         }
 
-        SignInResult result;
-        if (!string.IsNullOrEmpty(Input.Passkey?.CredentialJson))
-        {
-            result = await SignInManager.PasskeySignInAsync(Input.Passkey.CredentialJson);
-        }
-        else
-        {
-            if (!editContext.Validate())
-            {
-                return;
-            }
-
-            result = await SignInManager.PasswordSignInAsync(Input.Email, Input.Password, Input.RememberMe, lockoutOnFailure: false);
-        }
+        var result = await SignInManager.PasswordSignInAsync(Input.Email, Input.Password, Input.RememberMe, lockoutOnFailure: false);
 
         if (result.Succeeded)
         {
@@ -88,9 +62,8 @@ public sealed partial class Login : ComponentBase
 
         if (result.RequiresTwoFactor)
         {
-            RedirectManager.RedirectTo(
-                "Account/LoginWith2fa",
-                new() { ["returnUrl"] = ReturnUrl, ["rememberMe"] = Input.RememberMe });
+            Logger.LogWarning("Two-factor login requested for {Email}, but two-factor authentication is disabled.", Input.Email);
+            errorMessage = "Error: Two-factor authentication is not available.";
             return;
         }
 
@@ -123,7 +96,5 @@ public sealed partial class Login : ComponentBase
 
         [Display(Name = "Remember me?")]
         public bool RememberMe { get; set; }
-
-        public PasskeyInputModel? Passkey { get; set; }
     }
 }

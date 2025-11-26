@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Common.Identity;
 using Microsoft.Extensions.Logging;
@@ -22,6 +23,7 @@ internal sealed class DeviceSecretsCentralIdentityConfigurator : IConfigureOptio
         this.logger = logger;
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Device bootstrap secrets may be missing or partially written; configuration should continue with defaults while logging the failure.")]
     public void Configure(CentralIdentityOptions options)
     {
         DeviceSecrets? secrets = null;

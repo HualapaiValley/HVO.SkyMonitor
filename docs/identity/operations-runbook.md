@@ -923,8 +923,7 @@ This runbook covers the essential operational procedures for Identity Hardening:
 - ✅ Monitoring, metrics, and alerting
 
 For additional information:
-- See [secrets-reference.md](secrets-reference.md) for secret management
-- See [SECRETS_MANAGEMENT.md](SECRETS_MANAGEMENT.md) for general secrets guidance
+- See [../security/secrets.md](../security/secrets.md) for the consolidated secrets catalog and rotation cadence
 - See logs and metrics dashboards for real-time monitoring
 
 **Next Steps:**

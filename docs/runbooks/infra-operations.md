@@ -80,4 +80,4 @@ Use when volumes need to be wiped but services should remain stopped afterward.
 
 - `docs/runbooks/local-dev.md` — developer workflow.
 - `docs/runbooks/ci-pipeline.md` — automated pipeline behavior.
-- `docs/SECRETS_MANAGEMENT.md` — storing and rotating secrets.
+- `docs/security/secrets.md` — storing and rotating secrets.

@@ -1,32 +1,23 @@
 using System.Diagnostics.CodeAnalysis;
 
-// Sample and demo applications intentionally use simpler patterns for demonstration purposes
-// ConfigureAwait(false) adds noise in demo code that doesn't benefit from it
-[assembly: SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Sample/demo code runs in ASP.NET Core context where ConfigureAwait provides no benefit.", Scope = "module")]
+// Blazor Server components must resume on the captured synchronization context to update the SignalR circuit, so ConfigureAwait(false) is intentionally avoided.
+[assembly: SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Blazor Server components rely on the current synchronization context to dispatch UI updates.", Scope = "module")]
 
-// Demo applications log infrequently and prioritize code clarity over marginal performance gains
-[assembly: SuppressMessage("Performance", "CA1848:For improved performance, use the LoggerMessage delegates", Justification = "Sample/demo logs infrequently; readability and simplicity prioritized.", Scope = "module")]
+// Logging volume in this project is low and favors readability over LoggerMessage delegate plumbing.
+[assembly: SuppressMessage("Performance", "CA1848:For improved performance, use the LoggerMessage delegates", Justification = "CameraAgent logs are low-frequency operator diagnostics where readability is preferred.", Scope = "module")]
 
-// This project intentionally makes some types public for demonstration and testing purposes
-[assembly: SuppressMessage("Design", "CA1515:Make types internal", Justification = "Some types are intentionally public for demonstration and external testing scenarios.", Scope = "module")]
+// Controllers and Razor components must remain public for ASP.NET Core discovery and routing.
+[assembly: SuppressMessage("Design", "CA1515:Make types internal", Justification = "Public visibility is required so MVC/Web API and Razor components can be activated by the framework.", Scope = "module")]
 
-// CA1716: Error page component name intentionally uses reserved keyword for Blazor routing conventions
-[assembly: SuppressMessage("Naming", "CA1716:Identifiers should not match keywords", Justification = "Error page follows Blazor/ASP.NET Core naming conventions.", Scope = "type", Target = "~T:HVO.SkyMonitor.CameraAgent.Components.Pages.Error")]
+// Error page component name intentionally matches routing conventions even though it overlaps with a C# keyword.
+[assembly: SuppressMessage("Naming", "CA1716:Identifiers should not match keywords", Justification = "Error page follows ASP.NET Core naming conventions for routing.", Scope = "type", Target = "~T:HVO.SkyMonitor.CameraAgent.Components.Pages.Error")]
 
-// Broad exception catching in demo clock loops and error boundaries for resilience
-[assembly: SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Demo error boundaries and clock loops intentionally catch all exceptions for app resilience.", Scope = "module")]
+// Some Razor component helpers intentionally remain instance members for binding consistency even when they could be static.
+[assembly: SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Component members participate in binding/state and follow Razor conventions.", Scope = "module")]
 
-// CA1822: Navigation link and toolbar action properties could be static but are instance members for consistency with Blazor patterns
-[assembly: SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Blazor component instance properties for consistency even when data is static.", Scope = "module")]
+// Remaining path comparisons intentionally rely on the framework defaults (ordinal) for readability.
+[assembly: SuppressMessage("Globalization", "CA1307:Specify StringComparison for clarity", Justification = "Path comparisons already occur on normalized strings; explicit StringComparison would add noise.", Scope = "module")]
 
-// CA1307: Explicit StringComparison added where needed; remaining cases use default ordinal comparison intentionally
-[assembly: SuppressMessage("Globalization", "CA1307:Specify StringComparison for clarity", Justification = "Remaining path comparisons intentionally use default ordinal comparison.", Scope = "module")]
-
-// CA1052: Program class with Main method cannot be static in .NET applications
-[assembly: SuppressMessage("Design", "CA1052:Static holder types should be Static or NotInheritable", Justification = "Program class with Main method cannot be static per .NET requirements.", Scope = "type", Target = "~T:HVO.SkyMonitor.CameraAgent.Program")]
-
-// Identity UI requires returnUrl to remain a string for LocalRedirect routing
-[assembly: SuppressMessage("Design", "CA1054:Uri parameters should not be strings", Justification = "Identity UI returnUrl needs to stay as a string for routing helpers.", Scope = "member", Target = "~M:HVO.SkyMonitor.CameraAgent.Areas.Identity.Pages.Account.LoginModel.OnGetAsync(System.String)")]
-[assembly: SuppressMessage("Design", "CA1054:Uri parameters should not be strings", Justification = "Identity UI returnUrl needs to stay as a string for routing helpers.", Scope = "member", Target = "~M:HVO.SkyMonitor.CameraAgent.Areas.Identity.Pages.Account.LoginModel.OnPostAsync(System.String)")]
-[assembly: SuppressMessage("Design", "CA1056:Uri properties should not be strings", Justification = "Identity UI returnUrl needs to stay as a string for routing helpers.", Scope = "member", Target = "~P:HVO.SkyMonitor.CameraAgent.Areas.Identity.Pages.Account.LoginModel.ReturnUrl")]
+// Program must remain non-static because it hosts the application entry point.
+[assembly: SuppressMessage("Design", "CA1052:Static holder types should be Static or NotInheritable", Justification = "Program class provides the Main entry point and cannot be static.", Scope = "type", Target = "~T:HVO.SkyMonitor.CameraAgent.Program")]
 

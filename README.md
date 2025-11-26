@@ -172,7 +172,7 @@ The following ports are automatically forwarded and accessible from your host ma
 - Copy `.env.template` to `.env` for Docker Compose. Only non-secret defaults live in version control.
 - Place per-developer overrides in `.devcontainer/devcontainer.local.env` (gitignored) and map them via the `remoteEnv` block in `.devcontainer/devcontainer.json`.
 - Use `.NET` [user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets?view=aspnetcore-8.0&tabs=linux) for local debugging outside containers. The devcontainer mounts your host secrets folder automatically.
-- See `docs/SECRETS_MANAGEMENT.md` and `docs/SECRETS_QUICKSTART.md` for detailed workflows covering Testcontainers, Docker Compose, and production deployments.
+- See `docs/security/secrets.md` for detailed workflows covering Testcontainers, Docker Compose, and production deployments.
 
 ## Container Support
 

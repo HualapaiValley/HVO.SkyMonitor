@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="bunit.web" />
     <PackageReference Include="MSTest" />
     <PackageReference Include="Moq" />
     <PackageReference Include="Microsoft.Extensions.Options" />

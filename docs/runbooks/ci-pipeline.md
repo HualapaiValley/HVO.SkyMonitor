@@ -15,7 +15,7 @@ This document describes the build and validation stages executed in GitHub Actio
 
 - Located at `.github/workflows/dotnet.yml`.
 - Uses the devcontainer image to ensure parity with local development.
-- Secrets (MinIO, database, API keys) are injected via GitHub repository secrets; names mirror `.env.template` variables.
+- Secrets (MinIO, database, API keys) are injected via GitHub repository secrets; names mirror `.env.template` variables. See `docs/security/secrets.md` for the canonical list and rotation cadence.
 
 ## Reproducing Locally
 
