@@ -11,7 +11,7 @@ public sealed class SkyMonitorClientOptions
     public const string SectionName = "SkyMonitor";
     public const string HttpClientName = "SkyMonitor.Api";
 
-    private const string DefaultBaseUrl = "https://localhost:5001";
+    private const string DefaultBaseUrl = "http://logichost:8080";
 
     /// <summary>
     /// Base URL for the SkyMonitor service (e.g., https://skymonitor.local:5174).

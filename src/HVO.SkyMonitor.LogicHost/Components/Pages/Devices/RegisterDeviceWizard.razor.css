@@ -1,0 +1,8 @@
+.register-device-wizard .mono {
+    font-family: var(--bs-font-monospace);
+}
+
+.register-device-wizard .envelope-text {
+    font-family: var(--bs-font-monospace);
+    min-height: 10rem;
+}

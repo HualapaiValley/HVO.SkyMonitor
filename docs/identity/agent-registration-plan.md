@@ -93,6 +93,8 @@
 - **DeviceRegistration** table (LogicHost):
    - Base columns: `Id`, `DeviceId`, `ObservatoryId`, `FriendlyName`, `Status (Pending/Active/Revoked)`, `VerificationCodeHash`, `IssuedAt`, `ExpiresAt`, `LastSeenUtc`, `RevokedReason`.
    - Envelope-specific columns: `DevicePublicId`, `DeviceKeyHash`, `RegistrationTokenHash` (all nullable until issuance), `ActivatedAtUtc` (when agent consumes envelope), and `EnvelopeVersion` for forward compatibility.
+   - Observatory snapshot columns: `ObservatoryName`, `ObservatoryLatitudeDegrees`, `ObservatoryLongitudeDegrees`, `ObservatoryElevationMeters`, `ObservatoryTimeZoneId` to preserve operator-friendly metadata even if the source record changes later.
+    - Owner confirmation columns: `OwnerUserId`, `OwnerDisplayName`, `OwnerEmail`, `OwnerConfirmationMethod`, `OwnerConfirmationNotes`, `OwnerConfirmedAtUtc` so every registration is tied to a human who asserted ownership and when/how that confirmation occurred.
 - **DeviceKey envelope master key**: stored in Key Vault or HSM, rotated on schedule; used only to encrypt envelopes. After bootstrap, per-device keys suffice.
 - **Audit logs** for registration attempts, successful envelopes, heartbeats, revocations.
 

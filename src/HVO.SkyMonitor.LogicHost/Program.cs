@@ -91,6 +91,9 @@ public sealed partial class Program
             .Bind(centralIdentitySection)
             .ConfigureCentralIdentityDefaults();
 
+        builder.Services.Configure<DeviceBootstrapSecretsOptions>(
+            builder.Configuration.GetSection("DeviceBootstrap"));
+
         var centralIdentitySettings = centralIdentitySection.Exists()
             ? centralIdentitySection.Get<CentralIdentityOptions>()
             : null;
@@ -316,6 +319,7 @@ public sealed partial class Program
         }
 
         builder.Services.AddSingleton<IEmailNotificationService, SmtpEmailNotificationService>();
+        builder.Services.AddScoped<IObservatoryService, ObservatoryService>();
 
         // Database - prefer PostgreSQL (fallback to explicit connection string if config missing)
         var connectionString = builder.Configuration.GetConnectionString("skymonitordb")
@@ -536,6 +540,9 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceRegistrationEnvelopeService, DeviceRegistrationEnvelopeService>();
         builder.Services.AddScoped<IDeviceBootstrapService, DeviceBootstrapService>();
         builder.Services.AddScoped<IDeviceRegistrationReadService, DeviceRegistrationReadService>();
+        builder.Services.AddScoped<IDeviceCredentialValidator, DeviceCredentialValidator>();
+        builder.Services.AddScoped<IDeviceHeartbeatService, DeviceHeartbeatService>();
+        builder.Services.AddScoped<IDeviceUploadService, DeviceUploadService>();
 
         var app = builder.Build();
 

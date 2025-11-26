@@ -4,6 +4,7 @@
     <PackageReference Include="FluentAssertions" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
     <PackageReference Include="MSTest" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
   </ItemGroup>
 
   <ItemGroup>
@@ -11,7 +12,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\HVO.SkyMonitor\HVO.SkyMonitor.LogicHost.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.LogicHost\HVO.SkyMonitor.LogicHost.csproj" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <!-- Test naming patterns intentionally use public classes + underscore naming; suppress analyzer noise here. -->
+    <NoWarn>$(NoWarn);CA1515;CA1707;CA2007;CA1861;CA1307;CA1859</NoWarn>
+  </PropertyGroup>
 
 </Project>

@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 [ApiController]
 [Route("api/device/bootstrap")]
 [AllowAnonymous]
-internal sealed class DeviceBootstrapController(
+public sealed class DeviceBootstrapController(
     IDeviceBootstrapService bootstrapService,
     ILogger<DeviceBootstrapController> logger) : ControllerBase
 {
@@ -55,21 +55,22 @@ internal sealed class DeviceBootstrapController(
         }
     }
 
-    internal sealed record DeviceBootstrapRequestDto(
-        [Required, StringLength(128)] string DeviceId,
-        [Required, StringLength(8192)] string Envelope,
-        [StringLength(128)] string? Nonce = null);
-
-    internal sealed record DeviceBootstrapResponse(
-        Guid RegistrationId,
-        Guid DevicePublicId,
-        string EnvelopeVersion,
-        string DeviceKey,
-        DeviceBootstrapEncryptedPayloadDto Payload);
-
-    internal sealed record DeviceBootstrapEncryptedPayloadDto(
-        string Ciphertext,
-        string Nonce,
-        string Tag,
-        string Algorithm);
 }
+
+public sealed record DeviceBootstrapRequestDto(
+    [Required, StringLength(128)] string DeviceId,
+    [Required, StringLength(8192)] string Envelope,
+    [StringLength(128)] string? Nonce = null);
+
+public sealed record DeviceBootstrapResponse(
+    Guid RegistrationId,
+    Guid DevicePublicId,
+    string EnvelopeVersion,
+    string DeviceKey,
+    DeviceBootstrapEncryptedPayloadDto Payload);
+
+public sealed record DeviceBootstrapEncryptedPayloadDto(
+    string Ciphertext,
+    string Nonce,
+    string Tag,
+    string Algorithm);

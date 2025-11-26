@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
-using Microsoft.AspNetCore.WebUtilities;
 using HVO.SkyMonitor.CameraAgent.Security;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Layout;
@@ -13,9 +12,7 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
     private static readonly IReadOnlyList<NavigationLink> PrimaryLinks =
     [
         new NavigationLink("/", "Dashboard", "bi bi-house", NavLinkMatch.All),
-        new NavigationLink("/weather", "Weather", "bi bi-cloud-moon", NavLinkMatch.Prefix),
-        new NavigationLink("/devices/bootstrap", "Device Bootstrap", "bi bi-usb-symbol", NavLinkMatch.Prefix),
-        new NavigationLink("/auth", "Secure Area", "bi bi-shield-lock", NavLinkMatch.Prefix)
+        new NavigationLink("/devices/bootstrap", "Device Bootstrap", "bi bi-usb-symbol", NavLinkMatch.Prefix)
     ];
 
     private static readonly IReadOnlyList<ToolbarAction> ToolbarActions =
@@ -37,8 +34,6 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
 
     private string SignInUrl => ReturnUrlHelper.BuildLoginPath(CurrentReturnUrl);
 
-    private string SignOutUrl => QueryHelpers.AddQueryString("/Account/Logout", "returnUrl", CurrentReturnUrl);
-
     protected override void OnInitialized()
     {
         UpdateReturnUrl(NavigationManager.Uri);
@@ -55,16 +50,6 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
     {
         var baseRelative = NavigationManager.ToBaseRelativePath(location);
         CurrentReturnUrl = ReturnUrlHelper.NormalizeReturnUrl(baseRelative);
-    }
-
-    private void BeginSignIn()
-    {
-        NavigationManager.NavigateTo(SignInUrl, forceLoad: true);
-    }
-
-    private void BeginSignOut()
-    {
-        NavigationManager.NavigateTo(SignOutUrl, forceLoad: true);
     }
 
     public void Dispose()

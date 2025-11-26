@@ -39,6 +39,9 @@ dotnet user-secrets set "MinIO:AccessKey" "your-username"
 dotnet user-secrets set "MinIO:SecretKey" "your-password"
 dotnet user-secrets set "PostgreSQL:Username" "postgres"
 dotnet user-secrets set "PostgreSQL:Password" "strong-password"
+# Optional: override DeviceBootstrap Central Identity bundle issued to camera agents
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:ClientId" "system-camera-agent"
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret" "test-camera-agent-secret-do-not-use-in-production"
 ```
 
 Use `dotnet user-secrets list --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj` to confirm values.

@@ -15,3 +15,7 @@
 .device-registrations .table th {
     vertical-align: middle;
 }
+
+.device-registrations .delete-card {
+    border-color: var(--bs-danger-border-subtle);
+}

@@ -69,6 +69,9 @@ POSTGRES_PASSWORD=<password>
 # Future secrets
 JWT_SECRET_KEY=<secret>
 ENCRYPTION_KEY=<key>
+# Device bootstrap overrides
+DeviceBootstrap__CentralIdentity__ClientCredentials__ClientId=<client-id>
+DeviceBootstrap__CentralIdentity__ClientCredentials__ClientSecret=<client-secret>
 ```
 
 ## 🚀 Quick Start

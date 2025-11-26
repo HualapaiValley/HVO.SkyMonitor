@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Security.Claims;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
@@ -14,6 +15,9 @@ internal sealed class DeviceRegistrationsController(
     IDeviceRegistrationService registrationService,
     IDeviceRegistrationEnvelopeService envelopeService) : ControllerBase
 {
+    private const string PortalConfirmationMethod = "PortalSelfAttested";
+    private const string PortalRevocationMethod = "PortalSelfServiceRevocation";
+
     [HttpPost("verify")]
     public async Task<ActionResult<DeviceRegistrationResponse>> VerifyDeviceAsync(
         DeviceRegistrationRequest request,
@@ -25,19 +29,42 @@ internal sealed class DeviceRegistrationsController(
             return ValidationProblem(ModelState);
         }
 
+        var ownerUserId = GetUserIdentifier();
+        if (string.IsNullOrWhiteSpace(ownerUserId))
+        {
+            return Unauthorized();
+        }
+
         var registration = await registrationService.CreatePendingAsync(new DeviceRegistrationCreateRequest(
             request.DeviceId,
             request.VerificationCode,
             request.ObservatoryId,
             request.FriendlyName,
+            ownerUserId,
+            GetUserDisplayName() ?? ownerUserId,
+            GetUserEmail(),
+            PortalConfirmationMethod,
+            null,
             TimeSpan.FromMinutes(request.PendingLifetimeMinutes ?? 15)), cancellationToken).ConfigureAwait(false);
 
         var response = new DeviceRegistrationResponse(
             registration.Id,
+            registration.DeviceId,
             registration.Status,
             registration.IssuedAtUtc,
             registration.ExpiresAtUtc,
-            registration.FriendlyName);
+            registration.FriendlyName,
+            registration.ObservatoryId,
+            registration.ObservatoryName,
+            registration.ObservatoryLatitudeDegrees,
+            registration.ObservatoryLongitudeDegrees,
+            registration.ObservatoryElevationMeters,
+            registration.ObservatoryTimeZoneId,
+            registration.OwnerUserId,
+            registration.OwnerDisplayName,
+            registration.OwnerEmail,
+            registration.OwnerConfirmedAtUtc,
+            registration.OwnerConfirmationMethod);
 
         return Ok(response);
     }
@@ -83,10 +110,22 @@ internal sealed class DeviceRegistrationsController(
 
     internal sealed record DeviceRegistrationResponse(
         Guid RegistrationId,
+        string DeviceId,
         DeviceRegistrationStatus Status,
         DateTimeOffset IssuedAtUtc,
         DateTimeOffset? ExpiresAtUtc,
-        string FriendlyName);
+        string FriendlyName,
+        Guid ObservatoryId,
+        string ObservatoryName,
+        double ObservatoryLatitudeDegrees,
+        double ObservatoryLongitudeDegrees,
+        double ObservatoryElevationMeters,
+        string ObservatoryTimeZoneId,
+        string OwnerUserId,
+        string OwnerDisplayName,
+        string? OwnerEmail,
+        DateTimeOffset? OwnerConfirmedAtUtc,
+        string OwnerConfirmationMethod);
 
     internal sealed record DeviceRegistrationEnvelopeDtoRequest(
         [Required] Guid RegistrationId,
@@ -101,4 +140,65 @@ internal sealed class DeviceRegistrationsController(
         DateTimeOffset ExpiresAtUtc,
         string Envelope,
         string EnvelopeVersion);
+
+    [HttpPost("delete")]
+    public async Task<IActionResult> DeleteRegistrationAsync(
+        DeviceRegistrationDeleteRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!ModelState.IsValid)
+        {
+            return ValidationProblem(ModelState);
+        }
+
+        var ownerUserId = GetUserIdentifier();
+        if (string.IsNullOrWhiteSpace(ownerUserId))
+        {
+            return Unauthorized();
+        }
+
+        try
+        {
+            await registrationService.RevokeAsync(new DeviceRegistrationRevokeRequest(
+                request.RegistrationId,
+                request.DeviceId,
+                ownerUserId,
+                GetUserDisplayName() ?? ownerUserId,
+                PortalRevocationMethod,
+                request.Reason), cancellationToken).ConfigureAwait(false);
+        }
+        catch (DeviceRegistrationException ex)
+        {
+            ModelState.AddModelError(string.Empty, ex.Message);
+            return ValidationProblem(ModelState);
+        }
+
+        return NoContent();
+    }
+
+    internal sealed record DeviceRegistrationDeleteRequest(
+        [Required] Guid RegistrationId,
+        [Required, StringLength(128)] string DeviceId,
+        [StringLength(256)] string? Reason);
+
+    private string? GetUserIdentifier()
+    {
+        return User?.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? User?.FindFirstValue("sub")
+            ?? User?.Identity?.Name;
+    }
+
+    private string? GetUserDisplayName()
+    {
+        return User?.FindFirstValue("name")
+            ?? User?.Identity?.Name
+            ?? GetUserEmail();
+    }
+
+    private string? GetUserEmail()
+    {
+        return User?.FindFirstValue(ClaimTypes.Email)
+            ?? User?.FindFirstValue("preferred_username");
+    }
 }

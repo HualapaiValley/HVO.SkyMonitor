@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.Common.Identity;
+using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -9,24 +10,24 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
-internal interface IDeviceBootstrapService
+public interface IDeviceBootstrapService
 {
     Task<DeviceBootstrapResult> BootstrapAsync(DeviceBootstrapRequest request, CancellationToken cancellationToken = default);
 }
 
-internal sealed record DeviceBootstrapRequest(
+public sealed record DeviceBootstrapRequest(
     string DeviceId,
     string Envelope,
     string? Nonce = null);
 
-internal sealed record DeviceBootstrapResult(
+public sealed record DeviceBootstrapResult(
     Guid RegistrationId,
     Guid DevicePublicId,
     string EnvelopeVersion,
     string DeviceKey,
     DeviceBootstrapEncryptedPayload Payload);
 
-internal sealed record DeviceBootstrapEncryptedPayload(
+public sealed record DeviceBootstrapEncryptedPayload(
     string Ciphertext,
     string Nonce,
     string Tag,
@@ -42,19 +43,22 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
     private readonly IDataProtector protector;
     private readonly ILogger<DeviceBootstrapService> logger;
     private readonly CentralIdentityOptions centralIdentityOptions;
+    private readonly DeviceBootstrapSecretsOptions bootstrapOptions;
 
     public DeviceBootstrapService(
         ApplicationDbContext dbContext,
         TimeProvider timeProvider,
         IDataProtectionProvider dataProtectionProvider,
         ILogger<DeviceBootstrapService> logger,
-        IOptions<CentralIdentityOptions> centralIdentityOptions)
+        IOptions<CentralIdentityOptions> centralIdentityOptions,
+        IOptions<DeviceBootstrapSecretsOptions> bootstrapOptions)
     {
         this.dbContext = dbContext;
         this.timeProvider = timeProvider;
         protector = dataProtectionProvider.CreateProtector("LogicHost", "DeviceRegistration", "Envelope", "v1");
         this.logger = logger;
         this.centralIdentityOptions = centralIdentityOptions.Value;
+        this.bootstrapOptions = bootstrapOptions.Value;
     }
 
     public async Task<DeviceBootstrapResult> BootstrapAsync(DeviceBootstrapRequest request, CancellationToken cancellationToken = default)
@@ -210,7 +214,8 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
 
     private CentralIdentityOptions CloneCentralIdentityOptions()
     {
-        var serialized = JsonSerializer.Serialize(centralIdentityOptions, DeviceRegistrationJson.Options);
+        var template = bootstrapOptions.CentralIdentity ?? centralIdentityOptions;
+        var serialized = JsonSerializer.Serialize(template, DeviceRegistrationJson.Options);
         return JsonSerializer.Deserialize<CentralIdentityOptions>(serialized, DeviceRegistrationJson.Options)
             ?? throw new InvalidOperationException("Central identity configuration could not be cloned.");
     }

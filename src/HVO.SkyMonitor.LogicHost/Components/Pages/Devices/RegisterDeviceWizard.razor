@@ -1,0 +1,246 @@
+@page "/devices/register"
+@using HVO.SkyMonitor.Common.Security
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Routing
+@using Microsoft.AspNetCore.Components.Web
+@attribute [Authorize(Policy = AuthorizationPolicyNames.ApiKeyReadWrite)]
+
+<PageTitle>Register Camera Agent</PageTitle>
+
+<div class="container py-4 register-device-wizard">
+    <div class="d-flex flex-column flex-lg-row gap-3 align-items-lg-center mb-4">
+        <div>
+            <h1 class="h3 mb-1">Register Camera Agent</h1>
+            <p class="text-muted mb-0">Verify a device, capture observatory metadata, and issue an envelope for the operator.</p>
+        </div>
+        <div class="ms-lg-auto d-flex gap-2">
+            <NavLink class="btn btn-outline-secondary" href="/devices">
+                <i class="bi bi-arrow-left me-1"></i>
+                Back to Devices
+            </NavLink>
+        </div>
+    </div>
+
+    @if (IsLoading)
+    {
+        <div class="text-muted">
+            <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+            Loading observatories...
+        </div>
+    }
+    else if (!string.IsNullOrEmpty(LoadError))
+    {
+        <div class="alert alert-danger" role="alert">
+            <i class="bi bi-exclamation-octagon me-2"></i>
+            @LoadError
+        </div>
+    }
+    else if (!HasObservatories)
+    {
+        <div class="alert alert-info" role="alert">
+            <div class="d-flex flex-column flex-lg-row gap-3 align-items-lg-center">
+                <div>
+                    <h2 class="h5 mb-1">Add an observatory to continue</h2>
+                    <p class="mb-0">Device registrations must be associated with an observatory you own.</p>
+                </div>
+                <div class="ms-lg-auto">
+                    <NavLink class="btn btn-primary" href="/observatories">
+                        <i class="bi bi-building-add me-1"></i>
+                        Manage Observatories
+                    </NavLink>
+                </div>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="row g-4">
+            <div class="col-xl-6">
+                <div class="card shadow-sm">
+                    <div class="card-body">
+                        <h2 class="h5 mb-3">Step 1 · Verify the device</h2>
+                        <p class="text-muted">Collect the pairing code from the CameraAgent UI. Verification keeps existing pending registrations for the same device up to date.</p>
+
+                        @if (!string.IsNullOrEmpty(SubmitError))
+                        {
+                            <div class="alert alert-danger" role="alert">
+                                <i class="bi bi-exclamation-triangle me-2"></i>
+                                @SubmitError
+                            </div>
+                        }
+                        else if (!string.IsNullOrEmpty(SubmitSuccess))
+                        {
+                            <div class="alert alert-success" role="alert">
+                                <i class="bi bi-check-circle me-2"></i>
+                                @SubmitSuccess
+                            </div>
+                        }
+
+                        <EditForm Model="FormModel" OnValidSubmit="OnValidSubmitAsync">
+                            <DataAnnotationsValidator />
+                            <ValidationSummary />
+
+                            <div class="mb-3">
+                                <label class="form-label">Observatory</label>
+                                <InputSelect class="form-select" @bind-Value="FormModel.ObservatoryId">
+                                    <option value="">Select an observatory…</option>
+                                    @foreach (var observatory in Observatories)
+                                    {
+                                        <option value="@observatory.Id">@observatory.Name</option>
+                                    }
+                                </InputSelect>
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Friendly Name</label>
+                                <InputText class="form-control" @bind-Value="FormModel.FriendlyName" />
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Device Id</label>
+                                <InputText class="form-control mono" @bind-Value="FormModel.DeviceId" />
+                                <div class="form-text">Copy from the CameraAgent pairing screen.</div>
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Verification Code</label>
+                                <InputText class="form-control" @bind-Value="FormModel.VerificationCode" />
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label class="form-label">Pending Lifetime (minutes)</label>
+                                    <InputNumber class="form-control" @bind-Value="FormModel.PendingLifetimeMinutes" />
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Envelope Lifetime (minutes)</label>
+                                    <InputNumber class="form-control" @bind-Value="FormModel.EnvelopeLifetimeMinutes" />
+                                </div>
+                            </div>
+
+                            <div class="mb-3 mt-3">
+                                <label class="form-label">Operator Notes (optional)</label>
+                                <InputTextArea class="form-control" rows="2" @bind-Value="FormModel.ConfirmationNotes" />
+                                <div class="form-text">Use this to capture how the operator confirmed device ownership.</div>
+                            </div>
+
+                            <div class="d-flex justify-content-between">
+                                <button type="button" class="btn btn-outline-secondary" @onclick="ResetForm" disabled="@IsSubmitting">
+                                    Clear
+                                </button>
+                                <button type="submit" class="btn btn-primary" disabled="@IsSubmitting">
+                                    @if (IsSubmitting)
+                                    {
+                                        <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                                    }
+                                    Verify Device
+                                </button>
+                            </div>
+                        </EditForm>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-xl-6">
+                <div class="card shadow-sm mb-4">
+                    <div class="card-body">
+                        <h2 class="h5 mb-3">Step 2 · Review pending registration</h2>
+                        @if (Registration is null)
+                        {
+                            <p class="text-muted mb-0">Verify a device to view observatory and owner metadata before issuing an envelope.</p>
+                        }
+                        else
+                        {
+                            <dl class="row mb-0">
+                                <dt class="col-sm-4">Device</dt>
+                                <dd class="col-sm-8 mono">@Registration.DeviceId</dd>
+
+                                <dt class="col-sm-4">Friendly Name</dt>
+                                <dd class="col-sm-8">@Registration.FriendlyName</dd>
+
+                                <dt class="col-sm-4">Observatory</dt>
+                                <dd class="col-sm-8">
+                                    <div>@Registration.ObservatoryName</div>
+                                    <div class="text-muted small">Lat @FormatCoordinate(Registration.ObservatoryLatitudeDegrees) · Lon @FormatCoordinate(Registration.ObservatoryLongitudeDegrees)</div>
+                                    <div class="text-muted small">Elev @FormatElevation(Registration.ObservatoryElevationMeters) m · TZ @Registration.ObservatoryTimeZoneId</div>
+                                </dd>
+
+                                <dt class="col-sm-4">Owner</dt>
+                                <dd class="col-sm-8">
+                                    <div>@Registration.OwnerDisplayName</div>
+                                    <div class="text-muted small">@FormatOwnerEmail(Registration.OwnerEmail)</div>
+                                </dd>
+
+                                <dt class="col-sm-4">Pending Window</dt>
+                                <dd class="col-sm-8">@FormatTimestamp(Registration.IssuedAtUtc) → @FormatTimestamp(Registration.ExpiresAtUtc)</dd>
+                            </dl>
+                        }
+                    </div>
+                </div>
+
+                <div class="card shadow-sm">
+                    <div class="card-body">
+                        <h2 class="h5 mb-3">Step 3 · Issue envelope</h2>
+
+                        @if (!string.IsNullOrEmpty(EnvelopeError))
+                        {
+                            <div class="alert alert-warning" role="alert">
+                                <i class="bi bi-exclamation-triangle me-2"></i>
+                                @EnvelopeError
+                            </div>
+                        }
+
+                        @if (Registration is null)
+                        {
+                            <p class="text-muted mb-0">Generate an envelope after verifying a device. The envelope expires automatically based on the selected lifetime.</p>
+                        }
+                        else
+                        {
+                            <div class="d-flex flex-column flex-lg-row gap-3 align-items-lg-center mb-3">
+                                <div class="text-muted small">Expires @FormatRelativeDuration(FormModel.EnvelopeLifetimeMinutes)</div>
+                                <div class="ms-lg-auto">
+                                    <button type="button" class="btn btn-primary" disabled="@IsIssuingEnvelope" @onclick="IssueEnvelopeAsync">
+                                        @if (IsIssuingEnvelope)
+                                        {
+                                            <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                                        }
+                                        <i class="bi bi-qr-code me-1"></i>
+                                        Issue Envelope
+                                    </button>
+                                </div>
+                            </div>
+                        }
+
+                        @if (ActiveEnvelope is not null)
+                        {
+                            <div class="border rounded p-3">
+                                <dl class="row mb-3">
+                                    <dt class="col-sm-4">Registration</dt>
+                                    <dd class="col-sm-8 mono">@ActiveEnvelope.RegistrationId</dd>
+                                    <dt class="col-sm-4">Device Id</dt>
+                                    <dd class="col-sm-8 mono">@ActiveEnvelope.DeviceId</dd>
+                                    <dt class="col-sm-4">Valid Until</dt>
+                                    <dd class="col-sm-8">@FormatTimestamp(ActiveEnvelope.ExpiresAtUtc)</dd>
+                                </dl>
+                                <textarea class="form-control envelope-text" rows="6" readonly>@ActiveEnvelope.Envelope</textarea>
+                                <div class="d-flex gap-2 mt-3">
+                                    <button type="button" class="btn btn-outline-secondary" @onclick="CopyEnvelopeAsync">
+                                        <i class="bi bi-clipboard me-1"></i>
+                                        Copy Envelope
+                                    </button>
+                                    <button type="button" class="btn btn-outline-secondary" @onclick="ClearEnvelope">
+                                        <i class="bi bi-x-circle me-1"></i>
+                                        Dismiss
+                                    </button>
+                                </div>
+                                <p class="text-muted small mt-3 mb-0">Provide the envelope to the operator immediately. Anyone with access can bootstrap the device until it expires.</p>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+</div>

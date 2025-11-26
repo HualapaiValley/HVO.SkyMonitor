@@ -1,0 +1,16 @@
+.nav-badge-bar .nav-badge.active {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+.card {
+    border: none;
+    border-radius: 1rem;
+}
+
+.card-title {
+    font-weight: 600;
+}
+
+.table td {
+    border-color: rgba(255, 255, 255, 0.05);
+}

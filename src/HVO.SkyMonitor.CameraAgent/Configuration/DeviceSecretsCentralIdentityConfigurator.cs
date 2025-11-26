@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Configuration;
 
 /// <summary>
-/// Hydrates <see cref="CentralIdentityOptions"/> from device bootstrap secrets so CameraAgent instances inherit Azure Entra wiring.
+/// Hydrates <see cref="CentralIdentityOptions"/> from device bootstrap secrets so CameraAgent instances inherit LogicHost Central Identity wiring.
 /// </summary>
 internal sealed class DeviceSecretsCentralIdentityConfigurator : IConfigureOptions<CentralIdentityOptions>
 {

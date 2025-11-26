@@ -327,6 +327,51 @@ RATE_LIMIT_GLOBAL_PERMITS_PER_MINUTE=10000
 
 ---
 
+### 7. Device Bootstrap Central Identity Overrides
+
+**Purpose:** Provide camera agents with scoped Central Identity credentials (for example, `system-camera-agent`) during the bootstrap flow so LogicHost never shares its own service credentials.
+
+**When Required:** Any environment that issues envelopes to camera agents. Production MUST source these values from a secrets provider (Azure Key Vault, environment variables, etc.).
+
+**Configuration Keys:**
+
+| Key | Description | Sensitive | Notes |
+| --- | --- | --- | --- |
+| `DeviceBootstrap:CentralIdentity:ServiceUrl` | Authority/issuer base URL camera agents should target | No | Defaults to `CentralIdentity:ServiceUrl` if omitted |
+| `DeviceBootstrap:CentralIdentity:ClientCredentials:ClientId` | Confidential client ID provisioned for agents | No | Reuse or scope per environment |
+| `DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret` | Client secret paired with the agent client ID | **Yes** | Store only in User Secrets / Key Vault |
+| `DeviceBootstrap:CentralIdentity:ClientCredentials:Scopes` | API scopes granted to camera agents | No | Typically `api.camera`, `api.frames`, `api.images` |
+
+**Environment Variables:**
+
+```bash
+export DeviceBootstrap__CentralIdentity__ServiceUrl="https://login.example.com"
+export DeviceBootstrap__CentralIdentity__ClientCredentials__ClientId="system-camera-agent"
+export DeviceBootstrap__CentralIdentity__ClientCredentials__ClientSecret="<secure-secret>"
+export DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__0="api.camera"
+export DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__1="api.frames"
+export DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__2="api.images"
+```
+
+**User Secrets (Development/Test):**
+
+```bash
+cd src/HVO.SkyMonitor.LogicHost
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ServiceUrl" "https://localhost:7096"
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:ClientId" "system-camera-agent"
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret" "test-camera-agent-secret-do-not-use-in-production"
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:Scopes:0" "api.camera"
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:Scopes:1" "api.frames"
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:Scopes:2" "api.images"
+```
+
+**Production Recommendations:**
+- Issue separate confidential clients per environment and store secrets in Azure Key Vault.
+- Rotate the agent client secret alongside device bootstrap key rotations; update Key Vault first, then recycle LogicHost pods.
+- Keep scopes minimal and audit usage via Central Identity logs to detect compromised agents.
+
+---
+
 ## Environment Setup Summary
 
 ### Development Environment

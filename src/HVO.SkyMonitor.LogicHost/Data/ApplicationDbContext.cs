@@ -13,6 +13,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
 {
     public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
     internal DbSet<DeviceRegistration> DeviceRegistrations => Set<DeviceRegistration>();
+    internal DbSet<Observatory> Observatories => Set<Observatory>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -21,6 +22,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
 
         ConfigureApiKeys(builder.Entity<ApiKey>());
         builder.ApplyConfiguration(new DeviceRegistrationConfiguration());
+        builder.ApplyConfiguration(new ObservatoryConfiguration());
 
         // Configure OpenIddict entities to use the default Entity Framework Core conventions
         builder.UseOpenIddict();

@@ -98,6 +98,20 @@ dotnet user-secrets set "PostgreSQL:Password" "your-db-password" \
 # Other Secrets (example)
 dotnet user-secrets set "JwtSettings:SecretKey" "your-jwt-secret" \
   --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+
+# Device Bootstrap Central Identity overrides (camera agent client credentials)
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ServiceUrl" "https://localhost:7096" \
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:ClientId" "system-camera-agent" \
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret" "test-camera-agent-secret-do-not-use-in-production" \
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:Scopes:0" "api.camera" \
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:Scopes:1" "api.frames" \
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+dotnet user-secrets set "DeviceBootstrap:CentralIdentity:ClientCredentials:Scopes:2" "api.images" \
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 ```
 
 ### Listing Secrets

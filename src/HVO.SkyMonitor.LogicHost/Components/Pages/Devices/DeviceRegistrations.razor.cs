@@ -1,9 +1,13 @@
 using System.Collections.Generic;
 using System.Data.Common;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Linq;
+using System.Security.Claims;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.JSInterop;
@@ -18,12 +22,25 @@ public partial class DeviceRegistrations : ComponentBase
     private string? loadError;
     private string? envelopeError;
     private Guid? pendingEnvelopeId;
+    private DeviceRegistrationSummary? deleteTarget;
+    private string deleteConfirmation = string.Empty;
+    private bool isDeleting;
+    private string? deleteError;
+    private string? deleteSuccess;
+    private DeviceRegistrationStatus? statusFilter;
+    private bool hideRevoked;
+    private OwnerContext? ownerContext;
+    private const string PortalRevocationMethod = "PortalSelfServiceRevocation";
+    private const string UiExceptionJustification = "UI surfaces friendly messages while logging unexpected exceptions.";
 
     [Inject]
     internal IDeviceRegistrationReadService RegistrationReadService { get; set; } = default!;
 
     [Inject]
     internal IDeviceRegistrationEnvelopeService EnvelopeService { get; set; } = default!;
+
+    [Inject]
+    internal IDeviceRegistrationService RegistrationService { get; set; } = default!;
 
     [Inject]
     internal TimeProvider TimeProvider { get; set; } = default!;
@@ -33,6 +50,9 @@ public partial class DeviceRegistrations : ComponentBase
 
     [Inject]
     internal ILogger<DeviceRegistrations> Logger { get; set; } = default!;
+
+    [CascadingParameter]
+    internal Task<AuthenticationState>? AuthenticationStateTask { get; set; }
 
     protected override async Task OnInitializedAsync()
     {
@@ -49,6 +69,37 @@ public partial class DeviceRegistrations : ComponentBase
 
     private EnvelopeViewModel? ActiveEnvelope => activeEnvelope;
 
+    private DeviceRegistrationSummary? DeleteTarget => deleteTarget;
+
+    private string? DeleteError => deleteError;
+
+    private string? DeleteSuccess => deleteSuccess;
+
+    private string DeleteConfirmation
+    {
+        get => deleteConfirmation;
+        set => deleteConfirmation = value;
+    }
+
+    private string StatusFilterValue
+    {
+        get => statusFilter?.ToString() ?? string.Empty;
+        set
+        {
+            if (!string.IsNullOrWhiteSpace(value) && Enum.TryParse<DeviceRegistrationStatus>(value, out var parsed))
+            {
+                statusFilter = parsed;
+            }
+            else
+            {
+                statusFilter = null;
+            }
+        }
+    }
+
+    private bool CanConfirmDeletion => deleteTarget is not null
+        && string.Equals(deleteTarget.DeviceId, deleteConfirmation.Trim(), StringComparison.Ordinal);
+
     private async Task ReloadAsync()
     {
         isLoading = true;
@@ -56,6 +107,10 @@ public partial class DeviceRegistrations : ComponentBase
         envelopeError = null;
         pendingEnvelopeId = null;
         activeEnvelope = null;
+        deleteTarget = null;
+        deleteConfirmation = string.Empty;
+        deleteError = null;
+        isDeleting = false;
         StateHasChanged();
 
         try
@@ -127,6 +182,102 @@ public partial class DeviceRegistrations : ComponentBase
         return pendingEnvelopeId == registrationId;
     }
 
+    private bool IsDeleteBusy(Guid registrationId)
+    {
+        return deleteTarget?.RegistrationId == registrationId && isDeleting;
+    }
+
+    private void BeginDelete(DeviceRegistrationSummary registration)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+        deleteError = null;
+        deleteSuccess = null;
+        deleteTarget = registration;
+        deleteConfirmation = string.Empty;
+    }
+
+    private void CancelDelete()
+    {
+        deleteTarget = null;
+        deleteConfirmation = string.Empty;
+        deleteError = null;
+    }
+
+    private List<DeviceRegistrationSummary> FilterRegistrations()
+    {
+        if (!statusFilter.HasValue && !hideRevoked)
+        {
+            return registrations;
+        }
+
+        IEnumerable<DeviceRegistrationSummary> query = registrations;
+
+        if (statusFilter.HasValue)
+        {
+            query = query.Where(r => r.Status == statusFilter.Value);
+        }
+
+        if (hideRevoked)
+        {
+            query = query.Where(r => r.Status != DeviceRegistrationStatus.Revoked);
+        }
+
+        return query.ToList();
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = UiExceptionJustification)]
+    private async Task ConfirmDeleteAsync()
+    {
+        var target = deleteTarget;
+        if (target is null || isDeleting)
+        {
+            return;
+        }
+
+        var confirmation = deleteConfirmation.Trim();
+        if (!string.Equals(target.DeviceId, confirmation, StringComparison.Ordinal))
+        {
+            deleteError = "Type the device identifier to confirm deletion.";
+            return;
+        }
+
+        try
+        {
+            isDeleting = true;
+            deleteError = null;
+            var owner = await EnsureOwnerContextAsync().ConfigureAwait(false);
+            var revocationNotes = $"Portal deletion confirmed for {target.DeviceId}";
+            await RegistrationService.RevokeAsync(new DeviceRegistrationRevokeRequest(
+                target.RegistrationId,
+                target.DeviceId,
+                owner.UserId,
+                owner.DisplayName,
+                PortalRevocationMethod,
+                revocationNotes), default).ConfigureAwait(false);
+
+            var deletedFriendlyName = target.FriendlyName;
+            deleteSuccess = $"Deleted registration for '{deletedFriendlyName}'.";
+            await ReloadAsync().ConfigureAwait(false);
+            deleteTarget = null;
+            deleteConfirmation = string.Empty;
+        }
+        catch (Exception ex) when (ex is DeviceRegistrationException or InvalidOperationException)
+        {
+            deleteError = ex.Message;
+            Logger.LogWarning(ex, "Unable to delete device registration {RegistrationId}", target.RegistrationId);
+        }
+        catch (Exception ex)
+        {
+            deleteError = "Unexpected error deleting the registration.";
+            Logger.LogError(ex, "Unexpected error deleting device registration {RegistrationId}", target.RegistrationId);
+        }
+        finally
+        {
+            isDeleting = false;
+            await InvokeAsync(StateHasChanged).ConfigureAwait(false);
+        }
+    }
+
     private string FormatTimestamp(DateTimeOffset? timestamp)
     {
         if (timestamp is null)
@@ -135,6 +286,34 @@ public partial class DeviceRegistrations : ComponentBase
         }
 
         return timestamp.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'zzz", CultureInfo.InvariantCulture);
+    }
+
+    private string FormatOwnerEmail(string? email)
+    {
+        return string.IsNullOrWhiteSpace(email) ? "—" : email;
+    }
+
+    private string FormatOwnerConfirmation(DeviceRegistrationSummary registration)
+    {
+        if (registration.OwnerConfirmedAtUtc is null)
+        {
+            return "Awaiting confirmation";
+        }
+
+        var timestamp = FormatTimestamp(registration.OwnerConfirmedAtUtc);
+        return string.IsNullOrWhiteSpace(registration.OwnerConfirmationMethod)
+            ? timestamp
+            : $"{timestamp} · {registration.OwnerConfirmationMethod}";
+    }
+
+    private static string FormatCoordinate(double value)
+    {
+        return value.ToString("F4", CultureInfo.InvariantCulture);
+    }
+
+    private static string FormatElevation(double value)
+    {
+        return value.ToString("F0", CultureInfo.InvariantCulture);
     }
 
     private string FormatRelativeDuration(DateTimeOffset expiresAt)
@@ -188,6 +367,34 @@ public partial class DeviceRegistrations : ComponentBase
         }
     }
 
+    private async Task<OwnerContext> EnsureOwnerContextAsync()
+    {
+        if (ownerContext is not null)
+        {
+            return ownerContext;
+        }
+
+        if (AuthenticationStateTask is null)
+        {
+            throw new InvalidOperationException("Authentication state is unavailable.");
+        }
+
+        var authState = await AuthenticationStateTask.ConfigureAwait(false);
+        var user = authState.User;
+        var userId = user.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? user.FindFirstValue("sub")
+            ?? user.Identity?.Name
+            ?? throw new InvalidOperationException("User identifier is missing required claims.");
+
+        var displayName = user.FindFirstValue("name")
+            ?? user.Identity?.Name
+            ?? user.FindFirstValue(ClaimTypes.Email)
+            ?? userId;
+
+        ownerContext = new OwnerContext(userId, displayName);
+        return ownerContext;
+    }
+
     private sealed record EnvelopeViewModel(
         Guid RegistrationId,
         string DeviceId,
@@ -196,4 +403,6 @@ public partial class DeviceRegistrations : ComponentBase
         string Envelope,
         DateTimeOffset IssuedAtUtc,
         DateTimeOffset ExpiresAtUtc);
+
+    private sealed record OwnerContext(string UserId, string DisplayName);
 }

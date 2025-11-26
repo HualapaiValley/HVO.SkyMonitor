@@ -35,31 +35,45 @@
                         }
                     </div>
 
-                    <AuthorizeView>
-                        <Authorized Context="authContext">
-                            <div class="d-flex flex-column flex-lg-row align-items-lg-center gap-3">
-                                <div class="nav-account-info d-flex align-items-center gap-2">
-                                    <span class="nav-avatar">
-                                        @GetUserInitials(authContext.User)
-                                    </span>
+                    <AuthorizeView Context="authState">
+                        <Authorized>
+                            <div class="nav-account-info d-flex align-items-center gap-2 dropdown">
+                                <button class="nav-avatar-button dropdown-toggle d-flex align-items-center gap-2"
+                                        type="button"
+                                        data-bs-toggle="dropdown"
+                                        aria-expanded="false">
+                                    <span class="nav-avatar">@GetUserInitials(authState.User)</span>
                                     <span class="nav-account-details text-start">
-                                        <span class="nav-account-name">@GetUserDisplayName(authContext.User)</span>
-                                        <span class="nav-account-email text-muted small">@GetUserEmail(authContext.User)</span>
+                                        <span class="nav-account-name">@GetUserDisplayName(authState.User)</span>
+                                        <span class="nav-account-email text-muted small">@GetUserEmail(authState.User)</span>
                                     </span>
-                                </div>
-                                <div class="d-flex gap-2 justify-content-end">
-                                    <button type="button" class="btn btn-outline-light btn-sm" @onclick="BeginSignOut">
-                                        <i class="bi bi-box-arrow-right me-1"></i>
-                                        Sign out
-                                    </button>
-                                </div>
+                                </button>
+
+                                <ul class="dropdown-menu nav-account-menu dropdown-menu-end">
+                                    <li>
+                                        <a class="dropdown-item d-flex align-items-center gap-2" href="Account/Manage">
+                                            <i class="bi bi-person-badge"></i>
+                                            Account Management
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <form class="nav-logout-form" action="Account/Logout" method="post">
+                                            <AntiforgeryToken />
+                                            <input type="hidden" name="returnUrl" value="@CurrentReturnUrl" />
+                                            <button type="submit" class="dropdown-item nav-logout-button">
+                                                <i class="bi bi-box-arrow-right"></i>
+                                                Sign Out
+                                            </button>
+                                        </form>
+                                    </li>
+                                </ul>
                             </div>
                         </Authorized>
                         <NotAuthorized>
-                            <button type="button" class="btn btn-primary" @onclick="BeginSignIn">
-                                <i class="bi bi-box-arrow-in-right me-1"></i>
-                                Sign in
-                            </button>
+                            <a class="nav-login-pill" href="@SignInUrl">
+                                <i class="bi bi-box-arrow-in-right"></i>
+                                Sign In
+                            </a>
                         </NotAuthorized>
                     </AuthorizeView>
                 </div>

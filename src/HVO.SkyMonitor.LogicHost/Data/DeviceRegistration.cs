@@ -13,7 +13,31 @@ internal sealed class DeviceRegistration
 
     public Guid ObservatoryId { get; set; }
 
+    public Observatory? Observatory { get; set; }
+
     public string FriendlyName { get; set; } = string.Empty;
+
+    public string ObservatoryName { get; set; } = string.Empty;
+
+    public double ObservatoryLatitudeDegrees { get; set; }
+
+    public double ObservatoryLongitudeDegrees { get; set; }
+
+    public double ObservatoryElevationMeters { get; set; }
+
+    public string ObservatoryTimeZoneId { get; set; } = "UTC";
+
+    public string OwnerUserId { get; set; } = string.Empty;
+
+    public string OwnerDisplayName { get; set; } = string.Empty;
+
+    public string? OwnerEmail { get; set; }
+
+    public string OwnerConfirmationMethod { get; set; } = "SelfAttested";
+
+    public string? OwnerConfirmationNotes { get; set; }
+
+    public DateTimeOffset? OwnerConfirmedAtUtc { get; set; }
 
     public DeviceRegistrationStatus Status { get; set; } = DeviceRegistrationStatus.Pending;
 

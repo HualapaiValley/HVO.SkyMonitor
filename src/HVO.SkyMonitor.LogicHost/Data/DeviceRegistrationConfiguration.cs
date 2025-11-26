@@ -24,6 +24,39 @@ internal sealed class DeviceRegistrationConfiguration : IEntityTypeConfiguration
             .HasMaxLength(200)
             .IsRequired();
 
+        builder.Property(registration => registration.ObservatoryName)
+            .HasMaxLength(200)
+            .IsRequired();
+
+        builder.Property(registration => registration.ObservatoryTimeZoneId)
+            .HasMaxLength(128)
+            .IsRequired();
+
+        builder.Property(registration => registration.ObservatoryLatitudeDegrees);
+        builder.Property(registration => registration.ObservatoryLongitudeDegrees);
+        builder.Property(registration => registration.ObservatoryElevationMeters);
+
+        builder.Property(registration => registration.OwnerUserId)
+            .HasMaxLength(450)
+            .IsRequired();
+
+        builder.Property(registration => registration.OwnerDisplayName)
+            .HasMaxLength(256)
+            .IsRequired();
+
+        builder.Property(registration => registration.OwnerEmail)
+            .HasMaxLength(256);
+
+        builder.Property(registration => registration.OwnerConfirmationMethod)
+            .HasMaxLength(64)
+            .HasDefaultValue("SelfAttested")
+            .IsRequired();
+
+        builder.Property(registration => registration.OwnerConfirmationNotes)
+            .HasMaxLength(512);
+
+        builder.Property(registration => registration.OwnerConfirmedAtUtc);
+
         builder.Property(registration => registration.Status)
             .HasConversion<string>()
             .HasMaxLength(32)
@@ -60,5 +93,11 @@ internal sealed class DeviceRegistrationConfiguration : IEntityTypeConfiguration
         builder.HasIndex(registration => new { registration.DeviceId, registration.Status });
         builder.HasIndex(registration => new { registration.ObservatoryId, registration.Status });
         builder.HasIndex(registration => registration.DevicePublicId);
+
+        builder.HasOne(registration => registration.Observatory)
+            .WithMany(observatory => observatory.DeviceRegistrations)
+            .HasForeignKey(registration => registration.ObservatoryId)
+            .OnDelete(DeleteBehavior.Cascade)
+            .IsRequired();
     }
 }

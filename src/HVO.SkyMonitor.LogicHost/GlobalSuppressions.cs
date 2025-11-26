@@ -41,5 +41,15 @@ using System.Diagnostics.CodeAnalysis;
 [assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Authentication logging abstractions are injected into public controllers.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Services.AuthenticationEventLogger")]
 [assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Authentication logging abstractions are injected into public controllers.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Services.IAuthenticationEventLogger")]
 
+// Device bootstrap surface types participate in MVC controller signatures
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controller must remain public for MVC discovery.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Controllers.DeviceBootstrapController")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controller constructors and responses require these types to remain public.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Services.IDeviceBootstrapService")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controller constructors and responses require these types to remain public.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Services.DeviceBootstrapRequest")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controller constructors and responses require these types to remain public.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Services.DeviceBootstrapResult")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controller constructors and responses require these types to remain public.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Services.DeviceBootstrapEncryptedPayload")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controller constructors and responses require these types to remain public.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Controllers.DeviceBootstrapRequestDto")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controller constructors and responses require these types to remain public.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Controllers.DeviceBootstrapResponse")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controller constructors and responses require these types to remain public.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Controllers.DeviceBootstrapEncryptedPayloadDto")]
+
 // Host builder needs Program to remain public for logging and testing hooks
 [assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Program is instantiated by hosting and referenced by logging infrastructure.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Program")]
