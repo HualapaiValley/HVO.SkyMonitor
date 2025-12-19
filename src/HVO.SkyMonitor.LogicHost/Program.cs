@@ -117,6 +117,10 @@ public sealed partial class Program
         {
             options.Filters.Add<ValidateModelStateAttribute>();
         })
+        .ConfigureApplicationPartManager(manager =>
+        {
+            manager.FeatureProviders.Add(new Controllers.InternalControllerFeatureProvider());
+        })
         .AddJsonOptions(options =>
         {
             options.JsonSerializerOptions.PropertyNamingPolicy = null;
@@ -543,6 +547,7 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceCredentialValidator, DeviceCredentialValidator>();
         builder.Services.AddScoped<IDeviceHeartbeatService, DeviceHeartbeatService>();
         builder.Services.AddScoped<IDeviceUploadService, DeviceUploadService>();
+        builder.Services.AddScoped<IDeviceRigProfileService, DeviceRigProfileService>();
 
         var app = builder.Build();
 

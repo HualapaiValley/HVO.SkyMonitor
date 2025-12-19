@@ -27,7 +27,10 @@ internal sealed record DeviceRegistrationSummary(
     DateTimeOffset IssuedAtUtc,
     DateTimeOffset? ExpiresAtUtc,
     DateTimeOffset? LastSeenUtc,
-    DateTimeOffset? ActivatedAtUtc);
+    DateTimeOffset? ActivatedAtUtc,
+    int? CurrentRigProfileVersion,
+    string? CurrentRigProfileHash,
+    DateTimeOffset? CurrentRigProfileUpdatedAtUtc);
 
 internal sealed class DeviceRegistrationReadService(ApplicationDbContext dbContext) : IDeviceRegistrationReadService
 {
@@ -54,7 +57,10 @@ internal sealed class DeviceRegistrationReadService(ApplicationDbContext dbConte
                 registration.IssuedAtUtc,
                 registration.ExpiresAtUtc,
                 registration.LastSeenUtc,
-                registration.ActivatedAtUtc))
+                registration.ActivatedAtUtc,
+                registration.CurrentRigProfileVersion,
+                registration.CurrentRigProfileHash,
+                registration.CurrentRigProfileUpdatedAtUtc))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }

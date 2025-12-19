@@ -59,6 +59,12 @@ internal sealed class DeviceRegistration
 
     public DateTimeOffset? ActivatedAtUtc { get; set; }
 
+    public int? CurrentRigProfileVersion { get; set; }
+
+    public string? CurrentRigProfileHash { get; set; }
+
+    public DateTimeOffset? CurrentRigProfileUpdatedAtUtc { get; set; }
+
     public string EnvelopeVersion { get; set; } = "v1";
 }
 

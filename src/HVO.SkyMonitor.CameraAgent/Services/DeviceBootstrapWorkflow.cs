@@ -12,6 +12,7 @@ internal sealed class DeviceBootstrapWorkflow(
     IHttpClientFactory httpClientFactory,
     IDeviceIdentityStore identityStore,
     IDeviceSecretStore secretStore,
+    IDeviceRigProfileSeeder rigProfileSeeder,
     ILogger<DeviceBootstrapWorkflow> logger)
 {
     public async Task<DeviceSecrets> BootstrapAsync(string envelope, CancellationToken cancellationToken = default)
@@ -51,9 +52,12 @@ internal sealed class DeviceBootstrapWorkflow(
             secretsPayload.IssuedAtUtc,
             secretsPayload.ExpiresAtUtc,
             payload.DeviceKey,
-            secretsPayload.CentralIdentity);
+            secretsPayload.CentralIdentity,
+            secretsPayload.RigProfileEndpoint);
 
         await secretStore.SaveAsync(secrets, cancellationToken).ConfigureAwait(false);
+
+        await rigProfileSeeder.SeedAsync(identity, secrets, cancellationToken).ConfigureAwait(false);
         return secrets;
     }
 

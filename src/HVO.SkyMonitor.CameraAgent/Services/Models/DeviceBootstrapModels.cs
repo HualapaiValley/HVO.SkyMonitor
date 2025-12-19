@@ -31,4 +31,5 @@ internal sealed record DeviceBootstrapSecretsPayload(
     int HeartbeatIntervalSeconds,
     DateTimeOffset IssuedAtUtc,
     DateTimeOffset ExpiresAtUtc,
-    CentralIdentityOptions CentralIdentity);
+    CentralIdentityOptions CentralIdentity,
+    string RigProfileEndpoint = "/api/device/profile/rig");

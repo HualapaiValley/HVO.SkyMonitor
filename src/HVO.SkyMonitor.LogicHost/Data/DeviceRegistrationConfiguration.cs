@@ -81,6 +81,13 @@ internal sealed class DeviceRegistrationConfiguration : IEntityTypeConfiguration
         builder.Property(registration => registration.LastSeenUtc);
         builder.Property(registration => registration.ActivatedAtUtc);
 
+        builder.Property(registration => registration.CurrentRigProfileVersion);
+
+        builder.Property(registration => registration.CurrentRigProfileHash)
+            .HasMaxLength(128);
+
+        builder.Property(registration => registration.CurrentRigProfileUpdatedAtUtc);
+
         builder.Property(registration => registration.RevokedReason)
             .HasMaxLength(512);
 

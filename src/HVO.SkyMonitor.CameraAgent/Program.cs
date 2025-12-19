@@ -87,6 +87,7 @@ public class Program
             .ValidateOnStart();
         builder.Services.AddSingleton<IDeviceIdentityStore, DeviceIdentityStore>();
         builder.Services.AddSingleton<IDeviceSecretStore, DeviceSecretStore>();
+        builder.Services.AddSingleton<IDeviceRigProfileSeeder, DeviceRigProfileSeeder>();
         builder.Services.AddScoped<DeviceBootstrapWorkflow>();
 
         var localIdentitySection = builder.Configuration.GetSection("LocalIdentity");

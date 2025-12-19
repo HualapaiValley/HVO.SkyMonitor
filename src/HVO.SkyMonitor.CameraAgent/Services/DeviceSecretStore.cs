@@ -29,7 +29,8 @@ internal sealed record DeviceSecrets(
     DateTimeOffset IssuedAtUtc,
     DateTimeOffset ExpiresAtUtc,
     string DeviceKey,
-    CentralIdentityOptions CentralIdentity);
+    CentralIdentityOptions CentralIdentity,
+    string RigProfileEndpoint = "/api/device/profile/rig");
 
 internal sealed class DeviceSecretStore(
     IDataProtectionProvider dataProtectionProvider,

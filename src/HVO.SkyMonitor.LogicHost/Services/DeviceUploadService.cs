@@ -13,7 +13,9 @@ internal sealed record DeviceUploadRequest(
     string DeviceKey,
     string ContentType,
     string PayloadBase64,
-    string? FileName);
+    string? FileName,
+    DateTimeOffset? CapturedAtUtc = null,
+    int? RigProfileVersion = null);
 
 internal sealed record DeviceUploadResult(
     Guid RegistrationId,
@@ -39,9 +41,30 @@ internal sealed class DeviceUploadService(
 
         var now = timeProvider.GetUtcNow();
         registration.LastSeenUtc = now;
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         var storageReference = $"stubs://uploads/{Guid.NewGuid():N}";
+        var capturedAtUtc = request.CapturedAtUtc ?? now;
+        var rigProfileVersion = request.RigProfileVersion ?? registration.CurrentRigProfileVersion;
+
+        if (registration.DevicePublicId is not null)
+        {
+            await dbContext.DeviceImageUploads.AddAsync(new DeviceImageUpload
+            {
+                RegistrationId = registration.Id,
+                DevicePublicId = registration.DevicePublicId.Value,
+                ObservatoryId = registration.ObservatoryId,
+                RigProfileVersion = rigProfileVersion,
+                CapturedAtUtc = capturedAtUtc,
+                ReceivedAtUtc = now,
+                ContentType = request.ContentType,
+                FileName = request.FileName,
+                PayloadBase64Length = request.PayloadBase64.Length,
+                StorageReference = storageReference
+            }, cancellationToken).ConfigureAwait(false);
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
         logger.LogInformation(
             "Received stub upload from {DeviceId} ({FriendlyName}) stored at {StorageRef} ({ContentType}, bytes={Length})",
             registration.DeviceId,

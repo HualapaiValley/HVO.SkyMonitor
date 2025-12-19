@@ -31,7 +31,9 @@ internal sealed class DeviceUploadController(
                 request.DeviceKey,
                 request.ContentType,
                 request.PayloadBase64,
-                request.FileName), cancellationToken).ConfigureAwait(false);
+                request.FileName,
+                request.CapturedAtUtc,
+                request.RigProfileVersion), cancellationToken).ConfigureAwait(false);
 
             return Accepted(new DeviceUploadResponse(
                 result.RegistrationId,
@@ -56,7 +58,9 @@ internal sealed class DeviceUploadController(
         [Required, StringLength(256)] string DeviceKey,
         [Required, StringLength(128)] string ContentType,
         [Required, StringLength(4194304)] string PayloadBase64,
-        [StringLength(256)] string? FileName);
+        [StringLength(256)] string? FileName,
+        DateTimeOffset? CapturedAtUtc,
+        [Range(1, int.MaxValue)] int? RigProfileVersion);
 
     internal sealed record DeviceUploadResponse(
         Guid RegistrationId,
