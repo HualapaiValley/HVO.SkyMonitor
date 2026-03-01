@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, 'feature/**', 'fix/**', 'release/**' ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  TEST_FILTER: 'TestCategory!=Integration&TestCategory!=Manual'
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Test with coverage
+        run: |
+          dotnet test HVO.SkyMonitor.v9.slnx \
+            --no-build \
+            --configuration Release \
+            --filter "${{ env.TEST_FILTER }}" \
+            --settings tests/coverage.runsettings \
+            --collect:"XPlat Code Coverage" \
+            --results-directory ./TestResults \
+            --logger "trx;LogFileName=test-results.trx"
+
+      - name: Install ReportGenerator
+        if: always()
+        run: dotnet tool install --global dotnet-reportgenerator-globaltool
+
+      - name: Generate coverage report
+        if: always()
+        run: |
+          reportgenerator \
+            -reports:"TestResults/**/coverage.cobertura.xml" \
+            -targetdir:"coverage-report" \
+            -reporttypes:"Html;TextSummary;MarkdownSummaryGithub;Badges;Cobertura"
+
+      - name: Parse coverage and test results for badges
+        if: always()
+        id: coverage
+        run: |
+          LINE_COV=$(grep 'Line coverage' coverage-report/Summary.txt | grep -oP '[\d.]+(?=%)' || echo "0")
+          BRANCH_COV=$(grep 'Branch coverage' coverage-report/Summary.txt | grep -oP '[\d.]+(?=%)' || echo "0")
+          METHOD_COV=$(grep 'Method coverage' coverage-report/Summary.txt | grep -oP '[\d.]+(?=%)' || echo "0")
+          echo "line=$LINE_COV" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH_COV" >> "$GITHUB_OUTPUT"
+          echo "method=$METHOD_COV" >> "$GITHUB_OUTPUT"
+
+          # Parse test count from TRX file
+          TESTS_PASSED=$(grep -oP 'passed="\K[0-9]+' TestResults/test-results.trx 2>/dev/null || echo "0")
+          TESTS_FAILED=$(grep -oP 'failed="\K[0-9]+' TestResults/test-results.trx 2>/dev/null || echo "0")
+          TESTS_TOTAL=$(grep -oP 'total="\K[0-9]+' TestResults/test-results.trx 2>/dev/null || echo "0")
+          echo "tests_passed=$TESTS_PASSED" >> "$GITHUB_OUTPUT"
+          echo "tests_failed=$TESTS_FAILED" >> "$GITHUB_OUTPUT"
+          echo "tests_total=$TESTS_TOTAL" >> "$GITHUB_OUTPUT"
+
+          echo "### Code Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Line coverage | ${LINE_COV}% |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Branch coverage | ${BRANCH_COV}% |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Method coverage | ${METHOD_COV}% |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tests | ${TESTS_PASSED} passed / ${TESTS_TOTAL} total |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat coverage-report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Test Results
+          path: TestResults/test-results.trx
+          reporter: dotnet-trx
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage-report/
+          retention-days: 30
+
+      - name: Upload coverage badges
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-badges
+          path: coverage-report/badge_*.svg
+          retention-days: 90
+
+      # -------------------------------------------------------------------
+      # Dynamic badges via gist (requires GIST_TOKEN secret with gist scope)
+      # -------------------------------------------------------------------
+      - name: Update line coverage badge
+        if: github.ref == 'refs/heads/main' && always()
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ secrets.COVERAGE_GIST_ID }}
+          filename: coverage-line.json
+          label: line coverage
+          message: ${{ steps.coverage.outputs.line }}%
+          valColorRange: ${{ steps.coverage.outputs.line }}
+          minColorRange: 40
+          maxColorRange: 80
+
+      - name: Update branch coverage badge
+        if: github.ref == 'refs/heads/main' && always()
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ secrets.COVERAGE_GIST_ID }}
+          filename: coverage-branch.json
+          label: branch coverage
+          message: ${{ steps.coverage.outputs.branch }}%
+          valColorRange: ${{ steps.coverage.outputs.branch }}
+          minColorRange: 30
+          maxColorRange: 70
+
+      - name: Update tests badge
+        if: github.ref == 'refs/heads/main' && always()
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ secrets.COVERAGE_GIST_ID }}
+          filename: tests.json
+          label: tests
+          message: "${{ steps.coverage.outputs.tests_passed }} passed"
+          color: ${{ steps.coverage.outputs.tests_failed == '0' && 'brightgreen' || 'red' }}

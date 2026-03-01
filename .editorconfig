@@ -1,5 +1,32 @@
 root = true
 
+# =====================================================
+# Formatting Defaults
+# =====================================================
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{cs,csx}]
+indent_size = 4
+
+[*.{json,yml,yaml,xml,csproj,props,targets,slnx,razor}]
+indent_size = 2
+
+[*.{sh,bash,zsh}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+# =====================================================
+# Analyzer Suppressions (repo-specific)
+# =====================================================
+
 # Default severity inherits from analyzer settings; specific folders override below.
 
 # Identity scaffolding has numerous async/ILogger patterns that intentionally diverge from analyzer guidance.

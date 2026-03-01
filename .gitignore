@@ -441,7 +441,24 @@ FodyWeavers.xsd
 src.zip
 .DS_Store
 
+# Python virtual environment (created by dev container setup)
+.venv/
+
 # CameraAgent runtime artifacts
 src/HVO.SkyMonitor.CameraAgent/App_Data/
 data/cameraagent/identity/
 data/cameraagent/dataprotection/
+
+# ===================================================================
+# HVO.SkyMonitor - Secrets and environment-specific config
+# ===================================================================
+# These files contain real API keys, PATs, and endpoints - NEVER commit
+appsettings.Development.json
+appsettings.Test.json
+appsettings.*.local.json
+
+# ===================================================================
+# Test & Coverage output
+# ===================================================================
+TestResults/
+coverage-report/

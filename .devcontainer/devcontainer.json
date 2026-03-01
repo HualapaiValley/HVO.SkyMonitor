@@ -1,6 +1,13 @@
 {
   "name": "HVO.SkyMonitor Dev Container",
-  "image": "mcr.microsoft.com/devcontainers/dotnet:1-10.0",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
   "features": {
     "ghcr.io/devcontainers/features/git:1": {
       "ppa": true,
@@ -17,12 +24,10 @@
       "username": "vscode",
       "userUid": "automatic",
       "userGid": "automatic",
-      "upgradePackages": true
+      "upgradePackages": false
     },
     "ghcr.io/devcontainers/features/dotnet:2": {
-      "version": "10.0",
-      "installUsingApt": true,
-      "dotnetRuntimeVersions": "10.0"
+      "version": "10.0"
     },
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "version": "latest",
@@ -40,7 +45,6 @@
         "GitHub.copilot",
         "GitHub.copilot-chat",
         "github.vscode-github-actions",
-        "ms-vscode.vscode-js-profile-flame",
         "openai.chatgpt"
       ],
       "settings": {
@@ -53,7 +57,20 @@
         "editor.codeActionsOnSave": {
           "source.fixAll": "explicit",
           "source.organizeImports": "explicit"
-        }
+        },
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.profiles.linux": {
+          "zsh": {
+            "path": "/bin/zsh"
+          },
+          "bash": {
+            "path": "/bin/bash"
+          }
+        },
+        "terminal.integrated.shellIntegration.enabled": true,
+        "terminal.integrated.shellIntegration.decorationsEnabled": "both",
+        "terminal.integrated.stickyScroll.enabled": true,
+        "terminal.integrated.suggest.enabled": true
       }
     }
   },
@@ -92,16 +109,19 @@
     "SIGNED_TICKET_DEFAULT_TTL_SECONDS": "300",
     "SIGNED_TICKET_MAX_CLOCK_SKEW_SECONDS": "30",
     "SIGNED_TICKET_ENFORCE_ALLOWED_PATHS": "true",
-    // Identity Hardening - Logging Configuration (non-sensitive)
+    // Logging Configuration (non-sensitive)
     "LOGGING_LOGLEVEL_DEFAULT": "Information",
     "LOGGING_LOGLEVEL_MICROSOFT_ASPNETCORE": "Warning",
     "APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=461820e1-768d-49c2-9ffa-dcadc6f8076a;IngestionEndpoint=https://westus3-1.in.applicationinsights.azure.com/;LiveEndpoint=https://westus3.livediagnostics.monitor.azure.com/;ApplicationId=ffe9f937-60da-4b07-8645-88b24d8f5e4f"
   },
   "remoteEnv": {
     // Point to Docker Desktop's magic SSH bridge on macOS
-    "SSH_AUTH_SOCK": "/run/host-services/ssh-auth.sock"
+    "SSH_AUTH_SOCK": "/run/host-services/ssh-auth.sock",
+    // Forward GitHub token from host so gh CLI works without re-auth
+    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}",
+    "GH_TOKEN": "${localEnv:GH_TOKEN}"
   },
-  // Port mappings with allInterfaces for Docker-from-Docker accessibility
+  // Port mappings
   // 5000-5001: Main HVO.SkyMonitor app (HTTP/HTTPS)
   // 5010-5011: Camera Agent (HTTP/HTTPS)
   // 5432: PostgreSQL, 6379: Redis
@@ -162,12 +182,14 @@
       "onAutoForward": "silent"
     }
   },
-  // Ensure host-side SSH agent directory exists to avoid bind mount errors
-  "initializeCommand": "",
-  // Mount user secrets from host into container
-  // Allows dev container to access locally stored secrets
+  "otherPortsAttributes": {
+    "onAutoForward": "silent"
+  },
+  // Ensure host-side secrets directory exists to avoid bind mount errors
+  "initializeCommand": "mkdir -p \"$HOME/.microsoft/usersecrets\"",
+  // Mount user secrets and SSH agent from host into container
   "mounts": [
-    // SSH agent socket from host -> container
+    // SSH agent socket from host -> container (for remote docker contexts)
     {
       "source": "/run/host-services/ssh-auth.sock",
       "target": "/run/host-services/ssh-auth.sock",
@@ -182,18 +204,6 @@
       "type": "bind",
       "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.microsoft/usersecrets",
       "target": "/home/vscode/.microsoft/usersecrets"
-    },
-    // Bind mount for HVOv9 reference repository (local dev only)
-    // This will fail gracefully in Codespaces where HVOv9 doesn't exist as a sibling
-    {
-      "type": "bind",
-      "source": "${localWorkspaceFolder}/../HVOv9-SkyMonitorv6",
-      "target": "/workspaces/HVOv9-SkyMonitorv6"
-    },
-    {
-      "type": "bind",
-      "source": "${localWorkspaceFolder}/../HVOv9",
-      "target": "/workspaces/HVOv9"
     }
   ],
   "postStartCommand": "sudo chgrp vscode /run/host-services/ssh-auth.sock && sudo chmod 660 /run/host-services/ssh-auth.sock",

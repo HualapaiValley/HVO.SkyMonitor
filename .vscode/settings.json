@@ -1,5 +1,12 @@
 {
     "files.exclude": {
         "**/BuildHost-*": true
+    },
+    "chat.tools.terminal.autoApprove": {
+        "gh": true,
+        "git push": true,
+        "dotnet test": true,
+        "dotnet build": true,
+        "dotnet run": true
     }
 }
