@@ -6,7 +6,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\HVO.Common\HVO.Common.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Common\HVO.SkyMonitor.Common.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
   </ItemGroup>

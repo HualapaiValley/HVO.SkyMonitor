@@ -1,7 +1,7 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
-using HVO;
+using HVO.Core.Results;
 using SkiaSharp;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Imaging;

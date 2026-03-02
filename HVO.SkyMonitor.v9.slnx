@@ -7,7 +7,6 @@
     <Project Path="src/HVO.Common/HVO.Common.csproj" />
         <Project Path="src/HVO.SkyMonitor.TestSupport/HVO.SkyMonitor.TestSupport.csproj" />
     <Folder Name="/Tests/">
-        <Project Path="tests/HVO.Common.Tests/HVO.Common.Tests.csproj" />
         <Project Path="tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj" />
         <Project Path="tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj" />
         <Project Path="tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj" />

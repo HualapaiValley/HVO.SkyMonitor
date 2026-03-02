@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\HVO.Common\HVO.Common.csproj" />
+    <PackageReference Include="HVO.Core" />
   </ItemGroup>
 
   <ItemGroup>

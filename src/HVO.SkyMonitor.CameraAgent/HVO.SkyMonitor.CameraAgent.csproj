@@ -36,7 +36,6 @@
     <ProjectReference Include="..\HVO.SkyMonitor.AgentCore\HVO.SkyMonitor.AgentCore.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Common\HVO.SkyMonitor.Common.csproj" />
-    <ProjectReference Include="..\HVO.Common\HVO.Common.csproj" />
   </ItemGroup>
 
   <ItemGroup>
