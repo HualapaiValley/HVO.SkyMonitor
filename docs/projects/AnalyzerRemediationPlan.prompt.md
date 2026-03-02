@@ -3,7 +3,7 @@
 Ship a warning-free `dotnet build` by fixing root causes where practical—tightening access modifiers on Identity/UI code, adding null guards, standardizing logging/async patterns, and cleaning disposal/random usage—while reserving scoped suppressions for intentional design or generated artifacts.
 
 ### Steps
-1. Harden shared libraries: update `src/HVO.Common/Result.cs` (null guards, targeted CA1000 suppression), `Security/SignedTicketService.cs`, and `Observability/SkyMonitorObservabilityExtensions.cs` with `ThrowIfNull`, `LoggerMessage`, and static helpers.
+1. Harden shared libraries: align with the latest `HVO.Core` primitives (Result/Option analyzers) and continue updating `Security/SignedTicketService.cs` plus `Observability/SkyMonitorObservabilityExtensions.cs` with `ThrowIfNull`, `LoggerMessage`, and static helpers.
 2. Normalize access modifiers and data contracts in Identity/UI (`src/HVO.SkyMonitor.LogicHost/Components/**`, `Configuration/*.cs`, `Models/Diagnostics/*.cs`, `Data/ApplicationUser.cs`) by making classes internal, sealing namespaces, and converting mutable collections; suppress CA1716 if renaming breaks routing.
 3. Modernize services/controllers: adjust `SmtpEmailNotificationService`, `DiagnosticsController`, `DefaultApiKeyAuthenticationHandler`, `AuthenticationMetrics`, and `DatabaseSeeder` for null guards, `ConfigureAwait(false)`, `using var`, and `MinioClient` disposal.
 4. Refactor camera agents (`src/HVO.SkyMonitor.CameraAgent*/`) to add LoggerMessage partials, `ConfigureAwait(false)`, URI overloads, disposal/IDisposable implementations, and update option DTOs (Uri types, readonly arrays); decide on CA1515 scope (internal or suppress).

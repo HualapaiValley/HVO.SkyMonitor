@@ -1,6 +1,6 @@
 using System.Runtime.CompilerServices;
 
-namespace HVO.Astronomy;
+namespace HVO.SkyMonitor.Astronomy;
 
 /// <summary>
 /// Provides shared astronomical utility calculations used across sky-monitoring applications.
@@ -55,19 +55,8 @@ public static class AstronomyMath
     }
 
     /// <summary>
-    /// Calculates the local sidereal time at the provided longitude.
-    /// Uses the IAU 2000A model for Greenwich Mean Sidereal Time (GMST).
+    /// Calculates the local sidereal time at the provided longitude using the IAU 2000A GMST model.
     /// </summary>
-    /// <remarks>
-    /// Constants used:
-    /// - 2_451_545.0: Julian Date of J2000.0 epoch (2000-01-01 12:00 TT)
-    /// - 36_525.0: Days per Julian century
-    /// - 6.697374558: GMST at J2000.0 epoch in hours
-    /// - 2400.051336: Rate of change of GMST (hours per century)
-    /// - 0.000025862: Quadratic term for GMST (hours per century squared)
-    /// - 1.00273790935: Ratio of sidereal day to solar day
-    /// Reference: IERS Conventions (2003), Chapter 5
-    /// </remarks>
     public static double LocalSiderealTime(DateTime utc, double longitudeDegrees)
     {
         var jd = JulianDate(utc);

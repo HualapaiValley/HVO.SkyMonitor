@@ -30,7 +30,7 @@ HVO.SkyMonitor is a sky monitoring application built with modern .NET technologi
 ### Project Structure
 - Use **explicit namespaces** matching folder structure
 - Organize code into logical layers: Controllers, Services, Models, etc.
-- Place shared code in the **HVO.Common** project
+- Place reusable domain utilities in dedicated shared projects (e.g., **HVO.SkyMonitor.Astronomy**) and lean on the published **HVO.Core** package for functional primitives
 - Use separate test projects with `.Tests` suffix
 - Test file naming: `{ClassUnderTest}Tests.cs`
 
@@ -59,7 +59,7 @@ HVO.SkyMonitor is a sky monitoring application built with modern .NET technologi
 - Apply `[MethodImpl(MethodImplOptions.AggressiveInlining)]` for hot-path methods
 
 ### Architecture Patterns
-- **Functional programming patterns**: Use `Result<T>` and `Option<T>` from `HVO.Common` for error handling
+- **Functional programming patterns**: Use `Result<T>` and `Option<T>` from the `HVO.Core` NuGet package for error handling
 - **Dependency Injection**: Use ASP.NET Core's built-in DI container
   - Use **constructor injection** for required dependencies
   - Register services in `Program.cs` using `builder.Services`
@@ -87,11 +87,11 @@ HVO.SkyMonitor is a sky monitoring application built with modern .NET technologi
 
 ## Project-Specific Guidelines
 
-### HVO.Common Library
-- Contains shared utilities, functional types (`Result<T>`, `Option<T>`), and astronomy calculations
-- All public APIs must have **XML documentation comments**
-- Use **readonly struct** for immutable types
-- Preserve stack traces with `ExceptionDispatchInfo` when rethrowing exceptions
+### Shared Libraries
+- **HVO.Core** (NuGet) provides shared utilities and functional types (`Result<T>`, `Option<T>`, `IOneOf`)
+- **HVO.SkyMonitor.Astronomy** contains reusable astronomy utilities referenced by the logic host and agents
+- All public APIs in shared projects must have **XML documentation comments**
+- Use **readonly struct** for immutable types and preserve stack traces with `ExceptionDispatchInfo` when rethrowing exceptions
 
 ### Astronomy Calculations
 - Document all astronomical constants with sources (IERS, IAU standards)

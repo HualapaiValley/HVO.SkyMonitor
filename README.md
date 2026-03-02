@@ -139,7 +139,7 @@ The devcontainer configuration includes:
 - **Secret management plumbing** - `.env.template`, `.devcontainer/devcontainer.local.env`, and .NET user secrets support keep credentials out of git
 - **Identity & API infrastructure parity** - The main `HVO.SkyMonitor` site runs the same Identity, passkey, and API key pipeline used by the camera agent, backed by shared middleware and helpers in `HVO.SkyMonitor.Common`.
 - **Shared diagnostics/security library** - Cross-cutting middleware (correlation IDs, exception handling, antiforgery helpers) and API-key primitives live in `src/HVO.SkyMonitor.Common`, consumed by the main site and reusable by future services.
-- **Camera-agent independence** - Projects under `HVO.SkyMonitor.CameraAgent.*` only reference `HVO.Common`, keeping edge agents lightweight while still registering their own diagnostics/security components.
+- **Camera-agent independence** - Projects under `HVO.SkyMonitor.CameraAgent.*` rely on the shared `HVO.Core` package (plus lightweight local libraries like `HVO.SkyMonitor.Astronomy`), keeping edge agents lightweight while still registering their own diagnostics/security components.
 
 ### Extensions
 

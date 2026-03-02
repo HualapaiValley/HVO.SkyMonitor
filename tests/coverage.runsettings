@@ -5,7 +5,7 @@
       <DataCollector friendlyName="XPlat Code Coverage">
         <Configuration>
           <Format>cobertura</Format>
-          <Include>[HVO.Common]*,[HVO.SkyMonitor]*,[HVO.SkyMonitor.*]*</Include>
+          <Include>[HVO.SkyMonitor.Astronomy]*,[HVO.SkyMonitor]*,[HVO.SkyMonitor.*]*</Include>
           <Exclude>[*.Tests]*,[*.IntegrationTests]*,[HVO.SkyMonitor.TestSupport]*</Exclude>
           <ExcludeByFile>**/obj/**,**/bin/**,**/Migrations/**</ExcludeByFile>
           <ExcludeByAttribute>ExcludeFromCodeCoverage</ExcludeByAttribute>

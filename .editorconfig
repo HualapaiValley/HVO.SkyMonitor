@@ -104,16 +104,6 @@ dotnet_diagnostic.CA1008.severity = none
 [src/HVO.SkyMonitor.Common/Security/SignedTickets/SignedTicketService.cs]
 dotnet_diagnostic.CA1031.severity = none
 
-# Option<T> type name conflicts with VB.NET keyword but is established functional programming convention
-# CA1716 suppressed as renaming would break from widely-used functional programming patterns
-[src/HVO.Common/Option.cs]
-dotnet_diagnostic.CA1716.severity = none
-
-# NamedOneOfAttribute uses params object[] for flexible source generation scenarios
-# CA1019 requests public accessor but the Cases property already provides structured access
-[src/HVO.Common/NamedOneOfAttribute.cs]
-dotnet_diagnostic.CA1019.severity = none
-
 # TestSupport project - uses nested types, Uri strings, and other patterns appropriate for test utilities
 [src/HVO.SkyMonitor.TestSupport/**.cs]
 dotnet_diagnostic.CA1034.severity = none

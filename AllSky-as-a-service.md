@@ -17,7 +17,7 @@
 - **Logic Service**: Receives frames/metadata, stores in object storage + DB, orchestrates processing pipelines (timelapse, overlay, detections), exposes APIs/UI.
 - **Processing Pipelines**: Timelapse generation, annotation overlays, meteor/transient detection; can run on agent or server depending on cost vs flexibility.
 - **UI / Client Experience**: Web app with calendar view, timeline scrubber, event lists, overlay toggles, and future community dashboards.
-- **Shared Core Components**: Rig configuration, projector engine, sky renderer, annotation utilities, Result/Option patterns from HVO.Common.
+- **Shared Core Components**: Rig configuration, projector engine, sky renderer, annotation utilities, Result/Option patterns from the shared HVO.Core package.
 
 ## 4. Camera Module & Rig Model Decisions
 - Introduce a generic `ICameraModule` abstraction returning `CameraFrame` objects (timestamp, pixel data, metadata). Modules can represent real hardware, simulators, or trivial generators.

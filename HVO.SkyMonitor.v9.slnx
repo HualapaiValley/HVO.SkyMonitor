@@ -4,7 +4,7 @@
     <Project Path="src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj" />
     <Project Path="src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj" />
     <Project Path="src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj" />
-    <Project Path="src/HVO.Common/HVO.Common.csproj" />
+    <Project Path="src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj" />
         <Project Path="src/HVO.SkyMonitor.TestSupport/HVO.SkyMonitor.TestSupport.csproj" />
     <Folder Name="/Tests/">
         <Project Path="tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj" />
