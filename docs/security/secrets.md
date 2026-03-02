@@ -6,8 +6,9 @@ how we handle configuration from local development through production and
 summarizes every sensitive value the platform requires.
 
 > Use the Docker/Testcontainers toolchain (`./scripts/infra:*`,
-> `docker-compose.dev.yml`, and direct project runs under `src/`) when
-> applying the steps below. Aspire/AppHost flows are no longer supported.
+> `docker-compose.infrastructure.yml`, `docker-compose.apps.yml`, and
+> direct project runs under `src/`) when applying the steps below.
+> Aspire/AppHost flows are no longer supported.
 
 ## 1. Layered Configuration Model
 

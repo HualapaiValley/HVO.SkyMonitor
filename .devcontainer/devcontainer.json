@@ -81,23 +81,18 @@
     "ASPNETCORE_ENVIRONMENT": "Development",
     "DOTNET_ENVIRONMENT": "Development",
     "USE_CONTAINERS": "true",
-    "DOCKER_HOST_ADDRESS": "0.0.0.0",
-    "POSTGRES_DOCKER_CONTEXT": "proxmox-home",
-    "MINIO_DOCKER_CONTEXT": "proxmox-home",
-    "REDIS_DOCKER_CONTEXT": "proxmox-home",
-    "SMTP_DOCKER_CONTEXT": "proxmox-home",
-    "POSTGRES_HOST": "192.168.2.104",
+    "POSTGRES_HOST": "localhost",
     "POSTGRES_PORT": "5432",
     "POSTGRES_USER": "skymonitor",
     "POSTGRES_PASSWORD": "skymonitor_dev_password",
     "POSTGRES_DB": "skymonitordb",
-    "REDIS_HOST": "192.168.2.104",
+    "REDIS_HOST": "localhost",
     "REDIS_PORT": "6379",
-    "MINIO_HOST": "192.168.2.104",
+    "MINIO_HOST": "localhost",
     "MINIO_API_PORT": "9000",
     "MINIO_CONSOLE_PORT": "9001",
-    "MINIO_ENDPOINT": "192.168.2.104:9000",
-    "SMTP_HOST": "192.168.2.104",
+    "MINIO_ENDPOINT": "localhost:9000",
+    "SMTP_HOST": "localhost",
     "SMTP_PORT": "1025",
     "SMTP_WEB_PORT": "8025",
     // Identity Hardening - Rate Limiting Configuration (non-sensitive)
@@ -206,7 +201,7 @@
       "target": "/home/vscode/.microsoft/usersecrets"
     }
   ],
-  "postStartCommand": "sudo chgrp vscode /run/host-services/ssh-auth.sock && sudo chmod 660 /run/host-services/ssh-auth.sock",
   "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postStartCommand": "sudo chgrp vscode /run/host-services/ssh-auth.sock && sudo chmod 660 /run/host-services/ssh-auth.sock && bash .devcontainer/post-start.sh",
   "remoteUser": "vscode"
 }

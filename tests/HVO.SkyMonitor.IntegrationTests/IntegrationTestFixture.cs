@@ -101,10 +101,10 @@ public sealed class IntegrationTestFixture : IDisposable
         PostgresConnectionString =
             $"Host=127.0.0.1;Port={postgresPort};Username={PostgresUsername};Password={PostgresPassword};Database={PostgresDatabase};Include Error Detail=true";
 
-        // Start Redis container
+        // Start Redis container (RedisBuilder provides a wait strategy that verifies
+        // the server responds to commands, not just that the TCP port is open)
         _redisContainer = new RedisBuilder()
             .WithImage("redis:7-alpine")
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(6379))
             .Build();
 
         await _redisContainer.StartAsync().ConfigureAwait(false);
@@ -180,6 +180,16 @@ public sealed class IntegrationTestFixture : IDisposable
                         options.UseNpgsql(PostgresConnectionString);
                         options.EnableSensitiveDataLogging();
                         options.EnableDetailedErrors();
+                    });
+
+                    // Override distributed cache to use the testcontainer Redis.
+                    // ConfigureAppConfiguration overrides may not be visible when
+                    // Program.cs reads Redis:Configuration (captured before Build()),
+                    // so we re-register the cache with the correct connection string.
+                    services.AddStackExchangeRedisCache(options =>
+                    {
+                        options.Configuration = RedisConnectionString;
+                        options.InstanceName = "integration-tests";
                     });
                 });
 

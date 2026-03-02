@@ -180,7 +180,7 @@ The Docker Compose workflow (via `scripts/infra:start`) runs infrastructure serv
 
 ### Automatic Container Building
 
-`./scripts/infra:start --rebuild [logichost|cameraagent]` invokes `docker compose -f docker-compose.dev.yml build` for the selected application services before issuing `up -d`. Resetting those services (`--reset logichost cameraagent`) also triggers a rebuild automatically. This keeps each container aligned with the working tree without requiring manual `docker build` commands.
+`./scripts/infra:start --rebuild [logichost|cameraagent]` invokes `docker compose -f docker-compose.apps.yml build` for the selected application services before issuing `up -d`. Resetting those services (`--reset logichost cameraagent`) also triggers a rebuild automatically. This keeps each container aligned with the working tree without requiring manual `docker build` commands.
 
 ### Manual Multi-Architecture Builds
 

@@ -4,13 +4,13 @@ This runbook covers maintenance tasks for the local Docker-based development env
 
 ## Service Layout
 
-`docker-compose.dev.yml` defines the following services:
+`docker-compose.infrastructure.yml` and `docker-compose.apps.yml` define the following services:
 
 - `postgres` — metadata database (volume: `skymonitor-postgres`).
 - `minio` — object storage (volume: `skymonitor-minio`).
 - `redis` — caching (volume: `skymonitor-redis`).
 - `smtp` — Mailpit relay for email testing.
-- `skymonitor`, `cameraagent` — application containers built from `src/`.
+- `logichost`, `cameraagent` — application containers built from `src/` (defined in `docker-compose.apps.yml`).
 
 ## Common Operations
 
@@ -35,7 +35,7 @@ This runbook covers maintenance tasks for the local Docker-based development env
 ```bash
 ./scripts/infra:status
 ```
-Shows `docker compose ps` output per service using each service’s configured Docker context.
+Shows `docker compose ps` output per service on the local Docker daemon.
 
 ### Data-only reset
 
@@ -48,17 +48,17 @@ Use when volumes need to be wiped but services should remain stopped afterward.
 
 - Tail a specific service:
   ```bash
-  docker compose -f docker-compose.dev.yml logs -f postgres
+  ./scripts/infra:logs postgres
   ```
 - Capture bundle for support:
   ```bash
   ./scripts/infra:status > /tmp/infra-status.txt
-  docker compose -f docker-compose.dev.yml logs > /tmp/infra-logs.txt
+  docker compose -f docker-compose.infrastructure.yml logs > /tmp/infra-logs.txt
   ```
 
 ## Secrets & Credentials
 
-- Base credentials live in `.env.template`; copy to `.env.development` or devcontainer env file.
+- Base credentials live in `.env.template`; copy to `.env` or devcontainer env file.
 - Rotations: update `.env.template`, rerun `./scripts/infra:start --reset service` for affected services, and commit documentation updates.
 
 ## Disaster Recovery Scenarios
@@ -72,7 +72,7 @@ Use when volumes need to be wiped but services should remain stopped afterward.
 
 ## Change Management
 
-1. Update `docker-compose.dev.yml` for topology changes.
+1. Update `docker-compose.infrastructure.yml` / `docker-compose.apps.yml` for topology changes.
 2. Reflect new environment variables in `.env.template` and devcontainer configuration.
 3. Document operational differences here and announce via commit/PR.
 

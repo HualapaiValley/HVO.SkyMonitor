@@ -1,5 +1,5 @@
 # Infrastructure services for HVO.SkyMonitor
-# This stack is typically deployed to the remote proxmox-home Docker context
+# Started automatically when the devcontainer boots (see .devcontainer/post-start.sh)
 
 services:
   postgres:
