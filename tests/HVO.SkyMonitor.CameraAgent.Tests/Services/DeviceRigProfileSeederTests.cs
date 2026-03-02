@@ -37,6 +37,7 @@ public sealed class DeviceRigProfileSeederTests
     public async Task SeedAsync_PostsRigProfile_WithSkipAuthHeader()
     {
         HttpRequestMessage? captured = null;
+        string? capturedPayload = null;
 
         var mockHttpMessageHandler = new Mock<HttpMessageHandler>();
         mockHttpMessageHandler.Protected()
@@ -44,7 +45,13 @@ public sealed class DeviceRigProfileSeederTests
                 "SendAsync",
                 ItExpr.IsAny<HttpRequestMessage>(),
                 ItExpr.IsAny<CancellationToken>())
-            .Callback<HttpRequestMessage, CancellationToken>((request, _) => captured = request)
+                .Callback<HttpRequestMessage, CancellationToken>((request, token) =>
+            {
+                captured = request;
+                capturedPayload = request.Content is null
+                    ? null
+                    : request.Content.ReadAsStringAsync(token).GetAwaiter().GetResult();
+            })
             .ReturnsAsync(() => new HttpResponseMessage(HttpStatusCode.Accepted)
             {
                 Content = JsonContent.Create(new { ok = true })
@@ -91,8 +98,8 @@ public sealed class DeviceRigProfileSeederTests
         Assert.AreEqual(new Uri("https://logichost.example/api/device/profile/rig"), captured!.RequestUri);
         Assert.IsTrue(captured.Headers.Contains(CentralIdentityDelegatingHandler.SkipAuthHeader));
 
-        var json = await captured.Content!.ReadAsStringAsync();
-        using var doc = JsonDocument.Parse(json);
+        Assert.IsNotNull(capturedPayload, "Expected request content to be captured before disposal.");
+        using var doc = JsonDocument.Parse(capturedPayload);
 
         Assert.AreEqual("device-1", doc.RootElement.GetProperty("deviceId").GetString());
         Assert.AreEqual(secrets.DeviceKey, doc.RootElement.GetProperty("deviceKey").GetString());
