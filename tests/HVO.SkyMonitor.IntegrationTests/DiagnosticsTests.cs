@@ -112,7 +112,7 @@ public sealed class DiagnosticsTests
     private static async Task<bool> WaitForEmailAsync(string expectedSubject, CancellationToken cancellationToken)
     {
         using var http = new HttpClient();
-        var endpoint = new Uri($"{AssemblyHooks.Fixture.SmtpHttpEndpoint}/api/v2/messages", UriKind.Absolute);
+        var endpoint = new Uri($"{AssemblyHooks.Fixture.SmtpHttpEndpoint}/api/v1/messages", UriKind.Absolute);
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -122,19 +122,12 @@ public sealed class DiagnosticsTests
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            if (document.RootElement.TryGetProperty("items", out var items))
+            if (document.RootElement.TryGetProperty("messages", out var messages))
             {
-                foreach (var item in items.EnumerateArray())
+                foreach (var item in messages.EnumerateArray())
                 {
-                    if (!item.TryGetProperty("Content", out var content) ||
-                        !content.TryGetProperty("Headers", out var headers))
-                    {
-                        continue;
-                    }
-
-                    if (headers.TryGetProperty("Subject", out var subjectArray) &&
-                        subjectArray.GetArrayLength() > 0 &&
-                        string.Equals(subjectArray[0].GetString(), expectedSubject, StringComparison.OrdinalIgnoreCase))
+                    if (item.TryGetProperty("Subject", out var subjectProp) &&
+                        string.Equals(subjectProp.GetString(), expectedSubject, StringComparison.OrdinalIgnoreCase))
                     {
                         return true;
                     }

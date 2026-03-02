@@ -43,10 +43,9 @@ end-to-end integration coverage.
   assertion utilities. Consumers: host + agent integration suites.
 
 ### Phase 2 – Docker Compose & Scripts
-- Added `docker-compose.dev.yml` with Postgres, MinIO, Redis, SMTP,
-  LogicHost, and CameraAgent services.
-- Introduced per-service Docker context env vars (`POSTGRES_DOCKER_CONTEXT`,
-  etc.).
+- Added `docker-compose.infrastructure.yml` and `docker-compose.apps.yml`
+  with Postgres, MinIO, Redis, SMTP, LogicHost, and CameraAgent services.
+- All services run on the local Docker daemon inside the devcontainer.
 - Created `scripts/infra:start|status|reset|stop`, including `--reset`
   support per service and binder directories for data volumes.
 - Documented workflows in `docs/runbooks/infra-operations.md` and
@@ -95,7 +94,7 @@ end-to-end integration coverage.
 
 ## 5. Related Files
 
-- `docker-compose.dev.yml`, `.env.template`, `scripts/infra:*`
+- `docker-compose.infrastructure.yml`, `docker-compose.apps.yml`, `.env.template`, `scripts/infra:*`
 - `src/HVO.SkyMonitor.TestSupport/`
 - `tests/HVO.SkyMonitor.IntegrationTests/`
 - `tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/`

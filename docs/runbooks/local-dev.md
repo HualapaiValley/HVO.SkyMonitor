@@ -11,12 +11,13 @@ This runbook describes the day-to-day workflow for developing and validating HVO
 
 ## Environment Setup
 
-1. **Start the shared infrastructure** using the helper script. From the repo root:
-   ```bash
-   ./scripts/infra:start
-   ```
-   - Use `./scripts/infra:start postgres minio redis smtp` to start a subset.
-   - Add `--reset` before the service list to wipe data (e.g., `./scripts/infra:start --reset postgres`).
+1. **Start the shared infrastructure.** The devcontainer automatically boots PostgreSQL, Redis, MinIO, and Mailpit via `.devcontainer/post-start.sh`. To skip this behavior, set `SKYMONITOR_SKIP_AUTO_INFRA=true` in `.devcontainer/devcontainer.local.env` before reopening the container.
+   - You can always rerun or customize the stack manually:
+     ```bash
+     ./scripts/infra:start                 # Start everything
+     ./scripts/infra:start postgres redis  # Start a subset
+     ./scripts/infra:start --reset minio   # Reset data before start
+     ```
 
 2. **Check status** whenever you need to confirm container health:
    ```bash
@@ -48,7 +49,7 @@ This runbook describes the day-to-day workflow for developing and validating HVO
   ```
 
 
-Each agent reads central identity + MinIO endpoints from `appsettings.Development.json` or environment variables. When running side-by-side with the host, use the Docker-provided service names (e.g., `http://host.docker.internal:5000`).
+Each agent reads central identity + MinIO endpoints from `appsettings.Development.json` or environment variables. When running side-by-side with the host, point to the localhost endpoints (e.g., `http://localhost:5000`).
 
 ## Testing Workflow
 
@@ -77,9 +78,9 @@ Hardware suites are opt-in. They are tagged with `TestCategory("Hardware")`—om
 | Symptom | Action |
 | --- | --- |
 | Database migration failures | Run `./scripts/infra:start --reset postgres` to recreate the database, then restart the host. |
-| MinIO credential errors | Verify `Minio:AccessKey`/`SecretKey` in `.env.development` match `docker-compose.dev.yml`. |
+| MinIO credential errors | Verify `Minio:AccessKey`/`SecretKey` in `.env` match `docker-compose.infrastructure.yml`. |
 | Redis connection timeouts | Ensure port `6379` is free; restart via `./scripts/infra:start redis`. |
-| SMTP emails missing | Use `./scripts/infra:status smtp` and check logs: `docker compose -f docker-compose.dev.yml logs smtp`. |
+| SMTP emails missing | Use `./scripts/infra:status smtp` and check logs: `./scripts/infra:logs --no-follow smtp`. |
 
 ## Additional References
 
