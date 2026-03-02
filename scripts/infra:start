@@ -92,7 +92,7 @@ wait_for_health() {
         status_json=$(docker compose -f "$compose_file" ps "$service" --format json 2>/dev/null || true)
         local health
         health=$(echo "$status_json" | grep -o '"Health":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
-        if [[ "$health" == "healthy" ]] || [[ "$health" == "starting" ]] || [[ "$health" == "unknown" ]]; then
+        if [[ "$health" == "healthy" ]] || [[ "$health" == "unknown" ]]; then
             echo -e "${GREEN}✓${NC}"
             return
         fi
