@@ -6,8 +6,8 @@ services:
     image: postgres:17-alpine
     container_name: skymonitor-postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-skymonitor}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-skymonitor_dev_password}
+      POSTGRES_USER: ${POSTGRES_USER:-hvo_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hvo_dev_password}
       POSTGRES_DB: ${POSTGRES_DB:-skymonitordb}
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
@@ -16,7 +16,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ${POSTGRES_DATA_DIR:-./data/postgres}:/host-data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-skymonitor} -d ${POSTGRES_DB:-skymonitordb}" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hvo_dev} -d ${POSTGRES_DB:-skymonitordb}" ]
       interval: 10s
       timeout: 5s
       retries: 5
