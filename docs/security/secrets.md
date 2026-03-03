@@ -37,8 +37,8 @@ cd src/HVO.SkyMonitor.LogicHost
  dotnet user-secrets init
  dotnet user-secrets set "MinIO:AccessKey" "dev-minio"
  dotnet user-secrets set "MinIO:SecretKey" "dev-minio-secret"
- dotnet user-secrets set "PostgreSQL:Username" "postgres"
- dotnet user-secrets set "PostgreSQL:Password" "postgres"
+ dotnet user-secrets set "PostgreSQL:Username" "hvo_dev"
+ dotnet user-secrets set "PostgreSQL:Password" "hvo_dev_password"
  dotnet user-secrets set "SignedTicket:Secret" "$(openssl rand -base64 32)"
 
 # Run the host
@@ -48,7 +48,7 @@ dotnet run --project src/HVO.SkyMonitor.LogicHost --configuration Debug
 
 Default development credentials (when you skip secrets):
 - MinIO: `minioadmin` / `minioadmin`
-- PostgreSQL: `postgres` / `postgres`
+- PostgreSQL: `hvo_dev` / `hvo_dev_password`
 
 ## 3. Secrets Catalog
 
