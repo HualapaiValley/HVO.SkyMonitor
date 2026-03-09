@@ -61,7 +61,7 @@
     <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="2.88.8" />
     <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="2.88.8" />
     <PackageVersion Include="StackExchange.Redis" Version="2.9.32" />
-    <PackageVersion Include="Testcontainers.Minio" Version="4.7.0" />
+    <PackageVersion Include="Testcontainers.Minio" Version="4.10.0" />
     <PackageVersion Include="Testcontainers.PostgreSql" Version="4.7.0" />
     <PackageVersion Include="Testcontainers.Redis" Version="4.7.0" />
   </ItemGroup>
