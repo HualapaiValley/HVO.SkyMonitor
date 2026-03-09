@@ -57,7 +57,7 @@
     <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.0" />
     <PackageVersion Include="Scalar.AspNetCore" Version="2.12.50" />
     <PackageVersion Include="SkiaSharp" Version="2.88.8" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="2.88.8" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.2" />
     <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="2.88.8" />
     <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="2.88.8" />
     <PackageVersion Include="StackExchange.Redis" Version="2.9.32" />
