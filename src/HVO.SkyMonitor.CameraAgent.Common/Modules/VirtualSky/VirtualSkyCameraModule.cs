@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 /// <summary>Deterministic virtual Mono16 or RGB24 camera using the shared imaging pipeline.</summary>
 public sealed class VirtualSkyCameraModule(TimeProvider timeProvider) : ICameraModule
 {
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private CameraModuleConfig? _config;
     private VirtualSkyCameraModuleOptions _options = new();
 
@@ -27,7 +28,7 @@ public sealed class VirtualSkyCameraModule(TimeProvider timeProvider) : ICameraM
         _config = config;
         if (config.ModuleOptions is { } options)
         {
-            _options = JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(options.GetRawText()) ?? new VirtualSkyCameraModuleOptions();
+            _options = JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(options.GetRawText(), SerializerOptions) ?? new VirtualSkyCameraModuleOptions();
         }
         return Task.CompletedTask;
     }

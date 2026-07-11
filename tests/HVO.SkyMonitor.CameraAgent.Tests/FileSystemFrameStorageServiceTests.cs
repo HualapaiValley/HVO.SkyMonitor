@@ -58,6 +58,29 @@ public sealed class FileSystemFrameStorageServiceTests
         }
     }
 
+    [TestMethod]
+    public async Task SaveAsync_WithSameTimestampAndRole_UsesDistinctArtifactPaths()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var frame = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono8, new byte[] { 1 },
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+            var first = await service.SaveAsync(CreateConfig(root), new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Raw, frame), CancellationToken.None).ConfigureAwait(false);
+            var second = await service.SaveAsync(CreateConfig(root), new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Raw, frame), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreNotEqual(first.AbsolutePath, second.AbsolutePath);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private static CameraModuleConfig CreateConfig(string root)
     {
         using var optionsDocument = System.Text.Json.JsonDocument.Parse($"{{\"storageRoot\":\"{root.Replace("\\", "\\\\", StringComparison.Ordinal)}\",\"retentionDays\":7}}");

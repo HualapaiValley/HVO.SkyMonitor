@@ -39,4 +39,6 @@ internal sealed class DeviceImageUpload
     public string? ChecksumSha256 { get; set; }
 
     public long? ByteLength { get; set; }
+
+    public string? AgentId { get; set; }
 }

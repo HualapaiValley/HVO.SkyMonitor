@@ -46,7 +46,7 @@ public sealed class FileSystemFrameStorageService(
 
         Directory.CreateDirectory(directory);
 
-        var stem = timestamp.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture);
+        var stem = string.Concat(timestamp.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture), "-", artifact.ArtifactId.ToString("N"));
 
         var payloadPath = Path.Combine(directory, string.Concat(stem, ".bin"));
         await WriteAtomicallyAsync(payloadPath, frame.PixelData, cancellationToken).ConfigureAwait(false);

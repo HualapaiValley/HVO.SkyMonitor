@@ -29,7 +29,7 @@ internal sealed class PreviewCaptureProcessingStep(
 
         context.AddDerivative(FrameArtifactRole.Preview,
             new CameraFrame(source.TimestampUtc, source.Width, source.Height, CameraPixelFormat.Mono8, preview,
-                source.Metadata with { SourceId = "Preview" }), "mono16-high-byte-v1");
+                source.Metadata with { SourceId = "Preview" }), Options.RecipeVersion);
         return ValueTask.CompletedTask;
     }
 }

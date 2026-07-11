@@ -10,6 +10,7 @@ public sealed class RollingMono16Combiner
 {
     private readonly int _capacity;
     private readonly Queue<(FrameArtifact Artifact, TimeSpan Exposure)> _frames = new();
+    private ulong[]? _totals;
     private int _width;
     private int _height;
 
@@ -38,35 +39,45 @@ public sealed class RollingMono16Combiner
         if (_frames.Count > 0 && (_width != frame.Width || _height != frame.Height))
         {
             _frames.Clear();
+            _totals = null;
         }
 
         _width = frame.Width;
         _height = frame.Height;
+        _totals ??= new ulong[checked(frame.Width * frame.Height)];
+        AddToTotals(frame.PixelData.Span, 1);
         _frames.Enqueue((artifact, frame.Metadata.Exposure));
         if (_frames.Count > _capacity)
         {
-            _frames.Dequeue();
-        }
-
-        var totals = new ulong[checked(frame.Width * frame.Height)];
-        foreach (var (input, _) in _frames)
-        {
-            var data = input.Frame.PixelData.Span;
-            for (var pixel = 0; pixel < totals.Length; pixel++)
-            {
-                totals[pixel] += (ushort)(data[pixel * 2] | data[pixel * 2 + 1] << 8);
-            }
+            var removed = _frames.Dequeue();
+            AddToTotals(removed.Artifact.Frame.PixelData.Span, -1);
         }
 
         var output = new byte[frame.PixelData.Length];
-        for (var pixel = 0; pixel < totals.Length; pixel++)
+        for (var pixel = 0; pixel < _totals.Length; pixel++)
         {
-            var average = (ushort)(totals[pixel] / (ulong)_frames.Count);
+            var average = (ushort)(_totals[pixel] / (ulong)_frames.Count);
             output[pixel * 2] = (byte)average;
             output[pixel * 2 + 1] = (byte)(average >> 8);
         }
 
         return new RollingCombinationResult(output, _frames.Select(item => item.Artifact.ArtifactId).ToArray(),
             TimeSpan.FromTicks(_frames.Sum(item => item.Exposure.Ticks)));
+    }
+
+    private void AddToTotals(ReadOnlySpan<byte> pixels, int direction)
+    {
+        for (var pixel = 0; pixel < _totals!.Length; pixel++)
+        {
+            var value = (ushort)(pixels[pixel * 2] | pixels[pixel * 2 + 1] << 8);
+            if (direction > 0)
+            {
+                _totals[pixel] += value;
+            }
+            else
+            {
+                _totals[pixel] -= value;
+            }
+        }
     }
 }

@@ -28,6 +28,7 @@ internal sealed class NoOpFileStorageProcessingStep(
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
+        ArgumentException.ThrowIfNullOrWhiteSpace(context.Config.AgentId);
         var artifacts = context.Artifacts;
         if (artifacts is null)
         {
@@ -40,7 +41,7 @@ internal sealed class NoOpFileStorageProcessingStep(
         {
             var stored = await _frameStorageService.SaveAsync(context.Config, artifact, cancellationToken).ConfigureAwait(false);
             await _artifactOutbox.EnqueueAsync(Options.StorageRoot, new ArtifactUploadManifest(
-                "v1", context.Config.ModuleType, artifact.ArtifactId, artifacts.Raw.ArtifactId, artifact.Role,
+                "v1", context.Config.AgentId, artifact.ArtifactId, artifacts.Raw.ArtifactId, artifact.Role,
                 MediaTypeFor(artifact.Frame.PixelFormat), artifact.Frame.PixelData.Length,
                 Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(artifact.Frame.PixelData.Span)),
                 artifact.Frame.TimestampUtc, artifact.RecipeVersion ?? "raw-v1", stored.RelativePath), cancellationToken).ConfigureAwait(false);

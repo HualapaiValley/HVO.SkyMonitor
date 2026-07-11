@@ -75,6 +75,20 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(setpoint.Gain, result.Frame.Metadata.Gain);
     }
 
+    [TestMethod]
+    public async Task InitializeAsync_WithCamelCaseOptions_UsesConfiguredStarCount()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse("{\"seed\":42,\"starCount\":0}");
+        var config = CreateConfig() with { Module = new CameraModuleDescriptor("VirtualSky", document.RootElement.Clone()) };
+        var module = new VirtualSkyCameraModule(TimeProvider.System);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+        var result = await module.CaptureAsync(
+            new CaptureRequest(DateTimeOffset.UnixEpoch, TimeSpan.FromSeconds(1), CaptureMode.Still), CancellationToken.None).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(new byte[] { 0, 0, 0, 128, 0, 128, 255, 255 }, result.Frame!.PixelData.ToArray());
+    }
+
     private static CameraModuleConfig CreateConfig(CameraPixelFormat format = CameraPixelFormat.Mono16, int width = 2, int height = 2) => new(
         new ObservatoryLocation(0, 0, 0, "UTC"), new CameraModuleDescriptor("VirtualSky"),
         new CameraRigConfig(new SensorProfile("Virtual", width, height, 5.86, format == CameraPixelFormat.Mono16 ? SensorColorMode.Mono : SensorColorMode.Color, format),

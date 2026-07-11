@@ -70,9 +70,28 @@ internal sealed class ArtifactIngestService(
             ArtifactId = manifest.ArtifactId,
             ArtifactRole = manifest.Role.ToString(),
             ChecksumSha256 = manifest.ChecksumSha256,
-            ByteLength = manifest.ByteLength
+            ByteLength = manifest.ByteLength,
+            AgentId = manifest.AgentId
         });
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
+        {
+            dbContext.ChangeTracker.Clear();
+            var concurrent = await dbContext.DeviceImageUploads.SingleOrDefaultAsync(
+                upload => upload.IdempotencyKey == manifest.IdempotencyKey, cancellationToken).ConfigureAwait(false);
+            if (concurrent is null)
+            {
+                throw;
+            }
+
+            return new DeviceUploadResult(concurrent.RegistrationId, concurrent.ObservatoryId, concurrent.StorageReference, concurrent.ReceivedAtUtc);
+        }
         return new DeviceUploadResult(registration.Id, registration.ObservatoryId, storageReference, now);
     }
+
+    private static bool IsUniqueConstraintViolation(DbUpdateException exception)
+        => exception.InnerException is Npgsql.PostgresException { SqlState: "23505" };
 }

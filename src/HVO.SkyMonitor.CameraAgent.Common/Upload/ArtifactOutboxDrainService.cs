@@ -11,6 +11,7 @@ public sealed class ArtifactOutboxDrainService(
     ArtifactUploadClient uploadClient) : BackgroundService
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
+    private static readonly System.Text.Json.JsonSerializerOptions SerializerOptions = new(System.Text.Json.JsonSerializerDefaults.Web);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -36,7 +37,7 @@ public sealed class ArtifactOutboxDrainService(
         {
             if (step.Type.Contains(nameof(NoOpFileStorageProcessingStep), StringComparison.OrdinalIgnoreCase) && step.Options is { } options)
             {
-                var parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(options.GetRawText());
+                var parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(options.GetRawText(), SerializerOptions);
                 if (!string.IsNullOrWhiteSpace(parsed?.StorageRoot))
                 {
                     return parsed.StorageRoot;

@@ -11,12 +11,14 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 [Authorize(AuthenticationSchemes = "Bearer")]
 internal sealed class ArtifactIngestController(IArtifactIngestService ingestService) : ControllerBase
 {
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+
     [HttpPost]
     [RequestSizeLimit(100 * 1024 * 1024)]
     public async Task<ActionResult<DeviceUploadController.DeviceUploadResponse>> IngestAsync(IFormFile payload, [FromForm] string manifest, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(payload);
-        var parsedManifest = JsonSerializer.Deserialize<ArtifactUploadManifest>(manifest);
+        var parsedManifest = JsonSerializer.Deserialize<ArtifactUploadManifest>(manifest, SerializerOptions);
         if (parsedManifest is null)
         {
             return BadRequest(new ProblemDetails { Title = "Invalid artifact manifest" });

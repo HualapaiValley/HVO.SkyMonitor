@@ -49,7 +49,8 @@ public sealed class FileCameraAgentConfigurationLoader(
             Module: document.Module,
             Rig: document.Rig,
             ProcessingSteps: document.ProcessingSteps,
-            Pipeline: document.Pipeline);
+            Pipeline: document.Pipeline,
+            AgentId: document.AgentId);
 
         ValidateConfig(config);
         _logger.ConfigurationLoaded(path);
@@ -61,6 +62,11 @@ public sealed class FileCameraAgentConfigurationLoader(
         if (config.Module is null || string.IsNullOrWhiteSpace(config.Module.Type))
         {
             throw new InvalidOperationException("Camera module type must be specified.");
+        }
+
+        if (string.IsNullOrWhiteSpace(config.AgentId))
+        {
+            throw new InvalidOperationException("AgentId must be specified and match the registered device identity.");
         }
 
         if (config.Rig.Sensor.WidthPixels <= 0 || config.Rig.Sensor.HeightPixels <= 0)
@@ -76,6 +82,7 @@ public sealed class FileCameraAgentConfigurationLoader(
 }
 
 internal sealed record CameraModuleDocument(
+    string AgentId,
     CameraModuleDescriptor Module,
     CameraRigConfig Rig,
     IReadOnlyList<CaptureProcessingStepConfig>? ProcessingSteps = null,

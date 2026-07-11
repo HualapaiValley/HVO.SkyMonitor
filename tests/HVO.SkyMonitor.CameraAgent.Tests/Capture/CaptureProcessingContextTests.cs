@@ -128,6 +128,20 @@ public sealed class CaptureProcessingContextTests
     }
 
     [TestMethod]
+    public async Task PreviewStep_UsesConfiguredRecipeVersion()
+    {
+        var raw = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono16,
+            new byte[] { 0, 255 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+        var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
+        var step = new PreviewCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions { RecipeVersion = "custom-preview-v2" });
+
+        await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual("custom-preview-v2", context.Artifacts![FrameArtifactRole.Preview].RecipeVersion);
+    }
+
+    [TestMethod]
     public async Task RollingCombinationStep_EmitsCombinedDerivativeAfterEveryCapture()
     {
         var step = new RollingCombinationCaptureProcessingStep(

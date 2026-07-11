@@ -46,7 +46,7 @@ public sealed class ArtifactIngestTests
         using var ingest = await PostAsync(client, manifest).ConfigureAwait(false);
         ingest.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
-        using var history = await client.GetAsync(new Uri("/api/v1.0/artifacts?role=Preview", UriKind.Relative)).ConfigureAwait(false);
+        using var history = await client.GetAsync(new Uri($"/api/v1.0/artifacts?agentId={deviceId}&role=preview", UriKind.Relative)).ConfigureAwait(false);
 
         history.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await history.Content.ReadAsStringAsync().ConfigureAwait(false);

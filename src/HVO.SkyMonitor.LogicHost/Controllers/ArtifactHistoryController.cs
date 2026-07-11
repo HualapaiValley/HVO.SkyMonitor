@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.AgentCore;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -26,11 +27,16 @@ internal sealed class ArtifactHistoryController(ApplicationDbContext dbContext) 
         var query = dbContext.DeviceImageUploads.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(agentId))
         {
-            query = query.Where(upload => upload.IdempotencyKey != null && upload.StorageReference.Contains($"/{agentId}/"));
+            query = query.Where(upload => upload.AgentId == agentId);
         }
         if (!string.IsNullOrWhiteSpace(role))
         {
-            query = query.Where(upload => upload.ArtifactRole == role);
+            if (!Enum.TryParse<FrameArtifactRole>(role, ignoreCase: true, out var parsedRole))
+            {
+                return BadRequest(new ProblemDetails { Title = "role is invalid" });
+            }
+
+            query = query.Where(upload => upload.ArtifactRole == parsedRole.ToString());
         }
 
         var results = await query.OrderByDescending(upload => upload.CapturedAtUtc).Take(take)
