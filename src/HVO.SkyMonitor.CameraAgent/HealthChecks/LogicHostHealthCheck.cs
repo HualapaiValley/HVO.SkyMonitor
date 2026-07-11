@@ -33,7 +33,10 @@ public sealed class LogicHostHealthCheck(
             if (response.IsSuccessStatusCode)
             {
                 var description = $"Logic Host responded {(int)response.StatusCode} in {stopwatch.ElapsedMilliseconds} ms";
-                logger.LogDebug("Logic Host health check succeeded with status {StatusCode}", response.StatusCode);
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug("Logic Host health check succeeded with status {StatusCode}", response.StatusCode);
+                }
                 return HealthCheckResult.Healthy(description);
             }
 

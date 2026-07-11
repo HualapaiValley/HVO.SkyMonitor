@@ -114,7 +114,10 @@ public sealed partial class Login : ComponentBase
 
         if (result.IsNotAllowed)
         {
-            Logger.LogInformation("Login blocked for unconfirmed account {Email}", Input.Email);
+            if (Logger.IsEnabled(LogLevel.Information))
+            {
+                Logger.LogInformation("Login blocked for unconfirmed account {Email}", Input.Email);
+            }
             errorMessage = "Error: Please confirm your email before signing in. Use the link in your inbox or request another confirmation email.";
             return;
         }

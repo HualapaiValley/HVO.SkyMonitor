@@ -53,7 +53,10 @@ public sealed class CentralAuthenticationService(
                 return _cachedToken.AccessToken;
             }
 
-            logger.LogInformation("Acquiring new access token from {ServiceUrl}", _options.ServiceUrl);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("Acquiring new access token from {ServiceUrl}", _options.ServiceUrl);
+            }
             var token = await AcquireTokenAsync(cancellationToken);
 
             _cachedToken = new TokenCacheEntry
@@ -63,7 +66,10 @@ public sealed class CentralAuthenticationService(
                 AcquiredAt = timeProvider.GetUtcNow()
             };
 
-            logger.LogInformation("Access token acquired successfully, expires in {ExpiresIn} seconds", token.ExpiresIn);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("Access token acquired successfully, expires in {ExpiresIn} seconds", token.ExpiresIn);
+            }
             return _cachedToken.AccessToken;
         }
         finally
@@ -122,8 +128,11 @@ public sealed class CentralAuthenticationService(
             ["scope"] = string.Join(" ", _options.ClientCredentials.Scopes)
         });
 
-        logger.LogDebug("Requesting token from {TokenEndpoint} with client_id {ClientId}",
-            tokenEndpoint, _options.ClientCredentials.ClientId);
+        if (logger.IsEnabled(LogLevel.Debug))
+        {
+            logger.LogDebug("Requesting token from {TokenEndpoint} with client_id {ClientId}",
+                tokenEndpoint, _options.ClientCredentials.ClientId);
+        }
 
         using var response = await client.PostAsync(tokenEndpoint, requestContent, cancellationToken)
             .ConfigureAwait(false);

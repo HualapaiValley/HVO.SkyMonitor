@@ -35,7 +35,10 @@ internal sealed class DeviceRigProfileSeeder(
 
         if (string.IsNullOrWhiteSpace(secrets.RigProfileEndpoint))
         {
-            logger.LogDebug("Rig profile endpoint is missing; skipping rig profile seed for {DeviceId}", identity.DeviceId);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug("Rig profile endpoint is missing; skipping rig profile seed for {DeviceId}", identity.DeviceId);
+            }
             return;
         }
 
@@ -70,7 +73,10 @@ internal sealed class DeviceRigProfileSeeder(
                 return;
             }
 
-            logger.LogInformation("Rig profile seeded for {DeviceId}", identity.DeviceId);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("Rig profile seeded for {DeviceId}", identity.DeviceId);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

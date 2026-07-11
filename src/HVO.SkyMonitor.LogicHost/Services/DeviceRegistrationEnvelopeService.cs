@@ -112,11 +112,14 @@ internal sealed class DeviceRegistrationEnvelopeService : IDeviceRegistrationEnv
 
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        logger.LogInformation(
-            "Issued device envelope for {DeviceId} / {ObservatoryId} (registration {RegistrationId})",
-            registration.DeviceId,
-            registration.ObservatoryId,
-            registration.Id);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation(
+                "Issued device envelope for {DeviceId} / {ObservatoryId} (registration {RegistrationId})",
+                registration.DeviceId,
+                registration.ObservatoryId,
+                registration.Id);
+        }
 
         return new DeviceRegistrationEnvelopeResponse(
             registration.Id,

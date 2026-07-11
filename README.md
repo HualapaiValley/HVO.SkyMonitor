@@ -1,6 +1,12 @@
 # HVO.SkyMonitor
 
-Sky monitoring application built with .NET 10, featuring distributed architecture for camera control, data processing, and real-time visualization.
+Distributed all-sky imaging system built with .NET 10. Self-contained CameraAgent
+instances acquire and process images near each camera, retain bounded local history,
+and send selected artifacts to a central LogicHost for durable storage and further
+processing.
+
+The authoritative architecture and implementation roadmap is
+[`docs/project-plan.md`](docs/project-plan.md).
 
 ## Development Environment
 
@@ -117,6 +123,7 @@ The `.devcontainer/devcontainer.json` includes:
 - Adds `vscode` user to the `docker` group
 - Sets Docker socket permissions (`chmod 666 /var/run/docker.sock`)
 - Installs the pinned `dotnet-ef` CLI tool for Entity Framework migrations
+- Restores `HVO.SkyMonitor.v9.slnx` so a fresh container can build immediately
 - Generates HTTPS developer certificate (`dotnet dev-certs https`)
 - Verifies Docker installation
 
@@ -130,16 +137,32 @@ The devcontainer configuration includes:
 - **.NET 10 SDK** - Latest .NET SDK for building and running applications
 - **Docker-in-Docker** - Run and manage Docker containers inside the dev container
 - **dotnet-ef CLI** - Pinned Entity Framework Core tooling installed automatically
-- **ripgrep & python alias** - `rg` and `python` commands available via ripgrep and python-is-python3 packages
+- **OpenCode CLI** - Interactive coding assistant installed automatically
+- **Tailscale CLI** - Private-network client installed automatically; authenticate locally with `sudo tailscale up`
+- **Command-line tools** - `jq`, `rg`, and `sqlite3` are installed during container setup
 - **C# Dev Kit** - Complete C# development experience with IntelliSense, debugging, and more
 - **GitHub Copilot** - AI-powered code completion and chat
 - **Git & GitHub CLI** - Version control and GitHub integration
 - **Zsh with Oh My Zsh** - Enhanced terminal experience
-- **IntelliCode** - AI-assisted development with usage examples
+- **Docker extension** - Container and Compose integration in VS Code
 - **Secret management plumbing** - `.env.template`, `.devcontainer/devcontainer.local.env`, and .NET user secrets support keep credentials out of git
 - **Identity & API infrastructure parity** - The main `HVO.SkyMonitor` site runs the same Identity, passkey, and API key pipeline used by the camera agent, backed by shared middleware and helpers in `HVO.SkyMonitor.Common`.
 - **Shared diagnostics/security library** - Cross-cutting middleware (correlation IDs, exception handling, antiforgery helpers) and API-key primitives live in `src/HVO.SkyMonitor.Common`, consumed by the main site and reusable by future services.
-- **Camera-agent independence** - Projects under `HVO.SkyMonitor.CameraAgent.*` rely on the shared `HVO.Core` package (plus lightweight local libraries like `HVO.SkyMonitor.Astronomy`), keeping edge agents lightweight while still registering their own diagnostics/security components.
+- **Camera-agent independence** - Projects under `HVO.SkyMonitor.CameraAgent.*` keep acquisition and local processing independent from LogicHost while registering their own diagnostics and security components.
+
+### OpenCode over Tailscale
+
+After authenticating Tailscale, expose the OpenCode server to authenticated devices on the tailnet:
+
+```bash
+./scripts/opencode:enable
+```
+
+The script starts OpenCode only on loopback and uses `tailscale serve` to provide a tailnet-only HTTPS endpoint. Set `OPENCODE_PORT` to use a different local port. To remove the tailnet endpoint and stop the OpenCode process started by the script:
+
+```bash
+./scripts/opencode:disable
+```
 
 ### Extensions
 
@@ -148,11 +171,10 @@ The following VS Code extensions are automatically installed:
 - C# Dev Kit (`ms-dotnettools.csdevkit`)
 - C# (`ms-dotnettools.csharp`)
 - .NET Runtime (`ms-dotnettools.vscode-dotnet-runtime`)
+- Docker (`ms-azuretools.vscode-docker`)
 - GitHub Copilot (`GitHub.copilot`)
 - GitHub Copilot Chat (`GitHub.copilot-chat`)
-- IntelliCode (`visualstudioexptteam.vscodeintellicode`)
-- IntelliCode API Usage Examples (`visualstudioexptteam.intellicode-api-usage-examples`)
-- JavaScript Profiler (`ms-vscode.vscode-js-profile-flame`)
+- OpenAI ChatGPT (`openai.chatgpt`)
 
 ### Port Forwarding
 
@@ -218,37 +240,11 @@ All Dockerfiles:
 - Include health checks
 - Expose port 8080
 
-## Identity System Rebuild (In Progress)
+## Identity Boundaries
 
-**⚠️ IMPORTANT: The identity and authentication system is being rebuilt from scratch.**
-
-The application is undergoing a major refactor to implement a centralized identity and authorization system. This affects:
-
-- **Identity Storage:** Transitioning from per-service databases to a single centralized PostgreSQL database
-- **Authentication:** Adding OpenIddict for OAuth2/OIDC flows (Authorization Code + PKCE, Client Credentials)
-- **Account Types:** Introducing USER vs SYSTEM account distinction
-- **Camera Agents:** Will authenticate to central HVO.SkyMonitor service (no local Identity)
-- **API Keys:** Centralized management with enhanced policies and audit logging
-- **Signed URLs:** New capability for high-volume media endpoints
-
-**Current Status:** Phase 0 (Environment Reset) - All existing Identity migrations have been removed. New schema is being implemented.
-
-**Documentation:**
-- Implementation Plan: `docs/projects/auth/central-identity-plan.md`
-- Current State Inventory: `docs/projects/auth/phase0-inventory.md`
-- Target Schema: `docs/projects/auth/target-schema.md`
-- Connection Strings & Keys: `docs/projects/auth/data-protection-and-connections.md`
-- Identity Operations Index: `docs/identity/operations-index.md`
-
-**For Developers:**
-- Database migrations have been reset - the database schema will be rebuilt during Phase 1
-- If you encounter authentication errors, this is expected during the transition
-- Camera agents will retain local Identity temporarily until Phase 4
-- See `docs/projects/auth/central-identity-plan.md` for the full 8-phase implementation plan
-
-## Recent Identity & Infrastructure Work (Pre-Rebuild)
-
-- Migrated diagnostics middleware, correlation ID plumbing, and API-key primitives into `src/HVO.SkyMonitor.Common` so the main site and future microservices share a single implementation.
-- Cloned the camera agent's complete Identity experience (Blazor pages, passkey WebAuthn flows, external login + email management, scoped CSS/JS) into `src/HVO.SkyMonitor.LogicHost/Components/Account`, ensuring parity with the hardened agent stack.
-- Added minimal API endpoints in `Program.cs` via `MapAdditionalIdentityEndpoints()` to support passkey creation/request, external login linking, and personal-data download routes.
-- Updated dependency wiring so only the main site references `HVO.SkyMonitor.Common`; camera-agent projects remain standalone and continue using their own infrastructure packages, preventing circular dependencies.
+CameraAgent retains its local authenticated administration and monitoring UI so it
+can be operated while disconnected. Device registration and agent-to-LogicHost
+authentication are separate central concerns. See
+[`docs/identity/overview.md`](docs/identity/overview.md) for the current workflow and
+[`docs/identity/operations-runbook.md`](docs/identity/operations-runbook.md) for
+operations.

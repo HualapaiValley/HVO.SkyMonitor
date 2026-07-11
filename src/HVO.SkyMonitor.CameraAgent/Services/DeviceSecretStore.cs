@@ -71,7 +71,10 @@ internal sealed class DeviceSecretStore(
         var protectedPayload = protector.Protect(json);
 
         await File.WriteAllTextAsync(path, protectedPayload, cancellationToken).ConfigureAwait(false);
-        logger.LogInformation("Persisted device secrets for {DevicePublicId}", secrets.DevicePublicId);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation("Persisted device secrets for {DevicePublicId}", secrets.DevicePublicId);
+        }
     }
 
     public Task ClearAsync(CancellationToken cancellationToken = default)

@@ -5,14 +5,16 @@ namespace HVO.SkyMonitor.AgentCore;
 public sealed record CaptureRequest(
     DateTimeOffset RequestedStartUtc,
     TimeSpan TargetInterval,
-    CaptureMode Mode);
+    CaptureMode Mode,
+    CaptureSetpoint? RequestedSetpoint = null);
 
 public sealed record CaptureResult(
     CameraFrame? Frame,
     CaptureSetpoint NextSetpoint,
     TimeSpan ProcessingLatency,
     CaptureMode Mode,
-    bool RequiresImmediateUpload);
+    bool RequiresImmediateUpload,
+    FrameArtifactSet? Artifacts = null);
 
 public sealed record CaptureSetpoint(
     TimeSpan Exposure,

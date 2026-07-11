@@ -77,11 +77,31 @@ sudo apt-get install -y jq ripgrep sqlite3 || echo "Warning: CLI utility install
 log_section "Tool versions (post CLI install)"
 log_tool_version "ripgrep" rg --version
 
+# Install OpenCode for interactive coding assistance.
+echo "Installing OpenCode..."
+if command_exists opencode; then
+	echo "OpenCode is already installed."
+else
+	curl -fsSL https://opencode.ai/install | bash
+fi
+
+# Install the Tailscale CLI. Authentication remains an explicit local action so
+# auth keys are never stored in the repository or dev-container configuration.
+echo "Installing Tailscale..."
+if command_exists tailscale; then
+	echo "Tailscale is already installed."
+else
+	curl -fsSL https://tailscale.com/install.sh | sh
+fi
+
 # Install EF Core CLI matching the repo packages
 EF_TOOLS_VERSION="10.0.*"
 echo "Installing dotnet-ef $EF_TOOLS_VERSION..."
 dotnet tool update --global dotnet-ef --version "$EF_TOOLS_VERSION" 2>/dev/null \
 	|| dotnet tool install --global dotnet-ef --version "$EF_TOOLS_VERSION"
+
+echo "Restoring solution dependencies..."
+dotnet restore HVO.SkyMonitor.v9.slnx
 
 # Add vscode user to docker group
 echo "Adding vscode user to docker group..."
@@ -140,6 +160,8 @@ log_section "Post-create summary"
 echo "Logs captured at: $LOG_FILE"
 echo "Latest log symlink: $LOG_ROOT/latest.log"
 log_tool_version "dotnet-ef" dotnet-ef --version
+log_tool_version "OpenCode" opencode --version
+log_tool_version "Tailscale" tailscale version
 log_tool_version "Docker" docker --version
 log_tool_version "dotnet" dotnet --version
 

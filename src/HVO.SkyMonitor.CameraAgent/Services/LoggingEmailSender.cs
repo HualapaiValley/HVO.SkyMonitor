@@ -10,19 +10,28 @@ internal sealed class LoggingEmailSender(ILogger<LoggingEmailSender> logger) : I
 
     public Task SendConfirmationLinkAsync(ApplicationUser user, string email, string confirmationLink)
     {
-        _logger.LogInformation("Pretending to send confirmation link to {Email}", email);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Pretending to send confirmation link to {Email}", email);
+        }
         return Task.CompletedTask;
     }
 
     public Task SendPasswordResetLinkAsync(ApplicationUser user, string email, string resetLink)
     {
-        _logger.LogInformation("Pretending to send password reset link to {Email}", email);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Pretending to send password reset link to {Email}", email);
+        }
         return Task.CompletedTask;
     }
 
     public Task SendPasswordResetCodeAsync(ApplicationUser user, string email, string resetCode)
     {
-        _logger.LogInformation("Pretending to send password reset code to {Email}", email);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Pretending to send password reset code to {Email}", email);
+        }
         return Task.CompletedTask;
     }
 }

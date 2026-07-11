@@ -69,7 +69,10 @@ internal sealed class DeviceIdentityStore(
                 await JsonSerializer.SerializeAsync(stream, identity, SerializerOptions, cancellationToken).ConfigureAwait(false);
             }
 
-            logger.LogInformation("Generated new device identity {DeviceId}", identity.DeviceId);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("Generated new device identity {DeviceId}", identity.DeviceId);
+            }
             cached = identity;
             return identity;
         }

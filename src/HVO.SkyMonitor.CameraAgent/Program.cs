@@ -9,12 +9,14 @@ using HVO.SkyMonitor.Common.Identity;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Extensions;
 using HVO.SkyMonitor.CameraAgent.Components;
 using HVO.SkyMonitor.CameraAgent.Components.Account;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.CameraAgent.HealthChecks;
 using HVO.SkyMonitor.Common.Observability;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -207,7 +209,9 @@ public class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
         builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
+        healthChecks.AddCheck<CameraAgentConfigurationHealthCheck>("camera-configuration", tags: ["dependency"]);
         builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
+        builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
 
         var app = builder.Build();
 

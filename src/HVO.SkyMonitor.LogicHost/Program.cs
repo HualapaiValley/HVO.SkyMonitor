@@ -547,6 +547,7 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceCredentialValidator, DeviceCredentialValidator>();
         builder.Services.AddScoped<IDeviceHeartbeatService, DeviceHeartbeatService>();
         builder.Services.AddScoped<IDeviceUploadService, DeviceUploadService>();
+        builder.Services.AddScoped<IArtifactIngestService, ArtifactIngestService>();
         builder.Services.AddScoped<IDeviceRigProfileService, DeviceRigProfileService>();
 
         var app = builder.Build();

@@ -9,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
+using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -39,9 +40,18 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICaptureTelemetrySink>(sp => sp.GetRequiredService<CaptureTelemetrySink>());
         services.AddSingleton<ICaptureTelemetryProvider>(sp => sp.GetRequiredService<CaptureTelemetrySink>());
         services.AddSingleton<ICaptureProcessingPipelineFactory, CaptureProcessingPipelineFactory>();
+        services.AddSingleton<IArtifactOutbox, FileSystemArtifactOutbox>();
+        services.AddTransient<ArtifactUploadClient>();
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "Preview", typeof(PreviewCaptureProcessingStep), typeof(PreviewProcessingStepOptions), 50));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "RollingCombination", typeof(RollingCombinationCaptureProcessingStep), typeof(RollingCombinationProcessingStepOptions), 25));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "Annotation", typeof(AnnotationCaptureProcessingStep), typeof(AnnotationProcessingStepOptions), 75));
         services.AddHostedService<CameraAgentConfigurationInitializer>();
         services.AddHostedService<CameraCaptureService>();
         services.AddHostedService<RetentionBackgroundService>();
+        services.AddHostedService<ArtifactOutboxDrainService>();
 
         return services;
     }

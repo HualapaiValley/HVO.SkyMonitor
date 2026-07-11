@@ -123,10 +123,13 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
 
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        logger.LogInformation(
-            "Activated device registration {RegistrationId} (device {DeviceId})",
-            registration.Id,
-            registration.DeviceId);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation(
+                "Activated device registration {RegistrationId} (device {DeviceId})",
+                registration.Id,
+                registration.DeviceId);
+        }
 
         return new DeviceBootstrapResult(
             registration.Id,

@@ -33,7 +33,10 @@ public sealed class CentralIdentityDelegatingHandler(
             if (!string.IsNullOrWhiteSpace(token))
             {
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                logger.LogTrace("Attached bearer token for {RequestUri}", request.RequestUri);
+                if (logger.IsEnabled(LogLevel.Trace))
+                {
+                    logger.LogTrace("Attached bearer token for {RequestUri}", request.RequestUri);
+                }
             }
             else
             {
@@ -41,7 +44,10 @@ public sealed class CentralIdentityDelegatingHandler(
                 if (!string.IsNullOrWhiteSpace(apiKey))
                 {
                     request.Headers.TryAddWithoutValidation(ApiKeyHeader, apiKey);
-                    logger.LogTrace("Attached API key for {RequestUri}", request.RequestUri);
+                    if (logger.IsEnabled(LogLevel.Trace))
+                    {
+                        logger.LogTrace("Attached API key for {RequestUri}", request.RequestUri);
+                    }
                 }
             }
         }

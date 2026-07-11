@@ -25,9 +25,12 @@ internal sealed class ApiKeyAuditLogger : IApiKeyAuditLogger
 
     public void LogKeyCreated(string keyId, string userId, string displayName, string accessLevel, DateTimeOffset? expiresUtc)
     {
-        _logger.LogInformation(
-            "API Key Created: KeyId={KeyId}, UserId={UserId}, DisplayName={DisplayName}, AccessLevel={AccessLevel}, ExpiresUtc={ExpiresUtc}",
-            keyId, userId, displayName, accessLevel, expiresUtc?.ToString("O") ?? "Never");
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "API Key Created: KeyId={KeyId}, UserId={UserId}, DisplayName={DisplayName}, AccessLevel={AccessLevel}, ExpiresUtc={ExpiresUtc}",
+                keyId, userId, displayName, accessLevel, expiresUtc?.ToString("O") ?? "Never");
+        }
     }
 
     public void LogKeyDeleted(string keyId, string userId, string displayName)
@@ -39,9 +42,12 @@ internal sealed class ApiKeyAuditLogger : IApiKeyAuditLogger
 
     public void LogKeyActivated(string keyId, string userId, string displayName)
     {
-        _logger.LogInformation(
-            "API Key Activated: KeyId={KeyId}, UserId={UserId}, DisplayName={DisplayName}",
-            keyId, userId, displayName);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "API Key Activated: KeyId={KeyId}, UserId={UserId}, DisplayName={DisplayName}",
+                keyId, userId, displayName);
+        }
     }
 
     public void LogKeyDeactivated(string keyId, string userId, string displayName)
@@ -53,8 +59,11 @@ internal sealed class ApiKeyAuditLogger : IApiKeyAuditLogger
 
     public void LogKeyRotated(string oldKeyId, string newKeyId, string userId, string displayName)
     {
-        _logger.LogInformation(
-            "API Key Rotated: OldKeyId={OldKeyId}, NewKeyId={NewKeyId}, UserId={UserId}, DisplayName={DisplayName}",
-            oldKeyId, newKeyId, userId, displayName);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "API Key Rotated: OldKeyId={OldKeyId}, NewKeyId={NewKeyId}, UserId={UserId}, DisplayName={DisplayName}",
+                oldKeyId, newKeyId, userId, displayName);
+        }
     }
 }

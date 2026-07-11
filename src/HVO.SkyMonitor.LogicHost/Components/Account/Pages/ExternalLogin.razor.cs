@@ -110,10 +110,13 @@ public sealed partial class ExternalLogin : ComponentBase
 
         if (result.Succeeded)
         {
-            Logger.LogInformation(
-                "{Name} logged in with {LoginProvider} provider.",
-                externalLoginInfo.Principal.Identity?.Name,
-                externalLoginInfo.LoginProvider);
+            if (Logger.IsEnabled(LogLevel.Information))
+            {
+                Logger.LogInformation(
+                    "{Name} logged in with {LoginProvider} provider.",
+                    externalLoginInfo.Principal.Identity?.Name,
+                    externalLoginInfo.LoginProvider);
+            }
             RedirectManager.RedirectTo(ReturnUrl);
             return;
         }
@@ -150,7 +153,10 @@ public sealed partial class ExternalLogin : ComponentBase
             result = await UserManager.AddLoginAsync(user, externalLoginInfo);
             if (result.Succeeded)
             {
-                Logger.LogInformation("User created an account using {Name} provider.", externalLoginInfo.LoginProvider);
+                if (Logger.IsEnabled(LogLevel.Information))
+                {
+                    Logger.LogInformation("User created an account using {Name} provider.", externalLoginInfo.LoginProvider);
+                }
 
                 var userId = await UserManager.GetUserIdAsync(user);
                 var code = await UserManager.GenerateEmailConfirmationTokenAsync(user);

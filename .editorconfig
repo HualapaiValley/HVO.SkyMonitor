@@ -118,6 +118,7 @@ dotnet_diagnostic.CA1869.severity = none
 # Test projects intentionally have public types and may create disposable objects in test setup
 [tests/HVO.SkyMonitor.IntegrationTests/**.cs]
 dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA1707.severity = none
 dotnet_diagnostic.CA2000.severity = none
 dotnet_diagnostic.CA2007.severity = none
 dotnet_diagnostic.CA1812.severity = none
@@ -134,3 +135,12 @@ dotnet_diagnostic.CA1515.severity = none
 dotnet_diagnostic.CA1707.severity = none
 dotnet_diagnostic.CA2000.severity = none
 dotnet_diagnostic.MSTEST0037.severity = none
+
+# Astronomy tests use MSTest's public test discovery surface and scenario names.
+[tests/HVO.SkyMonitor.Astronomy.Tests/**.cs]
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA1707.severity = none
+
+[tests/HVO.SkyMonitor.Imaging.Tests/**.cs]
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA1707.severity = none

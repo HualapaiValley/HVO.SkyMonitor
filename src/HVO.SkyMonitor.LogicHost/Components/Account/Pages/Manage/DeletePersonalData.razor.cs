@@ -71,7 +71,10 @@ public sealed partial class DeletePersonalData
         await SignInManager.SignOutAsync();
 
         var userId = await UserManager.GetUserIdAsync(user);
-        Logger.LogInformation("User with ID '{UserId}' deleted themselves.", userId);
+        if (Logger.IsEnabled(LogLevel.Information))
+        {
+            Logger.LogInformation("User with ID '{UserId}' deleted themselves.", userId);
+        }
 
         RedirectManager.RedirectToCurrentPage();
     }

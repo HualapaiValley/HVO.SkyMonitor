@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# opencode:disable - Disable the Tailscale proxy and stop the OpenCode server.
+# Usage: ./scripts/opencode:disable
+
+set -euo pipefail
+
+readonly OPENCODE_PID_FILE="/tmp/skymonitor-opencode.pid"
+
+if command -v tailscale >/dev/null 2>&1 && pgrep -x tailscaled >/dev/null 2>&1; then
+    sudo tailscale serve --https=443 off
+    echo "Disabled the Tailscale OpenCode proxy."
+fi
+
+if [[ -f "$OPENCODE_PID_FILE" ]]; then
+    opencode_pid="$(<"$OPENCODE_PID_FILE")"
+    if kill -0 "$opencode_pid" 2>/dev/null; then
+        kill "$opencode_pid"
+        echo "Stopped OpenCode (PID $opencode_pid)."
+    fi
+    rm -f "$OPENCODE_PID_FILE"
+else
+    echo "No OpenCode process was started by ./scripts/opencode:enable."
+fi
+
+echo "Tailscale remains connected. Run 'sudo tailscale down' to disconnect it."

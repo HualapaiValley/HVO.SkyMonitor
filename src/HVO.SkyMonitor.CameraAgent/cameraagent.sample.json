@@ -1,19 +1,19 @@
 {
     "module": {
-        "type": "HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage.RandomImageCameraModule, HVO.SkyMonitor.CameraAgent.Common",
+        "type": "VirtualSky",
         "options": {
-            "pattern": "Gradient",
-            "seed": 2025
+            "seed": 2025,
+            "starCount": 32
         }
     },
     "rig": {
         "sensor": {
-            "name": "SampleSensor",
+            "name": "VirtualAsi174MmReduced",
             "widthPixels": 640,
             "heightPixels": 480,
-            "pixelSizeMicrons": 3.76,
+            "pixelSizeMicrons": 5.86,
             "colorMode": "Mono",
-            "pixelFormat": "Mono8"
+            "pixelFormat": "Mono16"
         },
         "optics": {
             "projectionModel": "EquidistantFisheye",
@@ -58,6 +58,34 @@
         }
     },
     "processingSteps": [
+        {
+            "id": "RollingCombination",
+            "type": "RollingCombination",
+            "order": 25,
+            "options": {
+                "enabled": true,
+                "windowSize": 5
+            }
+        },
+        {
+            "id": "Preview",
+            "type": "Preview",
+            "order": 50,
+            "options": {
+                "enabled": true,
+                "recipeVersion": "mono16-high-byte-v1"
+            }
+        },
+        {
+            "id": "Annotation",
+            "type": "Annotation",
+            "order": 75,
+            "options": {
+                "enabled": true,
+                "focalLengthPixels": 500,
+                "recipeVersion": "zenith-marker-v1"
+            }
+        },
         {
             "id": "Calibration",
             "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CalibrationCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",

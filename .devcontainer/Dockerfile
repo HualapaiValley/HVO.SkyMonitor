@@ -1,9 +1,5 @@
-FROM mcr.microsoft.com/devcontainers/dotnet:1-10.0
+# Pin to Ubuntu LTS; the .NET SDK is supplied by the devcontainer feature.
+FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
-# ── Fix the Yarn apt source that ships broken in the base image ──
-# The base image includes an apt source for Yarn that can cause
-# "Release file is not valid yet" errors during apt-get update.
-# Removing it avoids transient CI/build failures.
-RUN rm -f /etc/apt/sources.list.d/yarn.list \
-    && apt-get update \
-    && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+ENV NUGET_XMLDOC_MODE=
+ENV PATH="/home/vscode/.dotnet/tools:/home/vscode/.opencode/bin:${PATH}"
