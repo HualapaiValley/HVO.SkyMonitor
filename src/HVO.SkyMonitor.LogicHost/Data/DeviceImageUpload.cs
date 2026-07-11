@@ -29,4 +29,16 @@ internal sealed class DeviceImageUpload
     public int PayloadBase64Length { get; set; }
 
     public string StorageReference { get; set; } = string.Empty;
+
+    public string? IdempotencyKey { get; set; }
+
+    public Guid? ArtifactId { get; set; }
+
+    public string? ArtifactRole { get; set; }
+
+    public string? ChecksumSha256 { get; set; }
+
+    public long? ByteLength { get; set; }
+
+    public string? AgentId { get; set; }
 }

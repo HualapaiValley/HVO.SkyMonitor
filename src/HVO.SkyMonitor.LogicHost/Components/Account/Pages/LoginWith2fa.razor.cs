@@ -41,7 +41,10 @@ public sealed partial class LoginWith2fa : ComponentBase
 
         if (result.Succeeded)
         {
-            Logger.LogInformation("User with ID '{UserId}' logged in with 2fa.", userId);
+            if (Logger.IsEnabled(LogLevel.Information))
+            {
+                Logger.LogInformation("User with ID '{UserId}' logged in with 2fa.", userId);
+            }
             RedirectManager.RedirectTo(ReturnUrl);
             return;
         }

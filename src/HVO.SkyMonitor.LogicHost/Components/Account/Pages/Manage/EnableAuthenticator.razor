@@ -9,17 +9,20 @@
 
 <PageTitle>Configure authenticator app</PageTitle>
 
-@if (recoveryCodes is not null)
+@if (recoveryCodes != null)
 {
-    <ShowRecoveryCodes RecoveryCodes="recoveryCodes.ToArray()" StatusMessage="@message" />
+    <div>
+        <ShowRecoveryCodes RecoveryCodes="recoveryCodes.ToArray()" StatusMessage="@message" />
+    </div>
 }
 else
 {
-    <StatusMessage Message="@message" />
-    <h3>Configure authenticator app</h3>
     <div>
-        <p>To use an authenticator app go through the following steps:</p>
-        <ol class="list">
+        <StatusMessage Message="@message" />
+        <h3>Configure authenticator app</h3>
+        <div>
+            <p>To use an authenticator app go through the following steps:</p>
+            <ol class="list">
             <li>
                 <p>
                     Download a two-factor authenticator app like Microsoft Authenticator for
@@ -62,6 +65,7 @@ else
                     </div>
                 </div>
             </li>
-        </ol>
+            </ol>
+        </div>
     </div>
 }

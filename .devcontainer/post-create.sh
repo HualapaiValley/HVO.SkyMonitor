@@ -83,6 +83,9 @@ echo "Installing dotnet-ef $EF_TOOLS_VERSION..."
 dotnet tool update --global dotnet-ef --version "$EF_TOOLS_VERSION" 2>/dev/null \
 	|| dotnet tool install --global dotnet-ef --version "$EF_TOOLS_VERSION"
 
+echo "Restoring solution dependencies..."
+dotnet restore HVO.SkyMonitor.v9.slnx
+
 # Add vscode user to docker group
 echo "Adding vscode user to docker group..."
 if getent group docker >/dev/null 2>&1; then

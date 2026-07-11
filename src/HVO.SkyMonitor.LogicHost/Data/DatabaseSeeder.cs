@@ -60,7 +60,10 @@ internal static class DatabaseSeeder
 
                 if (result.Succeeded)
                 {
-                    logger.LogInformation("Seeded user {Email}", descriptor.Email);
+                    if (logger.IsEnabled(LogLevel.Information))
+                    {
+                        logger.LogInformation("Seeded user {Email}", descriptor.Email);
+                    }
                 }
                 else
                 {
@@ -106,7 +109,10 @@ internal static class DatabaseSeeder
         var existingAccount = await userManager.FindByEmailAsync(systemEmail);
         if (existingAccount != null)
         {
-            logger.LogInformation("System service account already exists: {Email}", systemEmail);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("System service account already exists: {Email}", systemEmail);
+            }
             return existingAccount;
         }
 
@@ -125,7 +131,10 @@ internal static class DatabaseSeeder
 
         if (result.Succeeded)
         {
-            logger.LogInformation("System service account created successfully: {Email}", systemEmail);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("System service account created successfully: {Email}", systemEmail);
+            }
             logger.LogInformation("System account uses API key authentication only - no password authentication");
             return systemAccount;
         }
@@ -170,11 +179,17 @@ internal static class DatabaseSeeder
                     Resources = { "skymonitor_api" }
                 });
 
-                logger.LogInformation("Created scope: {ScopeName}", scope.Name);
+                if (logger.IsEnabled(LogLevel.Information))
+                {
+                    logger.LogInformation("Created scope: {ScopeName}", scope.Name);
+                }
             }
             else
             {
-                logger.LogInformation("Scope already exists: {ScopeName}", scope.Name);
+                if (logger.IsEnabled(LogLevel.Information))
+                {
+                    logger.LogInformation("Scope already exists: {ScopeName}", scope.Name);
+                }
             }
         }
     }
@@ -234,7 +249,10 @@ internal static class DatabaseSeeder
     {
         if (await applicationManager.FindByClientIdAsync(clientId) != null)
         {
-            logger.LogInformation("OAuth2 client already exists: {ClientId}", clientId);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("OAuth2 client already exists: {ClientId}", clientId);
+            }
             return;
         }
 
@@ -254,7 +272,10 @@ internal static class DatabaseSeeder
         }
 
         await applicationManager.CreateAsync(descriptor);
-        logger.LogInformation("Created OAuth2 client: {ClientId}", clientId);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation("Created OAuth2 client: {ClientId}", clientId);
+        }
         logger.LogWarning("SECURITY: Client {ClientId} uses default secret. Change it in production!", clientId);
     }
 
@@ -269,7 +290,10 @@ internal static class DatabaseSeeder
     {
         if (await applicationManager.FindByClientIdAsync(clientId) != null)
         {
-            logger.LogInformation("OAuth2 client already exists: {ClientId}", clientId);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("OAuth2 client already exists: {ClientId}", clientId);
+            }
             return;
         }
 
@@ -309,7 +333,10 @@ internal static class DatabaseSeeder
         }
 
         await applicationManager.CreateAsync(descriptor);
-        logger.LogInformation("Created OAuth2 public client: {ClientId}", clientId);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation("Created OAuth2 public client: {ClientId}", clientId);
+        }
     }
 
     private static IEnumerable<TestUserDescriptor> GetTestUsers()
@@ -359,7 +386,10 @@ internal static class DatabaseSeeder
                 CreatedBy = "DatabaseSeeder"
             });
 
-            logger.LogInformation("Seeded API key {Name}", descriptor.DisplayName);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("Seeded API key {Name}", descriptor.DisplayName);
+            }
         }
     }
 

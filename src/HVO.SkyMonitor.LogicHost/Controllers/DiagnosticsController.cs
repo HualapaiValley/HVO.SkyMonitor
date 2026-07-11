@@ -187,7 +187,10 @@ public sealed class DiagnosticsController : ControllerBase
             .ConfigureAwait(false);
         if (!exists)
         {
-            _logger.LogInformation("Creating MinIO bucket {Bucket}", bucket);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Creating MinIO bucket {Bucket}", bucket);
+            }
             await client.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket), cancellationToken)
                 .ConfigureAwait(false);
         }

@@ -45,20 +45,26 @@ internal sealed class DeviceHeartbeatService(
         registration.LastSeenUtc = now;
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        logger.LogInformation(
-            "Heartbeat received for device {DeviceId} ({FriendlyName})",
-            registration.DeviceId,
-            registration.FriendlyName);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation(
+                "Heartbeat received for device {DeviceId} ({FriendlyName})",
+                registration.DeviceId,
+                registration.FriendlyName);
+        }
 
         if (!string.IsNullOrWhiteSpace(request.SoftwareVersion) || !string.IsNullOrWhiteSpace(request.AgentState))
         {
-            logger.LogDebug(
-                "Device {DeviceId} status version={Version} state={State} cpu={Cpu} temp={Temp}",
-                registration.DeviceId,
-                request.SoftwareVersion,
-                request.AgentState,
-                request.CpuPercent,
-                request.TemperatureCelsius);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(
+                    "Device {DeviceId} status version={Version} state={State} cpu={Cpu} temp={Temp}",
+                    registration.DeviceId,
+                    request.SoftwareVersion,
+                    request.AgentState,
+                    request.CpuPercent,
+                    request.TemperatureCelsius);
+            }
         }
 
         if (registration.DevicePublicId is null)

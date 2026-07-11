@@ -30,9 +30,12 @@ public sealed class AuthenticationEventLogger : IAuthenticationEventLogger
 
     public void LogLoginSuccess(string userId, string username, string? ipAddress)
     {
-        _logger.LogInformation(
-            "Login successful: UserId={UserId}, Username={Username}, IpAddress={IpAddress}",
-            userId, username, ipAddress ?? "unknown");
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Login successful: UserId={UserId}, Username={Username}, IpAddress={IpAddress}",
+                userId, username, ipAddress ?? "unknown");
+        }
     }
 
     public void LogLoginFailure(string? username, string reason, string? ipAddress)
@@ -44,23 +47,32 @@ public sealed class AuthenticationEventLogger : IAuthenticationEventLogger
 
     public void LogTokenIssued(string clientId, string grantType, string? userId, string[] scopes)
     {
-        _logger.LogInformation(
-            "OAuth2 token issued: ClientId={ClientId}, GrantType={GrantType}, UserId={UserId}, Scopes={Scopes}",
-            clientId, grantType, userId ?? "none", string.Join(", ", scopes));
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "OAuth2 token issued: ClientId={ClientId}, GrantType={GrantType}, UserId={UserId}, Scopes={Scopes}",
+                clientId, grantType, userId ?? "none", string.Join(", ", scopes));
+        }
     }
 
     public void LogTokenRefreshed(string clientId, string? userId)
     {
-        _logger.LogInformation(
-            "OAuth2 token refreshed: ClientId={ClientId}, UserId={UserId}",
-            clientId, userId ?? "none");
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "OAuth2 token refreshed: ClientId={ClientId}, UserId={UserId}",
+                clientId, userId ?? "none");
+        }
     }
 
     public void LogApiKeyUsed(string keyId, string? userId, string accessLevel, string endpoint)
     {
-        _logger.LogInformation(
-            "API key used: KeyId={KeyId}, UserId={UserId}, AccessLevel={AccessLevel}, Endpoint={Endpoint}",
-            keyId, userId ?? "unknown", accessLevel, endpoint);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "API key used: KeyId={KeyId}, UserId={UserId}, AccessLevel={AccessLevel}, Endpoint={Endpoint}",
+                keyId, userId ?? "unknown", accessLevel, endpoint);
+        }
     }
 
     public void LogSignedUrlValidationFailure(string path, string reason, string? ipAddress)
@@ -79,9 +91,12 @@ public sealed class AuthenticationEventLogger : IAuthenticationEventLogger
 
     public void LogPasswordChangeSuccess(string userId, string username)
     {
-        _logger.LogInformation(
-            "Password changed successfully: UserId={UserId}, Username={Username}",
-            userId, username);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Password changed successfully: UserId={UserId}, Username={Username}",
+                userId, username);
+        }
     }
 
     public void LogPasswordChangeFailure(string userId, string username, string reason)

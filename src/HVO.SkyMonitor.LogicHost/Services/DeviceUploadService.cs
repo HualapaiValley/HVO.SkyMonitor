@@ -65,13 +65,16 @@ internal sealed class DeviceUploadService(
 
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        logger.LogInformation(
-            "Received stub upload from {DeviceId} ({FriendlyName}) stored at {StorageRef} ({ContentType}, bytes={Length})",
-            registration.DeviceId,
-            registration.FriendlyName,
-            storageReference,
-            request.ContentType,
-            request.PayloadBase64.Length);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation(
+                "Received stub upload from {DeviceId} ({FriendlyName}) stored at {StorageRef} ({ContentType}, bytes={Length})",
+                registration.DeviceId,
+                registration.FriendlyName,
+                storageReference,
+                request.ContentType,
+                request.PayloadBase64.Length);
+        }
 
         return new DeviceUploadResult(
             registration.Id,

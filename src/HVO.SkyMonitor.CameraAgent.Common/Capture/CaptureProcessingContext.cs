@@ -11,11 +11,14 @@ public sealed class CaptureProcessingContext
 {
     private CaptureLoopSubmission _submission;
     private readonly List<CaptureProcessingStepTelemetry> _stepTelemetry = new();
+    private FrameArtifactSet? _artifacts;
 
     public CaptureProcessingContext(CameraModuleConfig config, CaptureLoopSubmission submission)
     {
         Config = config ?? throw new ArgumentNullException(nameof(config));
         _submission = submission ?? throw new ArgumentNullException(nameof(submission));
+        _artifacts = submission.Result.Artifacts
+            ?? (submission.Result.Frame is { } frame ? new FrameArtifactSet(frame) : null);
     }
 
     public CameraModuleConfig Config { get; }
@@ -24,13 +27,24 @@ public sealed class CaptureProcessingContext
 
     public CameraFrame? Frame => _submission.Result.Frame;
 
+    public FrameArtifactSet? Artifacts => _artifacts;
+
     public IReadOnlyList<CaptureProcessingStepTelemetry> StepTelemetry => _stepTelemetry;
 
     public void ReplaceFrame(CameraFrame frame)
     {
         ArgumentNullException.ThrowIfNull(frame);
-        var result = _submission.Result with { Frame = frame };
+        _artifacts = _artifacts?.WithDerivative(FrameArtifactRole.Calibrated, frame)
+            ?? new FrameArtifactSet(frame);
+        var result = _submission.Result with { Frame = frame, Artifacts = _artifacts };
         _submission = _submission with { Result = result };
+    }
+
+    public void AddDerivative(FrameArtifactRole role, CameraFrame frame, string? recipeVersion = null)
+    {
+        ArgumentNullException.ThrowIfNull(frame);
+        _artifacts = (_artifacts ?? new FrameArtifactSet(frame)).WithDerivative(role, frame, recipeVersion);
+        _submission = _submission with { Result = _submission.Result with { Artifacts = _artifacts } };
     }
 
     public void UpdateResult(CaptureResult result)

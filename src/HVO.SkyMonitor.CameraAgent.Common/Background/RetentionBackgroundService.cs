@@ -58,7 +58,7 @@ public sealed class RetentionBackgroundService(
         }
     }
 
-    private Task ApplyRetentionAsync(CameraModuleConfig config, CancellationToken cancellationToken)
+    internal Task ApplyRetentionAsync(CameraModuleConfig config, CancellationToken cancellationToken)
     {
         var plans = BuildRetentionPlans(config);
         if (plans.Count == 0)

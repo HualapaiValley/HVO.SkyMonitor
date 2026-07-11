@@ -36,7 +36,10 @@ public sealed partial class LoginWithRecoveryCode : ComponentBase
 
         if (result.Succeeded)
         {
-            Logger.LogInformation("User with ID '{UserId}' logged in with a recovery code.", userId);
+            if (Logger.IsEnabled(LogLevel.Information))
+            {
+                Logger.LogInformation("User with ID '{UserId}' logged in with a recovery code.", userId);
+            }
             RedirectManager.RedirectTo(ReturnUrl);
             return;
         }

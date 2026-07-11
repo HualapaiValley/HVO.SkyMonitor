@@ -2,6 +2,8 @@
     <Project Path="src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj" />
     <Project Path="src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj" />
     <Project Path="src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj" />
+    <Project Path="src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj" />
+    <Project Path="src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj" />
     <Project Path="src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj" />
     <Project Path="src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj" />
         <Project Path="src/HVO.SkyMonitor.TestSupport/HVO.SkyMonitor.TestSupport.csproj" />
@@ -9,5 +11,7 @@
         <Project Path="tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj" />
         <Project Path="tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj" />
         <Project Path="tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj" />
+        <Project Path="tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj" />
+        <Project Path="tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj" />
     </Folder>
 </Solution>

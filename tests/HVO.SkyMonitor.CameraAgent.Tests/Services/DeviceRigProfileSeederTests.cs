@@ -30,7 +30,7 @@ public sealed class DeviceRigProfileSeederTests
         var identity = new DeviceIdentity("device-1", "CODE", DateTimeOffset.UtcNow);
         var secrets = CreateSecrets(rigProfileEndpoint: "");
 
-        await seeder.SeedAsync(identity, secrets, CancellationToken.None);
+        await seeder.SeedAsync(identity, secrets, CancellationToken.None).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -92,7 +92,7 @@ public sealed class DeviceRigProfileSeederTests
         var identity = new DeviceIdentity("device-1", "CODE", DateTimeOffset.UtcNow);
         var secrets = CreateSecrets(rigProfileEndpoint: "/api/device/profile/rig");
 
-        await seeder.SeedAsync(identity, secrets, CancellationToken.None);
+        await seeder.SeedAsync(identity, secrets, CancellationToken.None).ConfigureAwait(false);
 
         Assert.IsNotNull(captured);
         Assert.AreEqual(new Uri("https://logichost.example/api/device/profile/rig"), captured!.RequestUri);

@@ -17,6 +17,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 [TestClass]
 public sealed class DeviceBootstrapWorkflowTests
 {
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+
     [TestMethod]
     public async Task BootstrapAsync_WhenSuccessful_PersistsSecrets_AndSeedsRigProfile()
     {
@@ -90,7 +92,7 @@ public sealed class DeviceBootstrapWorkflowTests
             mockSeeder.Object,
             NullLogger<DeviceBootstrapWorkflow>.Instance);
 
-        var result = await workflow.BootstrapAsync(" envelope ", CancellationToken.None);
+        var result = await workflow.BootstrapAsync(" envelope ", CancellationToken.None).ConfigureAwait(false);
 
         Assert.IsNotNull(capturedRequest);
         Assert.AreEqual(new Uri("https://logichost.example/api/device/bootstrap"), capturedRequest!.RequestUri);
@@ -114,7 +116,7 @@ public sealed class DeviceBootstrapWorkflowTests
 
     private static DeviceBootstrapResponseDto CreateBootstrapResponse(string deviceKeyBase64, DeviceBootstrapSecretsPayload secrets)
     {
-        var plaintext = JsonSerializer.SerializeToUtf8Bytes(secrets, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var plaintext = JsonSerializer.SerializeToUtf8Bytes(secrets, SerializerOptions);
 
         var keyBytes = Convert.FromBase64String(deviceKeyBase64);
         Span<byte> nonce = stackalloc byte[12];

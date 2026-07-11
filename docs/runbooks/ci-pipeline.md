@@ -6,16 +6,16 @@ This document describes the build and validation stages executed in GitHub Actio
 
 | Stage | Purpose |
 | --- | --- |
-| **Restore & Build** | `dotnet restore` + `dotnet build HVO.SkyMonitor.v9.slnx` with warnings-as-errors in Release. |
-| **Unit Tests** | `dotnet test` across all `*.Tests` projects (excluding integration/hardware). |
-| **Integration Tests** | Testcontainers-backed suites for the main host and camera agents. |
+| **Restore & Build** | `dotnet restore` + `dotnet build HVO.SkyMonitor.v9.slnx` in Release. |
+| **Unit Tests** | `dotnet test` across the solution, excluding `Integration` and `Manual` categories. |
+| **Integration Tests** | Available for local and dedicated runs; not part of the current CI workflow. |
 | **Artifacts** | Publish coverage and build logs for download. |
 
 ## Workflow Configuration
 
-- Located at `.github/workflows/dotnet.yml`.
-- Uses the devcontainer image to ensure parity with local development.
-- Secrets (MinIO, database, API keys) are injected via GitHub repository secrets; names mirror `.env.template` variables. See `docs/security/secrets.md` for the canonical list and rotation cadence.
+- Located at `.github/workflows/ci.yml`.
+- Runs on GitHub-hosted `ubuntu-latest` with the .NET 10 SDK installed by `actions/setup-dotnet`.
+- The workflow does not start the local infrastructure stack or inject application-service credentials. Coverage badge publication uses the configured gist secrets.
 
 ## Reproducing Locally
 

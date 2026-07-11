@@ -99,11 +99,14 @@ internal sealed class DeviceRigProfileService(
 
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        logger.LogInformation(
-            "Accepted rig profile v{Version} for device {DeviceId} ({FriendlyName})",
-            nextVersion,
-            registration.DeviceId,
-            registration.FriendlyName);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation(
+                "Accepted rig profile v{Version} for device {DeviceId} ({FriendlyName})",
+                nextVersion,
+                registration.DeviceId,
+                registration.FriendlyName);
+        }
 
         return new DeviceRigProfileUpsertResult(
             registration.Id,

@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# opencode:enable - Start OpenCode and expose it securely to the Tailscale tailnet.
+# Usage: ./scripts/opencode:enable
+
+set -euo pipefail
+
+readonly OPENCODE_HOST="127.0.0.1"
+readonly OPENCODE_PORT="${OPENCODE_PORT:-4096}"
+readonly OPENCODE_PID_FILE="/tmp/skymonitor-opencode.pid"
+readonly OPENCODE_LOG_FILE="/tmp/skymonitor-opencode.log"
+
+if ! command -v opencode >/dev/null 2>&1; then
+    echo "OpenCode is not installed. Rebuild the dev container to run its post-create setup." >&2
+    exit 1
+fi
+
+if ! command -v tailscale >/dev/null 2>&1 || ! command -v tailscaled >/dev/null 2>&1; then
+    echo "Tailscale is not installed. Rebuild the dev container to run its post-create setup." >&2
+    exit 1
+fi
+
+if ! pgrep -x tailscaled >/dev/null 2>&1; then
+    echo "Starting Tailscale daemon..."
+    sudo mkdir -p /var/lib/tailscale /var/run/tailscale
+    sudo nohup tailscaled \
+        --state=/var/lib/tailscale/tailscaled.state \
+        --socket=/var/run/tailscale/tailscaled.sock \
+        --tun=userspace-networking \
+        >/tmp/tailscaled.log 2>&1 &
+    sleep 1
+fi
+
+if ! pgrep -x tailscaled >/dev/null 2>&1; then
+    echo "Tailscale daemon did not start. See /tmp/tailscaled.log for details." >&2
+    exit 1
+fi
+
+if [[ "$(tailscale status --json | jq -r '.BackendState')" != "Running" ]]; then
+    echo "Tailscale is not authenticated. Run 'sudo tailscale up' before enabling OpenCode." >&2
+    exit 1
+fi
+
+if [[ -f "$OPENCODE_PID_FILE" ]] && kill -0 "$(<"$OPENCODE_PID_FILE")" 2>/dev/null; then
+    echo "OpenCode is already running on ${OPENCODE_HOST}:${OPENCODE_PORT}."
+elif ss -ltn "sport = :${OPENCODE_PORT}" | grep -q LISTEN; then
+    rm -f "$OPENCODE_PID_FILE"
+    echo "Port ${OPENCODE_PORT} is already in use; proxying the existing local server."
+else
+    rm -f "$OPENCODE_PID_FILE"
+    echo "Starting OpenCode on ${OPENCODE_HOST}:${OPENCODE_PORT}..."
+    nohup opencode serve --hostname "$OPENCODE_HOST" --port "$OPENCODE_PORT" \
+        >"$OPENCODE_LOG_FILE" 2>&1 &
+    echo $! >"$OPENCODE_PID_FILE"
+    sleep 1
+
+    if ! kill -0 "$(<"$OPENCODE_PID_FILE")" 2>/dev/null; then
+        rm -f "$OPENCODE_PID_FILE"
+        echo "OpenCode failed to start. See $OPENCODE_LOG_FILE for details." >&2
+        exit 1
+    fi
+fi
+
+sudo tailscale serve --bg --yes "$OPENCODE_PORT"
+echo "OpenCode is available within the tailnet at:"
+sudo tailscale serve status

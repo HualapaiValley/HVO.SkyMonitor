@@ -9,7 +9,8 @@ public sealed record CameraModuleConfig(
     CameraModuleDescriptor Module,
     CameraRigConfig Rig,
     IReadOnlyList<CaptureProcessingStepConfig>? ProcessingSteps = null,
-    CapturePipelineConfig? Pipeline = null)
+    CapturePipelineConfig? Pipeline = null,
+    string? AgentId = null)
 {
     public string ModuleType => Module?.Type ?? throw new InvalidOperationException("Camera module type must be specified.");
 

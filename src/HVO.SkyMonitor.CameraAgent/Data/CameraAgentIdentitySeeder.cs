@@ -47,7 +47,10 @@ internal sealed class CameraAgentIdentitySeeder(
                 throw new InvalidOperationException("Could not seed default admin user");
             }
 
-            _logger.LogInformation("Seeded default admin account {Email}", _options.AdminEmail);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Seeded default admin account {Email}", _options.AdminEmail);
+            }
             return;
         }
 
@@ -81,7 +84,10 @@ internal sealed class CameraAgentIdentitySeeder(
                 throw new InvalidOperationException("Could not align default admin account");
             }
 
-            _logger.LogInformation("Aligned default admin account to use email {Email} as username", _options.AdminEmail);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Aligned default admin account to use email {Email} as username", _options.AdminEmail);
+            }
         }
 
         if (!await userManager.CheckPasswordAsync(user, _options.AdminPassword))
@@ -99,7 +105,10 @@ internal sealed class CameraAgentIdentitySeeder(
                 throw new InvalidOperationException("Could not update default admin password");
             }
 
-            _logger.LogInformation("Reset password for default admin account {Email}", _options.AdminEmail);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Reset password for default admin account {Email}", _options.AdminEmail);
+            }
         }
     }
 }

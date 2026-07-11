@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Exposure;
 using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -35,7 +36,8 @@ internal sealed class CameraModuleRunner
         var nextRequest = new CaptureRequest(
             RequestedStartUtc: _timeProvider.GetUtcNow(),
             TargetInterval: targetInterval,
-            Mode: CaptureMode.Still);
+            Mode: CaptureMode.Still,
+            RequestedSetpoint: new CaptureSetpoint(config.Rig.Pipeline.NightExposure, config.Rig.Pipeline.NightGain, null, null));
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -85,10 +87,52 @@ internal sealed class CameraModuleRunner
                 }
             }
 
+            var brightness = MeasureNormalizedBrightness(result.Frame);
+            var decision = ExposureController.Next(config.Rig.Pipeline, brightness, night: true);
             nextRequest = new CaptureRequest(
                 RequestedStartUtc: _timeProvider.GetUtcNow(),
                 TargetInterval: effectiveInterval,
-                Mode: result.Mode);
+                Mode: result.Mode,
+                RequestedSetpoint: decision.Setpoint);
         }
+    }
+
+    private static double? MeasureNormalizedBrightness(CameraFrame? frame)
+    {
+        if (frame is null || frame.PixelData.IsEmpty)
+        {
+            return null;
+        }
+
+        var data = frame.PixelData.Span;
+        return frame.PixelFormat switch
+        {
+            CameraPixelFormat.Mono8 => AverageMono8(data),
+            CameraPixelFormat.Mono16 => AverageMono16(data),
+            CameraPixelFormat.Rgb24 => AverageMono8(data),
+            _ => null
+        };
+    }
+
+    private static double AverageMono16(ReadOnlySpan<byte> data)
+    {
+        ulong total = 0;
+        for (var index = 0; index < data.Length; index += 2)
+        {
+            total += (ushort)(data[index] | data[index + 1] << 8);
+        }
+
+        return total / (data.Length / 2d) / ushort.MaxValue;
+    }
+
+    private static double AverageMono8(ReadOnlySpan<byte> data)
+    {
+        ulong total = 0;
+        foreach (var value in data)
+        {
+            total += value;
+        }
+
+        return total / (double)data.Length / byte.MaxValue;
     }
 }
