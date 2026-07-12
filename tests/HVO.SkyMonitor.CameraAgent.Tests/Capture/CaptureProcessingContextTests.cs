@@ -301,7 +301,8 @@ public sealed class CaptureProcessingContextTests
         store.Put(sceneId, scene);
         var step = new AnnotationCaptureProcessingStep(
             new CaptureProcessingStepMetadata("Annotation", "Annotation", 0),
-            new AnnotationProcessingStepOptions { MarkRadius = 0, DrawLabels = false }, store);
+            new AnnotationProcessingStepOptions { MarkRadius = 0, DrawLabels = false }, store,
+            new UnexpectedAnnotationSceneProvider());
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
@@ -330,7 +331,7 @@ public sealed class CaptureProcessingContextTests
         var step = new AnnotationCaptureProcessingStep(
             new CaptureProcessingStepMetadata("Annotation", "Annotation", 0),
             new AnnotationProcessingStepOptions { MarkRadius = 0, DrawLabels = false },
-            new ProjectedSceneStore());
+            new ProjectedSceneStore(), new UnexpectedAnnotationSceneProvider());
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
@@ -397,6 +398,17 @@ public sealed class CaptureProcessingContextTests
 
         public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
             => ValueTask.FromException(new InvalidOperationException("Expected test failure."));
+    }
+
+    private sealed class UnexpectedAnnotationSceneProvider : IAnnotationSceneProvider
+    {
+        public ValueTask<AnnotationSceneResult> BuildAsync(
+            CameraModuleConfig config,
+            CameraFrame rawFrame,
+            IReadOnlyList<string> constellationIds,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromException<AnnotationSceneResult>(
+                new InvalidOperationException("The test scene should come from existing provenance."));
     }
 
     private sealed class RawArtifactObserverStep : ICaptureProcessingStep

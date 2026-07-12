@@ -27,9 +27,11 @@ public sealed class VirtualSkyCameraModuleTests
         using var provider = services.BuildServiceProvider();
 
         var topology = provider.GetRequiredService<IConstellationTopology>();
+        var optionalAnnotationProvider = provider.GetRequiredService<IAnnotationSceneProvider>();
 
         StringAssert.Contains(topology.Metadata.Name, "D3-Celestial", StringComparison.Ordinal);
         Assert.IsNotEmpty(topology.GetSegments("ORI"));
+        Assert.IsNotNull(optionalAnnotationProvider);
     }
 
     [TestMethod]
@@ -88,11 +90,12 @@ public sealed class VirtualSkyCameraModuleTests
     {
         var config = await LoadProfileAsync("virtual-asi174mc.full.json").ConfigureAwait(false);
         var services = new ServiceCollection();
+        var catalog = CreateCanonicalStarCatalog();
         services.AddLogging();
+        services.AddSingleton<ICelestialCatalog>(catalog);
         services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
         using var provider = services.BuildServiceProvider();
         var sceneStore = provider.GetRequiredService<IProjectedSceneStore>();
-        var catalog = CreateCanonicalStarCatalog();
         var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, sceneStore);
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
         var setpoint = new CaptureSetpoint(

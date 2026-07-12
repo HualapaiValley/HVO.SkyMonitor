@@ -61,7 +61,7 @@ public sealed class VirtualSkyCameraModule(
         var setpoint = request.RequestedSetpoint ?? new CaptureSetpoint(
             config.Rig.Pipeline.NightExposure, config.Rig.Pipeline.NightGain, null, null);
         var sensor = config.Rig.Sensor;
-        var projection = CreateProjection(config.Rig);
+        var projection = RigProjectionContextFactory.Create(config.Rig);
         var configuredMetadata = new CatalogMetadata(
             _options.CatalogName,
             _options.CatalogVersion,
@@ -236,57 +236,6 @@ public sealed class VirtualSkyCameraModule(
                 setpoint.Gain, _options.Asi178Sensor.BlackLevelContainerAdu)
         };
 
-    private static ProjectionContext CreateProjection(CameraRigConfig rig)
-    {
-        var sensor = rig.Sensor;
-        var optics = rig.Optics;
-        var principalX = optics.PrincipalPointX ?? sensor.WidthPixels / 2d;
-        var principalY = optics.PrincipalPointY ?? sensor.HeightPixels / 2d;
-        var model = ParseProjectionModel(optics.ProjectionModel);
-        if (model == ProjectionModel.Perspective)
-        {
-            var physicalFocalPixels = optics.FocalLengthMillimeters > 0
-                ? optics.FocalLengthMillimeters / (sensor.PixelSizeMicrons / 1000d)
-                : (double?)null;
-            var horizontalFov = DegreesToRadians(optics.FieldOfViewDegrees);
-            var verticalFov = DegreesToRadians(optics.VerticalFieldOfViewDegrees ?? 0);
-            var focalX = optics.FocalLengthXPixels ?? physicalFocalPixels ??
-                sensor.WidthPixels / (2 * Math.Tan(horizontalFov / 2));
-            var focalY = optics.FocalLengthYPixels ?? physicalFocalPixels ??
-                (verticalFov > 0 ? sensor.HeightPixels / (2 * Math.Tan(verticalFov / 2)) : focalX);
-            return new ProjectionContext(
-                model, principalX, principalY, focalX, focalY, sensor.WidthPixels, sensor.HeightPixels,
-                ProjectionAperture.Rectangular, BoresightAltitudeDegrees: rig.Orientation.BoresightAltitudeDegrees,
-                BoresightAzimuthDegrees: rig.Orientation.BoresightAzimuthDegrees,
-                RollDegrees: rig.Orientation.RollAdjustmentDegrees, HorizontalFlip: optics.HorizontalFlip);
-        }
-
-        var radius = optics.ImageCircleRadiusPixels ?? 0.98 * Math.Min(sensor.WidthPixels, sensor.HeightPixels) / 2d;
-        var halfAngle = DegreesToRadians(optics.FieldOfViewDegrees / 2);
-        var derivedFocal = model switch
-        {
-            ProjectionModel.EquidistantFisheye => radius / halfAngle,
-            ProjectionModel.EquisolidFisheye => radius / (2 * Math.Sin(halfAngle / 2)),
-            ProjectionModel.OrthographicFisheye => radius / Math.Sin(halfAngle),
-            ProjectionModel.StereographicFisheye => radius / (2 * Math.Tan(halfAngle / 2)),
-            _ => throw new UnreachableException()
-        };
-        if (optics.FocalLengthXPixels is { } calibratedX && optics.FocalLengthYPixels is { } calibratedY &&
-            Math.Abs(calibratedX - calibratedY) > 1e-12)
-        {
-            throw new NotSupportedException("Radial fisheye calibration requires equal X and Y focal lengths.");
-        }
-
-        var physicalFocal = optics.FocalLengthMillimeters > 0
-            ? optics.FocalLengthMillimeters / (sensor.PixelSizeMicrons / 1000d)
-            : (double?)null;
-        var focal = optics.FocalLengthXPixels ?? optics.FocalLengthYPixels ?? physicalFocal ?? derivedFocal;
-        return new ProjectionContext(
-            model, principalX, principalY, focal, focal, sensor.WidthPixels, sensor.HeightPixels,
-            ProjectionAperture.Circular, radius, rig.Orientation.BoresightAltitudeDegrees,
-            rig.Orientation.BoresightAzimuthDegrees, rig.Orientation.RollAdjustmentDegrees, optics.HorizontalFlip);
-    }
-
     private static void ValidateRig(CameraRigConfig rig)
     {
         ArgumentNullException.ThrowIfNull(rig);
@@ -295,7 +244,7 @@ public sealed class VirtualSkyCameraModule(
             throw new NotSupportedException("VirtualSky supports Mono16, RGB24 compatibility, or BayerRggb16 output.");
         }
 
-        var model = ParseProjectionModel(rig.Optics.ProjectionModel);
+        var model = RigProjectionContextFactory.ParseModel(rig.Optics.ProjectionModel);
         var fisheye = model != ProjectionModel.Perspective;
         if (fisheye && rig.Optics.LensKind is not (LensKind.Unspecified or LensKind.Fisheye) ||
             !fisheye && rig.Optics.LensKind is not (LensKind.Unspecified or LensKind.Rectilinear or LensKind.Telescope))
@@ -329,24 +278,8 @@ public sealed class VirtualSkyCameraModule(
             throw new ArgumentException("Sensor color and response modes must agree with the selected pixel format.", nameof(rig));
         }
 
-        CreateProjection(rig).Validate();
+        _ = RigProjectionContextFactory.Create(rig);
     }
-
-    private static ProjectionModel ParseProjectionModel(string value)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(value);
-        if (string.Equals(value, "Rectilinear", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(value, "Gnomonic", StringComparison.OrdinalIgnoreCase))
-        {
-            return ProjectionModel.Perspective;
-        }
-
-        return Enum.TryParse<ProjectionModel>(value, true, out var model) && Enum.IsDefined(model)
-            ? model
-            : throw new NotSupportedException($"Projection model '{value}' is not supported.");
-    }
-
-    private static double DegreesToRadians(double degrees) => degrees * Math.PI / 180d;
 
     private static string CreateSceneId(
         VisibleSceneRequest request,

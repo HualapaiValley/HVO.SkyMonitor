@@ -647,11 +647,14 @@ PR #55 merge scope closes the VirtualSky baseline as follows:
    final PR evidence retains Debug/Release build, test, vulnerability, coverage,
    and format results.
 
-Real-camera geometry-only constellation overlays are explicitly deferred to
-issue #56. Pinned containerized Stellarium validation is explicitly deferred to
-issue #57 because the host executable/package mismatch prevents reproducible
-evidence; it remains an external manual/scheduled oracle rather than a normal
-.NET test dependency.
+Issue #56 completes real-camera geometry-only constellation overlays. Real raw
+and preview pixels remain untouched; annotation derives clipped D3-Celestial
+segments at the raw frame timestamp from the same shared rig projection used by
+VirtualSky, records catalog/topology provenance on `AnnotatedPreview`, and never
+synthesizes endpoint stars. Pinned containerized Stellarium validation remains
+deferred to issue #57 because the host executable/package mismatch prevents
+reproducible evidence; it remains an external manual/scheduled oracle rather
+than a normal .NET test dependency.
 
 Continue physical ASI178 calibration separately after that baseline work:
 

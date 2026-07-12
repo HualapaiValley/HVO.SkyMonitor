@@ -96,6 +96,7 @@
         "maximumLabelMagnitude": 2.5,
         "labelScale": 2,
         "drawConstellationLines": true,
+        "constellationIds": ["UMA", "UMI", "CAS", "CYG", "LYR", "PEG", "AND"],
         "constellationLineValue": 160,
         "constellationLineRed": 96,
         "constellationLineGreen": 160,
