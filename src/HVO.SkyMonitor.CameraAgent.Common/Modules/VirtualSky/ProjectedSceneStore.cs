@@ -20,6 +20,8 @@ public sealed class ProjectedSceneStore : IProjectedSceneStore
     private readonly ConcurrentDictionary<string, VisibleScene> _scenes = new(StringComparer.Ordinal);
     private readonly ConcurrentQueue<string> _order = new();
 
+    internal int Count => _scenes.Count;
+
     /// <inheritdoc />
     public void Put(string sceneId, VisibleScene scene)
     {

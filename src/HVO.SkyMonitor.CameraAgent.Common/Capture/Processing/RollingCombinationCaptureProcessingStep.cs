@@ -12,6 +12,8 @@ internal sealed class RollingCombinationCaptureProcessingStep(
 {
     private readonly RollingMono16Combiner _combiner = new(options.WindowSize);
 
+    internal int BufferedFrameCount => _combiner.BufferedFrameCount;
+
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);

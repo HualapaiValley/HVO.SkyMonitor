@@ -11,6 +11,8 @@ internal sealed record FrameProcessingItem(CameraModuleConfig Config, CaptureLoo
 internal sealed class FrameProcessingChannel
 {
     private readonly Channel<FrameProcessingItem> _channel;
+    private long _acceptedCount;
+    private long _dequeuedCount;
 
     public FrameProcessingChannel(int capacity)
     {
@@ -25,13 +27,32 @@ internal sealed class FrameProcessingChannel
         };
 
         _channel = Channel.CreateBounded<FrameProcessingItem>(options);
+        Capacity = capacity;
     }
 
-    public ValueTask WriteAsync(FrameProcessingItem item, CancellationToken cancellationToken)
-        => _channel.Writer.WriteAsync(item, cancellationToken);
+    public int Capacity { get; }
 
-    public IAsyncEnumerable<FrameProcessingItem> ReadAllAsync(CancellationToken cancellationToken)
-        => _channel.Reader.ReadAllAsync(cancellationToken);
+    public int CurrentDepth => _channel.Reader.Count;
+
+    public long AcceptedCount => Interlocked.Read(ref _acceptedCount);
+
+    public long DequeuedCount => Interlocked.Read(ref _dequeuedCount);
+
+    public async ValueTask WriteAsync(FrameProcessingItem item, CancellationToken cancellationToken)
+    {
+        await _channel.Writer.WriteAsync(item, cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref _acceptedCount);
+    }
+
+    public async IAsyncEnumerable<FrameProcessingItem> ReadAllAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var item in _channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            Interlocked.Increment(ref _dequeuedCount);
+            yield return item;
+        }
+    }
 
     public void Complete(Exception? exception = null)
         => _channel.Writer.TryComplete(exception);
