@@ -27,9 +27,7 @@ public sealed class FileSystemStorageCapacityProvider : IStorageCapacityProvider
 
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var drive = DriveInfo.GetDrives()
-            .Where(candidate => candidate.IsReady &&
-                (path.Equals(candidate.RootDirectory.FullName, comparison) ||
-                 path.StartsWith(candidate.RootDirectory.FullName.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, comparison)))
+            .Where(candidate => candidate.IsReady && IsWithinRoot(path, candidate.RootDirectory.FullName, comparison))
             .OrderByDescending(candidate => candidate.RootDirectory.FullName.Length)
             .FirstOrDefault()
             ?? throw new IOException($"No mounted filesystem exists for '{storageRoot}'.");
@@ -38,6 +36,18 @@ public sealed class FileSystemStorageCapacityProvider : IStorageCapacityProvider
             throw new IOException($"Filesystem capacity is unavailable for '{storageRoot}'.");
         }
         return new StorageCapacity(drive.TotalSize, drive.AvailableFreeSpace);
+    }
+
+    private static bool IsWithinRoot(string path, string root, StringComparison comparison)
+    {
+        path = Path.TrimEndingDirectorySeparator(path);
+        root = Path.TrimEndingDirectorySeparator(root);
+        if (path.Equals(root, comparison))
+        {
+            return true;
+        }
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+        return path.StartsWith(prefix, comparison);
     }
 
     private static string ResolvePhysicalPath(string path)
