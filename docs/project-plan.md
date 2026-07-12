@@ -666,6 +666,9 @@ Deliverables:
 Deliverables include timelapses, central annotations and reprocessing, meteor or
 transient detection, historical browsing, dashboards, and cross-agent analysis.
 These features use stored raw artifacts and versioned rig/catalog metadata.
+Fireball/transient preparation and runtime dependencies are defined in
+[`projects/fireball-transient-detection.md`](projects/fireball-transient-detection.md)
+and tracked by epic [#65](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65).
 
 ## 8. Test and Quality Strategy
 
@@ -875,6 +878,14 @@ The next implementation work should occur in this order:
 7. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
 8. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
    calibration as a separate hardware-backed work stream.
+9. Prepare deferred fireball/transient processing through continuous capture
+   cadence [#58](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58),
+   durable raw fan-out [#59](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59),
+   and reconstructable central jobs
+   [#60](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/60). Detector
+   runtime work remains under epic
+   [#65](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65) after the
+   preceding queue and recorded decision gates.
 
 ## 12. Success Definition for the CameraAgent Milestone
 
