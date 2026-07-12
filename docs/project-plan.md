@@ -852,9 +852,9 @@ The next implementation work should occur in this order:
    geometry-only path, then validate selected rendered stars, figure endpoints,
    and clipped boundaries through a pinned headless Stellarium container.
 2. Complete the remaining virtual-planetarium acceptance evidence. The
-   ordinary-path VirtualSky integration test is complete; add fixed full/reduced
-   geometry and statistics, numeric orientation movement, full canonical RGB24
-   evidence, and machine-readable fixtures.
+   ordinary-path integration and fixed ASI174MM reduced/full geometry,
+   statistics, centroid, and orientation movement evidence are complete; add
+   full canonical RGB24 evidence and machine-readable fixtures.
 3. Resolve catalog coarse-region filtering and harden coverage enforcement for
    missing reports/files; complete shared public API documentation.
 4. Validate standalone container startup with its packaged offline catalog and

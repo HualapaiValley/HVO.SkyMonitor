@@ -4,10 +4,13 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -45,9 +48,68 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(148.96, optics.GetProperty("imageCircleRadiusPixels").GetDouble(), 1e-12);
         Assert.IsFalse(optics.GetProperty("horizontalFlip").GetBoolean());
     }
+
+    [TestMethod]
+    [DataRow("virtual-asi174.full.json", CameraPixelFormat.Mono16, SensorResponseMode.Monochrome, 3872)]
+    [DataRow("virtual-asi174mc.full.json", CameraPixelFormat.Rgb24, SensorResponseMode.RenderedRgb, 5808)]
+    public async Task FullAsi174ProfilesLoadCanonicalGeometry(
+        string fileName,
+        CameraPixelFormat pixelFormat,
+        SensorResponseMode responseMode,
+        int strideBytes)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, fileName);
+        var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
+        {
+            ConfigFilePath = path,
+            AgentId = "canonical-profile-test",
+            Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
+        }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
+
+        var config = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual("canonical-profile-test", config.AgentId);
+        Assert.AreEqual(35.347, config.Observatory.LatitudeDegrees, 1e-12);
+        Assert.AreEqual(1936, config.Rig.Sensor.WidthPixels);
+        Assert.AreEqual(1216, config.Rig.Sensor.HeightPixels);
+        Assert.AreEqual(pixelFormat, config.Rig.Sensor.PixelFormat);
+        Assert.AreEqual(responseMode, config.Rig.Sensor.ResponseMode);
+        Assert.AreEqual(strideBytes, config.Rig.Sensor.StrideBytes);
+        Assert.AreEqual(968, config.Rig.Optics.PrincipalPointX);
+        Assert.AreEqual(608, config.Rig.Optics.PrincipalPointY);
+        Assert.AreEqual(595.84, config.Rig.Optics.ImageCircleRadiusPixels);
+        Assert.AreEqual(new RigOrientation(90, 0, 0), config.Rig.Orientation);
+    }
     private static readonly DateTimeOffset FixtureUtc = DateTimeOffset.Parse(
         "2025-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+    private static readonly DateTimeOffset SiderealHourUtc = DateTimeOffset.Parse(
+        "2025-01-15T08:59:50.170Z", System.Globalization.CultureInfo.InvariantCulture);
     private static readonly string[] ExpectedTestConstellationIds = ["TST"];
+    private static readonly CanonicalAsi174Expectation[] CanonicalAsi174Expectations =
+    [
+        new(484, 304,
+            new Dictionary<string, PixelPoint>(StringComparer.Ordinal)
+            {
+                ["HIP 32349"] = new(206.2686834265123, 236.27038538252305),
+                ["HIP 24608"] = new(195.87567302369607, 123.3189863672512),
+                ["HIP 37279"] = new(231.65452002346004, 201.71857083297678),
+                ["HIP 27989"] = new(187.7359865461824, 191.34906529847547)
+            },
+            new PixelPoint(206.29222527955037, 236.30129968971372),
+            0, 2263, 46.60373396041757,
+            "2E49B62A79138ABDC115720F1F3B1DDFA733D44CAC696FABAEFD46C18C133C8A"),
+        new(1936, 1216,
+            new Dictionary<string, PixelPoint>(StringComparer.Ordinal)
+            {
+                ["HIP 32349"] = new(825.0747337060492, 945.0815415300922),
+                ["HIP 24608"] = new(783.5026920947843, 493.2759454690048),
+                ["HIP 37279"] = new(926.6180800938401, 806.8742833319071),
+                ["HIP 27989"] = new(750.9439461847296, 765.3962611939019)
+            },
+            new PixelPoint(825.1183823529411, 945.1205882352941),
+            0, 2043, 31.337987049396478,
+            "9009C6CC7F6B929913E9AC19D701E1097FECEED98E7FF97C2370010E23E8D69A")
+    ];
 
     public TestContext TestContext { get; set; }
 
@@ -176,6 +238,89 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
+    public async Task CanonicalAsi174CaptureHasFixedGeometryCentroidAndStatistics()
+    {
+        foreach (var expected in CanonicalAsi174Expectations)
+        {
+            var module = CreateCanonicalStarModule();
+            await module.InitializeAsync(CreateAsi174Config(expected.Width, expected.Height), CancellationToken.None)
+                .ConfigureAwait(false);
+
+            var result = await module.CaptureAsync(
+                new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+                    new CaptureSetpoint(TimeSpan.FromSeconds(20), 150, null, null)),
+                CancellationToken.None).ConfigureAwait(false);
+
+            var frame = result.Frame!;
+            var objects = frame.Metadata.Scene!.Objects!;
+            var sirius = objects.Single(item => item.Id == "HIP 32349");
+            var centroid = CalculateLocalCentroid(frame, sirius.PixelX, sirius.PixelY, 6);
+            var statistics = CalculateRawStatistics(frame.PixelData.Span);
+            var checksum = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span));
+
+            Assert.HasCount(expected.ObjectPixels.Count, objects);
+            foreach (var item in objects)
+            {
+                var expectedPixel = expected.ObjectPixels[item.Id];
+                Assert.AreEqual(expectedPixel.X, item.PixelX, 1e-9, $"{expected.Width}x{expected.Height} {item.Id} X");
+                Assert.AreEqual(expectedPixel.Y, item.PixelY, 1e-9, $"{expected.Width}x{expected.Height} {item.Id} Y");
+            }
+            Assert.AreEqual(Asi174MmSensorModel.Version, frame.Metadata.Extra!["sensorModel"]);
+            Assert.AreEqual(expected.SiriusCentroid.X, centroid.X, 1e-9);
+            Assert.AreEqual(expected.SiriusCentroid.Y, centroid.Y, 1e-9);
+            Assert.AreEqual(expected.Minimum, statistics.Minimum);
+            Assert.AreEqual(expected.Maximum, statistics.Maximum);
+            Assert.AreEqual(expected.Mean, statistics.Mean, 1e-12);
+            Assert.AreEqual(expected.Checksum, checksum);
+        }
+    }
+
+    [TestMethod]
+    public async Task CanonicalStarGeometryMovesNumericallyWithTimeBoresightRollAndFlip()
+    {
+        async Task<ProjectedObjectProvenance> CaptureAsync(
+            DateTimeOffset utc,
+            RigOrientation orientation,
+            bool horizontalFlip = false)
+        {
+            var module = CreateCanonicalStarModule();
+            var config = CreateConfig() with
+            {
+                Rig = CreateConfig().Rig with
+                {
+                    Orientation = orientation,
+                    Optics = CreateConfig().Rig.Optics with { HorizontalFlip = horizontalFlip }
+                }
+            };
+            await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var result = await module.CaptureAsync(
+                new CaptureRequest(utc, TimeSpan.FromSeconds(1), CaptureMode.Still),
+                CancellationToken.None).ConfigureAwait(false);
+            return result.Frame!.Metadata.Scene!.Objects!.Single(item => item.Id == "HIP 32349");
+        }
+
+        var normal = await CaptureAsync(FixtureUtc, new RigOrientation(90, 0, 0)).ConfigureAwait(false);
+        var later = await CaptureAsync(SiderealHourUtc, new RigOrientation(90, 0, 0)).ConfigureAwait(false);
+        var tilted = await CaptureAsync(FixtureUtc, new RigOrientation(80, 0, 0)).ConfigureAwait(false);
+        var rolled = await CaptureAsync(FixtureUtc, new RigOrientation(90, 0, 90)).ConfigureAwait(false);
+        var flipped = await CaptureAsync(FixtureUtc, new RigOrientation(90, 0, 0), horizontalFlip: true).ConfigureAwait(false);
+        TestContext.WriteLine(
+            $"Movement: normal=({normal.PixelX:R},{normal.PixelY:R}), later=({later.PixelX:R},{later.PixelY:R}), " +
+            $"tilted=({tilted.PixelX:R},{tilted.PixelY:R}), rolled=({rolled.PixelX:R},{rolled.PixelY:R}), " +
+            $"flipped=({flipped.PixelX:R},{flipped.PixelY:R})");
+
+        AssertProjectedPixel(normal, 206.2686834265123, 236.27038538252305);
+        AssertProjectedPixel(later, 179.02511105712003, 232.07360939398308);
+        AssertProjectedPixel(tilted, 279.9844275635436, 52.078222900196494);
+        AssertProjectedPixel(rolled, 157.72961461747693, 116.2686834265123);
+        AssertProjectedPixel(flipped, 277.7313165734877, 236.27038538252305);
+        Assert.AreEqual(242 - (normal.PixelY - 152), rolled.PixelX, 1e-9);
+        Assert.AreEqual(152 + (normal.PixelX - 242), rolled.PixelY, 1e-9);
+        Assert.AreEqual(2 * 242 - normal.PixelX, flipped.PixelX, 1e-9);
+        Assert.AreEqual(normal.PixelY, flipped.PixelY, 1e-9);
+    }
+
+    [TestMethod]
     public async Task CaptureAsyncWithRequestedSetpointChangesStatisticsNotObjectSelection()
     {
         var module = CreateModule(FixtureUtc);
@@ -190,6 +335,12 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(high, highResult.NextSetpoint);
         Assert.AreNotEqual(lowResult.Frame!.Metadata.Extra!["renderMean"], highResult.Frame!.Metadata.Extra!["renderMean"]);
         Assert.AreEqual(lowResult.Frame.Metadata.Extra["visibleObjectCount"], highResult.Frame.Metadata.Extra["visibleObjectCount"]);
+        Assert.IsGreaterThan(
+            double.Parse(lowResult.Frame.Metadata.Extra["renderMean"], System.Globalization.CultureInfo.InvariantCulture),
+            double.Parse(highResult.Frame.Metadata.Extra["renderMean"], System.Globalization.CultureInfo.InvariantCulture));
+        CollectionAssert.AreEqual(
+            lowResult.Frame.Metadata.Scene!.Objects!.Select(item => (item.Id, item.PixelX, item.PixelY)).ToArray(),
+            highResult.Frame.Metadata.Scene!.Objects!.Select(item => (item.Id, item.PixelX, item.PixelY)).ToArray());
     }
 
     [TestMethod]
@@ -552,6 +703,37 @@ public sealed class VirtualSkyCameraModuleTests
         return new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
     }
 
+    private static VirtualSkyCameraModule CreateCanonicalStarModule()
+    {
+        var catalog = new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("HIP 32349", "Sirius", 101.28715533 / 15, -16.71611586, -1.46, 0.009, "32349"),
+            new CelestialCatalogObject("HIP 24608", "Capella", 79.17232794 / 15, 45.99799147, 0.08, 0.795, "24608"),
+            new CelestialCatalogObject("HIP 37279", "Procyon", 114.8254935 / 15, 5.22499307, 0.34, 0.42, "37279"),
+            new CelestialCatalogObject("HIP 27989", "Betelgeuse", 88.792939 / 15, 7.407064, 0.45, 1.5, "27989")
+        ]);
+        return new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+    }
+
+    private static CameraModuleConfig CreateAsi174Config(int width, int height)
+    {
+        using var options = System.Text.Json.JsonDocument.Parse(
+            "{\"seed\":2025,\"maximumMagnitude\":6.5,\"maximumResults\":10," +
+            "\"magnitudeZeroElectronsPerSecond\":300,\"bortleClass\":3," +
+            "\"rigProfileVersion\":\"canonical-asi174mm-v1\"," +
+            "\"asi174Sensor\":{\"enabled\":true,\"blackLevelAdu\":64}}");
+        return CreateConfig(CameraPixelFormat.Mono16, width, height) with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", options.RootElement.Clone()),
+            Rig = CreateConfig(CameraPixelFormat.Mono16, width, height).Rig with
+            {
+                Sensor = CreateConfig(CameraPixelFormat.Mono16, width, height).Rig.Sensor with
+                {
+                    SensorRecipeVersion = "virtual-asi174mm-electron-domain-v2"
+                }
+            }
+        };
+    }
+
     private static CameraModuleConfig CreateConfig(
         CameraPixelFormat format = CameraPixelFormat.Mono16, int width = 484, int height = 304) => new(
         new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix"), new CameraModuleDescriptor("VirtualSky"),
@@ -597,6 +779,73 @@ public sealed class VirtualSkyCameraModuleTests
         }
         return maximum;
     }
+
+    private static PixelPoint CalculateLocalCentroid(CameraFrame frame, double sourceX, double sourceY, int radius)
+    {
+        var centerX = (int)Math.Round(sourceX, MidpointRounding.AwayFromZero);
+        var centerY = (int)Math.Round(sourceY, MidpointRounding.AwayFromZero);
+        var strideBytes = frame.StrideBytes ?? checked(frame.Width * 2);
+        var minimum = ushort.MaxValue;
+        for (var y = Math.Max(0, centerY - radius); y <= Math.Min(frame.Height - 1, centerY + radius); y++)
+        {
+            for (var x = Math.Max(0, centerX - radius); x <= Math.Min(frame.Width - 1, centerX + radius); x++)
+            {
+                minimum = Math.Min(minimum, ReadSample(frame.PixelData.Span, strideBytes, x, y));
+            }
+        }
+
+        double total = 0;
+        double weightedX = 0;
+        double weightedY = 0;
+        for (var y = Math.Max(0, centerY - radius); y <= Math.Min(frame.Height - 1, centerY + radius); y++)
+        {
+            for (var x = Math.Max(0, centerX - radius); x <= Math.Min(frame.Width - 1, centerX + radius); x++)
+            {
+                var weight = ReadSample(frame.PixelData.Span, strideBytes, x, y) - minimum;
+                total += weight;
+                weightedX += (x + 0.5) * weight;
+                weightedY += (y + 0.5) * weight;
+            }
+        }
+        return new PixelPoint(weightedX / total, weightedY / total);
+    }
+
+    private static (ushort Minimum, ushort Maximum, double Mean) CalculateRawStatistics(ReadOnlySpan<byte> pixels)
+    {
+        var minimum = ushort.MaxValue;
+        ushort maximum = 0;
+        double total = 0;
+        for (var offset = 0; offset < pixels.Length; offset += 2)
+        {
+            var value = (ushort)(pixels[offset] | pixels[offset + 1] << 8);
+            minimum = Math.Min(minimum, value);
+            maximum = Math.Max(maximum, value);
+            total += value;
+        }
+        return (minimum, maximum, total / (pixels.Length / 2));
+    }
+
+    private static ushort ReadSample(ReadOnlySpan<byte> pixels, int strideBytes, int x, int y)
+    {
+        var offset = y * strideBytes + x * 2;
+        return (ushort)(pixels[offset] | pixels[offset + 1] << 8);
+    }
+
+    private static void AssertProjectedPixel(ProjectedObjectProvenance value, double expectedX, double expectedY)
+    {
+        Assert.AreEqual(expectedX, value.PixelX, 1e-9);
+        Assert.AreEqual(expectedY, value.PixelY, 1e-9);
+    }
+
+    private sealed record CanonicalAsi174Expectation(
+        int Width,
+        int Height,
+        IReadOnlyDictionary<string, PixelPoint> ObjectPixels,
+        PixelPoint SiriusCentroid,
+        ushort Minimum,
+        ushort Maximum,
+        double Mean,
+        string Checksum);
 
     private sealed class ProvenanceCatalog(CatalogMetadata metadata) : ICelestialCatalog, ICelestialCatalogMetadataSource
     {
