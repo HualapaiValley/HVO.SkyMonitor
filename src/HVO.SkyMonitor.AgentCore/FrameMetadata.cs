@@ -37,7 +37,9 @@ public sealed record SceneProvenance(
     Uri? ConstellationTopologySourceUrl = null,
     string? ConstellationTopologySha256 = null,
     string? ConstellationTopologyLicense = null,
-    string? ConstellationTopologyPreprocessingVersion = null);
+    string? ConstellationTopologyPreprocessingVersion = null,
+    IReadOnlyList<string>? ConstellationIds = null,
+    bool IncludeConstellationEndpointStars = false);
 
 /// <summary>
 /// A projected scene object in continuous sensor pixel-edge coordinates.
@@ -58,4 +60,5 @@ public sealed record ProjectedSegmentProvenance(
     double FromPixelX,
     double FromPixelY,
     double ToPixelX,
-    double ToPixelY);
+    double ToPixelY,
+    int PartIndex = 0);

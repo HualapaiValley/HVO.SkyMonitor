@@ -4,6 +4,7 @@
     "type": "VirtualSky",
     "options": {
       "seed": 2025,
+      "rigProfileVersion": "virtual-asi178mc-fujinon-candidate-v4",
       "maximumMagnitude": 6.5,
       "maximumResults": 300,
       "magnitudeZeroElectronsPerSecond": 18000.0,
@@ -13,6 +14,7 @@
         "blackLevelContainerAdu": 64.0
       },
       "constellationIds": ["UMA", "UMI", "CAS", "CYG", "LYR", "PEG", "AND"],
+      "includeConstellationEndpointStars": true,
       "solarSystemBodies": ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]
     }
   },
@@ -94,12 +96,18 @@
         "maximumLabelMagnitude": 2.5,
         "labelScale": 2,
         "drawConstellationLines": true,
+        "constellationLineValue": 160,
+        "constellationLineRed": 96,
+        "constellationLineGreen": 160,
+        "constellationLineBlue": 255,
+        "constellationLineThickness": 2,
+        "constellationLineOpacity": 0.8,
         "drawImageCircle": true,
         "drawCardinalDirections": true,
         "imageCircleValue": 96,
         "cardinalValue": 255,
         "cardinalScale": 2,
-        "recipeVersion": "named-object-rgb-compass-annotation-v2"
+        "recipeVersion": "named-object-rgb-compass-annotation-v3"
       }
     },
     {

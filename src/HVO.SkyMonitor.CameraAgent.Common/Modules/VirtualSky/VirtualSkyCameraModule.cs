@@ -79,9 +79,10 @@ public sealed class VirtualSkyCameraModule(
             metadata,
             horizonPolicy: HorizonPolicy.GeometricHorizon,
             projectionVersion: config.Rig.Optics.CalibrationVersion,
-            algorithmVersion: "visible-scene-iau1976-v1",
+            algorithmVersion: "visible-scene-iau1976-constellation-v2",
             constellationIds: _options.ConstellationIds,
-            solarSystemBodies: ParseSolarSystemBodies(_options.SolarSystemBodies));
+            solarSystemBodies: ParseSolarSystemBodies(_options.SolarSystemBodies),
+            includeConstellationEndpointStars: _options.IncludeConstellationEndpointStars);
         var scene = await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
             .BuildAsync(sceneRequest, cancellationToken).ConfigureAwait(false);
         var layout = new ImageLayout(sensor.WidthPixels, sensor.HeightPixels, sensor.PixelFormat,
@@ -103,7 +104,7 @@ public sealed class VirtualSkyCameraModule(
             _options,
             sensor,
             planetEphemeris?.ModelVersion,
-            constellationTopology?.Metadata.Version);
+            constellationTopology?.Metadata);
         sceneStore.Put(sceneId, scene);
         var provenance = new SceneProvenance(
             sceneId,
@@ -121,22 +122,26 @@ public sealed class VirtualSkyCameraModule(
             (catalog as ICelestialCatalogMetadataSource)?.PreprocessingVersion,
             scene.Objects.Select(static item => new ProjectedObjectProvenance(
                 item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(),
-             scene.Segments.Select(static item => new ProjectedSegmentProvenance(
-                 item.ConstellationId, item.FromObjectId, item.ToObjectId,
-                 item.FromPixel.X, item.FromPixel.Y, item.ToPixel.X, item.ToPixel.Y)).ToArray(),
+            scene.Segments.Select(static item => new ProjectedSegmentProvenance(
+                item.ConstellationId, item.FromObjectId, item.ToObjectId,
+                item.FromPixel.X, item.FromPixel.Y, item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray(),
             sceneRequest.SolarSystemBodies.Count > 0 ? planetEphemeris?.ModelVersion : null,
             sceneRequest.ConstellationIds.Count > 0 ? constellationTopology?.Metadata.Version : null,
             sceneRequest.ConstellationIds.Count > 0 ? constellationTopology?.Metadata.SourceUrl : null,
             sceneRequest.ConstellationIds.Count > 0 ? constellationTopology?.Metadata.SourceSha256 : null,
             sceneRequest.ConstellationIds.Count > 0 ? constellationTopology?.Metadata.License : null,
-            sceneRequest.ConstellationIds.Count > 0 ? constellationTopology?.Metadata.PreprocessingVersion : null);
+            sceneRequest.ConstellationIds.Count > 0 ? constellationTopology?.Metadata.PreprocessingVersion : null,
+            sceneRequest.ConstellationIds,
+            sceneRequest.IncludeConstellationEndpointStars);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sceneId"] = sceneId,
             ["visibleObjectCount"] = scene.Objects.Count.ToString(CultureInfo.InvariantCulture),
+            ["constellationStrokeCount"] = scene.Segments.Count.ToString(CultureInfo.InvariantCulture),
             ["renderAlgorithm"] = render.AlgorithmVersion,
             ["renderMean"] = render.Statistics.Mean.ToString("R", CultureInfo.InvariantCulture),
-            ["compatibilityLabel"] = render.CompatibilityLabel
+            ["compatibilityLabel"] = render.CompatibilityLabel,
+            ["includeConstellationEndpointStars"] = sceneRequest.IncludeConstellationEndpointStars.ToString()
         };
         if (_options.Asi174Sensor.Enabled)
         {
@@ -349,7 +354,7 @@ public sealed class VirtualSkyCameraModule(
         VirtualSkyCameraModuleOptions options,
         SensorProfile sensor,
         string? ephemerisModelVersion,
-        string? constellationTopologyVersion)
+        ConstellationTopologyMetadata? constellationTopologyMetadata)
     {
         var value = JsonSerializer.Serialize(new
         {
@@ -368,7 +373,7 @@ public sealed class VirtualSkyCameraModule(
             Options = options,
             Sensor = sensor,
             EphemerisModelVersion = ephemerisModelVersion,
-            ConstellationTopologyVersion = constellationTopologyVersion
+            ConstellationTopology = constellationTopologyMetadata
         });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
@@ -404,6 +409,7 @@ public sealed class VirtualSkyCameraModuleOptions
     public string CatalogSchemaVersion { get; init; } = "2";
     public string RigProfileVersion { get; init; } = "virtual-asi174-v1";
     public IReadOnlyList<string> ConstellationIds { get; init; } = Array.Empty<string>();
+    public bool IncludeConstellationEndpointStars { get; init; }
     public IReadOnlyList<string> SolarSystemBodies { get; init; } = Array.Empty<string>();
 
     internal void Validate()

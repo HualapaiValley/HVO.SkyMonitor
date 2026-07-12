@@ -43,7 +43,13 @@ internal sealed class AnnotationCaptureProcessingStep(
             DrawCardinalDirections = Options.DrawCardinalDirections,
             ImageCircleValue = Options.ImageCircleValue,
             CardinalValue = Options.CardinalValue,
-            CardinalScale = Options.CardinalScale
+            CardinalScale = Options.CardinalScale,
+            ConstellationLineValue = Options.ConstellationLineValue,
+            ConstellationLineRed = Options.ConstellationLineRed,
+            ConstellationLineGreen = Options.ConstellationLineGreen,
+            ConstellationLineBlue = Options.ConstellationLineBlue,
+            ConstellationLineThickness = Options.ConstellationLineThickness,
+            ConstellationLineOpacity = Options.ConstellationLineOpacity
         };
         AnnotationResult annotation;
         if (sceneStore.TryGet(provenance.SceneId, out var scene) && scene is not null)
@@ -87,12 +93,29 @@ internal sealed class AnnotationCaptureProcessingStep(
         }
         context.AddDerivative(FrameArtifactRole.AnnotatedPreview,
             new CameraFrame(frame.TimestampUtc, frame.Width, frame.Height, frame.PixelFormat, annotation.Pixels,
-                frame.Metadata with { SourceId = "AnnotatedPreview" }), Options.RecipeVersion, [preview.ArtifactId]);
+                CreateAnnotationMetadata(frame.Metadata)), Options.RecipeVersion, [preview.ArtifactId]);
         return ValueTask.CompletedTask;
     }
 
     private static bool IsNamed(string id, string displayName)
         => !string.IsNullOrWhiteSpace(displayName) && !string.Equals(id, displayName, StringComparison.Ordinal);
+
+    private FrameMetadata CreateAnnotationMetadata(FrameMetadata metadata)
+    {
+        var extra = metadata.Extra is null
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : new Dictionary<string, string>(metadata.Extra, StringComparer.Ordinal);
+        extra["annotationRecipeVersion"] = Options.RecipeVersion;
+        extra["constellationLineValue"] = Options.ConstellationLineValue.ToString(
+            System.Globalization.CultureInfo.InvariantCulture);
+        extra["constellationLineRgb"] = string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{Options.ConstellationLineRed},{Options.ConstellationLineGreen},{Options.ConstellationLineBlue}");
+        extra["constellationLineThickness"] = Options.ConstellationLineThickness.ToString(
+            System.Globalization.CultureInfo.InvariantCulture);
+        extra["constellationLineOpacity"] = Options.ConstellationLineOpacity.ToString(
+            "R", System.Globalization.CultureInfo.InvariantCulture);
+        return metadata with { SourceId = "AnnotatedPreview", Extra = extra };
+    }
 
     private static AnnotationResult Annotate(
         ReadOnlyMemory<byte> preview,
@@ -143,6 +166,24 @@ public sealed class AnnotationProcessingStepOptions
 
     public bool DrawConstellationLines { get; init; } = true;
 
+    [Range(0, 255)]
+    public byte ConstellationLineValue { get; init; } = 160;
+
+    [Range(0, 255)]
+    public byte ConstellationLineRed { get; init; } = 96;
+
+    [Range(0, 255)]
+    public byte ConstellationLineGreen { get; init; } = 160;
+
+    [Range(0, 255)]
+    public byte ConstellationLineBlue { get; init; } = byte.MaxValue;
+
+    [Range(1, 8)]
+    public int ConstellationLineThickness { get; init; } = 1;
+
+    [Range(0, 1)]
+    public double ConstellationLineOpacity { get; init; } = 0.8;
+
     [Range(-30, 30)]
     public double MaximumLabelMagnitude { get; init; } = 2.5;
 
@@ -163,5 +204,5 @@ public sealed class AnnotationProcessingStepOptions
     public int CardinalScale { get; init; } = 2;
 
     [Required(AllowEmptyStrings = false)]
-    public string RecipeVersion { get; init; } = "projected-scene-annotation-v1";
+    public string RecipeVersion { get; init; } = "projected-scene-annotation-v2";
 }

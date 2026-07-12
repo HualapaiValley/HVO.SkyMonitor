@@ -302,15 +302,18 @@ stars. Requirements:
 - later constellation segments resolve through stable object IDs from the same
   scene.
 
-Constellation overlay completeness remains follow-up work. Real-camera and
-virtual-camera behavior must be distinct:
+VirtualSky constellation completeness is implemented. Topology endpoints are
+resolved by HIP identifier independently of magnitude and result limits, edges
+are projected as bounded great-circle chord sequences, and visible portions are
+clipped to sensor, image-circle, horizon, and projection-domain boundaries.
+Real-camera and virtual-camera behavior remain distinct:
 
 - For a real-camera frame, annotation may augment its geometry with topology
   endpoints omitted by normal magnitude, label, or visible-result selection so
   it can draw and clip the figure. It must never synthesize missing star pixels
   or imply that a catalog endpoint was detected in the physical image.
-- For VirtualSky acquisition only, a planned
-  `IncludeConstellationEndpointStars` render option may include otherwise omitted
+- For VirtualSky acquisition only, the
+  `IncludeConstellationEndpointStars` render option includes otherwise omitted
   topology stars in the generated virtual scene and raw sensor simulation when
   constellation figures are requested. This is a virtual render-recipe choice,
   not generic annotation behavior, and must be recorded in frame provenance.
@@ -323,9 +326,9 @@ horizon boundary, draw and clip only the geometrically visible segment portions
 instead of dropping the figure because one endpoint is off-screen.
 Invalid/back-facing projection domains must not be bridged with a straight line.
 
-The constellation overlay also needs explicit derivative style options for line
+The constellation overlay exposes explicit derivative style options for line
 value/color, thickness, and opacity, with deterministic defaults for Mono8 and
-RGB24 previews. Acceptance tests must cover a fully visible figure with an
+RGB24 previews. Acceptance tests cover a fully visible figure with an
 endpoint omitted from the base visible-object selection, one-endpoint and
 multi-segment boundary clipping, mirrored orientation, and stable output for
 each supported preview format.
@@ -608,6 +611,8 @@ The baseline includes:
   combination, storage, latest-frame, telemetry, and outbox components;
 - persisted scene provenance, offline catalog packaging, and HYG attribution;
 - shared object, constellation, image-circle, and cardinal annotations;
+- independent constellation endpoint lookup, clipped great-circle geometry,
+  VirtualSky endpoint-star inclusion, and configurable line styling;
 - pinned Stellarium automation and analytic/cross-host conformance tests;
 - an additional ASI178MC RGGB16 development profile with demosaicing, Bayer
   stacking, and a provisional Fujinon FE185C057HA-1 candidate calibration.
@@ -619,13 +624,11 @@ replace that conformance fixture.
 
 Resume prompt acceptance in this order:
 
-1. Correct constellation figure overlays: augment real and virtual annotation
-   geometry with required topology endpoints without adding stars to real
-   images; add the VirtualSky-only `IncludeConstellationEndpointStars` render
-   option for missing simulated stars; clip partially visible segments at
-   calibrated boundaries; and add line color/value, thickness, and opacity
-   options with geometry and image tests. Add pinned headless Stellarium
-   validation for star centroids, figure endpoints, and clipped boundaries.
+1. Finish constellation validation and real-camera wiring: the VirtualSky
+   endpoint lookup, `IncludeConstellationEndpointStars`, clipping, provenance,
+   and line-style implementation is complete. Add the real-camera geometry-only
+   path and pinned headless Stellarium validation for star centroids, figure
+   endpoints, and clipped boundaries.
 2. Add one ordinary-path VirtualSky integration test spanning capture, preview,
    annotation, filesystem persistence, latest-frame publication, telemetry, and
    durable outbox selection.

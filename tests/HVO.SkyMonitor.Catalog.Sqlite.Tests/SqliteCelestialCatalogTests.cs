@@ -225,6 +225,21 @@ internal sealed class SqliteCelestialCatalogTests
     }
 
     [TestMethod]
+    public async Task GetByHipparcosIdsAsync_ReturnsStableMatchesIndependentOfMagnitude()
+    {
+        var catalog = CreateCatalog();
+
+        var result = await catalog.GetByHipparcosIdsAsync(["91262", "32349", "91262", "missing"])
+            .ConfigureAwait(false);
+
+        Assert.HasCount(2, result);
+        Assert.AreEqual("32263", result[0].Id);
+        Assert.AreEqual("90979", result[1].Id);
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await catalog.GetByHipparcosIdsAsync([" "]).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task QueriesHonorInclusiveMagnitudeAndResultBoundaries()
     {
         var catalog = CreateCatalog();

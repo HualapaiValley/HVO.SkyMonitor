@@ -50,11 +50,13 @@ public sealed class VisibleSceneRequest
         RefractionOptions refraction = default,
         HorizonPolicy horizonPolicy = HorizonPolicy.GeometricHorizon,
         string projectionVersion = "equidistant-v1",
-        string algorithmVersion = "visible-scene-iau1976-v1",
+        string algorithmVersion = "visible-scene-iau1976-constellation-v2",
         IReadOnlyList<string>? constellationIds = null,
-        IReadOnlyList<SolarSystemBody>? solarSystemBodies = null)
+        IReadOnlyList<SolarSystemBody>? solarSystemBodies = null,
+        bool includeConstellationEndpointStars = false)
         : this(utc, observer, ToProjectionContext(projection), catalogQuery, catalogMetadata,
-            refraction, horizonPolicy, projectionVersion, algorithmVersion, constellationIds, solarSystemBodies)
+            refraction, horizonPolicy, projectionVersion, algorithmVersion, constellationIds, solarSystemBodies,
+            includeConstellationEndpointStars)
     {
     }
 
@@ -68,9 +70,10 @@ public sealed class VisibleSceneRequest
         RefractionOptions refraction = default,
         HorizonPolicy horizonPolicy = HorizonPolicy.GeometricHorizon,
         string projectionVersion = "equidistant-v1",
-        string algorithmVersion = "visible-scene-iau1976-v1",
+        string algorithmVersion = "visible-scene-iau1976-constellation-v2",
         IReadOnlyList<string>? constellationIds = null,
-        IReadOnlyList<SolarSystemBody>? solarSystemBodies = null)
+        IReadOnlyList<SolarSystemBody>? solarSystemBodies = null,
+        bool includeConstellationEndpointStars = false)
     {
         ArgumentNullException.ThrowIfNull(catalogQuery);
         ArgumentNullException.ThrowIfNull(catalogMetadata);
@@ -105,8 +108,10 @@ public sealed class VisibleSceneRequest
         HorizonPolicy = horizonPolicy;
         ProjectionVersion = projectionVersion;
         AlgorithmVersion = algorithmVersion;
-        ConstellationIds = new ReadOnlyCollection<string>(constellationIds.Distinct(StringComparer.Ordinal).ToArray());
+        ConstellationIds = new ReadOnlyCollection<string>(constellationIds
+            .Select(static id => id.ToUpperInvariant()).Distinct(StringComparer.Ordinal).ToArray());
         SolarSystemBodies = new ReadOnlyCollection<SolarSystemBody>(solarSystemBodies.Distinct().ToArray());
+        IncludeConstellationEndpointStars = includeConstellationEndpointStars;
     }
 
     /// <summary>Gets the normalized UTC scene instant.</summary>
@@ -141,6 +146,9 @@ public sealed class VisibleSceneRequest
 
     /// <summary>Gets solar-system bodies requested from the configured ephemeris.</summary>
     public IReadOnlyList<SolarSystemBody> SolarSystemBodies { get; }
+
+    /// <summary>Gets whether topology endpoints omitted by normal selection are included as virtual render objects.</summary>
+    public bool IncludeConstellationEndpointStars { get; }
 
     private static void ValidateMetadata(CatalogMetadata metadata)
     {
@@ -193,13 +201,14 @@ public sealed record ProjectedCelestialObject(
     string AlgorithmVersion,
     string? HipparcosId = null);
 
-/// <summary>A constellation segment whose stable catalog endpoints are both present in this scene.</summary>
+/// <summary>One clipped projected chord of a constellation segment.</summary>
 public sealed record ProjectedConstellationSegment(
     string ConstellationId,
     string FromObjectId,
     string ToObjectId,
     PixelPoint FromPixel,
-    PixelPoint ToPixel);
+    PixelPoint ToPixel,
+    int PartIndex = 0);
 
 /// <summary>The immutable geometry authority shared by rendering and annotation.</summary>
 public sealed class VisibleScene
@@ -220,7 +229,7 @@ public sealed class VisibleScene
     /// <summary>Gets visible objects in stable magnitude-then-ID order.</summary>
     public IReadOnlyList<ProjectedCelestialObject> Objects { get; }
 
-    /// <summary>Gets requested constellation segments resolved from the same visible object set.</summary>
+    /// <summary>Gets clipped constellation chords resolved independently of normal render-object selection.</summary>
     public IReadOnlyList<ProjectedConstellationSegment> Segments { get; }
 }
 
@@ -262,6 +271,27 @@ public sealed class VisibleSceneBuilder
             request.Projection.HorizontalFlip);
         var visible = new List<ProjectedCelestialObject>();
 
+        var topologySegments = request.ConstellationIds.Count > 0 && _constellationTopology is null
+            ? throw new InvalidOperationException("Constellations were requested without a topology provider.")
+            : request.ConstellationIds
+                .SelectMany(id => _constellationTopology?.GetSegments(id) ?? [])
+                .ToArray();
+        var endpointHipparcosIds = topologySegments
+            .SelectMany(static segment => new[] { segment.FromHipparcosId, segment.ToHipparcosId })
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var endpointCatalogObjects = endpointHipparcosIds.Length == 0
+            ? Array.Empty<CelestialCatalogObject>()
+            : _catalog is IHipparcosCatalog hipparcosCatalog
+                ? (await hipparcosCatalog.GetByHipparcosIdsAsync(endpointHipparcosIds, cancellationToken)
+                    .ConfigureAwait(false)).ToArray()
+                : throw new InvalidOperationException(
+                    "Constellations require a catalog that supports stable Hipparcos lookup.");
+        var endpointsByHipparcosId = endpointCatalogObjects
+            .Where(static item => item.HipparcosId is not null)
+            .GroupBy(static item => item.HipparcosId!, StringComparer.Ordinal)
+            .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.Ordinal);
+
         foreach (var item in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -286,6 +316,28 @@ public sealed class VisibleSceneBuilder
             .Take(request.CatalogQuery.MaximumResults)
             .ToArray();
         var selected = selectedStars.ToList();
+        if (request.IncludeConstellationEndpointStars)
+        {
+            var selectedIds = new HashSet<string>(selected.Select(static item => item.Id), StringComparer.Ordinal);
+            foreach (var endpoint in endpointCatalogObjects)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (selectedIds.Contains(endpoint.Id))
+                {
+                    continue;
+                }
+
+                var projected = ProjectObject(
+                    request, projector, basis, endpoint.Id, endpoint.DisplayName, CelestialObjectKind.Star,
+                    new EquatorialPoint(endpoint.RightAscensionHours, endpoint.DeclinationDegrees),
+                    endpoint.Magnitude, endpoint.ColorIndex, endpoint.HipparcosId);
+                if (projected is not null)
+                {
+                    selected.Add(projected);
+                    selectedIds.Add(projected.Id);
+                }
+            }
+        }
         if (request.SolarSystemBodies.Count > 0 && _planetEphemeris is null)
         {
             throw new InvalidOperationException("Solar-system bodies were requested without an ephemeris provider.");
@@ -307,25 +359,14 @@ public sealed class VisibleSceneBuilder
         selected = selected.OrderBy(static item => item.Magnitude)
             .ThenBy(static item => item.Id, StringComparer.Ordinal)
             .ToList();
-        var byHipparcosId = selectedStars
-            .Where(static item => item.HipparcosId is not null)
-            .GroupBy(static item => item.HipparcosId!, StringComparer.Ordinal)
-            .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.Ordinal);
         var segments = new List<ProjectedConstellationSegment>();
-        if (_constellationTopology is not null)
+        foreach (var segment in topologySegments)
         {
-            foreach (var constellationId in request.ConstellationIds)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (endpointsByHipparcosId.TryGetValue(segment.FromHipparcosId, out var from) &&
+                endpointsByHipparcosId.TryGetValue(segment.ToHipparcosId, out var to))
             {
-                foreach (var segment in _constellationTopology.GetSegments(constellationId))
-                {
-                    if (byHipparcosId.TryGetValue(segment.FromHipparcosId, out var from) &&
-                        byHipparcosId.TryGetValue(segment.ToHipparcosId, out var to))
-                    {
-                        segments.Add(new ProjectedConstellationSegment(
-                            segment.ConstellationId, from.Id, to.Id,
-                            from.Pixel, to.Pixel));
-                    }
-                }
+                AppendProjectedSegmentChords(request, basis, segment.ConstellationId, from, to, segments);
             }
         }
 
@@ -363,5 +404,313 @@ public sealed class VisibleSceneBuilder
                 id, displayName, kind, j2000, ofDate, geometric, apparent,
                 basis.ToCamera(CameraBasis.FromHorizontal(apparent)), pixel.Value, magnitude, colorIndex,
                 request.CatalogMetadata.Version, request.ProjectionVersion, request.AlgorithmVersion, hipparcosId);
+    }
+
+    private static void AppendProjectedSegmentChords(
+        VisibleSceneRequest request,
+        CameraBasis basis,
+        string constellationId,
+        CelestialCatalogObject from,
+        CelestialCatalogObject to,
+        List<ProjectedConstellationSegment> output)
+    {
+        var chords = new List<ProjectedConstellationSegment>();
+        var fromHorizontal = HorizontalOfDate(request, from);
+        var toHorizontal = HorizontalOfDate(request, to);
+        var fromDirection = CameraBasis.FromHorizontal(fromHorizontal);
+        var toDirection = CameraBasis.FromHorizontal(toHorizontal);
+        var angle = Math.Acos(Math.Clamp(EnuVector.Dot(fromDirection, toDirection), -1d, 1d));
+        if (!double.IsFinite(angle) || angle >= Math.PI - 1e-9)
+        {
+            return;
+        }
+
+        var stepCount = Math.Max(1, (int)Math.Ceiling(angle / (2 * Math.PI / 180d)));
+        var previous = fromDirection;
+        for (var step = 1; step <= stepCount; step++)
+        {
+            var current = Slerp(fromDirection, toDirection, (double)step / stepCount);
+            AppendClippedChord(request, basis, constellationId, from.Id, to.Id, previous, current, chords);
+            previous = current;
+        }
+        for (var index = 0; index < chords.Count; index++)
+        {
+            output.Add(chords[index] with { PartIndex = index });
+        }
+    }
+
+    private static AltAzPoint HorizontalOfDate(VisibleSceneRequest request, CelestialCatalogObject value)
+    {
+        var ofDate = EquatorialPrecession.PrecessJ2000(
+            new EquatorialPoint(value.RightAscensionHours, value.DeclinationDegrees), request.Utc);
+        return CoordinateTransforms.EquatorialToHorizontal(
+            ofDate, request.Utc, request.Observer.LatitudeDegrees, request.Observer.LongitudeDegrees);
+    }
+
+    private static void AppendClippedChord(
+        VisibleSceneRequest request,
+        CameraBasis basis,
+        string constellationId,
+        string fromObjectId,
+        string toObjectId,
+        EnuVector from,
+        EnuVector to,
+        List<ProjectedConstellationSegment> output,
+        int subdivisionDepth = 0)
+    {
+        var fromValid = TryProjectGeometry(request, basis, from, out var fromPixel);
+        var toValid = TryProjectGeometry(request, basis, to, out var toPixel);
+        if (fromValid && toValid)
+        {
+            var middle = (from + to).Normalize();
+            var middleValid = TryProjectGeometry(request, basis, middle, out var middlePixel);
+            if (subdivisionDepth < 8 && (!middleValid ||
+                DistanceFromChord(middlePixel, fromPixel, toPixel) > 0.25))
+            {
+                AppendClippedChord(request, basis, constellationId, fromObjectId, toObjectId,
+                    from, middle, output, subdivisionDepth + 1);
+                AppendClippedChord(request, basis, constellationId, fromObjectId, toObjectId,
+                    middle, to, output, subdivisionDepth + 1);
+                return;
+            }
+            AddClippedChord(request.Projection, constellationId, fromObjectId, toObjectId, fromPixel, toPixel, output);
+            return;
+        }
+
+        if (subdivisionDepth < 8)
+        {
+            var middle = (from + to).Normalize();
+            AppendClippedChord(request, basis, constellationId, fromObjectId, toObjectId,
+                from, middle, output, subdivisionDepth + 1);
+            AppendClippedChord(request, basis, constellationId, fromObjectId, toObjectId,
+                middle, to, output, subdivisionDepth + 1);
+            return;
+        }
+
+        if (fromValid == toValid)
+        {
+            return;
+        }
+
+        var validDirection = fromValid ? from : to;
+        var invalidDirection = fromValid ? to : from;
+        var boundaryPixel = fromValid ? fromPixel : toPixel;
+        for (var iteration = 0; iteration < 32; iteration++)
+        {
+            var middle = (validDirection + invalidDirection).Normalize();
+            if (TryProjectGeometry(request, basis, middle, out var middlePixel))
+            {
+                validDirection = middle;
+                boundaryPixel = middlePixel;
+            }
+            else
+            {
+                invalidDirection = middle;
+            }
+        }
+
+        if (fromValid)
+        {
+            AddClippedChord(request.Projection, constellationId, fromObjectId, toObjectId,
+                fromPixel, boundaryPixel, output);
+        }
+        else
+        {
+            AddClippedChord(request.Projection, constellationId, fromObjectId, toObjectId,
+                boundaryPixel, toPixel, output);
+        }
+    }
+
+    private static double DistanceFromChord(PixelPoint point, PixelPoint from, PixelPoint to)
+    {
+        var deltaX = to.X - from.X;
+        var deltaY = to.Y - from.Y;
+        var lengthSquared = deltaX * deltaX + deltaY * deltaY;
+        if (lengthSquared <= 1e-20)
+        {
+            return Math.Sqrt(Math.Pow(point.X - from.X, 2) + Math.Pow(point.Y - from.Y, 2));
+        }
+        var amount = Math.Clamp(
+            ((point.X - from.X) * deltaX + (point.Y - from.Y) * deltaY) / lengthSquared, 0, 1);
+        var nearestX = from.X + amount * deltaX;
+        var nearestY = from.Y + amount * deltaY;
+        return Math.Sqrt(Math.Pow(point.X - nearestX, 2) + Math.Pow(point.Y - nearestY, 2));
+    }
+
+    private static bool TryProjectGeometry(
+        VisibleSceneRequest request,
+        CameraBasis basis,
+        EnuVector geometricDirection,
+        out PixelPoint pixel)
+    {
+        if (request.HorizonPolicy == HorizonPolicy.GeometricHorizon && geometricDirection.Up < 0)
+        {
+            pixel = default;
+            return false;
+        }
+
+        var geometric = CameraBasis.ToHorizontal(geometricDirection);
+        var apparent = geometric with
+        {
+            AltitudeDegrees = AtmosphericRefraction.Apply(geometric.AltitudeDegrees, request.Refraction)
+        };
+        var camera = basis.ToCamera(CameraBasis.FromHorizontal(apparent));
+        var context = request.Projection;
+        if (context.Model == ProjectionModel.Perspective)
+        {
+            if (camera.Up <= 1e-12)
+            {
+                pixel = default;
+                return false;
+            }
+            pixel = new PixelPoint(
+                context.PrincipalPointX + context.FocalLengthXPixels * camera.East / camera.Up,
+                context.PrincipalPointY - context.FocalLengthYPixels * camera.North / camera.Up);
+            return double.IsFinite(pixel.X) && double.IsFinite(pixel.Y);
+        }
+
+        var theta = Math.Acos(Math.Clamp(camera.Up, -1d, 1d));
+        if (context.Model == ProjectionModel.OrthographicFisheye && theta > Math.PI / 2 + 1e-12)
+        {
+            pixel = default;
+            return false;
+        }
+
+        var planarLength = Math.Sqrt(camera.East * camera.East + camera.North * camera.North);
+        if (planarLength <= 1e-15)
+        {
+            if (theta > 1e-12)
+            {
+                pixel = default;
+                return false;
+            }
+            pixel = new PixelPoint(context.PrincipalPointX, context.PrincipalPointY);
+            return true;
+        }
+
+        var radius = context.Model switch
+        {
+            ProjectionModel.EquidistantFisheye => context.FocalLengthXPixels * theta,
+            ProjectionModel.EquisolidFisheye => 2 * context.FocalLengthXPixels * Math.Sin(theta / 2),
+            ProjectionModel.OrthographicFisheye => context.FocalLengthXPixels * Math.Sin(theta),
+            ProjectionModel.StereographicFisheye when theta < Math.PI - 1e-12
+                => 2 * context.FocalLengthXPixels * Math.Tan(theta / 2),
+            _ => double.NaN
+        };
+        pixel = new PixelPoint(
+            context.PrincipalPointX + radius * camera.East / planarLength,
+            context.PrincipalPointY - radius * camera.North / planarLength);
+        return double.IsFinite(pixel.X) && double.IsFinite(pixel.Y);
+    }
+
+    private static void AddClippedChord(
+        ProjectionContext projection,
+        string constellationId,
+        string fromObjectId,
+        string toObjectId,
+        PixelPoint from,
+        PixelPoint to,
+        List<ProjectedConstellationSegment> output)
+    {
+        if (TryClipToProjection(projection, from, to, out var clippedFrom, out var clippedTo) &&
+            (Math.Abs(clippedFrom.X - clippedTo.X) > 1e-9 || Math.Abs(clippedFrom.Y - clippedTo.Y) > 1e-9))
+        {
+            output.Add(new ProjectedConstellationSegment(
+                constellationId, fromObjectId, toObjectId, clippedFrom, clippedTo));
+        }
+    }
+
+    private static bool TryClipToProjection(
+        ProjectionContext projection,
+        PixelPoint from,
+        PixelPoint to,
+        out PixelPoint clippedFrom,
+        out PixelPoint clippedTo)
+    {
+        var deltaX = to.X - from.X;
+        var deltaY = to.Y - from.Y;
+        var minimum = 0d;
+        var maximum = 1d;
+        var enforceSensorBounds = projection.EnforceSensorBounds || projection.Model == ProjectionModel.Perspective;
+        if (enforceSensorBounds &&
+            (!ClipBoundary(-deltaX, from.X, ref minimum, ref maximum) ||
+             !ClipBoundary(deltaX, projection.WidthPixels - from.X, ref minimum, ref maximum) ||
+             !ClipBoundary(-deltaY, from.Y, ref minimum, ref maximum) ||
+             !ClipBoundary(deltaY, projection.HeightPixels - from.Y, ref minimum, ref maximum)) ||
+            projection.Aperture == ProjectionAperture.Circular &&
+            !ClipCircle(projection, from, deltaX, deltaY, ref minimum, ref maximum))
+        {
+            clippedFrom = default;
+            clippedTo = default;
+            return false;
+        }
+
+        clippedFrom = new PixelPoint(from.X + minimum * deltaX, from.Y + minimum * deltaY);
+        clippedTo = new PixelPoint(from.X + maximum * deltaX, from.Y + maximum * deltaY);
+        return minimum <= maximum;
+    }
+
+    private static bool ClipBoundary(double direction, double distance, ref double minimum, ref double maximum)
+    {
+        if (Math.Abs(direction) < 1e-15)
+        {
+            return distance >= 0;
+        }
+        var ratio = distance / direction;
+        if (direction < 0)
+        {
+            if (ratio > maximum) return false;
+            minimum = Math.Max(minimum, ratio);
+        }
+        else
+        {
+            if (ratio < minimum) return false;
+            maximum = Math.Min(maximum, ratio);
+        }
+        return minimum <= maximum;
+    }
+
+    private static bool ClipCircle(
+        ProjectionContext projection,
+        PixelPoint from,
+        double deltaX,
+        double deltaY,
+        ref double minimum,
+        ref double maximum)
+    {
+        var offsetX = from.X - projection.PrincipalPointX;
+        var offsetY = from.Y - projection.PrincipalPointY;
+        var quadratic = deltaX * deltaX + deltaY * deltaY;
+        var linear = 2 * (offsetX * deltaX + offsetY * deltaY);
+        var constant = offsetX * offsetX + offsetY * offsetY -
+            projection.ImageCircleRadiusPixels!.Value * projection.ImageCircleRadiusPixels.Value;
+        if (quadratic <= 1e-20)
+        {
+            return constant <= 0;
+        }
+        var discriminant = linear * linear - 4 * quadratic * constant;
+        if (discriminant < 0)
+        {
+            return constant <= 0;
+        }
+        var root = Math.Sqrt(Math.Max(0, discriminant));
+        var enter = (-linear - root) / (2 * quadratic);
+        var exit = (-linear + root) / (2 * quadratic);
+        minimum = Math.Max(minimum, enter);
+        maximum = Math.Min(maximum, exit);
+        return minimum <= maximum;
+    }
+
+    private static EnuVector Slerp(EnuVector from, EnuVector to, double amount)
+    {
+        var dot = Math.Clamp(EnuVector.Dot(from, to), -1d, 1d);
+        var angle = Math.Acos(dot);
+        if (angle < 1e-12)
+        {
+            return from;
+        }
+        var sine = Math.Sin(angle);
+        return (from * (Math.Sin((1 - amount) * angle) / sine) +
+            to * (Math.Sin(amount * angle) / sine)).Normalize();
     }
 }

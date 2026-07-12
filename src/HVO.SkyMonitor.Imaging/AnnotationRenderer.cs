@@ -34,11 +34,19 @@ public sealed record AnnotationOptions
     public byte ImageCircleValue { get; init; } = 96;
     public byte CardinalValue { get; init; } = byte.MaxValue;
     public int CardinalScale { get; init; } = 2;
+    public byte ConstellationLineValue { get; init; } = 160;
+    public byte ConstellationLineRed { get; init; } = 96;
+    public byte ConstellationLineGreen { get; init; } = 160;
+    public byte ConstellationLineBlue { get; init; } = byte.MaxValue;
+    public int ConstellationLineThickness { get; init; } = 1;
+    public double ConstellationLineOpacity { get; init; } = 0.8;
 
     internal void Validate()
     {
         if (MarkRadius is < 0 or > 32 || MaximumLabelCharacters is < 0 or > 256 ||
-            LabelScale is < 1 or > 8 || CardinalScale is < 1 or > 8)
+            LabelScale is < 1 or > 8 || CardinalScale is < 1 or > 8 ||
+            ConstellationLineThickness is < 1 or > 8 ||
+            !double.IsFinite(ConstellationLineOpacity) || ConstellationLineOpacity is < 0 or > 1)
         {
             throw new ArgumentOutOfRangeException(nameof(AnnotationOptions));
         }
@@ -87,14 +95,19 @@ public static class AnnotationRenderer
         AnnotationOptions? options = null,
         ProjectedAnnotationOverlay? projectionOverlay = null)
     {
+        ArgumentNullException.ThrowIfNull(segments);
         if (preview.Length != checked(width * height * 3))
         {
             throw new ArgumentException("Preview dimensions do not match its RGB24 pixel buffer.", nameof(preview));
         }
 
-        var overlay = AnnotateMono8WithSegments(
-            new byte[checked(width * height)], width, height, objects, segments, transform, options, projectionOverlay);
+        transform.Validate();
+        options ??= new AnnotationOptions();
+        options.Validate();
         var pixels = preview.ToArray();
+        DrawRgbSegments(pixels, width, height, segments, transform, options);
+        var overlay = AnnotateMono8WithSegments(
+            new byte[checked(width * height)], width, height, objects, [], transform, options, projectionOverlay);
         for (var pixel = 0; pixel < width * height; pixel++)
         {
             var value = overlay.Pixels.Span[pixel];
@@ -121,23 +134,17 @@ public static class AnnotationRenderer
         ProjectedAnnotationOverlay? projectionOverlay = null)
     {
         ArgumentNullException.ThrowIfNull(segments);
-        var result = AnnotateMono8(preview, width, height, objects, transform, options);
-        var pixels = result.Pixels.ToArray();
-        foreach (var segment in segments)
-        {
-            var from = transform.Apply(segment.FromPixel);
-            var to = transform.Apply(segment.ToPixel);
-            if (double.IsFinite(from.X) && double.IsFinite(from.Y) &&
-                double.IsFinite(to.X) && double.IsFinite(to.Y))
-            {
-                DrawLine(pixels, width, height, Round(from.X), Round(from.Y), Round(to.X), Round(to.Y),
-                    options?.MarkValue ?? byte.MaxValue);
-            }
-        }
+        transform.Validate();
+        options ??= new AnnotationOptions();
+        options.Validate();
+        var pixels = preview.ToArray();
+        DrawMonoSegments(pixels, width, height, segments, transform, options);
+        var result = AnnotateMono8(pixels, width, height, objects, transform, options);
+        pixels = result.Pixels.ToArray();
 
         if (projectionOverlay is not null)
         {
-            DrawProjectionOverlay(pixels, width, height, transform, projectionOverlay, options ?? new AnnotationOptions());
+            DrawProjectionOverlay(pixels, width, height, transform, projectionOverlay, options);
         }
 
         return new AnnotationResult(pixels, result.Anchors);
@@ -375,8 +382,145 @@ public static class AnnotationRenderer
         DrawLabel(pixels, width, height, x, y, text, options.CardinalValue, scale);
     }
 
-    private static void DrawLine(byte[] pixels, int width, int height, int x0, int y0, int x1, int y1, byte value)
+    private static void DrawMonoSegments(
+        byte[] pixels,
+        int width,
+        int height,
+        IEnumerable<ProjectedAnnotationSegment> segments,
+        PreviewTransform transform,
+        AnnotationOptions options)
     {
+        bool[]? mask = null;
+        foreach (var segment in segments)
+        {
+            if (TryTransformAndClip(segment, transform, width, height, out var from, out var to))
+            {
+                mask ??= new bool[checked(width * height)];
+                DrawLine(from, to, options.ConstellationLineThickness,
+                    (x, y) => SetMask(mask, width, height, x, y));
+            }
+        }
+        if (mask is null)
+        {
+            return;
+        }
+        for (var index = 0; index < mask.Length; index++)
+        {
+            if (mask[index])
+            {
+                pixels[index] = Blend(pixels[index], options.ConstellationLineValue, options.ConstellationLineOpacity);
+            }
+        }
+    }
+
+    private static void DrawRgbSegments(
+        byte[] pixels,
+        int width,
+        int height,
+        IEnumerable<ProjectedAnnotationSegment> segments,
+        PreviewTransform transform,
+        AnnotationOptions options)
+    {
+        bool[]? mask = null;
+        foreach (var segment in segments)
+        {
+            if (TryTransformAndClip(segment, transform, width, height, out var from, out var to))
+            {
+                mask ??= new bool[checked(width * height)];
+                DrawLine(from, to, options.ConstellationLineThickness,
+                    (x, y) => SetMask(mask, width, height, x, y));
+            }
+        }
+        if (mask is null)
+        {
+            return;
+        }
+        for (var pixel = 0; pixel < mask.Length; pixel++)
+        {
+            if (mask[pixel])
+            {
+                var index = pixel * 3;
+                pixels[index] = Blend(pixels[index], options.ConstellationLineRed, options.ConstellationLineOpacity);
+                pixels[index + 1] = Blend(pixels[index + 1], options.ConstellationLineGreen, options.ConstellationLineOpacity);
+                pixels[index + 2] = Blend(pixels[index + 2], options.ConstellationLineBlue, options.ConstellationLineOpacity);
+            }
+        }
+    }
+
+    private static bool TryTransformAndClip(
+        ProjectedAnnotationSegment segment,
+        PreviewTransform transform,
+        int width,
+        int height,
+        out PixelPoint from,
+        out PixelPoint to)
+    {
+        from = transform.Apply(segment.FromPixel);
+        to = transform.Apply(segment.ToPixel);
+        if (!double.IsFinite(from.X) || !double.IsFinite(from.Y) ||
+            !double.IsFinite(to.X) || !double.IsFinite(to.Y))
+        {
+            return false;
+        }
+
+        var deltaX = to.X - from.X;
+        var deltaY = to.Y - from.Y;
+        var minimum = 0d;
+        var maximum = 1d;
+        if (!ClipBoundary(-deltaX, from.X, ref minimum, ref maximum) ||
+            !ClipBoundary(deltaX, width - 1d - from.X, ref minimum, ref maximum) ||
+            !ClipBoundary(-deltaY, from.Y, ref minimum, ref maximum) ||
+            !ClipBoundary(deltaY, height - 1d - from.Y, ref minimum, ref maximum))
+        {
+            return false;
+        }
+
+        to = new PixelPoint(from.X + maximum * deltaX, from.Y + maximum * deltaY);
+        from = new PixelPoint(from.X + minimum * deltaX, from.Y + minimum * deltaY);
+        return true;
+    }
+
+    private static bool ClipBoundary(double direction, double distance, ref double minimum, ref double maximum)
+    {
+        if (Math.Abs(direction) < 1e-15)
+        {
+            return distance >= 0;
+        }
+        var ratio = distance / direction;
+        if (direction < 0)
+        {
+            if (ratio > maximum) return false;
+            minimum = Math.Max(minimum, ratio);
+        }
+        else
+        {
+            if (ratio < minimum) return false;
+            maximum = Math.Min(maximum, ratio);
+        }
+        return minimum <= maximum;
+    }
+
+    private static void SetMask(bool[] mask, int width, int height, int x, int y)
+    {
+        if ((uint)x < (uint)width && (uint)y < (uint)height)
+        {
+            mask[y * width + x] = true;
+        }
+    }
+
+    private static byte Blend(byte source, byte value, double opacity)
+        => (byte)Math.Clamp(Round(source + (value - source) * opacity), byte.MinValue, byte.MaxValue);
+
+    private static void DrawLine(
+        PixelPoint from,
+        PixelPoint to,
+        int thickness,
+        Action<int, int> setPixel)
+    {
+        var x0 = Round(from.X);
+        var y0 = Round(from.Y);
+        var x1 = Round(to.X);
+        var y1 = Round(to.Y);
         var deltaX = Math.Abs(x1 - x0);
         var stepX = x0 < x1 ? 1 : -1;
         var deltaY = -Math.Abs(y1 - y0);
@@ -384,7 +528,15 @@ public static class AnnotationRenderer
         var error = deltaX + deltaY;
         while (true)
         {
-            SetPixel(pixels, width, height, x0, y0, value);
+            var minimumOffset = -(thickness - 1) / 2;
+            var maximumOffset = thickness / 2;
+            for (var offsetY = minimumOffset; offsetY <= maximumOffset; offsetY++)
+            {
+                for (var offsetX = minimumOffset; offsetX <= maximumOffset; offsetX++)
+                {
+                    setPixel(x0 + offsetX, y0 + offsetY);
+                }
+            }
             if (x0 == x1 && y0 == y1)
             {
                 return;

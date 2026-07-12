@@ -46,15 +46,48 @@ public sealed class AnnotationRendererTests
         var result = AnnotationRenderer.AnnotateMono8WithSegments(
             source, 8, 8, Array.Empty<ProjectedAnnotationObject>(),
             [new ProjectedAnnotationSegment("TST", new PixelPoint(-2, -2), new PixelPoint(6, 6))],
-            new PreviewTransform(1, 1), new AnnotationOptions { DrawLabels = false });
+            new PreviewTransform(1, 1), new AnnotationOptions
+            {
+                DrawLabels = false,
+                ConstellationLineValue = byte.MaxValue,
+                ConstellationLineOpacity = 1
+            });
 
         Assert.AreEqual(0, source[3 * 8 + 3]);
         Assert.AreEqual(byte.MaxValue, result.Pixels.Span[3 * 8 + 3]);
         CollectionAssert.AreEqual(result.Pixels.ToArray(),
             AnnotationRenderer.AnnotateMono8WithSegments(
-                source, 8, 8, Array.Empty<ProjectedAnnotationObject>(),
-                [new ProjectedAnnotationSegment("TST", new PixelPoint(-2, -2), new PixelPoint(6, 6))],
-                 new PreviewTransform(1, 1), new AnnotationOptions { DrawLabels = false }).Pixels.ToArray());
+                 source, 8, 8, Array.Empty<ProjectedAnnotationObject>(),
+                 [new ProjectedAnnotationSegment("TST", new PixelPoint(-2, -2), new PixelPoint(6, 6))],
+                  new PreviewTransform(1, 1), new AnnotationOptions
+                  {
+                      DrawLabels = false,
+                      ConstellationLineValue = byte.MaxValue,
+                      ConstellationLineOpacity = 1
+                  }).Pixels.ToArray());
+    }
+
+    [TestMethod]
+    public void AnnotateRgb24WithSegments_UsesConfiguredColorThicknessAndOpacity()
+    {
+        var source = new byte[9 * 9 * 3];
+        var result = AnnotationRenderer.AnnotateRgb24WithSegments(
+            source, 9, 9, [],
+            [new ProjectedAnnotationSegment("TST", new PixelPoint(-1_000_000, 4), new PixelPoint(1_000_000, 4))],
+            new PreviewTransform(1, 1), new AnnotationOptions
+            {
+                DrawLabels = false,
+                ConstellationLineRed = 100,
+                ConstellationLineGreen = 150,
+                ConstellationLineBlue = 200,
+                ConstellationLineThickness = 3,
+                ConstellationLineOpacity = 0.5
+            });
+
+        Assert.AreEqual((byte)50, result.Pixels.Span[(3 * 9 + 4) * 3]);
+        Assert.AreEqual((byte)75, result.Pixels.Span[(4 * 9 + 4) * 3 + 1]);
+        Assert.AreEqual((byte)100, result.Pixels.Span[(5 * 9 + 4) * 3 + 2]);
+        Assert.AreEqual(0, result.Pixels.Span[(2 * 9 + 4) * 3]);
     }
 
     [TestMethod]

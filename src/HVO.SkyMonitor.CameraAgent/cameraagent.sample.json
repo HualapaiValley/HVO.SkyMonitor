@@ -13,6 +13,7 @@
                 "blackLevelAdu": 64.0
             },
             "constellationIds": ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"],
+            "includeConstellationEndpointStars": true,
             "solarSystemBodies": ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]
         }
     },
@@ -111,6 +112,12 @@
                 "maximumLabelMagnitude": 2.5,
                 "labelScale": 2,
                 "drawConstellationLines": true,
+                "constellationLineValue": 160,
+                "constellationLineRed": 96,
+                "constellationLineGreen": 160,
+                "constellationLineBlue": 255,
+                "constellationLineThickness": 2,
+                "constellationLineOpacity": 0.8,
                 "drawImageCircle": true,
                 "drawCardinalDirections": true,
                 "imageCircleValue": 96,

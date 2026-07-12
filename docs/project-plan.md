@@ -846,12 +846,11 @@ unpinned branch as the only provenance record.
 
 The next implementation work should occur in this order:
 
-1. Correct constellation overlay completeness and clipping. Real images receive
-   supplemental endpoint geometry but no synthetic stars; VirtualSky receives a
-   provenance-tracked `IncludeConstellationEndpointStars` render option. Add
-   configurable line color/value, thickness, and opacity, then validate selected
-   rendered stars, figure endpoints, and clipped boundaries through a pinned
-   headless Stellarium container.
+1. Finish constellation validation and real-camera wiring. VirtualSky now has
+   independent endpoint geometry, provenance-tracked endpoint-star inclusion,
+   boundary clipping, and configurable line styling. Add the real-image
+   geometry-only path, then validate selected rendered stars, figure endpoints,
+   and clipped boundaries through a pinned headless Stellarium container.
 2. Complete the remaining virtual-planetarium acceptance evidence: ordinary-path
    integration, fixed full/reduced geometry and statistics, numeric orientation
    movement, full canonical RGB24 evidence, and machine-readable fixtures.

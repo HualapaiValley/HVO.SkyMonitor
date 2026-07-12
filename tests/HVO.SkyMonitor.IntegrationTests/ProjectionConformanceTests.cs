@@ -25,7 +25,7 @@ public sealed class ProjectionConformanceTests
             var center = result.Objects.Single(item => item.Id == "center").Pixel;
             Assert.IsTrue(Math.Sqrt(Math.Pow(center.X - 100, 2) + Math.Pow(center.Y - 100, 2)) < 1);
             Assert.IsTrue(result.Objects.Any(item => item.Id == "solar-system:Jupiter"));
-            Assert.HasCount(1, result.Segments);
+            Assert.IsGreaterThan(0, result.Segments.Count);
         }
     }
 }

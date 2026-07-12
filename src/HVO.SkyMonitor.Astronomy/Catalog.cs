@@ -58,6 +58,16 @@ public interface ICelestialCatalog
     ValueTask<IReadOnlyList<CelestialCatalogObject>> QueryCandidatesAsync(
         CatalogCandidateQuery query,
         CancellationToken cancellationToken = default);
+
+}
+
+/// <summary>Optional catalog capability for stable Hipparcos lookup independent of render-selection limits.</summary>
+public interface IHipparcosCatalog
+{
+    /// <summary>Returns objects matching the requested Hipparcos identifiers, independent of magnitude limits.</summary>
+    ValueTask<IReadOnlyList<CelestialCatalogObject>> GetByHipparcosIdsAsync(
+        IReadOnlyCollection<string> hipparcosIds,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -75,7 +85,7 @@ public interface ICelestialCatalogMetadataSource
 }
 
 /// <summary>Process-safe in-memory catalog with deterministic brightest-first selection.</summary>
-public sealed class InMemoryCelestialCatalog : ICelestialCatalog
+public sealed class InMemoryCelestialCatalog : ICelestialCatalog, IHipparcosCatalog
 {
     private readonly CelestialCatalogObject[] _objects;
 
@@ -109,6 +119,25 @@ public sealed class InMemoryCelestialCatalog : ICelestialCatalog
         return ValueTask.FromResult(result);
     }
 
+    /// <inheritdoc />
+    public ValueTask<IReadOnlyList<CelestialCatalogObject>> GetByHipparcosIdsAsync(
+        IReadOnlyCollection<string> hipparcosIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(hipparcosIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        var requested = new HashSet<string>(hipparcosIds, StringComparer.Ordinal);
+        if (requested.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException("Hipparcos identifiers cannot be blank.", nameof(hipparcosIds));
+        }
+
+        IReadOnlyList<CelestialCatalogObject> result = _objects
+            .Where(item => item.HipparcosId is { } hip && requested.Contains(hip))
+            .ToArray();
+        return ValueTask.FromResult(result);
+    }
+
     private static CelestialCatalogObject Validate(CelestialCatalogObject value)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value.Id);
@@ -131,7 +160,7 @@ public sealed class InMemoryCelestialCatalog : ICelestialCatalog
 /// to an immutable in-memory index. Required headers are id, proper, ra, dec,
 /// and mag; optional ci and hip supply color index and Hipparcos identity.
 /// </summary>
-public sealed class CsvCelestialCatalog : ICelestialCatalog
+public sealed class CsvCelestialCatalog : ICelestialCatalog, IHipparcosCatalog
 {
     private readonly InMemoryCelestialCatalog _catalog;
 
@@ -150,6 +179,12 @@ public sealed class CsvCelestialCatalog : ICelestialCatalog
         CatalogCandidateQuery query,
         CancellationToken cancellationToken = default)
         => _catalog.QueryCandidatesAsync(query, cancellationToken);
+
+    /// <inheritdoc />
+    public ValueTask<IReadOnlyList<CelestialCatalogObject>> GetByHipparcosIdsAsync(
+        IReadOnlyCollection<string> hipparcosIds,
+        CancellationToken cancellationToken = default)
+        => _catalog.GetByHipparcosIdsAsync(hipparcosIds, cancellationToken);
 
     private static IEnumerable<CelestialCatalogObject> ReadObjects(Stream source)
     {

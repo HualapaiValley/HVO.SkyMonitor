@@ -192,5 +192,6 @@ public sealed class VisibleSceneCoverageTests
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult<IReadOnlyList<CelestialCatalogObject>>([]);
         }
+
     }
 }

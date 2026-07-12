@@ -47,6 +47,7 @@ public sealed class VirtualSkyCameraModuleTests
     }
     private static readonly DateTimeOffset FixtureUtc = DateTimeOffset.Parse(
         "2025-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+    private static readonly string[] ExpectedTestConstellationIds = ["TST"];
 
     public TestContext TestContext { get; set; }
 
@@ -457,10 +458,60 @@ public sealed class VirtualSkyCameraModuleTests
             new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still),
             CancellationToken.None).ConfigureAwait(false);
 
-        Assert.HasCount(1, result.Frame!.Metadata.Scene!.Segments!);
+        Assert.IsGreaterThan(0, result.Frame!.Metadata.Scene!.Segments!.Count);
         Assert.AreEqual("ORI", result.Frame.Metadata.Scene.Segments![0].ConstellationId);
         Assert.AreEqual("v0.7.32", result.Frame.Metadata.Scene.ConstellationTopologyVersion);
         Assert.AreEqual("BSD-3-Clause", result.Frame.Metadata.Scene.ConstellationTopologyLicense);
+    }
+
+    [TestMethod]
+    public async Task IncludeConstellationEndpointStars_ChangesOnlyVirtualRenderObjectsNotLineGeometry()
+    {
+        var rightAscension = AstronomyTime.LocalMeanSiderealDegrees(FixtureUtc, -113.878) / 15d;
+        var catalog = new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("from", "From", rightAscension, 35.347, 1, HipparcosId: "1"),
+            new CelestialCatalogObject("faint", "Faint", rightAscension, 30, 7, HipparcosId: "2")
+        ]);
+        var topology = new InMemoryConstellationTopology([new ConstellationSegment("TST", "1", "2")]);
+
+        async Task<CaptureResult> CaptureAsync(bool includeEndpoints)
+        {
+            var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore(), topology);
+            using var document = System.Text.Json.JsonDocument.Parse($$"""
+                {
+                  "maximumMagnitude": 6.5,
+                  "maximumResults": 10,
+                  "magnitudeZeroElectronsPerSecond": 1000000,
+                  "constellationIds": ["TST"],
+                  "includeConstellationEndpointStars": {{System.Text.Json.JsonSerializer.Serialize(includeEndpoints)}},
+                  "shotNoiseEnabled": false,
+                  "readNoiseStandardDeviation": 0
+                }
+                """);
+            var config = CreateConfig() with
+            {
+                Module = new CameraModuleDescriptor("VirtualSky", document.RootElement.Clone())
+            };
+            await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+            return await module.CaptureAsync(
+                new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        var linesOnly = await CaptureAsync(false).ConfigureAwait(false);
+        var withEndpoints = await CaptureAsync(true).ConfigureAwait(false);
+
+        Assert.HasCount(1, linesOnly.Frame!.Metadata.Scene!.Objects!);
+        Assert.HasCount(2, withEndpoints.Frame!.Metadata.Scene!.Objects!);
+        Assert.IsFalse(linesOnly.Frame.Metadata.Scene.IncludeConstellationEndpointStars);
+        Assert.IsTrue(withEndpoints.Frame.Metadata.Scene.IncludeConstellationEndpointStars);
+        CollectionAssert.AreEqual(ExpectedTestConstellationIds, withEndpoints.Frame.Metadata.Scene.ConstellationIds!.ToArray());
+        CollectionAssert.AreEqual(
+            linesOnly.Frame.Metadata.Scene.Segments!.Select(item =>
+                (item.FromPixelX, item.FromPixelY, item.ToPixelX, item.ToPixelY)).ToArray(),
+            withEndpoints.Frame.Metadata.Scene.Segments!.Select(item =>
+                (item.FromPixelX, item.FromPixelY, item.ToPixelX, item.ToPixelY)).ToArray());
+        Assert.IsFalse(linesOnly.Frame.PixelData.Span.SequenceEqual(withEndpoints.Frame.PixelData.Span));
     }
 
     [TestMethod]
@@ -557,5 +608,6 @@ public sealed class VirtualSkyCameraModuleTests
             CatalogCandidateQuery query,
             CancellationToken cancellationToken = default)
             => ValueTask.FromResult<IReadOnlyList<CelestialCatalogObject>>([]);
+
     }
 }

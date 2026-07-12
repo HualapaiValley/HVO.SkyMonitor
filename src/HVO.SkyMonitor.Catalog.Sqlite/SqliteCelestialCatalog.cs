@@ -8,10 +8,11 @@ namespace HVO.SkyMonitor.Catalog.Sqlite;
 /// <summary>
 /// Validates and loads a read-only SQLite snapshot into a connection-independent immutable cache.
 /// </summary>
-public sealed class SqliteCelestialCatalog : ICelestialCatalog, ICelestialCatalogMetadataSource
+public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalog, ICelestialCatalogMetadataSource
 {
     private const int Sha256HexLength = 64;
     private readonly ReadOnlyCollection<CelestialCatalogObject> _objects;
+    private readonly IReadOnlyDictionary<string, CelestialCatalogObject> _objectsByHipparcosId;
 
     /// <summary>Creates and fully loads a validated catalog snapshot.</summary>
     public SqliteCelestialCatalog(SqliteCelestialCatalogOptions options)
@@ -47,6 +48,10 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, ICelestialCatalo
             RequiredMetadata(metadata, "schema_version"));
         PreprocessingVersion = RequiredMetadata(metadata, "preprocessing_version");
         _objects = Array.AsReadOnly(ReadObjects(connection));
+        _objectsByHipparcosId = _objects
+            .Where(static item => item.HipparcosId is not null)
+            .GroupBy(static item => item.HipparcosId!, StringComparer.Ordinal)
+            .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.Ordinal);
     }
 
     /// <summary>Gets the immutable options used to validate this snapshot.</summary>
@@ -92,6 +97,29 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, ICelestialCatalo
         }
 
         return ValueTask.FromResult<IReadOnlyList<CelestialCatalogObject>>(candidates);
+    }
+
+    /// <inheritdoc />
+    public ValueTask<IReadOnlyList<CelestialCatalogObject>> GetByHipparcosIdsAsync(
+        IReadOnlyCollection<string> hipparcosIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(hipparcosIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (hipparcosIds.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException("Hipparcos identifiers cannot be blank.", nameof(hipparcosIds));
+        }
+
+        IReadOnlyList<CelestialCatalogObject> result = hipparcosIds
+            .Distinct(StringComparer.Ordinal)
+            .Select(hip => _objectsByHipparcosId.GetValueOrDefault(hip))
+            .Where(static item => item is not null)
+            .Select(static item => item!)
+            .OrderBy(static item => item.Magnitude)
+            .ThenBy(static item => item.Id, StringComparer.Ordinal)
+            .ToArray();
+        return ValueTask.FromResult(result);
     }
 
     private int FindUpperBound(double maximumMagnitude)

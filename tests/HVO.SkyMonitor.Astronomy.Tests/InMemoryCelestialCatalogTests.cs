@@ -49,6 +49,22 @@ public sealed class InMemoryCelestialCatalogTests
             await catalog.QueryCandidatesAsync(new CatalogCandidateQuery(5), cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
+    [TestMethod]
+    public async Task GetByHipparcosIdsAsync_IgnoresMagnitudeAndDeduplicatesRequestedIds()
+    {
+        var catalog = new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("bright", "Bright", 1, 1, 1, HipparcosId: "10"),
+            new CelestialCatalogObject("faint", "Faint", 1, 1, 12, HipparcosId: "20")
+        ]);
+
+        var result = await catalog.GetByHipparcosIdsAsync(["20", "20", "missing"]).ConfigureAwait(false);
+
+        Assert.HasCount(1, result);
+        Assert.AreEqual("faint", result[0].Id);
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await catalog.GetByHipparcosIdsAsync([""]).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
     private static CelestialCatalogObject Create(string id, double magnitude)
         => new(id, id, 1, 1, magnitude);
 }

@@ -26,7 +26,7 @@ public sealed class VisibleSceneBuilderTests
         Assert.IsTrue(scene.Objects[0].GeometricHorizontal.AltitudeDegrees > 0);
         Assert.AreEqual("4.2", scene.Objects[0].CatalogVersion);
         Assert.AreEqual("equidistant-v1", scene.Objects[0].ProjectionVersion);
-        Assert.AreEqual("visible-scene-iau1976-v1", scene.Objects[0].AlgorithmVersion);
+        Assert.AreEqual("visible-scene-iau1976-constellation-v2", scene.Objects[0].AlgorithmVersion);
     }
 
     [TestMethod]
@@ -95,10 +95,70 @@ public sealed class VisibleSceneBuilderTests
         var scene = await new VisibleSceneBuilder(catalog, topology).BuildAsync(request).ConfigureAwait(false);
 
         Assert.HasCount(2, scene.Objects);
-        Assert.HasCount(1, scene.Segments);
+        Assert.IsGreaterThan(0, scene.Segments.Count);
         Assert.AreEqual("from", scene.Segments[0].FromObjectId);
-        Assert.AreEqual(scene.Objects.Single(item => item.Id == "to").Pixel, scene.Segments[0].ToPixel);
+        Assert.AreEqual(scene.Objects.Single(item => item.Id == "to").Pixel, scene.Segments[^1].ToPixel);
         Assert.HasCount(1, scene.Request.ConstellationIds);
+    }
+
+    [TestMethod]
+    public async Task BuildAsync_ResolvesTopologyEndpointsIndependentlyOfRenderSelection()
+    {
+        var rightAscension = AstronomyTime.LocalMeanSiderealDegrees(PrimaryUtc, -113.878) / 15;
+        var catalog = new InMemoryCelestialCatalog([
+            new("from", "From", rightAscension, 35.347, 1, HipparcosId: "1"),
+            new("faint", "Faint", rightAscension, 30, 8, HipparcosId: "2")
+        ]);
+        var topology = new InMemoryConstellationTopology([new ConstellationSegment("TST", "1", "2")]);
+        var baseRequest = new VisibleSceneRequest(
+            PrimaryUtc, new ObserverLocation(35.347, -113.878, 0),
+            new ProjectionContext(ProjectionModel.EquidistantFisheye, 100, 100, 100, 100, 200, 200,
+                ProjectionAperture.Circular, 150),
+            new CatalogQuery(6.5, 10),
+            new CatalogMetadata("test", "1", new Uri("https://example.test"), "fixture"),
+            constellationIds: ["tst"]);
+
+        var linesOnly = await new VisibleSceneBuilder(catalog, topology).BuildAsync(baseRequest).ConfigureAwait(false);
+        var withEndpoints = await new VisibleSceneBuilder(catalog, topology).BuildAsync(new VisibleSceneRequest(
+            baseRequest.Utc, baseRequest.Observer, baseRequest.Projection, baseRequest.CatalogQuery,
+            baseRequest.CatalogMetadata, constellationIds: ["TST"], includeConstellationEndpointStars: true))
+            .ConfigureAwait(false);
+
+        Assert.IsFalse(linesOnly.Objects.Any(item => item.Id == "faint"));
+        Assert.IsGreaterThan(0, linesOnly.Segments.Count);
+        Assert.IsTrue(withEndpoints.Objects.Any(item => item.Id == "faint"));
+        Assert.AreEqual(linesOnly.Segments.Count, withEndpoints.Segments.Count);
+        CollectionAssert.AreEqual(
+            linesOnly.Segments.Select(item => (item.FromPixel, item.ToPixel)).ToArray(),
+            withEndpoints.Segments.Select(item => (item.FromPixel, item.ToPixel)).ToArray());
+        Assert.AreEqual("TST", linesOnly.Request.ConstellationIds[0]);
+    }
+
+    [TestMethod]
+    public async Task BuildAsync_ClipsFigureWhoseEndpointsAreOutsideCircularAperture()
+    {
+        var siderealHours = AstronomyTime.LocalMeanSiderealDegrees(PrimaryUtc, 0) / 15;
+        var catalog = new InMemoryCelestialCatalog([
+            new("east", "East", (siderealHours + 22) % 24, 0, 1, HipparcosId: "1"),
+            new("west", "West", (siderealHours + 2) % 24, 0, 1, HipparcosId: "2")
+        ]);
+        var topology = new InMemoryConstellationTopology([new ConstellationSegment("TST", "1", "2")]);
+        var request = new VisibleSceneRequest(
+            PrimaryUtc, new ObserverLocation(0, 0, 0),
+            new ProjectionContext(ProjectionModel.EquidistantFisheye, 100, 100, 100, 100, 200, 200,
+                ProjectionAperture.Circular, 50),
+            new CatalogQuery(6.5, 10),
+            new CatalogMetadata("test", "1", new Uri("https://example.test"), "fixture"),
+            constellationIds: ["TST"]);
+
+        var scene = await new VisibleSceneBuilder(catalog, topology).BuildAsync(request).ConfigureAwait(false);
+
+        Assert.IsEmpty(scene.Objects);
+        Assert.IsGreaterThan(0, scene.Segments.Count);
+        Assert.IsTrue(scene.Segments.SelectMany(item => new[] { item.FromPixel, item.ToPixel })
+            .All(point => Math.Sqrt(Math.Pow(point.X - 100, 2) + Math.Pow(point.Y - 100, 2)) <= 50 + 1e-8));
+        Assert.IsTrue(scene.Segments.SelectMany(item => new[] { item.FromPixel, item.ToPixel })
+            .Any(point => Math.Abs(Math.Sqrt(Math.Pow(point.X - 100, 2) + Math.Pow(point.Y - 100, 2)) - 50) < 1e-6));
     }
 
     [TestMethod]
