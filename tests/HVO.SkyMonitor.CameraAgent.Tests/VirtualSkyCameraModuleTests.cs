@@ -6,6 +6,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -79,6 +81,54 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(608, config.Rig.Optics.PrincipalPointY);
         Assert.AreEqual(595.84, config.Rig.Optics.ImageCircleRadiusPixels);
         Assert.AreEqual(new RigOrientation(90, 0, 0), config.Rig.Orientation);
+    }
+
+    [TestMethod]
+    public async Task FullAsi174McRgbProfileHasFixedFrameEvidenceAndConfiguredPipeline()
+    {
+        var config = await LoadProfileAsync("virtual-asi174mc.full.json").ConfigureAwait(false);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+        using var provider = services.BuildServiceProvider();
+        var sceneStore = provider.GetRequiredService<IProjectedSceneStore>();
+        var catalog = CreateCanonicalStarCatalog();
+        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, sceneStore);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var setpoint = new CaptureSetpoint(
+            config.Rig.Pipeline.NightExposure, config.Rig.Pipeline.NightGain, null, null);
+        var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint);
+
+        var result = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var rawBytes = result.Frame!.PixelData.ToArray();
+        var statistics = CalculateByteStatistics(rawBytes);
+        var checksum = Convert.ToHexString(SHA256.HashData(rawBytes));
+        TestContext.WriteLine(
+            $"ASI174MC RGB24: min={statistics.Minimum}, max={statistics.Maximum}, " +
+            $"mean={statistics.Mean:R}, checksum={checksum}");
+
+        var submission = new CaptureLoopSubmission(request, result, FixtureUtc, request.TargetInterval, TimeSpan.Zero);
+        var context = new CaptureProcessingContext(config, submission);
+        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreatePipeline(config);
+        foreach (var step in pipeline)
+        {
+            await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        Assert.AreEqual(1936 * 1216 * 3, rawBytes.Length);
+        Assert.AreEqual((byte)0, statistics.Minimum);
+        Assert.AreEqual(byte.MaxValue, statistics.Maximum);
+        Assert.AreEqual(32.39891848924351, statistics.Mean, 1e-12);
+        Assert.AreEqual("A9CD1CF8A835F512996AE328415688889EA5EAD3A5DA1D6660A7D4BBEF73678D", checksum);
+        Assert.AreEqual("virtual-asi174mc-full-v1", result.Frame.Metadata.Scene!.RigProfileVersion);
+        Assert.IsNotNull(context.Artifacts);
+        Assert.AreEqual(CameraPixelFormat.Rgb24, context.Artifacts[FrameArtifactRole.Preview].Frame.PixelFormat);
+        Assert.AreEqual(CameraPixelFormat.Rgb24, context.Artifacts[FrameArtifactRole.AnnotatedPreview].Frame.PixelFormat);
+        Assert.AreEqual("rgb24-canonical-annotation-v2",
+            context.Artifacts[FrameArtifactRole.AnnotatedPreview].RecipeVersion);
+        CollectionAssert.AreEqual(rawBytes, context.Artifacts.Raw.Frame.PixelData.ToArray());
+        CollectionAssert.AreNotEqual(rawBytes,
+            context.Artifacts[FrameArtifactRole.AnnotatedPreview].Frame.PixelData.ToArray());
     }
     private static readonly DateTimeOffset FixtureUtc = DateTimeOffset.Parse(
         "2025-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
@@ -705,13 +755,26 @@ public sealed class VirtualSkyCameraModuleTests
 
     private static VirtualSkyCameraModule CreateCanonicalStarModule()
     {
-        var catalog = new InMemoryCelestialCatalog([
+        return new VirtualSkyCameraModule(TimeProvider.System, CreateCanonicalStarCatalog(), new ProjectedSceneStore());
+    }
+
+    private static InMemoryCelestialCatalog CreateCanonicalStarCatalog()
+        => new([
             new CelestialCatalogObject("HIP 32349", "Sirius", 101.28715533 / 15, -16.71611586, -1.46, 0.009, "32349"),
             new CelestialCatalogObject("HIP 24608", "Capella", 79.17232794 / 15, 45.99799147, 0.08, 0.795, "24608"),
             new CelestialCatalogObject("HIP 37279", "Procyon", 114.8254935 / 15, 5.22499307, 0.34, 0.42, "37279"),
             new CelestialCatalogObject("HIP 27989", "Betelgeuse", 88.792939 / 15, 7.407064, 0.45, 1.5, "27989")
         ]);
-        return new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+
+    private static async Task<CameraModuleConfig> LoadProfileAsync(string fileName)
+    {
+        var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
+        {
+            ConfigFilePath = Path.Combine(AppContext.BaseDirectory, fileName),
+            AgentId = "canonical-profile-test",
+            Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
+        }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
+        return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
     private static CameraModuleConfig CreateAsi174Config(int width, int height)
@@ -823,6 +886,20 @@ public sealed class VirtualSkyCameraModuleTests
             total += value;
         }
         return (minimum, maximum, total / (pixels.Length / 2));
+    }
+
+    private static (byte Minimum, byte Maximum, double Mean) CalculateByteStatistics(ReadOnlySpan<byte> pixels)
+    {
+        var minimum = byte.MaxValue;
+        byte maximum = 0;
+        double total = 0;
+        foreach (var value in pixels)
+        {
+            minimum = Math.Min(minimum, value);
+            maximum = Math.Max(maximum, value);
+            total += value;
+        }
+        return (minimum, maximum, total / pixels.Length);
     }
 
     private static ushort ReadSample(ReadOnlySpan<byte> pixels, int strideBytes, int x, int y)

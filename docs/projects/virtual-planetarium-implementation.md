@@ -620,6 +620,8 @@ The baseline includes:
   statistics, and checksums under the electron-domain sensor recipe;
 - exact CameraAgent-level movement evidence for the documented sidereal hour,
   boresight tilt, 90-degree roll, and horizontal flip;
+- fixed full-resolution canonical equidistant ASI174MC RGB24 checksum and image
+  statistics plus configured RGB preview/annotation pipeline coverage;
 - pinned Stellarium automation and analytic/cross-host conformance tests;
 - an additional ASI178MC RGGB16 development profile with demosaicing, Bayer
   stacking, and a provisional Fujinon FE185C057HA-1 candidate calibration.
@@ -636,13 +638,11 @@ Resume prompt acceptance in this order:
    and line-style implementation is complete. Add the real-camera geometry-only
    path and pinned headless Stellarium validation for star centroids, figure
    endpoints, and clipped boundaries.
-2. Add full-resolution canonical equidistant ASI174MC RGB24 checksum/statistics
-   evidence and RGB pipeline integration coverage.
-3. Move the rotation, second-season, and second-latitude astronomy expectations
+2. Move the rotation, second-season, and second-latitude astronomy expectations
    into complete machine-readable manifests.
-4. Resolve the catalog coarse-region query requirement or record an explicit
+3. Resolve the catalog coarse-region query requirement or record an explicit
    approved scope revision with rationale.
-5. Harden the coverage gate so missing required files/reports fail, complete XML
+4. Harden the coverage gate so missing required files/reports fail, complete XML
    documentation for shared public APIs, and retain final Debug/Release,
    vulnerability, coverage, format, and Stellarium evidence for the PR.
 

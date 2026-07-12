@@ -1,6 +1,6 @@
 {
   "agentId": "replace-with-registered-device-id",
-  "module": { "type": "VirtualSky", "options": { "seed": 2025, "maximumMagnitude": 6.5, "maximumResults": 2000 } },
+  "module": { "type": "VirtualSky", "options": { "seed": 2025, "maximumMagnitude": 6.5, "maximumResults": 2000, "rigProfileVersion": "virtual-asi174mc-full-v1" } },
   "rig": {
     "sensor": {
       "name": "VirtualAsi174McRgb",
@@ -38,5 +38,29 @@
       "dayGain": 1.0,
       "nightGain": 1.0
     }
-  }
+  },
+  "processingSteps": [
+    {
+      "id": "Preview",
+      "type": "Preview",
+      "order": 50,
+      "options": {
+        "enabled": true,
+        "recipeVersion": "rgb24-copy-v1"
+      }
+    },
+    {
+      "id": "Annotation",
+      "type": "Annotation",
+      "order": 75,
+      "options": {
+        "enabled": true,
+        "drawLabels": true,
+        "drawConstellationLines": false,
+        "drawImageCircle": true,
+        "drawCardinalDirections": true,
+        "recipeVersion": "rgb24-canonical-annotation-v2"
+      }
+    }
+  ]
 }

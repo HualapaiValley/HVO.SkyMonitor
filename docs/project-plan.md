@@ -853,8 +853,8 @@ The next implementation work should occur in this order:
    and clipped boundaries through a pinned headless Stellarium container.
 2. Complete the remaining virtual-planetarium acceptance evidence. The
    ordinary-path integration and fixed ASI174MM reduced/full geometry,
-   statistics, centroid, and orientation movement evidence are complete; add
-   full canonical RGB24 evidence and machine-readable fixtures.
+   statistics, centroid, orientation movement, and full canonical RGB24 evidence
+   are complete; move the remaining expectations into machine-readable fixtures.
 3. Resolve catalog coarse-region filtering and harden coverage enforcement for
    missing reports/files; complete shared public API documentation.
 4. Validate standalone container startup with its packaged offline catalog and
