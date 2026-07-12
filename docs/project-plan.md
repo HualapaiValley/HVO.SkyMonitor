@@ -446,9 +446,13 @@ after the baseline is measured.
 - Use the same projector and catalog query as the virtual camera.
 - Support optional star, planet, DSO, constellation, cardinal-direction, and
   horizon overlays.
-- Constellation overlays may include topology endpoint stars omitted by the base
-  visible-object selection, but only in the annotation derivative; enabling an
-  overlay never changes raw sensor data.
+- Real-camera constellation overlays may resolve topology endpoint geometry
+  omitted by the base visible-object selection, but they never synthesize star
+  pixels or claim a physical detection.
+- VirtualSky may expose an explicit `IncludeConstellationEndpointStars` render
+  option that adds omitted topology stars to the simulated scene before raw
+  generation. The option is virtual-only, versioned in the render recipe, and
+  recorded in provenance; the annotation step still never mutates raw data.
 - Draw complete figures when their topology is inside the calibrated view and
   clip partial figures against sensor, image-circle, projection-domain, and
   horizon boundaries rather than requiring both endpoints to be on-screen.
@@ -838,9 +842,10 @@ unpinned branch as the only provenance record.
 
 The next implementation work should occur in this order:
 
-1. Correct constellation overlay completeness and clipping, including optional
-   topology endpoint stars and configurable line color/value, thickness, and
-   opacity without changing raw frames.
+1. Correct constellation overlay completeness and clipping. Real images receive
+   supplemental endpoint geometry but no synthetic stars; VirtualSky receives a
+   provenance-tracked `IncludeConstellationEndpointStars` render option. Add
+   configurable line color/value, thickness, and opacity.
 2. Complete the remaining virtual-planetarium acceptance evidence: ordinary-path
    integration, fixed full/reduced geometry and statistics, numeric orientation
    movement, full canonical RGB24 evidence, and machine-readable fixtures.

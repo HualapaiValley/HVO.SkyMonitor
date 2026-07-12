@@ -302,17 +302,26 @@ stars. Requirements:
 - later constellation segments resolve through stable object IDs from the same
   scene.
 
-Constellation overlay completeness remains follow-up work. Enabling the overlay
-must not modify immutable raw sensor data, but the annotation derivative may
-augment its scene with topology endpoint stars omitted by the normal magnitude,
-label, or visible-result selection. A planned `IncludeConstellationStars` option
-controls whether those required endpoints receive deterministic star marks in
-the annotated preview. When the complete figure lies within the calibrated view,
-all resolvable segments and endpoints should be drawn. When a figure crosses the
-sensor, image-circle, or horizon boundary, draw and clip only the geometrically
-visible segment portions instead of dropping the figure because one endpoint is
-off-screen. Invalid/back-facing projection domains must not be bridged with a
-straight line.
+Constellation overlay completeness remains follow-up work. Real-camera and
+virtual-camera behavior must be distinct:
+
+- For a real-camera frame, annotation may augment its geometry with topology
+  endpoints omitted by normal magnitude, label, or visible-result selection so
+  it can draw and clip the figure. It must never synthesize missing star pixels
+  or imply that a catalog endpoint was detected in the physical image.
+- For VirtualSky acquisition only, a planned
+  `IncludeConstellationEndpointStars` render option may include otherwise omitted
+  topology stars in the generated virtual scene and raw sensor simulation when
+  constellation figures are requested. This is a virtual render-recipe choice,
+  not generic annotation behavior, and must be recorded in frame provenance.
+  Profiles that enable constellation lines should set the render option
+  explicitly rather than allowing the annotation step to mutate raw data.
+
+When the complete figure lies within the calibrated view, all resolvable
+segments should be drawn. When a figure crosses the sensor, image-circle, or
+horizon boundary, draw and clip only the geometrically visible segment portions
+instead of dropping the figure because one endpoint is off-screen.
+Invalid/back-facing projection domains must not be bridged with a straight line.
 
 The constellation overlay also needs explicit derivative style options for line
 value/color, thickness, and opacity, with deterministic defaults for Mono8 and
@@ -575,11 +584,12 @@ replace that conformance fixture.
 
 Resume prompt acceptance in this order:
 
-1. Correct constellation figure overlays: augment annotation scenes with required
-   topology endpoints when `IncludeConstellationStars` is enabled, render their
-   derivative star marks without changing raw data, clip partially visible
-   segments at calibrated boundaries, and add line color/value, thickness, and
-   opacity options with geometry and image tests.
+1. Correct constellation figure overlays: augment real and virtual annotation
+   geometry with required topology endpoints without adding stars to real
+   images; add the VirtualSky-only `IncludeConstellationEndpointStars` render
+   option for missing simulated stars; clip partially visible segments at
+   calibrated boundaries; and add line color/value, thickness, and opacity
+   options with geometry and image tests.
 2. Add one ordinary-path VirtualSky integration test spanning capture, preview,
    annotation, filesystem persistence, latest-frame publication, telemetry, and
    durable outbox selection.
