@@ -74,3 +74,9 @@ that completion-driven shutdown path finished. If the host shutdown deadline
 expires, the drain is canceled, the module is still disposed, and a `Capture
 processing channel drain aborted` warning records that accepted work may remain
 unfinished.
+
+Capture failures use deterministic exponential retry delays configured by the
+rig pipeline (`captureFailureInitialDelay`, default 250 ms, and
+`captureFailureMaximumDelay`, default 30 seconds). A successful capture resets the sequence; shutdown
+cancellation interrupts either capture or backoff immediately. Structured logs
+record the failure count/delay and the subsequent recovery transition.
