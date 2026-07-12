@@ -7,11 +7,14 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly MANIFEST="$REPO_ROOT/tests/fixtures/stellarium/hualapai-fisheye-v1.json"
 readonly VALIDATOR="$REPO_ROOT/tests/fixtures/stellarium/validate.jq"
+readonly PARSER="$REPO_ROOT/tests/fixtures/stellarium/parse-output.jq"
 readonly SSC="$REPO_ROOT/scripts/stellarium/hualapai-fisheye.ssc"
+readonly TOPOLOGY="$REPO_ROOT/src/HVO.SkyMonitor.Astronomy/Data/d3-celestial-v0.7.32-topology.tsv"
 readonly EXPECTED_VERSION="23.4-2build3"
-readonly EXPECTED_EXECUTABLE_VERSION="Stellarium 23.4"
+readonly EXPECTED_EXECUTABLE_VERSION="Stellarium 24.4"
 readonly STELLARIUM_BIN="/usr/bin/stellarium"
 readonly REQUIRED_PACKAGES=(stellarium stellarium-data xvfb xauth libgl1-mesa-dri imagemagick jq)
+readonly RESULTS_ROOT="${STELLARIUM_RESULTS_ROOT:-$REPO_ROOT/TestResults/stellarium}"
 
 missing=()
 wrong_versions=()
@@ -30,7 +33,8 @@ done
 if [[ ${#missing[@]} -gt 0 || ${#wrong_versions[@]} -gt 0 ]]; then
     [[ ${#missing[@]} -eq 0 ]] || echo "Missing Stellarium validation packages: ${missing[*]}" >&2
     [[ ${#wrong_versions[@]} -eq 0 ]] || echo "Incorrect pinned package versions: ${wrong_versions[*]}" >&2
-    echo "On Ubuntu 24.04, install the exact dependencies with: ./scripts/setup:stellarium" >&2
+    echo "Run ./scripts/validate:stellarium-container for the preferred pinned environment." >&2
+    echo "For host debugging on Ubuntu 24.04, install dependencies with: ./scripts/setup:stellarium" >&2
     echo "Required apt packages: stellarium=${EXPECTED_VERSION} stellarium-data=${EXPECTED_VERSION} xvfb xauth libgl1-mesa-dri imagemagick jq" >&2
     exit 2
 fi
@@ -49,30 +53,38 @@ fi
 jq -e '
     .schemaVersion == 1 and
     .stellarium.packageVersion == "23.4-2build3" and
+    .stellarium.runtimeVersion == "Stellarium 24.4" and
     .stellarium.viewportWidth == 1024 and
     .stellarium.viewportHeight == 1024 and
     .sensor.imageCircleRadiusPixels == (0.98 * ([.sensor.width, .sensor.height] | min) / 2) and
     (.landmarks | length) == 5 and
     (.stars | length) > 0
 ' "$MANIFEST" >/dev/null
+expected_topology_sha256="$(jq -r '.constellationValidation.embeddedTopologySha256' "$MANIFEST")"
+actual_topology_sha256="$(sha256sum "$TOPOLOGY" | cut -d ' ' -f 1)"
+if [[ "$actual_topology_sha256" != "$expected_topology_sha256" ]]; then
+    echo "Embedded D3-Celestial topology checksum mismatch: $actual_topology_sha256." >&2
+    exit 2
+fi
 
-run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-run_dir="$REPO_ROOT/TestResults/stellarium/$run_id"
+run_id="${STELLARIUM_RUN_ID:-$(date -u +%Y%m%dT%H%M%S%NZ)-$$}"
+run_dir="$RESULTS_ROOT/$run_id"
 user_dir="$(mktemp -d -t hvo-stellarium-user.XXXXXX)"
-mkdir -p "$run_dir"
+mkdir -p "$run_dir" "$HOME"
 
 cleanup() {
     rm -rf "$user_dir"
 }
 trap cleanup EXIT
 
-version="$(TZ=UTC LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe QT_SCALE_FACTOR=1 LC_ALL=C \
-    xvfb-run -a -s "-screen 0 1024x1024x24 -nolisten tcp" "$STELLARIUM_BIN" --version 2>&1 \
-    | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+version_output="$(TZ=UTC LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe QT_SCALE_FACTOR=1 LC_ALL=C.UTF-8 \
+    xvfb-run -a -s "-screen 0 1024x1024x24 -nolisten tcp" "$STELLARIUM_BIN" --version 2>&1)"
+version="$(grep -oE 'Stellarium [0-9]+(\.[0-9]+)+' <<<"$version_output" | tail -n 1)"
 if [[ "$version" != "$EXPECTED_EXECUTABLE_VERSION" ]]; then
-    echo "Incorrect Stellarium executable version: '$version' (expected '$EXPECTED_EXECUTABLE_VERSION')." >&2
+    echo "Incorrect Stellarium executable version in '$version_output' (expected '$EXPECTED_EXECUTABLE_VERSION')." >&2
     exit 2
 fi
+dpkg-query -W -f='${Package}\t${Version}\n' | sort > "$run_dir/packages.txt"
 {
     echo "stellarium_version=$version"
     echo "stellarium_package_version=$(dpkg-query -W -f='${Version}' stellarium)"
@@ -80,17 +92,34 @@ fi
     echo "utc=2025-01-15T08:00:00Z"
     echo "observer=Hualapai Valley Observatory; latitude=35.347; longitude=-113.878; elevation=0"
     echo "projection=ProjectionFisheye; fov=180; viewport=1024x1024; disk=true; mount=azimuthal; flips=false,false"
-    echo "environment=TZ=UTC LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe QT_SCALE_FACTOR=1 LC_ALL=C"
+    echo "environment=TZ=UTC LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe QT_SCALE_FACTOR=1 LC_ALL=C.UTF-8"
     echo "manifest=$MANIFEST"
     echo "startup_script=$SSC"
 } > "$run_dir/settings.txt"
+jq -n \
+    --arg runtimeVersion "$version" \
+    --arg packageVersion "$(dpkg-query -W -f='${Version}' stellarium)" \
+    --arg dataPackageVersion "$(dpkg-query -W -f='${Version}' stellarium-data)" \
+    --arg manifest "$MANIFEST" \
+    --arg startupScript "$SSC" \
+    '{
+      runtimeVersion: $runtimeVersion,
+      packageVersion: $packageVersion,
+      dataPackageVersion: $dataPackageVersion,
+      utc: "2025-01-15T08:00:00Z",
+      observer: {name:"Hualapai Valley Observatory",latitudeDegrees:35.347,longitudeDegrees:-113.878,elevationMeters:0},
+      projection: {model:"ProjectionFisheye",fieldOfViewDegrees:180,viewport:[1024,1024],diskViewport:true,mount:"azimuthal",horizontalFlip:false,verticalFlip:false},
+      environment: {TZ:"UTC",LIBGL_ALWAYS_SOFTWARE:"1",GALLIUM_DRIVER:"llvmpipe",QT_SCALE_FACTOR:"1",LC_ALL:"C.UTF-8"},
+      manifest: $manifest,
+      startupScript: $startupScript
+    }' > "$run_dir/settings.json"
 
 set +e
 TZ=UTC \
 LIBGL_ALWAYS_SOFTWARE=1 \
 GALLIUM_DRIVER=llvmpipe \
 QT_SCALE_FACTOR=1 \
-LC_ALL=C \
+LC_ALL=C.UTF-8 \
 xvfb-run -a -s "-screen 0 1024x1024x24 -nolisten tcp" \
     timeout --signal=TERM --kill-after=10s 45s \
     "$STELLARIUM_BIN" \
@@ -123,28 +152,7 @@ if [[ ! -s "$run_dir/hualapai-fisheye.png" ]]; then
     exit 1
 fi
 
-jq -Rn '
-    [inputs | select(length > 0) | split("|")] as $rows |
-    ($rows[] | select(.[0] == "SETTINGS")) as $s |
-    {
-      settings: {
-        width: ($s[1] | tonumber), height: ($s[2] | tonumber), projection: $s[3],
-        fieldOfViewDegrees: ($s[4] | tonumber), utc: $s[5], mount: $s[6],
-        diskViewport: ($s[7] == "true"), horizontalFlip: ($s[8] == "true"), verticalFlip: ($s[9] == "true"),
-        longitudeDegrees: ($s[10] | tonumber), latitudeDegrees: ($s[11] | tonumber), elevationMeters: ($s[12] | tonumber),
-        magnitudeLimit: ($s[13] | tonumber)
-      },
-      landmarks: [$rows[] | select(.[0] == "LANDMARK") | {
-        id: .[1], altitudeDegrees: (.[2] | tonumber), azimuthDegrees: (.[3] | tonumber),
-        native: {x: (.[4] | tonumber), y: (.[5] | tonumber)}
-      }],
-      stars: [$rows[] | select(.[0] == "STAR") | {
-        id: .[1], altitudeDegrees: (.[2] | tonumber), azimuthDegrees: (.[3] | tonumber),
-        native: {x: (.[4] | tonumber), y: (.[5] | tonumber)},
-        j2000: {rightAscensionDegrees: (.[6] | tonumber), declinationDegrees: (.[7] | tonumber)}
-      }]
-    }
-' "$run_dir/stellarium-output.txt" > "$run_dir/actual.json"
+jq -Rn -f "$PARSER" "$run_dir/stellarium-output.txt" > "$run_dir/actual.json"
 
 jq -n --slurpfile m "$MANIFEST" --slurpfile a "$run_dir/actual.json" -f "$VALIDATOR" > "$run_dir/report.json"
 

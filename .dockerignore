@@ -1,0 +1,15 @@
+.git
+.github
+.env
+.env.*
+!.env.template
+**/bin
+**/obj
+**/TestResults
+TestResults
+coverage-report
+App_Data
+DataProtection-Keys
+*.user
+*.suo
+*.log

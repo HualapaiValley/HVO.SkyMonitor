@@ -11,6 +11,8 @@
   "utc": "2025-01-15T08:00:00Z",
   "stellarium": {
     "packageVersion": "23.4-2build3",
+    "runtimeVersion": "Stellarium 24.4",
+    "ubuntuAmd64ImageDigest": "sha256:52df9b1ee71626e0088f7d400d5c6b5f7bb916f8f0c82b474289a4ece6cf3faf",
     "projection": "ProjectionFisheye",
     "viewportWidth": 1024,
     "viewportHeight": 1024,
@@ -32,7 +34,10 @@
   "tolerances": {
     "analyticSensorPixels": 1.5,
     "astronomyModelDegrees": 0.75,
-    "screenRoundingNativePixels": 1.0
+    "screenRoundingNativePixels": 1.0,
+    "endpointJ2000Degrees": 0.02,
+    "endpointSensorPixels": 6.1291,
+    "clippedBoundarySensorPixels": 10.0
   },
   "landmarks": [
     { "id": "zenith", "altitudeDegrees": 90, "azimuthDegrees": 0, "expectedNative": { "x": 512, "y": 512 }, "expectedSensor": { "x": 968, "y": 608 } },
@@ -47,6 +52,26 @@
     { "id": "HIP 37279", "name": "Procyon", "j2000": { "rightAscensionDegrees": 114.8254935, "declinationDegrees": 5.22499307 }, "expectedHorizontal": { "altitudeDegrees": 59.318434, "azimuthDegrees": 192.413214 }, "expectedSensor": { "x": 924.336, "y": 806.377 } },
     { "id": "HIP 27989", "name": "Betelgeuse", "j2000": { "rightAscensionDegrees": 88.792939, "declinationDegrees": 7.407064 }, "expectedHorizontal": { "altitudeDegrees": 49.275360, "azimuthDegrees": 234.434523 }, "expectedSensor": { "x": 748.681, "y": 764.817 } }
   ],
+  "constellationValidation": {
+    "connectivitySource": "D3-Celestial v0.7.32",
+    "connectivitySourceSha256": "294f66bef5d5cf50b1e17f16d2efa1d97a15131612c68dd935adef6e7373e13c",
+    "embeddedTopologySha256": "70c253a00e0909ae0236dec0411afe837ebf8e493b2be7f84373b63c95c91621",
+    "endpointCoordinateSource": "SIMBAD ICRS J2000 queried 2026-07-12",
+    "stellariumSkyCultureTopology": {
+      "status": "not-qualified",
+      "usedForConnectivity": false
+    },
+    "endpoints": [
+      { "id": "HIP 27989", "j2000": { "rightAscensionDegrees": 88.792939, "declinationDegrees": 7.407064 }, "expectedHvoSensor": { "x": 750.9439461847296, "y": 765.3962611939019 } },
+      { "id": "HIP 25336", "j2000": { "rightAscensionDegrees": 81.28276354166667, "declinationDegrees": 6.349703277777778 }, "expectedHvoSensor": { "x": 699.653801778748, "y": 757.7322202905561 } },
+      { "id": "HIP 65474", "j2000": { "rightAscensionDegrees": 201.298247375, "declinationDegrees": -11.161319472222223 }, "expectedHvoSensor": { "x": 1537.3853152051333, "y": 757.2623637534609 } },
+      { "id": "HIP 69701", "j2000": { "rightAscensionDegrees": 214.00361781700208, "declinationDegrees": -6.000547078703056 }, "expectedHvoSensor": { "x": 1603.409494775945, "y": 643.1727127329025 } }
+    ],
+    "segments": [
+      { "id": "ORI-27989-25336", "constellationId": "ORI", "from": "HIP 27989", "to": "HIP 25336", "expectedClipping": "none" },
+      { "id": "VIR-65474-69701", "constellationId": "VIR", "from": "HIP 65474", "to": "HIP 69701", "expectedClipping": "image-circle", "expectedHvoBoundary": { "x": 1548.6594907492827, "y": 741.6407924354555 } }
+    ]
+  },
   "astronomyFixtureModel": {
     "description": "Published Hipparcos J2000 positions transformed with the IAU 1982 GMST expression and spherical equatorial-to-horizontal equations.",
     "enabled": ["Earth rotation at fixed UTC", "east-positive observer longitude", "geometric horizontal coordinates"],

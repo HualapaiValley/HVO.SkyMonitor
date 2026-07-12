@@ -7,11 +7,13 @@ readonly STELLARIUM_VERSION="23.4-2build3"
 readonly PACKAGES=(
     "stellarium=${STELLARIUM_VERSION}"
     "stellarium-data=${STELLARIUM_VERSION}"
-    xvfb
-    xauth
-    libgl1-mesa-dri
-    imagemagick
-    jq
+    "xvfb=2:21.1.12-1ubuntu1.6"
+    "xauth=1:1.1.2-1build1"
+    "libgl1-mesa-dri=25.2.8-0ubuntu0.24.04.2"
+    "imagemagick=8:6.9.12.98+dfsg1-5.2build2"
+    "jq=1.7.1-3ubuntu0.24.04.2"
+    "fonts-dejavu-core=2.37-8"
+    "fontconfig=2.15.0-1.1ubuntu2"
 )
 
 if [[ ! -r /etc/os-release ]]; then
@@ -39,7 +41,7 @@ export DEBIAN_FRONTEND=noninteractive
 "${APT[@]}" update
 
 for package in stellarium stellarium-data; do
-    if ! apt-cache policy "$package" | awk -v version="$STELLARIUM_VERSION" '$1 == version { found=1 } END { exit !found }'; then
+    if ! apt-cache policy "$package" | grep -Fq "${STELLARIUM_VERSION}"; then
         echo "Pinned package ${package}=${STELLARIUM_VERSION} is unavailable from the configured Ubuntu 24.04 apt sources." >&2
         echo "Enable the Ubuntu noble universe repository, run apt-get update, then rerun ./scripts/setup:stellarium." >&2
         exit 1
@@ -56,4 +58,5 @@ for package in stellarium stellarium-data; do
     fi
 done
 
-echo "Stellarium validation dependencies are installed at ${STELLARIUM_VERSION}."
+echo "Stellarium validation packages are installed at ${STELLARIUM_VERSION}."
+echo "Ubuntu package ${STELLARIUM_VERSION} is expected to report runtime version 'Stellarium 24.4'; the validator records both values."
