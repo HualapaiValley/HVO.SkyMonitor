@@ -613,6 +613,9 @@ The baseline includes:
 - shared object, constellation, image-circle, and cardinal annotations;
 - independent constellation endpoint lookup, clipped great-circle geometry,
   VirtualSky endpoint-star inclusion, and configurable line styling;
+- ordinary-path production-host integration coverage from VirtualSky capture
+  through rolling combination, preview, annotation, filesystem persistence,
+  latest-frame publication, telemetry, and durable outbox selection;
 - pinned Stellarium automation and analytic/cross-host conformance tests;
 - an additional ASI178MC RGGB16 development profile with demosaicing, Bayer
   stacking, and a provisional Fujinon FE185C057HA-1 candidate calibration.
@@ -629,18 +632,15 @@ Resume prompt acceptance in this order:
    and line-style implementation is complete. Add the real-camera geometry-only
    path and pinned headless Stellarium validation for star centroids, figure
    endpoints, and clipped boundaries.
-2. Add one ordinary-path VirtualSky integration test spanning capture, preview,
-   annotation, filesystem persistence, latest-frame publication, telemetry, and
-   durable outbox selection.
-3. Expand reduced/full ASI174 tests with fixed object pixels, rendered centroids,
+2. Expand reduced/full ASI174 tests with fixed object pixels, rendered centroids,
    statistics, and numeric time/boresight/roll/flip movement assertions.
-4. Add full-resolution canonical equidistant ASI174MC RGB24 checksum/statistics
+3. Add full-resolution canonical equidistant ASI174MC RGB24 checksum/statistics
    evidence and RGB pipeline integration coverage.
-5. Move the rotation, second-season, and second-latitude astronomy expectations
+4. Move the rotation, second-season, and second-latitude astronomy expectations
    into complete machine-readable manifests.
-6. Resolve the catalog coarse-region query requirement or record an explicit
+5. Resolve the catalog coarse-region query requirement or record an explicit
    approved scope revision with rationale.
-7. Harden the coverage gate so missing required files/reports fail, complete XML
+6. Harden the coverage gate so missing required files/reports fail, complete XML
    documentation for shared public APIs, and retain final Debug/Release,
    vulnerability, coverage, format, and Stellarium evidence for the PR.
 
