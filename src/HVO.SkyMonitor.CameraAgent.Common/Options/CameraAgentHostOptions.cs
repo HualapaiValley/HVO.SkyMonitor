@@ -9,6 +9,8 @@ public sealed class CameraAgentHostOptions
     [MinLength(1)]
     public string ConfigFilePath { get; init; } = "cameraagent.sample.json";
 
+    public string? AgentId { get; init; }
+
     [Range(1, 1440)]
     public int RetentionSweepIntervalMinutes { get; init; } = 30;
 

@@ -39,19 +39,32 @@ internal sealed class NoOpFileStorageProcessingStep(
         _logger.NoOpStoragePlanned(Name, artifacts.Raw.Frame.TimestampUtc, Options.StorageRoot, Options.RetentionDays);
         foreach (var artifact in artifacts.Artifacts.Values)
         {
-            var stored = await _frameStorageService.SaveAsync(context.Config, artifact, cancellationToken).ConfigureAwait(false);
-            await _artifactOutbox.EnqueueAsync(Options.StorageRoot, new ArtifactUploadManifest(
-                "v1", context.Config.AgentId, artifact.ArtifactId, artifacts.Raw.ArtifactId, artifact.Role,
-                MediaTypeFor(artifact.Frame.PixelFormat), artifact.Frame.PixelData.Length,
-                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(artifact.Frame.PixelData.Span)),
-                artifact.Frame.TimestampUtc, artifact.RecipeVersion ?? "raw-v1", stored.RelativePath), cancellationToken).ConfigureAwait(false);
+            var stored = await _frameStorageService.SaveAsync(Options.StorageRoot, artifact, cancellationToken).ConfigureAwait(false);
+            if (Options.QueueForUpload)
+            {
+                await _artifactOutbox.EnqueueAsync(Options.StorageRoot, new ArtifactUploadManifest(
+                    "v1", context.Config.AgentId, artifact.ArtifactId, artifacts.Raw.ArtifactId, artifact.Role,
+                    MediaTypeFor(artifact.Frame.PixelFormat), artifact.Frame.PixelData.Length,
+                    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(artifact.Frame.PixelData.Span)),
+                    artifact.Frame.TimestampUtc, artifact.RecipeVersion ?? "raw-v1", stored.RelativePath), cancellationToken).ConfigureAwait(false);
+            }
         }
 
         if (Options.UpdateLatestFrame)
         {
-            _latestFrameAccessor.Update(artifacts.Artifacts.TryGetValue(FrameArtifactRole.Preview, out var preview)
-                ? preview.Frame
-                : artifacts.Raw.Frame);
+            _latestFrameAccessor.Update(artifacts.Raw);
+            if (artifacts.Artifacts.TryGetValue(FrameArtifactRole.Combined, out var combined))
+            {
+                _latestFrameAccessor.Update(combined);
+            }
+            if (artifacts.Artifacts.TryGetValue(FrameArtifactRole.AnnotatedPreview, out var annotated))
+            {
+                _latestFrameAccessor.Update(annotated);
+            }
+            else if (artifacts.Artifacts.TryGetValue(FrameArtifactRole.Preview, out var preview))
+            {
+                _latestFrameAccessor.Update(preview);
+            }
         }
 
     }
@@ -74,4 +87,6 @@ public sealed class NoOpFileStorageProcessingStepOptions
     public int RetentionDays { get; init; } = 30;
 
     public bool UpdateLatestFrame { get; init; } = true;
+
+    public bool QueueForUpload { get; init; } = true;
 }

@@ -67,6 +67,8 @@ so it can run fully offline:
   `DeviceBootstrapWorkflow`) persists under
   `Configuration/DeviceProvisioningOptions` and survives container
   restarts.
+- Its astronomy catalog is a separate local, read-only SQLite snapshot; it is
+  not part of local Identity or any shared SQL Server database.
 
 ## 4. Operational References
 

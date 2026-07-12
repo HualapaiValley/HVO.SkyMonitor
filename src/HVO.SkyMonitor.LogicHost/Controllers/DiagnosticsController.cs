@@ -86,7 +86,13 @@ public sealed class DiagnosticsController : ControllerBase
             return StatusCode(StatusCodes.Status503ServiceUnavailable, Problem("MinIO is not configured."));
         }
 
-        var bucket = string.IsNullOrWhiteSpace(request.Bucket) ? _minioOptions.DefaultBucket : request.Bucket!;
+        var bucket = _minioOptions.DefaultBucket;
+        if (!string.IsNullOrWhiteSpace(request.Bucket) && !string.Equals(request.Bucket, bucket, StringComparison.Ordinal))
+        {
+            return Problem(
+                detail: $"Only the configured SkyMonitor diagnostics bucket '{bucket}' may be used.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
         var objectName = string.IsNullOrWhiteSpace(request.ObjectName)
             ? $"diagnostics/{Guid.NewGuid():N}.txt"
             : request.ObjectName!;

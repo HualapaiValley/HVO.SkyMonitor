@@ -28,22 +28,37 @@ public sealed class FramesController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status415UnsupportedMediaType)]
     public IActionResult GetLatest()
+        => GetFrame(FrameArtifactRole.Preview);
+
+    [HttpGet("raw")]
+    [Produces("image/jpeg")]
+    public IActionResult GetRaw()
+        => GetFrame(FrameArtifactRole.Raw);
+
+    [HttpGet("processed")]
+    [Produces("image/jpeg")]
+    public IActionResult GetProcessed()
+        => GetFrame(FrameArtifactRole.Combined);
+
+    private IActionResult GetFrame(FrameArtifactRole role)
     {
-        if (!_latestFrameAccessor.TryGetSnapshot(out var snapshot))
+        if (!_latestFrameAccessor.TryGetSnapshot(role, out var snapshot))
         {
             return NotFound();
         }
 
-        if (snapshot.PixelFormat is not CameraPixelFormat.Mono8)
+        if (snapshot.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16))
         {
-            _logger.LogWarning("Latest frame pixel format {PixelFormat} is not supported for preview.", snapshot.PixelFormat);
+            _logger.LogWarning("Frame role {Role} pixel format {PixelFormat} is not supported for preview.", role, snapshot.PixelFormat);
             return StatusCode(StatusCodes.Status415UnsupportedMediaType);
         }
 
-        var encodeResult = SkiaPreviewEncoder.EncodeMono8ToJpeg(snapshot.Width, snapshot.Height, snapshot.PixelData);
+        var encodeResult = snapshot.PixelFormat == CameraPixelFormat.Mono8
+            ? SkiaPreviewEncoder.EncodeMono8ToJpeg(snapshot.Width, snapshot.Height, snapshot.PixelData)
+            : SkiaPreviewEncoder.EncodeMono16ToJpeg(snapshot.Width, snapshot.Height, snapshot.PixelData);
         if (encodeResult.IsFailure)
         {
-            _logger.LogError(encodeResult.Error, "Failed to encode latest frame to JPEG.");
+            _logger.LogError(encodeResult.Error, "Failed to encode {Role} frame to JPEG.", role);
             return Problem("Unable to encode preview image.", statusCode: StatusCodes.Status500InternalServerError);
         }
 

@@ -41,27 +41,12 @@ public sealed partial class Program
     {
         var builder = WebApplication.CreateBuilder(args);
 
-        // Enhanced logging with activity tracking
-        builder.Logging.ClearProviders();
-        builder.Logging.AddJsonConsole();
-        builder.Logging.AddDebug();
-        builder.Logging.Configure(options =>
+        // Configure shared HVO telemetry, logging, and health defaults.
+        builder.AddSkyMonitorObservability();
+        builder.Services.AddOpenTelemetry().WithMetrics(metrics =>
         {
-            options.ActivityTrackingOptions = ActivityTrackingOptions.SpanId |
-                ActivityTrackingOptions.TraceId |
-                ActivityTrackingOptions.ParentId |
-                ActivityTrackingOptions.Baggage |
-                ActivityTrackingOptions.Tags;
-        });
-
-        // Configure shared observability (OpenTelemetry + health defaults)
-        builder.AddSkyMonitorObservability(openTelemetryBuilder =>
-        {
-            openTelemetryBuilder.WithMetrics(metrics =>
-            {
-                metrics.AddPrometheusExporter();
-                metrics.AddMeter("HVO.SkyMonitor.Authentication");
-            });
+            metrics.AddPrometheusExporter();
+            metrics.AddMeter("HVO.SkyMonitor.Authentication");
         });
 
         // Correlation ID support
@@ -255,7 +240,7 @@ public sealed partial class Program
             builder.Services.AddStackExchangeRedisCache(options =>
             {
                 options.Configuration = redisConfiguration;
-                options.InstanceName = builder.Configuration.GetValue<string>("Redis:InstanceName") ?? "skymonitor";
+                options.InstanceName = builder.Configuration.GetValue<string>("Redis:InstanceName") ?? "skymonitor:";
             });
         }
 
@@ -285,15 +270,20 @@ public sealed partial class Program
 
         builder.Services.AddSingleton<IEmailNotificationService, SmtpEmailNotificationService>();
 
-        // Database - prefer PostgreSQL (fallback to explicit connection string if config missing)
+        // This host owns only the SkyMonitor database; do not point this context at shared identity databases.
+        // Database - require an explicit SQL Server connection string.
         var connectionString = builder.Configuration.GetConnectionString("skymonitordb")
             ?? builder.Configuration.GetConnectionString("DefaultConnection")
             ?? builder.Configuration["ConnectionStrings:skymonitordb"]
-            ?? builder.Configuration["ConnectionStrings:DefaultConnection"]
-            ?? "Host=localhost;Port=5432;Database=skymonitordb;Username=postgres;Password=postgres";
+            ?? builder.Configuration["ConnectionStrings:DefaultConnection"];
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException("A SkyMonitor SQL Server connection string must be configured.");
+        }
 
         builder.Services.AddDbContext<ApplicationDbContext>(options =>
-            options.UseNpgsql(connectionString));
+            options.UseSqlServer(connectionString));
 
         builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 

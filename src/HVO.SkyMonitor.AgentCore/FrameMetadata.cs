@@ -8,4 +8,5 @@ public sealed record FrameMetadata(
     double Gain,
     double TemperatureC,
     string? SourceId = null,
-    IReadOnlyDictionary<string, string>? Extra = null);
+    IReadOnlyDictionary<string, string>? Extra = null,
+    double? Offset = null);

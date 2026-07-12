@@ -44,14 +44,20 @@ public sealed class VirtualSkyCameraModule(TimeProvider timeProvider) : ICameraM
 
         var setpoint = request.RequestedSetpoint ?? new CaptureSetpoint(config.Rig.Pipeline.NightExposure, config.Rig.Pipeline.NightGain, null, null);
         var sensor = config.Rig.Sensor;
+        // Keep the virtual scene visible at the rig's nominal night setpoint while
+        // preserving relative exposure/gain changes for pipeline testing.
+        var nominalSignal = Math.Max(
+            config.Rig.Pipeline.NightExposure.TotalSeconds * config.Rig.Pipeline.NightGain,
+            double.Epsilon);
+        var relativeSignal = setpoint.Exposure.TotalSeconds * setpoint.Gain / nominalSignal;
         var layout = new ImageLayout(sensor.WidthPixels, sensor.HeightPixels, sensor.PixelFormat,
             checked(sensor.WidthPixels * ImageLayout.BytesPerPixel(sensor.PixelFormat)));
         var start = timeProvider.GetTimestamp();
         var pixelData = sensor.PixelFormat switch
         {
             CameraPixelFormat.Mono16 => DeterministicStarFieldRenderer.RenderMono16(
-                layout, request.RequestedStartUtc, _options.Seed, _options.StarCount, setpoint.Exposure.TotalSeconds, setpoint.Gain),
-            CameraPixelFormat.Rgb24 => Rgb24GradientRenderer.Render(layout, setpoint.Exposure.TotalSeconds, setpoint.Gain),
+                layout, request.RequestedStartUtc, _options.Seed, _options.StarCount, relativeSignal, 1),
+            CameraPixelFormat.Rgb24 => Rgb24GradientRenderer.Render(layout, relativeSignal, 1),
             _ => throw new UnreachableException()
         };
         var frame = new CameraFrame(

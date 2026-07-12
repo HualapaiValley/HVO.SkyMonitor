@@ -6,7 +6,7 @@ how we handle configuration from local development through production and
 summarizes every sensitive value the platform requires.
 
 > Use the Docker/Testcontainers toolchain (`./scripts/infra:*`,
-> `docker-compose.infrastructure.yml`, `docker-compose.apps.yml`, and
+> `deploy/hvo-docker/docker-compose.shared-services.yml`, `docker-compose.apps.yml`, and
 > direct project runs under `src/`) when applying the steps below.
 > Aspire/AppHost flows are no longer supported.
 
@@ -29,26 +29,20 @@ into git.
 ## 2. Quick Start (Local Development)
 
 ```bash
-cp .env.template .env                # Non-sensitive defaults (ports, contexts)
-./scripts/infra:start postgres minio redis smtp
+cp .env.template .env                # Add shared hvo-docker credentials
+./scripts/infra:start logichost
 cd src/HVO.SkyMonitor.LogicHost
 
-# Optional: initialize user secrets and provide credentials
- dotnet user-secrets init
- dotnet user-secrets set "MinIO:AccessKey" "dev-minio"
- dotnet user-secrets set "MinIO:SecretKey" "dev-minio-secret"
- dotnet user-secrets set "PostgreSQL:Username" "hvo_dev"
- dotnet user-secrets set "PostgreSQL:Password" "hvo_dev_password"
- dotnet user-secrets set "SignedTicket:Secret" "$(openssl rand -base64 32)"
+# Optional: initialize user secrets for application-only credentials
+dotnet user-secrets init
+dotnet user-secrets set "SignedTicket:Secret" "$(openssl rand -base64 32)"
 
 # Run the host
 cd ../..
-dotnet run --project src/HVO.SkyMonitor.LogicHost --configuration Debug
+./scripts/with-env dotnet run --project src/HVO.SkyMonitor.LogicHost --configuration Debug
 ```
 
-Default development credentials (when you skip secrets):
-- MinIO: `minioadmin` / `minioadmin`
-- PostgreSQL: `hvo_dev` / `hvo_dev_password`
+Shared-service credentials must be configured in the ignored `.env`; no default credentials are provided.
 
 ## 3. Secrets Catalog
 
@@ -60,7 +54,7 @@ ASPNETCORE_ENVIRONMENT=Development
 DOTNET_ENVIRONMENT=Development
 DOCKER_HOST_ADDRESS=0.0.0.0
 REDIS_PORT=6379
-POSTGRES_PORT=5432
+SQLSERVER_PORT=1433
 MINIO_API_PORT=9000
 SKYMONITOR_HTTP_PORT=5174
 ```
@@ -69,8 +63,10 @@ SKYMONITOR_HTTP_PORT=5174
 
 | Key | Description | Min Entropy | Recommended Store |
 | --- | --- | --- | --- |
-| `MinIO:AccessKey`, `MinIO:SecretKey` | Object storage admin credentials | strong password | User Secrets (dev) / Key Vault (prod) |
-| `PostgreSQL:Username`, `PostgreSQL:Password` | Database login | strong password | User Secrets / Key Vault |
+| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | Shared MinIO administrator credentials, used only to provision the service | strong password | Root `.env` / Key Vault |
+| `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` | SkyMonitor bucket-scoped application credentials | strong password | Root `.env` / Key Vault |
+| `SQLSERVER_USER`, `SQLSERVER_PASSWORD` | Shared database login | strong password | Root `.env` / Key Vault |
+| `REDIS_PASSWORD` | Shared Redis credential | strong password | Root `.env` / Key Vault |
 | `SignedTicket:Secret` | HMAC key for signed URLs | 256-bit random | User Secrets / Key Vault |
 | `ApiKey:HashingSalt` | Optional salt for API key hashing | 256-bit random | Key Vault |
 | `OpenIddict:*Certificate:*` | Signing/encryption certificates | RSA 4096 | Key Vault / secure file mount |

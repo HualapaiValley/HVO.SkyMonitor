@@ -31,7 +31,15 @@ public sealed class ArtifactUploadClient(IHttpClientFactory httpClientFactory)
         using var request = new HttpRequestMessage(HttpMethod.Post, "api/v1.0/artifacts") { Content = content };
         request.Headers.TryAddWithoutValidation("Idempotency-Key", manifest.IdempotencyKey);
         var httpClient = httpClientFactory.CreateClient(CentralClientName);
-        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        return response.IsSuccessStatusCode;
+        try
+        {
+            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            return response.IsSuccessStatusCode;
+        }
+        catch (HttpRequestException)
+        {
+            // Network loss is expected for an offline agent; retain the outbox manifest for a later retry.
+            return false;
+        }
     }
 }

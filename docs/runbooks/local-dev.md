@@ -11,30 +11,24 @@ This runbook describes the day-to-day workflow for developing and validating HVO
 
 ## Environment Setup
 
-1. **Start the shared infrastructure.** The devcontainer automatically boots PostgreSQL, Redis, MinIO, and Mailpit via `.devcontainer/post-start.sh`. To skip this behavior, set `SKYMONITOR_SKIP_AUTO_INFRA=true` in `.devcontainer/devcontainer.local.env` before reopening the container.
-   - You can always rerun or customize the stack manually:
-     ```bash
-     ./scripts/infra:start                 # Start everything
-     ./scripts/infra:start postgres redis  # Start a subset
-     ./scripts/infra:start --reset minio   # Reset data before start
-     ```
+1. **Configure shared infrastructure.** Copy `.env.template` to the ignored `.env` and provide the `hvo-docker.hvo.lan` endpoints and credentials. SQL Server, Redis, MinIO, and Mailpit are persistent services managed outside this repository.
 
-2. **Check status** whenever you need to confirm container health:
-   ```bash
-   ./scripts/infra:status
-   ```
+2. **Start application containers** when needed:
+    ```bash
+    ./scripts/infra:start
+    ```
 
-3. **Stop everything** using the matching helper:
+3. **Stop local application containers** using the matching helper:
    ```bash
    ./scripts/infra:stop
    ```
-   Add `--clear-cache` plus service names (or `all`) to wipe their cached volumes/directories after the containers stop.
+    This does not stop or clear shared-service data.
 
 ## Application Workflows
 
 ### Running the main host
 
-1. Ensure infra is running.
+1. Ensure `.env` is configured and invoke `dotnet run` through `./scripts/with-env` so the shared-service settings are loaded.
 2. From `/workspaces/HVO.SkyMonitor` execute:
    ```bash
    dotnet run --project src/HVO.SkyMonitor.LogicHost
@@ -77,10 +71,10 @@ Hardware suites are opt-in. They are tagged with `TestCategory("Hardware")`—om
 
 | Symptom | Action |
 | --- | --- |
-| Database migration failures | Run `./scripts/infra:start --reset postgres` to recreate the database, then restart the host. |
-| MinIO credential errors | Verify `Minio:AccessKey`/`SecretKey` in `.env` match `docker-compose.infrastructure.yml`. |
-| Redis connection timeouts | Ensure port `6379` is free; restart via `./scripts/infra:start redis`. |
-| SMTP emails missing | Use `./scripts/infra:status smtp` and check logs: `./scripts/infra:logs --no-follow smtp`. |
+| Database migration failures | Verify the `SQLSERVER_*` values in `.env`, then apply migrations against the shared SQL Server. |
+| MinIO credential errors | Verify `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` in `.env` match the shared MinIO service. |
+| Redis connection timeouts | Verify the `REDIS_*` values in `.env` and the availability of `hvo-docker.hvo.lan:6379`. |
+| SMTP emails missing | Verify the `SMTP_*` values in `.env`, then inspect Mailpit on `hvo-docker`. |
 
 ## Additional References
 

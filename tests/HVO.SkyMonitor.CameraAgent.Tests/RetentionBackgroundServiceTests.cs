@@ -46,7 +46,7 @@ public sealed class RetentionBackgroundServiceTests
             new CameraRigConfig(new SensorProfile("Virtual", 1, 1, 1, SensorColorMode.Mono, CameraPixelFormat.Mono16),
                 new OpticsProfile("EquidistantFisheye", 1, 180, 0), new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
-            [new CaptureProcessingStepConfig("NoOpFileStorageProcessingStep", Options: options.RootElement.Clone())]);
+            [new CaptureProcessingStepConfig("HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common", Options: options.RootElement.Clone())]);
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider

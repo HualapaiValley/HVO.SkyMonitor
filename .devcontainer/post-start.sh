@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Automatically start the local infrastructure stack whenever the devcontainer boots
+# Configure developer access to shared services whenever the devcontainer boots.
 
 set -euo pipefail
 
@@ -7,44 +7,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-LOCAL_ENV_FILE="$SCRIPT_DIR/devcontainer.local.env"
-if [[ -f "$LOCAL_ENV_FILE" ]]; then
-    echo "[post-start] Loading developer overrides from $LOCAL_ENV_FILE"
-    set -a
-    # shellcheck disable=SC1090
-    source "$LOCAL_ENV_FILE"
-    set +a
+source "$SCRIPT_DIR/load-repo-env.sh"
+
+# Refresh the persisted key after local developer secrets have been loaded.
+if ! bash "$SCRIPT_DIR/setup-ssh-key.sh"; then
+    echo "[post-start] SSH key setup failed; continuing without a configured SSH key." >&2
 fi
 
-if command -v tailscaled >/dev/null 2>&1; then
-    if pgrep -x tailscaled >/dev/null 2>&1; then
-        echo "[post-start] Tailscale daemon is already running"
-    else
-        echo "[post-start] Starting Tailscale daemon..."
-        sudo mkdir -p /var/lib/tailscale /var/run/tailscale
-        sudo nohup tailscaled \
-            --state=/var/lib/tailscale/tailscaled.state \
-            --socket=/var/run/tailscale/tailscaled.sock \
-            --tun=userspace-networking \
-            >/tmp/tailscaled.log 2>&1 &
-        sleep 1
-    fi
+if command -v docker >/dev/null 2>&1; then
+    declare -a docker_contexts=(
+        "hvo-docker|HVO shared-services Docker host|ssh://roys@hvo-docker"
+        "devpi5|HVO development Raspberry Pi Docker host|ssh://roys@devpi5"
+    )
 
-    if pgrep -x tailscaled >/dev/null 2>&1; then
-        echo "[post-start] Tailscale daemon ready"
-    else
-        echo "[post-start] Failed to start the Tailscale daemon." >&2
-    fi
-fi
-
-if [[ "${SKYMONITOR_SKIP_AUTO_INFRA:-}" == "true" ]]; then
-    echo "[post-start] SKYMONITOR_SKIP_AUTO_INFRA=true -> skipping infrastructure startup"
-    exit 0
-fi
-
-echo "[post-start] Starting local infrastructure (postgres, redis, minio, smtp)..."
-if ./scripts/infra:start postgres redis minio smtp >/tmp/skymonitor-post-start.log 2>&1; then
-    echo "[post-start] Infrastructure ready"
-else
-    echo "[post-start] Failed to start infrastructure automatically. See /tmp/skymonitor-post-start.log for details." >&2
+    for docker_context in "${docker_contexts[@]}"; do
+        IFS='|' read -r context_name context_description context_endpoint <<< "$docker_context"
+        if ! docker context inspect "$context_name" >/dev/null 2>&1; then
+            echo "[post-start] Creating Docker context $context_name"
+            docker context create "$context_name" \
+                --description "$context_description" \
+                --docker "host=$context_endpoint"
+        fi
+    done
 fi

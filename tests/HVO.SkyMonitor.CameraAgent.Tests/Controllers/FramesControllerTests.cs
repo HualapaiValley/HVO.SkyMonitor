@@ -18,7 +18,7 @@ public class FramesControllerTests
     {
         var accessor = new Mock<ILatestFrameAccessor>(MockBehavior.Strict);
         LatestFrameSnapshot? snapshot = null;
-        accessor.Setup(a => a.TryGetSnapshot(out snapshot)).Returns(false);
+        accessor.Setup(a => a.TryGetSnapshot(FrameArtifactRole.Preview, out snapshot)).Returns(false);
 
         var controller = CreateController(accessor.Object);
 
@@ -28,16 +28,16 @@ public class FramesControllerTests
     }
 
     [TestMethod]
-    public void GetLatest_WhenPixelFormatUnsupported_Returns415()
+    public void GetLatest_WhenRgbPixelFormatUnsupported_Returns415()
     {
         var accessor = new Mock<ILatestFrameAccessor>(MockBehavior.Strict);
         var snapshot = new LatestFrameSnapshot(
             DateTimeOffset.UtcNow,
             2,
             2,
-            CameraPixelFormat.Mono16,
-            new byte[4]);
-        accessor.Setup(a => a.TryGetSnapshot(out snapshot)).Returns(true);
+            CameraPixelFormat.Rgb24,
+            new byte[12]);
+        accessor.Setup(a => a.TryGetSnapshot(FrameArtifactRole.Preview, out snapshot)).Returns(true);
 
         var controller = CreateController(accessor.Object);
 
@@ -58,7 +58,7 @@ public class FramesControllerTests
             1,
             CameraPixelFormat.Mono8,
             new byte[] { 128 });
-        accessor.Setup(a => a.TryGetSnapshot(out snapshot)).Returns(true);
+        accessor.Setup(a => a.TryGetSnapshot(FrameArtifactRole.Preview, out snapshot)).Returns(true);
 
         var controller = CreateController(accessor.Object);
 
@@ -71,6 +71,28 @@ public class FramesControllerTests
         Assert.AreEqual("no-store, no-cache, must-revalidate", controller.Response.Headers.CacheControl.ToString());
         Assert.AreEqual("no-cache", controller.Response.Headers.Pragma.ToString());
         Assert.AreEqual("0", controller.Response.Headers.Expires.ToString());
+    }
+
+    [TestMethod]
+    public void GetProcessed_WhenMono16FrameAvailable_ReturnsJpeg()
+    {
+        var accessor = new Mock<ILatestFrameAccessor>(MockBehavior.Strict);
+        var snapshot = new LatestFrameSnapshot(
+            DateTimeOffset.UtcNow,
+            1,
+            1,
+            CameraPixelFormat.Mono16,
+            new byte[] { 0, 128 });
+        accessor.Setup(a => a.TryGetSnapshot(FrameArtifactRole.Combined, out snapshot)).Returns(true);
+
+        var controller = CreateController(accessor.Object);
+
+        var result = controller.GetProcessed();
+
+        var fileResult = result as FileContentResult;
+        Assert.IsNotNull(fileResult);
+        Assert.AreEqual("image/jpeg", fileResult.ContentType);
+        Assert.IsTrue(fileResult.FileContents.Length > 0);
     }
 
     private static FramesController CreateController(ILatestFrameAccessor accessor)

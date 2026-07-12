@@ -127,9 +127,10 @@ public sealed class RetentionBackgroundService(
             return false;
         }
 
-        return typeName.Equals(FileStorageStepName, StringComparison.OrdinalIgnoreCase)
-            || (FileStorageStepFullName is not null && typeName.Equals(FileStorageStepFullName, StringComparison.OrdinalIgnoreCase))
-            || typeName.EndsWith(FileStorageStepName, StringComparison.OrdinalIgnoreCase);
+        var implementationName = typeName.Split(',', 2)[0].Trim();
+        return implementationName.Equals(FileStorageStepName, StringComparison.OrdinalIgnoreCase)
+            || (FileStorageStepFullName is not null && implementationName.Equals(FileStorageStepFullName, StringComparison.OrdinalIgnoreCase))
+            || implementationName.EndsWith(FileStorageStepName, StringComparison.OrdinalIgnoreCase);
     }
 
     private void PruneFrameDirectories(string storageRoot, DateTime cutoffDate)

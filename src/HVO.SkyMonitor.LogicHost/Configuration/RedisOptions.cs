@@ -13,5 +13,5 @@ public sealed class RedisOptions
     /// <summary>
     /// Instance prefix for distributed cache keys.
     /// </summary>
-    public string InstanceName { get; set; } = "skymonitor";
+    public string InstanceName { get; set; } = "skymonitor:";
 }

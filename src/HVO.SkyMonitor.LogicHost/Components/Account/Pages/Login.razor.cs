@@ -76,7 +76,10 @@ public sealed partial class Login : ComponentBase
                 return;
             }
 
-            result = await SignInManager.PasswordSignInAsync(Input.Email, Input.Password, Input.RememberMe, lockoutOnFailure: false);
+            var user = await UserManager.FindByEmailAsync(Input.Email);
+            result = user is null
+                ? SignInResult.Failed
+                : await SignInManager.PasswordSignInAsync(user, Input.Password, Input.RememberMe, lockoutOnFailure: false);
         }
 
         if (result.Succeeded)

@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -42,6 +43,20 @@ public sealed class DiagnosticsTests
         var result = await response.Content.ReadFromJsonAsync<StorageDiagnosticsResponse>().ConfigureAwait(false);
         Assert.IsNotNull(result);
         Assert.AreEqual(request.Content, result!.Content);
+    }
+
+    [TestMethod]
+    public async Task MinioDiagnosticsRejectsForeignBucketAsync()
+    {
+        await AuthenticateAsSystemAsync().ConfigureAwait(false);
+
+        var response = await _client!.PostAsJsonAsync(new Uri("/api/v1.0/diagnostics/minio", UriKind.Relative), new StorageDiagnosticsRequest
+        {
+            Bucket = "other-repository-data",
+            Content = "must not be written"
+        }).ConfigureAwait(false);
+
+        Assert.AreEqual(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [TestMethod]

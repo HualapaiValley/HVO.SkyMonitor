@@ -9,11 +9,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="HVO.Enterprise.Telemetry" />
+    <PackageReference Include="HVO.Enterprise.Telemetry.OpenTelemetry" />
+    <PackageReference Include="HVO.Enterprise.Telemetry.Serilog" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
     <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" />
+    <PackageReference Include="Serilog.AspNetCore" />
+    <PackageReference Include="Serilog.Sinks.OpenTelemetry" />
   </ItemGroup>
 
 </Project>

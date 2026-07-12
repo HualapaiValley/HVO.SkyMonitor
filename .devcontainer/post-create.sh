@@ -16,6 +16,10 @@ exec 2>&1
 echo "Recording post-create output to $LOG_FILE"
 echo
 
+# Make ignored repository secrets available to this setup process.
+# .devcontainer/devcontainer.local.env overrides the repository .env.
+source /workspaces/HVO.SkyMonitor/.devcontainer/load-repo-env.sh
+
 command_exists() {
 	command -v "$1" >/dev/null 2>&1
 }
@@ -119,19 +123,18 @@ else
 	echo "Using existing SSH agent at $SSH_AUTH_SOCK"
 fi
 
-# Try to load SSH keys if available
-if compgen -G "/home/vscode/.ssh/id_*" >/dev/null 2>&1; then
-	for key in /home/vscode/.ssh/id_*; do
-		if [[ -f "$key" && "$key" != *.pub ]]; then
-			if ssh-add "$key" >/dev/null 2>&1; then
-				echo "Loaded SSH key: $key"
-			else
-				echo "Warning: Failed to load key $key"
-			fi
-		fi
-	done
-else
-	echo "No default SSH keys found under /home/vscode/.ssh. Add keys manually with ssh-add if needed."
+# SSH_PRIVATE_KEY is optional and must be injected from the host or ignored local env.
+bash /workspaces/HVO.SkyMonitor/.devcontainer/setup-ssh-key.sh
+
+# Match the Website devcontainer behavior when these optional values are present.
+if [[ -n "${GIT_AUTHOR_NAME:-}" && -n "${GIT_AUTHOR_EMAIL:-}" ]]; then
+	git config --global user.name "$GIT_AUTHOR_NAME"
+	git config --global user.email "$GIT_AUTHOR_EMAIL"
+fi
+
+if [[ -n "${GH_PAT:-}" ]]; then
+	(unset GITHUB_TOKEN GH_TOKEN; printf '%s' "$GH_PAT" | gh auth login --with-token) || true
+	gh auth setup-git || true
 fi
 
 # Generate HTTPS developer certificate

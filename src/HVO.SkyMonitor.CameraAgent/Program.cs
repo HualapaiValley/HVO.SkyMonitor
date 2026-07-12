@@ -39,18 +39,6 @@ public class Program
     {
         var builder = WebApplication.CreateBuilder(args);
 
-        builder.Logging.ClearProviders();
-        builder.Logging.AddJsonConsole();
-        builder.Logging.AddDebug();
-        builder.Logging.Configure(options =>
-        {
-            options.ActivityTrackingOptions = ActivityTrackingOptions.SpanId |
-                ActivityTrackingOptions.TraceId |
-                ActivityTrackingOptions.ParentId |
-                ActivityTrackingOptions.Baggage |
-                ActivityTrackingOptions.Tags;
-        });
-
         builder.AddSkyMonitorObservability();
 
         builder.Services.AddHttpContextAccessor();

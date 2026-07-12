@@ -4,13 +4,12 @@ using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
-using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Storage;
 
 public sealed class FileSystemFrameStorageService(
-    ILogger<FileSystemFrameStorageService> logger) : IFrameStorageService
+    ILogger<FileSystemFrameStorageService> logger) : IFrameStorageService, IDisposable
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -22,19 +21,18 @@ public sealed class FileSystemFrameStorageService(
     };
 
     private readonly ILogger<FileSystemFrameStorageService> _logger = logger;
+    private readonly SemaphoreSlim _indexGate = new(1, 1);
 
     public async ValueTask<StoredFrameReference> SaveAsync(
-        CameraModuleConfig config,
+        string storageRoot,
         FrameArtifact artifact,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(config);
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
         ArgumentNullException.ThrowIfNull(artifact);
         var frame = artifact.Frame;
 
-        var storageOptions = ResolveStorageOptions(config)
-            ?? throw new InvalidOperationException("No file-system storage processing step is configured.");
-        var storageRoot = Path.GetFullPath(storageOptions.StorageRoot);
+        storageRoot = Path.GetFullPath(storageRoot);
         var timestamp = frame.TimestampUtc;
         var directory = Path.Combine(
             storageRoot,
@@ -60,7 +58,12 @@ public sealed class FileSystemFrameStorageService(
             frame.Width,
             frame.Height,
             frame.PixelFormat,
-            frame.Metadata);
+            new StoredFrameCaptureMetadata(
+                frame.Metadata.Exposure,
+                frame.Metadata.Gain,
+                double.IsFinite(frame.Metadata.TemperatureC) ? frame.Metadata.TemperatureC : null,
+                frame.Metadata.SourceId,
+                frame.Metadata.Extra));
 
         var metadataPath = Path.Combine(directory, string.Concat(stem, ".json"));
         await WriteAtomicallyAsync(metadataPath, JsonSerializer.SerializeToUtf8Bytes(metadata, SerializerOptions), cancellationToken).ConfigureAwait(false);
@@ -69,7 +72,15 @@ public sealed class FileSystemFrameStorageService(
         Directory.CreateDirectory(indexDirectory);
         var indexPath = Path.Combine(indexDirectory, $"frames_{timestamp:yyyy-MM-dd}.jsonl");
         var metadataLine = JsonSerializer.Serialize(metadata, SerializerOptions) + Environment.NewLine;
-        await File.AppendAllTextAsync(indexPath, metadataLine, cancellationToken).ConfigureAwait(false);
+        await _indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await File.AppendAllTextAsync(indexPath, metadataLine, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _indexGate.Release();
+        }
 
         _logger.FrameStored(payloadPath);
         return new StoredFrameReference(
@@ -77,6 +88,66 @@ public sealed class FileSystemFrameStorageService(
             AbsolutePath: payloadPath,
             TimestampUtc: timestamp,
             Role: artifact.Role);
+    }
+
+    public async ValueTask RemoveAsync(
+        string storageRoot,
+        StoredFrameReference storedFrame,
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
+        ArgumentNullException.ThrowIfNull(storedFrame);
+
+        var payloadPath = storedFrame.AbsolutePath;
+        if (File.Exists(payloadPath))
+        {
+            File.Delete(payloadPath);
+        }
+
+        var metadataPath = Path.ChangeExtension(payloadPath, ".json");
+        if (File.Exists(metadataPath))
+        {
+            File.Delete(metadataPath);
+        }
+
+        storageRoot = Path.GetFullPath(storageRoot);
+        var indexPath = Path.Combine(storageRoot, "index", $"frames_{storedFrame.TimestampUtc:yyyy-MM-dd}.jsonl");
+        if (!File.Exists(indexPath))
+        {
+            return;
+        }
+
+        await _indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var remainingLines = (await File.ReadAllLinesAsync(indexPath, cancellationToken).ConfigureAwait(false))
+                .Where(line => !HasArtifactId(line, artifactId))
+                .ToArray();
+            if (remainingLines.Length == 0)
+            {
+                File.Delete(indexPath);
+                return;
+            }
+
+            var temporaryPath = string.Concat(indexPath, ".", Guid.NewGuid().ToString("N"), ".tmp");
+            try
+            {
+                await File.WriteAllLinesAsync(temporaryPath, remainingLines, cancellationToken).ConfigureAwait(false);
+                File.Move(temporaryPath, indexPath, overwrite: true);
+            }
+            finally
+            {
+                if (File.Exists(temporaryPath))
+                {
+                    File.Delete(temporaryPath);
+                }
+            }
+        }
+        finally
+        {
+            _indexGate.Release();
+        }
     }
 
     private static async Task WriteAtomicallyAsync(string destinationPath, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
@@ -93,6 +164,22 @@ public sealed class FileSystemFrameStorageService(
             {
                 File.Delete(temporaryPath);
             }
+        }
+    }
+
+    private static bool HasArtifactId(string line, Guid artifactId)
+    {
+        try
+        {
+            using var metadata = JsonDocument.Parse(line);
+            return metadata.RootElement.TryGetProperty("artifactId", out var value) &&
+                   value.ValueKind == JsonValueKind.String &&
+                   Guid.TryParse(value.GetString(), out var parsedArtifactId) &&
+                   parsedArtifactId == artifactId;
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 
@@ -130,62 +217,15 @@ public sealed class FileSystemFrameStorageService(
         int Width,
         int Height,
         CameraPixelFormat PixelFormat,
-        FrameMetadata Metadata);
+        StoredFrameCaptureMetadata Metadata);
 
-    private static readonly JsonSerializerOptions StepSerializerOptions = new(JsonSerializerDefaults.Web)
-    {
-        PropertyNameCaseInsensitive = true,
-        Converters =
-        {
-            new System.Text.Json.Serialization.JsonStringEnumConverter()
-        }
-    };
+    private sealed record StoredFrameCaptureMetadata(
+        TimeSpan Exposure,
+        double Gain,
+        double? TemperatureC,
+        string? SourceId,
+        IReadOnlyDictionary<string, string>? Extra);
 
-    private static readonly string FileStorageStepName = typeof(NoOpFileStorageProcessingStep).Name;
-    private static readonly string? FileStorageStepFullName = typeof(NoOpFileStorageProcessingStep).FullName;
+    public void Dispose() => _indexGate.Dispose();
 
-    private static NoOpFileStorageProcessingStepOptions? ResolveStorageOptions(CameraModuleConfig config)
-    {
-        foreach (var step in config.ResolveProcessingSteps())
-        {
-            if (!IsFileStorageStep(step.Type) || step.Options is null)
-            {
-                continue;
-            }
-
-            try
-            {
-                var options = JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(step.Options.Value.GetRawText(), StepSerializerOptions);
-                if (options is null)
-                {
-                    continue;
-                }
-
-                if (string.IsNullOrWhiteSpace(options.StorageRoot))
-                {
-                    continue;
-                }
-
-                return options;
-            }
-            catch (JsonException)
-            {
-                // Ignore malformed options and continue scanning for a valid storage step
-            }
-        }
-
-        return null;
-    }
-
-    private static bool IsFileStorageStep(string? typeName)
-    {
-        if (string.IsNullOrWhiteSpace(typeName))
-        {
-            return false;
-        }
-
-        return typeName.Equals(FileStorageStepName, StringComparison.OrdinalIgnoreCase)
-            || (FileStorageStepFullName is not null && typeName.Equals(FileStorageStepFullName, StringComparison.OrdinalIgnoreCase))
-            || typeName.EndsWith(FileStorageStepName, StringComparison.OrdinalIgnoreCase);
-    }
 }

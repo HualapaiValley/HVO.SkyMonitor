@@ -13,7 +13,7 @@
 
   <ItemGroup>
     <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" />
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
     <!-- Direct package references (replaced Aspire wrappers) -->
     <PackageReference Include="StackExchange.Redis" />
     <PackageReference Include="Minio" />

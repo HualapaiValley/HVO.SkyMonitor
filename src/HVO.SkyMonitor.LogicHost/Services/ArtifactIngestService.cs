@@ -93,5 +93,5 @@ internal sealed class ArtifactIngestService(
     }
 
     private static bool IsUniqueConstraintViolation(DbUpdateException exception)
-        => exception.InnerException is Npgsql.PostgresException { SqlState: "23505" };
+        => exception.InnerException is Microsoft.Data.SqlClient.SqlException { Number: 2601 or 2627 };
 }

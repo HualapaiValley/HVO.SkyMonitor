@@ -16,7 +16,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Minio;
 using Minio.DataModel.Args;
-using Testcontainers.PostgreSql;
+using Testcontainers.MsSql;
 using Testcontainers.Redis;
 
 namespace HVO.SkyMonitor.IntegrationTests;
@@ -24,20 +24,20 @@ namespace HVO.SkyMonitor.IntegrationTests;
 using Program = HVO.SkyMonitor.LogicHost.Program;
 
 /// <summary>
-/// Integration test fixture that starts Testcontainers for PostgreSQL, Redis, and MinIO.
+/// Integration test fixture that starts Testcontainers for SQL Server, Redis, and MinIO.
 /// Provides a WebApplicationFactory for hosting the HVO.SkyMonitor application in-process.
 /// </summary>
 public sealed class IntegrationTestFixture : IDisposable
 {
-    private const string PostgresUsername = "skymonitor";
-    private const string PostgresPassword = "skymonitor_test";
-    private const string PostgresDatabase = "skymonitordb";
+    private const string SqlServerPassword = "SkyMonitor_test_password1!";
     private readonly int _minioHostPort = GetFreeTcpPort();
-    private PostgreSqlContainer? _postgresContainer;
+    private MsSqlContainer? _sqlServerContainer;
     private RedisContainer? _redisContainer;
     private IContainer? _minioContainer;
     private IContainer? _smtpContainer;
     private bool _initialized;
+    private string? _originalSqlServerConnectionString;
+    private string? _originalDefaultConnectionString;
 
     /// <summary>
     /// Gets the web application factory for creating HTTP clients.
@@ -45,9 +45,9 @@ public sealed class IntegrationTestFixture : IDisposable
     public WebApplicationFactory<Program> Factory { get; private set; } = null!;
 
     /// <summary>
-    /// Gets the PostgreSQL connection string.
+    /// Gets the SQL Server connection string.
     /// </summary>
-    public string PostgresConnectionString { get; private set; } = string.Empty;
+    public string SqlServerConnectionString { get; private set; } = string.Empty;
 
     /// <summary>
     /// Gets the Redis connection string.
@@ -88,18 +88,16 @@ public sealed class IntegrationTestFixture : IDisposable
             return;
         }
 
-        _postgresContainer = new PostgreSqlBuilder()
-            .WithImage("postgres:17-alpine")
-            .WithDatabase(PostgresDatabase)
-            .WithUsername(PostgresUsername)
-            .WithPassword(PostgresPassword)
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(5432))
+        _sqlServerContainer = new MsSqlBuilder()
+            .WithPassword(SqlServerPassword)
             .Build();
 
-        await _postgresContainer.StartAsync().ConfigureAwait(false);
-        var postgresPort = _postgresContainer.GetMappedPublicPort(5432);
-        PostgresConnectionString =
-            $"Host=127.0.0.1;Port={postgresPort};Username={PostgresUsername};Password={PostgresPassword};Database={PostgresDatabase};Include Error Detail=true";
+        await _sqlServerContainer.StartAsync().ConfigureAwait(false);
+        SqlServerConnectionString = _sqlServerContainer.GetConnectionString();
+        _originalSqlServerConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__skymonitordb");
+        _originalDefaultConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection");
+        Environment.SetEnvironmentVariable("ConnectionStrings__skymonitordb", SqlServerConnectionString);
+        Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", SqlServerConnectionString);
 
         // Start Redis container (RedisBuilder provides a wait strategy that verifies
         // the server responds to commands, not just that the TCP port is open)
@@ -151,8 +149,8 @@ public sealed class IntegrationTestFixture : IDisposable
                 {
                     var overrides = new Dictionary<string, string?>
                     {
-                        ["ConnectionStrings:skymonitordb"] = PostgresConnectionString,
-                        ["ConnectionStrings:DefaultConnection"] = PostgresConnectionString,
+                        ["ConnectionStrings:skymonitordb"] = SqlServerConnectionString,
+                        ["ConnectionStrings:DefaultConnection"] = SqlServerConnectionString,
                         ["Redis:Configuration"] = RedisConnectionString,
                         ["Redis:InstanceName"] = "integration-tests",
                         ["Minio:Endpoint"] = MinioHost,
@@ -177,7 +175,7 @@ public sealed class IntegrationTestFixture : IDisposable
 
                     services.AddDbContext<ApplicationDbContext>(options =>
                     {
-                        options.UseNpgsql(PostgresConnectionString);
+                        options.UseSqlServer(SqlServerConnectionString);
                         options.EnableSensitiveDataLogging();
                         options.EnableDetailedErrors();
                     });
@@ -229,9 +227,12 @@ public sealed class IntegrationTestFixture : IDisposable
             Factory.Dispose();
         }
 
-        if (_postgresContainer != null)
+        Environment.SetEnvironmentVariable("ConnectionStrings__skymonitordb", _originalSqlServerConnectionString);
+        Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", _originalDefaultConnectionString);
+
+        if (_sqlServerContainer != null)
         {
-            _postgresContainer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            _sqlServerContainer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
 
         if (_redisContainer != null)

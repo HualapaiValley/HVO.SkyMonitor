@@ -68,4 +68,35 @@ public static class SkiaPreviewEncoder
             return Result<byte[]>.Failure(ex);
         }
     }
+
+    /// <summary>Encodes a Mono16 frame as a contrast-normalized 8-bit JPEG preview.</summary>
+    public static Result<byte[]> EncodeMono16ToJpeg(int width, int height, ReadOnlyMemory<byte> pixelData, int quality = DefaultQuality)
+    {
+        if (pixelData.Length != checked(width * height * 2))
+        {
+            return Result<byte[]>.Failure(new InvalidOperationException($"Pixel buffer length {pixelData.Length} does not match expected Mono16 size for {width}x{height}."));
+        }
+
+        var pixels = pixelData.Span;
+        ushort minimum = ushort.MaxValue;
+        ushort maximum = ushort.MinValue;
+        for (var index = 0; index < pixels.Length; index += 2)
+        {
+            var sample = (ushort)(pixels[index] | pixels[index + 1] << 8);
+            minimum = Math.Min(minimum, sample);
+            maximum = Math.Max(maximum, sample);
+        }
+
+        var preview = new byte[checked(width * height)];
+        var range = maximum - minimum;
+        for (var index = 0; index < preview.Length; index++)
+        {
+            var sample = (ushort)(pixels[index * 2] | pixels[index * 2 + 1] << 8);
+            preview[index] = range == 0
+                ? (byte)0
+                : (byte)((sample - minimum) * byte.MaxValue / range);
+        }
+
+        return EncodeMono8ToJpeg(width, height, preview, quality);
+    }
 }
