@@ -52,6 +52,14 @@ function outputStar(id) {
     core.output("STAR|" + id + "|" + altitude + "|" + azimuth + "|" + screen["x"] + "|" + screen["y"] + "|" + info["raJ2000"] + "|" + info["decJ2000"]);
 }
 
+function outputEndpoint(id) {
+    var info = core.getObjectInfo(id);
+    var altitude = info["altitude-geometric"];
+    var azimuth = info["azimuth-geometric"];
+    var screen = core.getScreenXYFromAltAzi(altitude + "d", azimuth + "d");
+    core.output("ENDPOINT|" + id + "|" + altitude + "|" + azimuth + "|" + screen["x"] + "|" + screen["y"] + "|" + info["raJ2000"] + "|" + info["decJ2000"]);
+}
+
 var location = core.getObserverLocationInfo();
 core.output("SETTINGS|" + core.getScreenWidth() + "|" + core.getScreenHeight() + "|" + core.getProjectionMode() + "|" + StelMovementMgr.getCurrentFov() + "|" + core.getDate("utc") + "|" + core.getMountMode() + "|" + core.getDiskViewport() + "|" + core.getFlipHorz() + "|" + core.getFlipVert() + "|" + location["longitude"] + "|" + location["latitude"] + "|" + location["altitude"] + "|6.5");
 
@@ -64,6 +72,10 @@ outputStar("HIP 32349");
 outputStar("HIP 24608");
 outputStar("HIP 37279");
 outputStar("HIP 27989");
+outputEndpoint("HIP 27989");
+outputEndpoint("HIP 25336");
+outputEndpoint("HIP 65474");
+outputEndpoint("HIP 69701");
 
 core.output("COMPLETE");
 core.saveOutputAs("stellarium-output.txt");

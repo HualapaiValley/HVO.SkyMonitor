@@ -4,26 +4,52 @@ Stellarium is an external geometry and visual oracle for the canonical Hualapai
 ASI174MM-compatible fisheye fixture. It is not a byte-exact image oracle and is
 not part of the normal .NET test gate.
 
-## Ubuntu 24.04 setup
+## Pinned container
 
-Install the pinned packages idempotently:
+Run the preferred validation path from any Docker-capable host:
+
+```bash
+./scripts/validate:stellarium-container
+```
+
+`docker/stellarium/Dockerfile` pins the Ubuntu 24.04 amd64 base manifest digest,
+Stellarium/data, Xvfb, Xauth, Mesa llvmpipe, ImageMagick, `jq`, fontconfig, and
+DejaVu fonts. The checked-in startup script is the image entrypoint. The wrapper
+builds for `linux/amd64`, runs without network or capabilities, uses a read-only
+root filesystem and `no-new-privileges`, and mounts only
+`TestResults/stellarium` as persistent writable storage. A bounded `/tmp` tmpfs
+holds transient GUI state. It uses the caller's UID/GID so diagnostics are not
+owned by root.
+
+The pinned Noble package metadata is `stellarium=23.4-2build3`, but the binary
+owned by that package reports `Stellarium 24.4`. This is a reproducible Ubuntu
+package inconsistency, not a `PATH` collision. Both values are asserted and
+recorded rather than treated as interchangeable.
+
+The Dockerfile resolves exact direct package versions and all transitive packages
+from Ubuntu snapshot `20260701T000000Z`; the base image is pinned by its amd64
+manifest digest. The sorted `packages.txt` retained by every run records the
+resolved closure. Updating the snapshot, base, or a direct package is an explicit
+reviewed fixture change, never a silent mirror update.
+
+The manual/scheduled `.github/workflows/stellarium.yml` workflow runs every
+Monday and through `workflow_dispatch`, then retains JSON, logs, package metadata,
+and screenshots for 30 days. It is intentionally separate from required
+pull-request CI.
+
+Validate the checked-in scripts, parser, fixture, Docker contract, and synthetic
+passing report without launching Stellarium:
+
+```bash
+./scripts/test:stellarium
+```
+
+## Optional host setup
+
+For debugging on Ubuntu 24.04 only, install and run the same direct package pins:
 
 ```bash
 ./scripts/setup:stellarium
-```
-
-The setup requires Ubuntu 24.04 and installs `stellarium=23.4-2build3`,
-`stellarium-data=23.4-2build3`, Xvfb, Xauth, Mesa llvmpipe, ImageMagick, and
-`jq`. It stops with an actionable error if the pinned packages are unavailable
-from the configured apt sources.
-
-Validation invokes `/usr/bin/stellarium` directly and requires its reported
-version to be exactly `Stellarium 23.4`. This prevents a different executable
-earlier on `PATH` from invalidating an otherwise pinned package run.
-
-## Run
-
-```bash
 ./scripts/validate:stellarium
 ```
 
@@ -63,36 +89,30 @@ Tolerance categories are not combined:
 | Analytic | `1.5` sensor px | Zenith and cardinal equidistant-projection landmarks |
 | Astronomy model | `0.75 deg` (`4.9653` sensor px) | Stellarium date model versus the intentionally coarse independent J2000 fixture |
 | Screen rounding | `1.0` native px | Stellarium horizontal coordinates versus its rendered fisheye screen coordinates |
+| Endpoint catalog | `0.02 deg` | Stellarium endpoint J2000 values versus independently sourced SIMBAD ICRS coordinates |
+| Endpoint sensor | `6.1291` sensor px | Normalized Stellarium endpoint versus HVO projection with astronomy and screen budgets |
+| Clipped boundary | `10.0` sensor px | Stellarium endpoint chord boundary versus HVO adaptive great-circle boundary |
 
 The run also asserts viewport dimensions, projection, FOV, observer location,
-UTC, mount, disk viewport, flips, and magnitude limit. Atmosphere/refraction,
+UTC, mount, disk viewport, flips, and magnitude limit. Four selected
+D3-Celestial HIP endpoints prove native-to-sensor endpoint positions. Orion
+`27989-25336` remains inside the image circle; Virgo `65474-69701` brackets the
+circle and produces a retained clipped boundary coordinate. Atmosphere/refraction,
 landscape, fog, Milky Way, nebulae, labels, planets, twinkle, and luminance
 adaptation are disabled by the `.ssc` script.
 
-Version, environment, settings, native coordinates, normalized coordinates,
-assertion details, logs, and the diagnostic PNG are written under ignored
-`TestResults/stellarium/`. PNGs are transient diagnostics only and must not be
-committed or used for whole-image equality.
-
-## Planned headless container validation
-
-This work is tracked in issue #57 and is intentionally outside normal .NET unit-test runs. Add a pinned
-container command and manual or scheduled workflow so validation does not depend
-on the host's GUI packages or an executable that differs from its package
-metadata. Pin the base image digest, Stellarium/data packages, Xvfb, llvmpipe,
-fonts, locale, and startup script. An opt-in integration test may invoke this
-container when Docker is available, but ordinary analytic/rendering tests remain
-offline and fast.
-
-The container gate should generate both the HVO virtual output and Stellarium
-diagnostics for the same fixture. Automated assertions compare normalized star
-centroids, annotation anchors, projection scale, image circle, orientation, and
-constellation endpoint/clipping coordinates. Screenshots are visual diagnostics,
-not whole-image golden files.
+Version, package closure, environment, settings, native coordinates, normalized
+coordinates, assertion details, logs, and the diagnostic PNG are written under
+ignored `TestResults/stellarium/`. `settings.json`, `actual.json`, and
+`report.json` are the machine-readable evidence. PNGs are transient diagnostics
+only and must not be committed or used for whole-image equality. HVO's ordinary
+.NET conformance tests remain authoritative for rendered centroids and annotation
+anchors; this external oracle independently validates their geometric inputs.
 
 Constellation stick figures require a separate topology qualification. HVO uses
 the pinned D3-Celestial topology; Stellarium may use a different sky culture and
 line convention. Its figure lines are comparable only after the selected sky
 culture is pinned and its endpoint graph is shown to match D3-Celestial.
 Otherwise Stellarium validates endpoint positions while D3-Celestial source
-checksums and topology tests validate connectivity.
+checksums and topology tests validate connectivity. Every report therefore marks
+Stellarium topology `not-qualified` and `usedForConnectivity: false`.

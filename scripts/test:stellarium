@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Validate the checked-in Stellarium container and report contract without launching Stellarium.
+
+set -euo pipefail
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly FIXTURES="$REPO_ROOT/tests/fixtures/stellarium"
+readonly DOCKERFILE="$REPO_ROOT/docker/stellarium/Dockerfile"
+readonly WRAPPER="$REPO_ROOT/scripts/validate:stellarium-container"
+readonly TOPOLOGY="$REPO_ROOT/src/HVO.SkyMonitor.Astronomy/Data/d3-celestial-v0.7.32-topology.tsv"
+readonly TEMP_DIR="$(mktemp -d -t hvo-stellarium-contract.XXXXXX)"
+
+cleanup() {
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
+bash -n "$REPO_ROOT/scripts/setup:stellarium"
+bash -n "$REPO_ROOT/scripts/validate:stellarium"
+bash -n "$WRAPPER"
+
+jq -e '.schemaVersion == 1 and .stellarium.packageVersion == "23.4-2build3" and .stellarium.runtimeVersion == "Stellarium 24.4"' \
+    "$FIXTURES/hualapai-fisheye-v1.json" >/dev/null
+jq -Rn -f "$FIXTURES/parse-output.jq" "$FIXTURES/sample-output-v1.txt" > "$TEMP_DIR/actual.json"
+jq -n \
+    --slurpfile m "$FIXTURES/hualapai-fisheye-v1.json" \
+    --slurpfile a "$TEMP_DIR/actual.json" \
+    -f "$FIXTURES/validate.jq" > "$TEMP_DIR/report.json"
+jq -e '.passed' "$TEMP_DIR/report.json" >/dev/null
+
+jq '.settings.fieldOfViewDegrees = 170' "$TEMP_DIR/actual.json" > "$TEMP_DIR/invalid-actual.json"
+jq -n \
+    --slurpfile m "$FIXTURES/hualapai-fisheye-v1.json" \
+    --slurpfile a "$TEMP_DIR/invalid-actual.json" \
+    -f "$FIXTURES/validate.jq" > "$TEMP_DIR/invalid-report.json"
+if jq -e '.passed' "$TEMP_DIR/invalid-report.json" >/dev/null; then
+    echo "The Stellarium validator accepted an invalid field of view." >&2
+    exit 1
+fi
+
+jq '.endpoints[3] = .endpoints[2]' "$TEMP_DIR/actual.json" > "$TEMP_DIR/duplicate-actual.json"
+jq -n \
+    --slurpfile m "$FIXTURES/hualapai-fisheye-v1.json" \
+    --slurpfile a "$TEMP_DIR/duplicate-actual.json" \
+    -f "$FIXTURES/validate.jq" > "$TEMP_DIR/duplicate-report.json"
+if jq -e '.passed' "$TEMP_DIR/duplicate-report.json" >/dev/null; then
+    echo "The Stellarium validator accepted a duplicated endpoint and missing expected endpoint." >&2
+    exit 1
+fi
+
+jq '.endpoints[0].j2000.rightAscensionDegrees += 5' "$TEMP_DIR/actual.json" > "$TEMP_DIR/invalid-endpoint.json"
+jq -n \
+    --slurpfile m "$FIXTURES/hualapai-fisheye-v1.json" \
+    --slurpfile a "$TEMP_DIR/invalid-endpoint.json" \
+    -f "$FIXTURES/validate.jq" > "$TEMP_DIR/invalid-endpoint-report.json"
+if jq -e '.passed' "$TEMP_DIR/invalid-endpoint-report.json" >/dev/null; then
+    echo "The Stellarium validator accepted an invalid endpoint coordinate." >&2
+    exit 1
+fi
+
+jq '.endpoints[2].j2000.rightAscensionDegrees = -1000' "$TEMP_DIR/actual.json" > "$TEMP_DIR/invalid-wrapped-endpoint.json"
+jq -n \
+    --slurpfile m "$FIXTURES/hualapai-fisheye-v1.json" \
+    --slurpfile a "$TEMP_DIR/invalid-wrapped-endpoint.json" \
+    -f "$FIXTURES/validate.jq" > "$TEMP_DIR/invalid-wrapped-endpoint-report.json"
+if jq -e '.passed' "$TEMP_DIR/invalid-wrapped-endpoint-report.json" >/dev/null; then
+    echo "The Stellarium validator accepted an invalid wrapped endpoint coordinate." >&2
+    exit 1
+fi
+
+grep -Eq '^FROM ubuntu:24\.04@sha256:[0-9a-f]{64}$' "$DOCKERFILE"
+for package in ca-certificates stellarium stellarium-data xvfb xauth libgl1-mesa-dri imagemagick jq fonts-dejavu-core fontconfig; do
+    grep -Eq "^[[:space:]]*${package}=[^[:space:]\\\\]+" "$DOCKERFILE"
+done
+grep -Fq 'ENTRYPOINT ["/opt/hvo/scripts/validate:stellarium"]' "$DOCKERFILE"
+grep -Fq -- '--network none' "$WRAPPER"
+grep -Fq -- '--read-only' "$WRAPPER"
+grep -Fq -- '--cap-drop ALL' "$WRAPPER"
+grep -Fq -- '--user "$(id -u):$(id -g)"' "$WRAPPER"
+grep -Fq $'ORI\t27989\t25336' "$TOPOLOGY"
+grep -Fq $'VIR\t65474\t69701' "$TOPOLOGY"
+expected_topology_sha256="$(jq -r '.constellationValidation.embeddedTopologySha256' "$FIXTURES/hualapai-fisheye-v1.json")"
+actual_topology_sha256="$(sha256sum "$TOPOLOGY" | cut -d ' ' -f 1)"
+[[ "$actual_topology_sha256" == "$expected_topology_sha256" ]]
+
+echo "Stellarium validation contract passed."

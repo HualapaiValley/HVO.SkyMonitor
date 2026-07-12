@@ -9,12 +9,16 @@ This document describes the build and validation stages executed in GitHub Actio
 | **Restore & Build** | `dotnet restore` + `dotnet build HVO.SkyMonitor.v9.slnx` in Release. |
 | **Tests** | `dotnet test` across the solution with the `Integration` and `Manual` category filter. |
 | **Artifacts** | Publish coverage and build logs for download. |
+| **Stellarium Oracle** | Separate manual/Monday pinned container run; never a required PR gate. |
 
 ## Workflow Configuration
 
 - Located at `.github/workflows/ci.yml`.
 - Runs on GitHub-hosted `ubuntu-latest` with the .NET 10 SDK installed by `actions/setup-dotnet`.
 - Testcontainers starts disposable SQL Server, Redis, MinIO, and Mailpit containers during the test run. Coverage badge publication uses the configured gist secrets.
+- `.github/workflows/stellarium.yml` independently runs the pinned headless
+  external geometry oracle on `ubuntu-24.04` by schedule or manual dispatch and
+  retains diagnostics for 30 days.
 
 ## Reproducing Locally
 
@@ -26,6 +30,11 @@ This document describes the build and validation stages executed in GitHub Actio
 2. **CI-equivalent tests**
    ```bash
    dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory!=Integration&TestCategory!=Manual" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
+   ```
+3. **Optional external geometry oracle**
+   ```bash
+   ./scripts/test:stellarium
+   ./scripts/validate:stellarium-container
    ```
 
 ## Handling Failures

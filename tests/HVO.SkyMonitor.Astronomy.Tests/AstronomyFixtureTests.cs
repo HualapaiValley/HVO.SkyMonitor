@@ -110,6 +110,67 @@ public sealed class AstronomyFixtureTests
         }
     }
 
+    [TestMethod]
+    public async Task HualapaiConstellationEndpoints_ProduceCanonicalClippingEvidence()
+    {
+        using var manifest = LoadStellariumManifest();
+        var constellation = manifest.RootElement.GetProperty("constellationValidation");
+        var endpoints = constellation.GetProperty("endpoints").EnumerateArray().ToArray();
+        var catalog = new InMemoryCelestialCatalog(endpoints.Select(item =>
+        {
+            var id = item.GetProperty("id").GetString()!;
+            var j2000 = item.GetProperty("j2000");
+            return new CelestialCatalogObject(
+                id, id,
+                j2000.GetProperty("rightAscensionDegrees").GetDouble() / 15,
+                j2000.GetProperty("declinationDegrees").GetDouble(),
+                1,
+                HipparcosId: id[4..]);
+        }));
+        var topology = new InMemoryConstellationTopology(
+            constellation.GetProperty("segments").EnumerateArray().Select(item => new ConstellationSegment(
+                item.GetProperty("constellationId").GetString()!,
+                item.GetProperty("from").GetString()![4..],
+                item.GetProperty("to").GetString()![4..])));
+        var request = new VisibleSceneRequest(
+            new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero),
+            new ObserverLocation(35.347, -113.878, 0),
+            new EquidistantProjectionContext(
+                968, 608, 595.84 / (Math.PI / 2), 595.84, WidthPixels: 1936, HeightPixels: 1216),
+            new CatalogQuery(6.5, 10),
+            new CatalogMetadata("SIMBAD fixture", "J2000", new Uri("https://simbad.u-strasbg.fr"), "fixture"),
+            constellationIds: ["ORI", "VIR"]);
+
+        var scene = await new VisibleSceneBuilder(catalog, topology).BuildAsync(request).ConfigureAwait(false);
+
+        foreach (var item in endpoints)
+        {
+            var id = item.GetProperty("id").GetString()!;
+            var j2000 = item.GetProperty("j2000");
+            var horizontal = CoordinateTransforms.EquatorialToHorizontal(
+                EquatorialPrecession.PrecessJ2000(new EquatorialPoint(
+                    j2000.GetProperty("rightAscensionDegrees").GetDouble() / 15,
+                    j2000.GetProperty("declinationDegrees").GetDouble()), request.Utc),
+                request.Utc, request.Observer.LatitudeDegrees, request.Observer.LongitudeDegrees);
+            var radius = 595.84 * (90 - horizontal.AltitudeDegrees) / 90;
+            var azimuth = horizontal.AzimuthDegrees * Math.PI / 180;
+            var actual = new PixelPoint(
+                968 + radius * Math.Sin(azimuth),
+                608 - radius * Math.Cos(azimuth));
+            var expected = item.GetProperty("expectedHvoSensor");
+            Assert.AreEqual(expected.GetProperty("x").GetDouble(), actual.X, 1e-9, id);
+            Assert.AreEqual(expected.GetProperty("y").GetDouble(), actual.Y, 1e-9, id);
+        }
+
+        var expectedBoundary = constellation.GetProperty("segments").EnumerateArray()
+            .Single(item => item.GetProperty("id").GetString() == "VIR-65474-69701")
+            .GetProperty("expectedHvoBoundary");
+        var clippedBoundary = scene.Segments.Where(segment => segment.ConstellationId == "VIR").Last().ToPixel;
+        Assert.AreEqual(expectedBoundary.GetProperty("x").GetDouble(), clippedBoundary.X, 1e-9);
+        Assert.AreEqual(expectedBoundary.GetProperty("y").GetDouble(), clippedBoundary.Y, 1e-9);
+        Assert.HasCount(9, scene.Segments);
+    }
+
     private static void AssertAngularEqual(double expected, double actual, double tolerance)
     {
         var difference = Math.Abs(expected - actual);
@@ -120,4 +181,8 @@ public sealed class AstronomyFixtureTests
     private static System.Text.Json.JsonDocument LoadConformanceManifest()
         => System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "hualapai-asi174-conformance-v1.json")));
+
+    private static System.Text.Json.JsonDocument LoadStellariumManifest()
+        => System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "hualapai-fisheye-v1.json")));
 }
