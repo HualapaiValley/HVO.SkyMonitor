@@ -112,6 +112,7 @@
                 "maximumLabelMagnitude": 2.5,
                 "labelScale": 2,
                 "drawConstellationLines": true,
+                "constellationIds": ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"],
                 "constellationLineValue": 160,
                 "constellationLineRed": 96,
                 "constellationLineGreen": 160,

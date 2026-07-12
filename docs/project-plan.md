@@ -855,30 +855,24 @@ unpinned branch as the only provenance record.
 
 ## 11. Near-Term Work Queue
 
-The next implementation work should occur in this order:
+The next implementation work should occur in this order. Ordinary-path
+integration, machine-readable ASI174 evidence, catalog coarse filtering, and
+real-image geometry-only constellation overlays are complete.
 
-1. Complete the remaining virtual-planetarium acceptance evidence. The
-   ordinary-path integration and fixed ASI174MM reduced/full geometry,
-   statistics, centroid, orientation movement, and full canonical RGB24 evidence
-   are complete and consumed from a versioned machine-readable conformance
-   fixture.
-2. Add real-image geometry-only constellation overlays in issue #56. VirtualSky
-   already has independent endpoint geometry, provenance-tracked endpoint-star
-   inclusion, boundary clipping, and configurable line styling.
-3. Add pinned headless Stellarium centroid, endpoint, and clipping validation in
+1. Add pinned headless Stellarium centroid, endpoint, and clipping validation in
    issue #57. This is a manual/scheduled external-oracle workflow, not part of
    the normal offline .NET test gate.
-4. Validate standalone container startup with its packaged offline catalog and
+2. Validate standalone container startup with its packaged offline catalog and
    retain exact Debug/Release, vulnerability, coverage, format, and Stellarium
    evidence for the implementation baseline.
-5. Complete local persistence restart browsing, disk-pressure policy, graceful
+3. Complete local persistence restart browsing, disk-pressure policy, graceful
    channel drain, failure backoff, and accelerated full-night/24-hour soak work.
-6. Validate ARM64 deployment and characterize performance on the intended
+4. Validate ARM64 deployment and characterize performance on the intended
    Raspberry Pi hardware without inventing thresholds.
-7. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
-8. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
+5. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
+6. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
    calibration as a separate hardware-backed work stream.
-9. Prepare deferred fireball/transient processing through continuous capture
+7. Prepare deferred fireball/transient processing through continuous capture
    cadence [#58](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58),
    durable raw fan-out [#59](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59),
    and reconstructable central jobs
