@@ -382,6 +382,14 @@ be documented beside the packaged data. Snapshot updates are explicitly
 distributed and applied atomically; CameraAgent continues using its current
 snapshot while offline.
 
+The initial region contract is an optional inclusive J2000 spherical cap on the
+candidate query. Astronomy derives a conservative cap from the calibrated
+projection and horizon policy, while adapters may use it only to reduce
+candidates. Exact visibility and `MaximumResults` remain Astronomy concerns.
+Refraction falls back to the geometric-horizon cap or an all-sky query where an
+optical cap cannot be proven conservative. The process-cached SQLite adapter
+filters its validated immutable rows without changing the snapshot schema.
+
 ### 5.3 Astronomy validation
 
 - Unit tests use published reference cases for sidereal time and coordinate
@@ -846,18 +854,17 @@ unpinned branch as the only provenance record.
 
 The next implementation work should occur in this order:
 
-1. Finish constellation validation and real-camera wiring. VirtualSky now has
-   independent endpoint geometry, provenance-tracked endpoint-star inclusion,
-   boundary clipping, and configurable line styling. Add the real-image
-   geometry-only path, then validate selected rendered stars, figure endpoints,
-   and clipped boundaries through a pinned headless Stellarium container.
-2. Complete the remaining virtual-planetarium acceptance evidence. The
+1. Complete the remaining virtual-planetarium acceptance evidence. The
    ordinary-path integration and fixed ASI174MM reduced/full geometry,
    statistics, centroid, orientation movement, and full canonical RGB24 evidence
    are complete and consumed from a versioned machine-readable conformance
    fixture.
-3. Resolve catalog coarse-region filtering and harden coverage enforcement for
-   missing reports/files; complete shared public API documentation.
+2. Add real-image geometry-only constellation overlays in issue #56. VirtualSky
+   already has independent endpoint geometry, provenance-tracked endpoint-star
+   inclusion, boundary clipping, and configurable line styling.
+3. Add pinned headless Stellarium centroid, endpoint, and clipping validation in
+   issue #57. This is a manual/scheduled external-oracle workflow, not part of
+   the normal offline .NET test gate.
 4. Validate standalone container startup with its packaged offline catalog and
    retain exact Debug/Release, vulnerability, coverage, format, and Stellarium
    evidence for the implementation baseline.

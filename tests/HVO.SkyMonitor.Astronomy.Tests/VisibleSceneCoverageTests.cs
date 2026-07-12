@@ -152,6 +152,89 @@ public sealed class VisibleSceneCoverageTests
         Assert.AreEqual(cancellation.Token, catalog.ReceivedToken);
     }
 
+    [TestMethod]
+    public async Task BuildAsync_PerspectiveRegionReducesCandidatesWithoutChangingVisibleScene()
+    {
+        var objects = CreateBoresightCatalog();
+        var filteredCatalog = new RecordingCatalog(objects, honorRegion: true);
+        var unfilteredCatalog = new RecordingCatalog(objects, honorRegion: false);
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 100, 50, 100, 100, 200, 100, ProjectionAperture.Rectangular,
+            BoresightAltitudeDegrees: 90);
+        var request = CreateModelRequest(projection, HorizonPolicy.ProjectionOnly);
+
+        var filtered = await new VisibleSceneBuilder(filteredCatalog).BuildAsync(request).ConfigureAwait(false);
+        var unfiltered = await new VisibleSceneBuilder(unfilteredCatalog).BuildAsync(request).ConfigureAwait(false);
+
+        Assert.IsNotNull(filteredCatalog.LastQuery?.J2000Region);
+        Assert.AreEqual(48.1896851042, filteredCatalog.LastQuery.J2000Region.Value.RadiusDegrees, 2e-9);
+        Assert.IsTrue(filteredCatalog.ReturnedCandidateCount < unfilteredCatalog.ReturnedCandidateCount);
+        CollectionAssert.AreEqual(unfiltered.Objects.Select(item => item.Id).ToArray(),
+            filtered.Objects.Select(item => item.Id).ToArray());
+        CollectionAssert.AreEqual(unfiltered.Objects.Select(item => item.Pixel).ToArray(),
+            filtered.Objects.Select(item => item.Pixel).ToArray());
+    }
+
+    [TestMethod]
+    public async Task BuildAsync_RefractionUsesHorizonRegionOrFallsBackToAllSky()
+    {
+        var geometricCatalog = new RecordingCatalog([], honorRegion: true);
+        var projectionCatalog = new RecordingCatalog([], honorRegion: true);
+
+        await new VisibleSceneBuilder(geometricCatalog).BuildAsync(CreateRequest(
+            refraction: new RefractionOptions(true),
+            horizonPolicy: HorizonPolicy.GeometricHorizon)).ConfigureAwait(false);
+        await new VisibleSceneBuilder(projectionCatalog).BuildAsync(CreateRequest(
+            refraction: new RefractionOptions(true),
+            horizonPolicy: HorizonPolicy.ProjectionOnly)).ConfigureAwait(false);
+
+        Assert.AreEqual(90, geometricCatalog.LastQuery!.J2000Region!.Value.RadiusDegrees, 2e-9);
+        Assert.IsNull(projectionCatalog.LastQuery?.J2000Region);
+    }
+
+    [TestMethod]
+    [DataRow(ProjectionModel.EquidistantFisheye, 57.2957795131)]
+    [DataRow(ProjectionModel.EquisolidFisheye, 60d)]
+    [DataRow(ProjectionModel.OrthographicFisheye, 90d)]
+    [DataRow(ProjectionModel.StereographicFisheye, 53.1301023542)]
+    public async Task BuildAsync_FisheyeModelsSupplyConservativeOpticalRegion(
+        ProjectionModel model,
+        double expectedRadiusDegrees)
+    {
+        var catalog = new RecordingCatalog([], honorRegion: true);
+        var projection = new ProjectionContext(
+            model, 100, 100, 100, 100, 200, 200, ProjectionAperture.Circular, 100);
+
+        await new VisibleSceneBuilder(catalog).BuildAsync(CreateModelRequest(
+            projection, HorizonPolicy.ProjectionOnly)).ConfigureAwait(false);
+
+        Assert.AreEqual(expectedRadiusDegrees, catalog.LastQuery!.J2000Region!.Value.RadiusDegrees, 2e-9);
+    }
+
+    [TestMethod]
+    public async Task BuildAsync_GeometricHorizonUsesSmallerConservativeRegion()
+    {
+        var catalog = new RecordingCatalog([], honorRegion: true);
+
+        await new VisibleSceneBuilder(catalog).BuildAsync(CreateRequest(
+            projection: new EquidistantProjectionContext(0, 0, 100, Math.PI * 100),
+            horizonPolicy: HorizonPolicy.GeometricHorizon)).ConfigureAwait(false);
+
+        Assert.AreEqual(90, catalog.LastQuery!.J2000Region!.Value.RadiusDegrees, 2e-9);
+    }
+
+    [TestMethod]
+    public async Task BuildAsync_StillAppliesExactHorizonWhenCatalogIgnoresRegionHint()
+    {
+        var catalog = new RecordingCatalog(CreateBoresightCatalog(), honorRegion: false);
+
+        var scene = await new VisibleSceneBuilder(catalog).BuildAsync(CreateRequest(
+            horizonPolicy: HorizonPolicy.GeometricHorizon)).ConfigureAwait(false);
+
+        Assert.IsFalse(scene.Objects.Any(item => item.GeometricHorizontal.AltitudeDegrees < 0));
+        Assert.IsTrue(catalog.ReturnedCandidateCount > scene.Objects.Count);
+    }
+
     private static InMemoryCelestialCatalog CreateKnownStarCatalog()
         => new([
             new("sirius", "sirius", 6.752477, -16.716116, -1.46, 0.00),
@@ -178,6 +261,38 @@ public sealed class VisibleSceneCoverageTests
             projectionVersion!,
             algorithmVersion!);
 
+    private static VisibleSceneRequest CreateModelRequest(
+        ProjectionContext projection,
+        HorizonPolicy horizonPolicy)
+        => new(
+            Utc,
+            Observer,
+            projection,
+            new CatalogQuery(6, 100),
+            Metadata,
+            horizonPolicy: horizonPolicy,
+            projectionVersion: "projection-test",
+            algorithmVersion: "algorithm-test");
+
+    private static CelestialCatalogObject[] CreateBoresightCatalog()
+    {
+        EquatorialPoint J2000(AltAzPoint horizontal)
+            => EquatorialPrecession.PrecessToJ2000(CoordinateTransforms.HorizontalToEquatorial(
+                horizontal, Utc, Observer.LatitudeDegrees, Observer.LongitudeDegrees), Utc);
+        CelestialCatalogObject Create(string id, AltAzPoint horizontal, double magnitude)
+        {
+            var point = J2000(horizontal);
+            return new CelestialCatalogObject(id, id, point.RightAscensionHours, point.DeclinationDegrees, magnitude);
+        }
+
+        return
+        [
+            Create("center", new AltAzPoint(90, 0), 1),
+            Create("near", new AltAzPoint(70, 45), 2),
+            Create("far", new AltAzPoint(-80, 0), 0)
+        ];
+    }
+
     private sealed class CancellationCatalog : ICelestialCatalog
     {
         public CancellationToken ReceivedToken { get; private set; }
@@ -193,5 +308,28 @@ public sealed class VisibleSceneCoverageTests
             return ValueTask.FromResult<IReadOnlyList<CelestialCatalogObject>>([]);
         }
 
+    }
+
+    private sealed class RecordingCatalog(
+        IEnumerable<CelestialCatalogObject> objects,
+        bool honorRegion) : ICelestialCatalog
+    {
+        private readonly InMemoryCelestialCatalog _inner = new(objects);
+
+        public CatalogCandidateQuery? LastQuery { get; private set; }
+        public int ReturnedCandidateCount { get; private set; }
+
+        public IReadOnlyList<CelestialCatalogObject> Query(CatalogQuery query) => _inner.Query(query);
+
+        public async ValueTask<IReadOnlyList<CelestialCatalogObject>> QueryCandidatesAsync(
+            CatalogCandidateQuery query,
+            CancellationToken cancellationToken = default)
+        {
+            LastQuery = query;
+            var effectiveQuery = honorRegion ? query : query with { J2000Region = null };
+            var result = await _inner.QueryCandidatesAsync(effectiveQuery, cancellationToken).ConfigureAwait(false);
+            ReturnedCandidateCount = result.Count;
+            return result;
+        }
     }
 }

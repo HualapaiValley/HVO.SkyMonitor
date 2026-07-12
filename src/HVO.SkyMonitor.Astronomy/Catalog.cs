@@ -19,16 +19,61 @@ public sealed record CatalogMetadata(
     string License = "unspecified",
     string SchemaVersion = "unspecified");
 
-/// <summary>Storage-neutral candidate criteria applied before exact sky visibility.</summary>
-public sealed record CatalogCandidateQuery(double MaximumMagnitude)
+/// <summary>A conservative spherical cap in the catalog's J2000 coordinate epoch.</summary>
+public readonly record struct J2000SphericalCap(
+    double CenterRightAscensionHours,
+    double CenterDeclinationDegrees,
+    double RadiusDegrees)
 {
-    /// <summary>Validates the finite limiting magnitude.</summary>
+    /// <summary>Validates the cap center and inclusive angular radius.</summary>
+    public void Validate()
+    {
+        if (!double.IsFinite(CenterRightAscensionHours) || CenterRightAscensionHours is < 0 or >= 24 ||
+            !double.IsFinite(CenterDeclinationDegrees) || CenterDeclinationDegrees is < -90 or > 90 ||
+            !double.IsFinite(RadiusDegrees) || RadiusDegrees is < 0 or > 180)
+        {
+            throw new ArgumentOutOfRangeException(nameof(J2000SphericalCap));
+        }
+    }
+
+    /// <summary>Returns whether a J2000 direction lies in this inclusive cap.</summary>
+    public bool Contains(double rightAscensionHours, double declinationDegrees)
+    {
+        Validate();
+        if (!double.IsFinite(rightAscensionHours) || rightAscensionHours is < 0 or >= 24 ||
+            !double.IsFinite(declinationDegrees) || declinationDegrees is < -90 or > 90)
+        {
+            throw new ArgumentOutOfRangeException(nameof(rightAscensionHours));
+        }
+        if (RadiusDegrees == 180)
+        {
+            return true;
+        }
+
+        var centerRa = CenterRightAscensionHours * Math.PI / 12d;
+        var centerDec = CenterDeclinationDegrees * Math.PI / 180d;
+        var rightAscension = rightAscensionHours * Math.PI / 12d;
+        var declination = declinationDegrees * Math.PI / 180d;
+        var dot = Math.Sin(centerDec) * Math.Sin(declination) +
+            Math.Cos(centerDec) * Math.Cos(declination) * Math.Cos(rightAscension - centerRa);
+        var boundary = Math.Cos(RadiusDegrees * Math.PI / 180d);
+        return dot >= boundary - 1e-12;
+    }
+}
+
+/// <summary>Storage-neutral candidate criteria applied before exact sky visibility.</summary>
+public sealed record CatalogCandidateQuery(
+    double MaximumMagnitude,
+    J2000SphericalCap? J2000Region = null)
+{
+    /// <summary>Validates the finite limiting magnitude and optional J2000 region.</summary>
     public void Validate()
     {
         if (!double.IsFinite(MaximumMagnitude))
         {
             throw new ArgumentOutOfRangeException(nameof(MaximumMagnitude));
         }
+        J2000Region?.Validate();
     }
 }
 
@@ -115,7 +160,10 @@ public sealed class InMemoryCelestialCatalog : ICelestialCatalog, IHipparcosCata
         query.Validate();
         cancellationToken.ThrowIfCancellationRequested();
         IReadOnlyList<CelestialCatalogObject> result = _objects
-            .Where(item => item.Magnitude <= query.MaximumMagnitude).ToArray();
+            .Where(item => item.Magnitude <= query.MaximumMagnitude &&
+                (query.J2000Region is not { } region ||
+                 region.Contains(item.RightAscensionHours, item.DeclinationDegrees)))
+            .ToArray();
         return ValueTask.FromResult(result);
     }
 

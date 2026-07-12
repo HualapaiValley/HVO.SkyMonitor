@@ -89,14 +89,19 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         cancellationToken.ThrowIfCancellationRequested();
 
         var count = FindUpperBound(query.MaximumMagnitude);
-        var candidates = new CelestialCatalogObject[count];
+        var candidates = new List<CelestialCatalogObject>(count);
         for (var index = 0; index < count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            candidates[index] = _objects[index];
+            var candidate = _objects[index];
+            if (query.J2000Region is not { } region ||
+                region.Contains(candidate.RightAscensionHours, candidate.DeclinationDegrees))
+            {
+                candidates.Add(candidate);
+            }
         }
 
-        return ValueTask.FromResult<IReadOnlyList<CelestialCatalogObject>>(candidates);
+        return ValueTask.FromResult<IReadOnlyList<CelestialCatalogObject>>(candidates.ToArray());
     }
 
     /// <inheritdoc />

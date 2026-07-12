@@ -12,12 +12,25 @@ var rendererCatalog = new HashSet<string>(StringComparer.Ordinal)
 {
     "SceneRenderers.cs", "SqliteCelestialCatalog.cs"
 };
+var requiredFiles = new HashSet<string>(highRisk, StringComparer.Ordinal);
+requiredFiles.UnionWith(rendererCatalog);
 var files = new Dictionary<string, Coverage>(StringComparer.Ordinal);
+
+if (args.Length == 0)
+{
+    throw new ArgumentException("At least one Cobertura report is required.");
+}
 
 foreach (var report in args)
 {
     var document = XDocument.Load(report, LoadOptions.None);
-    foreach (var classElement in document.Descendants("class"))
+    var classElements = document.Descendants("class").ToArray();
+    if (classElements.Length == 0)
+    {
+        throw new InvalidDataException($"Coverage report '{report}' contains no class entries.");
+    }
+
+    foreach (var classElement in classElements)
     {
         var className = RequiredAttribute(classElement, "name");
         var sourcePath = RequiredAttribute(classElement, "filename");
@@ -60,6 +73,14 @@ var totalLines = 0;
 var coveredLines = 0;
 var totalBranches = 0;
 var coveredBranches = 0;
+foreach (var requiredFile in requiredFiles.Order(StringComparer.Ordinal))
+{
+    if (!files.ContainsKey(requiredFile))
+    {
+        failures.Add($"required coverage file '{requiredFile}' is missing from the supplied reports");
+    }
+}
+
 foreach (var (filename, coverage) in files)
 {
     totalLines += coverage.Lines.Count;

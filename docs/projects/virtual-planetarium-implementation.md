@@ -634,18 +634,24 @@ fixture (`484 x 304`, principal point `(242,152)`, radius `148.96`). ASI178MC
 hardware comparison uses `cameraagent.asi178mc-comparison.json` and does not
 replace that conformance fixture.
 
-Resume prompt acceptance in this order:
+PR #55 merge scope closes the VirtualSky baseline as follows:
 
-1. Finish constellation validation and real-camera wiring: the VirtualSky
-   endpoint lookup, `IncludeConstellationEndpointStars`, clipping, provenance,
-   and line-style implementation is complete. Add the real-camera geometry-only
-   path and pinned headless Stellarium validation for star centroids, figure
-   endpoints, and clipped boundaries.
-2. Resolve the catalog coarse-region query requirement or record an explicit
-   approved scope revision with rationale.
-3. Harden the coverage gate so missing required files/reports fail, complete XML
-   documentation for shared public APIs, and retain final Debug/Release,
-   vulnerability, coverage, format, and Stellarium evidence for the PR.
+1. The storage-neutral candidate contract includes an optional conservative
+   J2000 spherical cap. Astronomy derives projection/horizon caps and retains
+   exact visibility and final result limiting; in-memory, CSV, and SQLite-backed
+   catalogs preserve deterministic ordering while applying the hint.
+2. The coverage gate fails when required reports omit a high-risk or renderer/
+   catalog source file, and focused geometry tests cover projection domains,
+   clipping boundaries, subdivision, and degenerate chords.
+3. Shared public APIs added by this baseline include XML documentation, and the
+   final PR evidence retains Debug/Release build, test, vulnerability, coverage,
+   and format results.
+
+Real-camera geometry-only constellation overlays are explicitly deferred to
+issue #56. Pinned containerized Stellarium validation is explicitly deferred to
+issue #57 because the host executable/package mismatch prevents reproducible
+evidence; it remains an external manual/scheduled oracle rather than a normal
+.NET test dependency.
 
 Continue physical ASI178 calibration separately after that baseline work:
 

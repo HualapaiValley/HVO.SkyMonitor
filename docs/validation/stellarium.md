@@ -76,7 +76,7 @@ committed or used for whole-image equality.
 
 ## Planned headless container validation
 
-Stellarium is intentionally outside normal .NET unit-test runs. Add a pinned
+This work is tracked in issue #57 and is intentionally outside normal .NET unit-test runs. Add a pinned
 container command and manual or scheduled workflow so validation does not depend
 on the host's GUI packages or an executable that differs from its package
 metadata. Pin the base image digest, Stellarium/data packages, Xvfb, llvmpipe,

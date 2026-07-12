@@ -12,13 +12,7 @@ public static class EquatorialPrecession
     public static EquatorialPoint PrecessJ2000(EquatorialPoint j2000, DateTimeOffset utc)
     {
         Validate(j2000);
-        var centuries = (AstronomyTime.ToJulianDate(utc) - 2451545d) / 36525d;
-        var t2 = centuries * centuries;
-        var t3 = t2 * centuries;
-        const double arcsecondsToRadians = Math.PI / (180d * 3600d);
-        var zeta = (2306.2181d * centuries + 0.30188d * t2 + 0.017998d * t3) * arcsecondsToRadians;
-        var z = (2306.2181d * centuries + 1.09468d * t2 + 0.018203d * t3) * arcsecondsToRadians;
-        var theta = (2004.3109d * centuries - 0.42665d * t2 - 0.041833d * t3) * arcsecondsToRadians;
+        var (zeta, z, theta) = PrecessionAngles(utc);
 
         var rightAscension = j2000.RightAscensionHours * Math.PI / 12d;
         var declination = j2000.DeclinationDegrees * Math.PI / 180d;
@@ -30,6 +24,35 @@ public static class EquatorialPrecession
         var precessedRa = NormalizeRadians(Math.Atan2(a, b) + z);
         var precessedDec = Math.Asin(Math.Clamp(c, -1d, 1d));
         return new EquatorialPoint(precessedRa * 12d / Math.PI, precessedDec * 180d / Math.PI);
+    }
+
+    /// <summary>Inverts the IAU 1976 rotation from mean coordinates of date back to J2000.0.</summary>
+    public static EquatorialPoint PrecessToJ2000(EquatorialPoint ofDate, DateTimeOffset utc)
+    {
+        Validate(ofDate);
+        var (zeta, z, theta) = PrecessionAngles(utc);
+        var rightAscension = ofDate.RightAscensionHours * Math.PI / 12d - z;
+        var declination = ofDate.DeclinationDegrees * Math.PI / 180d;
+        var a = Math.Cos(declination) * Math.Sin(rightAscension);
+        var b = Math.Cos(declination) * Math.Cos(rightAscension);
+        var c = Math.Sin(declination);
+        var x = Math.Cos(theta) * b + Math.Sin(theta) * c;
+        var originalZ = -Math.Sin(theta) * b + Math.Cos(theta) * c;
+        var originalRa = NormalizeRadians(Math.Atan2(a, x) - zeta);
+        var originalDec = Math.Asin(Math.Clamp(originalZ, -1d, 1d));
+        return new EquatorialPoint(originalRa * 12d / Math.PI, originalDec * 180d / Math.PI);
+    }
+
+    private static (double Zeta, double Z, double Theta) PrecessionAngles(DateTimeOffset utc)
+    {
+        var centuries = (AstronomyTime.ToJulianDate(utc) - 2451545d) / 36525d;
+        var t2 = centuries * centuries;
+        var t3 = t2 * centuries;
+        const double arcsecondsToRadians = Math.PI / (180d * 3600d);
+        return (
+            (2306.2181d * centuries + 0.30188d * t2 + 0.017998d * t3) * arcsecondsToRadians,
+            (2306.2181d * centuries + 1.09468d * t2 + 0.018203d * t3) * arcsecondsToRadians,
+            (2004.3109d * centuries - 0.42665d * t2 - 0.041833d * t3) * arcsecondsToRadians);
     }
 
     private static void Validate(EquatorialPoint point)

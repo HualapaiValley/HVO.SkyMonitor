@@ -33,4 +33,32 @@ public sealed class EquatorialPrecessionTests
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             EquatorialPrecession.PrecessJ2000(new EquatorialPoint(24, 0), DateTimeOffset.UnixEpoch));
     }
+
+    [TestMethod]
+    [DataRow(0.001, -89d, 1900, 1, 1)]
+    [DataRow(23.999, 89d, 2100, 12, 31)]
+    [DataRow(6.752477, -16.716116, 2026, 7, 12)]
+    public void PrecessToJ2000_RoundTripsIau1976Rotation(
+        double rightAscensionHours,
+        double declinationDegrees,
+        int year,
+        int month,
+        int day)
+    {
+        var utc = new DateTimeOffset(year, month, day, 12, 0, 0, TimeSpan.Zero);
+        var input = new EquatorialPoint(rightAscensionHours, declinationDegrees);
+
+        var actual = EquatorialPrecession.PrecessToJ2000(
+            EquatorialPrecession.PrecessJ2000(input, utc), utc);
+
+        Assert.AreEqual(input.RightAscensionHours, actual.RightAscensionHours, 1e-10);
+        Assert.AreEqual(input.DeclinationDegrees, actual.DeclinationDegrees, 1e-10);
+    }
+
+    [TestMethod]
+    public void PrecessToJ2000_InvalidCoordinate_Throws()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            EquatorialPrecession.PrecessToJ2000(new EquatorialPoint(double.NaN, 0), DateTimeOffset.UnixEpoch));
+    }
 }

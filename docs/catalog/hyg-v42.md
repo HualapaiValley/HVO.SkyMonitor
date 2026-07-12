@@ -45,7 +45,9 @@ J2000 catalog stars. Schema version 2 preserves the source `hip` value as `hippa
 reusable constellation topology can resolve stable Hipparcos endpoints while
 projected provenance continues to use the catalog row ID. Candidate queries use
 a binary-search upper bound and copy only rows at or brighter than the requested
-magnitude. Exact horizon and image visibility
-remain Astronomy responsibilities. A future catalog contract may add an
-explicit coarse sky-region hint; the current all-sky fisheye query intentionally
-does not invent one.
+magnitude. They may also apply an inclusive storage-neutral J2000 spherical-cap
+hint after the snapshot is loaded. Astronomy derives that cap conservatively
+from the calibrated optical projection or geometric horizon and continues to own
+exact horizon/image visibility and `MaximumResults`. The adapter preserves its
+validated immutable cache and deterministic magnitude-then-ID order; this hint
+does not justify a schema, preprocessing, or SQLite index change.

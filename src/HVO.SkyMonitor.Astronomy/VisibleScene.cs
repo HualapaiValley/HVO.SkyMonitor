@@ -262,7 +262,8 @@ public sealed class VisibleSceneBuilder
     {
         ArgumentNullException.ThrowIfNull(request);
         var candidates = await _catalog.QueryCandidatesAsync(
-            new CatalogCandidateQuery(request.CatalogQuery.MaximumMagnitude), cancellationToken).ConfigureAwait(false);
+            new CatalogCandidateQuery(request.CatalogQuery.MaximumMagnitude, CreateCandidateRegion(request)),
+            cancellationToken).ConfigureAwait(false);
         var projector = ProjectorFactory.Create(request.Projection);
         var basis = CameraBasis.Create(
             request.Projection.BoresightAltitudeDegrees,
@@ -373,6 +374,68 @@ public sealed class VisibleSceneBuilder
         return new VisibleScene(request, selected, segments);
     }
 
+    private static J2000SphericalCap? CreateCandidateRegion(VisibleSceneRequest request)
+    {
+        J2000SphericalCap? optical = null;
+        if (!request.Refraction.Enabled)
+        {
+            var radius = OpticalRadiusDegrees(request.Projection);
+            optical = CreateJ2000Cap(request, new AltAzPoint(
+                request.Projection.BoresightAltitudeDegrees,
+                request.Projection.BoresightAzimuthDegrees), radius);
+        }
+
+        var horizon = request.HorizonPolicy == HorizonPolicy.GeometricHorizon
+            ? CreateJ2000Cap(request, new AltAzPoint(90, 0), 90)
+            : (J2000SphericalCap?)null;
+        if (optical is null)
+        {
+            return horizon;
+        }
+        if (horizon is null)
+        {
+            return optical;
+        }
+        return optical.Value.RadiusDegrees <= horizon.Value.RadiusDegrees ? optical : horizon;
+    }
+
+    private static J2000SphericalCap CreateJ2000Cap(
+        VisibleSceneRequest request,
+        AltAzPoint center,
+        double radiusDegrees)
+    {
+        var ofDate = CoordinateTransforms.HorizontalToEquatorial(
+            center, request.Utc, request.Observer.LatitudeDegrees, request.Observer.LongitudeDegrees);
+        var j2000 = EquatorialPrecession.PrecessToJ2000(ofDate, request.Utc);
+        return new J2000SphericalCap(
+            j2000.RightAscensionHours, j2000.DeclinationDegrees,
+            Math.Min(180, radiusDegrees + 1e-9));
+    }
+
+    private static double OpticalRadiusDegrees(ProjectionContext projection)
+    {
+        if (projection.Model == ProjectionModel.Perspective)
+        {
+            var horizontal = Math.Max(projection.PrincipalPointX,
+                projection.WidthPixels - projection.PrincipalPointX) / projection.FocalLengthXPixels;
+            var vertical = Math.Max(projection.PrincipalPointY,
+                projection.HeightPixels - projection.PrincipalPointY) / projection.FocalLengthYPixels;
+            return Math.Atan(Math.Sqrt(horizontal * horizontal + vertical * vertical)) * 180d / Math.PI;
+        }
+
+        var radius = projection.ImageCircleRadiusPixels!.Value;
+        var focal = projection.FocalLengthXPixels;
+        var angle = projection.Model switch
+        {
+            ProjectionModel.EquidistantFisheye => radius / focal,
+            ProjectionModel.EquisolidFisheye => 2 * Math.Asin(Math.Clamp(radius / (2 * focal), -1d, 1d)),
+            ProjectionModel.OrthographicFisheye => Math.Asin(Math.Clamp(radius / focal, -1d, 1d)),
+            ProjectionModel.StereographicFisheye => 2 * Math.Atan(radius / (2 * focal)),
+            _ => throw new ArgumentOutOfRangeException(nameof(projection))
+        };
+        return angle * 180d / Math.PI;
+    }
+
     private static ProjectedCelestialObject? ProjectObject(
         VisibleSceneRequest request,
         IImageProjector projector,
@@ -406,7 +469,7 @@ public sealed class VisibleSceneBuilder
                 request.CatalogMetadata.Version, request.ProjectionVersion, request.AlgorithmVersion, hipparcosId);
     }
 
-    private static void AppendProjectedSegmentChords(
+    internal static void AppendProjectedSegmentChords(
         VisibleSceneRequest request,
         CameraBasis basis,
         string constellationId,
@@ -447,7 +510,7 @@ public sealed class VisibleSceneBuilder
             ofDate, request.Utc, request.Observer.LatitudeDegrees, request.Observer.LongitudeDegrees);
     }
 
-    private static void AppendClippedChord(
+    internal static void AppendClippedChord(
         VisibleSceneRequest request,
         CameraBasis basis,
         string constellationId,
@@ -521,7 +584,7 @@ public sealed class VisibleSceneBuilder
         }
     }
 
-    private static double DistanceFromChord(PixelPoint point, PixelPoint from, PixelPoint to)
+    internal static double DistanceFromChord(PixelPoint point, PixelPoint from, PixelPoint to)
     {
         var deltaX = to.X - from.X;
         var deltaY = to.Y - from.Y;
@@ -537,7 +600,7 @@ public sealed class VisibleSceneBuilder
         return Math.Sqrt(Math.Pow(point.X - nearestX, 2) + Math.Pow(point.Y - nearestY, 2));
     }
 
-    private static bool TryProjectGeometry(
+    internal static bool TryProjectGeometry(
         VisibleSceneRequest request,
         CameraBasis basis,
         EnuVector geometricDirection,
@@ -603,7 +666,7 @@ public sealed class VisibleSceneBuilder
         return double.IsFinite(pixel.X) && double.IsFinite(pixel.Y);
     }
 
-    private static void AddClippedChord(
+    internal static void AddClippedChord(
         ProjectionContext projection,
         string constellationId,
         string fromObjectId,
@@ -620,7 +683,7 @@ public sealed class VisibleSceneBuilder
         }
     }
 
-    private static bool TryClipToProjection(
+    internal static bool TryClipToProjection(
         ProjectionContext projection,
         PixelPoint from,
         PixelPoint to,
@@ -650,7 +713,7 @@ public sealed class VisibleSceneBuilder
         return minimum <= maximum;
     }
 
-    private static bool ClipBoundary(double direction, double distance, ref double minimum, ref double maximum)
+    internal static bool ClipBoundary(double direction, double distance, ref double minimum, ref double maximum)
     {
         if (Math.Abs(direction) < 1e-15)
         {
@@ -670,7 +733,7 @@ public sealed class VisibleSceneBuilder
         return minimum <= maximum;
     }
 
-    private static bool ClipCircle(
+    internal static bool ClipCircle(
         ProjectionContext projection,
         PixelPoint from,
         double deltaX,
@@ -701,7 +764,7 @@ public sealed class VisibleSceneBuilder
         return minimum <= maximum;
     }
 
-    private static EnuVector Slerp(EnuVector from, EnuVector to, double amount)
+    internal static EnuVector Slerp(EnuVector from, EnuVector to, double amount)
     {
         var dot = Math.Clamp(EnuVector.Dot(from, to), -1d, 1d);
         var angle = Math.Acos(dot);

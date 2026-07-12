@@ -214,6 +214,23 @@ internal sealed class SqliteCelestialCatalogTests
     }
 
     [TestMethod]
+    public async Task RegionalCandidatesMatchInMemoryContractAndPreserveOrder()
+    {
+        var catalog = CreateCatalog();
+        var all = await catalog.QueryCandidatesAsync(new CatalogCandidateQuery(10)).ConfigureAwait(false);
+        var center = all[3];
+        var query = new CatalogCandidateQuery(10, new J2000SphericalCap(
+            center.RightAscensionHours, center.DeclinationDegrees, 35));
+
+        var sqlite = await catalog.QueryCandidatesAsync(query).ConfigureAwait(false);
+        var inMemory = await new InMemoryCelestialCatalog(all).QueryCandidatesAsync(query).ConfigureAwait(false);
+
+        Assert.IsNotEmpty(sqlite);
+        Assert.IsTrue(sqlite.Count < all.Count);
+        CollectionAssert.AreEqual(inMemory.Select(item => item.Id).ToArray(), sqlite.Select(item => item.Id).ToArray());
+    }
+
+    [TestMethod]
     public async Task QueryCandidatesAsyncHonorsCancellation()
     {
         var catalog = CreateCatalog();

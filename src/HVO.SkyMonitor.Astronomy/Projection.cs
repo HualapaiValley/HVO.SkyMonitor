@@ -38,6 +38,33 @@ public static class CoordinateTransforms
         return new AltAzPoint(RadiansToDegrees(altitude), NormalizeDegrees(RadiansToDegrees(azimuth) + 180d));
     }
 
+    /// <summary>Converts a horizontal direction to mean equatorial coordinates of date.</summary>
+    public static EquatorialPoint HorizontalToEquatorial(
+        AltAzPoint horizontal,
+        DateTimeOffset utc,
+        double latitudeDegrees,
+        double longitudeDegrees)
+    {
+        if (!double.IsFinite(horizontal.AltitudeDegrees) || horizontal.AltitudeDegrees is < -90 or > 90 ||
+            !double.IsFinite(horizontal.AzimuthDegrees) ||
+            !double.IsFinite(latitudeDegrees) || latitudeDegrees is < -90 or > 90 ||
+            !double.IsFinite(longitudeDegrees) || longitudeDegrees is < -180 or > 180)
+        {
+            throw new ArgumentOutOfRangeException(nameof(horizontal));
+        }
+
+        var direction = CameraBasis.FromHorizontal(horizontal);
+        var latitude = DegreesToRadians(latitudeDegrees);
+        var sinDeclination = direction.North * Math.Cos(latitude) + direction.Up * Math.Sin(latitude);
+        var declination = Math.Asin(Math.Clamp(sinDeclination, -1d, 1d));
+        var hourAngle = Math.Atan2(
+            -direction.East,
+            direction.Up * Math.Cos(latitude) - direction.North * Math.Sin(latitude));
+        var rightAscensionDegrees = NormalizeDegrees(
+            AstronomyTime.LocalMeanSiderealDegrees(utc, longitudeDegrees) - RadiansToDegrees(hourAngle));
+        return new EquatorialPoint(rightAscensionDegrees / 15d, RadiansToDegrees(declination));
+    }
+
     private static double NormalizeDegrees(double degrees) => ((degrees % 360d) + 360d) % 360d;
     private static double DegreesToRadians(double degrees) => degrees * Math.PI / 180d;
     private static double RadiansToDegrees(double radians) => radians * 180d / Math.PI;
@@ -201,10 +228,8 @@ public sealed class EquidistantFisheyeProjector : IImageProjector
             context.HorizontalFlip);
     }
 
-    /// <summary>Creates an equidistant projector from the model-neutral projection context.</summary>
-    internal EquidistantFisheyeProjector(ProjectionContext context) : this(ToEquidistantContext(context))
-    {
-    }
+    internal static EquidistantFisheyeProjector FromProjectionContext(ProjectionContext context)
+        => new(ToEquidistantContext(context));
 
     /// <inheritdoc />
     public PixelPoint? Project(AltAzPoint direction)
@@ -292,7 +317,7 @@ public static class ProjectorFactory
         context.Validate();
         return context.Model switch
         {
-            ProjectionModel.EquidistantFisheye => new EquidistantFisheyeProjector(context),
+            ProjectionModel.EquidistantFisheye => EquidistantFisheyeProjector.FromProjectionContext(context),
             ProjectionModel.EquisolidFisheye or ProjectionModel.OrthographicFisheye or ProjectionModel.StereographicFisheye
                 => new RadialFisheyeProjector(context),
             ProjectionModel.Perspective => new PerspectiveProjector(context),
