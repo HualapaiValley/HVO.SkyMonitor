@@ -24,6 +24,7 @@ public sealed class CameraCaptureService(
     private readonly ICaptureProcessingPipelineFactory _pipelineFactory = pipelineFactory;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<CameraCaptureService> _logger = logger;
+    private readonly CancellationTokenSource _drainAbort = new();
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
@@ -46,7 +47,7 @@ public sealed class CameraCaptureService(
                 var hostContext = new CaptureHostContext(config, channel);
                 var processingSteps = _pipelineFactory.CreatePipeline(config);
                 var processingWorker = new FrameProcessingWorker(channel, processingSteps, _logger);
-                processingTask = processingWorker.RunAsync(stoppingToken);
+                processingTask = processingWorker.RunAsync(_drainAbort.Token);
 
                 var runner = new CameraModuleRunner(module, hostContext, _timeProvider, _logger);
                 await runner.RunAsync(stoppingToken).ConfigureAwait(false);
@@ -75,21 +76,49 @@ public sealed class CameraCaptureService(
             }
             finally
             {
-                channel?.Complete();
-                if (processingTask is not null)
+                try
                 {
-                    try
+                    channel?.Complete();
+                    if (processingTask is not null)
                     {
-                        await processingTask.ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                    {
-                        // Graceful shutdown
+                        try
+                        {
+                            await processingTask.ConfigureAwait(false);
+                            _logger.CaptureProcessingDrainCompleted();
+                        }
+                        catch (OperationCanceledException) when (_drainAbort.IsCancellationRequested)
+                        {
+                            _logger.CaptureProcessingDrainAborted();
+                        }
                     }
                 }
-
-                await module.DisposeAsync().ConfigureAwait(false);
+                finally
+                {
+                    await module.DisposeAsync().ConfigureAwait(false);
+                }
             }
         }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        using var registration = cancellationToken.Register(_drainAbort.Cancel);
+        try
+        {
+            await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                await _drainAbort.CancelAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    public override void Dispose()
+    {
+        _drainAbort.Dispose();
+        base.Dispose();
     }
 }

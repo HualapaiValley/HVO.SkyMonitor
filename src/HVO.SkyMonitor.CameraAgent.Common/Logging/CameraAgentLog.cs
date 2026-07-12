@@ -21,6 +21,9 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2004, Level = LogLevel.Information, Message = "Stored frame at {Path}")]
     public static partial void FrameStored(this ILogger logger, string path);
 
+    [LoggerMessage(EventId = 2026, Level = LogLevel.Warning, Message = "Skipped invalid or incomplete stored-frame entry in {IndexPath}")]
+    public static partial void FrameBrowseEntrySkipped(this ILogger logger, string indexPath);
+
     [LoggerMessage(EventId = 2015, Level = LogLevel.Warning, Message = "Failed to store frame to root {StorageRoot}")]
     public static partial void FrameStorageFailed(this ILogger logger, string storageRoot, Exception exception);
 
@@ -67,6 +70,12 @@ internal static partial class CameraAgentLog
 
     [LoggerMessage(EventId = 2014, Level = LogLevel.Debug, Message = "Built capture processing pipeline with {StepCount} steps")]
     public static partial void CaptureProcessingPipelineBuilt(this ILogger logger, int StepCount);
+
+    [LoggerMessage(EventId = 2027, Level = LogLevel.Information, Message = "Capture processing channel drained")]
+    public static partial void CaptureProcessingDrainCompleted(this ILogger logger);
+
+    [LoggerMessage(EventId = 2028, Level = LogLevel.Warning, Message = "Capture processing channel drain aborted by the host shutdown deadline")]
+    public static partial void CaptureProcessingDrainAborted(this ILogger logger);
 
     [LoggerMessage(EventId = 2020, Level = LogLevel.Information, Message = "NoOp storage step {Step} skipped because no frame was captured")]
     public static partial void NoOpStorageSkipped(this ILogger logger, string Step);
