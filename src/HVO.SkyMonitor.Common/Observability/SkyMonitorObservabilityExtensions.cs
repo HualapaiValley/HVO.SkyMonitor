@@ -1,4 +1,8 @@
 using System.Linq;
+using System.Globalization;
+using HVO.Enterprise.Telemetry;
+using HVO.Enterprise.Telemetry.OpenTelemetry;
+using HVO.Enterprise.Telemetry.Serilog;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http;
@@ -11,6 +15,9 @@ using OpenTelemetry;
 using OpenTelemetry.Extensions.Hosting;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
+using Serilog;
+using Serilog.Events;
+using Serilog.Sinks.OpenTelemetry;
 
 namespace HVO.SkyMonitor.Common.Observability;
 
@@ -23,41 +30,33 @@ public static class SkyMonitorObservabilityExtensions
     private const string AlivenessEndpointPath = "/alive";
 
     /// <summary>
-    /// Configures OpenTelemetry logging, metrics, tracing, and optional OTLP export if configured.
+    /// Configures the shared HVO telemetry stack and OTLP export.
     /// </summary>
-    public static IHostApplicationBuilder AddSkyMonitorObservability(this IHostApplicationBuilder builder, Action<IOpenTelemetryBuilder>? configure = null)
+    public static IHostApplicationBuilder AddSkyMonitorObservability(this IHostApplicationBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        builder.Logging.AddOpenTelemetry(logging =>
+        ConfigureSerilog(builder);
+        builder.Services.AddTelemetry(builder.Configuration.GetSection("Telemetry"));
+        builder.Services.AddOpenTelemetryExport(options =>
         {
-            logging.IncludeFormattedMessage = true;
-            logging.IncludeScopes = true;
+            // Preserve OTLP/HTTP signal paths using the collector's standard SDK environment settings.
+            options.EnableTraceExport = false;
+            options.EnableMetricsExport = false;
+            options.EnableLogExport = false;
+            options.EnableStandardMeters = true;
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.Authentication");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Capture");
+            options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
         });
-
-        var openTelemetryBuilder = builder.Services.AddOpenTelemetry();
-
-        openTelemetryBuilder
-            .WithMetrics(metrics =>
-            {
-                metrics.AddAspNetCoreInstrumentation()
-                    .AddHttpClientInstrumentation()
-                    .AddRuntimeInstrumentation();
-            })
-            .WithTracing(tracing =>
-            {
-                tracing.AddSource(builder.Environment.ApplicationName)
-                    .AddAspNetCoreInstrumentation(options =>
-                    {
-                        options.Filter = context => !IsHealthRequest(context.Request.Path);
-                    })
-                    .AddHttpClientInstrumentation();
-            });
-
-        configure?.Invoke(openTelemetryBuilder);
 
         if (HasOtlpEndpointConfigured(builder.Configuration))
         {
-            openTelemetryBuilder.UseOtlpExporter();
+            builder.Services.AddOpenTelemetry()
+                .WithTracing(tracing => tracing.AddOtlpExporter())
+                .WithMetrics(metrics => metrics
+                    .AddMeter("HVO.SkyMonitor.Authentication")
+                    .AddMeter("HVO.SkyMonitor.CameraAgent.Capture")
+                    .AddOtlpExporter());
         }
 
         return builder;
@@ -126,6 +125,36 @@ public static class SkyMonitorObservabilityExtensions
     private static bool HasOtlpEndpointConfigured(IConfiguration configuration)
     {
         return !string.IsNullOrWhiteSpace(configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]);
+    }
+
+    private static void ConfigureSerilog(IHostApplicationBuilder builder)
+    {
+        var loggerConfiguration = new LoggerConfiguration()
+            .MinimumLevel.Information()
+            .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+            .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+            .Enrich.FromLogContext()
+            .Enrich.WithTelemetry()
+            .WriteTo.Console(formatProvider: CultureInfo.InvariantCulture);
+
+        var endpoint = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
+        if (!string.IsNullOrWhiteSpace(endpoint))
+        {
+            var serviceName = builder.Configuration["OTEL_SERVICE_NAME"] ?? builder.Environment.ApplicationName;
+            loggerConfiguration.WriteTo.OpenTelemetry(options =>
+            {
+                options.Endpoint = endpoint.TrimEnd('/') + "/v1/logs";
+                options.Protocol = OtlpProtocol.HttpProtobuf;
+                options.ResourceAttributes = new Dictionary<string, object>
+                {
+                    ["service.name"] = serviceName
+                };
+            });
+        }
+
+        Log.Logger = loggerConfiguration.CreateLogger();
+        builder.Logging.ClearProviders();
+        builder.Logging.AddSerilog(Log.Logger, dispose: true);
     }
 
     private static bool IsHealthRequest(PathString path)

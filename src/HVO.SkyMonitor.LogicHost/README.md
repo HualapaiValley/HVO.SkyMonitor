@@ -5,7 +5,7 @@ Main sky monitoring application with full authentication, API versioning, and ob
 ## Features
 
 - **Authentication**: ASP.NET Core Identity with cookie authentication + API Key authentication
-- **Database**: PostgreSQL (managed via Docker Compose or Testcontainers)
+- **Database**: SQL Server (persistent shared instance or Testcontainers)
 - **API Versioning**: URL-based versioning (v1.0)
 - **Documentation**: OpenAPI + Scalar UI
 - **Observability**: OpenTelemetry, Prometheus metrics, structured JSON logging
@@ -19,15 +19,14 @@ Main sky monitoring application with full authentication, API versioning, and ob
 ### Docker Compose (recommended)
 
 ```bash
-./scripts/infra:start postgres redis minio
-dotnet run --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+./scripts/infra:start logichost
 ```
-Stop the containers when you're done via `./scripts/infra:stop` (use `--clear-cache` to wipe Redis/MinIO/Postgres volumes during shutdown).
+Stop local application containers when you're done via `./scripts/infra:stop`. Shared SQL Server, Redis, MinIO, and Mailpit remain running on `hvo-docker`.
 
 ### Direct execution only
 
 ```bash
-dotnet run --project src/HVO.SkyMonitor/HVO.SkyMonitor.csproj
+./scripts/with-env dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 ```
 
 ## Endpoints
@@ -84,7 +83,7 @@ During startup the `DatabaseSeeder` populates standard test identities, API keys
 | Web UI | Public (PKCE) | `web-ui` | _(none)_ | `openid`, `profile`, `email`, `api.viewer` | Redirect URIs `http://localhost:5000/signin-oidc`, `https://localhost:5001/signin-oidc` |
 | Mobile App | Public (PKCE) | `mobile-app` | _(none)_ | `openid`, `profile`, `email`, `api.viewer`, `offline_access` | Redirect `com.skymonitor.mobile://auth-callback` |
 
-To reset the data back to these defaults, stop the app, run `./scripts/infra:reset postgres`, then start `./scripts/infra:start postgres minio redis smtp` and relaunch the Logic Host.
+Shared database resets are an operational action on `hvo-docker`, not a repository script. Reapply migrations and reseed as appropriate after an approved reset.
 
 ## Database Migrations
 

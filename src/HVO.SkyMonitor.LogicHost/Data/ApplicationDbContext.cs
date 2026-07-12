@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 namespace HVO.SkyMonitor.LogicHost.Data;
 
 /// <summary>
-/// Application database context backed by PostgreSQL.
+/// Application database context backed by SQL Server.
 /// Includes Identity tables, API keys, and OpenIddict entities.
 /// </summary>
 public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : IdentityDbContext<ApplicationUser>(options)

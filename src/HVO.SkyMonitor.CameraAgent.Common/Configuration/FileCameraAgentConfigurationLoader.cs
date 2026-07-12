@@ -50,7 +50,7 @@ public sealed class FileCameraAgentConfigurationLoader(
             Rig: document.Rig,
             ProcessingSteps: document.ProcessingSteps,
             Pipeline: document.Pipeline,
-            AgentId: document.AgentId);
+            AgentId: string.IsNullOrWhiteSpace(_options.AgentId) ? document.AgentId : _options.AgentId);
 
         ValidateConfig(config);
         _logger.ConfigurationLoaded(path);

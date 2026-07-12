@@ -2,6 +2,8 @@ using System;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -47,9 +49,11 @@ public sealed class DashboardTests
         var statusText = cut.Find(".status-pill").TextContent.Trim();
         Assert.AreEqual("Live", statusText);
 
-        var preview = cut.Find("img.latest-frame__preview");
-        var expectedSrc = FormattableString.Invariant($"/api/v1.0/frames/latest?ts={sampleTime.ToUnixTimeMilliseconds()}");
-        Assert.AreEqual(expectedSrc, preview.GetAttribute("src"));
+        var previews = cut.FindAll(".frame-preview-card img");
+        Assert.AreEqual(2, previews.Count);
+        Assert.AreEqual(FormattableString.Invariant($"/api/v1.0/frames/raw?ts={sampleTime.ToUnixTimeMilliseconds()}"), previews[0].GetAttribute("src"));
+        Assert.AreEqual(FormattableString.Invariant($"/api/v1.0/frames/processed?ts={sampleTime.ToUnixTimeMilliseconds()}"), previews[1].GetAttribute("src"));
+        StringAssert.Contains(cut.Markup, "Virtual Sensor", StringComparison.Ordinal);
 
         var historyRow = cut.Find("table tbody tr");
         StringAssert.Contains(historyRow.TextContent, sampleTime.ToString("HH:mm:ss", CultureInfo.InvariantCulture), StringComparison.Ordinal);
@@ -60,6 +64,8 @@ public sealed class DashboardTests
         ctx.Services.AddSingleton<ICaptureTelemetryProvider>(new TestTelemetryProvider(snapshot));
         ctx.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(utcNow));
         ctx.Services.AddSingleton<IOptions<CapturePreviewOptions>>(Options.Create(new CapturePreviewOptions { PollingIntervalSeconds = 60 }));
+        ctx.Services.AddSingleton<ICameraAgentConfigurationAccessor>(new TestConfigurationAccessor());
+        ctx.Services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         ctx.Services.AddSingleton<ILogger<Dashboard>>(_ => NullLogger<Dashboard>.Instance);
     }
 
@@ -111,5 +117,23 @@ public sealed class DashboardTests
         }
 
         public override DateTimeOffset GetUtcNow() => _utcNow;
+    }
+
+    private sealed class TestConfigurationAccessor : ICameraAgentConfigurationAccessor
+    {
+        private static readonly CameraModuleConfig Config = new(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            new CameraModuleDescriptor("VirtualSky"),
+            new CameraRigConfig(
+                new SensorProfile("Virtual Sensor", 640, 480, 5.86, SensorColorMode.Mono, CameraPixelFormat.Mono16),
+                new OpticsProfile("EquidistantFisheye", 3, 180, 0),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), 1, 1)));
+
+        public bool IsConfigured => true;
+
+        public void SetConfiguration(CameraModuleConfig config) => throw new NotSupportedException();
+
+        public ValueTask<CameraModuleConfig> WaitForConfigurationAsync(CancellationToken cancellationToken) => ValueTask.FromResult(Config);
     }
 }

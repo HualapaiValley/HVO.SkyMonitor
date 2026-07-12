@@ -38,22 +38,21 @@ This repository is configured to work with Visual Studio Code Dev Containers and
 
 ### Running the Application
 
-The application runs using **Docker Compose** for infrastructure and optionally via direct `dotnet run`/`dotnet watch` for faster inner-loop development.
+The application uses persistent SQL Server, Redis, MinIO, and Mailpit services on `hvo-docker.hvo.lan`. Configure their endpoints and credentials in the ignored `.env` file using `.env.template`. Docker Compose runs only application containers.
 
 #### Option 1: Docker Compose (Recommended)
 
 Use the infrastructure management scripts to start services:
 
-**Start all infrastructure and application services:**
+**Start application containers:**
 ```bash
 ./scripts/infra:start
 ```
 
-**Start only infrastructure services (for running app in IDE):**
+**Start one application container:**
 ```bash
-./scripts/infra:start postgres redis minio smtp
+./scripts/infra:start logichost
 ```
-Only the services you list are started now, so `./scripts/infra:start postgres` leaves MinIO, Redis, etc. untouched. If you request an application service (for example `logichost`), the script automatically starts all supporting infrastructure if you didn't list them explicitly.
 
 **Reset data and start:**
 ```bash
@@ -77,17 +76,13 @@ You can pass specific services to `--rebuild` (for example `--rebuild logichost`
 ./scripts/infra:stop
 ```
 
-**Stop and clear cached data (volumes/directories) for specific services:**
-```bash
-./scripts/infra:stop --clear-cache redis minio
-```
-When `--clear-cache` is supplied without explicit service names the script clears caches for everything you stop, wiping the corresponding Docker volumes (Postgres/Redis/MinIO) and removing the application containers so the next start is clean.
+`./scripts/infra:stop` and `./scripts/infra:reset` affect only local application containers. They never modify the shared services or their data.
 
-**Services Started:**
-- **PostgreSQL** - tcp://localhost:5432 with `skymonitordb` database
-- **Redis** - tcp://localhost:6379
-- **MinIO** - API: http://localhost:9000, Console: http://localhost:9001 (minioadmin/minioadmin)
-- **SMTP (Mailpit)** - SMTP: tcp://localhost:1025, Web UI: http://localhost:8025
+**Shared services:**
+- **SQL Server** - configured by `SQLSERVER_*` in `.env`
+- **Redis** - configured by `REDIS_*` in `.env`
+- **MinIO** - configured by `MINIO_*` in `.env`
+- **SMTP (Mailpit)** - configured by `SMTP_*` in `.env`
 - **Logic Host** - Main application: http://localhost:5174
  - **Camera Agent** - http://localhost:5130
 
@@ -99,7 +94,7 @@ dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.cspro
 dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 ```
 
-This mode keeps hot reload and a faster edit/run cycle while still talking to the same Postgres, Redis, and MinIO containers.
+This mode keeps hot reload and a faster edit/run cycle while still talking to the same SQL Server, Redis, and MinIO containers.
 
 ### Docker-in-Docker Architecture
 

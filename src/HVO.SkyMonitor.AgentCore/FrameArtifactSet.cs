@@ -165,7 +165,8 @@ public sealed class FrameArtifactSet
     public FrameArtifactSet WithDerivative(
         FrameArtifactRole role,
         CameraFrame frame,
-        string? recipeVersion = null)
+        string? recipeVersion = null,
+        IReadOnlyList<Guid>? sourceArtifactIds = null)
     {
         ArgumentNullException.ThrowIfNull(frame);
         if (role == FrameArtifactRole.Raw)
@@ -178,7 +179,7 @@ public sealed class FrameArtifactSet
             Guid.NewGuid(),
             role,
             frame,
-            [Raw.ArtifactId],
+            sourceArtifactIds ?? [Raw.ArtifactId],
             recipeVersion);
 
         return new FrameArtifactSet(new ReadOnlyDictionary<FrameArtifactRole, FrameArtifact>(artifacts));

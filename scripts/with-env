@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Run a command with ignored repository and devcontainer-local settings loaded.
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/.devcontainer/load-repo-env.sh"
+
+if [[ "$*" == *"HVO.SkyMonitor.LogicHost"* ]]; then
+    export "ConnectionStrings__skymonitordb=Server=${SQLSERVER_HOST:?SQLSERVER_HOST must be set},${SQLSERVER_PORT:?SQLSERVER_PORT must be set};Database=${SQLSERVER_DATABASE:?SQLSERVER_DATABASE must be set};User Id=${SQLSERVER_USER:?SQLSERVER_USER must be set};Password=${SQLSERVER_PASSWORD:?SQLSERVER_PASSWORD must be set};TrustServerCertificate=True"
+    export "Redis__Configuration=${REDIS_HOST:?REDIS_HOST must be set}:${REDIS_PORT:?REDIS_PORT must be set},password=${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+    export Redis__InstanceName="skymonitor:"
+    export Minio__Endpoint="${MINIO_HOST:?MINIO_HOST must be set}"
+    export Minio__Port="${MINIO_API_PORT:?MINIO_API_PORT must be set}"
+    export Minio__AccessKey="${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY must be set}"
+    export Minio__SecretKey="${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set}"
+    export Minio__UseSsl="false"
+    export Smtp__Host="${SMTP_HOST:?SMTP_HOST must be set}"
+    export Smtp__Port="${SMTP_PORT:?SMTP_PORT must be set}"
+    export Smtp__From="${SMTP_FROM:-no-reply@skymonitor.local}"
+fi
+
+exec "$@"

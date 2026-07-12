@@ -1,16 +1,22 @@
 # Infrastructure Operations Runbook
 
-This runbook covers maintenance tasks for the local Docker-based development environment as well as operational resets that mirror staging/production procedures.
+This runbook covers the persistent shared services on `hvo-docker.hvo.lan` and the local application containers that consume them.
 
 ## Service Layout
 
-`docker-compose.infrastructure.yml` and `docker-compose.apps.yml` define the following services:
+`deploy/hvo-docker/docker-compose.shared-services.yml` defines the persistent shared services; `docker-compose.apps.yml` defines only local application containers.
 
-- `postgres` — metadata database (volume: `skymonitor-postgres`).
-- `minio` — object storage (volume: `skymonitor-minio`).
-- `redis` — caching (volume: `skymonitor-redis`).
-- `smtp` — Mailpit relay for email testing.
-- `logichost`, `cameraagent` — application containers built from `src/` (defined in `docker-compose.apps.yml`).
+- SQL Server — metadata database, managed separately on `hvo-docker`.
+- MinIO — persistent object storage on `hvo-docker`.
+- Redis — persistent cache on `hvo-docker`.
+- Mailpit — email capture service on `hvo-docker`.
+- `logichost`, `cameraagent` — local application containers built from `src/`.
+
+## Resource Ownership
+
+- `SkyMonitor` is the only SQL Server database this repository migrates or seeds. Shared identity databases are owned by their defining repositories and must never be used as this host's connection string.
+- Redis keys are prefixed with `skymonitor:`.
+- SkyMonitor creates and uses only the `skymonitor-diagnostics` and `skymonitor-artifacts` MinIO buckets. Do not configure diagnostics requests to access another repository's bucket.
 
 ## Common Operations
 
@@ -19,60 +25,56 @@ This runbook covers maintenance tasks for the local Docker-based development env
 ```bash
 ./scripts/infra:start [service...]
 ```
-- Omit arguments to start everything.
-- Services may be listed to start a subset (e.g., `./scripts/infra:start postgres redis`).
+- Omit arguments to start both application containers, or specify `logichost` or `cameraagent`.
 
 ### Reset data and start fresh
 
 ```bash
-./scripts/infra:start --reset postgres minio
+./scripts/infra:start --reset cameraagent
 ```
-- `--reset all` wipes every volume before start-up.
-- Resetting Postgres drops and recreates the database; re-running the host will apply EF migrations automatically.
+- `--reset all` removes both local application containers.
+- Shared-service data is never reset from this repository.
 
 ### Status checks
 
 ```bash
 ./scripts/infra:status
 ```
-Shows `docker compose ps` output per service on the local Docker daemon.
+Shows `docker compose ps` output for local application containers.
 
 ### Data-only reset
 
 ```bash
-./scripts/infra:reset minio
+./scripts/infra:reset cameraagent
 ```
-Use when volumes need to be wiped but services should remain stopped afterward.
+Use when the CameraAgent identity and data-protection runtime state must be cleared.
 
 ## Log Collection
 
 - Tail a specific service:
   ```bash
-  ./scripts/infra:logs postgres
+./scripts/infra:logs logichost
   ```
 - Capture bundle for support:
   ```bash
   ./scripts/infra:status > /tmp/infra-status.txt
-  docker compose -f docker-compose.infrastructure.yml logs > /tmp/infra-logs.txt
+  docker --context hvo-docker compose --env-file deploy/hvo-docker/.env -f deploy/hvo-docker/docker-compose.shared-services.yml logs > /tmp/infra-logs.txt
   ```
 
 ## Secrets & Credentials
 
-- Base credentials live in `.env.template`; copy to `.env` or devcontainer env file.
-- Rotations: update `.env.template`, rerun `./scripts/infra:start --reset service` for affected services, and commit documentation updates.
+- Application connection details live in the ignored root `.env`, based on `.env.template`.
+- Shared-service credentials live only in the ignored `deploy/hvo-docker/.env`. Rotate them on `hvo-docker`, then update the root `.env` for applications.
 
 ## Disaster Recovery Scenarios
 
 | Scenario | Steps |
 | --- | --- |
-| Postgres volume corruption | `./scripts/infra:start --reset postgres`, rerun host migrations, reseed via integration fixture if needed. |
-| MinIO object mismatch | `./scripts/infra:start --reset minio`, rerun unit/integration tests that populate fixtures. |
-| Redis memory leak | `./scripts/infra:start redis` (script stops + starts the container). |
-| SMTP never receives mail | `./scripts/infra:status smtp` then `docker compose logs smtp`; restart if necessary. |
+| Shared service failure | Use the `hvo-docker` Docker context and `deploy/hvo-docker/docker-compose.shared-services.yml` to inspect or restart the affected service. |
 
 ## Change Management
 
-1. Update `docker-compose.infrastructure.yml` / `docker-compose.apps.yml` for topology changes.
+1. Update `deploy/hvo-docker/docker-compose.shared-services.yml` / `docker-compose.apps.yml` for topology changes.
 2. Reflect new environment variables in `.env.template` and devcontainer configuration.
 3. Document operational differences here and announce via commit/PR.
 

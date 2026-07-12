@@ -105,7 +105,8 @@
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
                 "retentionDays": 7,
-                "updateLatestFrame": true
+                "updateLatestFrame": true,
+                "queueForUpload": true
             }
         },
         {
@@ -115,7 +116,8 @@
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/archive",
                 "retentionDays": 30,
-                "updateLatestFrame": false
+                "updateLatestFrame": false,
+                "queueForUpload": false
             }
         },
         {

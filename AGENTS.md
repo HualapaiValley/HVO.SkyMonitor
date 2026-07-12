@@ -20,12 +20,12 @@
 - `AgentCore` contains stable transport-neutral camera, rig, frame, and artifact contracts only; do not add ASP.NET, EF Core, MinIO, SkiaSharp, or camera-SDK dependencies.
 - `CameraAgent.Common` owns edge capture orchestration: module registration/factory, ordered processing, storage, retention, telemetry, and configuration loading. The `CameraAgent` host registers this through `AddCameraAgentInfrastructure` and hosts the local UI/API/identity.
 - `LogicHost` is the central ASP.NET host; it owns PostgreSQL/Redis/MinIO-backed central services and runs EF migrations plus seed data at startup.
-- New reusable astronomy/projection behavior belongs in the planned `HVO.SkyMonitor.Astronomy` project, and reusable image algorithms in `HVO.SkyMonitor.Imaging`; do not create host-specific projection math.
+- New reusable astronomy/projection behavior belongs in the planned `HVO.SkyMonitor.Astronomy` project, and reusable image algorithms in `HVO.SkyMonitor.Imaging`; do not create host-specific projection math. Astronomy catalogs are versioned read-only SQLite snapshots deployed locally to LogicHost and every CameraAgent, never part of the shared SQL Server schema.
 
 ## Runtime and Infrastructure
 
-- The devcontainer starts Postgres, Redis, MinIO, and Mailpit automatically. Set `SKYMONITOR_SKIP_AUTO_INFRA=true` in `.devcontainer/devcontainer.local.env` before startup to opt out.
-- Use `./scripts/infra:start [services]` rather than raw Compose for the local stack. Requesting `logichost` or `cameraagent` automatically starts all infrastructure; `--reset` deletes service state and rebuilding either app refreshes its image.
+- SQL Server, Redis, MinIO, and Mailpit are persistent shared services on `hvo-docker`; configure their endpoints and credentials in the ignored `.env` using `.env.template`.
+- Use `./scripts/infra:start [logichost|cameraagent]` rather than raw Compose for application containers. `--reset` only deletes application container state and rebuilding refreshes the image.
 - Run hosts directly with `dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj` and `dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj`. Compose exposes them at ports `5174` and `5130` respectively.
 - CameraAgent's local Identity database and data-protection keys are runtime state under `App_Data/` and `DataProtection-Keys/`; do not add them to commits.
 - Keep local secrets in user secrets, `.env`, or `.devcontainer/devcontainer.local.env`. These are intentionally ignored; `.env.template` contains the supported local defaults.

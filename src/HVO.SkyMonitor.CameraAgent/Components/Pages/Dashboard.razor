@@ -35,7 +35,22 @@
 	</section>
 
 	<section class="latest-frame">
-		<h2>Latest Capture</h2>
+		<div class="latest-frame__heading">
+			<div>
+				<h2>Latest Capture</h2>
+				<p class="text-muted">Raw sensor output beside the current rolling stack.</p>
+			</div>
+			@if (Rig is not null)
+			{
+				<div class="rig-summary" aria-label="Active camera rig">
+					<span class="rig-summary__label">Active Rig</span>
+					<strong>@Rig.Sensor.Name</strong>
+					<span>@Rig.Sensor.WidthPixels x @Rig.Sensor.HeightPixels · @Rig.Sensor.PixelFormat</span>
+					<span>@Rig.Optics.ProjectionModel · @Rig.Optics.FieldOfViewDegrees.ToString("F0") deg FOV</span>
+					<span>Alt @Rig.Orientation.BoresightAltitudeDegrees.ToString("F1") deg · Az @Rig.Orientation.BoresightAzimuthDegrees.ToString("F1") deg</span>
+				</div>
+			}
+		</div>
 		@if (LatestSample is null)
 		{
 			<p class="text-muted">Waiting for telemetry…</p>
@@ -69,12 +84,40 @@
 				</div>
 			</div>
 
-			@if (!string.IsNullOrEmpty(PreviewImageSource))
-			{
-				<div class="latest-frame__preview-wrapper">
-					<img class="latest-frame__preview" src="@PreviewImageSource" alt="Latest frame preview" />
-				</div>
-			}
+			<div class="latest-frame__previews">
+				<figure class="frame-preview-card">
+					<figcaption>
+						<span>Individual Frame</span>
+						<small>Raw Mono16, displayed as JPEG</small>
+					</figcaption>
+					@if (!string.IsNullOrEmpty(RawPreviewImageSource))
+					{
+						<img src="@RawPreviewImageSource" alt="Latest raw camera frame" />
+					}
+					<dl class="frame-details">
+						<div><dt>Captured</dt><dd>@FormatFrameTimestamp(RawFrame)</dd></div>
+						<div><dt>Exposure</dt><dd>@FormatFrameExposure(RawFrame)</dd></div>
+						<div><dt>Gain</dt><dd>@FormatFrameGain(RawFrame)</dd></div>
+						<div><dt>Offset</dt><dd>@FormatFrameOffset(RawFrame)</dd></div>
+					</dl>
+				</figure>
+				<figure class="frame-preview-card">
+					<figcaption>
+						<span>Rolling Stack</span>
+						<small>Current processed combination</small>
+					</figcaption>
+					@if (!string.IsNullOrEmpty(ProcessedPreviewImageSource))
+					{
+						<img src="@ProcessedPreviewImageSource" alt="Latest processed stacked frame" />
+					}
+					<dl class="frame-details">
+						<div><dt>Captured</dt><dd>@FormatFrameTimestamp(ProcessedFrame)</dd></div>
+						<div><dt>Frames</dt><dd>@FormatStackCount(ProcessedFrame)</dd></div>
+						<div><dt>Stack</dt><dd>@(ProcessedFrame?.RecipeVersion ?? "—")</dd></div>
+						<div><dt>Integration</dt><dd>@FormatStackIntegration(ProcessedFrame)</dd></div>
+					</dl>
+				</figure>
+			</div>
 		}
 	</section>
 

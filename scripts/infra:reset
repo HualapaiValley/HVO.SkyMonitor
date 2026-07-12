@@ -1,114 +1,28 @@
 #!/usr/bin/env bash
-# infra:reset - Reset infrastructure and application service data
-# Usage: ./scripts/infra:reset [all|SERVICE...]
+# infra:reset - Remove local application containers and CameraAgent runtime state.
+# Usage: ./scripts/infra:reset [logichost|cameraagent|all]
 
 set -euo pipefail
-
-readonly RED='\033[0;31m'
-readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[1;33m'
-readonly BLUE='\033[0;34m'
-readonly NC='\033[0m' # No Color
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-if [[ -f .env ]]; then
-    set -a
-    source .env
-    set +a
-fi
-
-readonly INFRA_SERVICES=(postgres minio redis smtp)
-readonly APP_SERVICES=(logichost cameraagent)
-readonly ALL_SERVICES=("${INFRA_SERVICES[@]}" "${APP_SERVICES[@]}")
-
-clean_cameraagent_data() {
-    mkdir -p data/cameraagent/identity data/cameraagent/dataprotection
-    rm -f data/cameraagent/identity/* 2>/dev/null || true
-    rm -f data/cameraagent/dataprotection/* 2>/dev/null || true
-}
-
-get_compose_file() {
-    local service="$1"
-    case "$service" in
-        postgres|minio|redis|smtp) echo "docker-compose.infrastructure.yml" ;;
-        logichost|cameraagent) echo "docker-compose.apps.yml" ;;
-        *) echo "docker-compose.infrastructure.yml" ;;
-    esac
-}
-
-reset_service() {
-    local service="$1"
-    local compose_file="$(get_compose_file "$service")"
-
-    echo -e "${YELLOW}Resetting $service data...${NC}"
-    case "$service" in
-        postgres|minio|redis)
-            docker compose -f "$compose_file" stop "$service" 2>/dev/null || true
-            docker compose -f "$compose_file" rm -f "$service" 2>/dev/null || true
-            local volume_name="skymonitor-${service}-data"
-            if docker volume ls --format '{{.Name}}' | grep -q "^${volume_name}$"; then
-                docker volume rm "$volume_name" >/dev/null 2>&1 || true
-                echo -e "${GREEN}✓ Removed volume: $volume_name${NC}"
-            else
-                echo -e "${BLUE}ℹ Volume not found: $volume_name${NC}"
-            fi
-            echo -e "${GREEN}✓ Reset $service data${NC}"
-            ;;
-        smtp)
-            docker compose -f "$compose_file" rm -f "$service" 2>/dev/null || true
-            echo -e "${GREEN}✓ Reset $service (removed container)${NC}"
-            ;;
-        logichost|cameraagent)
-            docker compose -f "$compose_file" rm -f "$service" 2>/dev/null || true
-            if [[ "$service" == "cameraagent" ]]; then
-                clean_cameraagent_data
-            fi
-            docker compose -f "$compose_file" build "$service"
-            echo -e "${GREEN}✓ Reset $service (removed container and rebuilt image)${NC}"
-            ;;
-        *)
-            echo -e "${RED}Unknown service: $service${NC}"
-            return 1
-            ;;
-    esac
-}
-
-if [[ $# -eq 0 ]]; then
-    echo -e "${RED}Error: No services specified${NC}"
-    echo "Usage: $0 [all|SERVICE...]"
-    echo "Available services: ${ALL_SERVICES[*]}"
+services=("$@")
+[[ ${#services[@]} -gt 0 ]] || {
+    echo "Usage: $0 [logichost|cameraagent|all]" >&2
     exit 1
+}
+[[ " ${services[*]} " == *" all "* ]] && services=(logichost cameraagent)
+
+for service in "${services[@]}"; do
+    [[ "$service" == "logichost" || "$service" == "cameraagent" ]] || {
+        echo "Unknown application service: $service" >&2
+        exit 1
+    }
+done
+
+docker compose -f docker-compose.apps.yml rm -sf "${services[@]}"
+if [[ " ${services[*]} " == *" cameraagent "* ]]; then
+    rm -f data/cameraagent/identity/* data/cameraagent/dataprotection/* 2>/dev/null || true
 fi
-
-RESET_SERVICES=()
-for arg in "$@"; do
-    if [[ "$arg" == "all" ]]; then
-        RESET_SERVICES=("${ALL_SERVICES[@]}")
-        break
-    else
-        RESET_SERVICES+=("$arg")
-    fi
-done
-
-echo -e "${YELLOW}This will reset the following services:${NC}"
-for service in "${RESET_SERVICES[@]}"; do
-    echo "  - $service"
-done
-echo ""
-read -r -p "Are you sure? (y/N) " reply
-if [[ ! "$reply" =~ ^[Yy]$ ]]; then
-    echo -e "${BLUE}Reset cancelled${NC}"
-    exit 0
-fi
-
-echo -e "${BLUE}=== Resetting Services ===${NC}"
-for service in "${RESET_SERVICES[@]}"; do
-    reset_service "$service"
-done
-
-echo ""
-echo -e "${GREEN}=== Reset Complete ===${NC}"
-echo "Use './scripts/infra:start' to start the services again"

@@ -51,6 +51,14 @@ end-to-end integration coverage.
 - Documented workflows in `docs/runbooks/infra-operations.md` and
   `docs/runbooks/local-dev.md`.
 
+### Shared Services Topology Update
+- Retired repository-local infrastructure containers. SQL Server, Redis,
+  MinIO, and Mailpit now persist on `hvo-docker` and applications consume
+  their explicit `.env` endpoints and credentials.
+- `docker-compose.apps.yml` and `scripts/infra:*` now manage only LogicHost
+  and CameraAgent containers. Shared services are provisioned from
+  `deploy/hvo-docker/docker-compose.shared-services.yml`.
+
 ### Phase 3 – Replace Aspire + SQLite
 - Removed `HVO.SkyMonitor.AppHost` and Aspire dependencies.
 - Swapped SQLite providers for PostgreSQL across host projects and
@@ -94,7 +102,7 @@ end-to-end integration coverage.
 
 ## 5. Related Files
 
-- `docker-compose.infrastructure.yml`, `docker-compose.apps.yml`, `.env.template`, `scripts/infra:*`
+- `deploy/hvo-docker/docker-compose.shared-services.yml`, `docker-compose.apps.yml`, `.env.template`, `scripts/infra:*`
 - `src/HVO.SkyMonitor.TestSupport/`
 - `tests/HVO.SkyMonitor.IntegrationTests/`
 - `tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/`

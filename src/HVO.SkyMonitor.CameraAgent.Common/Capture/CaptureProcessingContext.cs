@@ -40,10 +40,14 @@ public sealed class CaptureProcessingContext
         _submission = _submission with { Result = result };
     }
 
-    public void AddDerivative(FrameArtifactRole role, CameraFrame frame, string? recipeVersion = null)
+    public void AddDerivative(
+        FrameArtifactRole role,
+        CameraFrame frame,
+        string? recipeVersion = null,
+        IReadOnlyList<Guid>? sourceArtifactIds = null)
     {
         ArgumentNullException.ThrowIfNull(frame);
-        _artifacts = (_artifacts ?? new FrameArtifactSet(frame)).WithDerivative(role, frame, recipeVersion);
+        _artifacts = (_artifacts ?? new FrameArtifactSet(frame)).WithDerivative(role, frame, recipeVersion, sourceArtifactIds);
         _submission = _submission with { Result = _submission.Result with { Artifacts = _artifacts } };
     }
 

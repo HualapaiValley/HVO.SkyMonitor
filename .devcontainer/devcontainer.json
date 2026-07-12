@@ -8,6 +8,7 @@
     "memory": "8gb",
     "storage": "32gb"
   },
+  "privileged": true,
   "features": {
     "ghcr.io/devcontainers/features/git:1": {
       "ppa": true,
@@ -78,20 +79,6 @@
     "ASPNETCORE_ENVIRONMENT": "Development",
     "DOTNET_ENVIRONMENT": "Development",
     "USE_CONTAINERS": "true",
-    "POSTGRES_HOST": "localhost",
-    "POSTGRES_PORT": "5432",
-    "POSTGRES_USER": "hvo_dev",
-    "POSTGRES_PASSWORD": "hvo_dev_password",
-    "POSTGRES_DB": "skymonitordb",
-    "REDIS_HOST": "localhost",
-    "REDIS_PORT": "6379",
-    "MINIO_HOST": "localhost",
-    "MINIO_API_PORT": "9000",
-    "MINIO_CONSOLE_PORT": "9001",
-    "MINIO_ENDPOINT": "localhost:9000",
-    "SMTP_HOST": "localhost",
-    "SMTP_PORT": "1025",
-    "SMTP_WEB_PORT": "8025",
     // Identity Hardening - Rate Limiting Configuration (non-sensitive)
     "RATE_LIMIT_TOKEN_ENDPOINT_PERMITS_PER_MINUTE": "60",
     "RATE_LIMIT_TOKEN_ENDPOINT_QUEUE_LIMIT": "10",
@@ -103,21 +90,21 @@
     "SIGNED_TICKET_ENFORCE_ALLOWED_PATHS": "true",
     // Logging Configuration (non-sensitive)
     "LOGGING_LOGLEVEL_DEFAULT": "Information",
-    "LOGGING_LOGLEVEL_MICROSOFT_ASPNETCORE": "Warning",
-    "APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=461820e1-768d-49c2-9ffa-dcadc6f8076a;IngestionEndpoint=https://westus3-1.in.applicationinsights.azure.com/;LiveEndpoint=https://westus3.livediagnostics.monitor.azure.com/;ApplicationId=ffe9f937-60da-4b07-8645-88b24d8f5e4f"
+    "LOGGING_LOGLEVEL_MICROSOFT_ASPNETCORE": "Warning"
   },
   "remoteEnv": {
-    // Point to Docker Desktop's magic SSH bridge on macOS
-    "SSH_AUTH_SOCK": "/run/host-services/ssh-auth.sock",
     // Forward GitHub token from host so gh CLI works without re-auth
     "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}",
-    "GH_TOKEN": "${localEnv:GH_TOKEN}"
+    "GH_TOKEN": "${localEnv:GH_TOKEN}",
+    "GH_PAT": "${localEnv:GH_PAT}",
+    "GIT_AUTHOR_NAME": "${localEnv:GIT_AUTHOR_NAME}",
+    "GIT_AUTHOR_EMAIL": "${localEnv:GIT_AUTHOR_EMAIL}",
+    // Optional ED25519 key injected by the host. It is materialized by setup-ssh-key.sh.
+    "SSH_PRIVATE_KEY": "${localEnv:SSH_PRIVATE_KEY}"
   },
   // Port mappings
   // 5000-5001: Main HVO.SkyMonitor app (HTTP/HTTPS)
   // 5010-5011: Camera Agent (HTTP/HTTPS)
-  // 5432: PostgreSQL, 6379: Redis
-  // 9000-9001: MinIO (API/Console)
   // 7096: Logic Host HTTPS (dotnet run)
   // 5174: SkyMonitor container mode (HTTP)
   // 5130: Camera agent container mode
@@ -126,10 +113,6 @@
     5001,
     5010,
     5011,
-    5432,
-    6379,
-    9000,
-    9001,
     7096,
     5174,
     5130
@@ -151,18 +134,6 @@
       "onAutoForward": "notify",
       "elevateIfNeeded": true
     },
-    "6379": {
-      "onAutoForward": "silent"
-    },
-    "5432": {
-      "onAutoForward": "silent"
-    },
-    "9000": {
-      "onAutoForward": "notify"
-    },
-    "9001": {
-      "onAutoForward": "notify"
-    },
     "7096": {
       "onAutoForward": "notify",
       "elevateIfNeeded": true
@@ -179,14 +150,8 @@
   },
   // Ensure host-side secrets directory exists to avoid bind mount errors
   "initializeCommand": "mkdir -p \"$HOME/.microsoft/usersecrets\"",
-  // Mount user secrets and SSH agent from host into container
+  // Mount the host user-secrets store into the container.
   "mounts": [
-    // SSH agent socket from host -> container (for remote docker contexts)
-    {
-      "source": "/run/host-services/ssh-auth.sock",
-      "target": "/run/host-services/ssh-auth.sock",
-      "type": "bind"
-    },
     {
       "type": "volume",
       "source": "x509stores",
@@ -196,6 +161,11 @@
       "type": "bind",
       "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.microsoft/usersecrets",
       "target": "/home/vscode/.microsoft/usersecrets"
+    },
+    {
+      "type": "volume",
+      "source": "hvo-skymonitor-ssh-config",
+      "target": "/home/vscode/.ssh"
     }
   ],
   "postCreateCommand": "bash .devcontainer/post-create.sh",

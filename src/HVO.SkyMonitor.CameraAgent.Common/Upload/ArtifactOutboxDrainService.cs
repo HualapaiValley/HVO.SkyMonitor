@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using Microsoft.Extensions.Hosting;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -8,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
 public sealed class ArtifactOutboxDrainService(
     ICameraAgentConfigurationAccessor configurationAccessor,
     IArtifactOutbox outbox,
+    IFrameStorageService frameStorageService,
     ArtifactUploadClient uploadClient) : BackgroundService
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
@@ -24,6 +26,9 @@ public sealed class ArtifactOutboxDrainService(
                 if (await uploadClient.UploadAsync(storageRoot, manifest, stoppingToken).ConfigureAwait(false))
                 {
                     await outbox.AcknowledgeAsync(storageRoot, manifest.IdempotencyKey, stoppingToken).ConfigureAwait(false);
+                    var path = Path.Combine(Path.GetFullPath(storageRoot), manifest.RelativeArtifactPath);
+                    await frameStorageService.RemoveAsync(storageRoot, new StoredFrameReference(
+                        manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role), manifest.ArtifactId, stoppingToken).ConfigureAwait(false);
                 }
             }
 
@@ -38,7 +43,7 @@ public sealed class ArtifactOutboxDrainService(
             if (step.Type.Contains(nameof(NoOpFileStorageProcessingStep), StringComparison.OrdinalIgnoreCase) && step.Options is { } options)
             {
                 var parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(options.GetRawText(), SerializerOptions);
-                if (!string.IsNullOrWhiteSpace(parsed?.StorageRoot))
+                if (parsed is { QueueForUpload: true } && !string.IsNullOrWhiteSpace(parsed.StorageRoot))
                 {
                     return parsed.StorageRoot;
                 }

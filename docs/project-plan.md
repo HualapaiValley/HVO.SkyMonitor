@@ -48,6 +48,7 @@ The CameraAgent owns work that must remain close to the camera:
 7. A local authenticated UI for setup, monitoring, history, and diagnostics.
 8. A durable upload outbox so temporary central outages do not lose work.
 9. Telemetry for cadence, queue depth, processing latency, disk use, and errors.
+10. A local read-only astronomy catalog snapshot so acquisition and processing work while disconnected from LogicHost.
 
 ### 2.3 LogicHost responsibilities
 
@@ -118,7 +119,7 @@ Contains reusable astronomy and catalog behavior:
 - Configurable atmospheric refraction.
 - Projection contracts, implementations, and a projector factory.
 - Star, planet, constellation, and deep-sky-object domain records.
-- Catalog query contracts and file-backed catalog implementations.
+- Catalog query contracts and storage-neutral catalog implementations.
 - Planet ephemeris and constellation topology services.
 
 The existing `IImageProjector`, `PixelPoint`, and `AltAzPoint` contracts move
@@ -129,6 +130,11 @@ contract.
 This project must be deterministic, thread-safe, and free of ambient state for
 a supplied time, location, rig, and catalog. It must not depend on CameraAgent,
 LogicHost, Imaging, EF Core, SkiaSharp, or UI code.
+
+Catalog persistence is host infrastructure, not Astronomy domain behavior. Each
+LogicHost and CameraAgent receives the same versioned, read-only SQLite catalog
+snapshot locally. Catalog data must never be added to the shared SQL Server
+schema or fetched during normal CameraAgent acquisition/processing.
 
 #### `HVO.SkyMonitor.Imaging` (new)
 
@@ -357,9 +363,12 @@ entities. The initial catalog API must support:
 - Stable object identifiers and display names.
 - Optional color index or spectral data for rendering.
 
-Load and index the HYG catalog once per process. Do not parse it or create a
-service scope for every frame. Catalog licensing, source URL, version, checksum,
-and preprocessing steps must be documented beside the packaged data.
+Load and index the local HYG SQLite snapshot once per process. Do not query a
+central service, parse source data, or create a service scope for every frame.
+Catalog licensing, source URL, version, checksum, and preprocessing steps must
+be documented beside the packaged data. Snapshot updates are explicitly
+distributed and applied atomically; CameraAgent continues using its current
+snapshot while offline.
 
 ### 5.3 Astronomy validation
 

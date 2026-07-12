@@ -1,0 +1,56 @@
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: skymonitor-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - skymonitor-minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+    networks:
+      - skymonitor
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: skymonitor-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - skymonitor-redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+    networks:
+      - skymonitor
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: skymonitor-mailpit
+    ports:
+      - "${SMTP_PORT:-1025}:1025"
+      - "${SMTP_WEB_PORT:-8025}:8025"
+    restart: unless-stopped
+    networks:
+      - skymonitor
+
+volumes:
+  skymonitor-minio-data:
+  skymonitor-redis-data:
+
+networks:
+  skymonitor:
+    name: skymonitor_default
