@@ -130,10 +130,8 @@ The `.devcontainer/devcontainer.json` includes:
 The devcontainer configuration includes:
 
 - **.NET 10 SDK** - Latest .NET SDK for building and running applications
-- **Docker-in-Docker** - Run and manage Docker containers inside the dev container
+- **Docker CLI** - Manage host and remote Docker contexts from the dev container
 - **dotnet-ef CLI** - Pinned Entity Framework Core tooling installed automatically
-- **OpenCode CLI** - Interactive coding assistant installed automatically
-- **Tailscale CLI** - Private-network client installed automatically; authenticate locally with `sudo tailscale up`
 - **Command-line tools** - `jq`, `rg`, and `sqlite3` are installed during container setup
 - **C# Dev Kit** - Complete C# development experience with IntelliSense, debugging, and more
 - **GitHub Copilot** - AI-powered code completion and chat
@@ -147,7 +145,7 @@ The devcontainer configuration includes:
 
 ### OpenCode over Tailscale
 
-After authenticating Tailscale, expose the OpenCode server to authenticated devices on the tailnet:
+After installing and authenticating OpenCode and Tailscale through their verified distribution channels, expose the OpenCode server to authenticated devices on the tailnet:
 
 ```bash
 ./scripts/opencode:enable

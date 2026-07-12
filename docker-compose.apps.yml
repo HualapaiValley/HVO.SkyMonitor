@@ -10,9 +10,9 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
       OTEL_SERVICE_NAME: hvo-skymonitor
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://192.168.1.238:4318
-      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
-      ConnectionStrings__skymonitordb: "Server=${SQLSERVER_HOST:?SQLSERVER_HOST must be set},${SQLSERVER_PORT:?SQLSERVER_PORT must be set};Database=${SQLSERVER_DATABASE:?SQLSERVER_DATABASE must be set};User Id=${SQLSERVER_USER:?SQLSERVER_USER must be set};Password=${SQLSERVER_PASSWORD:-${MSSQL_SA_PASSWORD:?SQLSERVER_PASSWORD or MSSQL_SA_PASSWORD must be set}};TrustServerCertificate=True"
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:?OTEL_EXPORTER_OTLP_PROTOCOL must be set}
+      ConnectionStrings__skymonitordb: "Server=${SQLSERVER_HOST:?SQLSERVER_HOST must be set},${SQLSERVER_PORT:?SQLSERVER_PORT must be set};Database=${SQLSERVER_DATABASE:?SQLSERVER_DATABASE must be set};User Id=${SQLSERVER_USER:?SQLSERVER_USER must be set};Password=${SQLSERVER_PASSWORD:?SQLSERVER_PASSWORD must be set};TrustServerCertificate=True"
       Redis__Configuration: "${REDIS_HOST:?REDIS_HOST must be set}:${REDIS_PORT:?REDIS_PORT must be set},password=${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
       Redis__InstanceName: "skymonitor:"
       Minio__Endpoint: "${MINIO_HOST:?MINIO_HOST must be set}"
@@ -40,8 +40,8 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
       OTEL_SERVICE_NAME: hvo-camera
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://192.168.1.238:4318
-      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:?OTEL_EXPORTER_OTLP_PROTOCOL must be set}
       SkyMonitor__BaseUrl: ${CAMERA_AGENT_LOGIC_BASEURL:-http://logichost:8080}
       CentralIdentity__ServiceUrl: ${CAMERA_AGENT_IDENTITY_URL:-http://logichost:8080}
       CentralIdentity__InteractiveClient__PublicAuthority: ${CAMERA_AGENT_IDENTITY_PUBLIC_URL:-http://localhost:5174}

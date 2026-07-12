@@ -36,6 +36,8 @@ public sealed class IntegrationTestFixture : IDisposable
     private IContainer? _minioContainer;
     private IContainer? _smtpContainer;
     private bool _initialized;
+    private string? _originalSqlServerConnectionString;
+    private string? _originalDefaultConnectionString;
 
     /// <summary>
     /// Gets the web application factory for creating HTTP clients.
@@ -92,6 +94,10 @@ public sealed class IntegrationTestFixture : IDisposable
 
         await _sqlServerContainer.StartAsync().ConfigureAwait(false);
         SqlServerConnectionString = _sqlServerContainer.GetConnectionString();
+        _originalSqlServerConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__skymonitordb");
+        _originalDefaultConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection");
+        Environment.SetEnvironmentVariable("ConnectionStrings__skymonitordb", SqlServerConnectionString);
+        Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", SqlServerConnectionString);
 
         // Start Redis container (RedisBuilder provides a wait strategy that verifies
         // the server responds to commands, not just that the TCP port is open)
@@ -220,6 +226,9 @@ public sealed class IntegrationTestFixture : IDisposable
         {
             Factory.Dispose();
         }
+
+        Environment.SetEnvironmentVariable("ConnectionStrings__skymonitordb", _originalSqlServerConnectionString);
+        Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", _originalDefaultConnectionString);
 
         if (_sqlServerContainer != null)
         {

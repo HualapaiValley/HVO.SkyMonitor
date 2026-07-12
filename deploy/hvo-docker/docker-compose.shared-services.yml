@@ -12,7 +12,7 @@ services:
     volumes:
       - skymonitor-minio-data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "curl --fail http://localhost:9000/minio/health/ready"]
       interval: 10s
       timeout: 5s
       retries: 6

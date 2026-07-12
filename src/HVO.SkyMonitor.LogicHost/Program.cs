@@ -313,12 +313,16 @@ public sealed partial class Program
         builder.Services.AddScoped<IObservatoryService, ObservatoryService>();
 
         // This host owns only the SkyMonitor database; do not point this context at shared identity databases.
-        // Database - prefer SQL Server (fallback to explicit connection string if config missing)
+        // Database - require an explicit SQL Server connection string.
         var connectionString = builder.Configuration.GetConnectionString("skymonitordb")
             ?? builder.Configuration.GetConnectionString("DefaultConnection")
             ?? builder.Configuration["ConnectionStrings:skymonitordb"]
-            ?? builder.Configuration["ConnectionStrings:DefaultConnection"]
-            ?? "Server=localhost,1433;Database=SkyMonitor;User Id=sa;Password=Your_password123;TrustServerCertificate=True";
+            ?? builder.Configuration["ConnectionStrings:DefaultConnection"];
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException("A SkyMonitor SQL Server connection string must be configured.");
+        }
 
         builder.Services.AddDbContext<ApplicationDbContext>(options =>
             options.UseSqlServer(connectionString));
