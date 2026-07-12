@@ -76,14 +76,15 @@ public sealed class RetentionBackgroundService(
             var cutoffDate = _timeProvider.GetUtcNow().UtcDateTime.Date.AddDays(-plan.RetentionDays);
             var pending = ReadPendingArtifacts(plan.StorageRoot, cancellationToken);
             var deletedFiles = PruneFrameDirectories(plan.StorageRoot, cutoffDate, pending, cancellationToken);
-            await FrameIndexLock.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var indexGate = FrameIndexLock.ForRoot(plan.StorageRoot);
+            await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 deletedFiles += PruneIndexFiles(plan.StorageRoot, cutoffDate, pending.ArtifactIds, cancellationToken);
             }
             finally
             {
-                FrameIndexLock.Gate.Release();
+                indexGate.Release();
             }
             deletedFiles += PruneDerivedOutputs(plan.StorageRoot, cutoffDate, pending.AbsolutePaths, cancellationToken);
             _logger.RetentionSweepCompleted(plan.StorageRoot, deletedFiles, pending.ArtifactIds.Count);

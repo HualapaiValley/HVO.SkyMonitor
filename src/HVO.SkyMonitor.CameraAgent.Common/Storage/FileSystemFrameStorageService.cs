@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -72,14 +73,15 @@ public sealed class FileSystemFrameStorageService(
         var indexDirectory = Path.Combine(storageRoot, "index");
         Directory.CreateDirectory(indexDirectory);
         var indexPath = Path.Combine(indexDirectory, $"frames_{timestamp:yyyy-MM-dd}.jsonl");
-        await FrameIndexLock.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var indexGate = FrameIndexLock.ForRoot(storageRoot);
+        await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             await AppendIndexEntryAsync(indexPath, metadata, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            FrameIndexLock.Gate.Release();
+            indexGate.Release();
         }
 
         _logger.FrameStored(payloadPath);
@@ -113,7 +115,8 @@ public sealed class FileSystemFrameStorageService(
 
         storageRoot = Path.GetFullPath(storageRoot);
         var indexPath = Path.Combine(storageRoot, "index", $"frames_{storedFrame.TimestampUtc:yyyy-MM-dd}.jsonl");
-        await FrameIndexLock.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var indexGate = FrameIndexLock.ForRoot(storageRoot);
+        await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (!File.Exists(indexPath))
@@ -145,7 +148,7 @@ public sealed class FileSystemFrameStorageService(
         }
         finally
         {
-            FrameIndexLock.Gate.Release();
+            indexGate.Release();
         }
     }
 
@@ -193,10 +196,11 @@ public sealed class FileSystemFrameStorageService(
         storageRoot = Path.GetFullPath(storageRoot);
         var references = new List<StoredFrameCandidate>();
         var seenArtifactIds = new HashSet<Guid>();
+        var indexGate = FrameIndexLock.ForRoot(storageRoot);
         foreach (var indexPath in GetCandidateIndexPaths(storageRoot, utcDate))
         {
             string[] lines;
-            FrameIndexLock.Gate.Wait();
+            indexGate.Wait();
             try
             {
                 if (!File.Exists(indexPath))
@@ -212,16 +216,18 @@ public sealed class FileSystemFrameStorageService(
             }
             finally
             {
-                FrameIndexLock.Gate.Release();
+                indexGate.Release();
             }
 
             foreach (var line in lines)
             {
-                if (!TryReadMetadata(line, out var indexedMetadata) ||
-                    !IsValid(indexedMetadata, utcDate, role) ||
-                    !seenArtifactIds.Add(indexedMetadata.ArtifactId))
+                if (!TryReadMetadata(line, out var indexedMetadata))
                 {
                     _logger.FrameBrowseEntrySkipped(indexPath);
+                    continue;
+                }
+                if (!IsValid(indexedMetadata, utcDate, role) || seenArtifactIds.Contains(indexedMetadata.ArtifactId))
+                {
                     continue;
                 }
 
@@ -234,6 +240,7 @@ public sealed class FileSystemFrameStorageService(
                     _logger.FrameBrowseEntrySkipped(indexPath);
                     continue;
                 }
+                seenArtifactIds.Add(indexedMetadata.ArtifactId);
 
                 references.Add(new StoredFrameCandidate(
                     new StoredFrameReference(
@@ -397,5 +404,9 @@ public sealed class FileSystemFrameStorageService(
 
 internal static class FrameIndexLock
 {
-    internal static SemaphoreSlim Gate { get; } = new(1, 1);
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> Gates = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+    internal static SemaphoreSlim ForRoot(string storageRoot)
+        => Gates.GetOrAdd(Path.GetFullPath(storageRoot), static _ => new SemaphoreSlim(1, 1));
 }

@@ -336,6 +336,38 @@ public sealed class FileSystemFrameStorageServiceTests
     }
 
     [TestMethod]
+    public async Task List_InvalidDuplicateDoesNotHideLaterValidArtifact()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var artifactId = Guid.NewGuid();
+            var frame = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono8, new byte[] { 1 },
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+            await service.SaveAsync(root,
+                new FrameArtifact(artifactId, FrameArtifactRole.Raw, frame), CancellationToken.None).ConfigureAwait(false);
+            var indexPath = Path.Combine(root, "index", "frames_1970-01-01.jsonl");
+            var validLine = await File.ReadAllTextAsync(indexPath).ConfigureAwait(false);
+            var invalid = System.Text.Json.Nodes.JsonNode.Parse(validLine)!;
+            invalid["width"] = 2;
+            await File.WriteAllTextAsync(indexPath, invalid.ToJsonString() + "\n" + validLine).ConfigureAwait(false);
+
+            var artifacts = service.List(root, DateOnly.FromDateTime(DateTime.UnixEpoch), null, 10);
+
+            Assert.AreEqual(1, artifacts.Count);
+            StringAssert.Contains(artifacts[0].RelativePath, artifactId.ToString("N"), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
     public void List_AcceptsDateOnlyBoundaries()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
