@@ -75,6 +75,10 @@ internal sealed class CameraModuleRunner
             if (result is null)
             {
                 consecutiveFailures++;
+                if (ShouldLogFailure(consecutiveFailures, initialFailureDelay, maximumFailureDelay))
+                {
+                    _logger.CaptureReturnedNull(consecutiveFailures);
+                }
                 if (!await DelayAfterFailureAsync(
                         consecutiveFailures, initialFailureDelay, maximumFailureDelay, cancellationToken).ConfigureAwait(false))
                 {

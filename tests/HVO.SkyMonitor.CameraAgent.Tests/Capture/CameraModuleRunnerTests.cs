@@ -42,8 +42,8 @@ public sealed class CameraModuleRunnerTests
         await runner.RunAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
         Assert.AreEqual(3, module.Requests.Count);
-        Assert.IsGreaterThan(module.Requests[0].RequestedStartUtc, module.Requests[1].RequestedStartUtc);
-        Assert.IsGreaterThan(module.Requests[1].RequestedStartUtc, module.Requests[2].RequestedStartUtc);
+        Assert.IsTrue(module.Requests[1].RequestedStartUtc > module.Requests[0].RequestedStartUtc);
+        Assert.IsTrue(module.Requests[2].RequestedStartUtc > module.Requests[1].RequestedStartUtc);
         Assert.AreEqual(module.Requests[2].RequestedStartUtc, context.Submission!.Request.RequestedStartUtc);
     }
 

@@ -58,6 +58,9 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2033, Level = LogLevel.Information, Message = "Capture recovered after {ConsecutiveFailures} consecutive failures")]
     public static partial void CaptureRecovered(this ILogger logger, int consecutiveFailures);
 
+    [LoggerMessage(EventId = 2034, Level = LogLevel.Error, Message = "Camera module returned no capture result on consecutive failure {ConsecutiveFailures}")]
+    public static partial void CaptureReturnedNull(this ILogger logger, int consecutiveFailures);
+
     [LoggerMessage(EventId = 2011, Level = LogLevel.Information, Message = "Created camera module {ModuleType} ({Implementation})")]
     public static partial void CameraModuleCreated(this ILogger logger, string moduleType, string implementation);
 
