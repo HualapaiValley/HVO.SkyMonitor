@@ -116,11 +116,16 @@ public sealed class VirtualSkyCameraModuleTests
         }
 
         Assert.AreEqual(1936 * 1216 * 3, rawBytes.Length);
-        Assert.AreEqual((byte)0, statistics.Minimum);
-        Assert.AreEqual(byte.MaxValue, statistics.Maximum);
-        Assert.AreEqual(32.39891848924351, statistics.Mean, 1e-12);
-        Assert.AreEqual("A9CD1CF8A835F512996AE328415688889EA5EAD3A5DA1D6660A7D4BBEF73678D", checksum);
-        Assert.AreEqual("virtual-asi174mc-full-v1", result.Frame.Metadata.Scene!.RigProfileVersion);
+        using var manifest = LoadConformanceManifest();
+        var expectedRender = manifest.RootElement.GetProperty("renders").EnumerateArray()
+            .Single(item => item.GetProperty("id").GetString() == "asi174mc-rgb24-full");
+        var expectedStatistics = expectedRender.GetProperty("statistics");
+        Assert.AreEqual((byte)expectedStatistics.GetProperty("minimum").GetInt32(), statistics.Minimum);
+        Assert.AreEqual((byte)expectedStatistics.GetProperty("maximum").GetInt32(), statistics.Maximum);
+        Assert.AreEqual(expectedStatistics.GetProperty("mean").GetDouble(), statistics.Mean, 1e-12);
+        Assert.AreEqual(expectedRender.GetProperty("sha256").GetString(), checksum);
+        Assert.AreEqual(expectedRender.GetProperty("rigProfileVersion").GetString(),
+            result.Frame.Metadata.Scene!.RigProfileVersion);
         Assert.IsNotNull(context.Artifacts);
         Assert.AreEqual(CameraPixelFormat.Rgb24, context.Artifacts[FrameArtifactRole.Preview].Frame.PixelFormat);
         Assert.AreEqual(CameraPixelFormat.Rgb24, context.Artifacts[FrameArtifactRole.AnnotatedPreview].Frame.PixelFormat);
@@ -132,34 +137,9 @@ public sealed class VirtualSkyCameraModuleTests
     }
     private static readonly DateTimeOffset FixtureUtc = DateTimeOffset.Parse(
         "2025-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
-    private static readonly DateTimeOffset SiderealHourUtc = DateTimeOffset.Parse(
-        "2025-01-15T08:59:50.170Z", System.Globalization.CultureInfo.InvariantCulture);
     private static readonly string[] ExpectedTestConstellationIds = ["TST"];
     private static readonly CanonicalAsi174Expectation[] CanonicalAsi174Expectations =
-    [
-        new(484, 304,
-            new Dictionary<string, PixelPoint>(StringComparer.Ordinal)
-            {
-                ["HIP 32349"] = new(206.2686834265123, 236.27038538252305),
-                ["HIP 24608"] = new(195.87567302369607, 123.3189863672512),
-                ["HIP 37279"] = new(231.65452002346004, 201.71857083297678),
-                ["HIP 27989"] = new(187.7359865461824, 191.34906529847547)
-            },
-            new PixelPoint(206.29222527955037, 236.30129968971372),
-            0, 2263, 46.60373396041757,
-            "2E49B62A79138ABDC115720F1F3B1DDFA733D44CAC696FABAEFD46C18C133C8A"),
-        new(1936, 1216,
-            new Dictionary<string, PixelPoint>(StringComparer.Ordinal)
-            {
-                ["HIP 32349"] = new(825.0747337060492, 945.0815415300922),
-                ["HIP 24608"] = new(783.5026920947843, 493.2759454690048),
-                ["HIP 37279"] = new(926.6180800938401, 806.8742833319071),
-                ["HIP 27989"] = new(750.9439461847296, 765.3962611939019)
-            },
-            new PixelPoint(825.1183823529411, 945.1205882352941),
-            0, 2043, 31.337987049396478,
-            "9009C6CC7F6B929913E9AC19D701E1097FECEED98E7FF97C2370010E23E8D69A")
-    ];
+        LoadCanonicalAsi174Expectations();
 
     public TestContext TestContext { get; set; }
 
@@ -349,21 +329,19 @@ public sealed class VirtualSkyCameraModuleTests
             return result.Frame!.Metadata.Scene!.Objects!.Single(item => item.Id == "HIP 32349");
         }
 
-        var normal = await CaptureAsync(FixtureUtc, new RigOrientation(90, 0, 0)).ConfigureAwait(false);
-        var later = await CaptureAsync(SiderealHourUtc, new RigOrientation(90, 0, 0)).ConfigureAwait(false);
-        var tilted = await CaptureAsync(FixtureUtc, new RigOrientation(80, 0, 0)).ConfigureAwait(false);
-        var rolled = await CaptureAsync(FixtureUtc, new RigOrientation(90, 0, 90)).ConfigureAwait(false);
-        var flipped = await CaptureAsync(FixtureUtc, new RigOrientation(90, 0, 0), horizontalFlip: true).ConfigureAwait(false);
-        TestContext.WriteLine(
-            $"Movement: normal=({normal.PixelX:R},{normal.PixelY:R}), later=({later.PixelX:R},{later.PixelY:R}), " +
-            $"tilted=({tilted.PixelX:R},{tilted.PixelY:R}), rolled=({rolled.PixelX:R},{rolled.PixelY:R}), " +
-            $"flipped=({flipped.PixelX:R},{flipped.PixelY:R})");
+        var captured = new Dictionary<string, ProjectedObjectProvenance>(StringComparer.Ordinal);
+        foreach (var expected in LoadOrientationExpectations())
+        {
+            var value = await CaptureAsync(expected.Utc,
+                new RigOrientation(expected.BoresightAltitude, expected.BoresightAzimuth, expected.Roll),
+                expected.HorizontalFlip).ConfigureAwait(false);
+            AssertProjectedPixel(value, expected.Pixel.X, expected.Pixel.Y);
+            captured.Add(expected.Id, value);
+        }
 
-        AssertProjectedPixel(normal, 206.2686834265123, 236.27038538252305);
-        AssertProjectedPixel(later, 179.02511105712003, 232.07360939398308);
-        AssertProjectedPixel(tilted, 279.9844275635436, 52.078222900196494);
-        AssertProjectedPixel(rolled, 157.72961461747693, 116.2686834265123);
-        AssertProjectedPixel(flipped, 277.7313165734877, 236.27038538252305);
+        var normal = captured["primary"];
+        var rolled = captured["roll-90"];
+        var flipped = captured["horizontal-flip"];
         Assert.AreEqual(242 - (normal.PixelY - 152), rolled.PixelX, 1e-9);
         Assert.AreEqual(152 + (normal.PixelX - 242), rolled.PixelY, 1e-9);
         Assert.AreEqual(2 * 242 - normal.PixelX, flipped.PixelX, 1e-9);
@@ -777,6 +755,59 @@ public sealed class VirtualSkyCameraModuleTests
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
+    private static CanonicalAsi174Expectation[] LoadCanonicalAsi174Expectations()
+    {
+        using var manifest = LoadConformanceManifest();
+        var root = manifest.RootElement;
+        var profiles = root.GetProperty("projectionProfiles");
+        return root.GetProperty("renders").EnumerateArray()
+            .Where(item => item.GetProperty("pixelFormat").GetString() == "Mono16")
+            .Select(item =>
+            {
+                var profile = profiles.GetProperty(item.GetProperty("profileId").GetString()!);
+                var pixels = item.GetProperty("objectPixels").EnumerateObject()
+                    .ToDictionary(
+                        property => property.Name,
+                        property => ReadPixel(property.Value),
+                        StringComparer.Ordinal);
+                var centroid = item.GetProperty("centroids").GetProperty("HIP 32349");
+                var statistics = item.GetProperty("statistics");
+                return new CanonicalAsi174Expectation(
+                    profile.GetProperty("width").GetInt32(),
+                    profile.GetProperty("height").GetInt32(),
+                    pixels,
+                    ReadPixel(centroid),
+                    (ushort)statistics.GetProperty("minimum").GetInt32(),
+                    (ushort)statistics.GetProperty("maximum").GetInt32(),
+                    statistics.GetProperty("mean").GetDouble(),
+                    item.GetProperty("sha256").GetString()!);
+            })
+            .ToArray();
+    }
+
+    private static OrientationExpectation[] LoadOrientationExpectations()
+    {
+        using var manifest = LoadConformanceManifest();
+        return manifest.RootElement.GetProperty("orientationCases").EnumerateArray()
+            .Select(item => new OrientationExpectation(
+                item.GetProperty("id").GetString()!,
+                DateTimeOffset.Parse(item.GetProperty("utc").GetString()!,
+                    System.Globalization.CultureInfo.InvariantCulture),
+                item.GetProperty("boresightAltitudeDegrees").GetDouble(),
+                item.GetProperty("boresightAzimuthDegrees").GetDouble(),
+                item.GetProperty("rollDegrees").GetDouble(),
+                item.GetProperty("horizontalFlip").GetBoolean(),
+                ReadPixel(item.GetProperty("expectedReducedPixel"))))
+            .ToArray();
+    }
+
+    private static System.Text.Json.JsonDocument LoadConformanceManifest()
+        => System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "hualapai-asi174-conformance-v1.json")));
+
+    private static PixelPoint ReadPixel(System.Text.Json.JsonElement value)
+        => new(value.GetProperty("x").GetDouble(), value.GetProperty("y").GetDouble());
+
     private static CameraModuleConfig CreateAsi174Config(int width, int height)
     {
         using var options = System.Text.Json.JsonDocument.Parse(
@@ -923,6 +954,15 @@ public sealed class VirtualSkyCameraModuleTests
         ushort Maximum,
         double Mean,
         string Checksum);
+
+    private sealed record OrientationExpectation(
+        string Id,
+        DateTimeOffset Utc,
+        double BoresightAltitude,
+        double BoresightAzimuth,
+        double Roll,
+        bool HorizontalFlip,
+        PixelPoint Pixel);
 
     private sealed class ProvenanceCatalog(CatalogMetadata metadata) : ICelestialCatalog, ICelestialCatalogMetadataSource
     {

@@ -622,6 +622,9 @@ The baseline includes:
   boresight tilt, 90-degree roll, and horizontal flip;
 - fixed full-resolution canonical equidistant ASI174MC RGB24 checksum and image
   statistics plus configured RGB preview/annotation pipeline coverage;
+- versioned `hualapai-asi174-conformance-v1.json` evidence consumed by Astronomy
+  and CameraAgent tests for primary, sidereal-hour, second-season,
+  second-latitude, orientation, reduced/full Mono16, and full RGB24 cases;
 - pinned Stellarium automation and analytic/cross-host conformance tests;
 - an additional ASI178MC RGGB16 development profile with demosaicing, Bayer
   stacking, and a provisional Fujinon FE185C057HA-1 candidate calibration.
@@ -638,11 +641,9 @@ Resume prompt acceptance in this order:
    and line-style implementation is complete. Add the real-camera geometry-only
    path and pinned headless Stellarium validation for star centroids, figure
    endpoints, and clipped boundaries.
-2. Move the rotation, second-season, and second-latitude astronomy expectations
-   into complete machine-readable manifests.
-3. Resolve the catalog coarse-region query requirement or record an explicit
+2. Resolve the catalog coarse-region query requirement or record an explicit
    approved scope revision with rationale.
-4. Harden the coverage gate so missing required files/reports fail, complete XML
+3. Harden the coverage gate so missing required files/reports fail, complete XML
    documentation for shared public APIs, and retain final Debug/Release,
    vulnerability, coverage, format, and Stellarium evidence for the PR.
 

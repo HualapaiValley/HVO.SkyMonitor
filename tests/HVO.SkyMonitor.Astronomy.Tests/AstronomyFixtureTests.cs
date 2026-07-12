@@ -5,46 +5,75 @@ namespace HVO.SkyMonitor.Astronomy.Tests;
 [TestClass]
 public sealed class AstronomyFixtureTests
 {
-    private static readonly EquatorialPoint PolarisJ2000 = new(2.530301, 89.264109);
-
     [TestMethod]
     public void Polaris_AtHualapaiTimes_MatchesIndependentReferenceFixtures()
     {
-        // J2000 position: SIMBAD/Hipparcos. Reference horizontal positions were
-        // independently generated with Astropy FK5/ERFA and rounded to 0.01 deg.
-        // The 0.05 deg tolerance covers IAU 1976 vs IAU 2006 precession and UTC-vs-TT.
-        (DateTimeOffset Utc, double Altitude, double Azimuth, double X, double Y)[] fixtures =
-        [
-            (new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero), 35.51, 359.25, 963.28, 247.27),
-            (new(2025, 1, 15, 8, 59, 50, 170, TimeSpan.Zero), 35.34, 359.23, 963.11, 246.19),
-            (new(2025, 7, 15, 8, 0, 0, TimeSpan.Zero), 35.16, 0.74, 972.68, 244.99)
-        ];
-        var projector = new EquidistantFisheyeProjector(new(968, 608, 595.84 / (Math.PI / 2), 595.84));
+        using var manifest = LoadConformanceManifest();
+        var root = manifest.RootElement;
+        var polaris = root.GetProperty("objects").EnumerateArray()
+            .Single(item => item.GetProperty("id").GetString() == "HIP 11767");
+        var polarisJ2000 = new EquatorialPoint(
+            polaris.GetProperty("rightAscensionHours").GetDouble(),
+            polaris.GetProperty("declinationDegrees").GetDouble());
+        var full = root.GetProperty("projectionProfiles").GetProperty("full");
+        var principal = full.GetProperty("principalPoint");
+        var radius = full.GetProperty("imageCircleRadiusPixels").GetDouble();
+        var projector = new EquidistantFisheyeProjector(new(
+            principal.GetProperty("x").GetDouble(), principal.GetProperty("y").GetDouble(),
+            radius / (Math.PI / 2), radius));
 
-        foreach (var fixture in fixtures)
+        foreach (var fixture in root.GetProperty("astronomyCases").EnumerateArray()
+            .Where(item => item.TryGetProperty("expectedFullPixel", out _)))
         {
-            var ofDate = EquatorialPrecession.PrecessJ2000(PolarisJ2000, fixture.Utc);
-            var horizontal = CoordinateTransforms.EquatorialToHorizontal(ofDate, fixture.Utc, 35.347, -113.878);
+            var utc = DateTimeOffset.Parse(
+                fixture.GetProperty("utc").GetString()!, System.Globalization.CultureInfo.InvariantCulture);
+            var observer = fixture.GetProperty("observer");
+            var expectedHorizontal = fixture.GetProperty("expectedHorizontal");
+            var expectedPixel = fixture.GetProperty("expectedFullPixel");
+            var horizontalTolerance = fixture.GetProperty("horizontalToleranceDegrees").GetDouble();
+            var pixelTolerance = fixture.GetProperty("pixelTolerance").GetDouble();
+            var ofDate = EquatorialPrecession.PrecessJ2000(polarisJ2000, utc);
+            var horizontal = CoordinateTransforms.EquatorialToHorizontal(
+                ofDate, utc,
+                observer.GetProperty("latitudeDegrees").GetDouble(),
+                observer.GetProperty("longitudeDegrees").GetDouble());
             var pixel = projector.Project(horizontal);
 
-            Assert.AreEqual(fixture.Altitude, horizontal.AltitudeDegrees, 0.05);
-            AssertAngularEqual(fixture.Azimuth, horizontal.AzimuthDegrees, 0.05);
+            Assert.AreEqual(expectedHorizontal.GetProperty("altitudeDegrees").GetDouble(),
+                horizontal.AltitudeDegrees, horizontalTolerance);
+            AssertAngularEqual(expectedHorizontal.GetProperty("azimuthDegrees").GetDouble(),
+                horizontal.AzimuthDegrees, horizontalTolerance);
             Assert.IsNotNull(pixel);
-            Assert.AreEqual(fixture.X, pixel.Value.X, 0.35);
-            Assert.AreEqual(fixture.Y, pixel.Value.Y, 0.35);
+            Assert.AreEqual(expectedPixel.GetProperty("x").GetDouble(), pixel.Value.X, pixelTolerance);
+            Assert.AreEqual(expectedPixel.GetProperty("y").GetDouble(), pixel.Value.Y, pixelTolerance);
         }
     }
 
     [TestMethod]
     public void Polaris_AtGreenwichLatitude_MatchesIndependentReferenceFixture()
     {
-        var utc = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
-        var ofDate = EquatorialPrecession.PrecessJ2000(PolarisJ2000, utc);
+        using var manifest = LoadConformanceManifest();
+        var root = manifest.RootElement;
+        var polaris = root.GetProperty("objects").EnumerateArray()
+            .Single(item => item.GetProperty("id").GetString() == "HIP 11767");
+        var fixture = root.GetProperty("astronomyCases").EnumerateArray()
+            .Single(item => item.GetProperty("id").GetString() == "second-latitude");
+        var observer = fixture.GetProperty("observer");
+        var expected = fixture.GetProperty("expectedHorizontal");
+        var tolerance = fixture.GetProperty("horizontalToleranceDegrees").GetDouble();
+        var utc = DateTimeOffset.Parse(
+            fixture.GetProperty("utc").GetString()!, System.Globalization.CultureInfo.InvariantCulture);
+        var ofDate = EquatorialPrecession.PrecessJ2000(new EquatorialPoint(
+            polaris.GetProperty("rightAscensionHours").GetDouble(),
+            polaris.GetProperty("declinationDegrees").GetDouble()), utc);
 
-        var horizontal = CoordinateTransforms.EquatorialToHorizontal(ofDate, utc, 51.4779, 0);
+        var horizontal = CoordinateTransforms.EquatorialToHorizontal(
+            ofDate, utc,
+            observer.GetProperty("latitudeDegrees").GetDouble(),
+            observer.GetProperty("longitudeDegrees").GetDouble());
 
-        Assert.AreEqual(50.85, horizontal.AltitudeDegrees, 0.05);
-        Assert.AreEqual(0.16, horizontal.AzimuthDegrees, 0.05);
+        Assert.AreEqual(expected.GetProperty("altitudeDegrees").GetDouble(), horizontal.AltitudeDegrees, tolerance);
+        Assert.AreEqual(expected.GetProperty("azimuthDegrees").GetDouble(), horizontal.AzimuthDegrees, tolerance);
     }
 
     [TestMethod]
@@ -87,4 +116,8 @@ public sealed class AstronomyFixtureTests
         difference = Math.Min(difference, 360 - difference);
         Assert.IsTrue(difference <= tolerance, $"Expected {expected} deg, actual {actual} deg.");
     }
+
+    private static System.Text.Json.JsonDocument LoadConformanceManifest()
+        => System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "hualapai-asi174-conformance-v1.json")));
 }

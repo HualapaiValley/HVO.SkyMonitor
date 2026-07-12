@@ -34,6 +34,9 @@
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi174mc.full.json" Link="virtual-asi174mc.full.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\fixtures\astronomy\hualapai-asi174-conformance-v1.json" Link="Fixtures\hualapai-asi174-conformance-v1.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

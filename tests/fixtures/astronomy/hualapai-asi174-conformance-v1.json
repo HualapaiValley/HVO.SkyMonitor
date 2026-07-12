@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "hualapai-asi174-conformance-v1",
+  "astronomyAlgorithm": "visible-scene-iau1976-constellation-v2",
+  "catalog": {
+    "name": "Canonical Hipparcos four-star fixture",
+    "version": "J2000-v1",
+    "checksumSha256": "FFCF8A710784897E49FCAEDEB3F8B023291EF2778992771385BFA2F26AD7276A",
+    "maximumMagnitude": 6.5,
+    "selectionPolicy": "magnitude-then-stable-id"
+  },
+  "objects": [
+    { "id": "HIP 11767", "name": "Polaris", "rightAscensionHours": 2.530301, "declinationDegrees": 89.264109 },
+    { "id": "HIP 32349", "name": "Sirius", "rightAscensionHours": 6.752477022, "declinationDegrees": -16.71611586, "magnitude": -1.46, "colorIndex": 0.009 },
+    { "id": "HIP 24608", "name": "Capella", "rightAscensionHours": 5.278155196, "declinationDegrees": 45.99799147, "magnitude": 0.08, "colorIndex": 0.795 },
+    { "id": "HIP 37279", "name": "Procyon", "rightAscensionHours": 7.6550329, "declinationDegrees": 5.22499307, "magnitude": 0.34, "colorIndex": 0.42 },
+    { "id": "HIP 27989", "name": "Betelgeuse", "rightAscensionHours": 5.919529266666667, "declinationDegrees": 7.407064, "magnitude": 0.45, "colorIndex": 1.5 }
+  ],
+  "projectionProfiles": {
+    "reduced": {
+      "width": 484,
+      "height": 304,
+      "principalPoint": { "x": 242, "y": 152 },
+      "imageCircleRadiusPixels": 148.96,
+      "pixelSizeMicrons": 5.86,
+      "projection": "EquidistantFisheye",
+      "fieldOfViewDegrees": 180,
+      "lensKind": "Fisheye"
+    },
+    "full": {
+      "width": 1936,
+      "height": 1216,
+      "principalPoint": { "x": 968, "y": 608 },
+      "imageCircleRadiusPixels": 595.84,
+      "pixelSizeMicrons": 5.86,
+      "projection": "EquidistantFisheye",
+      "fieldOfViewDegrees": 180,
+      "lensKind": "Fisheye"
+    }
+  },
+  "astronomyCases": [
+    {
+      "id": "primary",
+      "referenceModel": "Astropy FK5/ERFA rounded reference",
+      "utc": "2025-01-15T08:00:00Z",
+      "observer": { "latitudeDegrees": 35.347, "longitudeDegrees": -113.878, "elevationMeters": 0, "timeZoneId": "America/Phoenix" },
+      "objectId": "HIP 11767",
+      "expectedHorizontal": { "altitudeDegrees": 35.51, "azimuthDegrees": 359.25 },
+      "expectedFullPixel": { "x": 963.28, "y": 247.27 },
+      "horizontalToleranceDegrees": 0.05,
+      "pixelTolerance": 0.35
+    },
+    {
+      "id": "sidereal-hour",
+      "referenceModel": "Astropy FK5/ERFA rounded reference",
+      "utc": "2025-01-15T08:59:50.170Z",
+      "observer": { "latitudeDegrees": 35.347, "longitudeDegrees": -113.878, "elevationMeters": 0, "timeZoneId": "America/Phoenix" },
+      "objectId": "HIP 11767",
+      "expectedHorizontal": { "altitudeDegrees": 35.34, "azimuthDegrees": 359.23 },
+      "expectedFullPixel": { "x": 963.11, "y": 246.19 },
+      "horizontalToleranceDegrees": 0.05,
+      "pixelTolerance": 0.35
+    },
+    {
+      "id": "second-season",
+      "referenceModel": "Astropy FK5/ERFA rounded reference",
+      "utc": "2025-07-15T08:00:00Z",
+      "observer": { "latitudeDegrees": 35.347, "longitudeDegrees": -113.878, "elevationMeters": 0, "timeZoneId": "America/Phoenix" },
+      "objectId": "HIP 11767",
+      "expectedHorizontal": { "altitudeDegrees": 35.16, "azimuthDegrees": 0.74 },
+      "expectedFullPixel": { "x": 972.68, "y": 244.99 },
+      "horizontalToleranceDegrees": 0.05,
+      "pixelTolerance": 0.35
+    },
+    {
+      "id": "second-latitude",
+      "referenceModel": "Astropy FK5/ERFA rounded reference",
+      "utc": "2025-01-15T08:00:00Z",
+      "observer": { "latitudeDegrees": 51.4779, "longitudeDegrees": 0, "elevationMeters": 46, "timeZoneId": "UTC" },
+      "objectId": "HIP 11767",
+      "expectedHorizontal": { "altitudeDegrees": 50.85, "azimuthDegrees": 0.16 },
+      "horizontalToleranceDegrees": 0.05
+    }
+  ],
+  "orientationCases": [
+    { "id": "primary", "utc": "2025-01-15T08:00:00Z", "boresightAltitudeDegrees": 90, "boresightAzimuthDegrees": 0, "rollDegrees": 0, "horizontalFlip": false, "objectId": "HIP 32349", "expectedReducedPixel": { "x": 206.2686834265123, "y": 236.27038538252305 } },
+    { "id": "sidereal-hour", "utc": "2025-01-15T08:59:50.170Z", "boresightAltitudeDegrees": 90, "boresightAzimuthDegrees": 0, "rollDegrees": 0, "horizontalFlip": false, "objectId": "HIP 32349", "expectedReducedPixel": { "x": 179.02511105712003, "y": 232.07360939398308 } },
+    { "id": "boresight-tilt", "utc": "2025-01-15T08:00:00Z", "boresightAltitudeDegrees": 80, "boresightAzimuthDegrees": 0, "rollDegrees": 0, "horizontalFlip": false, "objectId": "HIP 32349", "expectedReducedPixel": { "x": 279.9844275635436, "y": 52.078222900196494 } },
+    { "id": "roll-90", "utc": "2025-01-15T08:00:00Z", "boresightAltitudeDegrees": 90, "boresightAzimuthDegrees": 0, "rollDegrees": 90, "horizontalFlip": false, "objectId": "HIP 32349", "expectedReducedPixel": { "x": 157.72961461747693, "y": 116.2686834265123 } },
+    { "id": "horizontal-flip", "utc": "2025-01-15T08:00:00Z", "boresightAltitudeDegrees": 90, "boresightAzimuthDegrees": 0, "rollDegrees": 0, "horizontalFlip": true, "objectId": "HIP 32349", "expectedReducedPixel": { "x": 277.7313165734877, "y": 236.27038538252305 } }
+  ],
+  "renderRecipe": {
+    "seed": 2025,
+    "exposureSeconds": 20,
+    "gain": 150,
+    "magnitudeZeroElectronsPerSecond": 300,
+    "bortleClass": 3,
+    "blackLevelAdu": 64,
+    "refractionEnabled": false,
+    "boresightAltitudeDegrees": 90,
+    "boresightAzimuthDegrees": 0,
+    "rollDegrees": 0,
+    "horizontalFlip": false,
+    "horizonPolicy": "GeometricHorizon"
+  },
+  "renders": [
+    {
+      "id": "asi174mm-reduced",
+      "referenceModel": "internal deterministic regression",
+      "caseId": "primary",
+      "profileId": "reduced",
+      "pixelFormat": "Mono16",
+      "sensorRecipeVersion": "virtual-asi174mm-electron-domain-v2",
+      "rigProfileVersion": "canonical-asi174mm-v1",
+      "objectPixels": {
+        "HIP 32349": { "x": 206.2686834265123, "y": 236.27038538252305 },
+        "HIP 24608": { "x": 195.87567302369607, "y": 123.3189863672512 },
+        "HIP 37279": { "x": 231.65452002346004, "y": 201.71857083297678 },
+        "HIP 27989": { "x": 187.7359865461824, "y": 191.34906529847547 }
+      },
+      "centroids": { "HIP 32349": { "x": 206.29222527955037, "y": 236.30129968971372, "windowRadius": 6 } },
+      "statistics": { "minimum": 0, "maximum": 2263, "mean": 46.60373396041757 },
+      "sha256": "2E49B62A79138ABDC115720F1F3B1DDFA733D44CAC696FABAEFD46C18C133C8A"
+    },
+    {
+      "id": "asi174mm-full",
+      "referenceModel": "internal deterministic regression",
+      "caseId": "primary",
+      "profileId": "full",
+      "pixelFormat": "Mono16",
+      "sensorRecipeVersion": "virtual-asi174mm-electron-domain-v2",
+      "rigProfileVersion": "canonical-asi174mm-v1",
+      "objectPixels": {
+        "HIP 32349": { "x": 825.0747337060492, "y": 945.0815415300922 },
+        "HIP 24608": { "x": 783.5026920947843, "y": 493.2759454690048 },
+        "HIP 37279": { "x": 926.6180800938401, "y": 806.8742833319071 },
+        "HIP 27989": { "x": 750.9439461847296, "y": 765.3962611939019 }
+      },
+      "centroids": { "HIP 32349": { "x": 825.1183823529411, "y": 945.1205882352941, "windowRadius": 6 } },
+      "statistics": { "minimum": 0, "maximum": 2043, "mean": 31.337987049396478 },
+      "sha256": "9009C6CC7F6B929913E9AC19D701E1097FECEED98E7FF97C2370010E23E8D69A"
+    },
+    {
+      "id": "asi174mc-rgb24-full",
+      "referenceModel": "internal deterministic regression",
+      "caseId": "primary",
+      "profileId": "full",
+      "pixelFormat": "Rgb24",
+      "sensorRecipeVersion": "virtual-asi174mc-rgb24-compat-v1",
+      "rigProfileVersion": "virtual-asi174mc-full-v1",
+      "exposureSeconds": 2.5,
+      "gain": 1,
+      "statistics": { "minimum": 0, "maximum": 255, "mean": 32.39891848924351 },
+      "sha256": "A9CD1CF8A835F512996AE328415688889EA5EAD3A5DA1D6660A7D4BBEF73678D"
+    }
+  ]
+}

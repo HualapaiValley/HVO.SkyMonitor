@@ -6,6 +6,11 @@
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
+    <None Include="..\fixtures\astronomy\hualapai-asi174-conformance-v1.json" Link="Fixtures\hualapai-asi174-conformance-v1.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Astronomy\HVO.SkyMonitor.Astronomy.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent\HVO.SkyMonitor.CameraAgent.csproj" ReferenceOutputAssembly="false" />

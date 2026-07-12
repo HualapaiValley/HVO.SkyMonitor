@@ -854,7 +854,8 @@ The next implementation work should occur in this order:
 2. Complete the remaining virtual-planetarium acceptance evidence. The
    ordinary-path integration and fixed ASI174MM reduced/full geometry,
    statistics, centroid, orientation movement, and full canonical RGB24 evidence
-   are complete; move the remaining expectations into machine-readable fixtures.
+   are complete and consumed from a versioned machine-readable conformance
+   fixture.
 3. Resolve catalog coarse-region filtering and harden coverage enforcement for
    missing reports/files; complete shared public API documentation.
 4. Validate standalone container startup with its packaged offline catalog and

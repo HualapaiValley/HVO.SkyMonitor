@@ -277,6 +277,11 @@ manifest containing:
 An image without this information is useful for visual inspiration but not as
 a projection conformance fixture.
 
+The canonical Hualapai ASI174 conformance evidence is stored in
+`tests/fixtures/astronomy/hualapai-asi174-conformance-v1.json`. It distinguishes
+independent Astropy reference cases from internal deterministic render
+regressions and is consumed directly by Astronomy and CameraAgent tests.
+
 ## Validation Strategy
 
 ### 1. Numeric astronomy validation
