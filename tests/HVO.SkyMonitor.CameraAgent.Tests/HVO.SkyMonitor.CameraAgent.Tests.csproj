@@ -24,4 +24,10 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.sample.json" Link="cameraagent.sample.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

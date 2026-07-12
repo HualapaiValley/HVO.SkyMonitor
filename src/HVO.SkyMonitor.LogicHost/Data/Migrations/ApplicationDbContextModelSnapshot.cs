@@ -206,6 +206,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<int?>("RigProfileVersion")
                         .HasColumnType("int");
 
+                    b.Property<string>("SceneProvenanceJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("StorageReference")
                         .IsRequired()
                         .HasMaxLength(256)

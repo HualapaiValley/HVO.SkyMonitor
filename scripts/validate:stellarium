@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# Run the external Stellarium geometry oracle and retain diagnostics in TestResults.
+
+set -euo pipefail
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly MANIFEST="$REPO_ROOT/tests/fixtures/stellarium/hualapai-fisheye-v1.json"
+readonly VALIDATOR="$REPO_ROOT/tests/fixtures/stellarium/validate.jq"
+readonly SSC="$REPO_ROOT/scripts/stellarium/hualapai-fisheye.ssc"
+readonly EXPECTED_VERSION="23.4-2build3"
+readonly EXPECTED_EXECUTABLE_VERSION="Stellarium 23.4"
+readonly STELLARIUM_BIN="/usr/bin/stellarium"
+readonly REQUIRED_PACKAGES=(stellarium stellarium-data xvfb xauth libgl1-mesa-dri imagemagick jq)
+
+missing=()
+wrong_versions=()
+for package in "${REQUIRED_PACKAGES[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q '^install ok installed$'; then
+        missing+=("$package")
+    fi
+done
+
+for package in stellarium stellarium-data; do
+    if installed="$(dpkg-query -W -f='${Version}' "$package" 2>/dev/null)" && [[ "$installed" != "$EXPECTED_VERSION" ]]; then
+        wrong_versions+=("${package}=${installed} (expected ${EXPECTED_VERSION})")
+    fi
+done
+
+if [[ ${#missing[@]} -gt 0 || ${#wrong_versions[@]} -gt 0 ]]; then
+    [[ ${#missing[@]} -eq 0 ]] || echo "Missing Stellarium validation packages: ${missing[*]}" >&2
+    [[ ${#wrong_versions[@]} -eq 0 ]] || echo "Incorrect pinned package versions: ${wrong_versions[*]}" >&2
+    echo "On Ubuntu 24.04, install the exact dependencies with: ./scripts/setup:stellarium" >&2
+    echo "Required apt packages: stellarium=${EXPECTED_VERSION} stellarium-data=${EXPECTED_VERSION} xvfb xauth libgl1-mesa-dri imagemagick jq" >&2
+    exit 2
+fi
+
+for command in xvfb-run timeout jq convert; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        echo "Package validation passed, but required command '$command' is not on PATH. Reinstall with ./scripts/setup:stellarium." >&2
+        exit 2
+    fi
+done
+if [[ ! -x "$STELLARIUM_BIN" ]]; then
+    echo "Pinned Stellarium executable is unavailable at $STELLARIUM_BIN. Reinstall with ./scripts/setup:stellarium." >&2
+    exit 2
+fi
+
+jq -e '
+    .schemaVersion == 1 and
+    .stellarium.packageVersion == "23.4-2build3" and
+    .stellarium.viewportWidth == 1024 and
+    .stellarium.viewportHeight == 1024 and
+    .sensor.imageCircleRadiusPixels == (0.98 * ([.sensor.width, .sensor.height] | min) / 2) and
+    (.landmarks | length) == 5 and
+    (.stars | length) > 0
+' "$MANIFEST" >/dev/null
+
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+run_dir="$REPO_ROOT/TestResults/stellarium/$run_id"
+user_dir="$(mktemp -d -t hvo-stellarium-user.XXXXXX)"
+mkdir -p "$run_dir"
+
+cleanup() {
+    rm -rf "$user_dir"
+}
+trap cleanup EXIT
+
+version="$(TZ=UTC LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe QT_SCALE_FACTOR=1 LC_ALL=C \
+    xvfb-run -a -s "-screen 0 1024x1024x24 -nolisten tcp" "$STELLARIUM_BIN" --version 2>&1 \
+    | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+if [[ "$version" != "$EXPECTED_EXECUTABLE_VERSION" ]]; then
+    echo "Incorrect Stellarium executable version: '$version' (expected '$EXPECTED_EXECUTABLE_VERSION')." >&2
+    exit 2
+fi
+{
+    echo "stellarium_version=$version"
+    echo "stellarium_package_version=$(dpkg-query -W -f='${Version}' stellarium)"
+    echo "stellarium_data_package_version=$(dpkg-query -W -f='${Version}' stellarium-data)"
+    echo "utc=2025-01-15T08:00:00Z"
+    echo "observer=Hualapai Valley Observatory; latitude=35.347; longitude=-113.878; elevation=0"
+    echo "projection=ProjectionFisheye; fov=180; viewport=1024x1024; disk=true; mount=azimuthal; flips=false,false"
+    echo "environment=TZ=UTC LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe QT_SCALE_FACTOR=1 LC_ALL=C"
+    echo "manifest=$MANIFEST"
+    echo "startup_script=$SSC"
+} > "$run_dir/settings.txt"
+
+set +e
+TZ=UTC \
+LIBGL_ALWAYS_SOFTWARE=1 \
+GALLIUM_DRIVER=llvmpipe \
+QT_SCALE_FACTOR=1 \
+LC_ALL=C \
+xvfb-run -a -s "-screen 0 1024x1024x24 -nolisten tcp" \
+    timeout --signal=TERM --kill-after=10s 45s \
+    "$STELLARIUM_BIN" \
+        --user-dir "$user_dir" \
+        --startup-script "$SSC" \
+        --screenshot-dir "$run_dir" \
+        --full-screen yes \
+        --dump-opengl-details \
+        >"$run_dir/console.log" 2>&1
+status=$?
+set -e
+
+[[ ! -f "$user_dir/log.txt" ]] || cp "$user_dir/log.txt" "$run_dir/stellarium.log"
+[[ ! -f "$user_dir/stellarium-output.txt" ]] || cp "$user_dir/stellarium-output.txt" "$run_dir/stellarium-output.txt"
+
+if [[ $status -eq 124 || $status -eq 137 ]]; then
+    echo "Stellarium timed out after 45 seconds. Inspect $run_dir/console.log and stellarium.log." >&2
+    exit 1
+fi
+if [[ $status -ne 0 ]]; then
+    echo "Stellarium exited with status $status. Inspect diagnostics under $run_dir." >&2
+    exit 1
+fi
+if [[ ! -s "$run_dir/stellarium-output.txt" ]] || ! grep -qx 'COMPLETE' "$run_dir/stellarium-output.txt"; then
+    echo "Stellarium did not produce a complete coordinate record. Inspect diagnostics under $run_dir." >&2
+    exit 1
+fi
+if [[ ! -s "$run_dir/hualapai-fisheye.png" ]]; then
+    echo "Stellarium did not produce the diagnostic PNG. Check screenshot permissions in $run_dir/stellarium.log." >&2
+    exit 1
+fi
+
+jq -Rn '
+    [inputs | select(length > 0) | split("|")] as $rows |
+    ($rows[] | select(.[0] == "SETTINGS")) as $s |
+    {
+      settings: {
+        width: ($s[1] | tonumber), height: ($s[2] | tonumber), projection: $s[3],
+        fieldOfViewDegrees: ($s[4] | tonumber), utc: $s[5], mount: $s[6],
+        diskViewport: ($s[7] == "true"), horizontalFlip: ($s[8] == "true"), verticalFlip: ($s[9] == "true"),
+        longitudeDegrees: ($s[10] | tonumber), latitudeDegrees: ($s[11] | tonumber), elevationMeters: ($s[12] | tonumber),
+        magnitudeLimit: ($s[13] | tonumber)
+      },
+      landmarks: [$rows[] | select(.[0] == "LANDMARK") | {
+        id: .[1], altitudeDegrees: (.[2] | tonumber), azimuthDegrees: (.[3] | tonumber),
+        native: {x: (.[4] | tonumber), y: (.[5] | tonumber)}
+      }],
+      stars: [$rows[] | select(.[0] == "STAR") | {
+        id: .[1], altitudeDegrees: (.[2] | tonumber), azimuthDegrees: (.[3] | tonumber),
+        native: {x: (.[4] | tonumber), y: (.[5] | tonumber)},
+        j2000: {rightAscensionDegrees: (.[6] | tonumber), declinationDegrees: (.[7] | tonumber)}
+      }]
+    }
+' "$run_dir/stellarium-output.txt" > "$run_dir/actual.json"
+
+jq -n --slurpfile m "$MANIFEST" --slurpfile a "$run_dir/actual.json" -f "$VALIDATOR" > "$run_dir/report.json"
+
+if ! jq -e '.passed' "$run_dir/report.json" >/dev/null; then
+    echo "Stellarium coordinate validation failed. Inspect $run_dir/report.json and hualapai-fisheye.png." >&2
+    exit 1
+fi
+
+echo "Stellarium validation passed: $run_dir/report.json"
+echo "Diagnostic screenshot (not for golden comparison): $run_dir/hualapai-fisheye.png"

@@ -46,7 +46,8 @@ internal sealed class NoOpFileStorageProcessingStep(
                     "v1", context.Config.AgentId, artifact.ArtifactId, artifacts.Raw.ArtifactId, artifact.Role,
                     MediaTypeFor(artifact.Frame.PixelFormat), artifact.Frame.PixelData.Length,
                     Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(artifact.Frame.PixelData.Span)),
-                    artifact.Frame.TimestampUtc, artifact.RecipeVersion ?? "raw-v1", stored.RelativePath), cancellationToken).ConfigureAwait(false);
+                    artifact.Frame.TimestampUtc, artifact.RecipeVersion ?? "raw-v1", stored.RelativePath,
+                    artifact.Frame.Metadata.Scene), cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -74,6 +75,7 @@ internal sealed class NoOpFileStorageProcessingStep(
         HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono8 => "application/x-skymonitor-mono8",
         HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16 => "application/x-skymonitor-mono16",
         HVO.SkyMonitor.AgentCore.CameraPixelFormat.Rgb24 => "application/x-skymonitor-rgb24",
+        HVO.SkyMonitor.AgentCore.CameraPixelFormat.BayerRggb16 => "application/x-skymonitor-bayer-rggb16",
         _ => "application/octet-stream"
     };
 }

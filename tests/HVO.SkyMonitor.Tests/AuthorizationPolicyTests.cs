@@ -25,10 +25,10 @@ public class AuthorizationPolicyTests
                     context.User.HasClaim("account_type", AccountType.System.ToString())));
         });
         services.AddLogging();
-        
+
         var serviceProvider = services.BuildServiceProvider();
         var authorizationService = serviceProvider.GetRequiredService<IAuthorizationService>();
-        
+
         var claims = new[]
         {
             new Claim(ClaimTypes.Name, "test-service"),
@@ -36,14 +36,14 @@ public class AuthorizationPolicyTests
         };
         var identity = new ClaimsIdentity(claims, "TestAuth");
         var user = new ClaimsPrincipal(identity);
-        
+
         // Act
         var result = await authorizationService.AuthorizeAsync(user, "RequireSystemAccount");
-        
+
         // Assert
         Assert.IsTrue(result.Succeeded);
     }
-    
+
     [TestMethod]
     public async Task RequireSystemAccountPolicy_WithUserAccount_Fails()
     {
@@ -56,10 +56,10 @@ public class AuthorizationPolicyTests
                     context.User.HasClaim("account_type", AccountType.System.ToString())));
         });
         services.AddLogging();
-        
+
         var serviceProvider = services.BuildServiceProvider();
         var authorizationService = serviceProvider.GetRequiredService<IAuthorizationService>();
-        
+
         var claims = new[]
         {
             new Claim(ClaimTypes.Name, "test-user"),
@@ -67,14 +67,14 @@ public class AuthorizationPolicyTests
         };
         var identity = new ClaimsIdentity(claims, "TestAuth");
         var user = new ClaimsPrincipal(identity);
-        
+
         // Act
         var result = await authorizationService.AuthorizeAsync(user, "RequireSystemAccount");
-        
+
         // Assert
         Assert.IsFalse(result.Succeeded);
     }
-    
+
     [TestMethod]
     public async Task RequireUserAccountPolicy_WithUserAccount_Succeeds()
     {
@@ -87,10 +87,10 @@ public class AuthorizationPolicyTests
                     context.User.HasClaim("account_type", AccountType.User.ToString())));
         });
         services.AddLogging();
-        
+
         var serviceProvider = services.BuildServiceProvider();
         var authorizationService = serviceProvider.GetRequiredService<IAuthorizationService>();
-        
+
         var claims = new[]
         {
             new Claim(ClaimTypes.Name, "test-user"),
@@ -98,14 +98,14 @@ public class AuthorizationPolicyTests
         };
         var identity = new ClaimsIdentity(claims, "TestAuth");
         var user = new ClaimsPrincipal(identity);
-        
+
         // Act
         var result = await authorizationService.AuthorizeAsync(user, "RequireUserAccount");
-        
+
         // Assert
         Assert.IsTrue(result.Succeeded);
     }
-    
+
     [TestMethod]
     public async Task RequireUserAccountPolicy_WithSystemAccount_Fails()
     {
@@ -118,10 +118,10 @@ public class AuthorizationPolicyTests
                     context.User.HasClaim("account_type", AccountType.User.ToString())));
         });
         services.AddLogging();
-        
+
         var serviceProvider = services.BuildServiceProvider();
         var authorizationService = serviceProvider.GetRequiredService<IAuthorizationService>();
-        
+
         var claims = new[]
         {
             new Claim(ClaimTypes.Name, "test-service"),
@@ -129,14 +129,14 @@ public class AuthorizationPolicyTests
         };
         var identity = new ClaimsIdentity(claims, "TestAuth");
         var user = new ClaimsPrincipal(identity);
-        
+
         // Act
         var result = await authorizationService.AuthorizeAsync(user, "RequireUserAccount");
-        
+
         // Assert
         Assert.IsFalse(result.Succeeded);
     }
-    
+
     [TestMethod]
     public void AccountType_UserIsDefault()
     {
@@ -146,11 +146,11 @@ public class AuthorizationPolicyTests
             UserName = "test@example.com",
             Email = "test@example.com"
         };
-        
+
         // Assert
         Assert.AreEqual(AccountType.User, user.AccountType);
     }
-    
+
     [TestMethod]
     public void AccountType_CanBeSetToSystem()
     {
@@ -161,7 +161,7 @@ public class AuthorizationPolicyTests
             Email = "service@example.com",
             AccountType = AccountType.System
         };
-        
+
         // Assert
         Assert.AreEqual(AccountType.System, user.AccountType);
     }

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Install the pinned Stellarium validation dependencies on Ubuntu 24.04.
+
+set -euo pipefail
+
+readonly STELLARIUM_VERSION="23.4-2build3"
+readonly PACKAGES=(
+    "stellarium=${STELLARIUM_VERSION}"
+    "stellarium-data=${STELLARIUM_VERSION}"
+    xvfb
+    xauth
+    libgl1-mesa-dri
+    imagemagick
+    jq
+)
+
+if [[ ! -r /etc/os-release ]]; then
+    echo "Cannot identify this operating system: /etc/os-release is unavailable." >&2
+    exit 1
+fi
+
+# shellcheck disable=SC1091
+source /etc/os-release
+if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "24.04" ]]; then
+    echo "Stellarium setup requires Ubuntu 24.04; found ${ID:-unknown} ${VERSION_ID:-unknown}." >&2
+    exit 1
+fi
+
+if [[ $EUID -eq 0 ]]; then
+    APT=(apt-get)
+elif command -v sudo >/dev/null 2>&1; then
+    APT=(sudo apt-get)
+else
+    echo "Stellarium setup requires root or sudo access to install apt packages." >&2
+    exit 1
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+"${APT[@]}" update
+
+for package in stellarium stellarium-data; do
+    if ! apt-cache policy "$package" | awk -v version="$STELLARIUM_VERSION" '$1 == version { found=1 } END { exit !found }'; then
+        echo "Pinned package ${package}=${STELLARIUM_VERSION} is unavailable from the configured Ubuntu 24.04 apt sources." >&2
+        echo "Enable the Ubuntu noble universe repository, run apt-get update, then rerun ./scripts/setup:stellarium." >&2
+        exit 1
+    fi
+done
+
+"${APT[@]}" install -y --no-install-recommends "${PACKAGES[@]}"
+
+for package in stellarium stellarium-data; do
+    installed="$(dpkg-query -W -f='${Version}' "$package")"
+    if [[ "$installed" != "$STELLARIUM_VERSION" ]]; then
+        echo "Expected ${package}=${STELLARIUM_VERSION}, but apt installed ${installed}." >&2
+        exit 1
+    fi
+done
+
+echo "Stellarium validation dependencies are installed at ${STELLARIUM_VERSION}."

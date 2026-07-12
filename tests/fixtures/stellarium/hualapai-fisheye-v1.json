@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "hualapai-asi174mm-180-equidistant-v1",
+  "observer": {
+    "name": "Hualapai Valley Observatory",
+    "latitudeDegrees": 35.347,
+    "longitudeDegreesEastPositive": -113.878,
+    "elevationMeters": 0,
+    "timeZone": "America/Phoenix"
+  },
+  "utc": "2025-01-15T08:00:00Z",
+  "stellarium": {
+    "packageVersion": "23.4-2build3",
+    "projection": "ProjectionFisheye",
+    "viewportWidth": 1024,
+    "viewportHeight": 1024,
+    "fieldOfViewDegrees": 180,
+    "diskViewport": true,
+    "mount": "azimuthal",
+    "horizontalFlip": false,
+    "verticalFlip": false,
+    "magnitudeLimit": 6.5
+  },
+  "sensor": {
+    "width": 1936,
+    "height": 1216,
+    "principalPoint": { "x": 968, "y": 608 },
+    "imageCircleRadiusPixels": 595.84,
+    "imageCircleFormula": "0.98 * min(width,height) / 2",
+    "nativeToSensorFormula": "x=968+(x_native-512)*(595.84/512); y_top=1024-y_native; y=608+(y_top-512)*(595.84/512)"
+  },
+  "tolerances": {
+    "analyticSensorPixels": 1.5,
+    "astronomyModelDegrees": 0.75,
+    "screenRoundingNativePixels": 1.0
+  },
+  "landmarks": [
+    { "id": "zenith", "altitudeDegrees": 90, "azimuthDegrees": 0, "expectedNative": { "x": 512, "y": 512 }, "expectedSensor": { "x": 968, "y": 608 } },
+    { "id": "north", "altitudeDegrees": 0, "azimuthDegrees": 0, "expectedNative": { "x": 512, "y": 1024 }, "expectedSensor": { "x": 968, "y": 12.16 } },
+    { "id": "east", "altitudeDegrees": 0, "azimuthDegrees": 90, "expectedNative": { "x": 1024, "y": 512 }, "expectedSensor": { "x": 1563.84, "y": 608 } },
+    { "id": "south", "altitudeDegrees": 0, "azimuthDegrees": 180, "expectedNative": { "x": 512, "y": 0 }, "expectedSensor": { "x": 968, "y": 1203.84 } },
+    { "id": "west", "altitudeDegrees": 0, "azimuthDegrees": 270, "expectedNative": { "x": 0, "y": 512 }, "expectedSensor": { "x": 372.16, "y": 608 } }
+  ],
+  "stars": [
+    { "id": "HIP 32349", "name": "Sirius", "j2000": { "rightAscensionDegrees": 101.28715533, "declinationDegrees": -16.71611586 }, "expectedHorizontal": { "altitudeDegrees": 34.633341, "azimuthDegrees": 203.295542 }, "expectedSensor": { "x": 823.038, "y": 944.670 } },
+    { "id": "HIP 24608", "name": "Capella", "j2000": { "rightAscensionDegrees": 79.17232794, "declinationDegrees": 45.99799147 }, "expectedHorizontal": { "altitudeDegrees": 56.864819, "azimuthDegrees": 301.788046 }, "expectedSensor": { "x": 781.535, "y": 492.441 } },
+    { "id": "HIP 37279", "name": "Procyon", "j2000": { "rightAscensionDegrees": 114.8254935, "declinationDegrees": 5.22499307 }, "expectedHorizontal": { "altitudeDegrees": 59.318434, "azimuthDegrees": 192.413214 }, "expectedSensor": { "x": 924.336, "y": 806.377 } },
+    { "id": "HIP 27989", "name": "Betelgeuse", "j2000": { "rightAscensionDegrees": 88.792939, "declinationDegrees": 7.407064 }, "expectedHorizontal": { "altitudeDegrees": 49.275360, "azimuthDegrees": 234.434523 }, "expectedSensor": { "x": 748.681, "y": 764.817 } }
+  ],
+  "astronomyFixtureModel": {
+    "description": "Published Hipparcos J2000 positions transformed with the IAU 1982 GMST expression and spherical equatorial-to-horizontal equations.",
+    "enabled": ["Earth rotation at fixed UTC", "east-positive observer longitude", "geometric horizontal coordinates"],
+    "omitted": ["precession", "nutation", "annual aberration", "proper motion", "parallax", "refraction"],
+    "purpose": "Independent coarse astronomy fixture; the separate astronomy-model tolerance covers the intentionally omitted date-dependent effects."
+  }
+}

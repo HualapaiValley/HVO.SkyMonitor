@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.Astronomy.Tests;
 public sealed class InMemoryCelestialCatalogTests
 {
     private static readonly string[] ExpectedBrightestIds = ["alpha", "beta", "zeta"];
+    private static readonly string[] ExpectedCandidateIds = ["a", "b"];
 
     [TestMethod]
     public void Query_UsesBrightnessThenIdentifierAndHonorsLimit()
@@ -32,6 +33,20 @@ public sealed class InMemoryCelestialCatalogTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new InMemoryCelestialCatalog([
             new CelestialCatalogObject("alpha", "Alpha", 24, 0, 1)
         ]));
+    }
+
+    [TestMethod]
+    public async Task QueryCandidatesAsync_DoesNotApplyAVisibleResultLimitAndHonorsCancellation()
+    {
+        var catalog = new InMemoryCelestialCatalog([Create("b", 2), Create("a", 1)]);
+
+        var result = await catalog.QueryCandidatesAsync(new CatalogCandidateQuery(5)).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(ExpectedCandidateIds, result.Select(item => item.Id).ToArray());
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+            await catalog.QueryCandidatesAsync(new CatalogCandidateQuery(5), cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     private static CelestialCatalogObject Create(string id, double magnitude)

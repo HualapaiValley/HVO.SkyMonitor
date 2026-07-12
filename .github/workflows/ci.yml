@@ -48,6 +48,9 @@ jobs:
             --results-directory ./TestResults \
             --logger "trx;LogFileName=test-results.trx"
 
+      - name: Enforce coverage baseline
+        run: ./scripts/coverage:enforce TestResults/*/coverage.cobertura.xml
+
       - name: Install ReportGenerator
         if: always()
         run: dotnet tool install --global dotnet-reportgenerator-globaltool

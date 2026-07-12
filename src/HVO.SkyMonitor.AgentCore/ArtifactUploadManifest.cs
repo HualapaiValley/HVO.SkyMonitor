@@ -15,7 +15,8 @@ public sealed record ArtifactUploadManifest(
     string ChecksumSha256,
     DateTimeOffset CapturedAtUtc,
     string RecipeVersion,
-    string RelativeArtifactPath)
+    string RelativeArtifactPath,
+    SceneProvenance? Scene = null)
 {
     /// <summary>Gets the deterministic idempotency key for this artifact and recipe.</summary>
     public string IdempotencyKey => ComputeIdempotencyKey(AgentId, FrameId, Role, RecipeVersion);

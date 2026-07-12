@@ -1,4 +1,5 @@
 using Asp.Versioning;
+using System.Diagnostics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Imaging;
@@ -47,15 +48,25 @@ public sealed class FramesController : ControllerBase
             return NotFound();
         }
 
-        if (snapshot.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16))
+        if (snapshot.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16 or
+            CameraPixelFormat.Rgb24 or CameraPixelFormat.BayerRggb16))
         {
             _logger.LogWarning("Frame role {Role} pixel format {PixelFormat} is not supported for preview.", role, snapshot.PixelFormat);
             return StatusCode(StatusCodes.Status415UnsupportedMediaType);
         }
 
-        var encodeResult = snapshot.PixelFormat == CameraPixelFormat.Mono8
-            ? SkiaPreviewEncoder.EncodeMono8ToJpeg(snapshot.Width, snapshot.Height, snapshot.PixelData)
-            : SkiaPreviewEncoder.EncodeMono16ToJpeg(snapshot.Width, snapshot.Height, snapshot.PixelData);
+        var encodeResult = snapshot.PixelFormat switch
+        {
+            CameraPixelFormat.Mono8 => SkiaPreviewEncoder.EncodeMono8ToJpeg(
+                snapshot.Width, snapshot.Height, snapshot.PixelData),
+            CameraPixelFormat.Mono16 => SkiaPreviewEncoder.EncodeMono16ToJpeg(
+                snapshot.Width, snapshot.Height, snapshot.PixelData),
+            CameraPixelFormat.Rgb24 => SkiaPreviewEncoder.EncodeRgb24ToJpeg(
+                snapshot.Width, snapshot.Height, snapshot.PixelData),
+            CameraPixelFormat.BayerRggb16 => SkiaPreviewEncoder.EncodeBayerRggb16ToJpeg(
+                snapshot.Width, snapshot.Height, snapshot.PixelData),
+            _ => throw new UnreachableException()
+        };
         if (encodeResult.IsFailure)
         {
             _logger.LogError(encodeResult.Error, "Failed to encode {Role} frame to JPEG.", role);

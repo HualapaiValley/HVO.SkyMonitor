@@ -5,7 +5,7 @@ using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-/// <summary>Creates a rolling Mono16 combined artifact after every compatible capture.</summary>
+/// <summary>Creates a rolling linear 16-bit combined artifact after every compatible capture.</summary>
 internal sealed class RollingCombinationCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     RollingCombinationProcessingStepOptions options) : ConfigurableCaptureProcessingStep<RollingCombinationProcessingStepOptions>(metadata, options)
@@ -15,7 +15,8 @@ internal sealed class RollingCombinationCaptureProcessingStep(
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (!Options.Enabled || context.Artifacts?.Raw is not { } raw || raw.Frame.PixelFormat != CameraPixelFormat.Mono16)
+        if (!Options.Enabled || context.Artifacts?.Raw is not { } raw ||
+            raw.Frame.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
         {
             return ValueTask.CompletedTask;
         }
@@ -27,7 +28,7 @@ internal sealed class RollingCombinationCaptureProcessingStep(
         stackMetadata["stackCount"] = result.SourceArtifactIds.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
         stackMetadata["totalIntegrationMilliseconds"] = result.TotalIntegration.TotalMilliseconds.ToString("F0", System.Globalization.CultureInfo.InvariantCulture);
         context.AddDerivative(FrameArtifactRole.Combined,
-            new CameraFrame(raw.Frame.TimestampUtc, raw.Frame.Width, raw.Frame.Height, CameraPixelFormat.Mono16, result.PixelData,
+            new CameraFrame(raw.Frame.TimestampUtc, raw.Frame.Width, raw.Frame.Height, result.PixelFormat, result.PixelData,
                 raw.Frame.Metadata with { SourceId = "RollingCombination", Extra = stackMetadata }),
             $"rolling-mean-v1-n{result.SourceArtifactIds.Count}",
             result.SourceArtifactIds);

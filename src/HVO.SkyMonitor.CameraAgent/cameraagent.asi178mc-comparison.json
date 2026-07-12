@@ -1,0 +1,122 @@
+{
+  "agentId": "replace-with-registered-device-id",
+  "module": {
+    "type": "VirtualSky",
+    "options": {
+      "seed": 2025,
+      "maximumMagnitude": 6.5,
+      "maximumResults": 300,
+      "magnitudeZeroElectronsPerSecond": 18000.0,
+      "bortleClass": 3,
+      "asi178Sensor": {
+        "enabled": true,
+        "blackLevelContainerAdu": 64.0
+      },
+      "constellationIds": ["UMA", "UMI", "CAS", "CYG", "LYR", "PEG", "AND"],
+      "solarSystemBodies": ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]
+    }
+  },
+  "rig": {
+    "sensor": {
+      "name": "VirtualAsi178McRaw16",
+      "widthPixels": 3096,
+      "heightPixels": 2080,
+      "pixelSizeMicrons": 2.4,
+      "colorMode": "Color",
+      "pixelFormat": "BayerRggb16",
+      "responseMode": "BayerRaw",
+      "strideBytes": 6192,
+      "byteOrder": "LittleEndian",
+      "sensorRecipeVersion": "virtual-asi178mc-rggb16-v1"
+    },
+    "optics": {
+      "projectionModel": "EquidistantFisheye",
+      "focalLengthMillimeters": 1.8,
+      "fieldOfViewDegrees": 185.0,
+      "rollDegrees": 0.0,
+      "lensKind": "Fisheye",
+      "principalPointX": 1548.0,
+      "principalPointY": 1040.0,
+      "imageCircleRadiusPixels": 1187.5,
+      "focalLengthXPixels": 735.553926,
+      "focalLengthYPixels": 735.553926,
+      "horizontalFlip": true,
+      "calibrationVersion": "asi178-fujinon-fe185c057ha1-candidate-v4"
+    },
+    "orientation": {
+      "boresightAltitudeDegrees": 90.0,
+      "boresightAzimuthDegrees": 0.0,
+      "rollAdjustmentDegrees": 0.0
+    },
+    "pipeline": {
+      "captureInterval": "00:00:25",
+      "dayExposure": "00:00:00.1000000",
+      "nightExposure": "00:00:20",
+      "dayGain": 0.0,
+      "nightGain": 150.0
+    },
+    "controlPolicy": {
+      "autoGain": "Disabled",
+      "autoExposure": "Disabled"
+    }
+  },
+  "processingSteps": [
+    {
+      "id": "RollingCombination",
+      "type": "RollingCombination",
+      "order": 25,
+      "options": {
+        "enabled": true,
+        "windowSize": 5
+      }
+    },
+    {
+      "id": "Preview",
+      "type": "Preview",
+      "order": 50,
+      "options": {
+        "enabled": true,
+        "recipeVersion": "bayer-rggb16-bilinear-asinh-v1",
+        "blackPercentile": 0.5,
+        "whitePercentile": 0.9999,
+        "asinhStrength": 4.0
+      }
+    },
+    {
+      "id": "Annotation",
+      "type": "Annotation",
+      "order": 75,
+      "options": {
+        "enabled": true,
+        "markRadius": 6,
+        "markerValue": 144,
+        "drawLabels": true,
+        "maximumLabelMagnitude": 2.5,
+        "labelScale": 2,
+        "drawConstellationLines": true,
+        "drawImageCircle": true,
+        "drawCardinalDirections": true,
+        "imageCircleValue": 96,
+        "cardinalValue": 255,
+        "cardinalScale": 2,
+        "recipeVersion": "named-object-rgb-compass-annotation-v2"
+      }
+    },
+    {
+      "id": "LocalStorage",
+      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "order": 100,
+      "options": {
+        "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
+        "retentionDays": 7,
+        "updateLatestFrame": true,
+        "queueForUpload": true
+      }
+    },
+    {
+      "id": "Telemetry",
+      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "order": 1000
+    }
+  ]
+}

@@ -36,6 +36,13 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2008, Level = LogLevel.Information, Message = "Deleted derived output {File}")]
     public static partial void DerivedFileDeleted(this ILogger logger, string file);
 
+    [LoggerMessage(EventId = 2025, Level = LogLevel.Information, Message = "Retention sweep completed for {StorageRoot}: deleted {DeletedFileCount} files and protected {ProtectedArtifactCount} pending artifacts")]
+    public static partial void RetentionSweepCompleted(
+        this ILogger logger,
+        string StorageRoot,
+        int DeletedFileCount,
+        int ProtectedArtifactCount);
+
     [LoggerMessage(EventId = 2009, Level = LogLevel.Information, Message = "Camera module {Module} initialized")]
     public static partial void CameraModuleInitialized(this ILogger logger, string module);
 

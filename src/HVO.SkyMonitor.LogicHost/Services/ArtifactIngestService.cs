@@ -3,6 +3,7 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 using Minio;
 using Minio.DataModel.Args;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -71,7 +72,8 @@ internal sealed class ArtifactIngestService(
             ArtifactRole = manifest.Role.ToString(),
             ChecksumSha256 = manifest.ChecksumSha256,
             ByteLength = manifest.ByteLength,
-            AgentId = manifest.AgentId
+            AgentId = manifest.AgentId,
+            SceneProvenanceJson = manifest.Scene is null ? null : JsonSerializer.Serialize(manifest.Scene)
         });
         try
         {

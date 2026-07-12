@@ -88,9 +88,11 @@ HVO.SkyMonitor.AgentCore
          ^
          +--- HVO.SkyMonitor.Imaging
 
+HVO.SkyMonitor.Catalog.Sqlite ---> HVO.SkyMonitor.Astronomy
+
 HVO.SkyMonitor.CameraAgent.Common ---> AgentCore + Astronomy + Imaging
-HVO.SkyMonitor.CameraAgent        ---> CameraAgent.Common
-HVO.SkyMonitor.LogicHost          ---> AgentCore + Astronomy + Imaging
+HVO.SkyMonitor.CameraAgent        ---> CameraAgent.Common + Catalog.Sqlite
+HVO.SkyMonitor.LogicHost          ---> AgentCore + Astronomy + Imaging + Catalog.Sqlite
 ```
 
 CameraAgent and LogicHost must not reference each other. They share stable
@@ -135,6 +137,12 @@ Catalog persistence is host infrastructure, not Astronomy domain behavior. Each
 LogicHost and CameraAgent receives the same versioned, read-only SQLite catalog
 snapshot locally. Catalog data must never be added to the shared SQL Server
 schema or fetched during normal CameraAgent acquisition/processing.
+
+The optional `HVO.SkyMonitor.Catalog.Sqlite` infrastructure adapter owns concrete
+SQLite access, snapshot validation, and process-cached query execution. It may
+reference Astronomy catalog contracts; Astronomy must not reference it. Both
+hosts may compose the adapter without referencing each other. Architecture tests
+must enforce this direction when the adapter project is introduced.
 
 #### `HVO.SkyMonitor.Imaging` (new)
 
@@ -822,16 +830,21 @@ unpinned branch as the only provenance record.
 
 The next implementation work should occur in this order:
 
-1. Complete Phase 0 contract and baseline repairs.
-2. Implement and validate the astronomy coordinate/projection foundation for
-  fisheye and rectilinear optics.
-3. Implement catalog loading and deterministic frame selection.
-4. Build the Mono16 planetarium renderer and virtual ASI174MM module.
-5. Prove continuous virtual acquisition through the current agent host.
-6. Introduce artifact sets and real local persistence.
-7. Add exposure feedback and rolling combination.
-8. Finish local previews, annotations, history, and operational hardening.
-9. Freeze the upload manifest and begin LogicHost durable ingestion.
+1. Complete the remaining virtual-planetarium acceptance evidence: ordinary-path
+   integration, fixed full/reduced geometry and statistics, numeric orientation
+   movement, full canonical RGB24 evidence, and machine-readable fixtures.
+2. Resolve catalog coarse-region filtering and harden coverage enforcement for
+   missing reports/files; complete shared public API documentation.
+3. Validate standalone container startup with its packaged offline catalog and
+   retain exact Debug/Release, vulnerability, coverage, format, and Stellarium
+   evidence for the implementation baseline.
+4. Complete local persistence restart browsing, disk-pressure policy, graceful
+   channel drain, failure backoff, and accelerated full-night/24-hour soak work.
+5. Validate ARM64 deployment and characterize performance on the intended
+   Raspberry Pi hardware without inventing thresholds.
+6. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
+7. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
+   calibration as a separate hardware-backed work stream.
 
 ## 12. Success Definition for the CameraAgent Milestone
 

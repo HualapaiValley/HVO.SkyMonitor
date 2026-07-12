@@ -3,6 +3,8 @@ using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Threading.RateLimiting;
 using Asp.Versioning;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
 using HVO.SkyMonitor.Common.Infrastructure.Filters;
 using HVO.SkyMonitor.Common.Security;
@@ -541,6 +543,7 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceUploadService, DeviceUploadService>();
         builder.Services.AddScoped<IArtifactIngestService, ArtifactIngestService>();
         builder.Services.AddScoped<IDeviceRigProfileService, DeviceRigProfileService>();
+        builder.Services.AddSingleton<ICelestialCatalog>(_ => CreateCatalog(builder.Configuration));
 
         var app = builder.Build();
 
@@ -670,6 +673,13 @@ public sealed partial class Program
         app.MapSkyMonitorHealthEndpoints();
 
         await app.RunAsync().ConfigureAwait(false);
+    }
+
+    private static SqliteCelestialCatalog CreateCatalog(ConfigurationManager configuration)
+    {
+        var path = configuration["Catalog:Path"] ?? Path.Combine(AppContext.BaseDirectory, "catalog", "hyg_v42.sqlite");
+        var checksum = configuration["Catalog:Sha256"] ?? "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
+        return new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(path, checksum, "2", "3"));
     }
 
     private static partial class Log

@@ -62,9 +62,9 @@ public class SignedUrlTests
 
         // Act
         var isValid = _signedTicketService.ValidateSignedTicket(
-            signedTicket, 
-            "GET", 
-            "/api/v1.0/frame/latest", 
+            signedTicket,
+            "GET",
+            "/api/v1.0/frame/latest",
             ""
         );
 
@@ -89,9 +89,9 @@ public class SignedUrlTests
 
         // Act
         var isValid = _signedTicketService.ValidateSignedTicket(
-            signedTicket, 
-            "GET", 
-            "/api/v1.0/frame/latest", 
+            signedTicket,
+            "GET",
+            "/api/v1.0/frame/latest",
             ""
         );
 
@@ -117,9 +117,9 @@ public class SignedUrlTests
 
         // Act
         var isValid = _signedTicketService.ValidateSignedTicket(
-            tamperedTicket, 
-            "GET", 
-            "/api/v1.0/frame/latest", 
+            tamperedTicket,
+            "GET",
+            "/api/v1.0/frame/latest",
             ""
         );
 
@@ -144,9 +144,9 @@ public class SignedUrlTests
 
         // Act - try to validate with POST instead of GET
         var isValid = _signedTicketService.ValidateSignedTicket(
-            signedTicket, 
+            signedTicket,
             "POST", // Wrong method
-            "/api/v1.0/frame/latest", 
+            "/api/v1.0/frame/latest",
             ""
         );
 
@@ -171,8 +171,8 @@ public class SignedUrlTests
 
         // Act - try to validate with different path
         var isValid = _signedTicketService.ValidateSignedTicket(
-            signedTicket, 
-            "GET", 
+            signedTicket,
+            "GET",
             "/api/v1.0/frame/other", // Wrong path
             ""
         );

@@ -1,0 +1,73 @@
+// Stellarium 23.4 geometric oracle for the canonical Hualapai fisheye fixture.
+
+core.resetOutput();
+core.setGuiVisible(false);
+core.clear("natural");
+core.setAppLanguage("en");
+core.setSkyLanguage("en");
+core.setObserverLocation(-113.878, 35.347, 0, 0, "Hualapai Valley Observatory", "Earth");
+core.setTimezone("UTC", 1);
+core.setDate("2025-01-15T08:00:00", "utc");
+core.setTimeRate(0);
+core.setMountMode("azimuthal");
+core.setSphericMirror(false);
+core.setProjectionMode("ProjectionFisheye");
+core.setDiskViewport(true);
+core.setFlipHorz(false);
+core.setFlipVert(false);
+core.setWindowSize(1024, 1024);
+
+LandscapeMgr.setFlagAtmosphere(false);
+LandscapeMgr.setFlagLandscape(false);
+LandscapeMgr.setFlagFog(false);
+LandscapeMgr.setFlagCardinalPoints(false);
+LandscapeMgr.setFlagLabels(false);
+MilkyWay.setFlagShow(false);
+NebulaMgr.setFlagShow(false);
+NebulaMgr.setFlagHints(false);
+SolarSystem.setFlagPlanets(false);
+SolarSystem.setFlagLabels(false);
+StarMgr.setFlagStars(true);
+StarMgr.setFlagLabels(false);
+StelSkyDrawer.setFlagTwinkle(false);
+StelSkyDrawer.setFlagLuminanceAdaptation(false);
+StelSkyDrawer.setFlagStarMagnitudeLimit(true);
+StelSkyDrawer.setCustomStarMagnitudeLimit(6.5);
+
+core.moveToAltAzi("90d", "0d", 0);
+StelMovementMgr.lookZenith();
+StelMovementMgr.zoomTo(180, 0);
+core.wait(2);
+
+function outputLandmark(name, altitude, azimuth) {
+    var screen = core.getScreenXYFromAltAzi(altitude + "d", azimuth + "d");
+    core.output("LANDMARK|" + name + "|" + altitude + "|" + azimuth + "|" + screen["x"] + "|" + screen["y"]);
+}
+
+function outputStar(id) {
+    var info = core.getObjectInfo(id);
+    var altitude = info["altitude-geometric"];
+    var azimuth = info["azimuth-geometric"];
+    var screen = core.getScreenXYFromAltAzi(altitude + "d", azimuth + "d");
+    core.output("STAR|" + id + "|" + altitude + "|" + azimuth + "|" + screen["x"] + "|" + screen["y"] + "|" + info["raJ2000"] + "|" + info["decJ2000"]);
+}
+
+var location = core.getObserverLocationInfo();
+core.output("SETTINGS|" + core.getScreenWidth() + "|" + core.getScreenHeight() + "|" + core.getProjectionMode() + "|" + StelMovementMgr.getCurrentFov() + "|" + core.getDate("utc") + "|" + core.getMountMode() + "|" + core.getDiskViewport() + "|" + core.getFlipHorz() + "|" + core.getFlipVert() + "|" + location["longitude"] + "|" + location["latitude"] + "|" + location["altitude"] + "|6.5");
+
+outputLandmark("zenith", 90, 0);
+outputLandmark("north", 0, 0);
+outputLandmark("east", 0, 90);
+outputLandmark("south", 0, 180);
+outputLandmark("west", 0, 270);
+outputStar("HIP 32349");
+outputStar("HIP 24608");
+outputStar("HIP 37279");
+outputStar("HIP 27989");
+
+core.output("COMPLETE");
+core.saveOutputAs("stellarium-output.txt");
+// An empty directory uses the writable --screenshot-dir without triggering the
+// separate external-directory permission required for script-supplied paths.
+core.screenshot("hualapai-fisheye", false, "", true, "png");
+core.quitStellarium();

@@ -9,8 +9,12 @@ WORKDIR /src
 # Copy solution and project files
 COPY Directory.Build.props ./
 COPY Directory.Packages.props ./
+COPY .editorconfig ./
 COPY HVO.SkyMonitor.v9.slnx ./
+COPY src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj src/HVO.SkyMonitor.AgentCore/
 COPY src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj src/HVO.SkyMonitor.Astronomy/
+COPY src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj src/HVO.SkyMonitor.Catalog.Sqlite/
+COPY src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj src/HVO.SkyMonitor.Imaging/
 COPY src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj src/HVO.SkyMonitor.Common/
 COPY src/HVO.SkyMonitor.TestSupport/HVO.SkyMonitor.TestSupport.csproj src/HVO.SkyMonitor.TestSupport/
 COPY src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj src/HVO.SkyMonitor.LogicHost/
@@ -20,6 +24,7 @@ RUN dotnet restore src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 
 # Copy source code
 COPY src/ src/
+COPY tests/fixtures/catalog/hyg-v42-bright-stars.sqlite tests/fixtures/catalog/hyg-v42-bright-stars.sqlite
 
 # Build and publish
 WORKDIR /src/src/HVO.SkyMonitor.LogicHost

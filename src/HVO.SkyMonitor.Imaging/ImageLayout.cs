@@ -14,9 +14,22 @@ public readonly record struct ImageLayout(int Width, int Height, CameraPixelForm
     /// <summary>Validates dimensions and stride for a non-empty image.</summary>
     public void Validate()
     {
-        if (Width <= 0 || Height <= 0 || StrideBytes < MinimumStrideBytes)
+        if (Width <= 0 || Height <= 0 || StrideBytes <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(ImageLayout));
+        }
+
+        try
+        {
+            if (StrideBytes < MinimumStrideBytes || RequiredByteLength < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(ImageLayout));
+            }
+        }
+        catch (OverflowException exception)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ImageLayout), exception,
+                "Image dimensions overflow the addressable buffer size.");
         }
     }
 
@@ -26,6 +39,7 @@ public readonly record struct ImageLayout(int Width, int Height, CameraPixelForm
         CameraPixelFormat.Mono8 => 1,
         CameraPixelFormat.Mono16 => 2,
         CameraPixelFormat.Rgb24 => 3,
+        CameraPixelFormat.BayerRggb16 => 2,
         _ => throw new ArgumentOutOfRangeException(nameof(format))
     };
 }

@@ -4,23 +4,42 @@
         "type": "VirtualSky",
         "options": {
             "seed": 2025,
-            "starCount": 32
+            "maximumMagnitude": 6.5,
+            "maximumResults": 2000,
+            "magnitudeZeroElectronsPerSecond": 300.0,
+            "bortleClass": 3,
+            "asi174Sensor": {
+                "enabled": true,
+                "blackLevelAdu": 64.0
+            },
+            "constellationIds": ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"],
+            "solarSystemBodies": ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]
         }
     },
     "rig": {
         "sensor": {
             "name": "VirtualAsi174MmReduced",
-            "widthPixels": 640,
-            "heightPixels": 480,
+            "widthPixels": 484,
+            "heightPixels": 304,
             "pixelSizeMicrons": 5.86,
             "colorMode": "Mono",
-            "pixelFormat": "Mono16"
+            "pixelFormat": "Mono16",
+            "responseMode": "Monochrome",
+            "strideBytes": 968,
+            "byteOrder": "LittleEndian",
+            "sensorRecipeVersion": "virtual-asi174mm-electron-domain-v2"
         },
         "optics": {
             "projectionModel": "EquidistantFisheye",
-            "focalLengthMillimeters": 3.0,
+            "focalLengthMillimeters": 0.0,
             "fieldOfViewDegrees": 180.0,
-            "rollDegrees": 0.0
+            "rollDegrees": 0.0,
+            "lensKind": "Fisheye",
+            "principalPointX": 242.0,
+            "principalPointY": 152.0,
+            "imageCircleRadiusPixels": 148.96,
+            "horizontalFlip": false,
+            "calibrationVersion": "virtual-fisheye-180-equidistant-v1"
         },
         "orientation": {
             "boresightAltitudeDegrees": 90.0,
@@ -28,22 +47,22 @@
             "rollAdjustmentDegrees": 0.0
         },
         "pipeline": {
-            "captureInterval": "00:00:05",
+            "captureInterval": "00:00:25",
             "dayExposure": "00:00:00.2500000",
-            "nightExposure": "00:00:02.5000000",
-            "dayGain": 1.0,
+            "nightExposure": "00:00:20",
+            "dayGain": 0.0,
             "nightGain": 150.0,
             "envelope": {
                 "minExposure": "00:00:00.0500000",
-                "maxExposure": "00:00:15",
-                "minGain": 1.0,
+                "maxExposure": "00:00:30",
+                "minGain": 0.0,
                 "maxGain": 400.0,
                 "dayDefaults": {
                     "exposure": "00:00:00.2500000",
-                    "gain": 2.5
+                    "gain": 0.0
                 },
                 "nightDefaults": {
-                    "exposure": "00:00:02.5000000",
+                    "exposure": "00:00:20",
                     "gain": 150.0
                 },
                 "targetAduLevel": 0.65
@@ -74,7 +93,10 @@
             "order": 50,
             "options": {
                 "enabled": true,
-                "recipeVersion": "mono16-high-byte-v1"
+                "recipeVersion": "mono16-asinh-v2",
+                "blackPercentile": 0.5,
+                "whitePercentile": 0.9999,
+                "asinhStrength": 4.0
             }
         },
         {
@@ -83,8 +105,18 @@
             "order": 75,
             "options": {
                 "enabled": true,
-                "focalLengthPixels": 500,
-                "recipeVersion": "zenith-marker-v1"
+                "markRadius": 6,
+                "markerValue": 144,
+                "drawLabels": true,
+                "maximumLabelMagnitude": 2.5,
+                "labelScale": 2,
+                "drawConstellationLines": true,
+                "drawImageCircle": true,
+                "drawCardinalDirections": true,
+                "imageCircleValue": 96,
+                "cardinalValue": 255,
+                "cardinalScale": 2,
+                "recipeVersion": "named-object-compass-annotation-v3"
             }
         },
         {

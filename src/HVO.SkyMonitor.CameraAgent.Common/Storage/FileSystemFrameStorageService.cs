@@ -63,7 +63,8 @@ public sealed class FileSystemFrameStorageService(
                 frame.Metadata.Gain,
                 double.IsFinite(frame.Metadata.TemperatureC) ? frame.Metadata.TemperatureC : null,
                 frame.Metadata.SourceId,
-                frame.Metadata.Extra));
+                frame.Metadata.Extra,
+                frame.Metadata.Scene));
 
         var metadataPath = Path.Combine(directory, string.Concat(stem, ".json"));
         await WriteAtomicallyAsync(metadataPath, JsonSerializer.SerializeToUtf8Bytes(metadata, SerializerOptions), cancellationToken).ConfigureAwait(false);
@@ -224,7 +225,8 @@ public sealed class FileSystemFrameStorageService(
         double Gain,
         double? TemperatureC,
         string? SourceId,
-        IReadOnlyDictionary<string, string>? Extra);
+        IReadOnlyDictionary<string, string>? Extra,
+        SceneProvenance? Scene);
 
     public void Dispose() => _indexGate.Dispose();
 

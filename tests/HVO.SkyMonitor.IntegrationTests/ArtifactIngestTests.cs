@@ -21,8 +21,11 @@ public sealed class ArtifactIngestTests
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
         using var client = fixture.Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        var scene = new SceneProvenance(
+            "scene-id", "rig-v1", "HYG", "4.2", new string('A', 64),
+            "EquidistantFisheye", "projection-v1", "scene-v1", "sensor-v1");
         var manifest = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw,
-            "application/octet-stream", 4, "AABBCCDD", DateTimeOffset.UnixEpoch, "raw-v1", "frames/raw.bin");
+            "application/octet-stream", 4, "AABBCCDD", DateTimeOffset.UnixEpoch, "raw-v1", "frames/raw.bin", scene);
 
         using var first = await PostAsync(client, manifest).ConfigureAwait(false);
         using var second = await PostAsync(client, manifest).ConfigureAwait(false);
@@ -31,7 +34,9 @@ public sealed class ArtifactIngestTests
         second.StatusCode.Should().Be(HttpStatusCode.Accepted);
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        (await db.DeviceImageUploads.CountAsync(upload => upload.RegistrationId == registrationId).ConfigureAwait(false)).Should().Be(1);
+        var upload = await db.DeviceImageUploads.SingleAsync(
+            item => item.RegistrationId == registrationId).ConfigureAwait(false);
+        upload.SceneProvenanceJson.Should().Contain("scene-id");
     }
 
     [TestMethod]

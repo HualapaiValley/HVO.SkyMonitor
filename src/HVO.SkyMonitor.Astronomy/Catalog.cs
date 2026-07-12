@@ -7,10 +7,30 @@ public sealed record CelestialCatalogObject(
     double RightAscensionHours,
     double DeclinationDegrees,
     double Magnitude,
-    double? ColorIndex = null);
+    double? ColorIndex = null,
+    string? HipparcosId = null);
 
 /// <summary>Immutable provenance required to reproduce a catalog-backed derivative.</summary>
-public sealed record CatalogMetadata(string Name, string Version, Uri SourceUrl, string Checksum);
+public sealed record CatalogMetadata(
+    string Name,
+    string Version,
+    Uri SourceUrl,
+    string Checksum,
+    string License = "unspecified",
+    string SchemaVersion = "unspecified");
+
+/// <summary>Storage-neutral candidate criteria applied before exact sky visibility.</summary>
+public sealed record CatalogCandidateQuery(double MaximumMagnitude)
+{
+    /// <summary>Validates the finite limiting magnitude.</summary>
+    public void Validate()
+    {
+        if (!double.IsFinite(MaximumMagnitude))
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaximumMagnitude));
+        }
+    }
+}
 
 /// <summary>Criteria for deterministic catalog selection.</summary>
 public sealed record CatalogQuery(double MaximumMagnitude, int MaximumResults)
@@ -30,6 +50,28 @@ public interface ICelestialCatalog
 {
     /// <summary>Returns matching objects ordered by brightness then stable identifier.</summary>
     IReadOnlyList<CelestialCatalogObject> Query(CatalogQuery query);
+
+    /// <summary>
+    /// Asynchronously returns all coarse-filtered candidates in magnitude-then-ID
+    /// order. Exact visibility and visible-result limits are the caller's concern.
+    /// </summary>
+    ValueTask<IReadOnlyList<CelestialCatalogObject>> QueryCandidatesAsync(
+        CatalogCandidateQuery query,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Exposes immutable provenance for a catalog that has validated its backing
+/// snapshot. Consumers use this metadata rather than configuration defaults
+/// when recording a reproducible scene.
+/// </summary>
+public interface ICelestialCatalogMetadataSource
+{
+    /// <summary>Gets source, version, license, schema, and checksum evidence for this catalog.</summary>
+    CatalogMetadata Metadata { get; }
+
+    /// <summary>Gets the deterministic preprocessing recipe version, or <c>unspecified</c>.</summary>
+    string PreprocessingVersion => "unspecified";
 }
 
 /// <summary>Process-safe in-memory catalog with deterministic brightest-first selection.</summary>
@@ -54,13 +96,28 @@ public sealed class InMemoryCelestialCatalog : ICelestialCatalog
             .Take(query.MaximumResults).ToArray();
     }
 
+    /// <inheritdoc />
+    public ValueTask<IReadOnlyList<CelestialCatalogObject>> QueryCandidatesAsync(
+        CatalogCandidateQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        query.Validate();
+        cancellationToken.ThrowIfCancellationRequested();
+        IReadOnlyList<CelestialCatalogObject> result = _objects
+            .Where(item => item.Magnitude <= query.MaximumMagnitude).ToArray();
+        return ValueTask.FromResult(result);
+    }
+
     private static CelestialCatalogObject Validate(CelestialCatalogObject value)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value.Id);
         ArgumentException.ThrowIfNullOrWhiteSpace(value.DisplayName);
         if (!double.IsFinite(value.RightAscensionHours) || value.RightAscensionHours is < 0 or >= 24 ||
             !double.IsFinite(value.DeclinationDegrees) || value.DeclinationDegrees is < -90 or > 90 ||
-            !double.IsFinite(value.Magnitude) || (value.ColorIndex is { } color && !double.IsFinite(color)))
+            !double.IsFinite(value.Magnitude) || (value.ColorIndex is { } color && !double.IsFinite(color)) ||
+            value.HipparcosId is { } hipparcosId &&
+            (!int.TryParse(hipparcosId, out var hip) || hip <= 0))
         {
             throw new ArgumentOutOfRangeException(nameof(value));
         }
@@ -72,7 +129,7 @@ public sealed class InMemoryCelestialCatalog : ICelestialCatalog
 /// <summary>
 /// Loads a simple HYG-compatible CSV catalog once and delegates all later queries
 /// to an immutable in-memory index. Required headers are id, proper, ra, dec,
-/// and mag; optional ci supplies the color index.
+/// and mag; optional ci and hip supply color index and Hipparcos identity.
 /// </summary>
 public sealed class CsvCelestialCatalog : ICelestialCatalog
 {
@@ -88,6 +145,12 @@ public sealed class CsvCelestialCatalog : ICelestialCatalog
     /// <inheritdoc />
     public IReadOnlyList<CelestialCatalogObject> Query(CatalogQuery query) => _catalog.Query(query);
 
+    /// <inheritdoc />
+    public ValueTask<IReadOnlyList<CelestialCatalogObject>> QueryCandidatesAsync(
+        CatalogCandidateQuery query,
+        CancellationToken cancellationToken = default)
+        => _catalog.QueryCandidatesAsync(query, cancellationToken);
+
     private static IEnumerable<CelestialCatalogObject> ReadObjects(Stream source)
     {
         using var reader = new StreamReader(source, leaveOpen: true);
@@ -100,6 +163,7 @@ public sealed class CsvCelestialCatalog : ICelestialCatalog
         var dec = RequiredColumn(columns, "dec");
         var magnitude = RequiredColumn(columns, "mag");
         var hasColorIndex = columns.TryGetValue("ci", out var colorIndex);
+        var hasHipparcosId = columns.TryGetValue("hip", out var hipparcosId);
 
         for (var lineNumber = 2; reader.ReadLine() is { } line; lineNumber++)
         {
@@ -122,6 +186,9 @@ public sealed class CsvCelestialCatalog : ICelestialCatalog
                 ParseDouble(fields[magnitude], lineNumber, "mag"),
                 hasColorIndex && colorIndex < fields.Length && !string.IsNullOrWhiteSpace(fields[colorIndex])
                     ? ParseDouble(fields[colorIndex], lineNumber, "ci")
+                    : null,
+                hasHipparcosId && hipparcosId < fields.Length && !string.IsNullOrWhiteSpace(fields[hipparcosId])
+                    ? fields[hipparcosId].Trim()
                     : null);
         }
     }
