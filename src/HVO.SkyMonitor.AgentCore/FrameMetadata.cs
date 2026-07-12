@@ -39,7 +39,9 @@ public sealed record SceneProvenance(
     string? ConstellationTopologyLicense = null,
     string? ConstellationTopologyPreprocessingVersion = null,
     IReadOnlyList<string>? ConstellationIds = null,
-    bool IncludeConstellationEndpointStars = false);
+    bool IncludeConstellationEndpointStars = false,
+    string? RigProfileHashSha256 = null,
+    string? ProjectionCalibrationVersion = null);
 
 /// <summary>
 /// A projected scene object in continuous sensor pixel-edge coordinates.

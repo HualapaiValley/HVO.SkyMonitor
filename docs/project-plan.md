@@ -255,7 +255,11 @@ version.
 
 ### 3.6 Backpressure and ownership
 
-- Use one bounded channel between capture and the ordered local pipeline.
+- Until issue #59 is deliberately implemented, use one bounded channel between
+  capture and the ordered local pipeline. Issue #59 may replace that top-level
+  coordinator only with durable raw ingress and independently observable lanes;
+  it must preserve the configured standard pipeline as one lane and must not
+  introduce hidden queues inside processing steps.
 - Do not recreate V5's nested processing queues.
 - The configured full-mode policy must be explicit and observable.
 - Raw data must be preserved before a fallible derivative step.
@@ -858,19 +862,16 @@ unpinned branch as the only provenance record.
 The next implementation work should occur in this order. Ordinary-path
 integration, machine-readable ASI174 evidence, catalog coarse filtering,
 real-image geometry-only constellation overlays, and pinned headless Stellarium
-validation are complete.
+validation and standalone container/catalog startup are complete.
 
-1. Validate standalone container startup with its packaged offline catalog and
-   retain exact Debug/Release, vulnerability, coverage, format, and Stellarium
-   evidence for the implementation baseline.
-2. Complete local persistence restart browsing, disk-pressure policy, graceful
+1. Complete local persistence restart browsing, disk-pressure policy, graceful
    channel drain, failure backoff, and accelerated full-night/24-hour soak work.
-3. Validate ARM64 deployment and characterize performance on the intended
+2. Validate ARM64 deployment and characterize performance on the intended
    Raspberry Pi hardware without inventing thresholds.
-4. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
-5. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
+3. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
+4. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
    calibration as a separate hardware-backed work stream.
-6. Prepare deferred fireball/transient processing through continuous capture
+5. After items 1-4, prepare deferred fireball/transient processing through continuous capture
    cadence [#58](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58),
    durable raw fan-out [#59](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59),
    and reconstructable central jobs

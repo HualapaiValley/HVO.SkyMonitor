@@ -18,9 +18,3 @@ load_env_file() {
 # Repository settings provide the baseline; devcontainer-local values override them.
 load_env_file "$repo_root/.env"
 load_env_file "$repo_root/.devcontainer/devcontainer.local.env"
-
-# HVO.WebSite uses this conventional SQL Server variable. Keep the SkyMonitor
-# compose and application settings on their existing SQLSERVER_* names.
-if [[ -z "${SQLSERVER_PASSWORD:-}" && -n "${MSSQL_SA_PASSWORD:-}" ]]; then
-    export SQLSERVER_PASSWORD="$MSSQL_SA_PASSWORD"
-fi

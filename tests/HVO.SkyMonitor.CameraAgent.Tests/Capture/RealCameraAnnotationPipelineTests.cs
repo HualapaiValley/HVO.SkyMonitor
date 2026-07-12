@@ -29,6 +29,7 @@ public sealed class RealCameraAnnotationPipelineTests
         using var provider = CreateServices(catalog, topology);
         var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreatePipeline(config);
         var rawBytes = new byte[checked(200 * 200 * 2)];
+        var expectedRawBytes = rawBytes.ToArray();
         var raw = new CameraFrame(
             Utc, 200, 200, CameraPixelFormat.Mono16, rawBytes,
             new FrameMetadata(TimeSpan.FromSeconds(20), 150, -10, "PhysicalTest"), 400);
@@ -37,7 +38,7 @@ public sealed class RealCameraAnnotationPipelineTests
         var second = await RunPipelineAsync(config, pipeline, raw).ConfigureAwait(false);
 
         Assert.AreSame(raw, first.Artifacts!.Raw.Frame);
-        CollectionAssert.AreEqual(rawBytes, first.Artifacts.Raw.Frame.PixelData.ToArray());
+        CollectionAssert.AreEqual(expectedRawBytes, first.Artifacts.Raw.Frame.PixelData.ToArray());
         var preview = first.Artifacts[FrameArtifactRole.Preview];
         var annotated = first.Artifacts[FrameArtifactRole.AnnotatedPreview];
         Assert.IsTrue(preview.Frame.PixelData.Span.IndexOfAnyExcept((byte)0) < 0);
@@ -59,7 +60,10 @@ public sealed class RealCameraAnnotationPipelineTests
         Assert.AreEqual("test-catalog", provenance.CatalogName);
         Assert.AreEqual(topology.Metadata.Version, provenance.ConstellationTopologyVersion);
         Assert.AreEqual(topology.Metadata.SourceSha256, provenance.ConstellationTopologySha256);
-        Assert.AreEqual(config.Rig.Optics.CalibrationVersion, provenance.ProjectionAlgorithmVersion);
+        Assert.AreEqual(RigProjectionContextFactory.AlgorithmVersion, provenance.ProjectionAlgorithmVersion);
+        Assert.AreEqual(config.Rig.Optics.CalibrationVersion, provenance.ProjectionCalibrationVersion);
+        Assert.AreEqual(config.Rig.ProfileVersion, provenance.RigProfileVersion);
+        Assert.AreEqual(RigProjectionContextFactory.CreateProfileHashSha256(config.Rig), provenance.RigProfileHashSha256);
         Assert.AreEqual(config.Rig.Sensor.SensorRecipeVersion, provenance.SensorRecipeVersion);
 
         var secondAnnotated = second.Artifacts![FrameArtifactRole.AnnotatedPreview].Frame;
@@ -96,13 +100,14 @@ public sealed class RealCameraAnnotationPipelineTests
         using var provider = CreateServices(catalog, topology);
         var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreatePipeline(config);
         var rawBytes = new byte[200 * 200 * 2];
+        var expectedRawBytes = rawBytes.ToArray();
         var raw = new CameraFrame(
             Utc, 200, 200, CameraPixelFormat.BayerRggb16, rawBytes,
             new FrameMetadata(TimeSpan.FromSeconds(20), 150, -10), 400);
 
         var context = await RunPipelineAsync(config, pipeline, raw).ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(rawBytes, context.Artifacts!.Raw.Frame.PixelData.ToArray());
+        CollectionAssert.AreEqual(expectedRawBytes, context.Artifacts!.Raw.Frame.PixelData.ToArray());
         var preview = context.Artifacts[FrameArtifactRole.Preview].Frame;
         var annotated = context.Artifacts[FrameArtifactRole.AnnotatedPreview].Frame;
         Assert.AreEqual(CameraPixelFormat.Rgb24, preview.PixelFormat);
@@ -167,7 +172,8 @@ public sealed class RealCameraAnnotationPipelineTests
                     CalibrationVersion: "physical-calibration-v1"),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
-                    TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(20), 0, 150)),
+                    TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(20), 0, 150),
+                ProfileVersion: "physical-test-rig-v1"),
             ProcessingSteps:
             [
                 new CaptureProcessingStepConfig(

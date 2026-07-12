@@ -1,6 +1,6 @@
 services:
   minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: skymonitor-minio
     command: server /data --console-address ":9001"
     environment:
@@ -24,12 +24,14 @@ services:
     image: redis:7.4-alpine
     container_name: skymonitor-redis
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - skymonitor-redis-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -qx PONG"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -49,7 +51,9 @@ services:
 
 volumes:
   skymonitor-minio-data:
+    name: skymonitor-minio-data
   skymonitor-redis-data:
+    name: skymonitor-redis-data
 
 networks:
   skymonitor:

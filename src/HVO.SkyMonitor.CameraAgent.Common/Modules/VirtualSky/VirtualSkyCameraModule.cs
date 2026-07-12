@@ -113,7 +113,7 @@ public sealed class VirtualSkyCameraModule(
             metadata.Version,
             metadata.Checksum,
             config.Rig.Optics.ProjectionModel,
-            config.Rig.Optics.CalibrationVersion,
+            RigProjectionContextFactory.AlgorithmVersion,
             sceneRequest.AlgorithmVersion,
             sensor.SensorRecipeVersion,
             metadata.SourceUrl,
@@ -132,7 +132,9 @@ public sealed class VirtualSkyCameraModule(
             sceneRequest.ConstellationIds.Count > 0 ? constellationTopology?.Metadata.License : null,
             sceneRequest.ConstellationIds.Count > 0 ? constellationTopology?.Metadata.PreprocessingVersion : null,
             sceneRequest.ConstellationIds,
-            sceneRequest.IncludeConstellationEndpointStars);
+            sceneRequest.IncludeConstellationEndpointStars,
+            RigProfileHashSha256: RigProjectionContextFactory.CreateProfileHashSha256(config.Rig),
+            ProjectionCalibrationVersion: config.Rig.Optics.CalibrationVersion);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sceneId"] = sceneId,

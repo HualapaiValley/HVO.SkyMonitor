@@ -11,6 +11,7 @@ COPY Directory.Build.props ./
 COPY Directory.Packages.props ./
 COPY .editorconfig ./
 COPY HVO.SkyMonitor.v9.slnx ./
+COPY THIRD-PARTY-NOTICES.md ./
 COPY src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj src/HVO.SkyMonitor.AgentCore/
 COPY src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj src/HVO.SkyMonitor.Astronomy/
 COPY src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj src/HVO.SkyMonitor.Catalog.Sqlite/

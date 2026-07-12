@@ -13,6 +13,7 @@
     "packageVersion": "23.4-2build3",
     "runtimeVersion": "Stellarium 24.4",
     "ubuntuAmd64ImageDigest": "sha256:52df9b1ee71626e0088f7d400d5c6b5f7bb916f8f0c82b474289a4ece6cf3faf",
+    "certificateImageDigest": "sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6",
     "projection": "ProjectionFisheye",
     "viewportWidth": 1024,
     "viewportHeight": 1024,
@@ -56,7 +57,12 @@
     "connectivitySource": "D3-Celestial v0.7.32",
     "connectivitySourceSha256": "294f66bef5d5cf50b1e17f16d2efa1d97a15131612c68dd935adef6e7373e13c",
     "embeddedTopologySha256": "70c253a00e0909ae0236dec0411afe837ebf8e493b2be7f84373b63c95c91621",
-    "endpointCoordinateSource": "SIMBAD ICRS J2000 queried 2026-07-12",
+    "endpointCoordinateSource": {
+      "name": "SIMBAD4 release 1.8 ICRS J2000 identifier queries",
+      "retrievedUtc": "2026-07-12",
+      "artifact": "SIMBAD_ENDPOINTS.md",
+      "artifactSha256": "9c23cac51074d480e6be69abb42d3d6c51d3dbcfa205e8b08bb9866fbfcbaccc"
+    },
     "stellariumSkyCultureTopology": {
       "status": "not-qualified",
       "usedForConnectivity": false

@@ -1,17 +1,21 @@
+FROM alpine:3.22@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6 AS certificates
+
 FROM ubuntu:24.04@sha256:52df9b1ee71626e0088f7d400d5c6b5f7bb916f8f0c82b474289a4ece6cf3faf
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
 RUN printf '%s\n' \
         'Types: deb' \
-        'URIs: http://snapshot.ubuntu.com/ubuntu/20260701T000000Z/' \
+        'URIs: https://snapshot.ubuntu.com/ubuntu/20260701T000000Z/' \
         'Suites: noble noble-updates noble-security' \
         'Components: main universe' \
         'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
         'Check-Valid-Until: no' \
         > /etc/apt/sources.list.d/ubuntu.sources \
-    && apt-get -o Acquire::https::Verify-Peer=false update \
-    && apt-get -o Acquire::https::Verify-Peer=false install -y --no-install-recommends \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
         ca-certificates=20240203 \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -42,6 +46,7 @@ COPY scripts/stellarium/hualapai-fisheye.ssc scripts/stellarium/hualapai-fisheye
 COPY tests/fixtures/stellarium/hualapai-fisheye-v1.json tests/fixtures/stellarium/hualapai-fisheye-v1.json
 COPY tests/fixtures/stellarium/parse-output.jq tests/fixtures/stellarium/parse-output.jq
 COPY tests/fixtures/stellarium/validate.jq tests/fixtures/stellarium/validate.jq
+COPY tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md
 COPY src/HVO.SkyMonitor.Astronomy/Data/d3-celestial-v0.7.32-topology.tsv src/HVO.SkyMonitor.Astronomy/Data/d3-celestial-v0.7.32-topology.tsv
 
 ENTRYPOINT ["/opt/hvo/scripts/validate:stellarium"]
