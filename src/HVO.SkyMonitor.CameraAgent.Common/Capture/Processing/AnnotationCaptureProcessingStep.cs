@@ -28,13 +28,18 @@ internal sealed class AnnotationCaptureProcessingStep(
         var frame = preview.Frame;
         var provenance = artifacts.Raw.Frame.Metadata.Scene;
         AnnotationSceneResult? generatedScene = null;
+        ProjectionContext? projectionOnly = null;
         if (provenance is null && Options.DrawConstellationLines && Options.ConstellationIds.Count > 0)
         {
             generatedScene = await annotationSceneProvider.BuildAsync(
                 context.Config, artifacts.Raw.Frame, Options.ConstellationIds, cancellationToken).ConfigureAwait(false);
             provenance = generatedScene.Provenance;
         }
-        if (provenance is null)
+        if (provenance is null && (Options.DrawImageCircle || Options.DrawCardinalDirections))
+        {
+            projectionOnly = RigProjectionContextFactory.Create(context.Config.Rig);
+        }
+        if (provenance is null && projectionOnly is null)
         {
             return;
         }
@@ -61,7 +66,13 @@ internal sealed class AnnotationCaptureProcessingStep(
             ConstellationLineOpacity = Options.ConstellationLineOpacity
         };
         AnnotationResult annotation;
-        if (generatedScene is not null)
+        if (projectionOnly is { } projection)
+        {
+            annotation = Annotate(
+                frame.PixelData, frame.Width, frame.Height, [], [], transform, annotationOptions,
+                CreateProjectionOverlay(projection));
+        }
+        else if (generatedScene is not null)
         {
             annotation = Annotate(
                 frame.PixelData, frame.Width, frame.Height,
@@ -70,7 +81,7 @@ internal sealed class AnnotationCaptureProcessingStep(
                     item.ConstellationId, item.FromPixel, item.ToPixel)),
                 transform, annotationOptions, CreateProjectionOverlay(generatedScene.Scene.Request.Projection));
         }
-        else if (sceneStore.TryGet(provenance.SceneId, out var scene) && scene is not null)
+        else if (sceneStore.TryGet(provenance!.SceneId, out var scene) && scene is not null)
         {
             annotation = Annotate(
                 frame.PixelData, frame.Width, frame.Height,
@@ -81,7 +92,8 @@ internal sealed class AnnotationCaptureProcessingStep(
                     return new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel, annotate, annotate);
                 }),
                 Options.DrawConstellationLines
-                    ? scene.Segments.Select(static item => new ProjectedAnnotationSegment(
+                    ? scene.Segments.Where(item => IsSelectedConstellation(item.ConstellationId))
+                        .Select(static item => new ProjectedAnnotationSegment(
                         item.ConstellationId, item.FromPixel, item.ToPixel))
                     : [],
                 transform, annotationOptions, CreateProjectionOverlay(scene.Request.Projection));
@@ -99,7 +111,8 @@ internal sealed class AnnotationCaptureProcessingStep(
                         item.Id, item.DisplayName, new PixelPoint(item.PixelX, item.PixelY), annotate, annotate);
                 }),
                 Options.DrawConstellationLines
-                    ? provenance.Segments?.Select(static item => new ProjectedAnnotationSegment(
+                    ? provenance.Segments?.Where(item => IsSelectedConstellation(item.ConstellationId))
+                        .Select(static item => new ProjectedAnnotationSegment(
                         item.ConstellationId, new PixelPoint(item.FromPixelX, item.FromPixelY),
                         new PixelPoint(item.ToPixelX, item.ToPixelY))) ?? []
                     : [],
@@ -118,6 +131,10 @@ internal sealed class AnnotationCaptureProcessingStep(
     private static bool IsNamed(string id, string displayName)
         => !string.IsNullOrWhiteSpace(displayName) && !string.Equals(id, displayName, StringComparison.Ordinal);
 
+    private bool IsSelectedConstellation(string id)
+        => Options.ConstellationIds.Count == 0 ||
+           Options.ConstellationIds.Contains(id, StringComparer.OrdinalIgnoreCase);
+
     private FrameMetadata CreateAnnotationMetadata(FrameMetadata metadata, SceneProvenance? generatedProvenance)
     {
         var extra = metadata.Extra is null
@@ -132,6 +149,7 @@ internal sealed class AnnotationCaptureProcessingStep(
             System.Globalization.CultureInfo.InvariantCulture);
         extra["constellationLineOpacity"] = Options.ConstellationLineOpacity.ToString(
             "R", System.Globalization.CultureInfo.InvariantCulture);
+        extra["annotationConstellationIds"] = string.Join(",", Options.ConstellationIds);
         return metadata with
         {
             SourceId = "AnnotatedPreview",

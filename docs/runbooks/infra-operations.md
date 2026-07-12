@@ -32,7 +32,7 @@ This runbook covers the persistent shared services on `hvo-docker.hvo.lan` and t
 ```bash
 ./scripts/infra:start --reset cameraagent
 ```
-- `--reset all` removes both local application containers.
+- `--reset` removes and rebuilds both local application containers; specify one or both service names to limit the reset.
 - Shared-service data is never reset from this repository.
 
 ### Status checks
@@ -40,6 +40,20 @@ This runbook covers the persistent shared services on `hvo-docker.hvo.lan` and t
 ```bash
 ./scripts/infra:status
 ```
+
+After a rebuild, verify both packaged catalogs and health endpoints:
+
+```bash
+docker exec skymonitor-logichost sha256sum /app/catalog/hyg_v42.sqlite
+docker exec skymonitor-cameraagent sha256sum /app/catalog/hyg_v42.sqlite
+curl --fail http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}/health
+curl --fail http://localhost:${CAMERA_AGENT_HTTP_PORT:-5130}/health
+```
+
+The expected catalog digest is
+`f80689217769a6b13c1b9bfb9711485d3cb1ad8de009d3d6b0f0b0a4f1fa9840`.
+Use `./scripts/test:infra` to validate service-selection semantics without
+starting containers.
 Shows `docker compose ps` output for local application containers.
 
 ### Data-only reset
@@ -58,13 +72,13 @@ Use when the CameraAgent identity and data-protection runtime state must be clea
 - Capture bundle for support:
   ```bash
   ./scripts/infra:status > /tmp/infra-status.txt
-  docker --context hvo-docker compose --env-file deploy/hvo-docker/.env -f deploy/hvo-docker/docker-compose.shared-services.yml logs > /tmp/infra-logs.txt
+  docker --context hvo-docker compose --env-file .env -f deploy/hvo-docker/docker-compose.shared-services.yml logs > /tmp/infra-logs.txt
   ```
 
 ## Secrets & Credentials
 
 - Application connection details live in the ignored root `.env`, based on `.env.template`.
-- Shared-service credentials live only in the ignored `deploy/hvo-docker/.env`. Rotate them on `hvo-docker`, then update the root `.env` for applications.
+- Shared-service credentials are supplied from the ignored root `.env`. Rotate them on `hvo-docker`, then update the root `.env` used by applications and provisioning commands.
 
 ## Disaster Recovery Scenarios
 

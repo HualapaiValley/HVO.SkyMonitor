@@ -9,6 +9,7 @@ readonly FIXTURES="$REPO_ROOT/tests/fixtures/stellarium"
 readonly DOCKERFILE="$REPO_ROOT/docker/stellarium/Dockerfile"
 readonly WRAPPER="$REPO_ROOT/scripts/validate:stellarium-container"
 readonly TOPOLOGY="$REPO_ROOT/src/HVO.SkyMonitor.Astronomy/Data/d3-celestial-v0.7.32-topology.tsv"
+readonly ENDPOINT_SOURCE="$FIXTURES/SIMBAD_ENDPOINTS.md"
 readonly TEMP_DIR="$(mktemp -d -t hvo-stellarium-contract.XXXXXX)"
 
 cleanup() {
@@ -69,7 +70,22 @@ if jq -e '.passed' "$TEMP_DIR/invalid-wrapped-endpoint-report.json" >/dev/null; 
     exit 1
 fi
 
-grep -Eq '^FROM ubuntu:24\.04@sha256:[0-9a-f]{64}$' "$DOCKERFILE"
+cp "$FIXTURES/sample-output-v1.txt" "$TEMP_DIR/duplicate-settings.txt"
+sed -n '1p' "$FIXTURES/sample-output-v1.txt" >> "$TEMP_DIR/duplicate-settings.txt"
+if jq -Rn -f "$FIXTURES/parse-output.jq" "$TEMP_DIR/duplicate-settings.txt" >/dev/null 2>&1; then
+    echo "The Stellarium parser accepted duplicate SETTINGS rows." >&2
+    exit 1
+fi
+sed '1s/|true|false|false|/|garbage|false|false|/' "$FIXTURES/sample-output-v1.txt" > "$TEMP_DIR/invalid-boolean.txt"
+if jq -Rn -f "$FIXTURES/parse-output.jq" "$TEMP_DIR/invalid-boolean.txt" >/dev/null 2>&1; then
+    echo "The Stellarium parser accepted an invalid boolean token." >&2
+    exit 1
+fi
+
+ubuntu_digest="$(jq -r '.stellarium.ubuntuAmd64ImageDigest' "$FIXTURES/hualapai-fisheye-v1.json")"
+certificate_digest="$(jq -r '.stellarium.certificateImageDigest' "$FIXTURES/hualapai-fisheye-v1.json")"
+grep -Fqx "FROM ubuntu:24.04@${ubuntu_digest}" "$DOCKERFILE"
+grep -Fqx "FROM alpine:3.22@${certificate_digest} AS certificates" "$DOCKERFILE"
 for package in ca-certificates stellarium stellarium-data xvfb xauth libgl1-mesa-dri imagemagick jq fonts-dejavu-core fontconfig; do
     grep -Eq "^[[:space:]]*${package}=[^[:space:]\\\\]+" "$DOCKERFILE"
 done
@@ -83,5 +99,8 @@ grep -Fq $'VIR\t65474\t69701' "$TOPOLOGY"
 expected_topology_sha256="$(jq -r '.constellationValidation.embeddedTopologySha256' "$FIXTURES/hualapai-fisheye-v1.json")"
 actual_topology_sha256="$(sha256sum "$TOPOLOGY" | cut -d ' ' -f 1)"
 [[ "$actual_topology_sha256" == "$expected_topology_sha256" ]]
+expected_endpoint_source_sha256="$(jq -r '.constellationValidation.endpointCoordinateSource.artifactSha256' "$FIXTURES/hualapai-fisheye-v1.json")"
+actual_endpoint_source_sha256="$(sha256sum "$ENDPOINT_SOURCE" | cut -d ' ' -f 1)"
+[[ "$actual_endpoint_source_sha256" == "$expected_endpoint_source_sha256" ]]
 
 echo "Stellarium validation contract passed."

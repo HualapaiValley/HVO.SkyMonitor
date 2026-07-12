@@ -1,27 +1,28 @@
 # Fireball and Transient Detection Plan
 
-## 1. Status and Scope
+## 1. Scope
 
 This document prepares the architecture for optional meteor, fireball, satellite,
 aircraft, and transient detection without moving that work ahead of the current
 CameraAgent hardening and durable-ingest queue. The umbrella work item is issue
 [#65](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65).
 
-Preparation infrastructure may be implemented earlier when it independently
-advances continuous physical capture, raw durability, processing isolation, or
-central reprocessing. Fireball-specific runtime work remains deferred until its
+The authoritative status and execution order live in
+[`docs/project-plan.md`](../project-plan.md). This document defines dependencies
+within the deferred fireball work; it does not promote those issues ahead of the
+near-term queue. Fireball-specific runtime work remains deferred until its
 dependencies and open product decisions are resolved.
 
 The initial implementation is not a generic machine-learning platform. It starts
 with deterministic image algorithms, measured heuristics, retained source
 evidence, and reviewable reason-coded classifications.
 
-## 2. Current Pipeline Reality
+## 2. Baseline Pipeline Constraints
 
-CameraAgent currently has one bounded in-memory channel with capacity four and
-`BoundedChannelFullMode.Wait`. A single worker runs every configured processing
-step serially for one current-capture context. When the channel fills, publication
-and therefore acquisition wait.
+The baseline entering this design uses one bounded in-memory channel and one
+worker that runs every configured processing step serially for a capture context.
+Issue #59 may replace that top-level coordinator only as described below; it does
+not permit nested queues inside arbitrary processing steps.
 
 The rolling combiner is the only component with frame history. Its private queue
 creates a linear mean from raw Mono16 or RGGB16 frames. Other processing steps do
@@ -244,19 +245,19 @@ work.
 
 ## 11. Dependency Order
 
-Preparation work follows the existing CameraAgent and upload roadmap:
+The project plan decides when this sequence starts. Once promoted, the internal
+dependency order is:
 
-1. Complete current planetarium/agent hardening and hardware characterization.
-2. Implement continuous physical cadence and low-latency metering in #58.
-3. Implement durable raw ingress and top-level lanes in #59.
-4. Complete reconstructable upload/ingest and durable central jobs in #60.
-5. Add deterministic transient scenarios in #61.
-6. Prove shared event contracts and detection algorithms in #62.
-7. Add optional edge execution in #63.
-8. Add central validation and persistence in #64.
+1. Implement continuous physical cadence and low-latency metering in #58.
+2. Implement durable raw ingress and top-level lanes in #59.
+3. Complete reconstructable upload/ingest and durable central jobs in #60.
+4. Add deterministic transient scenarios in #61.
+5. Prove shared event contracts and detection algorithms in #62.
+6. Add optional edge execution in #63.
+7. Add central validation and persistence in #64.
 
-Issues #61 and #62 may begin earlier as isolated deterministic work, but they do
-not justify runtime configuration until the required infrastructure exists.
+Isolated design experiments do not change the authoritative queue or justify
+runtime configuration before the required infrastructure exists.
 
 ## 12. Open Decisions
 

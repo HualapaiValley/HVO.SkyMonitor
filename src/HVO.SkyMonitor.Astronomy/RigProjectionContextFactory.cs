@@ -1,10 +1,21 @@
 using HVO.SkyMonitor.AgentCore;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.Astronomy;
 
 /// <summary>Creates calibrated projection contexts from transport-neutral camera rig profiles.</summary>
 public static class RigProjectionContextFactory
 {
+    public const string AlgorithmVersion = "rig-projection-v1";
+
+    /// <summary>Creates a deterministic content hash for the complete rig profile.</summary>
+    public static string CreateProfileHashSha256(CameraRigConfig rig)
+    {
+        ArgumentNullException.ThrowIfNull(rig);
+        return Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(rig)));
+    }
+
     /// <summary>Creates and validates the projection defined by the supplied rig.</summary>
     public static ProjectionContext Create(CameraRigConfig rig)
     {

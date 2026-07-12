@@ -7,7 +7,8 @@ public sealed record CameraRigConfig(
     OpticsProfile Optics,
     RigOrientation Orientation,
     PipelineExposureProfile Pipeline,
-    CameraControlPolicy? ControlPolicy = null);
+    CameraControlPolicy? ControlPolicy = null,
+    string ProfileVersion = "unversioned");
 
 public sealed record SensorProfile(
     string Name,

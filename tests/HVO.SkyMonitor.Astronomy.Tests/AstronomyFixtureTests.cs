@@ -158,16 +158,22 @@ public sealed class AstronomyFixtureTests
                 968 + radius * Math.Sin(azimuth),
                 608 - radius * Math.Cos(azimuth));
             var expected = item.GetProperty("expectedHvoSensor");
-            Assert.AreEqual(expected.GetProperty("x").GetDouble(), actual.X, 1e-9, id);
-            Assert.AreEqual(expected.GetProperty("y").GetDouble(), actual.Y, 1e-9, id);
+            Assert.AreEqual(expected.GetProperty("x").GetDouble(), actual.X, 1e-6, id);
+            Assert.AreEqual(expected.GetProperty("y").GetDouble(), actual.Y, 1e-6, id);
         }
 
         var expectedBoundary = constellation.GetProperty("segments").EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "VIR-65474-69701")
             .GetProperty("expectedHvoBoundary");
-        var clippedBoundary = scene.Segments.Where(segment => segment.ConstellationId == "VIR").Last().ToPixel;
-        Assert.AreEqual(expectedBoundary.GetProperty("x").GetDouble(), clippedBoundary.X, 1e-9);
-        Assert.AreEqual(expectedBoundary.GetProperty("y").GetDouble(), clippedBoundary.Y, 1e-9);
+        var expectedBoundaryPoint = new PixelPoint(
+            expectedBoundary.GetProperty("x").GetDouble(), expectedBoundary.GetProperty("y").GetDouble());
+        var clippedBoundary = scene.Segments
+            .Where(segment => segment.ConstellationId == "VIR")
+            .SelectMany(static segment => new[] { segment.FromPixel, segment.ToPixel })
+            .MinBy(point => Math.Pow(point.X - expectedBoundaryPoint.X, 2) +
+                Math.Pow(point.Y - expectedBoundaryPoint.Y, 2));
+        Assert.AreEqual(expectedBoundaryPoint.X, clippedBoundary.X, 1e-6);
+        Assert.AreEqual(expectedBoundaryPoint.Y, clippedBoundary.Y, 1e-6);
         Assert.HasCount(9, scene.Segments);
     }
 

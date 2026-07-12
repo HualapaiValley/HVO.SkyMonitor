@@ -57,14 +57,25 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+if [[ "$mode" == "reset" && ${#RESET_SERVICES[@]} -eq 0 ]]; then
+    RESET_SERVICES=("${APP_SERVICES[@]}")
+fi
+if [[ "$mode" == "rebuild" && ${#REBUILD_SERVICES[@]} -eq 0 ]]; then
+    REBUILD_SERVICES=("${APP_SERVICES[@]}")
+fi
 if [[ ${#START_SERVICES[@]} -eq 0 ]]; then
-    START_SERVICES=("${APP_SERVICES[@]}")
+    if [[ ${#RESET_SERVICES[@]} -gt 0 || ${#REBUILD_SERVICES[@]} -gt 0 ]]; then
+        START_SERVICES=("${RESET_SERVICES[@]}" "${REBUILD_SERVICES[@]}")
+    else
+        START_SERVICES=("${APP_SERVICES[@]}")
+    fi
 fi
 if [[ ${#RESET_SERVICES[@]} -gt 0 ]]; then
     for service in "${RESET_SERVICES[@]}"; do
         docker compose -f docker-compose.apps.yml rm -sf "$service"
         [[ "$service" == "cameraagent" ]] && clean_cameraagent_data
     done
+    REBUILD_SERVICES+=("${RESET_SERVICES[@]}")
 fi
 if [[ ${#REBUILD_SERVICES[@]} -gt 0 ]]; then
     docker compose -f docker-compose.apps.yml build "${REBUILD_SERVICES[@]}"

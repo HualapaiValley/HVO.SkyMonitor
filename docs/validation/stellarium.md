@@ -12,7 +12,8 @@ Run the preferred validation path from any Docker-capable host:
 ./scripts/validate:stellarium-container
 ```
 
-`docker/stellarium/Dockerfile` pins the Ubuntu 24.04 amd64 base manifest digest,
+`docker/stellarium/Dockerfile` pins the Ubuntu 24.04 amd64 base manifest digest
+and a separate Alpine certificate-source manifest digest,
 Stellarium/data, Xvfb, Xauth, Mesa llvmpipe, ImageMagick, `jq`, fontconfig, and
 DejaVu fonts. The checked-in startup script is the image entrypoint. The wrapper
 builds for `linux/amd64`, runs without network or capabilities, uses a read-only
@@ -27,8 +28,8 @@ package inconsistency, not a `PATH` collision. Both values are asserted and
 recorded rather than treated as interchangeable.
 
 The Dockerfile resolves exact direct package versions and all transitive packages
-from Ubuntu snapshot `20260701T000000Z`; the base image is pinned by its amd64
-manifest digest. The sorted `packages.txt` retained by every run records the
+over verified HTTPS from Ubuntu snapshot `20260701T000000Z`; both source images
+are pinned by amd64 manifest digest. The sorted `packages.txt` retained by every run records the
 resolved closure. Updating the snapshot, base, or a direct package is an explicit
 reviewed fixture change, never a silent mirror update.
 
@@ -100,6 +101,10 @@ D3-Celestial HIP endpoints prove native-to-sensor endpoint positions. Orion
 circle and produces a retained clipped boundary coordinate. Atmosphere/refraction,
 landscape, fog, Milky Way, nebulae, labels, planets, twinkle, and luminance
 adaptation are disabled by the `.ssc` script.
+
+The exact SIMBAD identifier-query URLs, retained sexagesimal coordinate rows,
+source references, retrieval date, and contract checksum are recorded in
+`tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`.
 
 Version, package closure, environment, settings, native coordinates, normalized
 coordinates, assertion details, logs, and the diagnostic PNG are written under

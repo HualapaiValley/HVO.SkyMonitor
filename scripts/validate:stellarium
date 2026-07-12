@@ -10,6 +10,7 @@ readonly VALIDATOR="$REPO_ROOT/tests/fixtures/stellarium/validate.jq"
 readonly PARSER="$REPO_ROOT/tests/fixtures/stellarium/parse-output.jq"
 readonly SSC="$REPO_ROOT/scripts/stellarium/hualapai-fisheye.ssc"
 readonly TOPOLOGY="$REPO_ROOT/src/HVO.SkyMonitor.Astronomy/Data/d3-celestial-v0.7.32-topology.tsv"
+readonly ENDPOINT_SOURCE="$REPO_ROOT/tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md"
 readonly EXPECTED_VERSION="23.4-2build3"
 readonly EXPECTED_EXECUTABLE_VERSION="Stellarium 24.4"
 readonly STELLARIUM_BIN="/usr/bin/stellarium"
@@ -64,6 +65,12 @@ expected_topology_sha256="$(jq -r '.constellationValidation.embeddedTopologySha2
 actual_topology_sha256="$(sha256sum "$TOPOLOGY" | cut -d ' ' -f 1)"
 if [[ "$actual_topology_sha256" != "$expected_topology_sha256" ]]; then
     echo "Embedded D3-Celestial topology checksum mismatch: $actual_topology_sha256." >&2
+    exit 2
+fi
+expected_endpoint_source_sha256="$(jq -r '.constellationValidation.endpointCoordinateSource.artifactSha256' "$MANIFEST")"
+actual_endpoint_source_sha256="$(sha256sum "$ENDPOINT_SOURCE" | cut -d ' ' -f 1)"
+if [[ "$actual_endpoint_source_sha256" != "$expected_endpoint_source_sha256" ]]; then
+    echo "SIMBAD endpoint source checksum mismatch: $actual_endpoint_source_sha256." >&2
     exit 2
 fi
 

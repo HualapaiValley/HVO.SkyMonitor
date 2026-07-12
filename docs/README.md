@@ -10,6 +10,7 @@ back to it rather than restating roadmap status.
 | Project implementation handoff | `.github/prompts/implement-project-phase.prompt.md` | Continuous phase-ordered TDD workflow with coverage, documentation, and zero-warning gates. |
 | Virtual camera and validation | `docs/virtual-camera.md` | Mono/color sensor modes, fisheye/rectilinear optics, fixtures, and planetarium comparison strategy. |
 | Virtual planetarium implementation | `docs/projects/virtual-planetarium-implementation.md` | Fixed Hualapai/ASI174 fisheye fixtures, work streams, Stellarium automation, test gates, and ASI174MC follow-on. |
+| Fireball/transient architecture | `docs/projects/fireball-transient-detection.md` | Deferred subsystem constraints and internal dependency graph; roadmap status and promotion remain in `docs/project-plan.md`. |
 | Legacy implementation references | `docs/reference-code.md` | Commit-pinned V5/V6 source map, behavior notes, caveats, and checkout instructions. |
 | Secrets & configuration | `docs/security/secrets.md` | Consolidates `SECRETS_MANAGEMENT.md`, `SECRETS_QUICKSTART.md`, `SECRETS_SUMMARY.md`, and identity-specific `secrets-reference.md`. |
 | Identity program status | `docs/identity/overview.md` | Rolls up `identity/hardening-summary.md`, `operations-index.md`, `agent-registration-plan.md`, and `non-azure-delta.md`. |
