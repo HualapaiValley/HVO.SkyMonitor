@@ -73,3 +73,26 @@ Version, environment, settings, native coordinates, normalized coordinates,
 assertion details, logs, and the diagnostic PNG are written under ignored
 `TestResults/stellarium/`. PNGs are transient diagnostics only and must not be
 committed or used for whole-image equality.
+
+## Planned headless container validation
+
+Stellarium is intentionally outside normal .NET unit-test runs. Add a pinned
+container command and manual or scheduled workflow so validation does not depend
+on the host's GUI packages or an executable that differs from its package
+metadata. Pin the base image digest, Stellarium/data packages, Xvfb, llvmpipe,
+fonts, locale, and startup script. An opt-in integration test may invoke this
+container when Docker is available, but ordinary analytic/rendering tests remain
+offline and fast.
+
+The container gate should generate both the HVO virtual output and Stellarium
+diagnostics for the same fixture. Automated assertions compare normalized star
+centroids, annotation anchors, projection scale, image circle, orientation, and
+constellation endpoint/clipping coordinates. Screenshots are visual diagnostics,
+not whole-image golden files.
+
+Constellation stick figures require a separate topology qualification. HVO uses
+the pinned D3-Celestial topology; Stellarium may use a different sky culture and
+line convention. Its figure lines are comparable only after the selected sky
+culture is pinned and its endpoint graph is shown to match D3-Celestial.
+Otherwise Stellarium validates endpoint positions while D3-Celestial source
+checksums and topology tests validate connectivity.

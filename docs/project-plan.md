@@ -334,6 +334,10 @@ astronomy, exposure, combination, storage, and API tests reproducible.
 - Frames pass through the ordinary processing, storage, latest-frame, and
   telemetry paths without simulator-specific branches.
 - A fixed fixture produces a golden test image and stable pixel checksum.
+- A pinned headless planetarium validation compares selected rendered centroids,
+  annotation anchors, projection boundaries, orientation, and constellation
+  endpoint/clipping geometry. It runs explicitly or on a manual/scheduled
+  workflow rather than making every unit test depend on a GUI stack.
 
 ## 5. Projection and Catalog Plan
 
@@ -845,7 +849,9 @@ The next implementation work should occur in this order:
 1. Correct constellation overlay completeness and clipping. Real images receive
    supplemental endpoint geometry but no synthetic stars; VirtualSky receives a
    provenance-tracked `IncludeConstellationEndpointStars` render option. Add
-   configurable line color/value, thickness, and opacity.
+   configurable line color/value, thickness, and opacity, then validate selected
+   rendered stars, figure endpoints, and clipped boundaries through a pinned
+   headless Stellarium container.
 2. Complete the remaining virtual-planetarium acceptance evidence: ordinary-path
    integration, fixed full/reduced geometry and statistics, numeric orientation
    movement, full canonical RGB24 evidence, and machine-readable fixtures.

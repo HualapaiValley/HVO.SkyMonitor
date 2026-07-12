@@ -409,6 +409,41 @@ explicit script and an optional manual/scheduled GitHub workflow.
 Image-wide pixel equality against Stellarium is forbidden because Stellarium,
 Qt, Mesa, catalog, antialiasing, and display rendering versions change pixels.
 
+### 8.4 Headless rendered-scene and constellation validation
+
+Add a pinned headless Stellarium container after the local package workflow is
+stable. The image should pin its Ubuntu base by digest, exact Stellarium and data
+package versions, Mesa llvmpipe, Xvfb, fonts, locale, and startup script. A
+repository command should build/run the image without host GUI dependencies and
+write diagnostics under `TestResults/stellarium/`. Run it as an explicit local
+command and manual or scheduled workflow, not as a dependency of every .NET unit
+test invocation. A small opt-in integration category may invoke the container
+when Docker is available.
+
+For the same fixed UTC, observer, projection, orientation, magnitude limit, and
+sensor normalization, validation must compare:
+
+- selected virtual raw star centroids and annotated star anchors to normalized
+  Stellarium object coordinates;
+- image-circle/horizon position, projection scale, cardinal orientation, roll,
+  and horizontal flip;
+- constellation endpoint coordinates and visible/clipped segment boundaries for
+  at least one complete figure and figures crossing the image circle and sensor
+  edges;
+- VirtualSky output with `IncludeConstellationEndpointStars` both disabled and
+  enabled, proving added simulated endpoints use the same externally validated
+  coordinates;
+- a rendered HVO preview and Stellarium screenshot as retained human-review
+  diagnostics, with coordinate/error reports as the automated pass/fail oracle.
+
+Stellarium constellation lines are not automatically a topology oracle. The IAU
+standardizes constellation boundaries and names, not stick-figure connectivity.
+Exact HVO segment connectivity remains validated against the pinned D3-Celestial
+source and generated checksum. Compare HVO figures directly with Stellarium only
+after pinning a Stellarium sky culture and proving its endpoint topology matches
+the selected D3-Celestial figure; otherwise use Stellarium to validate each
+endpoint's celestial and screen position independently.
+
 ## 9. ASI174MC Follow-On
 
 After the ASI174MM milestone and shared annotations pass, reuse the identical
@@ -589,7 +624,8 @@ Resume prompt acceptance in this order:
    images; add the VirtualSky-only `IncludeConstellationEndpointStars` render
    option for missing simulated stars; clip partially visible segments at
    calibrated boundaries; and add line color/value, thickness, and opacity
-   options with geometry and image tests.
+   options with geometry and image tests. Add pinned headless Stellarium
+   validation for star centroids, figure endpoints, and clipped boundaries.
 2. Add one ordinary-path VirtualSky integration test spanning capture, preview,
    annotation, filesystem persistence, latest-frame publication, telemetry, and
    durable outbox selection.
