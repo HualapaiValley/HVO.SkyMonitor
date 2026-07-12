@@ -58,7 +58,17 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
             yield break;
         }
 
-        foreach (var path in Directory.EnumerateFiles(directory, "*.json").OrderBy(static path => path, StringComparer.Ordinal))
+        var paths = new List<string>();
+        foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            paths.Add(path);
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        paths.Sort(StringComparer.Ordinal);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        foreach (var path in paths)
         {
             cancellationToken.ThrowIfCancellationRequested();
             ArtifactUploadManifest manifest;

@@ -58,7 +58,7 @@ internal sealed class PreviewCaptureProcessingStep(
     }
 }
 
-public sealed class PreviewProcessingStepOptions
+public sealed class PreviewProcessingStepOptions : IValidatableObject
 {
     public bool Enabled { get; init; } = true;
 
@@ -73,4 +73,14 @@ public sealed class PreviewProcessingStepOptions
 
     [Range(0.01, 1000)]
     public double AsinhStrength { get; init; } = 4;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (BlackPercentile >= WhitePercentile)
+        {
+            yield return new ValidationResult(
+                "BlackPercentile must be less than WhitePercentile.",
+                [nameof(BlackPercentile), nameof(WhitePercentile)]);
+        }
+    }
 }

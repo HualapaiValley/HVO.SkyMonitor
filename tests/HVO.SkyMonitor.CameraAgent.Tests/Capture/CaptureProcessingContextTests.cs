@@ -11,6 +11,20 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 public sealed class CaptureProcessingContextTests
 {
     [TestMethod]
+    public void PreviewStep_RejectsInvertedPercentilesDuringConstruction()
+    {
+        var options = new PreviewProcessingStepOptions
+        {
+            BlackPercentile = 0.9,
+            WhitePercentile = 0.1
+        };
+
+        Assert.Throws<System.ComponentModel.DataAnnotations.ValidationException>(() =>
+            new PreviewCaptureProcessingStep(
+                new CaptureProcessingStepMetadata("Preview", "Preview", 0), options));
+    }
+
+    [TestMethod]
     public void ReplaceFrame_PreservesRawArtifactAndAddsCalibratedArtifact()
     {
         // Arrange

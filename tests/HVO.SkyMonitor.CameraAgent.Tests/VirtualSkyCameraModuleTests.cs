@@ -3,7 +3,9 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
+using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.Imaging;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -12,6 +14,19 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestClass]
 public sealed class VirtualSkyCameraModuleTests
 {
+    [TestMethod]
+    public void AddCameraAgentInfrastructure_RegistersConstellationTopologyByInterface()
+    {
+        var services = new ServiceCollection();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+        using var provider = services.BuildServiceProvider();
+
+        var topology = provider.GetRequiredService<IConstellationTopology>();
+
+        StringAssert.Contains(topology.Metadata.Name, "D3-Celestial", StringComparison.Ordinal);
+        Assert.IsNotEmpty(topology.GetSegments("ORI"));
+    }
+
     [TestMethod]
     public void CameraAgentSample_UsesCanonicalReducedAsi174Fixture()
     {

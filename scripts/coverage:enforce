@@ -26,4 +26,4 @@ if [[ "${#reports[@]}" -eq 0 ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-dotnet run --no-restore --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" -- "${reports[@]}"
+dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" -- "${reports[@]}"

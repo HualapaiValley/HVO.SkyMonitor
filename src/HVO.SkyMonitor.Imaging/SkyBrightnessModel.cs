@@ -24,11 +24,17 @@ public static class SkyBrightnessModel
     public static double PhotometricBackgroundElectronsPerSecond(
         int bortleClass, double magnitudeZeroElectronsPerSecond, double focalLengthXPixels, double focalLengthYPixels)
     {
-        if (!double.IsFinite(magnitudeZeroElectronsPerSecond) || magnitudeZeroElectronsPerSecond < 0 ||
-            !double.IsFinite(focalLengthXPixels) || focalLengthXPixels <= 0 ||
-            !double.IsFinite(focalLengthYPixels) || focalLengthYPixels <= 0)
+        if (!double.IsFinite(magnitudeZeroElectronsPerSecond) || magnitudeZeroElectronsPerSecond < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(magnitudeZeroElectronsPerSecond));
+        }
+        if (!double.IsFinite(focalLengthXPixels) || focalLengthXPixels <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(focalLengthXPixels));
+        }
+        if (!double.IsFinite(focalLengthYPixels) || focalLengthYPixels <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(focalLengthYPixels));
         }
 
         var squareArcsecondsPerPixel =

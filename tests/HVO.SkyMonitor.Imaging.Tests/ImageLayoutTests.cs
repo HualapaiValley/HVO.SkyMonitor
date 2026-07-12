@@ -10,6 +10,7 @@ public sealed class ImageLayoutTests
     [DataRow(CameraPixelFormat.Mono8, 1)]
     [DataRow(CameraPixelFormat.Mono16, 2)]
     [DataRow(CameraPixelFormat.Rgb24, 3)]
+    [DataRow(CameraPixelFormat.BayerRggb16, 2)]
     public void Validate_AcceptsSupportedFormatsWithPadding(CameraPixelFormat format, int bytesPerPixel)
     {
         var layout = new ImageLayout(3, 2, format, 3 * bytesPerPixel + 2);

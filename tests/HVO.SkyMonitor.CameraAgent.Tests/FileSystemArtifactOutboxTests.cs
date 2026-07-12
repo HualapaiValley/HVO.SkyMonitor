@@ -77,6 +77,29 @@ public sealed class FileSystemArtifactOutboxTests
         }
     }
 
+    [TestMethod]
+    public async Task EnumeratePending_WithCanceledToken_StopsBeforeReadingManifests()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-outbox", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var outbox = new FileSystemArtifactOutbox();
+            await outbox.EnqueueAsync(root, CreateManifest(), CancellationToken.None).ConfigureAwait(false);
+            using var cancellation = new CancellationTokenSource();
+            await cancellation.CancelAsync().ConfigureAwait(false);
+
+            Assert.Throws<OperationCanceledException>(() =>
+                outbox.EnumeratePending(root, cancellation.Token).ToArray());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private static ArtifactUploadManifest CreateManifest() => new(
         "v1", "agent-a", Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw, "application/octet-stream", 4,
         "0123456789ABCDEF", DateTimeOffset.UnixEpoch, "raw-v1", "frames/1970/01/01/Raw/frame.bin");

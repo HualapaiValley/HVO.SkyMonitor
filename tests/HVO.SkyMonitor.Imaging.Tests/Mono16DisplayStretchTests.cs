@@ -55,6 +55,21 @@ public sealed class Mono16DisplayStretchTests
             SkyBrightnessModel.PhotometricBackgroundElectronsPerSecond(2, 300, 379.3, 379.3));
     }
 
+    [TestMethod]
+    public void SkyBrightnessModel_ReportsTheInvalidPhotometricParameter()
+    {
+        var rate = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            SkyBrightnessModel.PhotometricBackgroundElectronsPerSecond(3, -1, 1, 1));
+        var focalX = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            SkyBrightnessModel.PhotometricBackgroundElectronsPerSecond(3, 1, 0, 1));
+        var focalY = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            SkyBrightnessModel.PhotometricBackgroundElectronsPerSecond(3, 1, 1, double.NaN));
+
+        Assert.AreEqual("magnitudeZeroElectronsPerSecond", rate.ParamName);
+        Assert.AreEqual("focalLengthXPixels", focalX.ParamName);
+        Assert.AreEqual("focalLengthYPixels", focalY.ParamName);
+    }
+
     private static byte[] Pack(IEnumerable<ushort> samples)
         => samples.SelectMany(BitConverter.GetBytes).ToArray();
 }

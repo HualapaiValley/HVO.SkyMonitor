@@ -36,7 +36,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IFrameStorageService, FileSystemFrameStorageService>();
         services.AddSingleton<ICameraModuleFactory, CameraModuleFactory>();
         services.AddSingleton<IProjectedSceneStore, ProjectedSceneStore>();
-        services.AddSingleton(StandardConstellationTopology.CreateD3Celestial());
+        services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());
         services.AddSingleton<IPlanetEphemeris, AstronomyEnginePlanetEphemeris>();
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
