@@ -78,6 +78,13 @@ public sealed class FileCameraAgentConfigurationLoader(
         {
             throw new InvalidOperationException("CaptureInterval must be greater than zero.");
         }
+        var initialBackoff = config.Rig.Pipeline.CaptureFailureInitialDelay ?? TimeSpan.FromMilliseconds(250);
+        var maximumBackoff = config.Rig.Pipeline.CaptureFailureMaximumDelay ?? TimeSpan.FromSeconds(30);
+        if (initialBackoff <= TimeSpan.Zero || maximumBackoff < initialBackoff)
+        {
+            throw new InvalidOperationException(
+                "Capture failure backoff delays must be positive and the maximum must not be less than the initial delay.");
+        }
     }
 }
 

@@ -11,6 +11,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 
 internal sealed class CameraModuleRunner
 {
+    private static readonly TimeSpan DefaultInitialFailureDelay = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan DefaultMaximumFailureDelay = TimeSpan.FromSeconds(30);
     private readonly ICameraModule _module;
     private readonly ICaptureHostContext _hostContext;
     private readonly TimeProvider _timeProvider;
@@ -33,15 +35,19 @@ internal sealed class CameraModuleRunner
     {
         var config = _hostContext.Configuration;
         var targetInterval = config.Rig.Pipeline.CaptureInterval;
+        var initialFailureDelay = config.Rig.Pipeline.CaptureFailureInitialDelay ?? DefaultInitialFailureDelay;
+        var maximumFailureDelay = config.Rig.Pipeline.CaptureFailureMaximumDelay ?? DefaultMaximumFailureDelay;
         var nextRequest = new CaptureRequest(
             RequestedStartUtc: _timeProvider.GetUtcNow(),
             TargetInterval: targetInterval,
             Mode: CaptureMode.Still,
             RequestedSetpoint: new CaptureSetpoint(config.Rig.Pipeline.NightExposure, config.Rig.Pipeline.NightGain, null, null));
+        var consecutiveFailures = 0;
 
         while (!cancellationToken.IsCancellationRequested)
         {
             var loopStart = _timeProvider.GetUtcNow();
+            nextRequest = nextRequest with { RequestedStartUtc = loopStart };
             CaptureResult? result = null;
             try
             {
@@ -53,13 +59,37 @@ internal sealed class CameraModuleRunner
             }
             catch (Exception ex)
             {
-                _logger.CaptureLoopFailed(ex);
+                consecutiveFailures++;
+                if (ShouldLogFailure(consecutiveFailures, initialFailureDelay, maximumFailureDelay))
+                {
+                    _logger.CaptureLoopFailed(ex);
+                }
+                if (!await DelayAfterFailureAsync(
+                        consecutiveFailures, initialFailureDelay, maximumFailureDelay, cancellationToken).ConfigureAwait(false))
+                {
+                    break;
+                }
                 continue;
             }
 
             if (result is null)
             {
+                consecutiveFailures++;
+                if (ShouldLogFailure(consecutiveFailures, initialFailureDelay, maximumFailureDelay))
+                {
+                    _logger.CaptureReturnedNull(consecutiveFailures);
+                }
+                if (!await DelayAfterFailureAsync(
+                        consecutiveFailures, initialFailureDelay, maximumFailureDelay, cancellationToken).ConfigureAwait(false))
+                {
+                    break;
+                }
                 continue;
+            }
+            if (consecutiveFailures > 0)
+            {
+                _logger.CaptureRecovered(consecutiveFailures);
+                consecutiveFailures = 0;
             }
 
             var elapsed = _timeProvider.GetUtcNow() - loopStart;
@@ -97,6 +127,46 @@ internal sealed class CameraModuleRunner
                 RequestedSetpoint: nextSetpoint);
         }
     }
+
+    private async Task<bool> DelayAfterFailureAsync(
+        int consecutiveFailures,
+        TimeSpan initialDelay,
+        TimeSpan maximumDelay,
+        CancellationToken cancellationToken)
+    {
+        var delay = CalculateFailureDelay(consecutiveFailures, initialDelay, maximumDelay);
+        if (ShouldLogFailure(consecutiveFailures, initialDelay, maximumDelay))
+        {
+            _logger.CaptureFailureBackoff(consecutiveFailures, delay.TotalMilliseconds);
+        }
+        try
+        {
+            await Task.Delay(delay, _timeProvider, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+    }
+
+    internal static TimeSpan CalculateFailureDelay(int consecutiveFailures)
+        => CalculateFailureDelay(consecutiveFailures, DefaultInitialFailureDelay, DefaultMaximumFailureDelay);
+
+    internal static TimeSpan CalculateFailureDelay(
+        int consecutiveFailures,
+        TimeSpan initialDelay,
+        TimeSpan maximumDelay)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(consecutiveFailures, 1);
+        var exponent = consecutiveFailures - 1d;
+        var milliseconds = initialDelay.TotalMilliseconds * Math.Pow(2, exponent);
+        return TimeSpan.FromMilliseconds(Math.Min(milliseconds, maximumDelay.TotalMilliseconds));
+    }
+
+    private static bool ShouldLogFailure(int failures, TimeSpan initialDelay, TimeSpan maximumDelay)
+        => failures == 1 || CalculateFailureDelay(failures, initialDelay, maximumDelay) !=
+            CalculateFailureDelay(failures - 1, initialDelay, maximumDelay);
 
     internal static CaptureSetpoint ApplyControlPolicy(
         CameraControlPolicy? policy,

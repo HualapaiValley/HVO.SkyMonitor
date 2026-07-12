@@ -53,6 +53,8 @@
             "nightExposure": "00:00:20",
             "dayGain": 0.0,
             "nightGain": 150.0,
+            "captureFailureInitialDelay": "00:00:00.2500000",
+            "captureFailureMaximumDelay": "00:00:30",
             "envelope": {
                 "minExposure": "00:00:00.0500000",
                 "maxExposure": "00:00:30",

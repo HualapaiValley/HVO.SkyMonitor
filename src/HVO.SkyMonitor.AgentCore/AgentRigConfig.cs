@@ -106,7 +106,9 @@ public sealed record PipelineExposureProfile(
     TimeSpan NightExposure,
     double DayGain,
     double NightGain,
-    ExposureEnvelope? Envelope = null);
+    ExposureEnvelope? Envelope = null,
+    TimeSpan? CaptureFailureInitialDelay = null,
+    TimeSpan? CaptureFailureMaximumDelay = null);
 
 public sealed record ExposureEnvelope(
     TimeSpan MinExposure,
