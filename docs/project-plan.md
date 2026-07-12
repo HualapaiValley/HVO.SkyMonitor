@@ -446,6 +446,14 @@ after the baseline is measured.
 - Use the same projector and catalog query as the virtual camera.
 - Support optional star, planet, DSO, constellation, cardinal-direction, and
   horizon overlays.
+- Constellation overlays may include topology endpoint stars omitted by the base
+  visible-object selection, but only in the annotation derivative; enabling an
+  overlay never changes raw sensor data.
+- Draw complete figures when their topology is inside the calibrated view and
+  clip partial figures against sensor, image-circle, projection-domain, and
+  horizon boundaries rather than requiring both endpoints to be on-screen.
+- Make constellation line value/color, thickness, opacity, and endpoint-star
+  inclusion explicit deterministic recipe options.
 - Keep label placement bounded to the image and record the catalog/recipe
   version used to create the derivative.
 
@@ -830,20 +838,23 @@ unpinned branch as the only provenance record.
 
 The next implementation work should occur in this order:
 
-1. Complete the remaining virtual-planetarium acceptance evidence: ordinary-path
+1. Correct constellation overlay completeness and clipping, including optional
+   topology endpoint stars and configurable line color/value, thickness, and
+   opacity without changing raw frames.
+2. Complete the remaining virtual-planetarium acceptance evidence: ordinary-path
    integration, fixed full/reduced geometry and statistics, numeric orientation
    movement, full canonical RGB24 evidence, and machine-readable fixtures.
-2. Resolve catalog coarse-region filtering and harden coverage enforcement for
+3. Resolve catalog coarse-region filtering and harden coverage enforcement for
    missing reports/files; complete shared public API documentation.
-3. Validate standalone container startup with its packaged offline catalog and
+4. Validate standalone container startup with its packaged offline catalog and
    retain exact Debug/Release, vulnerability, coverage, format, and Stellarium
    evidence for the implementation baseline.
-4. Complete local persistence restart browsing, disk-pressure policy, graceful
+5. Complete local persistence restart browsing, disk-pressure policy, graceful
    channel drain, failure backoff, and accelerated full-night/24-hour soak work.
-5. Validate ARM64 deployment and characterize performance on the intended
+6. Validate ARM64 deployment and characterize performance on the intended
    Raspberry Pi hardware without inventing thresholds.
-6. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
-7. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
+7. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
+8. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
    calibration as a separate hardware-backed work stream.
 
 ## 12. Success Definition for the CameraAgent Milestone

@@ -302,6 +302,25 @@ stars. Requirements:
 - later constellation segments resolve through stable object IDs from the same
   scene.
 
+Constellation overlay completeness remains follow-up work. Enabling the overlay
+must not modify immutable raw sensor data, but the annotation derivative may
+augment its scene with topology endpoint stars omitted by the normal magnitude,
+label, or visible-result selection. A planned `IncludeConstellationStars` option
+controls whether those required endpoints receive deterministic star marks in
+the annotated preview. When the complete figure lies within the calibrated view,
+all resolvable segments and endpoints should be drawn. When a figure crosses the
+sensor, image-circle, or horizon boundary, draw and clip only the geometrically
+visible segment portions instead of dropping the figure because one endpoint is
+off-screen. Invalid/back-facing projection domains must not be bridged with a
+straight line.
+
+The constellation overlay also needs explicit derivative style options for line
+value/color, thickness, and opacity, with deterministic defaults for Mono8 and
+RGB24 previews. Acceptance tests must cover a fully visible figure with an
+endpoint omitted from the base visible-object selection, one-endpoint and
+multi-segment boundary clipping, mirrored orientation, and stable output for
+each supported preview format.
+
 No Blazor UI is required. A command-line fixture generator or test artifact is
 preferred for visual inspection.
 
@@ -556,18 +575,23 @@ replace that conformance fixture.
 
 Resume prompt acceptance in this order:
 
-1. Add one ordinary-path VirtualSky integration test spanning capture, preview,
+1. Correct constellation figure overlays: augment annotation scenes with required
+   topology endpoints when `IncludeConstellationStars` is enabled, render their
+   derivative star marks without changing raw data, clip partially visible
+   segments at calibrated boundaries, and add line color/value, thickness, and
+   opacity options with geometry and image tests.
+2. Add one ordinary-path VirtualSky integration test spanning capture, preview,
    annotation, filesystem persistence, latest-frame publication, telemetry, and
    durable outbox selection.
-2. Expand reduced/full ASI174 tests with fixed object pixels, rendered centroids,
+3. Expand reduced/full ASI174 tests with fixed object pixels, rendered centroids,
    statistics, and numeric time/boresight/roll/flip movement assertions.
-3. Add full-resolution canonical equidistant ASI174MC RGB24 checksum/statistics
+4. Add full-resolution canonical equidistant ASI174MC RGB24 checksum/statistics
    evidence and RGB pipeline integration coverage.
-4. Move the rotation, second-season, and second-latitude astronomy expectations
+5. Move the rotation, second-season, and second-latitude astronomy expectations
    into complete machine-readable manifests.
-5. Resolve the catalog coarse-region query requirement or record an explicit
+6. Resolve the catalog coarse-region query requirement or record an explicit
    approved scope revision with rationale.
-6. Harden the coverage gate so missing required files/reports fail, complete XML
+7. Harden the coverage gate so missing required files/reports fail, complete XML
    documentation for shared public APIs, and retain final Debug/Release,
    vulnerability, coverage, format, and Stellarium evidence for the PR.
 
