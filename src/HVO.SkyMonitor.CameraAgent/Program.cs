@@ -201,6 +201,7 @@ public class Program
         builder.Services.AddSingleton<ICelestialCatalog>(_ => CreateCatalog(builder.Configuration));
         builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
         healthChecks.AddCheck<CameraAgentConfigurationHealthCheck>("camera-configuration", tags: ["dependency"]);
+        healthChecks.AddCheck<DiskPressureHealthCheck>("disk-pressure", tags: ["dependency"]);
         builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
         builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
 

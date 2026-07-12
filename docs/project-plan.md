@@ -864,9 +864,9 @@ integration, machine-readable ASI174 evidence, catalog coarse filtering,
 real-image geometry-only constellation overlays, and pinned headless Stellarium
 validation and standalone container/catalog startup are complete.
 
-1. Complete disk-pressure policy, failure backoff, and accelerated
-   full-night/24-hour soak work. Restart-safe persistence browsing and graceful
-   channel drain are complete.
+1. Complete failure backoff and accelerated full-night/24-hour soak work.
+   Restart-safe persistence browsing, graceful channel drain, and disk-pressure
+   retention/health policy are complete.
 2. Validate ARM64 deployment and characterize performance on the intended
    Raspberry Pi hardware without inventing thresholds.
 3. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
