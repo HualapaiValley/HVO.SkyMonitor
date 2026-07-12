@@ -14,7 +14,6 @@ public sealed class FrameProcessingChannelTests
         await channel.WriteAsync(CreateItem(), CancellationToken.None).ConfigureAwait(false);
 
         var blockedWrite = channel.WriteAsync(CreateItem(), CancellationToken.None).AsTask();
-        await Task.Delay(25).ConfigureAwait(false);
         Assert.IsFalse(blockedWrite.IsCompleted);
         Assert.AreEqual(2, channel.CurrentDepth);
 

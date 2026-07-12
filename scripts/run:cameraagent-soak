@@ -43,8 +43,6 @@ timeout --signal=TERM --kill-after=30s "$DURATION" docker run --rm --name "$CONT
     --network none \
     --mount "type=bind,src=$RUN_ROOT/data,dst=/workspaces/HVO.SkyMonitor/data" \
     -e ASPNETCORE_ENVIRONMENT=Development \
-    -e OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
-    -e OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
     "$IMAGE_NAME" >"$RUN_ROOT/cameraagent.log" 2>&1
 status=$?
 set -e
