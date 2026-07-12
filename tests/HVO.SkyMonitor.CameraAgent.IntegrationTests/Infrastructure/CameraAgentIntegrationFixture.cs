@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent;
+using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.IntegrationTests;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -14,6 +15,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
@@ -30,6 +32,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     private Uri? _centralIdentityBaseUri;
     private Uri? _centralHostBaseUri;
     private JsonWebKeySet? _jwksDocument;
+    private string? _configurationPath;
+    private string? _storageRoot;
 
     /// <summary>
     /// Initializes the host and camera agent factories.
@@ -37,6 +41,15 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     public async Task InitializeAsync()
     {
         await _hostFixture.InitializeAsync().ConfigureAwait(false);
+
+        _storageRoot = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-integration-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_storageRoot);
+        _configurationPath = Path.Combine(_storageRoot, "cameraagent.integration.json");
+        var template = await File.ReadAllTextAsync(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.integration.json")).ConfigureAwait(false);
+        await File.WriteAllTextAsync(_configurationPath,
+            template.Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(_storageRoot), StringComparison.Ordinal))
+            .ConfigureAwait(false);
 
         using var hostClient = _hostFixture.Factory.CreateClient(new WebApplicationFactoryClientOptions
         {
@@ -66,6 +79,11 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                 });
                 builder.ConfigureTestServices(services =>
                 {
+                    var drainService = services.Single(descriptor =>
+                        descriptor.ServiceType == typeof(IHostedService) &&
+                        descriptor.ImplementationType == typeof(ArtifactOutboxDrainService));
+                    services.Remove(drainService);
+
                     services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
                     {
                         options.BackchannelHttpHandler = _hostFixture.Factory.Server.CreateHandler();
@@ -131,11 +149,17 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     /// </summary>
     public Uri CentralIdentityBaseUri => _centralIdentityBaseUri ?? throw new InvalidOperationException("Fixture has not been initialized.");
 
+    public string StorageRoot => _storageRoot ?? throw new InvalidOperationException("Fixture has not been initialized.");
+
     public void Dispose()
     {
         _agentFactory?.Dispose();
         _agentBaseFactory?.Dispose();
         _hostFixture.Dispose();
+        if (_storageRoot is not null && Directory.Exists(_storageRoot))
+        {
+            Directory.Delete(_storageRoot, recursive: true);
+        }
     }
 
     private Dictionary<string, string?> BuildConfigurationOverrides()
@@ -148,7 +172,10 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["CentralIdentity:Mode"] = "ClientCredentials",
             ["CentralIdentity:ClientCredentials:ClientId"] = TestClients.SystemCameraAgent.ClientId,
             ["CentralIdentity:ClientCredentials:ClientSecret"] = TestClients.SystemCameraAgent.ClientSecret,
-            ["SkyMonitor:BaseUrl"] = apiBase
+            ["SkyMonitor:BaseUrl"] = apiBase,
+            ["Catalog:Path"] = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"),
+            ["Catalog:Sha256"] = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+            ["CameraAgent:ConfigFilePath"] = _configurationPath
         };
 
         var scopePrefix = "CentralIdentity:ClientCredentials:Scopes";

@@ -6,7 +6,9 @@ public enum CameraPixelFormat
 {
     Mono8,
     Mono16,
-    Rgb24
+    Rgb24,
+    /// <summary>One little-endian unsigned 16-bit sample per RGGB photosite, without demosaicing.</summary>
+    BayerRggb16
 }
 
 public sealed record CameraFrame(
@@ -15,4 +17,5 @@ public sealed record CameraFrame(
     int Height,
     CameraPixelFormat PixelFormat,
     ReadOnlyMemory<byte> PixelData,
-    FrameMetadata Metadata);
+    FrameMetadata Metadata,
+    int? StrideBytes = null);

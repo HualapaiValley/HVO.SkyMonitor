@@ -24,4 +24,19 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.sample.json" Link="cameraagent.sample.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi174.full.json" Link="virtual-asi174.full.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi174mc.full.json" Link="virtual-asi174mc.full.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\fixtures\astronomy\hualapai-asi174-conformance-v1.json" Link="Fixtures\hualapai-asi174-conformance-v1.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

@@ -49,6 +49,7 @@ internal sealed class DeviceImageUploadConfiguration : IEntityTypeConfiguration<
         builder.Property(upload => upload.ChecksumSha256).HasMaxLength(64);
         builder.Property(upload => upload.ByteLength);
         builder.Property(upload => upload.AgentId).HasMaxLength(128);
+        builder.Property(upload => upload.SceneProvenanceJson);
 
         builder.HasIndex(upload => upload.RegistrationId);
         builder.HasIndex(upload => upload.DevicePublicId);

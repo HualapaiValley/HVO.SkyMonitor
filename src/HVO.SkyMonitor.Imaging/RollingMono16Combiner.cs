@@ -2,10 +2,14 @@ using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Imaging;
 
-/// <summary>Immutable result of a rolling Mono16 arithmetic mean.</summary>
-public sealed record RollingCombinationResult(ReadOnlyMemory<byte> PixelData, IReadOnlyList<Guid> SourceArtifactIds, TimeSpan TotalIntegration);
+/// <summary>Immutable result of a rolling linear 16-bit arithmetic mean.</summary>
+public sealed record RollingCombinationResult(
+    ReadOnlyMemory<byte> PixelData,
+    CameraPixelFormat PixelFormat,
+    IReadOnlyList<Guid> SourceArtifactIds,
+    TimeSpan TotalIntegration);
 
-/// <summary>Maintains a bounded compatible Mono16 frame window and emits an average after every frame.</summary>
+/// <summary>Maintains a bounded compatible linear 16-bit frame window and emits an average after every frame.</summary>
 public sealed class RollingMono16Combiner
 {
     private readonly int _capacity;
@@ -13,6 +17,7 @@ public sealed class RollingMono16Combiner
     private ulong[]? _totals;
     private int _width;
     private int _height;
+    private CameraPixelFormat _pixelFormat;
 
     /// <summary>Creates a rolling combiner using the newest compatible frame count.</summary>
     public RollingMono16Combiner(int capacity)
@@ -25,18 +30,19 @@ public sealed class RollingMono16Combiner
         _capacity = capacity;
     }
 
-    /// <summary>Adds a raw Mono16 artifact, resetting the window when layout changes, and returns the warm-up/full average.</summary>
+    /// <summary>Adds a raw linear 16-bit artifact, resetting on layout changes, and returns the warm-up/full average.</summary>
     public RollingCombinationResult Add(FrameArtifact artifact)
     {
         ArgumentNullException.ThrowIfNull(artifact);
         var frame = artifact.Frame;
-        if (artifact.Role is not FrameArtifactRole.Raw and not FrameArtifactRole.Calibrated || frame.PixelFormat != CameraPixelFormat.Mono16 ||
+        if (artifact.Role is not FrameArtifactRole.Raw and not FrameArtifactRole.Calibrated ||
+            frame.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
             frame.PixelData.Length != checked(frame.Width * frame.Height * 2))
         {
-            throw new ArgumentException("A tightly packed Mono16 raw or calibrated artifact is required.", nameof(artifact));
+            throw new ArgumentException("A tightly packed Mono16 or BayerRggb16 raw or calibrated artifact is required.", nameof(artifact));
         }
 
-        if (_frames.Count > 0 && (_width != frame.Width || _height != frame.Height))
+        if (_frames.Count > 0 && (_width != frame.Width || _height != frame.Height || _pixelFormat != frame.PixelFormat))
         {
             _frames.Clear();
             _totals = null;
@@ -44,6 +50,7 @@ public sealed class RollingMono16Combiner
 
         _width = frame.Width;
         _height = frame.Height;
+        _pixelFormat = frame.PixelFormat;
         _totals ??= new ulong[checked(frame.Width * frame.Height)];
         AddToTotals(frame.PixelData.Span, 1);
         _frames.Enqueue((artifact, frame.Metadata.Exposure));
@@ -61,7 +68,7 @@ public sealed class RollingMono16Combiner
             output[pixel * 2 + 1] = (byte)(average >> 8);
         }
 
-        return new RollingCombinationResult(output, _frames.Select(item => item.Artifact.ArtifactId).ToArray(),
+        return new RollingCombinationResult(output, frame.PixelFormat, _frames.Select(item => item.Artifact.ArtifactId).ToArray(),
             TimeSpan.FromTicks(_frames.Sum(item => item.Exposure.Ticks)));
     }
 

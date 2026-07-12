@@ -89,13 +89,28 @@ internal sealed class CameraModuleRunner
 
             var brightness = MeasureNormalizedBrightness(result.Frame);
             var decision = ExposureController.Next(config.Rig.Pipeline, brightness, night: true);
+            var nextSetpoint = ApplyControlPolicy(config.Rig.ControlPolicy, nextRequest.RequestedSetpoint!, decision.Setpoint);
             nextRequest = new CaptureRequest(
                 RequestedStartUtc: _timeProvider.GetUtcNow(),
                 TargetInterval: effectiveInterval,
                 Mode: result.Mode,
-                RequestedSetpoint: decision.Setpoint);
+                RequestedSetpoint: nextSetpoint);
         }
     }
+
+    internal static CaptureSetpoint ApplyControlPolicy(
+        CameraControlPolicy? policy,
+        CaptureSetpoint current,
+        CaptureSetpoint automatic)
+        => automatic with
+        {
+            Exposure = policy?.AutoExposure == CameraFeatureDirective.Disabled
+                ? current.Exposure
+                : automatic.Exposure,
+            Gain = policy?.AutoGain == CameraFeatureDirective.Disabled
+                ? current.Gain
+                : automatic.Gain
+        };
 
     private static double? MeasureNormalizedBrightness(CameraFrame? frame)
     {
@@ -104,35 +119,58 @@ internal sealed class CameraModuleRunner
             return null;
         }
 
-        var data = frame.PixelData.Span;
         return frame.PixelFormat switch
         {
-            CameraPixelFormat.Mono8 => AverageMono8(data),
-            CameraPixelFormat.Mono16 => AverageMono16(data),
-            CameraPixelFormat.Rgb24 => AverageMono8(data),
+            CameraPixelFormat.Mono8 => AverageBytes(frame, 1),
+            CameraPixelFormat.Mono16 => AverageMono16(frame),
+            CameraPixelFormat.BayerRggb16 => AverageMono16(frame),
+            CameraPixelFormat.Rgb24 => AverageBytes(frame, 3),
             _ => null
         };
     }
 
-    private static double AverageMono16(ReadOnlySpan<byte> data)
+    private static double? AverageMono16(CameraFrame frame)
     {
-        ulong total = 0;
-        for (var index = 0; index < data.Length; index += 2)
+        var data = frame.PixelData.Span;
+        var packedStride = checked(frame.Width * 2);
+        var stride = frame.StrideBytes ?? packedStride;
+        if (frame.Width <= 0 || frame.Height <= 0 || stride < packedStride || data.Length < checked(stride * frame.Height))
         {
-            total += (ushort)(data[index] | data[index + 1] << 8);
+            return null;
         }
 
-        return total / (data.Length / 2d) / ushort.MaxValue;
+        ulong total = 0;
+        for (var y = 0; y < frame.Height; y++)
+        {
+            for (var x = 0; x < frame.Width; x++)
+            {
+                var index = y * stride + x * 2;
+                total += (ushort)(data[index] | data[index + 1] << 8);
+            }
+        }
+
+        return total / (double)(frame.Width * frame.Height) / ushort.MaxValue;
     }
 
-    private static double AverageMono8(ReadOnlySpan<byte> data)
+    private static double? AverageBytes(CameraFrame frame, int bytesPerPixel)
     {
-        ulong total = 0;
-        foreach (var value in data)
+        var data = frame.PixelData.Span;
+        var packedStride = checked(frame.Width * bytesPerPixel);
+        var stride = frame.StrideBytes ?? packedStride;
+        if (frame.Width <= 0 || frame.Height <= 0 || stride < packedStride || data.Length < checked(stride * frame.Height))
         {
-            total += value;
+            return null;
         }
 
-        return total / (double)data.Length / byte.MaxValue;
+        ulong total = 0;
+        for (var y = 0; y < frame.Height; y++)
+        {
+            foreach (var value in data.Slice(y * stride, packedStride))
+            {
+                total += value;
+            }
+        }
+
+        return total / (double)(packedStride * frame.Height) / byte.MaxValue;
     }
 }

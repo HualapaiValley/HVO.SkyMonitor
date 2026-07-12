@@ -11,7 +11,7 @@ public class ApiKeyAuthenticationTests
     {
         // Arrange
         var keyWithPrefix = "smk_test123";
-        
+
         // Assert
         Assert.StartsWith("smk_", keyWithPrefix);
     }

@@ -1,0 +1,66 @@
+{
+  "agentId": "replace-with-registered-device-id",
+  "module": { "type": "VirtualSky", "options": { "seed": 2025, "maximumMagnitude": 6.5, "maximumResults": 2000, "rigProfileVersion": "virtual-asi174mc-full-v1" } },
+  "rig": {
+    "sensor": {
+      "name": "VirtualAsi174McRgb",
+      "widthPixels": 1936,
+      "heightPixels": 1216,
+      "pixelSizeMicrons": 5.86,
+      "colorMode": "Color",
+      "pixelFormat": "Rgb24",
+      "responseMode": "RenderedRgb",
+      "strideBytes": 5808,
+      "byteOrder": "LittleEndian",
+      "sensorRecipeVersion": "virtual-asi174mc-rgb24-compat-v1"
+    },
+    "optics": {
+      "projectionModel": "EquidistantFisheye",
+      "focalLengthMillimeters": 0.0,
+      "fieldOfViewDegrees": 180.0,
+      "rollDegrees": 0.0,
+      "lensKind": "Fisheye",
+      "principalPointX": 968.0,
+      "principalPointY": 608.0,
+      "imageCircleRadiusPixels": 595.84,
+      "horizontalFlip": false,
+      "calibrationVersion": "virtual-fisheye-180-equidistant-v1"
+    },
+    "orientation": {
+      "boresightAltitudeDegrees": 90.0,
+      "boresightAzimuthDegrees": 0.0,
+      "rollAdjustmentDegrees": 0.0
+    },
+    "pipeline": {
+      "captureInterval": "00:00:05",
+      "dayExposure": "00:00:00.2500000",
+      "nightExposure": "00:00:02.5000000",
+      "dayGain": 1.0,
+      "nightGain": 1.0
+    }
+  },
+  "processingSteps": [
+    {
+      "id": "Preview",
+      "type": "Preview",
+      "order": 50,
+      "options": {
+        "enabled": true,
+        "recipeVersion": "rgb24-copy-v1"
+      }
+    },
+    {
+      "id": "Annotation",
+      "type": "Annotation",
+      "order": 75,
+      "options": {
+        "enabled": true,
+        "drawLabels": true,
+        "drawConstellationLines": false,
+        "drawImageCircle": true,
+        "drawCardinalDirections": true,
+        "recipeVersion": "rgb24-canonical-annotation-v2"
+      }
+    }
+  ]
+}

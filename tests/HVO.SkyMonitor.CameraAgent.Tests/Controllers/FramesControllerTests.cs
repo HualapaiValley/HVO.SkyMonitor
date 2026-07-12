@@ -28,7 +28,7 @@ public class FramesControllerTests
     }
 
     [TestMethod]
-    public void GetLatest_WhenRgbPixelFormatUnsupported_Returns415()
+    public void GetLatest_WhenRgbPixelFormatAvailable_ReturnsJpeg()
     {
         var accessor = new Mock<ILatestFrameAccessor>(MockBehavior.Strict);
         var snapshot = new LatestFrameSnapshot(
@@ -43,9 +43,10 @@ public class FramesControllerTests
 
         var result = controller.GetLatest();
 
-        var status = result as StatusCodeResult;
-        Assert.IsNotNull(status);
-        Assert.AreEqual(StatusCodes.Status415UnsupportedMediaType, status.StatusCode);
+        var fileResult = result as FileContentResult;
+        Assert.IsNotNull(fileResult);
+        Assert.AreEqual("image/jpeg", fileResult.ContentType);
+        Assert.IsTrue(fileResult.FileContents.Length > 0);
     }
 
     [TestMethod]

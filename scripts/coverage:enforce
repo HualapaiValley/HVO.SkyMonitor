@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -eq 0 ]]; then
+  reports=()
+  shopt -s nullglob
+  for results_dir in tests/*/TestResults; do
+    latest=""
+    for report in "$results_dir"/*/coverage.cobertura.xml; do
+      if [[ -z "$latest" || "$report" -nt "$latest" ]]; then
+        latest="$report"
+      fi
+    done
+    if [[ -n "$latest" ]]; then
+      reports+=("$latest")
+    fi
+  done
+  shopt -u nullglob
+else
+  reports=("$@")
+fi
+
+if [[ "${#reports[@]}" -eq 0 ]]; then
+  echo "No Cobertura reports found. Run the repository coverage test command first." >&2
+  exit 2
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" -- "${reports[@]}"

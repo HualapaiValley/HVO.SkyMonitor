@@ -21,6 +21,7 @@
 - `CameraAgent.Common` owns edge capture orchestration: module registration/factory, ordered processing, storage, retention, telemetry, and configuration loading. The `CameraAgent` host registers this through `AddCameraAgentInfrastructure` and hosts the local UI/API/identity.
 - `LogicHost` is the central ASP.NET host; it owns SQL Server/Redis/MinIO-backed central services and runs EF migrations plus seed data at startup.
 - New reusable astronomy/projection behavior belongs in `HVO.SkyMonitor.Astronomy`, and reusable image algorithms in `HVO.SkyMonitor.Imaging`; do not create host-specific projection math. Astronomy catalogs are versioned read-only SQLite snapshots deployed locally to LogicHost and every CameraAgent, never part of the shared SQL Server schema.
+- Concrete read-only catalog persistence belongs in the optional `HVO.SkyMonitor.Catalog.Sqlite` infrastructure adapter shared by both hosts. It may reference Astronomy contracts; Astronomy must remain storage-neutral and must not reference the adapter.
 
 ## Runtime and Infrastructure
 

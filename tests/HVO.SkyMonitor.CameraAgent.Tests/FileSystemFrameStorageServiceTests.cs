@@ -136,6 +136,36 @@ public sealed class FileSystemFrameStorageServiceTests
     }
 
     [TestMethod]
+    public async Task SaveAsync_PersistsSceneProvenance()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var scene = new SceneProvenance(
+                "scene-id", "rig-v1", "HYG", "4.2", new string('A', 64),
+                "EquidistantFisheye", "projection-v1", "scene-v1", "sensor-v1");
+            var frame = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono8, new byte[] { 1 },
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0, Scene: scene));
+
+            var stored = await service.SaveAsync(root,
+                new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Raw, frame), CancellationToken.None).ConfigureAwait(false);
+
+            using var metadata = System.Text.Json.JsonDocument.Parse(
+                await File.ReadAllTextAsync(Path.ChangeExtension(stored.AbsolutePath, ".json")).ConfigureAwait(false));
+            Assert.AreEqual("scene-id",
+                metadata.RootElement.GetProperty("metadata").GetProperty("scene").GetProperty("sceneId").GetString());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task RemoveAsync_RemovesAcknowledgedPayloadMetadataAndIndexEntry()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));

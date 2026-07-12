@@ -46,15 +46,43 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
             throw new ArgumentOutOfRangeException(nameof(maximumResults));
         }
 
+        return EnumeratePending(root, CancellationToken.None).Take(maximumResults).ToArray();
+    }
+
+    public IEnumerable<ArtifactUploadManifest> EnumeratePending(string root, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
         var directory = Path.Combine(Path.GetFullPath(root), "outbox");
         if (!Directory.Exists(directory))
         {
-            return Array.Empty<ArtifactUploadManifest>();
+            yield break;
         }
 
-        return Directory.EnumerateFiles(directory, "*.json").OrderBy(static path => path, StringComparer.Ordinal)
-            .Take(maximumResults).Select(path => JsonSerializer.Deserialize<ArtifactUploadManifest>(File.ReadAllBytes(path), SerializerOptions)
-                ?? throw new InvalidDataException($"Outbox manifest '{path}' is invalid.")).ToArray();
+        var paths = new List<string>();
+        foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            paths.Add(path);
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        paths.Sort(StringComparer.Ordinal);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        foreach (var path in paths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ArtifactUploadManifest manifest;
+            try
+            {
+                manifest = JsonSerializer.Deserialize<ArtifactUploadManifest>(File.ReadAllBytes(path), SerializerOptions)
+                    ?? throw new InvalidDataException($"Outbox manifest '{path}' is invalid.");
+            }
+            catch (JsonException exception)
+            {
+                throw new InvalidDataException($"Outbox manifest '{path}' is invalid.", exception);
+            }
+            yield return manifest;
+        }
     }
 
     public ValueTask AcknowledgeAsync(string root, string idempotencyKey, CancellationToken cancellationToken)

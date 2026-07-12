@@ -1,0 +1,120 @@
+{
+  "agentId": "cameraagent-integration-test",
+  "module": {
+    "type": "VirtualSky",
+    "options": {
+      "seed": 2025,
+      "maximumMagnitude": 6.5,
+      "maximumResults": 9,
+      "magnitudeZeroElectronsPerSecond": 1000.0,
+      "backgroundElectronsPerSecond": 2.0,
+      "shotNoiseEnabled": false,
+      "readNoiseStandardDeviation": 0.0,
+      "rigProfileVersion": "integration-virtual-asi174-v1",
+      "asi174Sensor": {
+        "enabled": true,
+        "blackLevelAdu": 64.0
+      }
+    }
+  },
+  "observatory": {
+    "latitudeDegrees": 35.347,
+    "longitudeDegrees": -113.878,
+    "elevationMeters": 1000.0,
+    "timeZoneId": "America/Phoenix"
+  },
+  "rig": {
+    "sensor": {
+      "name": "IntegrationAsi174Mm",
+      "widthPixels": 64,
+      "heightPixels": 48,
+      "pixelSizeMicrons": 5.86,
+      "colorMode": "Mono",
+      "pixelFormat": "Mono16",
+      "responseMode": "Monochrome",
+      "strideBytes": 128,
+      "byteOrder": "LittleEndian",
+      "sensorRecipeVersion": "integration-asi174-v1"
+    },
+    "optics": {
+      "projectionModel": "EquidistantFisheye",
+      "focalLengthMillimeters": 0.0,
+      "fieldOfViewDegrees": 180.0,
+      "rollDegrees": 0.0,
+      "lensKind": "Fisheye",
+      "principalPointX": 32.0,
+      "principalPointY": 24.0,
+      "imageCircleRadiusPixels": 23.0,
+      "horizontalFlip": false,
+      "calibrationVersion": "integration-equidistant-v1"
+    },
+    "orientation": {
+      "boresightAltitudeDegrees": 90.0,
+      "boresightAzimuthDegrees": 0.0,
+      "rollAdjustmentDegrees": 0.0
+    },
+    "pipeline": {
+      "captureInterval": "00:00:00.5000000",
+      "dayExposure": "00:00:00.0100000",
+      "nightExposure": "00:00:00.0100000",
+      "dayGain": 1.0,
+      "nightGain": 1.0
+    },
+    "controlPolicy": {
+      "autoGain": "Disabled",
+      "autoExposure": "Disabled"
+    }
+  },
+  "processingSteps": [
+    {
+      "id": "RollingCombination",
+      "type": "RollingCombination",
+      "order": 25,
+      "options": {
+        "enabled": true,
+        "windowSize": 2
+      }
+    },
+    {
+      "id": "Preview",
+      "type": "Preview",
+      "order": 50,
+      "options": {
+        "enabled": true,
+        "recipeVersion": "integration-mono16-preview-v1",
+        "blackPercentile": 0.5,
+        "whitePercentile": 0.999,
+        "asinhStrength": 4.0
+      }
+    },
+    {
+      "id": "Annotation",
+      "type": "Annotation",
+      "order": 75,
+      "options": {
+        "enabled": true,
+        "drawLabels": true,
+        "drawConstellationLines": false,
+        "drawImageCircle": true,
+        "drawCardinalDirections": true,
+        "recipeVersion": "integration-annotation-v2"
+      }
+    },
+    {
+      "id": "LocalStorage",
+      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "order": 100,
+      "options": {
+        "storageRoot": __STORAGE_ROOT__,
+        "retentionDays": 1,
+        "updateLatestFrame": true,
+        "queueForUpload": true
+      }
+    },
+    {
+      "id": "Telemetry",
+      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "order": 1000
+    }
+  ]
+}

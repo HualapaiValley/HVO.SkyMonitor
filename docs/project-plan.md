@@ -88,9 +88,11 @@ HVO.SkyMonitor.AgentCore
          ^
          +--- HVO.SkyMonitor.Imaging
 
+HVO.SkyMonitor.Catalog.Sqlite ---> HVO.SkyMonitor.Astronomy
+
 HVO.SkyMonitor.CameraAgent.Common ---> AgentCore + Astronomy + Imaging
-HVO.SkyMonitor.CameraAgent        ---> CameraAgent.Common
-HVO.SkyMonitor.LogicHost          ---> AgentCore + Astronomy + Imaging
+HVO.SkyMonitor.CameraAgent        ---> CameraAgent.Common + Catalog.Sqlite
+HVO.SkyMonitor.LogicHost          ---> AgentCore + Astronomy + Imaging + Catalog.Sqlite
 ```
 
 CameraAgent and LogicHost must not reference each other. They share stable
@@ -135,6 +137,12 @@ Catalog persistence is host infrastructure, not Astronomy domain behavior. Each
 LogicHost and CameraAgent receives the same versioned, read-only SQLite catalog
 snapshot locally. Catalog data must never be added to the shared SQL Server
 schema or fetched during normal CameraAgent acquisition/processing.
+
+The optional `HVO.SkyMonitor.Catalog.Sqlite` infrastructure adapter owns concrete
+SQLite access, snapshot validation, and process-cached query execution. It may
+reference Astronomy catalog contracts; Astronomy must not reference it. Both
+hosts may compose the adapter without referencing each other. Architecture tests
+must enforce this direction when the adapter project is introduced.
 
 #### `HVO.SkyMonitor.Imaging` (new)
 
@@ -326,6 +334,10 @@ astronomy, exposure, combination, storage, and API tests reproducible.
 - Frames pass through the ordinary processing, storage, latest-frame, and
   telemetry paths without simulator-specific branches.
 - A fixed fixture produces a golden test image and stable pixel checksum.
+- A pinned headless planetarium validation compares selected rendered centroids,
+  annotation anchors, projection boundaries, orientation, and constellation
+  endpoint/clipping geometry. It runs explicitly or on a manual/scheduled
+  workflow rather than making every unit test depend on a GUI stack.
 
 ## 5. Projection and Catalog Plan
 
@@ -369,6 +381,14 @@ Catalog licensing, source URL, version, checksum, and preprocessing steps must
 be documented beside the packaged data. Snapshot updates are explicitly
 distributed and applied atomically; CameraAgent continues using its current
 snapshot while offline.
+
+The initial region contract is an optional inclusive J2000 spherical cap on the
+candidate query. Astronomy derives a conservative cap from the calibrated
+projection and horizon policy, while adapters may use it only to reduce
+candidates. Exact visibility and `MaximumResults` remain Astronomy concerns.
+Refraction falls back to the geometric-horizon cap or an all-sky query where an
+optical cap cannot be proven conservative. The process-cached SQLite adapter
+filters its validated immutable rows without changing the snapshot schema.
 
 ### 5.3 Astronomy validation
 
@@ -438,6 +458,18 @@ after the baseline is measured.
 - Use the same projector and catalog query as the virtual camera.
 - Support optional star, planet, DSO, constellation, cardinal-direction, and
   horizon overlays.
+- Real-camera constellation overlays may resolve topology endpoint geometry
+  omitted by the base visible-object selection, but they never synthesize star
+  pixels or claim a physical detection.
+- VirtualSky may expose an explicit `IncludeConstellationEndpointStars` render
+  option that adds omitted topology stars to the simulated scene before raw
+  generation. The option is virtual-only, versioned in the render recipe, and
+  recorded in provenance; the annotation step still never mutates raw data.
+- Draw complete figures when their topology is inside the calibrated view and
+  clip partial figures against sensor, image-circle, projection-domain, and
+  horizon boundaries rather than requiring both endpoints to be on-screen.
+- Make constellation line value/color, thickness, opacity, and endpoint-star
+  inclusion explicit deterministic recipe options.
 - Keep label placement bounded to the image and record the catalog/recipe
   version used to create the derivative.
 
@@ -822,16 +854,27 @@ unpinned branch as the only provenance record.
 
 The next implementation work should occur in this order:
 
-1. Complete Phase 0 contract and baseline repairs.
-2. Implement and validate the astronomy coordinate/projection foundation for
-  fisheye and rectilinear optics.
-3. Implement catalog loading and deterministic frame selection.
-4. Build the Mono16 planetarium renderer and virtual ASI174MM module.
-5. Prove continuous virtual acquisition through the current agent host.
-6. Introduce artifact sets and real local persistence.
-7. Add exposure feedback and rolling combination.
-8. Finish local previews, annotations, history, and operational hardening.
-9. Freeze the upload manifest and begin LogicHost durable ingestion.
+1. Complete the remaining virtual-planetarium acceptance evidence. The
+   ordinary-path integration and fixed ASI174MM reduced/full geometry,
+   statistics, centroid, orientation movement, and full canonical RGB24 evidence
+   are complete and consumed from a versioned machine-readable conformance
+   fixture.
+2. Add real-image geometry-only constellation overlays in issue #56. VirtualSky
+   already has independent endpoint geometry, provenance-tracked endpoint-star
+   inclusion, boundary clipping, and configurable line styling.
+3. Add pinned headless Stellarium centroid, endpoint, and clipping validation in
+   issue #57. This is a manual/scheduled external-oracle workflow, not part of
+   the normal offline .NET test gate.
+4. Validate standalone container startup with its packaged offline catalog and
+   retain exact Debug/Release, vulnerability, coverage, format, and Stellarium
+   evidence for the implementation baseline.
+5. Complete local persistence restart browsing, disk-pressure policy, graceful
+   channel drain, failure backoff, and accelerated full-night/24-hour soak work.
+6. Validate ARM64 deployment and characterize performance on the intended
+   Raspberry Pi hardware without inventing thresholds.
+7. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
+8. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
+   calibration as a separate hardware-backed work stream.
 
 ## 12. Success Definition for the CameraAgent Milestone
 

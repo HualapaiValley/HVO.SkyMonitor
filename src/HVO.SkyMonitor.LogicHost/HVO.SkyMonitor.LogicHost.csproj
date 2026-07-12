@@ -6,9 +6,22 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="..\..\tests\fixtures\catalog\hyg-v42-bright-stars.sqlite" Link="catalog\hyg_v42.sqlite">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\HVO.SkyMonitor.Common\HVO.SkyMonitor.Common.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.AgentCore\HVO.SkyMonitor.AgentCore.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Astronomy\HVO.SkyMonitor.Astronomy.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.Catalog.Sqlite\HVO.SkyMonitor.Catalog.Sqlite.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.Imaging\HVO.SkyMonitor.Imaging.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
   </ItemGroup>
 

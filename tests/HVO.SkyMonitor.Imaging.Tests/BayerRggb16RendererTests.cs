@@ -1,0 +1,48 @@
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Imaging;
+
+namespace HVO.SkyMonitor.Imaging.Tests;
+
+[TestClass]
+public sealed class BayerRggb16RendererTests
+{
+    [TestMethod]
+    public async Task Render_ProducesPackedIndependentRaw16FramesWithoutDemosaicing()
+    {
+        var scene = await SceneTestFactory.CreateCenteredAsync(9, 9).ConfigureAwait(false);
+        var layout = new ImageLayout(9, 9, CameraPixelFormat.BayerRggb16, 18);
+        var options = new BayerRggb16RenderOptions
+        {
+            ExposureSeconds = 1,
+            Gain = 150,
+            MagnitudeZeroElectronsPerSecond = 100,
+            BackgroundElectronsPerSecond = 10,
+            ShotNoiseEnabled = true,
+            Seed = 42,
+            SensorResponse = Asi178McSensorModel.Resolve(150)
+        };
+
+        var first = BayerRggb16Renderer.Render(scene, layout, options);
+        var repeated = BayerRggb16Renderer.Render(scene, layout, options);
+        var changed = BayerRggb16Renderer.Render(scene, layout, options with { Seed = 43 });
+
+        Assert.AreEqual(9 * 9 * 2, first.Pixels.Length);
+        Assert.AreEqual(BayerRggb16Renderer.AlgorithmVersion, first.AlgorithmVersion);
+        StringAssert.Contains(first.CompatibilityLabel, "RGGB", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(first.Pixels.ToArray(), repeated.Pixels.ToArray());
+        CollectionAssert.AreNotEqual(first.Pixels.ToArray(), changed.Pixels.ToArray());
+    }
+
+    [TestMethod]
+    public void Asi178McSensorModel_MapsPublishedGainIntoFullRangeContainer()
+    {
+        var gainZero = Asi178McSensorModel.Resolve(0);
+        var gainOneFifty = Asi178McSensorModel.Resolve(150);
+
+        Assert.AreEqual(0.229, gainZero.ElectronsPerAdu, 1e-12);
+        Assert.AreEqual(0.04072, gainOneFifty.ElectronsPerAdu, 0.00001);
+        Assert.AreEqual(2.25, gainZero.ReadNoiseElectrons, 1e-12);
+        Assert.AreEqual(1.57, gainOneFifty.ReadNoiseElectrons, 1e-12);
+        Assert.AreEqual(16, gainZero.AdcBitDepth);
+    }
+}

@@ -53,11 +53,23 @@ Initial named profiles are:
 | `VirtualAsi174Mm` | 1936 × 1216, 5.86 µm | Monochrome | `Mono16` |
 | `VirtualAsi174McRgb` | 1936 × 1216, 5.86 µm | Color scene compatibility | `Rgb24` |
 | `VirtualAsi174McBayer` | 1936 × 1216, 5.86 µm | RGGB CFA sensor emulation | `BayerRggb16` |
+| `VirtualAsi178McRaw16` | 3096 × 2080, 2.4 µm | RGGB CFA sensor emulation | `BayerRggb16` |
 
 `VirtualAsi174McBayer` is complete only after the shared frame contract can
 describe CFA pattern, sample bit depth, packing, stride, endianness, black
 level, white level, and channel gains. Until then, the RGB profile validates
 color rendering but must not be described as raw ASI174MC emulation.
+
+`VirtualAsi178McRaw16` is the development baseline. Its sensor geometry, RGGB
+phase, RAW16 length, byte order, ADC depth, gain units, and initial response
+curve are evidence-backed. Its lens and absolute system throughput remain
+provisional; see `docs/calibration/asi178mc-characterization.md`.
+
+The full comparison host profile is `cameraagent.asi178mc-comparison.json`. It
+emits immutable full-resolution RGGB RAW16 and creates a bilinear RGB24 display
+preview. Its equidistant fisheye image circle lies outside the sensor rectangle
+to match the installed camera's cropped fisheye appearance rather than forcing
+artificial black corners.
 
 The implementation must not branch on preset names. Presets produce ordinary
 sensor, optics, orientation, and simulation option records consumed through
@@ -122,6 +134,35 @@ simulation parameter. Required configurable groups are:
 
 The first milestone may use documented heuristic defaults. It must not present
 them as measured IMX174 characteristics.
+
+### Sky brightness and display
+
+The virtual sensor keeps raw Mono16 values linear. The ASI174MM response applies
+exposure in the electron domain, photon shot noise, optional dark-current shot
+noise, gain-dependent read noise, physical-well clipping, conversion to native
+12-bit ADU, a configurable black pedestal, and ADC clipping. ZWO gain values use
+the documented 0.1 dB control convention; gain changes conversion gain and
+input-referred ADC saturation rather than creating photons.
+
+When the ASI174 model is enabled and no explicit background rate is configured,
+the Bortle zenith surface brightness is converted to electrons per pixel from
+the same magnitude-zero system rate and the projection-center pixel solid
+angle. The magnitude-zero rate still includes unmeasured lens aperture,
+transmission, atmosphere, passband, and quantum efficiency and is therefore a
+versioned system calibration, not an ASI174 sensor specification. See
+`docs/calibration/asi174mm-characterization.md` for the hardware measurement
+plan.
+
+The Hualapai sample uses Bortle class 3, a 20-second night exposure, ZWO gain
+150, and a provisional magnitude-zero system rate of 300 electrons/second. For
+the 180-degree equidistant full-resolution projection this produces about 0.17
+zenith sky electrons/second/pixel before vignetting.
+
+Display previews use the active-pixel median as the black point, a 99.99th
+percentile white point, and a mild asinh strength of 4 without modifying stored
+Mono16 data. Annotation marks and readable scalable labels are restricted to
+properly named stars at magnitude 2.5 or brighter and named solar-system
+bodies; constellation lines can still use all resolved endpoints.
 
 ## Optical Profiles
 
@@ -236,6 +277,11 @@ manifest containing:
 An image without this information is useful for visual inspiration but not as
 a projection conformance fixture.
 
+The canonical Hualapai ASI174 conformance evidence is stored in
+`tests/fixtures/astronomy/hualapai-asi174-conformance-v1.json`. It distinguishes
+independent Astropy reference cases from internal deterministic render
+regressions and is consumed directly by Astronomy and CameraAgent tests.
+
 ## Validation Strategy
 
 ### 1. Numeric astronomy validation
@@ -312,6 +358,36 @@ artifacts remain reproducible.
 
 ## Acceptance Criteria
 
+### Virtual Planetarium Implementation Baseline
+
+The Hualapai virtual-camera implementation now provides the synthetic 180-degree equidistant,
+equisolid, orthographic, and stereographic fisheye mappings plus perspective
+rectilinear and telescope mappings for
+`VirtualAsi174Mm` Mono16 and `VirtualAsi174McRgb` RGB24 compatibility profiles,
+one versioned local HYG SQLite fixture, shared projected-scene annotations, and
+scripted Stellarium validation. The color output is packed R, G, B derivative
+compatibility data, not ASI174MC Bayer raw. The canonical exact-quarter ASI174
+sample and full profiles are implemented, but remaining ordinary-path
+integration, full/reduced numeric evidence, fixture manifests, and final gate
+hardening keep project phases 1, 2, and 5 in progress. Physical lens calibration
+and long-run operational hardening also remain open.
+
+Constellation derivatives use the complete 88-figure, 743-segment D3-Celestial
+`v0.7.32` line dataset. Its HIP endpoints resolve against stable Hipparcos IDs
+preserved by HYG schema version 2, while projected endpoints retain the selected
+catalog row IDs for cache-independent annotation. Requested Sun, Moon, and
+planet positions use the offline MIT-licensed Astronomy Engine `2.1.19` model,
+which is based on truncated VSOP87 and NOVAS-derived calculations and targets
+one-arcminute accuracy. HVO consumes corrected geocentric mean-J2000 vectors,
+then applies the same mean-of-date and optical projection path as catalog stars.
+The ephemeris model version is persisted with frame provenance.
+
+Fixed reference values for `2025-01-15T08:00:00Z` come from NASA/JPL Horizons
+API `1.2`, Earth-geocentric observer coordinates, quantity `1` (astrometric
+ICRF RA/Dec), and DE441. Tests compare angular separation rather than component
+differences and require no runtime network access. Astronomy Engine's stated
+accuracy is suitable for visualization, not precision astrometry or navigation.
+
 - Mono and RGB color profiles produce deterministic images for identical input.
 - Fisheye and rectilinear/telescope profiles use the same celestial scene and
   shared projector contracts.
@@ -323,10 +399,10 @@ artifacts remain reproducible.
   documented tolerances.
 - Renderer and annotation coordinates agree for every compatibility fixture.
 - Raw outputs contain no labels or display tone mapping.
-- Every checked-in fixture includes a complete manifest and source/license
-  record.
-- Full-resolution output stays within the measured CameraAgent memory and
-  cadence budget on the target host.
+- Catalog and external-validation fixtures include source/license records;
+  complete multi-time and second-location machine-readable manifests remain.
+- Full-resolution x64 timing/allocation observations exist; target Raspberry Pi
+  memory and cadence acceptance remains hardware validation work.
 
 ## Implementation Order
 

@@ -41,4 +41,6 @@ internal sealed class DeviceImageUpload
     public long? ByteLength { get; set; }
 
     public string? AgentId { get; set; }
+
+    public string? SceneProvenanceJson { get; set; }
 }

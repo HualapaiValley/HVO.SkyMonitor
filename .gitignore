@@ -450,6 +450,7 @@ data/cameraagent/identity/
 data/cameraagent/dataprotection/
 data/agent/
 data/archive/
+data/calibration/
 dotnet/
 
 # ===================================================================

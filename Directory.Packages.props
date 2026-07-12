@@ -13,6 +13,7 @@
     <PackageVersion Include="Aspire.Hosting.Redis" Version="13.0.0" />
     <PackageVersion Include="CommunityToolkit.Aspire.Hosting.Minio" Version="9.9.0" />
     <PackageVersion Include="CommunityToolkit.Aspire.Microsoft.Data.Sqlite" Version="9.9.0" />
+    <PackageVersion Include="CosineKitty.AstronomyEngine" Version="2.1.19" />
     <PackageVersion Include="FluentAssertions" Version="8.8.0" />
     <PackageVersion Include="HVO.Core" Version="1.1.0" />
     <PackageVersion Include="HVO.Enterprise.Telemetry" Version="1.0.3" />
@@ -27,6 +28,7 @@
     <PackageVersion Include="Microsoft.Build.Framework" Version="18.0.2" />
     <PackageVersion Include="Microsoft.Build.Tasks.Core" Version="18.0.2" />
     <PackageVersion Include="Microsoft.Build.Utilities.Core" Version="18.0.2" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.9" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.9" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.9" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9" />

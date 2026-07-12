@@ -35,6 +35,7 @@
   <ItemGroup>
     <ProjectReference Include="..\HVO.SkyMonitor.AgentCore\HVO.SkyMonitor.AgentCore.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.Catalog.Sqlite\HVO.SkyMonitor.Catalog.Sqlite.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Common\HVO.SkyMonitor.Common.csproj" />
   </ItemGroup>
 
@@ -42,8 +43,31 @@
     <None Update="cameraagent.sample.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="cameraagent.asi178mc-comparison.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="virtual-asi174.full.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="virtual-asi174mc.full.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="virtual-asi174-rectilinear.full.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="virtual-asi174mc-telescope.full.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="virtual-asi178mc.full.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\tests\fixtures\catalog\hyg-v42-bright-stars.sqlite" Link="catalog\hyg_v42.sqlite">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
   </ItemGroup>
 </Project>

@@ -1,0 +1,702 @@
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
+
+namespace HVO.SkyMonitor.Imaging;
+
+/// <summary>One deterministic sensor defect applied after stochastic sensor noise.</summary>
+public sealed record SensorDefect(int X, int Y, double Offset = 0, double? FixedValue = null);
+
+/// <summary>Shared linear sensor and optical settings for scene rendering.</summary>
+public record LinearSceneRenderOptions
+{
+    public double ExposureSeconds { get; init; } = 1;
+    public double Gain { get; init; } = 1;
+    public double MagnitudeZeroElectronsPerSecond { get; init; } = 10_000;
+    public double BackgroundElectronsPerSecond { get; init; }
+    public double PsfSigmaPixels { get; init; } = 1;
+    public double PsfRadiusPixels { get; init; } = 4;
+    public double VignettingStrength { get; init; }
+    public double Bias { get; init; }
+    public double ReadNoiseStandardDeviation { get; init; }
+    public bool ShotNoiseEnabled { get; init; }
+    public double DarkCurrentElectronsPerSecond { get; init; }
+    public bool DarkNoiseEnabled { get; init; }
+    public int Seed { get; init; }
+    public IReadOnlyList<SensorDefect> Defects { get; init; } = Array.Empty<SensorDefect>();
+
+    /// <summary>Validates finite, non-negative sensor parameters and bounded optical settings.</summary>
+    public virtual void Validate()
+    {
+        if (!IsNonNegativeFinite(ExposureSeconds) || !IsNonNegativeFinite(Gain) ||
+            !IsNonNegativeFinite(MagnitudeZeroElectronsPerSecond) || !IsNonNegativeFinite(BackgroundElectronsPerSecond) ||
+            !double.IsFinite(PsfSigmaPixels) || PsfSigmaPixels <= 0 || !double.IsFinite(PsfRadiusPixels) ||
+            PsfRadiusPixels <= 0 || PsfRadiusPixels > 64 || !double.IsFinite(VignettingStrength) ||
+            VignettingStrength is < 0 or > 1 || !IsNonNegativeFinite(Bias) ||
+            !IsNonNegativeFinite(ReadNoiseStandardDeviation) || !IsNonNegativeFinite(DarkCurrentElectronsPerSecond))
+        {
+            throw new ArgumentOutOfRangeException(nameof(LinearSceneRenderOptions));
+        }
+
+        ArgumentNullException.ThrowIfNull(Defects);
+        foreach (var defect in Defects)
+        {
+            ArgumentNullException.ThrowIfNull(defect);
+            if (!double.IsFinite(defect.Offset) || defect.FixedValue is { } fixedValue && !double.IsFinite(fixedValue))
+            {
+                throw new ArgumentOutOfRangeException(nameof(Defects));
+            }
+        }
+
+        if (!double.IsFinite(ExposureSeconds * Gain) ||
+            !double.IsFinite(BackgroundElectronsPerSecond * ExposureSeconds * Gain) ||
+            !double.IsFinite(MagnitudeZeroElectronsPerSecond * ExposureSeconds * Gain) ||
+            !double.IsFinite(DarkCurrentElectronsPerSecond * ExposureSeconds * Gain))
+        {
+            throw new ArgumentOutOfRangeException(nameof(LinearSceneRenderOptions), "Combined exposure and signal scaling must remain finite.");
+        }
+    }
+
+    private static bool IsNonNegativeFinite(double value) => double.IsFinite(value) && value >= 0;
+}
+
+/// <summary>Settings for packed unsigned little-endian Mono16 output.</summary>
+public sealed record Mono16SceneRenderOptions : LinearSceneRenderOptions
+{
+    public MonoSensorResponse? SensorResponse { get; init; }
+
+    public override void Validate()
+    {
+        base.Validate();
+        SensorResponse?.Validate();
+    }
+}
+
+/// <summary>Resolved electron-domain response for one monochrome sensor gain setting.</summary>
+public sealed record MonoSensorResponse
+{
+    public int AdcBitDepth { get; init; } = 12;
+    public double FullWellElectrons { get; init; } = 32_400;
+    public double ElectronsPerAdu { get; init; } = 7.9;
+    public double ReadNoiseElectrons { get; init; } = 5.9;
+    public double BlackLevelAdu { get; init; }
+
+    internal int MaximumAdu => (1 << AdcBitDepth) - 1;
+
+    internal void Validate()
+    {
+        if (AdcBitDepth is < 1 or > 16 || !double.IsFinite(FullWellElectrons) || FullWellElectrons <= 0 ||
+            !double.IsFinite(ElectronsPerAdu) || ElectronsPerAdu <= 0 ||
+            !double.IsFinite(ReadNoiseElectrons) || ReadNoiseElectrons < 0 ||
+            !double.IsFinite(BlackLevelAdu) || BlackLevelAdu < 0 || BlackLevelAdu > MaximumAdu)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MonoSensorResponse));
+        }
+    }
+}
+
+/// <summary>Published ASI174MM gain and read-noise response in ZWO gain-control units.</summary>
+public static class Asi174MmSensorModel
+{
+    private static readonly (double Gain, double ReadNoise)[] ReadNoisePoints =
+        [(0, 5.9), (100, 4.45), (200, 3.8), (300, 3.58), (400, 3.6)];
+
+    public const string Version = "zwo-asi174mm-12bit-v1";
+
+    /// <summary>Resolves the 0.1 dB ZWO gain control to input-referred sensor values.</summary>
+    public static MonoSensorResponse Resolve(double gainControl, double blackLevelAdu = 64)
+    {
+        if (!double.IsFinite(gainControl) || gainControl is < 0 or > 400)
+        {
+            throw new ArgumentOutOfRangeException(nameof(gainControl));
+        }
+
+        return new MonoSensorResponse
+        {
+            AdcBitDepth = 12,
+            FullWellElectrons = 32_400,
+            ElectronsPerAdu = 7.9 / Math.Pow(10, gainControl / 200),
+            ReadNoiseElectrons = InterpolateReadNoise(gainControl),
+            BlackLevelAdu = blackLevelAdu
+        };
+    }
+
+    private static double InterpolateReadNoise(double gain)
+    {
+        for (var index = 1; index < ReadNoisePoints.Length; index++)
+        {
+            var upper = ReadNoisePoints[index];
+            if (gain <= upper.Gain)
+            {
+                var lower = ReadNoisePoints[index - 1];
+                var fraction = (gain - lower.Gain) / (upper.Gain - lower.Gain);
+                return lower.ReadNoise + fraction * (upper.ReadNoise - lower.ReadNoise);
+            }
+        }
+        return ReadNoisePoints[^1].ReadNoise;
+    }
+}
+
+/// <summary>Published ASI178MC gain and read-noise response mapped to its full-range RAW16 container.</summary>
+public static class Asi178McSensorModel
+{
+    private static readonly (double Gain, double ReadNoise)[] ReadNoisePoints =
+        [(0, 2.25), (50, 1.92), (100, 1.72), (150, 1.57), (200, 1.44), (270, 1.37), (300, 1.37), (400, 1.35)];
+
+    public const string Version = "zwo-asi178mc-14bit-raw16-v1";
+
+    public static MonoSensorResponse Resolve(double gainControl, double blackLevelContainerAdu = 64)
+    {
+        if (!double.IsFinite(gainControl) || gainControl is < 0 or > 400)
+        {
+            throw new ArgumentOutOfRangeException(nameof(gainControl));
+        }
+
+        var nativeElectronsPerAdu = 0.916 * Math.Pow(10, -gainControl / 200);
+        return new MonoSensorResponse
+        {
+            AdcBitDepth = 16,
+            FullWellElectrons = Math.Min(15_000, 16_383 * nativeElectronsPerAdu),
+            ElectronsPerAdu = nativeElectronsPerAdu / 4,
+            ReadNoiseElectrons = InterpolateReadNoise(gainControl),
+            BlackLevelAdu = blackLevelContainerAdu
+        };
+    }
+
+    private static double InterpolateReadNoise(double gain)
+    {
+        for (var index = 1; index < ReadNoisePoints.Length; index++)
+        {
+            var upper = ReadNoisePoints[index];
+            if (gain <= upper.Gain)
+            {
+                var lower = ReadNoisePoints[index - 1];
+                var fraction = (gain - lower.Gain) / (upper.Gain - lower.Gain);
+                return lower.ReadNoise + fraction * (upper.ReadNoise - lower.ReadNoise);
+            }
+        }
+        return ReadNoisePoints[^1].ReadNoise;
+    }
+}
+
+/// <summary>Linear RGB channel response and white-balance multipliers.</summary>
+public readonly record struct RgbChannelSettings(double Red = 1, double Green = 1, double Blue = 1)
+{
+    internal void Validate()
+    {
+        if (!double.IsFinite(Red) || Red < 0 || !double.IsFinite(Green) || Green < 0 || !double.IsFinite(Blue) || Blue < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(RgbChannelSettings));
+        }
+    }
+}
+
+/// <summary>Compatibility RGB24 settings; output is packed R,G,B and is not a Bayer sensor simulation.</summary>
+public sealed record Rgb24CompatibilityRenderOptions : LinearSceneRenderOptions
+{
+    public double FallbackColorIndex { get; init; } = 0.65;
+    public RgbChannelSettings ChannelResponse { get; init; } = new(1, 1, 1);
+    public RgbChannelSettings WhiteBalance { get; init; } = new(1, 1, 1);
+
+    /// <inheritdoc />
+    public override void Validate()
+    {
+        base.Validate();
+        if (!double.IsFinite(FallbackColorIndex))
+        {
+            throw new ArgumentOutOfRangeException(nameof(FallbackColorIndex));
+        }
+
+        ChannelResponse.Validate();
+        WhiteBalance.Validate();
+    }
+}
+
+/// <summary>Linear RGGB photosite settings for little-endian RAW16 output.</summary>
+public sealed record BayerRggb16RenderOptions : LinearSceneRenderOptions
+{
+    public double FallbackColorIndex { get; init; } = 0.65;
+    public RgbChannelSettings ChannelResponse { get; init; } = new(0.94, 1, 0.8);
+    public MonoSensorResponse SensorResponse { get; init; } = Asi178McSensorModel.Resolve(0);
+
+    public override void Validate()
+    {
+        base.Validate();
+        if (!double.IsFinite(FallbackColorIndex))
+        {
+            throw new ArgumentOutOfRangeException(nameof(FallbackColorIndex));
+        }
+        ChannelResponse.Validate();
+        ArgumentNullException.ThrowIfNull(SensorResponse);
+        SensorResponse.Validate();
+    }
+}
+
+/// <summary>Expected object footprint before background, defects, noise, and quantization.</summary>
+public sealed record RenderedObjectGeometry(
+    string ObjectId,
+    PixelPoint SourcePixel,
+    PixelPoint DepositedCentroid,
+    double ExpectedSignal,
+    double DepositedSignal,
+    double RetainedEnergyFraction,
+    int MinimumX,
+    int MinimumY,
+    int MaximumX,
+    int MaximumY);
+
+/// <summary>Summary statistics over active image-circle samples.</summary>
+public sealed record RenderStatistics(long ActivePixelCount, double Minimum, double Maximum, double Mean, long ClippedLow, long ClippedHigh);
+
+/// <summary>A rendered buffer with stable provenance and centroid-supporting object geometry.</summary>
+public sealed record SceneRenderResult(
+    ReadOnlyMemory<byte> Pixels,
+    string AlgorithmVersion,
+    string CompatibilityLabel,
+    RenderStatistics Statistics,
+    IReadOnlyList<RenderedObjectGeometry> Objects);
+
+/// <summary>Deterministic linear Mono16 rendering from frozen visible-scene geometry.</summary>
+public static class Mono16SceneRenderer
+{
+    public const string AlgorithmVersion = "linear-visible-scene-v1";
+    public const string ElectronDomainAlgorithmVersion = "electron-domain-visible-scene-v2";
+
+    /// <summary>Returns flux relative to a magnitude-zero source: 10^(-0.4 * magnitude).</summary>
+    public static double RelativeFlux(double magnitude)
+    {
+        if (!double.IsFinite(magnitude))
+        {
+            throw new ArgumentOutOfRangeException(nameof(magnitude));
+        }
+
+        return Math.Pow(10, -0.4 * magnitude);
+    }
+
+    /// <summary>Renders background, PSFs, vignetting, exposure/gain, noise/defects, then clamps and quantizes.</summary>
+    public static SceneRenderResult Render(VisibleScene scene, ImageLayout layout, Mono16SceneRenderOptions? options = null)
+    {
+        Validate(scene, layout, CameraPixelFormat.Mono16, options ??= new());
+        var plane = RenderCore(scene, layout, options, static _ => 1d, out var geometry);
+        var pixels = new byte[layout.RequiredByteLength];
+        var maximumAdu = options.SensorResponse?.MaximumAdu ?? ushort.MaxValue;
+        var statistics = QuantizeMono16(scene, layout, plane, pixels, maximumAdu);
+        return new SceneRenderResult(
+            pixels,
+            options.SensorResponse is null ? AlgorithmVersion : ElectronDomainAlgorithmVersion,
+            options.SensorResponse is null ? "Mono16 linear sensor" : "ASI174MM native 12-bit ADU in Mono16",
+            statistics,
+            geometry);
+    }
+
+    internal static double[] RenderCore(
+        VisibleScene scene,
+        ImageLayout layout,
+        LinearSceneRenderOptions options,
+        Func<ProjectedCelestialObject, double> objectScale,
+        out IReadOnlyList<RenderedObjectGeometry> geometry)
+    {
+        var length = checked(layout.Width * layout.Height);
+        var rates = new double[length];
+        var projection = scene.Request.Projection;
+        for (var y = 0; y < layout.Height; y++)
+        {
+            for (var x = 0; x < layout.Width; x++)
+            {
+                if (InsideAperture(x, y, projection))
+                {
+                    rates[y * layout.Width + x] = options.BackgroundElectronsPerSecond;
+                }
+            }
+        }
+
+        var footprints = new List<RenderedObjectGeometry>(scene.Objects.Count);
+        foreach (var item in scene.Objects)
+        {
+            var flux = RelativeFlux(item.Magnitude) * options.MagnitudeZeroElectronsPerSecond * objectScale(item);
+            if (!double.IsFinite(item.Pixel.X) || !double.IsFinite(item.Pixel.Y) || !double.IsFinite(flux) || flux < 0)
+            {
+                throw new ArgumentException("Scene objects must contain finite projected pixels and renderable flux values.", nameof(scene));
+            }
+
+            footprints.Add(AddPsf(rates, layout.Width, layout.Height, projection, item, flux, options));
+        }
+
+        var random = new StableRandom(options.Seed);
+        var darkExpected = options.DarkCurrentElectronsPerSecond * options.ExposureSeconds;
+        for (var y = 0; y < layout.Height; y++)
+        {
+            for (var x = 0; x < layout.Width; x++)
+            {
+                var index = y * layout.Width + x;
+                if (!InsideAperture(x, y, projection))
+                {
+                    rates[index] = 0;
+                    continue;
+                }
+
+                var radialFraction = projection.NormalizedRadiusSquared(x + 0.5, y + 0.5);
+                var electrons = rates[index] * (1 - options.VignettingStrength * radialFraction) * options.ExposureSeconds;
+                if (options.ShotNoiseEnabled)
+                {
+                    electrons = random.Poisson(electrons);
+                }
+
+                electrons += options.DarkNoiseEnabled ? random.Poisson(darkExpected) : darkExpected;
+                var response = options switch
+                {
+                    Mono16SceneRenderOptions { SensorResponse: { } monoResponse } => monoResponse,
+                    BayerRggb16RenderOptions bayerOptions => bayerOptions.SensorResponse,
+                    _ => null
+                };
+                if (response is not null)
+                {
+                    var collectedCharge = Math.Min(electrons, response.FullWellElectrons);
+                    var measuredCharge = collectedCharge + random.Gaussian() * response.ReadNoiseElectrons;
+                    rates[index] = measuredCharge / response.ElectronsPerAdu + response.BlackLevelAdu;
+                }
+                else
+                {
+                    rates[index] = electrons * options.Gain + options.Bias + random.Gaussian() * options.ReadNoiseStandardDeviation;
+                }
+            }
+        }
+
+        ApplyDefects(rates, layout.Width, layout.Height, projection, options.Defects);
+        geometry = footprints;
+        return rates;
+    }
+
+    private static RenderedObjectGeometry AddPsf(
+        double[] rates, int width, int height, ProjectionContext projection,
+        ProjectedCelestialObject item, double flux, LinearSceneRenderOptions options)
+    {
+        var radius = options.PsfRadiusPixels;
+        var minKernelX = (int)Math.Ceiling(item.Pixel.X - radius - 0.5);
+        var maxKernelX = (int)Math.Floor(item.Pixel.X + radius - 0.5);
+        var minKernelY = (int)Math.Ceiling(item.Pixel.Y - radius - 0.5);
+        var maxKernelY = (int)Math.Floor(item.Pixel.Y + radius - 0.5);
+        var radiusSquared = radius * radius;
+        var denominator = 0d;
+        for (var y = minKernelY; y <= maxKernelY; y++)
+        {
+            for (var x = minKernelX; x <= maxKernelX; x++)
+            {
+                var distanceSquared = Square(x + 0.5 - item.Pixel.X) + Square(y + 0.5 - item.Pixel.Y);
+                if (distanceSquared <= radiusSquared)
+                {
+                    denominator += Math.Exp(-distanceSquared / (2 * options.PsfSigmaPixels * options.PsfSigmaPixels));
+                }
+            }
+        }
+
+        var deposited = 0d;
+        var weightedX = 0d;
+        var weightedY = 0d;
+        var minX = width;
+        var minY = height;
+        var maxX = -1;
+        var maxY = -1;
+        for (var y = Math.Max(0, minKernelY); y <= Math.Min(height - 1, maxKernelY); y++)
+        {
+            for (var x = Math.Max(0, minKernelX); x <= Math.Min(width - 1, maxKernelX); x++)
+            {
+                var distanceSquared = Square(x + 0.5 - item.Pixel.X) + Square(y + 0.5 - item.Pixel.Y);
+                if (distanceSquared > radiusSquared || !InsideAperture(x, y, projection))
+                {
+                    continue;
+                }
+
+                var value = flux * Math.Exp(-distanceSquared / (2 * options.PsfSigmaPixels * options.PsfSigmaPixels)) / denominator;
+                rates[y * width + x] += value;
+                deposited += value;
+                weightedX += value * (x + 0.5);
+                weightedY += value * (y + 0.5);
+                minX = Math.Min(minX, x);
+                minY = Math.Min(minY, y);
+                maxX = Math.Max(maxX, x);
+                maxY = Math.Max(maxY, y);
+            }
+        }
+
+        var centroid = deposited > 0 ? new PixelPoint(weightedX / deposited, weightedY / deposited) : item.Pixel;
+        return new RenderedObjectGeometry(item.Id, item.Pixel, centroid, flux, deposited,
+            flux > 0 ? deposited / flux : 0, minX, minY, maxX, maxY);
+    }
+
+    private static RenderStatistics QuantizeMono16(
+        VisibleScene scene, ImageLayout layout, double[] values, byte[] pixels, int maximumAdu)
+    {
+        var accumulator = new StatisticsAccumulator();
+        var projection = scene.Request.Projection;
+        for (var y = 0; y < layout.Height; y++)
+        {
+            for (var x = 0; x < layout.Width; x++)
+            {
+                if (!InsideAperture(x, y, projection))
+                {
+                    continue;
+                }
+
+                var value = values[y * layout.Width + x];
+                var sample = accumulator.AddAndQuantize(value, checked((ushort)maximumAdu));
+                var offset = y * layout.StrideBytes + x * 2;
+                pixels[offset] = (byte)sample;
+                pixels[offset + 1] = (byte)(sample >> 8);
+            }
+        }
+
+        return accumulator.Create();
+    }
+
+    private static void ApplyDefects(double[] values, int width, int height, ProjectionContext projection,
+        IReadOnlyList<SensorDefect> defects)
+    {
+        foreach (var defect in defects)
+        {
+            if ((uint)defect.X >= (uint)width || (uint)defect.Y >= (uint)height)
+            {
+                throw new ArgumentOutOfRangeException(nameof(defects), "A defect lies outside the image.");
+            }
+
+            if (InsideAperture(defect.X, defect.Y, projection))
+            {
+                var index = defect.Y * width + defect.X;
+                values[index] = defect.FixedValue ?? values[index] + defect.Offset;
+            }
+        }
+    }
+
+    internal static void Validate(VisibleScene scene, ImageLayout layout, CameraPixelFormat format, LinearSceneRenderOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        ArgumentNullException.ThrowIfNull(options);
+        if (layout.PixelFormat != format)
+        {
+            throw new ArgumentException($"{format} layout is required.", nameof(layout));
+        }
+
+        layout.Validate();
+        options.Validate();
+        var projection = scene.Request.Projection;
+        if (projection.WidthPixels > 0 && (projection.WidthPixels != layout.Width || projection.HeightPixels != layout.Height))
+        {
+            throw new ArgumentException("The image layout must match the frozen scene projection dimensions.", nameof(layout));
+        }
+    }
+
+    internal static bool InsideAperture(int x, int y, ProjectionContext projection)
+        => projection.ContainsSample(x + 0.5, y + 0.5);
+
+    private static double Square(double value) => value * value;
+}
+
+/// <summary>RGB24 compatibility rendering from the same scene geometry; this is explicitly not Bayer data.</summary>
+public static class Rgb24CompatibilityRenderer
+{
+    public const string CompatibilityLabel = "RGB24 compatibility (non-Bayer), packed R,G,B";
+
+    /// <summary>Renders packed red, green, blue bytes using B-V color, response, and white-balance factors.</summary>
+    public static SceneRenderResult Render(VisibleScene scene, ImageLayout layout, Rgb24CompatibilityRenderOptions? options = null)
+    {
+        Mono16SceneRenderer.Validate(scene, layout, CameraPixelFormat.Rgb24, options ??= new());
+        var channels = new double[3][];
+        IReadOnlyList<RenderedObjectGeometry>? geometry = null;
+        for (var channel = 0; channel < channels.Length; channel++)
+        {
+            var selected = channel;
+            channels[channel] = Mono16SceneRenderer.RenderCore(scene, layout, options with { Seed = unchecked(options.Seed + channel * 104729) },
+                item => ColorFactors(item.ColorIndex ?? options.FallbackColorIndex)[selected], out var currentGeometry);
+            geometry ??= currentGeometry;
+        }
+
+        var response = new[]
+        {
+            options.ChannelResponse.Red * options.WhiteBalance.Red,
+            options.ChannelResponse.Green * options.WhiteBalance.Green,
+            options.ChannelResponse.Blue * options.WhiteBalance.Blue
+        };
+        var pixels = new byte[layout.RequiredByteLength];
+        var statistics = new StatisticsAccumulator();
+        var projection = scene.Request.Projection;
+        for (var y = 0; y < layout.Height; y++)
+        {
+            for (var x = 0; x < layout.Width; x++)
+            {
+                if (!Mono16SceneRenderer.InsideAperture(x, y, projection))
+                {
+                    continue;
+                }
+
+                var index = y * layout.Width + x;
+                var offset = y * layout.StrideBytes + x * 3;
+                for (var channel = 0; channel < 3; channel++)
+                {
+                    pixels[offset + channel] = (byte)statistics.AddAndQuantize(channels[channel][index] * response[channel], byte.MaxValue);
+                }
+            }
+        }
+
+        return new SceneRenderResult(pixels, Mono16SceneRenderer.AlgorithmVersion, CompatibilityLabel, statistics.Create(), geometry!);
+    }
+
+    // Smooth bounded approximation suitable for compatibility previews, normalized to green.
+    internal static double[] ColorFactors(double bv)
+    {
+        bv = Math.Clamp(bv, -0.4, 2.0);
+        var red = Math.Exp(0.35 * bv);
+        var blue = Math.Exp(-0.65 * bv);
+        return [red, 1d, blue];
+    }
+}
+
+/// <summary>Renders one linear little-endian RAW16 sample per RGGB photosite without demosaicing.</summary>
+public static class BayerRggb16Renderer
+{
+    public const string AlgorithmVersion = "electron-domain-rggb-visible-scene-v1";
+    public const string CompatibilityLabel = "Virtual RGGB RAW16 sensor (non-demosaiced)";
+
+    public static SceneRenderResult Render(
+        VisibleScene scene, ImageLayout layout, BayerRggb16RenderOptions? options = null)
+    {
+        Mono16SceneRenderer.Validate(scene, layout, CameraPixelFormat.BayerRggb16, options ??= new());
+        var responses = new[] { options.ChannelResponse.Red, options.ChannelResponse.Green, options.ChannelResponse.Blue };
+        var channels = new double[3][];
+        IReadOnlyList<RenderedObjectGeometry>? geometry = null;
+        for (var channel = 0; channel < channels.Length; channel++)
+        {
+            var selected = channel;
+            channels[channel] = Mono16SceneRenderer.RenderCore(
+                scene,
+                layout,
+                options with { Seed = unchecked(options.Seed + channel * 104729) },
+                item => Rgb24CompatibilityRenderer.ColorFactors(item.ColorIndex ?? options.FallbackColorIndex)[selected] *
+                    responses[selected],
+                out var currentGeometry);
+            geometry ??= currentGeometry;
+        }
+
+        var pixels = new byte[layout.RequiredByteLength];
+        var statistics = new StatisticsAccumulator();
+        var projection = scene.Request.Projection;
+        var maximum = checked((ushort)options.SensorResponse.MaximumAdu);
+        for (var y = 0; y < layout.Height; y++)
+        {
+            for (var x = 0; x < layout.Width; x++)
+            {
+                if (!Mono16SceneRenderer.InsideAperture(x, y, projection))
+                {
+                    continue;
+                }
+
+                var channel = (y & 1, x & 1) switch
+                {
+                    (0, 0) => 0,
+                    (1, 1) => 2,
+                    _ => 1
+                };
+                var sample = statistics.AddAndQuantize(channels[channel][y * layout.Width + x], maximum);
+                var offset = y * layout.StrideBytes + x * 2;
+                pixels[offset] = (byte)sample;
+                pixels[offset + 1] = (byte)(sample >> 8);
+            }
+        }
+
+        return new SceneRenderResult(pixels, AlgorithmVersion, CompatibilityLabel, statistics.Create(), geometry!);
+    }
+}
+
+internal sealed class StatisticsAccumulator
+{
+    private long _count;
+    private double _minimum = double.PositiveInfinity;
+    private double _maximum = double.NegativeInfinity;
+    private double _sum;
+    private long _clippedLow;
+    private long _clippedHigh;
+
+    public ushort AddAndQuantize(double value, ushort maximum)
+    {
+        _count++;
+        _minimum = Math.Min(_minimum, value);
+        _maximum = Math.Max(_maximum, value);
+        _sum += value;
+        if (value < 0)
+        {
+            _clippedLow++;
+        }
+        else if (value > maximum)
+        {
+            _clippedHigh++;
+        }
+
+        return (ushort)Math.Clamp(Math.Round(value, MidpointRounding.AwayFromZero), 0, maximum);
+    }
+
+    public RenderStatistics Create()
+        => new(_count, _count == 0 ? 0 : _minimum, _count == 0 ? 0 : _maximum, _count == 0 ? 0 : _sum / _count,
+            _clippedLow, _clippedHigh);
+}
+
+internal sealed class StableRandom
+{
+    private ulong _state;
+    private bool _hasGaussian;
+    private double _gaussian;
+
+    public StableRandom(int seed) => _state = unchecked((uint)seed) + 0x9e3779b97f4a7c15UL;
+
+    public double Gaussian()
+    {
+        if (_hasGaussian)
+        {
+            _hasGaussian = false;
+            return _gaussian;
+        }
+
+        var radius = Math.Sqrt(-2 * Math.Log(Math.Max(double.Epsilon, Uniform())));
+        var angle = 2 * Math.PI * Uniform();
+        _gaussian = radius * Math.Sin(angle);
+        _hasGaussian = true;
+        return radius * Math.Cos(angle);
+    }
+
+    public double Poisson(double mean)
+    {
+        if (mean <= 0)
+        {
+            return 0;
+        }
+
+        if (mean >= 30)
+        {
+            return Math.Max(0, Math.Round(mean + Math.Sqrt(mean) * Gaussian()));
+        }
+
+        var limit = Math.Exp(-mean);
+        var product = 1d;
+        var count = 0;
+        do
+        {
+            count++;
+            product *= Uniform();
+        }
+        while (product > limit);
+        return count - 1;
+    }
+
+    private double Uniform()
+    {
+        var value = NextUInt64() >> 11;
+        return value * (1d / (1UL << 53));
+    }
+
+    private ulong NextUInt64()
+    {
+        var value = _state;
+        value ^= value >> 12;
+        value ^= value << 25;
+        value ^= value >> 27;
+        _state = value;
+        return value * 2685821657736338717UL;
+    }
+}

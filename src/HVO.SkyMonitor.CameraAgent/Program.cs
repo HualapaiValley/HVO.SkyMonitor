@@ -17,6 +17,8 @@ using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Common.Observability;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -196,6 +198,7 @@ public class Program
             .Bind(builder.Configuration.GetSection("CapturePreview"))
             .ValidateDataAnnotations()
             .ValidateOnStart();
+        builder.Services.AddSingleton<ICelestialCatalog>(_ => CreateCatalog(builder.Configuration));
         builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
         healthChecks.AddCheck<CameraAgentConfigurationHealthCheck>("camera-configuration", tags: ["dependency"]);
         builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
@@ -266,5 +269,12 @@ public class Program
         return Path.IsPathRooted(configuredPath)
             ? configuredPath
             : Path.GetFullPath(configuredPath, contentRoot);
+    }
+
+    private static SqliteCelestialCatalog CreateCatalog(ConfigurationManager configuration)
+    {
+        var path = configuration["Catalog:Path"] ?? Path.Combine(AppContext.BaseDirectory, "catalog", "hyg_v42.sqlite");
+        var checksum = configuration["Catalog:Sha256"] ?? "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
+        return new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(path, checksum, "2", "3"));
     }
 }

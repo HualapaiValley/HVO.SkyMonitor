@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
@@ -6,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
@@ -33,6 +35,9 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentConfigurationLoader, FileCameraAgentConfigurationLoader>();
         services.AddSingleton<IFrameStorageService, FileSystemFrameStorageService>();
         services.AddSingleton<ICameraModuleFactory, CameraModuleFactory>();
+        services.AddSingleton<IProjectedSceneStore, ProjectedSceneStore>();
+        services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());
+        services.AddSingleton<IPlanetEphemeris, AstronomyEnginePlanetEphemeris>();
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
         services.AddSingleton<CaptureTelemetryMetricsRecorder>();

@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Exposure;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
@@ -6,6 +7,22 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestClass]
 public sealed class ExposureControllerTests
 {
+    [TestMethod]
+    public void ApplyControlPolicy_PreservesDisabledExposureAndGain()
+    {
+        var current = new CaptureSetpoint(TimeSpan.FromSeconds(20), 150, null, null);
+        var automatic = new CaptureSetpoint(TimeSpan.FromSeconds(25), 187.5, null, null);
+
+        var result = CameraModuleRunner.ApplyControlPolicy(new CameraControlPolicy
+        {
+            AutoExposure = CameraFeatureDirective.Disabled,
+            AutoGain = CameraFeatureDirective.Disabled
+        }, current, automatic);
+
+        Assert.AreEqual(current.Exposure, result.Exposure);
+        Assert.AreEqual(current.Gain, result.Gain);
+    }
+
     [TestMethod]
     public void Next_WithoutMeasurement_UsesClampedNightDefault()
     {
