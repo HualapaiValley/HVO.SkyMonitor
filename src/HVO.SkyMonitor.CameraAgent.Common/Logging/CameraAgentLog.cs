@@ -77,6 +77,15 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2028, Level = LogLevel.Warning, Message = "Capture processing channel drain aborted by the host shutdown deadline")]
     public static partial void CaptureProcessingDrainAborted(this ILogger logger);
 
+    [LoggerMessage(EventId = 2029, Level = LogLevel.Warning, Message = "Disk pressure entered for {StorageRoot} at {AvailablePercent:F2}% available")]
+    public static partial void DiskPressureEntered(this ILogger logger, string storageRoot, double availablePercent);
+
+    [LoggerMessage(EventId = 2030, Level = LogLevel.Information, Message = "Disk pressure recovered for {StorageRoot} at {AvailablePercent:F2}% available")]
+    public static partial void DiskPressureRecovered(this ILogger logger, string storageRoot, double availablePercent);
+
+    [LoggerMessage(EventId = 2031, Level = LogLevel.Error, Message = "Storage capacity probe failed for {StorageRoot}")]
+    public static partial void StorageCapacityProbeFailed(this ILogger logger, string storageRoot, Exception exception);
+
     [LoggerMessage(EventId = 2020, Level = LogLevel.Information, Message = "NoOp storage step {Step} skipped because no frame was captured")]
     public static partial void NoOpStorageSkipped(this ILogger logger, string Step);
 

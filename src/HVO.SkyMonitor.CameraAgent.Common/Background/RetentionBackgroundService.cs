@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using System.Globalization;
 using System.Linq;
 using System.Text.Json;
@@ -23,12 +24,16 @@ public sealed class RetentionBackgroundService(
     IOptions<CameraAgentHostOptions> hostOptions,
     TimeProvider timeProvider,
     IArtifactOutbox artifactOutbox,
+    IStorageCapacityProvider capacityProvider,
+    StoragePressureState pressureState,
     ILogger<RetentionBackgroundService> logger) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly CameraAgentHostOptions _hostOptions = hostOptions.Value;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly IArtifactOutbox _artifactOutbox = artifactOutbox;
+    private readonly IStorageCapacityProvider _capacityProvider = capacityProvider;
+    private readonly StoragePressureState _pressureState = pressureState;
     private readonly ILogger<RetentionBackgroundService> _logger = logger;
     private static readonly JsonSerializerOptions StepSerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -70,24 +75,79 @@ public sealed class RetentionBackgroundService(
             return;
         }
 
+        Exception? firstFailure = null;
         foreach (var plan in plans)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var cutoffDate = _timeProvider.GetUtcNow().UtcDateTime.Date.AddDays(-plan.RetentionDays);
-            var pending = ReadPendingArtifacts(plan.StorageRoot, cancellationToken);
-            var deletedFiles = PruneFrameDirectories(plan.StorageRoot, cutoffDate, pending, cancellationToken);
-            var indexGate = FrameIndexLock.ForRoot(plan.StorageRoot);
-            await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var lifecycleGate = StorageLifecycleLock.ForRoot(plan.StorageRoot);
+            await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                deletedFiles += PruneIndexFiles(plan.StorageRoot, cutoffDate, pending.ArtifactIds, cancellationToken);
+                StorageCapacity capacity;
+                try
+                {
+                    capacity = _capacityProvider.GetCapacity(plan.StorageRoot);
+                    if (capacity.TotalBytes <= 0 || capacity.AvailableBytes < 0 || capacity.AvailableBytes > capacity.TotalBytes)
+                    {
+                        throw new IOException($"Invalid storage capacity returned for '{plan.StorageRoot}'.");
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    var prior = _pressureState.Get(plan.StorageRoot);
+                    _pressureState.Set(new StoragePressureSnapshot(
+                        plan.StorageRoot, default, prior?.IsUnderPressure ?? false,
+                        prior?.EffectiveRetentionDays ?? plan.RetentionDays, _timeProvider.GetUtcNow(), ex.Message));
+                    _logger.StorageCapacityProbeFailed(plan.StorageRoot, ex);
+                    throw;
+                }
+                var previous = _pressureState.Get(plan.StorageRoot);
+                var underPressure = previous?.IsUnderPressure == true
+                    ? capacity.AvailablePercent < _hostOptions.DiskPressureRecoveryPercent
+                    : capacity.AvailablePercent < _hostOptions.DiskPressureThresholdPercent;
+                var effectiveRetentionDays = underPressure
+                    ? Math.Min(plan.RetentionDays, _hostOptions.DiskPressureRetentionDays)
+                    : plan.RetentionDays;
+                var evaluatedUtc = _timeProvider.GetUtcNow();
+                _pressureState.Set(new StoragePressureSnapshot(
+                    plan.StorageRoot, capacity, underPressure, effectiveRetentionDays, evaluatedUtc));
+                if (underPressure && previous?.IsUnderPressure != true)
+                {
+                    _logger.DiskPressureEntered(plan.StorageRoot, capacity.AvailablePercent);
+                }
+                else if (!underPressure && previous?.IsUnderPressure == true)
+                {
+                    _logger.DiskPressureRecovered(plan.StorageRoot, capacity.AvailablePercent);
+                }
+
+                var cutoffDate = evaluatedUtc.UtcDateTime.Date.AddDays(-effectiveRetentionDays);
+                var pending = ReadPendingArtifacts(plan.StorageRoot, cancellationToken);
+                var deletedFiles = PruneFrameDirectories(plan.StorageRoot, cutoffDate, pending, cancellationToken);
+                var indexGate = FrameIndexLock.ForRoot(plan.StorageRoot);
+                await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    deletedFiles += PruneIndexFiles(plan.StorageRoot, cutoffDate, pending.ArtifactIds, cancellationToken);
+                }
+                finally
+                {
+                    indexGate.Release();
+                }
+                deletedFiles += PruneDerivedOutputs(plan.StorageRoot, cutoffDate, pending.AbsolutePaths, cancellationToken);
+                _logger.RetentionSweepCompleted(plan.StorageRoot, deletedFiles, pending.ArtifactIds.Count);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                firstFailure ??= ex;
             }
             finally
             {
-                indexGate.Release();
+                lifecycleGate.Release();
             }
-            deletedFiles += PruneDerivedOutputs(plan.StorageRoot, cutoffDate, pending.AbsolutePaths, cancellationToken);
-            _logger.RetentionSweepCompleted(plan.StorageRoot, deletedFiles, pending.ArtifactIds.Count);
+        }
+        if (firstFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(firstFailure).Throw();
         }
     }
 
@@ -118,7 +178,8 @@ public sealed class RetentionBackgroundService(
                 var normalizedRoot = Path.GetFullPath(storageRoot);
                 var retentionDays = Math.Max(1, options.RetentionDays);
 
-                if (plans.Any(p => string.Equals(p.StorageRoot, normalizedRoot, StringComparison.OrdinalIgnoreCase)))
+                var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+                if (plans.Any(p => string.Equals(p.StorageRoot, normalizedRoot, comparison)))
                 {
                     continue;
                 }

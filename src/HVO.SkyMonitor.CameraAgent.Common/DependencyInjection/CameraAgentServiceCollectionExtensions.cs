@@ -34,6 +34,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentConfigurationAccessor, CameraAgentConfigurationAccessor>();
         services.AddSingleton<ICameraAgentConfigurationLoader, FileCameraAgentConfigurationLoader>();
         services.AddSingleton<IFrameStorageService, FileSystemFrameStorageService>();
+        services.AddSingleton<IStorageCapacityProvider, FileSystemStorageCapacityProvider>();
+        services.AddSingleton<StoragePressureState>();
         services.AddSingleton<ICameraModuleFactory, CameraModuleFactory>();
         services.AddSingleton<IProjectedSceneStore, ProjectedSceneStore>();
         services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());

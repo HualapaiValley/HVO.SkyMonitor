@@ -24,6 +24,20 @@ protected pending artifacts. A repeated `Retention sweep failed` event requires
 operator investigation; do not manually delete outbox manifests until central
 ingestion or an explicit abandonment procedure accounts for the artifact.
 
+## Disk Pressure
+
+Each retention sweep measures available capacity for every configured storage
+root. Pressure begins below `DiskPressureThresholdPercent` (default 10%) and
+remains active until capacity reaches `DiskPressureRecoveryPercent` (default
+15%). While active, eligible history uses the smaller of its configured
+retention and `DiskPressureRetentionDays` (default one day).
+
+The current UTC day and every pending outbox payload, sidecar, and index entry
+remain protected. Probe or outbox validation failures delete nothing for that
+root. `/health` reports pressure as degraded and capacity-probe failure as
+unhealthy; transition logs record entry and recovery. This policy does not pause
+capture or discard accepted frames.
+
 ## Outage Recovery
 
 1. Restore LogicHost or network connectivity.
