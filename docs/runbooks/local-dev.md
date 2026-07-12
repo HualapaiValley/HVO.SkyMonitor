@@ -30,26 +30,26 @@ This runbook describes the day-to-day workflow for developing and validating HVO
 
 1. Ensure `.env` is configured and invoke `dotnet run` through `./scripts/with-env` so the shared-service settings are loaded.
 2. From `/workspaces/HVO.SkyMonitor` execute:
-   ```bash
-   dotnet run --project src/HVO.SkyMonitor.LogicHost
-   ```
-3. The host listens on the standard HTTP ports defined in `appsettings.Development.json` (defaults: 5000/5001). Update `.env.development` for overrides.
+    ```bash
+    ./scripts/with-env dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+    ```
+3. The HTTPS direct-run profile exposes LogicHost at `https://localhost:7096`; the container profile exposes it at `http://localhost:5174`.
 
 ### Running camera agents
 
 - **Camera Agent**:
   ```bash
-   dotnet run --project src/HVO.SkyMonitor.CameraAgent
+   dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
   ```
 
 
-Each agent reads central identity + MinIO endpoints from `appsettings.Development.json` or environment variables. When running side-by-side with the host, point to the localhost endpoints (e.g., `http://localhost:5000`).
+Each agent reads central identity and LogicHost endpoints from configuration or environment variables. When running side-by-side with the direct-run host, use `https://localhost:7096`; the container profile uses `http://localhost:5174`.
 
 ## Testing Workflow
 
 1. **Unit tests**
    ```bash
-   dotnet test HVO.SkyMonitor.v9.slnx --filter TestCategory!=Hardware
+   dotnet test HVO.SkyMonitor.v9.slnx --filter "TestCategory!=Integration&TestCategory!=Manual"
    ```
 
 2. **Integration tests only**
@@ -65,7 +65,7 @@ Each agent reads central identity + MinIO endpoints from `appsettings.Developmen
 
 ### Hardware Tests
 
-Hardware suites are opt-in. They are tagged with `TestCategory("Hardware")`—omit them via `--filter TestCategory!=Hardware`. Future CI jobs will keep them disabled by default.
+Hardware suites are opt-in when added. The current test sources have no category attributes, so CI's category filter still runs the Testcontainers suites.
 
 ## Troubleshooting
 

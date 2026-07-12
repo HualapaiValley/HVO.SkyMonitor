@@ -77,7 +77,6 @@
   "containerEnv": {
     "ASPNETCORE_ENVIRONMENT": "Development",
     "DOTNET_ENVIRONMENT": "Development",
-    "USE_CONTAINERS": "true",
     // Identity Hardening - Rate Limiting Configuration (non-sensitive)
     "RATE_LIMIT_TOKEN_ENDPOINT_PERMITS_PER_MINUTE": "60",
     "RATE_LIMIT_TOKEN_ENDPOINT_QUEUE_LIMIT": "10",

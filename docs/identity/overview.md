@@ -89,7 +89,7 @@ so it can run fully offline:
    data is logged) and envelope revocation paths.
 4. **Production rollout** once staging validation is complete; integrate
    with TLS automation and incident runbooks.
-5. **Future enhancements** tracked under `docs/projects/infra-modernization.md`
+5. **Future enhancements** are tracked in the project plan and issues.
    (certificate automation, HTTPS hardening, additional Testcontainers
    coverage).
 

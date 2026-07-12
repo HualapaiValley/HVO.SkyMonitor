@@ -55,7 +55,7 @@ The CameraAgent owns work that must remain close to the camera:
 LogicHost owns work requiring durable or centralized resources:
 
 1. Agent registration, credential validation, and rig-profile versioning.
-2. Idempotent streamed ingestion into MinIO and metadata into PostgreSQL.
+2. Idempotent streamed ingestion into MinIO and metadata into SQL Server.
 3. Durable historical retention and lifecycle policy enforcement.
 4. Cross-frame and cross-agent processing, including timelapses and detection.
 5. Central previews, galleries, search, overlays, and operational dashboards.
@@ -505,7 +505,7 @@ Exit criteria:
 - No current documentation claims an unimplemented simulator or upload path is
   complete.
 
-### Phase 1: Astronomy and projection foundation — Not started
+### Phase 1: Astronomy and projection foundation — In progress
 
 Deliverables:
 
@@ -529,7 +529,7 @@ Exit criteria:
 - CameraAgent and LogicHost projection conformance fixtures return matching
   visibility and pixel results from the shared assembly.
 
-### Phase 2: Imaging and virtual ASI174MM — Not started
+### Phase 2: Imaging and virtual ASI174MM — In progress
 
 Deliverables:
 
@@ -549,7 +549,7 @@ Exit criteria:
 - CPU, allocation, frame size, and generation latency baselines are recorded
   on x64 and the intended Raspberry Pi architecture when available.
 
-### Phase 3: Artifact pipeline and local persistence — Not started
+### Phase 3: Artifact pipeline and local persistence — In progress
 
 Deliverables:
 
@@ -567,7 +567,7 @@ Exit criteria:
 - Failed encoding or annotation cannot remove raw data.
 - Sustained capture demonstrates bounded memory and channel behavior.
 
-### Phase 4: Exposure control and rolling combination — Not started
+### Phase 4: Exposure control and rolling combination — In progress
 
 Deliverables:
 
@@ -583,7 +583,7 @@ Exit criteria:
 - A long-running virtual night produces stable combined images while memory and
   local storage remain bounded.
 
-### Phase 5: Planetarium derivatives and agent hardening — Not started
+### Phase 5: Planetarium derivatives and agent hardening — In progress
 
 Deliverables:
 
@@ -600,7 +600,7 @@ Exit criteria:
   raw artifacts.
 - The CameraAgent can be installed and operated without LogicHost.
 
-### Phase 6: Upload contract and durable outbox — Not started
+### Phase 6: Upload contract and durable outbox — In progress
 
 This is the transition to LogicHost work, after the local agent is proven.
 
@@ -617,12 +617,12 @@ Exit criteria:
 - Network interruption and agent restart do not duplicate or lose artifacts.
 - Upload throughput does not block acquisition or exhaust local memory.
 
-### Phase 7: LogicHost durable ingest — Deferred
+### Phase 7: LogicHost durable ingest — In progress
 
 Deliverables:
 
 - Stream bytes into MinIO with deterministic object keys and checksums.
-- Store normalized frame/artifact/provenance records in PostgreSQL.
+- Store normalized frame/artifact/provenance records in SQL Server.
 - Make ingestion idempotent by agent, frame ID, artifact role, and recipe.
 - Expose latest and historical artifact queries.
 - Add server-side derivative scheduling without coupling it to request handling.
@@ -695,7 +695,7 @@ the defect.
 - Restart recovery with stored artifacts and pending outbox entries.
 - Pipeline failure isolation.
 - Configuration-specific pipeline composition.
-- Later, streamed CameraAgent-to-LogicHost upload with PostgreSQL and MinIO.
+- Streamed CameraAgent-to-LogicHost upload with SQL Server and MinIO.
 - Versioned manifest compatibility, idempotency, checksum failure, retry, and
   partial-write behavior at process and storage boundaries.
 

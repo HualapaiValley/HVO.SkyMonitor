@@ -1,10 +1,10 @@
 # HVO.SkyMonitor.CameraAgent
 
-Blazor Server application that emulates a SkyMonitor camera agent, mirroring the SkyMonitor V6 SampleApp layout, API pipeline, and security model. It is powered by ASP.NET Core Identity (email + password only), OpenAPI/Scalar, and a locally hosted copy of the `hvo-dark` theme.
+Blazor Server host for a self-contained SkyMonitor camera agent. It provides local identity, operational UI, capture APIs, and configuration-driven camera/pipeline hosting while remaining independent of LogicHost.
 
 ## Highlights
 
-- **Modern UI**: Main layout, reconnect modal, scoped CSS/JS, and shared components copied from the V6 SampleApp while loading the theme from `wwwroot/css/themes/hvo-dark.css`.
+- **Modern UI**: Main layout, reconnect modal, scoped CSS/JS, and shared components using the local `hvo-dark` theme.
 - **Identity**: Local-only ASP.NET Core Identity with confirmation email flow, cookie auth, and profile/email/password management pages.
 - **Frame APIs**: Versioned `/api/v1.0/frames` endpoints that stream the most recent exposure from the simulated capture pipeline.
 - **Diagnostics**: Structured JSON logging, custom correlation-id middleware, ProblemDetails enrichment, OpenTelemetry metrics/traces, Scalar UI, Prometheus scraping, and health checks.

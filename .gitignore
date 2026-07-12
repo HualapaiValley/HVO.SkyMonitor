@@ -13,7 +13,6 @@
 # Environment files with secrets
 *.env
 !.env.template
-!.env.development
 .env.local
 .env.production
 .env.staging

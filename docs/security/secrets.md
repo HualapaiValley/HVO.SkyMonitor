@@ -15,12 +15,12 @@ summarizes every sensitive value the platform requires.
 | Layer | Usage | Notes |
 | --- | --- | --- |
 | `appsettings*.json` | Non-sensitive defaults | Keep checked into git; document defaults only. |
-| `.env` / `.env.development` | Developer overrides (non-secret) | Copy `.env.template` and keep it git-ignored. |
+| `.env` | Developer service configuration and credentials | Copy `.env.template` and keep it git-ignored. |
 | .NET User Secrets | Local secrets for any project (`dotnet user-secrets`) | Preferred for developers and Testcontainers. |
 | Dev Container env files | `.devcontainer/devcontainer.local.env` | Git-ignored opt-in for contributors who prefer env files. |
 | Environment variables | Runtime overrides (containers, CI, production) | Use double underscores for nested config (`MINIO__ACCESSKEY`). |
 | Azure Key Vault | Production/staging secrets | Add via `builder.Configuration.AddAzureKeyVault(...)`. |
-| GitHub Secrets | CI/CD pipelines | Documented in `.github/workflows/README.md`. |
+| GitHub Secrets | CI/CD pipelines | The active workflow defines the secrets it consumes. |
 
 Configuration sources later in the list override earlier ones. Use
 User Secrets or env vars for anything sensitive; never commit secrets
@@ -39,7 +39,7 @@ dotnet user-secrets set "SignedTicket:Secret" "$(openssl rand -base64 32)"
 
 # Run the host
 cd ../..
-./scripts/with-env dotnet run --project src/HVO.SkyMonitor.LogicHost --configuration Debug
+./scripts/with-env dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --configuration Debug
 ```
 
 Shared-service credentials must be configured in the ignored `.env`; no default credentials are provided.
@@ -49,14 +49,12 @@ Shared-service credentials must be configured in the ignored `.env`; no default 
 ### 3.1 Non-Sensitive (stay in git)
 
 ```
-USE_CONTAINERS=true
 ASPNETCORE_ENVIRONMENT=Development
 DOTNET_ENVIRONMENT=Development
-DOCKER_HOST_ADDRESS=0.0.0.0
 REDIS_PORT=6379
 SQLSERVER_PORT=1433
 MINIO_API_PORT=9000
-SKYMONITOR_HTTP_PORT=5174
+LOGIC_HOST_HTTP_PORT=5174
 ```
 
 ### 3.2 Sensitive (never in git)
@@ -80,8 +78,8 @@ or the PowerShell equivalent shown in the legacy docs.
 ## 4. Environment-Specific Guidance
 
 ### Development + Dev Container
-- `.env.template` → `.env` for ports, Docker contexts, and other non-secret
-  overrides.
+- `.env.template` → `.env` for shared-service endpoints, credentials, and
+  application ports.
 - User Secrets are automatically mounted inside the Dev Container
   (`~/.microsoft/usersecrets`).
 - Optional `.devcontainer/devcontainer.local.env` holds extra env vars and
@@ -89,9 +87,9 @@ or the PowerShell equivalent shown in the legacy docs.
 
 ### CI/CD (GitHub Actions)
 - Add required secrets under **Settings → Secrets and variables → Actions**.
-- Minimum set: `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`,
-  `POSTGRES_PASSWORD`, image-registry credentials, and any deployment
-  secrets called out in `.github/workflows/README.md`.
+- The current CI workflow requires no application-service credentials because
+  Testcontainers supplies its disposable dependencies. Coverage badge updates
+  require the configured gist secrets.
 - Reference them via `${{ secrets.NAME }}` inside workflow yaml.
 
 ### Production / Staging
@@ -155,7 +153,7 @@ or the PowerShell equivalent shown in the legacy docs.
 | Secret | Frequency | Notes |
 | --- | --- | --- |
 | Signed URL HMAC | 90 days | Accept both old/new secrets during overlap window. |
-| MinIO / PostgreSQL credentials | 90 days (shared env) | Update secrets store first, then recycle containers. |
+| MinIO / SQL Server credentials | 90 days (shared env) | Update secrets store first, then recycle containers. |
 | OpenIddict certificates | 12 months | Load new cert alongside old before revoking. |
 | Camera agent confidential client | With any suspected compromise | Update envelope service and restart LogicHost. |
 | TLS certificates | Per CA lifetime | Automate with Let's Encrypt or Key Vault rotation. |
@@ -172,7 +170,6 @@ or the PowerShell equivalent shown in the legacy docs.
 ## 8. References
 
 - `.env.template` – list of non-sensitive environment variables.
-- `.github/workflows/README.md` – CI secrets inventory.
 - `docs/runbooks/local-dev.md` – end-to-end local workflow that links back
   to this guide.
 - `docs/identity/operations-runbook.md` – operational procedures (key

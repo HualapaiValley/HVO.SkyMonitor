@@ -13,14 +13,12 @@ back to it rather than restating roadmap status.
 | Secrets & configuration | `docs/security/secrets.md` | Consolidates `SECRETS_MANAGEMENT.md`, `SECRETS_QUICKSTART.md`, `SECRETS_SUMMARY.md`, and identity-specific `secrets-reference.md`. |
 | Identity program status | `docs/identity/overview.md` | Rolls up `identity/hardening-summary.md`, `operations-index.md`, `agent-registration-plan.md`, and `non-azure-delta.md`. |
 | Identity runbooks | `docs/identity/operations-runbook.md` | Existing step-by-step guide (rename only if needed). Referenced from `identity/overview.md`. |
-| Infra & testing modernization | `docs/projects/infra-modernization.md` | Supersedes `plan-infraAndTestingVNext.prompt.md` and merges next-step items from `future-infra-todos.md`. |
-| Analyzer clean-up plan | `docs/projects/AnalyzerRemediationPlan.prompt.md` | Stays separate because it is an active engineering plan. |
 | Runbooks (daily ops) | `docs/runbooks/*.md` | `local-dev.md`, `infra-operations.md`, and `ci-pipeline.md` remain the authoritative workflow docs. |
 
 ## Documentation Rules
 
 1. Delete superseded files after their still-valid content lands in the destination doc.
-2. Keep prompts (`*.prompt.md`) only when they describe ongoing engineering scope; archive
+2. Keep prompts (`*.prompt.md`) only when they describe ongoing engineering scope; delete
    them once the scope is complete.
 3. Runbooks live under `docs/runbooks/` and should reference the new core docs instead of
    duplicating content.

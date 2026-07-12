@@ -10,7 +10,7 @@ The authoritative architecture and implementation roadmap is
 
 ## Development Environment
 
-This repository is configured to work with Visual Studio Code Dev Containers and GitHub Codespaces, with **Docker-in-Docker** support for running containers and infrastructure services.
+This repository is configured to work with Visual Studio Code Dev Containers and GitHub Codespaces. The devcontainer provides a Docker CLI for local and remote Docker contexts.
 
 ### Prerequisites
 
@@ -88,7 +88,7 @@ You can pass specific services to `--rebuild` (for example `--rebuild logichost`
 
 ```bash
 # Main site
-dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+./scripts/with-env dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 
 # Camera agent
 dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
@@ -96,23 +96,9 @@ dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.c
 
 This mode keeps hot reload and a faster edit/run cycle while still talking to the same SQL Server, Redis, and MinIO containers.
 
-### Docker-in-Docker Architecture
+### Devcontainer Setup
 
-This project uses **Docker-in-Docker** to run container orchestration inside the dev container.
-
-#### DevContainer Configuration
-
-The `.devcontainer/devcontainer.json` includes:
-
-```jsonc
-"features": {
-  "ghcr.io/devcontainers/features/docker-in-docker:2": {
-    "version": "latest",
-    "moby": true,
-    "dockerDashComposeVersion": "v2"
-  }
-}
-```
+The `.devcontainer/devcontainer.json` uses the Docker-outside-of-Docker feature so containers run through the host Docker daemon without granting the devcontainer privileged mode.
 
 **Post-create script** (`.devcontainer/post-create.sh`):
 - Adds `vscode` user to the `docker` group
@@ -122,7 +108,7 @@ The `.devcontainer/devcontainer.json` includes:
 - Generates HTTPS developer certificate (`dotnet dev-certs https`)
 - Verifies Docker installation
 
-**Note:** We default to HTTP endpoints inside the dev container to avoid certificate trust issues. HTTPS runbooks live under `docs/projects/infra/` if you need certificates locally.
+**Note:** We default to HTTP endpoints inside the dev container to avoid certificate trust issues.
 
 
 ### What's Included
@@ -139,7 +125,7 @@ The devcontainer configuration includes:
 - **Zsh with Oh My Zsh** - Enhanced terminal experience
 - **Docker extension** - Container and Compose integration in VS Code
 - **Secret management plumbing** - `.env.template`, `.devcontainer/devcontainer.local.env`, and .NET user secrets support keep credentials out of git
-- **Identity & API infrastructure parity** - The main `HVO.SkyMonitor` site runs the same Identity, passkey, and API key pipeline used by the camera agent, backed by shared middleware and helpers in `HVO.SkyMonitor.Common`.
+- **Identity & API infrastructure parity** - LogicHost and CameraAgent use shared middleware and helpers from `HVO.SkyMonitor.Common` while retaining separate identity stores.
 - **Shared diagnostics/security library** - Cross-cutting middleware (correlation IDs, exception handling, antiforgery helpers) and API-key primitives live in `src/HVO.SkyMonitor.Common`, consumed by the main site and reusable by future services.
 - **Camera-agent independence** - Projects under `HVO.SkyMonitor.CameraAgent.*` keep acquisition and local processing independent from LogicHost while registering their own diagnostics and security components.
 
@@ -173,14 +159,9 @@ The following VS Code extensions are automatically installed:
 
 The following ports are automatically forwarded and accessible from your host machine:
 
-- **5000-5001** - Logic Host application (HTTP/HTTPS)
-- **5174** - SkyMonitor container profile (Docker Compose build)
+- **7096** - LogicHost HTTPS direct-run profile
+- **5174** - LogicHost container profile
 - **5130** - Camera Agent container profile
-  
-- **6379** - Redis
-- **5432** - PostgreSQL
-- **9000** - MinIO API
-- **9001** - MinIO Console
 
 ### Environment Variables & Secrets
 
@@ -191,34 +172,11 @@ The following ports are automatically forwarded and accessible from your host ma
 
 ## Container Support
 
-The Docker Compose workflow (via `scripts/infra:start`) runs infrastructure services and the ASP.NET/Blazor applications. Docker caches previously built images, so use the script's `--rebuild` flag whenever you need to force fresh LogicHost or Camera Agent binaries.
+The Docker Compose workflow (via `scripts/infra:start`) runs only the ASP.NET/Blazor application containers. Docker caches previously built images, so use the script's `--rebuild` flag whenever you need to force fresh LogicHost or Camera Agent binaries.
 
 ### Automatic Container Building
 
 `./scripts/infra:start --rebuild [logichost|cameraagent]` invokes `docker compose -f docker-compose.apps.yml build` for the selected application services before issuing `up -d`. Resetting those services (`--reset logichost cameraagent`) also triggers a rebuild automatically. This keeps each container aligned with the working tree without requiring manual `docker build` commands.
-
-### Manual Multi-Architecture Builds
-
-For deploying to Raspberry Pi or other platforms, build multi-arch images manually:
-
-```bash
-# Build all images for all platforms (amd64, arm64, arm/v7)
-./build-images.sh
-
-# Build for specific platform only
-PLATFORMS=linux/arm64 ./build-images.sh
-
-# Or use docker-compose
-docker-compose -f docker-compose.build.yml build
-```
-
-This creates local images:
-- `hvo-skymonitor:latest`
-- `hvo-cameraagent:latest`
-
-### Deployment to Raspberry Pi
-
-For deploying the camera agent to Raspberry Pi (if desired), build an ARM image locally and push to a registry or load via tarball, using the `hvo-cameraagent` image.
 
 ### Dockerfiles
 
