@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -61,12 +62,12 @@ public sealed class RetentionBackgroundService(
         }
     }
 
-    internal Task ApplyRetentionAsync(CameraModuleConfig config, CancellationToken cancellationToken)
+    internal async Task ApplyRetentionAsync(CameraModuleConfig config, CancellationToken cancellationToken)
     {
         var plans = BuildRetentionPlans(config);
         if (plans.Count == 0)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         foreach (var plan in plans)
@@ -75,12 +76,19 @@ public sealed class RetentionBackgroundService(
             var cutoffDate = _timeProvider.GetUtcNow().UtcDateTime.Date.AddDays(-plan.RetentionDays);
             var pending = ReadPendingArtifacts(plan.StorageRoot, cancellationToken);
             var deletedFiles = PruneFrameDirectories(plan.StorageRoot, cutoffDate, pending, cancellationToken);
-            deletedFiles += PruneIndexFiles(plan.StorageRoot, cutoffDate, pending.ArtifactIds, cancellationToken);
+            var indexGate = FrameIndexLock.ForRoot(plan.StorageRoot);
+            await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                deletedFiles += PruneIndexFiles(plan.StorageRoot, cutoffDate, pending.ArtifactIds, cancellationToken);
+            }
+            finally
+            {
+                indexGate.Release();
+            }
             deletedFiles += PruneDerivedOutputs(plan.StorageRoot, cutoffDate, pending.AbsolutePaths, cancellationToken);
             _logger.RetentionSweepCompleted(plan.StorageRoot, deletedFiles, pending.ArtifactIds.Count);
         }
-
-        return Task.CompletedTask;
     }
 
     private static List<StorageRetentionPlan> BuildRetentionPlans(CameraModuleConfig config)

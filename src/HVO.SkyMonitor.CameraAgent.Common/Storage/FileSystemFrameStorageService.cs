@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -19,9 +20,9 @@ public sealed class FileSystemFrameStorageService(
             new System.Text.Json.Serialization.JsonStringEnumConverter()
         }
     };
+    private static readonly byte[] NewLineBytes = "\n"u8.ToArray();
 
     private readonly ILogger<FileSystemFrameStorageService> _logger = logger;
-    private readonly SemaphoreSlim _indexGate = new(1, 1);
 
     public async ValueTask<StoredFrameReference> SaveAsync(
         string storageRoot,
@@ -33,7 +34,7 @@ public sealed class FileSystemFrameStorageService(
         var frame = artifact.Frame;
 
         storageRoot = Path.GetFullPath(storageRoot);
-        var timestamp = frame.TimestampUtc;
+        var timestamp = frame.TimestampUtc.ToUniversalTime();
         var directory = Path.Combine(
             storageRoot,
             "frames",
@@ -54,7 +55,7 @@ public sealed class FileSystemFrameStorageService(
             artifact.Role,
             artifact.SourceArtifactIds,
             artifact.RecipeVersion,
-            frame.TimestampUtc,
+            timestamp,
             frame.Width,
             frame.Height,
             frame.PixelFormat,
@@ -72,15 +73,15 @@ public sealed class FileSystemFrameStorageService(
         var indexDirectory = Path.Combine(storageRoot, "index");
         Directory.CreateDirectory(indexDirectory);
         var indexPath = Path.Combine(indexDirectory, $"frames_{timestamp:yyyy-MM-dd}.jsonl");
-        var metadataLine = JsonSerializer.Serialize(metadata, SerializerOptions) + Environment.NewLine;
-        await _indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var indexGate = FrameIndexLock.ForRoot(storageRoot);
+        await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await File.AppendAllTextAsync(indexPath, metadataLine, cancellationToken).ConfigureAwait(false);
+            await AppendIndexEntryAsync(indexPath, metadata, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            _indexGate.Release();
+            indexGate.Release();
         }
 
         _logger.FrameStored(payloadPath);
@@ -114,14 +115,14 @@ public sealed class FileSystemFrameStorageService(
 
         storageRoot = Path.GetFullPath(storageRoot);
         var indexPath = Path.Combine(storageRoot, "index", $"frames_{storedFrame.TimestampUtc:yyyy-MM-dd}.jsonl");
-        if (!File.Exists(indexPath))
-        {
-            return;
-        }
-
-        await _indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var indexGate = FrameIndexLock.ForRoot(storageRoot);
+        await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (!File.Exists(indexPath))
+            {
+                return;
+            }
             var remainingLines = (await File.ReadAllLinesAsync(indexPath, cancellationToken).ConfigureAwait(false))
                 .Where(line => !HasArtifactId(line, artifactId))
                 .ToArray();
@@ -147,7 +148,7 @@ public sealed class FileSystemFrameStorageService(
         }
         finally
         {
-            _indexGate.Release();
+            indexGate.Release();
         }
     }
 
@@ -192,21 +193,188 @@ public sealed class FileSystemFrameStorageService(
             throw new ArgumentOutOfRangeException(nameof(maximumResults));
         }
 
-        var dateDirectory = Path.Combine(Path.GetFullPath(storageRoot), "frames", utcDate.Year.ToString("D4", CultureInfo.InvariantCulture),
-            utcDate.Month.ToString("D2", CultureInfo.InvariantCulture), utcDate.Day.ToString("D2", CultureInfo.InvariantCulture));
-        if (!Directory.Exists(dateDirectory))
+        storageRoot = Path.GetFullPath(storageRoot);
+        var references = new List<StoredFrameCandidate>();
+        var seenArtifactIds = new HashSet<Guid>();
+        var indexGate = FrameIndexLock.ForRoot(storageRoot);
+        foreach (var indexPath in GetCandidateIndexPaths(storageRoot, utcDate))
         {
-            return Array.Empty<StoredFrameReference>();
+            string[] lines;
+            indexGate.Wait();
+            try
+            {
+                if (!File.Exists(indexPath))
+                {
+                    continue;
+                }
+                lines = File.ReadAllLines(indexPath);
+            }
+            catch (IOException)
+            {
+                _logger.FrameBrowseEntrySkipped(indexPath);
+                continue;
+            }
+            finally
+            {
+                indexGate.Release();
+            }
+
+            foreach (var line in lines)
+            {
+                if (!TryReadMetadata(line, out var indexedMetadata))
+                {
+                    _logger.FrameBrowseEntrySkipped(indexPath);
+                    continue;
+                }
+                if (!IsValid(indexedMetadata, utcDate, role) || seenArtifactIds.Contains(indexedMetadata.ArtifactId))
+                {
+                    continue;
+                }
+
+                var payloadPath = ResolvePayloadPath(storageRoot, indexedMetadata);
+                var metadataPath = payloadPath is null ? null : Path.ChangeExtension(payloadPath, ".json");
+                if (payloadPath is null || metadataPath is null || !File.Exists(metadataPath) ||
+                    !TryReadMetadataFile(metadataPath, out var sidecarMetadata) ||
+                    !Matches(indexedMetadata, sidecarMetadata))
+                {
+                    _logger.FrameBrowseEntrySkipped(indexPath);
+                    continue;
+                }
+                seenArtifactIds.Add(indexedMetadata.ArtifactId);
+
+                references.Add(new StoredFrameCandidate(
+                    new StoredFrameReference(
+                        Path.GetRelativePath(storageRoot, payloadPath), payloadPath,
+                        indexedMetadata.TimestampUtc, indexedMetadata.Role),
+                    indexedMetadata.ArtifactId));
+            }
         }
 
-        var roleDirectories = role is { } selectedRole
-            ? new[] { Path.Combine(dateDirectory, selectedRole.ToString()) }
-            : Directory.EnumerateDirectories(dateDirectory);
-        return roleDirectories.Where(Directory.Exists).SelectMany(directory => Directory.EnumerateFiles(directory, "*.bin")
-                .Select(path => new StoredFrameReference(Path.GetRelativePath(storageRoot, path), path,
-                    DateTimeOffset.FromFileTime(File.GetLastWriteTimeUtc(path).ToFileTimeUtc()),
-                    Enum.Parse<FrameArtifactRole>(Path.GetFileName(Path.GetDirectoryName(path)!)))))
-            .OrderByDescending(reference => reference.TimestampUtc).Take(maximumResults).ToArray();
+        return references
+            .OrderByDescending(candidate => candidate.Reference.TimestampUtc)
+            .ThenBy(candidate => candidate.ArtifactId)
+            .Take(maximumResults)
+            .Select(candidate => candidate.Reference)
+            .ToArray();
+    }
+
+    private static bool TryReadMetadata(string value, out StoredFrameMetadata metadata)
+    {
+        try
+        {
+            metadata = JsonSerializer.Deserialize<StoredFrameMetadata>(value, SerializerOptions)!;
+            return metadata is not null;
+        }
+        catch (JsonException)
+        {
+            metadata = null!;
+            return false;
+        }
+    }
+
+    private static bool TryReadMetadataFile(string path, out StoredFrameMetadata metadata)
+    {
+        try
+        {
+            metadata = JsonSerializer.Deserialize<StoredFrameMetadata>(File.ReadAllText(path), SerializerOptions)!;
+            return metadata is not null;
+        }
+        catch (JsonException)
+        {
+            metadata = null!;
+            return false;
+        }
+        catch (IOException)
+        {
+            metadata = null!;
+            return false;
+        }
+    }
+
+    private static bool IsValid(StoredFrameMetadata metadata, DateOnly utcDate, FrameArtifactRole? role)
+        => metadata.ArtifactId != Guid.Empty &&
+           Enum.IsDefined(metadata.Role) &&
+           Enum.IsDefined(metadata.PixelFormat) &&
+           metadata.Width > 0 && metadata.Height > 0 &&
+           DateOnly.FromDateTime(metadata.TimestampUtc.UtcDateTime) == utcDate &&
+           (role is null || metadata.Role == role);
+
+    private static bool Matches(StoredFrameMetadata indexed, StoredFrameMetadata sidecar)
+        => indexed.ArtifactId == sidecar.ArtifactId &&
+           indexed.Role == sidecar.Role &&
+           indexed.TimestampUtc == sidecar.TimestampUtc &&
+           indexed.Width == sidecar.Width &&
+           indexed.Height == sidecar.Height &&
+           indexed.PixelFormat == sidecar.PixelFormat;
+
+    private static async Task AppendIndexEntryAsync(
+        string indexPath,
+        StoredFrameMetadata metadata,
+        CancellationToken cancellationToken)
+    {
+        using var stream = new FileStream(
+            indexPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read,
+            bufferSize: 4096, FileOptions.Asynchronous);
+        if (stream.Length > 0)
+        {
+            stream.Seek(-1, SeekOrigin.End);
+            if (stream.ReadByte() != '\n')
+            {
+                stream.Seek(0, SeekOrigin.End);
+                await stream.WriteAsync(NewLineBytes, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        stream.Seek(0, SeekOrigin.End);
+        var line = JsonSerializer.SerializeToUtf8Bytes(metadata, SerializerOptions);
+        await stream.WriteAsync(line, cancellationToken).ConfigureAwait(false);
+        await stream.WriteAsync(NewLineBytes, cancellationToken).ConfigureAwait(false);
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static IEnumerable<string> GetCandidateIndexPaths(string storageRoot, DateOnly utcDate)
+    {
+        if (utcDate > DateOnly.MinValue)
+        {
+            yield return GetIndexPath(storageRoot, utcDate.AddDays(-1));
+        }
+        yield return GetIndexPath(storageRoot, utcDate);
+        if (utcDate < DateOnly.MaxValue)
+        {
+            yield return GetIndexPath(storageRoot, utcDate.AddDays(1));
+        }
+    }
+
+    private static string GetIndexPath(string storageRoot, DateOnly date)
+        => Path.Combine(storageRoot, "index", $"frames_{date:yyyy-MM-dd}.jsonl");
+
+    private static string? ResolvePayloadPath(string storageRoot, StoredFrameMetadata metadata)
+    {
+        var currentPath = GetPayloadPath(storageRoot, metadata, normalizeToUtc: true);
+        if (File.Exists(currentPath))
+        {
+            return currentPath;
+        }
+
+        var legacyPath = GetPayloadPath(storageRoot, metadata, normalizeToUtc: false);
+        return File.Exists(legacyPath) ? legacyPath : null;
+    }
+
+    private static string GetPayloadPath(
+        string storageRoot,
+        StoredFrameMetadata metadata,
+        bool normalizeToUtc)
+    {
+        var timestamp = normalizeToUtc ? metadata.TimestampUtc.ToUniversalTime() : metadata.TimestampUtc;
+        var stem = string.Concat(
+            timestamp.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture),
+            "-", metadata.ArtifactId.ToString("N"));
+        return Path.Combine(
+            storageRoot, "frames",
+            timestamp.Year.ToString("D4", CultureInfo.InvariantCulture),
+            timestamp.Month.ToString("D2", CultureInfo.InvariantCulture),
+            timestamp.Day.ToString("D2", CultureInfo.InvariantCulture),
+            metadata.Role.ToString(), string.Concat(stem, ".bin"));
     }
 
     private sealed record StoredFrameMetadata(
@@ -228,6 +396,17 @@ public sealed class FileSystemFrameStorageService(
         IReadOnlyDictionary<string, string>? Extra,
         SceneProvenance? Scene);
 
-    public void Dispose() => _indexGate.Dispose();
+    private sealed record StoredFrameCandidate(StoredFrameReference Reference, Guid ArtifactId);
 
+    public void Dispose() => GC.SuppressFinalize(this);
+
+}
+
+internal static class FrameIndexLock
+{
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> Gates = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+    internal static SemaphoreSlim ForRoot(string storageRoot)
+        => Gates.GetOrAdd(Path.GetFullPath(storageRoot), static _ => new SemaphoreSlim(1, 1));
 }

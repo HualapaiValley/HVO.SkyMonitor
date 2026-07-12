@@ -196,4 +196,184 @@ public sealed class FileSystemFrameStorageServiceTests
             }
         }
     }
+
+    [TestMethod]
+    public async Task List_AfterServiceRecreation_UsesCommittedMetadataAndCaptureTimestamp()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var artifactId = Guid.NewGuid();
+            var timestamp = new DateTimeOffset(2026, 7, 12, 23, 30, 0, TimeSpan.FromHours(2));
+            var writer = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var frame = new CameraFrame(timestamp, 1, 1, CameraPixelFormat.Mono8, new byte[] { 1 },
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+            var stored = await writer.SaveAsync(root,
+                new FrameArtifact(artifactId, FrameArtifactRole.Preview, frame), CancellationToken.None).ConfigureAwait(false);
+            File.SetLastWriteTimeUtc(stored.AbsolutePath, DateTime.UtcNow.AddDays(1));
+
+            var reader = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var artifacts = reader.List(root, new DateOnly(2026, 7, 12), FrameArtifactRole.Preview, 10);
+
+            Assert.AreEqual(1, artifacts.Count);
+            StringAssert.Contains(artifacts[0].RelativePath, artifactId.ToString("N"), StringComparison.Ordinal);
+            Assert.AreEqual(timestamp.ToUniversalTime(), artifacts[0].TimestampUtc);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task List_SkipsMalformedIndexAndIncompleteArtifact()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var frame = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono8, new byte[] { 1 },
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+            var incomplete = await service.SaveAsync(root,
+                new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Raw, frame), CancellationToken.None).ConfigureAwait(false);
+            File.Delete(Path.ChangeExtension(incomplete.AbsolutePath, ".json"));
+            await File.AppendAllTextAsync(Path.Combine(root, "index", "frames_1970-01-01.jsonl"), "{truncated")
+                .ConfigureAwait(false);
+            var retainedId = Guid.NewGuid();
+            await service.SaveAsync(root,
+                new FrameArtifact(retainedId, FrameArtifactRole.Raw, frame), CancellationToken.None).ConfigureAwait(false);
+
+            var artifacts = service.List(root, DateOnly.FromDateTime(DateTime.UnixEpoch), null, 10);
+
+            Assert.AreEqual(1, artifacts.Count);
+            StringAssert.Contains(artifacts[0].RelativePath, retainedId.ToString("N"), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task List_DiscoversLegacyOffsetPathFromAdjacentDateIndex()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var artifactId = Guid.NewGuid();
+            var timestamp = new DateTimeOffset(2026, 7, 13, 0, 30, 0, TimeSpan.FromHours(2));
+            var directory = Path.Combine(root, "frames", "2026", "07", "13", "Raw");
+            Directory.CreateDirectory(directory);
+            var stem = $"2026-07-13_00-30-00.000Z-{artifactId:N}";
+            var payloadPath = Path.Combine(directory, stem + ".bin");
+            await File.WriteAllBytesAsync(payloadPath, new byte[] { 1 }).ConfigureAwait(false);
+            var metadata = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                artifactId,
+                role = "Raw",
+                timestampUtc = timestamp,
+                width = 1,
+                height = 1,
+                pixelFormat = "Mono8",
+                metadata = new { exposure = TimeSpan.FromSeconds(1), gain = 1, temperatureC = 0 }
+            });
+            await File.WriteAllTextAsync(Path.ChangeExtension(payloadPath, ".json"), metadata).ConfigureAwait(false);
+            var indexDirectory = Path.Combine(root, "index");
+            Directory.CreateDirectory(indexDirectory);
+            await File.WriteAllTextAsync(Path.Combine(indexDirectory, "frames_2026-07-13.jsonl"), metadata + "\n")
+                .ConfigureAwait(false);
+
+            var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var artifacts = service.List(root, new DateOnly(2026, 7, 12), FrameArtifactRole.Raw, 10);
+
+            Assert.AreEqual(1, artifacts.Count);
+            StringAssert.Contains(artifacts[0].RelativePath, artifactId.ToString("N"), StringComparison.Ordinal);
+            Assert.AreEqual(payloadPath, artifacts[0].AbsolutePath);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task List_WithEqualTimestamps_AppliesStableArtifactIdOrderBeforeLimit()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var frame = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono8, new byte[] { 1 },
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+            var laterId = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
+            var earlierId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+            await service.SaveAsync(root,
+                new FrameArtifact(laterId, FrameArtifactRole.Raw, frame), CancellationToken.None).ConfigureAwait(false);
+            await service.SaveAsync(root,
+                new FrameArtifact(earlierId, FrameArtifactRole.Preview, frame), CancellationToken.None).ConfigureAwait(false);
+
+            var artifacts = service.List(root, DateOnly.FromDateTime(DateTime.UnixEpoch), null, 1);
+
+            Assert.AreEqual(1, artifacts.Count);
+            StringAssert.Contains(artifacts[0].RelativePath, earlierId.ToString("N"), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task List_InvalidDuplicateDoesNotHideLaterValidArtifact()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var artifactId = Guid.NewGuid();
+            var frame = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono8, new byte[] { 1 },
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+            await service.SaveAsync(root,
+                new FrameArtifact(artifactId, FrameArtifactRole.Raw, frame), CancellationToken.None).ConfigureAwait(false);
+            var indexPath = Path.Combine(root, "index", "frames_1970-01-01.jsonl");
+            var validLine = await File.ReadAllTextAsync(indexPath).ConfigureAwait(false);
+            var invalid = System.Text.Json.Nodes.JsonNode.Parse(validLine)!;
+            invalid["width"] = 2;
+            await File.WriteAllTextAsync(indexPath, invalid.ToJsonString() + "\n" + validLine).ConfigureAwait(false);
+
+            var artifacts = service.List(root, DateOnly.FromDateTime(DateTime.UnixEpoch), null, 10);
+
+            Assert.AreEqual(1, artifacts.Count);
+            StringAssert.Contains(artifacts[0].RelativePath, artifactId.ToString("N"), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void List_AcceptsDateOnlyBoundaries()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        using var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+
+        Assert.IsEmpty(service.List(root, DateOnly.MinValue, null, 1));
+        Assert.IsEmpty(service.List(root, DateOnly.MaxValue, null, 1));
+    }
 }
