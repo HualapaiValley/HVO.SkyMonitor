@@ -44,6 +44,10 @@ public sealed class ArtifactIngestTests
         frame.Artifacts.Should().ContainSingle();
         frame.Artifacts.Single().RecipeVersion.Should().Be(manifest.RecipeVersion);
         frame.Artifacts.Single().ManifestSchemaVersion.Should().Be(manifest.SchemaVersion);
+        var jobs = await db.CentralDerivativeJobs.Where(job => job.SourceArtifact!.CentralFrameId == frame.Id)
+            .ToListAsync().ConfigureAwait(false);
+        jobs.Should().HaveCount(2);
+        jobs.Should().OnlyHaveUniqueItems(job => new { job.TargetRole, job.TargetRecipeVersion });
     }
 
     [TestMethod]
@@ -348,6 +352,71 @@ public sealed class ArtifactIngestTests
             .WithObject(objectKey)
             .WithCallbackStream(stream => stream.CopyTo(storedPayload))).ConfigureAwait(false);
         Convert.ToHexString(SHA256.HashData(storedPayload.ToArray())).Should().Be(checksum);
+    }
+
+    [TestMethod]
+    public async Task MultipartIngest_TargetBeforeRawCompletesMatchingDerivativeJob()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        var frameId = Guid.NewGuid();
+        var preview = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), frameId, FrameArtifactRole.Preview,
+            "image/png", 4, PayloadChecksum, DateTimeOffset.UnixEpoch,
+            CentralDerivativeRecipeCatalog.PreviewRecipeVersion, "frames/preview.bin");
+        var raw = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), frameId, FrameArtifactRole.Raw,
+            "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch, "raw-v1", "frames/raw.bin");
+
+        using var previewResponse = await PostAsync(client, preview).ConfigureAwait(false);
+        using var rawResponse = await PostAsync(client, raw).ConfigureAwait(false);
+
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        rawResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var jobs = await db.CentralDerivativeJobs.Include(job => job.ResultArtifact)
+            .Where(job => job.SourceArtifact!.Frame!.RegistrationId == registrationId)
+            .ToListAsync().ConfigureAwait(false);
+        jobs.Should().HaveCount(2);
+        var previewJob = jobs.Single(job => job.TargetRole == FrameArtifactRole.Preview);
+        previewJob.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+        previewJob.ResultArtifact!.ArtifactId.Should().Be(preview.ArtifactId);
+        jobs.Single(job => job.TargetRole == FrameArtifactRole.AnnotatedPreview).Status
+            .Should().Be(CentralDerivativeJobStatus.Pending);
+    }
+
+    [TestMethod]
+    public async Task MultipartIngest_ConcurrentRawAndCanonicalTargetConvergeOnCompletedJob()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        var frameId = Guid.NewGuid();
+        var seed = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), frameId, FrameArtifactRole.Combined,
+            "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch, "combined-v1", "frames/combined.bin");
+        var raw = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), frameId, FrameArtifactRole.Raw,
+            "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch, "raw-v1", "frames/raw.bin");
+        var preview = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), frameId, FrameArtifactRole.Preview,
+            "image/png", 4, PayloadChecksum, DateTimeOffset.UnixEpoch,
+            CentralDerivativeRecipeCatalog.PreviewRecipeVersion, "frames/preview.bin");
+        using var seedResponse = await PostAsync(client, seed).ConfigureAwait(false);
+        seedResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        var responses = await Task.WhenAll(PostAsync(client, raw), PostAsync(client, preview)).ConfigureAwait(false);
+        using var rawResponse = responses[0];
+        using var previewResponse = responses[1];
+
+        rawResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var job = await db.CentralDerivativeJobs.Include(item => item.ResultArtifact).SingleAsync(item =>
+            item.SourceArtifact!.Frame!.RegistrationId == registrationId
+            && item.TargetRole == FrameArtifactRole.Preview).ConfigureAwait(false);
+        job.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+        job.ResultArtifact!.ArtifactId.Should().Be(preview.ArtifactId);
     }
 
     private static async Task<HttpResponseMessage> PostAsync(

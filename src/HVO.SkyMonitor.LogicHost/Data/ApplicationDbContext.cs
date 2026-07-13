@@ -17,6 +17,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<DeviceImageUpload> DeviceImageUploads => Set<DeviceImageUpload>();
     internal DbSet<CentralFrame> CentralFrames => Set<CentralFrame>();
     internal DbSet<CentralArtifact> CentralArtifacts => Set<CentralArtifact>();
+    internal DbSet<CentralDerivativeJob> CentralDerivativeJobs => Set<CentralDerivativeJob>();
     internal DbSet<Observatory> Observatories => Set<Observatory>();
 
     protected override void OnModelCreating(ModelBuilder builder)
@@ -30,6 +31,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.ApplyConfiguration(new DeviceImageUploadConfiguration());
         builder.ApplyConfiguration(new CentralFrameConfiguration());
         builder.ApplyConfiguration(new CentralArtifactConfiguration());
+        builder.ApplyConfiguration(new CentralDerivativeJobConfiguration());
         builder.ApplyConfiguration(new ObservatoryConfiguration());
 
         // Configure OpenIddict entities to use the default Entity Framework Core conventions
