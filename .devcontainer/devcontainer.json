@@ -95,8 +95,6 @@
     "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}",
     "GH_TOKEN": "${localEnv:GH_TOKEN}",
     "GH_PAT": "${localEnv:GH_PAT}",
-    "GIT_AUTHOR_NAME": "${localEnv:GIT_AUTHOR_NAME}",
-    "GIT_AUTHOR_EMAIL": "${localEnv:GIT_AUTHOR_EMAIL}",
     // Optional ED25519 key injected by the host. It is materialized by setup-ssh-key.sh.
     "SSH_PRIVATE_KEY": "${localEnv:SSH_PRIVATE_KEY}"
   },
