@@ -65,7 +65,8 @@ phase, RAW16 length, byte order, ADC depth, gain units, and initial response
 curve are evidence-backed. Its lens and absolute system throughput remain
 provisional; see `docs/calibration/asi178mc-characterization.md`.
 
-The full comparison host profile is `cameraagent.asi178mc-comparison.json`. It
+The full comparison host profile is
+[`src/HVO.SkyMonitor.CameraAgent/cameraagent.asi178mc-comparison.json`](../src/HVO.SkyMonitor.CameraAgent/cameraagent.asi178mc-comparison.json). It
 emits immutable full-resolution RGGB RAW16 and creates a bilinear RGB24 display
 preview. Its equidistant fisheye image circle lies outside the sensor rectangle
 to match the installed camera's cropped fisheye appearance rather than forcing
@@ -134,6 +135,27 @@ simulation parameter. Required configurable groups are:
 
 The first milestone may use documented heuristic defaults. It must not present
 them as measured IMX174 characteristics.
+
+### Rendering invariants
+
+The shared renderer must preserve these deterministic linear-image rules:
+
+1. Fill a deterministic linear background inside the valid image region and
+   zero or mask pixels outside it according to the recipe.
+2. Convert magnitude to relative linear flux through a documented versioned
+   formula.
+3. Apply a deterministic bounded point-spread function. A centered kernel must
+   conserve configured energy within 0.5 percent; energy outside the sensor is
+   lost and the remaining in-frame kernel is not renormalized.
+4. Apply radial vignetting as an explicit linear factor.
+5. Apply exposure and gain without moving celestial geometry.
+6. Apply seeded bias, read noise, optional shot/dark noise, and fixed defects
+   through versioned algorithms.
+7. Clamp and quantize to the declared layout and byte order.
+
+Raw frames contain no labels, constellation lines, display gamma, or tone
+mapping. Every full-frame algorithm documents complexity and maximum
+simultaneously live full-frame buffers under the shared processing recipe.
 
 ### Sky brightness and display
 
@@ -227,8 +249,9 @@ Required profiles include:
 
 ### Shared optical configuration
 
-The current single `FieldOfViewDegrees` rig value is insufficient. The Phase 0
-contract revision must represent:
+The shared optics profile represents field of view, focal length, principal
+point, calibrated pixel scale, lens family, orientation, and calibration
+identity. Reconstructable contracts must represent these requirements:
 
 - A strongly typed projection model rather than an arbitrary string.
 - Optional horizontal and vertical field of view.
@@ -241,16 +264,16 @@ contract revision must represent:
 
 ## Required Compatibility Matrix
 
-The compatibility matrix tracks combinations that must run through ordinary
-acquisition, preview, storage, and telemetry paths. Rows marked `Required` are
-part of the first virtual-camera milestone; Bayer coverage follows the frame-
-layout contract work described above.
+Every combination in the matrix must run through ordinary acquisition, preview,
+storage, telemetry, and shared-recipe conformance paths. Bayer execution follows
+the reconstructable frame-layout contract but remains a required virtual-first
+combination.
 
 | Sensor | Fisheye | Rectilinear | Telescope |
 | --- | --- | --- | --- |
 | Mono16 | Required | Required | Required |
 | RGB24 color | Required | Required | Required |
-| Bayer16 color | Planned after frame-layout contracts | Planned | Planned |
+| Bayer16 color | Required | Required | Required |
 
 CI uses reduced dimensions with the same aspect ratio and optics. Full
 1936 × 1216 profiles validate realistic memory, performance, and image output.
@@ -265,6 +288,9 @@ manifest containing:
 - Latitude, longitude, elevation, and time-zone identifier.
 - Pressure, temperature, and refraction mode if refraction is enabled.
 - Catalog name, version, checksum, magnitude limit, and selection policy.
+- Catalog coordinate frame/epoch, cited precession model/version, and every
+  enabled or omitted astronomy effect: precession, nutation, annual aberration,
+  proper motion, parallax, and refraction.
 - Ephemeris implementation and version.
 - Sensor dimensions, pixel size, response mode, format, and CFA pattern.
 - Lens kind, mapping, focal length, fields of view, intrinsics, and principal
@@ -277,10 +303,92 @@ manifest containing:
 An image without this information is useful for visual inspiration but not as
 a projection conformance fixture.
 
+### Canonical Hualapai fixture
+
+The canonical machine source is
+`tests/fixtures/astronomy/hualapai-asi174-conformance-v1.json`. It fixes these
+values so later refactoring cannot silently replace the test scene:
+
+| Field | Value |
+| --- | --- |
+| Observatory | Hualapai Valley Observatory |
+| Latitude | 35.347 degrees north |
+| Longitude | -113.878 degrees in the east-positive convention |
+| Time zone | America/Phoenix |
+| Geometric fixture elevation | synthetic 0 m with refraction disabled |
+| ASI174 geometry | 1936 x 1216, 5.86 um square pixels |
+| Reduced geometry | exact quarter scale, 484 x 304 |
+| Full principal point | (968, 608) in continuous pixel-edge coordinates |
+| Reduced principal point | (242, 152) |
+| Raw layout | tightly packed unsigned little-endian Mono16 |
+| Boresight/roll | altitude 90 degrees, azimuth 0 degrees, roll 0 degrees |
+| Synthetic lens | `VirtualFisheye180Equidistant` |
+| Full image-circle radius | 595.84 px |
+| Reduced image-circle radius | 148.96 px |
+| Required UTC cases | 2025-01-15T08:00:00Z, 2025-01-15T08:59:50.170Z, 2025-07-15T08:00:00Z |
+
+Pixel `(0,0)` has center `(0.5,0.5)`. In the canonical unflipped zenith basis,
+north maps toward negative image Y and east toward positive image X. The full
+profile's expected horizon cardinals are north `(968,12.16)`, east
+`(1563.84,608)`, south `(968,1203.84)`, and west `(372.16,608)`.
+
+The coordinates come from the commit-pinned V5 persisted fixture described in
+`docs/reference-code.md`. Do not substitute current host coordinates without a
+new sourced fixture/version. The synthetic lens is a geometry conformance model,
+not a measured Fujinon calibration.
+
+`src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json` must keep this exact
+quarter-scale ASI174 fixture as its default sample and has a regression test for
+dimensions, principal point, and image-circle radius.
+
 The canonical Hualapai ASI174 conformance evidence is stored in
 `tests/fixtures/astronomy/hualapai-asi174-conformance-v1.json`. It distinguishes
 independent Astropy reference cases from internal deterministic render
 regressions and is consumed directly by Astronomy and CameraAgent tests.
+
+## Astronomy Model
+
+HYG star coordinates are J2000/ICRS catalog coordinates. Production projection
+must use a cited, versioned precession model to transform them to the observation
+date before horizontal conversion. Nutation, annual aberration, proper motion,
+and parallax remain disabled unless their required source fields, algorithm
+identity, and reference tests are implemented. Refraction is an explicit policy
+and geometric conformance fixtures disable it unless stated otherwise.
+
+No fixture or artifact may silently change this model. Its manifest records the
+catalog frame/epoch, enabled precession and refraction behavior, every omitted
+effect, algorithm versions, and reference source.
+
+## Visible Scene Contract
+
+The shared scene request is immutable and contains UTC, observatory and
+refraction values, sensor and calibrated optics, orientation/flips/crop/horizon,
+catalog query and metadata, and requested solar-system bodies.
+
+The result contains stable object identity/name/kind, equatorial and
+geometric/apparent horizontal coordinates, camera direction, projected pixel,
+apparent magnitude/color where available, visibility or rejection reason, and
+catalog/projection/algorithm versions. One scene result is the geometry
+authority for rendering and annotation; those paths must not independently
+repeat catalog selection or coordinate conversion.
+
+## Annotation Invariants
+
+- Annotation is a derivative and never alters raw data.
+- Label placement and styles are bounded, explicit, and deterministic.
+- Flip, crop, resize, and preview scaling are explicit transforms.
+- Selected raw centroids and annotation anchors agree within the fixture's
+  documented tolerance after transforms.
+- Constellation topology resolves through stable HIP identifiers and projects
+  bounded great-circle chord sequences.
+- Segments clip against sensor, image-circle, horizon, and projection-domain
+  boundaries; invalid or back-facing domains are not bridged by straight lines.
+- A real-camera annotation may resolve missing endpoint geometry but never
+  synthesize star pixels or claim a physical detection.
+- VirtualSky may include otherwise omitted constellation endpoint stars only
+  through an explicit render option recorded in raw provenance.
+- Mono8 and RGB24 overlay defaults are deterministic and configurable for
+  value/color, thickness, and opacity.
 
 ## Validation Strategy
 
@@ -356,23 +464,34 @@ effective focal length, radial distortion, horizon mask, and optical
 misalignment. Calibration values belong in a versioned rig profile so old
 artifacts remain reproducible.
 
-## Acceptance Criteria
+## Conformance Test Matrix
 
-### Virtual Planetarium Implementation Baseline
+Required deterministic tests cover:
 
-The Hualapai virtual-camera implementation now provides the synthetic 180-degree equidistant,
-equisolid, orthographic, and stereographic fisheye mappings plus perspective
-rectilinear and telescope mappings for
-`VirtualAsi174Mm` Mono16 and `VirtualAsi174McRgb` RGB24 compatibility profiles,
-one versioned local HYG SQLite fixture, shared projected-scene annotations, and
-scripted Stellarium validation. The color output is packed R, G, B derivative
-compatibility data, not ASI174MC Bayer raw. The canonical exact-quarter ASI174
-sample and full profiles are implemented, but remaining ordinary-path
-integration, full/reduced numeric evidence, fixture manifests, and final gate
-hardening keep project phases 1, 2, and 5 in progress. Physical lens calibration
-and long-run operational hardening also remain open.
+- Finite/range validation for every public astronomy, optics, sensor, and layout
+  value type.
+- Sidereal/coordinate reference cases; ENU/camera basis center, cardinal,
+  horizon, edge, singularity, off-sensor, and invalid-domain behavior.
+- Catalog order, magnitude/result bounds, checksum/read-only failure,
+  cancellation/lifetime behavior, and the off-frame displacement regression.
+- Magnitude/flux, point-spread symmetry/energy/edge behavior, masks,
+  vignetting, zero/maximum exposure, gain scaling, clipping, seeded/different
+  noise, malformed layouts, and overflow rejection.
+- Mono16 byte order, RGB24 channel order, CFA phase/raw preservation, and
+  geometry parity between sensor modes.
+- Configuration-driven module creation, reduced/full frame sizes, fixed
+  checksums/statistics/centroids, time/orientation/setpoint behavior, ordinary
+  pipeline persistence/telemetry/upload, and failure before capture for invalid
+  catalog, optics, sensor, or recipe configuration.
+- Renderer/annotation agreement, bounded/clipped topology, mirrored orientation,
+  and deterministic Mono8/RGB24 overlays.
 
-Constellation derivatives use the complete 88-figure, 743-segment D3-Celestial
+Tests requiring Docker, external Stellarium, endurance, or future hardware stay
+separately classified and report honestly when unrun.
+
+## Normative Acceptance Criteria
+
+Conformance evidence pins the complete 88-figure, 743-segment D3-Celestial
 `v0.7.32` line dataset. Its HIP endpoints resolve against stable Hipparcos IDs
 preserved by HYG schema version 2, while projected endpoints retain the selected
 catalog row IDs for cache-independent annotation. Requested Sun, Moon, and
@@ -388,7 +507,8 @@ ICRF RA/Dec), and DE441. Tests compare angular separation rather than component
 differences and require no runtime network access. Astronomy Engine's stated
 accuracy is suitable for visualization, not precision astrometry or navigation.
 
-- Mono and RGB color profiles produce deterministic images for identical input.
+- Mono, RGB color, and Bayer profiles produce deterministic images for identical
+  input across the required lens matrix.
 - Fisheye and rectilinear/telescope profiles use the same celestial scene and
   shared projector contracts.
 - Changing sensor mode changes sensor response, not celestial geometry.
@@ -399,18 +519,11 @@ accuracy is suitable for visualization, not precision astrometry or navigation.
   documented tolerances.
 - Renderer and annotation coordinates agree for every compatibility fixture.
 - Raw outputs contain no labels or display tone mapping.
-- Catalog and external-validation fixtures include source/license records;
-  complete multi-time and second-location machine-readable manifests remain.
-- Full-resolution x64 timing/allocation observations exist; target Raspberry Pi
-  memory and cadence acceptance remains hardware validation work.
+- Catalog and external-validation fixtures include source/license records and
+  machine-readable conformance manifests.
+- Reduced deterministic CI and selected full-resolution x64 output/performance
+  evidence pass; Raspberry Pi and physical calibration remain later hardware
+  acceptance.
 
-## Implementation Order
-
-1. Extend rig and frame-layout contracts for explicit optics and color layouts.
-2. Implement shared fisheye and rectilinear projectors with numeric fixtures.
-3. Implement the catalog/ephemeris scene independent of pixel format.
-4. Implement deterministic linear mono rendering and `Mono16` sensor response.
-5. Implement linear color rendering and `Rgb24` compatibility response.
-6. Run the full lens/sensor compatibility matrix and external comparisons.
-7. Add CFA formats and Bayer sampling before claiming raw ASI174MC fidelity.
-8. Calibrate profiles against real cameras when suitable images are available.
+Implementation order and live status are owned only by `docs/project-plan.md`
+and its linked GitHub issues.

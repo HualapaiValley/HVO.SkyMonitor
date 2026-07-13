@@ -1,9 +1,9 @@
 # ASI178MC Characterization
 
 This document defines the evidence hierarchy and initial virtual profile for the
-development ASI178MC. It complements the session record in
-`asi178mc-pi-smoke-test.md` and must be updated as controlled bias, dark, flat,
-and astrometric lens measurements become available.
+development ASI178MC. It is backed by `asi178mc-sdk-profile-v1.json` and
+`asi178mc-session-20260713.json` and must be updated as controlled bias, dark,
+flat, and astrometric lens measurements become available.
 
 ## Profile
 
@@ -112,21 +112,65 @@ The full profile derives approximately the same Bortle-3 background from the
 full-resolution pixel solid angle. These values combine lens throughput,
 atmosphere, passband, and assumed absolute QE and are not sensor specifications.
 
-## Measured Open-Sky Baseline
+## 2026-07-12 Open-Sky Matrix
 
-Representative gain-150 display derivatives and sidecars are under:
+The ZWO ASI Camera SDK V1.41 ARMv8 library and repository
+`tools/asi-capture` utility were deployed natively to `allskycamera01` under
+`/home/roys/asi-capture`. No system packages, Docker images, services, or global
+libraries were installed.
 
-`data/calibration/asi178mc/2026-07-12`
+The camera was serial `350f500522000900`, attached as a USB3 camera to a USB3
+host, at approximately 35 C. Offset was 10, high-speed mode was disabled, and
+USB bandwidth control was 40. Two full-resolution untouched RAW16 frames were
+captured for every exposure/gain pair:
 
-| Exposure | Median container ADU | Mean container ADU |
+| Exposure | Gains |
+| --- | --- |
+| 0.1 s | 0, 150, 300 |
+| 1 s | 0, 150, 300 |
+| 20 s | 0, 150, 300 |
+
+The retained Pi source path is
+`/home/roys/asi-capture/captures/matrix-20260712T0830Z`. The downloaded analysis
+working path was `/tmp/opencode/asi178mc-matrix/matrix-20260712T0830Z`; it was
+temporary and is not a repository artifact. Representative gain-150 display
+derivatives and sidecars were also organized under the external path
+`data/calibration/asi178mc/2026-07-12`.
+
+Every raw file was 12,879,360 bytes. Adjacent JSON recorded camera properties,
+requested and actual controls, timing, temperature, and basic statistics.
+
+| Exposure | Gain-150 median container ADU | Gain-150 mean container ADU |
 | ---: | ---: | ---: |
 | 0.1 s | 78 | 83.5 |
 | 1 s | 84 | 92.9 |
 | 20 s | 598 | 580.7 |
 
-These images include sky signal, dark current, bias, fixed-pattern response,
+Twenty-second medians at gains 0, 150, and 300 were approximately 152, 601, and
+3227 container ADU. The observed floor was 4 and ceiling was 65534. All low-byte
+values occurred, with a strong modulo-four code bias. Near-container clipping
+was sparse even at 20 seconds and gain 300. Long exposures showed persistent
+spatial glow, edge/optical obstruction, fixed-pattern structure, and hot pixels.
+Repeated short high-gain sequences also contained occasional whole-frame level
+excursions that were not consistently first-frame settling.
+
+These images combine sky signal, dark current, bias, fixed-pattern response,
 amp/dome/lens glow, obstructions, hot pixels, and stars. They cannot isolate any
-one sensor parameter.
+one sensor parameter. Preview JPEGs are display derivatives only; quantitative
+analysis uses untouched RAW16 inputs.
+
+The original capture pattern can be repeated with a new named output directory:
+
+```bash
+ssh roys@192.168.1.5 \
+  "/home/roys/asi-capture/asi-capture \
+    --output-dir /home/roys/asi-capture/captures/session-name \
+    --exposure-us 20000000 --gain 150 --offset 10 --count 4"
+```
+
+Controlled flat or covered bias/dark pairs are required for photon-transfer or
+read-noise measurements. The open-sky matrix characterizes operational behavior
+and system structure only.
 
 ## Cloudy-Sky SDK and Binning Session
 
