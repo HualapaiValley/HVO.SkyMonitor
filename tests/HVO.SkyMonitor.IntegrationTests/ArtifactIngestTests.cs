@@ -240,7 +240,7 @@ public sealed class ArtifactIngestTests
         var objectInfo = await minio.StatObjectAsync(new StatObjectArgs()
             .WithBucket("skymonitor-artifacts").WithObject(objectKey)).ConfigureAwait(false);
         objectInfo.Size.Should().Be(4);
-        objectInfo.ContentType.Should().Be("application/octet-stream");
+        objectInfo.ContentType.Should().Be(artifact.MediaType);
     }
 
     [TestMethod]

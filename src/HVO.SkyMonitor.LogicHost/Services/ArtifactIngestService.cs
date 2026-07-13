@@ -6,6 +6,7 @@ using Minio.DataModel.Args;
 using Minio.Exceptions;
 using System.Data.Common;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
@@ -22,7 +23,6 @@ internal sealed class ArtifactIngestService(
     TimeProvider timeProvider) : IArtifactIngestService
 {
     private const string Bucket = "skymonitor-artifacts";
-    private const string ObjectContentType = "application/octet-stream";
 
     public async Task<DeviceUploadResult> IngestAsync(ArtifactUploadManifest manifest, Stream payload, CancellationToken cancellationToken)
     {
@@ -64,13 +64,14 @@ internal sealed class ArtifactIngestService(
             await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(Bucket), cancellationToken).ConfigureAwait(false);
         }
 
-        var objectKey = $"{manifest.AgentId}/{manifest.CapturedAtUtc:yyyy/MM/dd}/{manifest.IdempotencyKey}-{manifest.ChecksumSha256.ToUpperInvariant()}.bin";
+        var mediaTypeKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(manifest.MediaType)));
+        var objectKey = $"{manifest.AgentId}/{manifest.CapturedAtUtc:yyyy/MM/dd}/{manifest.IdempotencyKey}-{manifest.ChecksumSha256.ToUpperInvariant()}-{mediaTypeKey}.bin";
         var stagingKey = $"staging/{Guid.NewGuid():N}";
         try
         {
             using var verifyingPayload = new HashingReadStream(payload);
             await minio.PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(stagingKey).WithStreamData(verifyingPayload).WithObjectSize(manifest.ByteLength)
-                .WithContentType(ObjectContentType), cancellationToken).ConfigureAwait(false);
+                .WithContentType(manifest.MediaType), cancellationToken).ConfigureAwait(false);
             if (verifyingPayload.BytesRead != manifest.ByteLength
                 || !string.Equals(verifyingPayload.GetChecksumSha256(), manifest.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
             {
