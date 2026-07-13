@@ -24,26 +24,59 @@ internal sealed class ArtifactHistoryController(ApplicationDbContext dbContext) 
             return BadRequest(new ProblemDetails { Title = "take must be between 1 and 500" });
         }
 
-        var query = dbContext.DeviceImageUploads.AsNoTracking().AsQueryable();
-        if (!string.IsNullOrWhiteSpace(agentId))
-        {
-            query = query.Where(upload => upload.AgentId == agentId);
-        }
+        FrameArtifactRole? parsedRole = null;
         if (!string.IsNullOrWhiteSpace(role))
         {
-            if (!Enum.TryParse<FrameArtifactRole>(role, ignoreCase: true, out var parsedRole))
+            if (!Enum.TryParse<FrameArtifactRole>(role, ignoreCase: true, out var parsed)
+                || !Enum.IsDefined(parsed))
             {
                 return BadRequest(new ProblemDetails { Title = "role is invalid" });
             }
-
-            query = query.Where(upload => upload.ArtifactRole == parsedRole.ToString());
+            parsedRole = parsed;
         }
 
-        var results = await query.OrderByDescending(upload => upload.CapturedAtUtc).Take(take)
-            .Select(upload => new ArtifactHistoryItem(
-                upload.ArtifactId, upload.ArtifactRole, upload.CapturedAtUtc, upload.ReceivedAtUtc,
-                upload.ContentType, upload.ByteLength, upload.ChecksumSha256, upload.StorageReference, upload.RigProfileVersion))
+        var centralQuery = dbContext.CentralArtifacts.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(agentId))
+        {
+            centralQuery = centralQuery.Where(artifact => artifact.Frame!.AgentId == agentId);
+        }
+        if (parsedRole is not null)
+        {
+            centralQuery = centralQuery.Where(artifact => artifact.Role == parsedRole);
+        }
+        var central = await centralQuery.Include(artifact => artifact.Frame)
+            .OrderByDescending(artifact => artifact.Frame!.CapturedAtUtc)
+            .ThenByDescending(artifact => artifact.ArtifactId).Take(take)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        var legacyQuery = dbContext.DeviceImageUploads.AsNoTracking().Where(upload =>
+            upload.IdempotencyKey == null
+            || !dbContext.CentralArtifacts.Any(artifact => artifact.IdempotencyKey == upload.IdempotencyKey));
+        if (!string.IsNullOrWhiteSpace(agentId))
+        {
+            legacyQuery = legacyQuery.Where(upload => upload.AgentId == agentId);
+        }
+        if (parsedRole is not null)
+        {
+            var roleName = parsedRole.Value.ToString();
+            legacyQuery = legacyQuery.Where(upload => upload.ArtifactRole == roleName);
+        }
+        var legacy = await legacyQuery.OrderByDescending(upload => upload.CapturedAtUtc)
+            .ThenByDescending(upload => upload.ArtifactId).Take(take)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        var results = central.Select(artifact => new ArtifactHistoryItem(
+                artifact.ArtifactId, artifact.Role.ToString(), artifact.Frame!.CapturedAtUtc, artifact.ReceivedAtUtc,
+                artifact.MediaType, artifact.ByteLength, artifact.ChecksumSha256,
+                artifact.StorageReference, artifact.Frame.RigProfileVersion))
+            .Concat(legacy.Select(upload => new ArtifactHistoryItem(
+                upload.ArtifactId, upload.ArtifactRole, upload.CapturedAtUtc, upload.ReceivedAtUtc,
+                upload.ContentType, upload.ByteLength, upload.ChecksumSha256,
+                upload.StorageReference, upload.RigProfileVersion)))
+            .OrderByDescending(item => item.CapturedAtUtc)
+            .ThenByDescending(item => item.ArtifactId)
+            .Take(take)
+            .ToList();
         return Ok(results);
     }
 

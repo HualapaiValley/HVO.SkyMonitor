@@ -674,6 +674,17 @@ Deliverables:
 - Reference the shared Astronomy and Imaging assemblies for central labels and
   annotations; do not introduce LogicHost-specific projection calculations.
 
+Central ingest now stores capture identity, registration, observatory, rig
+version, capture time, and scene provenance once per normalized frame. Immutable
+role/recipe artifacts reference that frame and retain their own checksum,
+length, media type, object reference, manifest version, and receive time. The
+additive migration backfills complete durable-upload rows while preserving
+incomplete legacy uploads, and bounded latest/history APIs support partial and
+out-of-order artifact sets. Request-isolated MinIO staging prevents invalid or
+conflicting concurrent payloads from overwriting a verified deterministic
+object. Durable server-side derivative scheduling remains the next Phase 7
+deliverable.
+
 ### Phase 8: Central processing and experience — Deferred
 
 Deliverables include timelapses, central annotations and reprocessing, meteor or
@@ -881,8 +892,9 @@ validation and standalone container/catalog startup are complete.
    remains open.
 2. Continue LogicHost durable ingest. The upload manifest/outbox contract,
    verified streamed ingest, deterministic object identity, normalized central
-   identity fields, and conflict acknowledgements are complete. Central frame
-   normalization and derivative scheduling remain in phase 7.
+   frame/artifact records, bounded latest/history queries, and conflict
+   acknowledgements are complete. Durable derivative scheduling remains in
+   phase 7.
 3. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
    calibration as a separate hardware-backed work stream.
 4. After items 1-3, prepare deferred fireball/transient processing through continuous capture
