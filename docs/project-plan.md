@@ -864,15 +864,14 @@ integration, machine-readable ASI174 evidence, catalog coarse filtering,
 real-image geometry-only constellation overlays, and pinned headless Stellarium
 validation and standalone container/catalog startup are complete.
 
-1. Complete accelerated full-night/24-hour soak work. Restart-safe persistence
-   browsing, graceful channel drain, disk-pressure retention/health policy, and
+1. Validate ARM64 deployment and characterize performance on the intended
+   Raspberry Pi hardware without inventing thresholds. Accelerated 24-hour soak,
+   restart-safe persistence browsing, graceful drain, disk-pressure policy, and
    bounded capture-failure backoff are complete.
-2. Validate ARM64 deployment and characterize performance on the intended
-   Raspberry Pi hardware without inventing thresholds.
-3. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
-4. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
+2. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
+3. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
    calibration as a separate hardware-backed work stream.
-5. After items 1-4, prepare deferred fireball/transient processing through continuous capture
+4. After items 1-3, prepare deferred fireball/transient processing through continuous capture
    cadence [#58](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58),
    durable raw fan-out [#59](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59),
    and reconstructable central jobs

@@ -80,3 +80,16 @@ rig pipeline (`captureFailureInitialDelay`, default 250 ms, and
 `captureFailureMaximumDelay`, default 30 seconds). A successful capture resets the sequence; shutdown
 cancellation interrupts either capture or backoff immediately. Structured logs
 record the failure count/delay and the subsequent recovery transition.
+
+## Soak Validation
+
+The normal test suite runs a reduced-resolution VirtualSky day from 289
+five-minute captures and verifies exact raw/derivative counts, committed
+payload/metadata pairs, bounded scene caching, and no temporary files. Channel
+tests separately prove capacity blocking and accepted/dequeued equality.
+
+An actual overnight or 24-hour run is optional and never gates pull requests.
+Dispatch `CameraAgent Real-Duration Soak` on a runner labeled
+`self-hosted`, `linux`, and `skymonitor-soak`, or run
+`./scripts/run:cameraagent-soak 24h`. The workflow retains compact logs and a
+JSON inventory; it does not upload the complete image tree.

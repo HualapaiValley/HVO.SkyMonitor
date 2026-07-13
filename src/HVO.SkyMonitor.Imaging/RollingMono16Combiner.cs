@@ -19,6 +19,8 @@ public sealed class RollingMono16Combiner
     private int _height;
     private CameraPixelFormat _pixelFormat;
 
+    public int BufferedFrameCount => _frames.Count;
+
     /// <summary>Creates a rolling combiner using the newest compatible frame count.</summary>
     public RollingMono16Combiner(int capacity)
     {

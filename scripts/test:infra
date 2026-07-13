@@ -12,6 +12,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
+bash -n "$REPO_ROOT/scripts/run:cameraagent-soak"
+
 cat > "$TEMP_DIR/docker" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
