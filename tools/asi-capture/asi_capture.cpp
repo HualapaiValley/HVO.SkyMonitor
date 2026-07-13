@@ -134,7 +134,7 @@ Options ParseOptions(int argc, char** argv)
     if (options.exposureMicroseconds <= 0 || options.count <= 0 || options.count > 100 ||
         options.cameraIndex < 0 || options.bin <= 0)
     {
-        throw std::invalid_argument("Exposure, count, or camera index is outside the supported range.");
+        throw std::invalid_argument("Exposure, count, camera index, or bin is outside the supported range.");
     }
     return options;
 }
@@ -160,6 +160,30 @@ std::string ImageTypeName(ASI_IMG_TYPE imageType)
         case ASI_IMG_RAW16: return "RAW16";
         case ASI_IMG_Y8: return "Y8";
         default: return "Unknown(" + std::to_string(static_cast<int>(imageType)) + ")";
+    }
+}
+
+std::string SampleLayoutName(const ASI_CAMERA_INFO& info, long monoBin, long flip)
+{
+    if (monoBin == 1)
+    {
+        return "Mono16";
+    }
+    if (flip != ASI_FLIP_NONE)
+    {
+        return "Unspecified";
+    }
+    if (!info.IsColorCam)
+    {
+        return "Mono16";
+    }
+    switch (info.BayerPattern)
+    {
+        case ASI_BAYER_RG: return "RGGB16";
+        case ASI_BAYER_BG: return "BGGR16";
+        case ASI_BAYER_GR: return "GRBG16";
+        case ASI_BAYER_GB: return "GBRG16";
+        default: return "Unspecified";
     }
 }
 
@@ -332,7 +356,7 @@ std::filesystem::path WriteProfile(
            << "  \"probedUtc\": \"" << UtcTimestamp(false) << "\",\n"
            << "  \"sdkVersion\": \"" << JsonEscape(ASIGetSDKVersion()) << "\",\n"
            << "  \"cameraModel\": \"" << JsonEscape(info.Name) << "\",\n"
-           << "  \"cameraSerial\": \"" << serial << "\",\n"
+           << "  \"cameraSerial\": \"" << JsonEscape(serial) << "\",\n"
            << "  \"cameraId\": " << info.CameraID << ",\n"
            << "  \"maximumWidth\": " << info.MaxWidth << ",\n"
            << "  \"maximumHeight\": " << info.MaxHeight << ",\n"
@@ -425,7 +449,8 @@ Statistics CalculateStatistics(const std::vector<unsigned char>& bytes, int widt
         throw std::invalid_argument("RAW16 statistics require a positive width and a non-empty, even byte count.");
     }
     const auto sampleCount = bytes.size() / 2;
-    if (sampleCount % static_cast<std::size_t>(width) != 0 || sampleCount < 4U)
+    if (sampleCount % static_cast<std::size_t>(width) != 0 || width < 2 ||
+        sampleCount / static_cast<std::size_t>(width) < 2U)
     {
         throw std::invalid_argument("RAW16 statistics require complete rows and all four sample parities.");
     }
@@ -522,14 +547,11 @@ void WriteMetadata(
            << "{\n"
            << "  \"schemaVersion\": \"hvo-asi-raw16-sidecar-v2\",\n"
            << "  \"cameraModel\": \"" << JsonEscape(info.Name) << "\",\n"
-           << "  \"cameraSerial\": \"" << serial << "\",\n"
+           << "  \"cameraSerial\": \"" << JsonEscape(serial) << "\",\n"
            << "  \"sdkVersion\": \"" << JsonEscape(ASIGetSDKVersion()) << "\",\n"
            << "  \"sdkProfileFile\": \"" << JsonEscape(profileFile) << "\",\n"
            << "  \"pixelFormat\": \"RAW16\",\n"
-           << "  \"sampleLayout\": \""
-           << (monoBin == 1 ? "Mono16" :
-               (flip == 0 ? (info.IsColorCam ? BayerPatternName(info.BayerPattern) + "16" : "Mono16") : "Unspecified"))
-           << "\",\n"
+           << "  \"sampleLayout\": \"" << SampleLayoutName(info, monoBin, flip) << "\",\n"
            << "  \"width\": " << width << ",\n"
            << "  \"height\": " << height << ",\n"
            << "  \"requestedBin\": " << options.bin << ",\n"

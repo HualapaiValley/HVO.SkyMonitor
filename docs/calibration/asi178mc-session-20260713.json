@@ -18,8 +18,10 @@
     "sdkVersion": "1, 41, 0, 0"
   },
   "software": {
-    "sourceSha256": "96b7731d2b01590906f5e7afa2715340b3d4816f15cbf822b2adbc36c80b79c1",
+    "captureSourceCommit": "081da55e5cb95fbb6f028bdd0d11c2788e11620d",
+    "captureSourceSha256": "96b7731d2b01590906f5e7afa2715340b3d4816f15cbf822b2adbc36c80b79c1",
     "arm64BinarySha256": "8a008327909330ec7f5a916b74de5bd082e360fc16a298f44eeaf243c33dab40",
+    "reviewedSuccessorSourceSha256": "da2ab5b4c2562469889d39d8e7dc067862bcd872d517cea4c696d47a002b0bdc",
     "sdkHeaderSha256": "af6ab82e66905b3a0f3313e1e82ccb4fedde272eaa64744588a1be8103f9cf0c",
     "sdkArm64LibrarySha256": "3ecf511979ed571131e7d7f4a467112aba21940b4dc91d63bd109b9683bf67c4",
     "sdkLicenseSha256": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
