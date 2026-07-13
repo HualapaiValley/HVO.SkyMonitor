@@ -15,6 +15,7 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentNullException.ThrowIfNull(manifest);
+        manifest.Validate();
         var directory = Path.Combine(Path.GetFullPath(root), "outbox");
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, string.Concat(manifest.IdempotencyKey, ".json"));

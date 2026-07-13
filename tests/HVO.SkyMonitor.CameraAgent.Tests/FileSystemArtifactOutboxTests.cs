@@ -102,5 +102,5 @@ public sealed class FileSystemArtifactOutboxTests
 
     private static ArtifactUploadManifest CreateManifest() => new(
         "v1", "agent-a", Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw, "application/octet-stream", 4,
-        "0123456789ABCDEF", DateTimeOffset.UnixEpoch, "raw-v1", "frames/1970/01/01/Raw/frame.bin");
+        new string('A', 64), DateTimeOffset.UnixEpoch, "raw-v1", "frames/1970/01/01/Raw/frame.bin");
 }

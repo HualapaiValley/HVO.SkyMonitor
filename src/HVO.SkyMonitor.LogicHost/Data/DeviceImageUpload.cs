@@ -34,7 +34,13 @@ internal sealed class DeviceImageUpload
 
     public Guid? ArtifactId { get; set; }
 
+    public Guid? FrameId { get; set; }
+
     public string? ArtifactRole { get; set; }
+
+    public string? RecipeVersion { get; set; }
+
+    public string? ManifestSchemaVersion { get; set; }
 
     public string? ChecksumSha256 { get; set; }
 
