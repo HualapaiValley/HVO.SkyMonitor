@@ -126,6 +126,9 @@ Longer baseline sampling reached 1.26 GB working set and 540 MB LOH, confirming
 that full-resolution ASI178 remains the memory-bound profile and should receive
 continued allocation and outbox-provenance optimization.
 
-These measurements are descriptive development-host data. Final acceptance,
-USB throughput, sensor behavior, and thermal characterization still require a
-cooled and unthrottled `allskycamera01` with the physical ASI178MC.
+These measurements are descriptive development-host data. Future acceptance of
+a production ASI acquisition module, its USB throughput, and clean thermal
+behavior still requires a cooled and unthrottled `allskycamera01` with the
+physical ASI178MC. That runtime acceptance is separate from the standalone SDK
+and profile characterization and does not block use of an explicitly
+provisional virtual profile.

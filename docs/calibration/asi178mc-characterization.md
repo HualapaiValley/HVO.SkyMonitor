@@ -17,7 +17,7 @@ and astrometric lens measurements become available.
 | Transport | little-endian RAW16 | measured capture |
 | Exposure range | 32 us to 1000 s | ZWO manual |
 | Gain units | 0.1 dB | ZWO SDK convention |
-| Gain-zero conversion | about 0.916 e-/native ADU | ZWO graph/SDK |
+| Gain-zero conversion | about 0.916 e-/native ADU | ZWO published graph |
 | Gain-zero full well | about 15 ke- | ZWO graph |
 | Gain-zero read noise | about 2.25 e- RMS | ZWO graph |
 | Minimum read noise | about 1.35 e- RMS | ZWO graph |
@@ -27,6 +27,33 @@ Sources:
 - https://i.zwoastro.com/zwo-website/manuals/ASI178_Manual_EN_V1.3.pdf
 - https://www.zwoastro.com/software/product-sdk/
 - https://web.archive.org/web/20240509064023id_/https://astronomy-imaging-camera.com/product/asi178mc-color/
+
+## Verification Status
+
+The current profile is intentionally provisional. Hardware and SDK evidence do
+not imply that the virtual response or installed optics are calibrated.
+
+| Component | Status | Evidence |
+| --- | --- | --- |
+| SDK identity and capabilities | Hardware verified | SDK 1.41 profile probe on serial `350f500522000900` |
+| Native RAW16 layout | Hardware verified | Untouched `3096 x 2080`, 12,879,360-byte captures |
+| RGGB phase | Hardware verified | SDK Bayer code plus measured four-position parity response |
+| Binned dimensions and packing | Hardware verified | Normal SDK bin 1/2/3/4 capture matrix |
+| Mono-bin behavior | Partially hardware verified | Bin 2/4 flatten parity; bin 3 retains a residual pattern |
+| Hardware-bin-2 control | Reported, not operationally verified | SDK reports writable; tested RAW16 still path rejects enablement |
+| Electron/noise response | Provisional | Published curves and open-sky samples; no controlled photon-transfer fit |
+| Lens identity and projection | Unverified | Candidate geometry only; no barrel inspection or multi-star fit |
+| Installed orientation | Provisional | Landmark observations without a synchronized multi-star fit |
+| Bias, dark, flat, and defect maps | Uncalibrated | Controlled datasets have not been collected |
+
+The machine-readable SDK evidence is
+[`asi178mc-sdk-profile-v1.json`](asi178mc-sdk-profile-v1.json). The SDK-reported
+`ElecPerADU` value is retained as provenance but is not treated as a calibrated
+conversion gain because it disagrees with the published gain-zero curve and has
+not been tied to an SDK gain setting.
+Commands, hashes, host state, measurements, and durable source paths for the
+cloudy session are recorded in
+[`asi178mc-session-20260713.json`](asi178mc-session-20260713.json).
 
 ## RAW16 Mapping
 
@@ -101,6 +128,59 @@ These images include sky signal, dark current, bias, fixed-pattern response,
 amp/dome/lens glow, obstructions, hot pixels, and stars. They cannot isolate any
 one sensor parameter.
 
+## Cloudy-Sky SDK and Binning Session
+
+On 2026-07-13, the standalone C++ utility probed SDK 1.41 and captured short
+RAW16 pairs at gain 150, offset 10, and a requested 0.1-second exposure. The
+camera reported RAW8, RGB24, Y8, and RAW16 formats; bins 1, 2, 3, and 4; gain
+`0-510`; exposure `32-2000000000 us`; offset `0-600`; and controls reported as
+writable for hardware-bin and mono-bin.
+
+| Bin | Returned dimensions | Row bytes | Frame bytes |
+| ---: | ---: | ---: | ---: |
+| 1 | 3096 x 2080 | 6192 | 12,879,360 |
+| 2 | 1548 x 1040 | 3096 | 3,219,840 |
+| 3 | 1032 x 692 | 2064 | 1,428,288 |
+| 4 | 774 x 520 | 1548 | 804,960 |
+
+The nominal bin-3 height is 693, but SDK error 8 rejected the odd ROI. Trimming
+one post-bin row to 692 produced the largest tested top-left ROI. It covers
+2,076 of 2,080 physical sensor rows, omitting four source rows. This is measured
+SDK behavior and must not be inferred from the advertised bin list alone; odd-
+width rejection was not tested.
+Normal bin-2 captures report hardware-bin disabled. The final utility configures
+a valid bin-2 ROI first; enabling the distinct hardware-bin control then causes
+SDK error 16 and writes no frame. An earlier development-order experiment also
+received error 8 before ROI configuration, but that path is not part of the
+reproducible workflow. Hardware binning therefore remains unsupported for this
+tested still/RAW16 combination despite the writable capability report.
+
+Bin-1 parity means from a representative cloudy frame were approximately
+`70.30, 50.67, 51.83, 88.35` ADU for even/even, even/odd, odd/even, and odd/odd
+samples. Bin-2 with mono-bin disabled retained the same strong four-position
+pattern. At bin 2 with mono-bin enabled, the four means were `83.011, 83.030,
+83.006, 82.977` ADU, and bin 4 was similarly flat. Bin 3 mono-bin retained an
+elevated odd/odd mean (`89.30` versus approximately `81.1-81.3` elsewhere).
+Normal binned RAW16 therefore retains color-grid behavior, while SDK mono-bin
+strongly suppresses it at bins 2 and 4 but is not parity-uniform at bin 3. It
+does not calibrate channel gains or establish a generic mono-bin response
+because cloud illumination and lens transmission were not controlled.
+
+Requested 0.1-second still exposures reached SDK success in approximately
+394-405 ms at every bin factor, followed by approximately 12-84 ms for
+`ASIGetDataAfterExp`. Sensor temperature was 39.6-39.7 C. The Raspberry Pi was
+73.5-74 C with no current throttle bits and a roughly 1.5 GHz ARM clock, but
+`get_throttled=0xe0000` retained earlier frequency-cap, throttle, and soft-
+temperature history. These are characterization observations, not a clean
+thermal acceptance run.
+
+Session frames ranged between whole-frame levels near 65 and 85 mean ADU. Cloud
+changes prevent attributing that variation to the camera, although earlier
+short high-gain sequences independently recorded occasional level excursions.
+Stationary read-noise work still requires controlled covered pairs and explicit
+outlier handling. Cloud cover prevented any astrometric lens or orientation
+claim.
+
 ## Calibration Process
 
 Future camera/lens onboarding should produce five versioned datasets:
@@ -123,6 +203,8 @@ fits are derivative artifacts with explicit recipes and source identifiers.
 ## Binned Mono Capability
 
 The SDK reports supported bin factors 1, 2, 3, and 4 and exposes the
-`ASI_MONO_BIN` control. This confirms hardware capability but not its exact ROI,
-packing, black level, or response. A virtual mono-bin profile will be added only
-after paired RAW16 captures establish those semantics.
+`ASI_MONO_BIN` control. Physical captures now establish the returned dimensions,
+tightly packed little-endian RAW16 layout, odd bin-3 row constraint, and color-
+grid versus mono-bin distinction. Black level, signal aggregation, conversion
+gain, and noise response remain uncalibrated. A virtual mono-bin response profile
+must not be added until controlled bias and flat pairs establish those semantics.

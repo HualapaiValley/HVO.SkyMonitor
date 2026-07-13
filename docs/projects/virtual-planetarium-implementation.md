@@ -666,3 +666,9 @@ Continue physical ASI178 calibration separately after that baseline work:
    distortion; replace the provisional lens profile only with residual evidence.
 4. Characterize hardware mono-bin output and controlled bias, dark, and flat
    response without changing immutable Bayer raw data.
+
+These are standalone profile-calibration tasks. The ASI178 virtual sensor and
+Fujinon candidate rig remain explicitly provisional/unverified until the
+evidence exists. They do not require or block a production C# ASI camera module;
+that adapter will be designed separately after its capability and native-
+interop boundaries are discussed.
