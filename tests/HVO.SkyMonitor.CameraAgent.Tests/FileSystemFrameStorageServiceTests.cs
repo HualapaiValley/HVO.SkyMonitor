@@ -201,7 +201,7 @@ public sealed class FileSystemFrameStorageServiceTests
     }
 
     [TestMethod]
-    public async Task RemoveBatchAsync_RewritesIndexOnceForMultipleArtifacts()
+    public async Task RemoveBatchAsync_RemovesMultipleArtifactsAndRetainsOtherIndexEntries()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
         try
