@@ -77,7 +77,7 @@ public sealed class FileSystemFrameStorageService(
         await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await AppendIndexEntryAsync(indexPath, metadata, cancellationToken).ConfigureAwait(false);
+            await AppendIndexEntryAsync(indexPath, metadata with { Metadata = null }, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -97,58 +97,79 @@ public sealed class FileSystemFrameStorageService(
         StoredFrameReference storedFrame,
         Guid artifactId,
         CancellationToken cancellationToken)
+        => await RemoveBatchAsync(
+            storageRoot,
+            [new StoredFrameRemoval(storedFrame, artifactId)],
+            cancellationToken).ConfigureAwait(false);
+
+    public async ValueTask RemoveBatchAsync(
+        string storageRoot,
+        IReadOnlyCollection<StoredFrameRemoval> removals,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
-        ArgumentNullException.ThrowIfNull(storedFrame);
-
-        var payloadPath = storedFrame.AbsolutePath;
-        if (File.Exists(payloadPath))
+        ArgumentNullException.ThrowIfNull(removals);
+        if (removals.Count == 0)
         {
-            File.Delete(payloadPath);
+            return;
         }
 
-        var metadataPath = Path.ChangeExtension(payloadPath, ".json");
-        if (File.Exists(metadataPath))
+        foreach (var removal in removals)
         {
-            File.Delete(metadataPath);
+            ArgumentNullException.ThrowIfNull(removal.StoredFrame);
+            var payloadPath = removal.StoredFrame.AbsolutePath;
+            if (File.Exists(payloadPath))
+            {
+                File.Delete(payloadPath);
+            }
+
+            var metadataPath = Path.ChangeExtension(payloadPath, ".json");
+            if (File.Exists(metadataPath))
+            {
+                File.Delete(metadataPath);
+            }
         }
 
         storageRoot = Path.GetFullPath(storageRoot);
-        var indexPath = Path.Combine(storageRoot, "index", $"frames_{storedFrame.TimestampUtc:yyyy-MM-dd}.jsonl");
-        var indexGate = FrameIndexLock.ForRoot(storageRoot);
-        await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        foreach (var dateGroup in removals.GroupBy(static removal => DateOnly.FromDateTime(removal.StoredFrame.TimestampUtc.UtcDateTime)))
         {
-            if (!File.Exists(indexPath))
-            {
-                return;
-            }
-            var remainingLines = (await File.ReadAllLinesAsync(indexPath, cancellationToken).ConfigureAwait(false))
-                .Where(line => !HasArtifactId(line, artifactId))
-                .ToArray();
-            if (remainingLines.Length == 0)
-            {
-                File.Delete(indexPath);
-                return;
-            }
-
-            var temporaryPath = string.Concat(indexPath, ".", Guid.NewGuid().ToString("N"), ".tmp");
+            var artifactIds = dateGroup.Select(static removal => removal.ArtifactId).ToHashSet();
+            var indexPath = Path.Combine(storageRoot, "index", $"frames_{dateGroup.Key:yyyy-MM-dd}.jsonl");
+            var indexGate = FrameIndexLock.ForRoot(storageRoot);
+            await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await File.WriteAllLinesAsync(temporaryPath, remainingLines, cancellationToken).ConfigureAwait(false);
-                File.Move(temporaryPath, indexPath, overwrite: true);
+                if (!File.Exists(indexPath))
+                {
+                    continue;
+                }
+                var remainingLines = (await File.ReadAllLinesAsync(indexPath, cancellationToken).ConfigureAwait(false))
+                    .Where(line => !TryGetArtifactId(line, out var artifactId) || !artifactIds.Contains(artifactId))
+                    .ToArray();
+                if (remainingLines.Length == 0)
+                {
+                    File.Delete(indexPath);
+                    continue;
+                }
+
+                var temporaryPath = string.Concat(indexPath, ".", Guid.NewGuid().ToString("N"), ".tmp");
+                try
+                {
+                    await File.WriteAllLinesAsync(temporaryPath, remainingLines, cancellationToken).ConfigureAwait(false);
+                    File.Move(temporaryPath, indexPath, overwrite: true);
+                }
+                finally
+                {
+                    if (File.Exists(temporaryPath))
+                    {
+                        File.Delete(temporaryPath);
+                    }
+                }
             }
             finally
             {
-                if (File.Exists(temporaryPath))
-                {
-                    File.Delete(temporaryPath);
-                }
+                indexGate.Release();
             }
-        }
-        finally
-        {
-            indexGate.Release();
         }
     }
 
@@ -157,7 +178,7 @@ public sealed class FileSystemFrameStorageService(
         var temporaryPath = string.Concat(destinationPath, ".", Guid.NewGuid().ToString("N"), ".tmp");
         try
         {
-            await File.WriteAllBytesAsync(temporaryPath, content.ToArray(), cancellationToken).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(temporaryPath, content, cancellationToken).ConfigureAwait(false);
             File.Move(temporaryPath, destinationPath, overwrite: false);
         }
         finally
@@ -169,15 +190,15 @@ public sealed class FileSystemFrameStorageService(
         }
     }
 
-    private static bool HasArtifactId(string line, Guid artifactId)
+    private static bool TryGetArtifactId(string line, out Guid artifactId)
     {
+        artifactId = Guid.Empty;
         try
         {
             using var metadata = JsonDocument.Parse(line);
             return metadata.RootElement.TryGetProperty("artifactId", out var value) &&
                    value.ValueKind == JsonValueKind.String &&
-                   Guid.TryParse(value.GetString(), out var parsedArtifactId) &&
-                   parsedArtifactId == artifactId;
+                   Guid.TryParse(value.GetString(), out artifactId);
         }
         catch (JsonException)
         {
@@ -386,7 +407,7 @@ public sealed class FileSystemFrameStorageService(
         int Width,
         int Height,
         CameraPixelFormat PixelFormat,
-        StoredFrameCaptureMetadata Metadata);
+        StoredFrameCaptureMetadata? Metadata);
 
     private sealed record StoredFrameCaptureMetadata(
         TimeSpan Exposure,

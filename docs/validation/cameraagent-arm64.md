@@ -70,3 +70,62 @@ to exercise durable outbox retention. Observations were:
 The validation container, image, and dedicated volumes were removed afterward.
 These are descriptive development-host observations, not acceptance thresholds
 and not final full-resolution or physical-camera performance evidence.
+
+### 2026-07-13 Full-Resolution and Central Ingest Run
+
+Issue #81 extended the `devpi5` fallback validation to the full-resolution
+VirtualSky profiles and an isolated LogicHost deployment. Both profiles used the
+pinned 119,625-object HYG 4.2 catalog with SHA-256
+`b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2`. The
+LogicHost dependencies, device bootstrap, OAuth client credentials, checksum-
+verified MinIO ingest, SQL upload records, Loki logs, and Prometheus/OTLP
+telemetry were healthy.
+
+The full ASI174MM run produced `1936x1216` Mono16 frames with 2,004 visible
+objects and 163 constellation strokes. Capture intervals remained 24.992-25.000
+seconds. The profile required `horizontalFlip: true` to match the intended
+east/west orientation. At the captured timestamp, Capella and Procyon scene
+coordinates differed from the pinned Stellarium 24.4 oracle by 0.021 and 0.067
+pixels. Raw pixel neighborhoods at both positions contained signal above the
+frame background. Runtime-counter observations over approximately one minute
+were:
+
+- 408-467 MB working set, 448 MB mean;
+- 140-167 MB large-object heap, 160 MB mean;
+- 44-67 MB LOH fragmentation, 62 MB mean;
+- 4.7 MB/s mean and 73 MB/s peak managed allocation rate;
+- approximately 167 ms processing and 209 ms capture-loop time; and
+- less than 0.005 seconds of GC pause time in any sampled second.
+
+The full ASI178MC run produced `3096x2080` Bayer RGGB16 frames and RGB24 preview
+and annotated artifacts. The configured 300-object query plus constellation
+endpoints yielded 309 visible objects and 155 strokes. Capture cadence remained
+24.992 seconds and processing required approximately 1.33 seconds. Capella, the
+Sun, Venus, and Jupiter differed from Stellarium by at most 0.054 pixels, and
+their raw Bayer neighborhoods contained strong signal. Temperature remained
+57-60 C with `get_throttled=0x0` throughout both profiles.
+
+Profiling identified storage and large-buffer allocation as the major costs,
+not scene rendering. Sampled stacks were dominated by file `unlink`, `open`,
+write, and wait operations; scene rendering and Bayer demosaic were each below
+one percent of sampled wall-clock stacks. The original outbox path rewrote a
+large JSONL index after every acknowledged artifact. With four artifacts per
+capture this prevented the ASI174 backlog from catching up even though each
+central upload returned HTTP 202 in approximately 0.27-0.52 seconds. Cleanup
+was changed to delete one acknowledged upload batch and rewrite each affected
+daily index once.
+
+Storage also copied every large pixel buffer with `ToArray()` before writing and
+placed full scene provenance in both each sidecar and each browse-index entry.
+The optimized path writes `ReadOnlyMemory<byte>` directly and keeps full
+provenance in the sidecar while writing compact browse entries. In comparable
+fresh ASI178 samples, mean allocation fell from 14.1 to 10.0 MB/s, mean working
+set from 733 to 699 MB, mean LOH size from 353 to 289 MB, and mean LOH
+fragmentation from 98 to 23 MB. Processing time and cadence were unchanged.
+Longer baseline sampling reached 1.26 GB working set and 540 MB LOH, confirming
+that full-resolution ASI178 remains the memory-bound profile and should receive
+continued allocation and outbox-provenance optimization.
+
+These measurements are descriptive development-host data. Final acceptance,
+USB throughput, sensor behavior, and thermal characterization still require a
+cooled and unthrottled `allskycamera01` with the physical ASI178MC.

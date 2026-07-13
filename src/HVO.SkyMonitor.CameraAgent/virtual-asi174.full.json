@@ -23,7 +23,7 @@
       "principalPointX": 968.0,
       "principalPointY": 608.0,
       "imageCircleRadiusPixels": 595.84,
-      "horizontalFlip": false,
+      "horizontalFlip": true,
       "calibrationVersion": "virtual-fisheye-180-equidistant-v1"
     },
     "orientation": {

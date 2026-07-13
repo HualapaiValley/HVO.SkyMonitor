@@ -54,13 +54,14 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
-    [DataRow("virtual-asi174.full.json", CameraPixelFormat.Mono16, SensorResponseMode.Monochrome, 3872)]
-    [DataRow("virtual-asi174mc.full.json", CameraPixelFormat.Rgb24, SensorResponseMode.RenderedRgb, 5808)]
+    [DataRow("virtual-asi174.full.json", CameraPixelFormat.Mono16, SensorResponseMode.Monochrome, 3872, true)]
+    [DataRow("virtual-asi174mc.full.json", CameraPixelFormat.Rgb24, SensorResponseMode.RenderedRgb, 5808, false)]
     public async Task FullAsi174ProfilesLoadCanonicalGeometry(
         string fileName,
         CameraPixelFormat pixelFormat,
         SensorResponseMode responseMode,
-        int strideBytes)
+        int strideBytes,
+        bool horizontalFlip)
     {
         var path = Path.Combine(AppContext.BaseDirectory, fileName);
         var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
@@ -82,6 +83,7 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(968, config.Rig.Optics.PrincipalPointX);
         Assert.AreEqual(608, config.Rig.Optics.PrincipalPointY);
         Assert.AreEqual(595.84, config.Rig.Optics.ImageCircleRadiusPixels);
+        Assert.AreEqual(horizontalFlip, config.Rig.Optics.HorizontalFlip);
         Assert.AreEqual(new RigOrientation(90, 0, 0), config.Rig.Orientation);
     }
 
