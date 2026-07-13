@@ -26,9 +26,11 @@ public sealed class ArtifactOutboxDrainService(
         while (!stoppingToken.IsCancellationRequested)
         {
             var now = timeProvider.GetUtcNow();
-            var ready = outbox.List(storageRoot, 10_000)
-                .Where(manifest => !_retries.TryGetValue(manifest.IdempotencyKey, out var retry) || retry.NextAttemptUtc <= now)
-                .Take(hostOptions.Value.UploadBatchSize);
+            var deferred = _retries
+                .Where(retry => retry.Value.NextAttemptUtc > now)
+                .Select(retry => retry.Key)
+                .ToHashSet(StringComparer.Ordinal);
+            var ready = outbox.List(storageRoot, hostOptions.Value.UploadBatchSize, deferred);
             foreach (var manifest in ready)
             {
                 if (await uploadClient.UploadAsync(storageRoot, manifest, stoppingToken).ConfigureAwait(false))

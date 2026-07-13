@@ -37,7 +37,8 @@ internal sealed class ArtifactIngestController(IArtifactIngestService ingestServ
             return BadRequest(new ProblemDetails { Title = "Invalid artifact manifest" });
         }
         if (!Request.Headers.TryGetValue("Idempotency-Key", out var idempotencyKey)
-            || !string.Equals(idempotencyKey.ToString(), parsedManifest.IdempotencyKey, StringComparison.Ordinal))
+            || idempotencyKey.Count != 1
+            || !string.Equals(idempotencyKey[0], parsedManifest.IdempotencyKey, StringComparison.OrdinalIgnoreCase))
         {
             return BadRequest(new ProblemDetails { Title = "Idempotency-Key does not match manifest" });
         }

@@ -99,13 +99,28 @@ public sealed class ArtifactIngestTests
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
     }
 
-    private static async Task<HttpResponseMessage> PostAsync(HttpClient client, ArtifactUploadManifest manifest)
+    [TestMethod]
+    public async Task MultipartIngest_WithLowercaseIdempotencyKey_IsAccepted()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, _) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        var manifest = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw,
+            "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch, "raw-v1", "frames/raw.bin");
+
+        using var response = await PostAsync(client, manifest, ToLowerHex(manifest.IdempotencyKey)).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+    }
+
+    private static async Task<HttpResponseMessage> PostAsync(HttpClient client, ArtifactUploadManifest manifest, string? idempotencyKey = null)
     {
         var content = new MultipartFormDataContent();
         content.Add(new StringContent(JsonSerializer.Serialize(manifest)), "manifest");
         content.Add(new ByteArrayContent([1, 2, 3, 4]) { Headers = { ContentType = new MediaTypeHeaderValue(manifest.MediaType) } }, "payload", "artifact.bin");
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri("/api/v1.0/artifacts", UriKind.Relative)) { Content = content };
-        request.Headers.TryAddWithoutValidation("Idempotency-Key", manifest.IdempotencyKey);
+        request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey ?? manifest.IdempotencyKey);
         return await client.SendAsync(request).ConfigureAwait(false);
     }
 
@@ -164,4 +179,22 @@ public sealed class ArtifactIngestTests
     }
 
     private static readonly string PayloadChecksum = Convert.ToHexString(SHA256.HashData([1, 2, 3, 4]));
+
+    private static string ToLowerHex(string value)
+        => string.Create(value.Length, value, static (destination, source) =>
+        {
+            for (var index = 0; index < source.Length; index++)
+            {
+                destination[index] = source[index] switch
+                {
+                    'A' => 'a',
+                    'B' => 'b',
+                    'C' => 'c',
+                    'D' => 'd',
+                    'E' => 'e',
+                    'F' => 'f',
+                    var character => character
+                };
+            }
+        });
 }

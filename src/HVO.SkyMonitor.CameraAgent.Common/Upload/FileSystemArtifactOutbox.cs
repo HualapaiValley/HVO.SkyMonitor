@@ -39,7 +39,10 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
         }
     }
 
-    public IReadOnlyList<ArtifactUploadManifest> List(string root, int maximumResults)
+    public IReadOnlyList<ArtifactUploadManifest> List(
+        string root,
+        int maximumResults,
+        IReadOnlySet<string>? excludedIdempotencyKeys = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         if (maximumResults is < 1 or > 10_000)
@@ -47,42 +50,32 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
             throw new ArgumentOutOfRangeException(nameof(maximumResults));
         }
 
-        return EnumeratePending(root, CancellationToken.None).Take(maximumResults).ToArray();
+        var manifests = new List<ArtifactUploadManifest>(maximumResults);
+        foreach (var path in EnumerateManifestPaths(root, CancellationToken.None))
+        {
+            var idempotencyKey = Path.GetFileNameWithoutExtension(path);
+            if (excludedIdempotencyKeys?.Contains(idempotencyKey) == true)
+            {
+                continue;
+            }
+
+            manifests.Add(ReadManifest(path));
+            if (manifests.Count == maximumResults)
+            {
+                break;
+            }
+        }
+
+        return manifests;
     }
 
     public IEnumerable<ArtifactUploadManifest> EnumeratePending(string root, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
-        var directory = Path.Combine(Path.GetFullPath(root), "outbox");
-        if (!Directory.Exists(directory))
-        {
-            yield break;
-        }
-
-        var paths = new List<string>();
-        foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
+        foreach (var path in EnumerateManifestPaths(root, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            paths.Add(path);
-        }
-        cancellationToken.ThrowIfCancellationRequested();
-        paths.Sort(StringComparer.Ordinal);
-        cancellationToken.ThrowIfCancellationRequested();
-
-        foreach (var path in paths)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            ArtifactUploadManifest manifest;
-            try
-            {
-                manifest = JsonSerializer.Deserialize<ArtifactUploadManifest>(File.ReadAllBytes(path), SerializerOptions)
-                    ?? throw new InvalidDataException($"Outbox manifest '{path}' is invalid.");
-            }
-            catch (JsonException exception)
-            {
-                throw new InvalidDataException($"Outbox manifest '{path}' is invalid.", exception);
-            }
-            yield return manifest;
+            yield return ReadManifest(path);
         }
     }
 
@@ -98,5 +91,37 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    private static List<string> EnumerateManifestPaths(string root, CancellationToken cancellationToken)
+    {
+        var directory = Path.Combine(Path.GetFullPath(root), "outbox");
+        if (!Directory.Exists(directory))
+        {
+            return [];
+        }
+
+        var paths = new List<string>();
+        foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            paths.Add(path);
+        }
+        paths.Sort(StringComparer.Ordinal);
+        cancellationToken.ThrowIfCancellationRequested();
+        return paths;
+    }
+
+    private static ArtifactUploadManifest ReadManifest(string path)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<ArtifactUploadManifest>(File.ReadAllBytes(path), SerializerOptions)
+                ?? throw new InvalidDataException($"Outbox manifest '{path}' is invalid.");
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException($"Outbox manifest '{path}' is invalid.", exception);
+        }
     }
 }

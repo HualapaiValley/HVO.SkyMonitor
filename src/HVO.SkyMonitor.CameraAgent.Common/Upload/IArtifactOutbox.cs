@@ -6,7 +6,10 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
 public interface IArtifactOutbox
 {
     ValueTask EnqueueAsync(string root, ArtifactUploadManifest manifest, CancellationToken cancellationToken);
-    IReadOnlyList<ArtifactUploadManifest> List(string root, int maximumResults);
+    IReadOnlyList<ArtifactUploadManifest> List(
+        string root,
+        int maximumResults,
+        IReadOnlySet<string>? excludedIdempotencyKeys = null);
     IEnumerable<ArtifactUploadManifest> EnumeratePending(string root, CancellationToken cancellationToken);
     ValueTask AcknowledgeAsync(string root, string idempotencyKey, CancellationToken cancellationToken);
 }
