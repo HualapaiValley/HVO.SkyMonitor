@@ -31,6 +31,7 @@ public sealed class ArtifactOutboxDrainService(
                 .Select(retry => retry.Key)
                 .ToHashSet(StringComparer.Ordinal);
             var ready = outbox.List(storageRoot, hostOptions.Value.UploadBatchSize, deferred);
+            var removals = new List<StoredFrameRemoval>(ready.Count);
             foreach (var manifest in ready)
             {
                 if (await uploadClient.UploadAsync(storageRoot, manifest, stoppingToken).ConfigureAwait(false))
@@ -38,8 +39,8 @@ public sealed class ArtifactOutboxDrainService(
                     _retries.Remove(manifest.IdempotencyKey);
                     await outbox.AcknowledgeAsync(storageRoot, manifest.IdempotencyKey, stoppingToken).ConfigureAwait(false);
                     var path = Path.Combine(Path.GetFullPath(storageRoot), manifest.RelativeArtifactPath);
-                    await frameStorageService.RemoveAsync(storageRoot, new StoredFrameReference(
-                        manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role), manifest.ArtifactId, stoppingToken).ConfigureAwait(false);
+                    removals.Add(new StoredFrameRemoval(new StoredFrameReference(
+                        manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role), manifest.ArtifactId));
                 }
                 else
                 {
@@ -51,6 +52,7 @@ public sealed class ArtifactOutboxDrainService(
                     _retries[manifest.IdempotencyKey] = new RetryState(attempt, timeProvider.GetUtcNow() + delay);
                 }
             }
+            await frameStorageService.RemoveBatchAsync(storageRoot, removals, stoppingToken).ConfigureAwait(false);
 
             await Task.Delay(TimeSpan.FromSeconds(hostOptions.Value.UploadPollIntervalSeconds), timeProvider, stoppingToken).ConfigureAwait(false);
         }

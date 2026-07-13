@@ -155,6 +155,9 @@ public sealed class FileSystemFrameStorageServiceTests
                 await File.ReadAllTextAsync(Path.ChangeExtension(stored.AbsolutePath, ".json")).ConfigureAwait(false));
             Assert.AreEqual("scene-id",
                 metadata.RootElement.GetProperty("metadata").GetProperty("scene").GetProperty("sceneId").GetString());
+            using var indexEntry = System.Text.Json.JsonDocument.Parse(
+                (await File.ReadAllLinesAsync(Path.Combine(root, "index", "frames_1970-01-01.jsonl")).ConfigureAwait(false))[0]);
+            Assert.AreEqual(System.Text.Json.JsonValueKind.Null, indexEntry.RootElement.GetProperty("metadata").ValueKind);
         }
         finally
         {
@@ -187,6 +190,42 @@ public sealed class FileSystemFrameStorageServiceTests
             var indexLines = await File.ReadAllLinesAsync(Path.Combine(root, "index", "frames_1970-01-01.jsonl")).ConfigureAwait(false);
             Assert.AreEqual(1, indexLines.Length);
             StringAssert.Contains(indexLines[0], retainedArtifactId.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task RemoveBatchAsync_RewritesIndexOnceForMultipleArtifacts()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var frame = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono8, new byte[] { 1 },
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+            var firstId = Guid.NewGuid();
+            var secondId = Guid.NewGuid();
+            var retainedId = Guid.NewGuid();
+            var first = await service.SaveAsync(root, new FrameArtifact(firstId, FrameArtifactRole.Raw, frame), CancellationToken.None).ConfigureAwait(false);
+            var second = await service.SaveAsync(root, new FrameArtifact(secondId, FrameArtifactRole.Preview, frame), CancellationToken.None).ConfigureAwait(false);
+            var retained = await service.SaveAsync(root, new FrameArtifact(retainedId, FrameArtifactRole.Raw, frame), CancellationToken.None).ConfigureAwait(false);
+
+            await service.RemoveBatchAsync(root,
+                [new StoredFrameRemoval(first, firstId), new StoredFrameRemoval(second, secondId)],
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(File.Exists(first.AbsolutePath));
+            Assert.IsFalse(File.Exists(second.AbsolutePath));
+            Assert.IsTrue(File.Exists(retained.AbsolutePath));
+            var indexLines = await File.ReadAllLinesAsync(Path.Combine(root, "index", "frames_1970-01-01.jsonl")).ConfigureAwait(false);
+            Assert.HasCount(1, indexLines);
+            StringAssert.Contains(indexLines[0], retainedId.ToString(), StringComparison.Ordinal);
         }
         finally
         {
