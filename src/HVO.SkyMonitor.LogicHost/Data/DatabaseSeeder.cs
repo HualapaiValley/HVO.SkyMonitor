@@ -258,34 +258,76 @@ internal static class DatabaseSeeder
         string displayName,
         IEnumerable<string> scopes)
     {
-        if (await applicationManager.FindByClientIdAsync(clientId) != null)
-        {
-            if (logger.IsEnabled(LogLevel.Information))
-            {
-                logger.LogInformation("OAuth2 client already exists: {ClientId}", clientId);
-            }
-            return;
-        }
-
-        var descriptor = new OpenIddictApplicationDescriptor
+        var managedDescriptor = new OpenIddictApplicationDescriptor
         {
             ClientId = clientId,
             ClientSecret = clientSecret,
             DisplayName = displayName,
-            ConsentType = ConsentTypes.Implicit
+            ConsentType = ConsentTypes.Implicit,
+            ClientType = ClientTypes.Confidential
         };
 
-        descriptor.Permissions.Add(Permissions.Endpoints.Token);
-        descriptor.Permissions.Add(Permissions.GrantTypes.ClientCredentials);
+        managedDescriptor.Permissions.Add(Permissions.Endpoints.Token);
+        managedDescriptor.Permissions.Add(Permissions.GrantTypes.ClientCredentials);
         foreach (var scope in scopes)
         {
-            descriptor.Permissions.Add(Permissions.Prefixes.Scope + scope);
+            managedDescriptor.Permissions.Add(Permissions.Prefixes.Scope + scope);
         }
 
-        await applicationManager.CreateAsync(descriptor);
+        var application = await applicationManager.FindByClientIdAsync(clientId);
+        if (application is null)
+        {
+            await applicationManager.CreateAsync(managedDescriptor);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("Created OAuth2 client: {ClientId}", clientId);
+            }
+            return;
+        }
+
+        var currentPermissions = await applicationManager.GetPermissionsAsync(application);
+        var metadataChanged = !string.Equals(
+                await applicationManager.GetDisplayNameAsync(application), displayName, StringComparison.Ordinal) ||
+            !string.Equals(
+                await applicationManager.GetConsentTypeAsync(application), ConsentTypes.Implicit, StringComparison.Ordinal) ||
+            !string.Equals(
+                await applicationManager.GetClientTypeAsync(application), ClientTypes.Confidential, StringComparison.Ordinal) ||
+            !currentPermissions.ToHashSet(StringComparer.Ordinal).SetEquals(managedDescriptor.Permissions);
+        var secretChanged = !await applicationManager.ValidateClientSecretAsync(application, clientSecret);
+
+        if (metadataChanged)
+        {
+            var persistedDescriptor = new OpenIddictApplicationDescriptor();
+            await applicationManager.PopulateAsync(persistedDescriptor, application);
+            persistedDescriptor.ClientId = managedDescriptor.ClientId;
+            persistedDescriptor.DisplayName = managedDescriptor.DisplayName;
+            persistedDescriptor.ConsentType = managedDescriptor.ConsentType;
+            persistedDescriptor.ClientType = managedDescriptor.ClientType;
+            persistedDescriptor.Permissions.Clear();
+            persistedDescriptor.Permissions.UnionWith(managedDescriptor.Permissions);
+            if (secretChanged)
+            {
+                persistedDescriptor.ClientSecret = clientSecret;
+            }
+
+            await applicationManager.UpdateAsync(application, persistedDescriptor);
+        }
+        else if (secretChanged)
+        {
+            await applicationManager.UpdateAsync(application, clientSecret);
+        }
+        else
+        {
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("OAuth2 client already matches configuration: {ClientId}", clientId);
+            }
+            return;
+        }
+
         if (logger.IsEnabled(LogLevel.Information))
         {
-            logger.LogInformation("Created OAuth2 client: {ClientId}", clientId);
+            logger.LogInformation("Updated OAuth2 client from configuration: {ClientId}", clientId);
         }
     }
 
