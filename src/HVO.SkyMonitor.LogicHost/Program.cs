@@ -83,6 +83,9 @@ public sealed partial class Program
         builder.Services.Configure<DeviceBootstrapSecretsOptions>(
             builder.Configuration.GetSection("DeviceBootstrap"));
 
+        builder.Services.Configure<DatabaseSeedOptions>(
+            builder.Configuration.GetSection(DatabaseSeedOptions.SectionName));
+
         var centralIdentitySettings = centralIdentitySection.Exists()
             ? centralIdentitySection.Get<CentralIdentityOptions>()
             : null;

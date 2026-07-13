@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Threading.Tasks;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
+using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Hosting;
@@ -38,6 +39,9 @@ public sealed class IntegrationTestFixture : IDisposable
     private bool _initialized;
     private string? _originalSqlServerConnectionString;
     private string? _originalDefaultConnectionString;
+    private string _redisHost = "127.0.0.1";
+    private string _minioHost = "127.0.0.1";
+    private string _smtpHost = "127.0.0.1";
 
     /// <summary>
     /// Gets the web application factory for creating HTTP clients.
@@ -74,10 +78,6 @@ public sealed class IntegrationTestFixture : IDisposable
     /// </summary>
     public const string MinioSecretKey = "minioadmin";
 
-    private const string RedisHost = "127.0.0.1";
-    private const string MinioHost = "127.0.0.1";
-    private const string SmtpHost = "127.0.0.1";
-
     /// <summary>
     /// Initializes Testcontainers and the application factory.
     /// </summary>
@@ -106,8 +106,9 @@ public sealed class IntegrationTestFixture : IDisposable
             .Build();
 
         await _redisContainer.StartAsync().ConfigureAwait(false);
+        _redisHost = _redisContainer.Hostname;
         var redisPort = _redisContainer.GetMappedPublicPort(6379);
-        RedisConnectionString = $"{RedisHost}:{redisPort}";
+        RedisConnectionString = $"{_redisHost}:{redisPort}";
 
         // Start MinIO container
         _minioContainer = new ContainerBuilder()
@@ -123,8 +124,9 @@ public sealed class IntegrationTestFixture : IDisposable
             .Build();
 
         await _minioContainer.StartAsync().ConfigureAwait(false);
+        _minioHost = _minioContainer.Hostname;
         var minioPort = _minioHostPort;
-        MinioEndpoint = $"{MinioHost}:{minioPort}";
+        MinioEndpoint = $"{_minioHost}:{minioPort}";
 
         // Start SMTP (Mailpit) container
         _smtpContainer = new ContainerBuilder()
@@ -135,9 +137,10 @@ public sealed class IntegrationTestFixture : IDisposable
             .Build();
 
         await _smtpContainer.StartAsync().ConfigureAwait(false);
+        _smtpHost = _smtpContainer.Hostname;
         var smtpPort = _smtpContainer.GetMappedPublicPort(1025);
         var smtpHttpPort = _smtpContainer.GetMappedPublicPort(8025);
-        SmtpHttpEndpoint = $"http://{SmtpHost}:{smtpHttpPort}";
+        SmtpHttpEndpoint = $"http://{_smtpHost}:{smtpHttpPort}";
 
         // Create the web application factory
         Factory = new WebApplicationFactory<Program>()
@@ -153,16 +156,18 @@ public sealed class IntegrationTestFixture : IDisposable
                         ["ConnectionStrings:DefaultConnection"] = SqlServerConnectionString,
                         ["Redis:Configuration"] = RedisConnectionString,
                         ["Redis:InstanceName"] = "integration-tests",
-                        ["Minio:Endpoint"] = MinioHost,
+                        ["Minio:Endpoint"] = _minioHost,
                         ["Minio:Port"] = minioPort.ToString(CultureInfo.InvariantCulture),
                         ["Minio:AccessKey"] = MinioAccessKey,
                         ["Minio:SecretKey"] = MinioSecretKey,
                         ["Minio:DefaultBucket"] = "skymonitor-diagnostics",
-                        ["Smtp:Host"] = SmtpHost,
+                        ["Smtp:Host"] = _smtpHost,
                         ["Smtp:Port"] = smtpPort.ToString(CultureInfo.InvariantCulture),
                         ["Smtp:From"] = TestEmail.FromAddress,
                         ["Smtp:FromDisplayName"] = TestEmail.FromDisplayName
                     };
+
+                    AddDatabaseSeedOverrides(overrides);
 
                     config.AddInMemoryCollection(overrides!);
                 });
@@ -206,7 +211,7 @@ public sealed class IntegrationTestFixture : IDisposable
     {
         // Ensure default diagnostics bucket exists
         using var client = new MinioClient()
-            .WithEndpoint(MinioHost, _minioHostPort)
+            .WithEndpoint(_minioHost, _minioHostPort)
             .WithCredentials(MinioAccessKey, MinioSecretKey)
             .Build();
 
@@ -214,6 +219,77 @@ public sealed class IntegrationTestFixture : IDisposable
         if (!bucketExists)
         {
             await client.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-diagnostics")).ConfigureAwait(false);
+        }
+    }
+
+    private static void AddDatabaseSeedOverrides(Dictionary<string, string?> overrides)
+    {
+        AddUser(0, TestUsers.Admin.Email, TestUsers.Admin.Username, TestUsers.Admin.Password);
+        AddUser(1, TestUsers.Operator.Email, TestUsers.Operator.Username, TestUsers.Operator.Password);
+        AddUser(2, TestUsers.Viewer.Email, TestUsers.Viewer.Username, TestUsers.Viewer.Password);
+        AddUser(3, TestUsers.Regular.Email, TestUsers.Regular.Username, TestUsers.Regular.Password);
+
+        AddApiKey(0, TestApiKeys.CameraAgent.Key, TestApiKeys.CameraAgent.Name, ApiKeyAccessLevel.ReadWrite);
+        AddApiKey(1, TestApiKeys.InternalService.Key, TestApiKeys.InternalService.Name, ApiKeyAccessLevel.ReadWrite);
+        AddApiKey(2, TestApiKeys.Webhook.Key, TestApiKeys.Webhook.Name, ApiKeyAccessLevel.Read);
+        AddApiKey(3, TestApiKeys.ReadOnly.Key, TestApiKeys.ReadOnly.Name, ApiKeyAccessLevel.Read);
+
+        AddConfidentialClient(0, TestClients.SystemInternal.ClientId, TestClients.SystemInternal.ClientSecret,
+            TestClients.SystemInternal.DisplayName, TestClients.SystemInternal.Scopes);
+
+        AddPublicClient(0, TestClients.WebUI.ClientId, TestClients.WebUI.DisplayName, TestClients.WebUI.Scopes,
+            ["https://localhost:5001/signin-oidc", "http://localhost:5000/signin-oidc"],
+            ["https://localhost:5001/signout-callback-oidc", "http://localhost:5000/signout-callback-oidc"]);
+        AddPublicClient(1, TestClients.MobileApp.ClientId, TestClients.MobileApp.DisplayName, TestClients.MobileApp.Scopes,
+            ["com.skymonitor.mobile://auth-callback"], []);
+
+        void AddUser(int index, string email, string username, string password)
+        {
+            var prefix = $"DatabaseSeed:Users:{index}";
+            overrides[$"{prefix}:Email"] = email;
+            overrides[$"{prefix}:Username"] = username;
+            overrides[$"{prefix}:Password"] = password;
+        }
+
+        void AddApiKey(int index, string rawKey, string displayName, ApiKeyAccessLevel accessLevel)
+        {
+            var prefix = $"DatabaseSeed:ApiKeys:{index}";
+            overrides[$"{prefix}:RawKey"] = rawKey;
+            overrides[$"{prefix}:DisplayName"] = displayName;
+            overrides[$"{prefix}:AccessLevel"] = accessLevel.ToString();
+        }
+
+        void AddConfidentialClient(int index, string clientId, string clientSecret, string displayName, IReadOnlyList<string> scopes)
+        {
+            var prefix = $"DatabaseSeed:ConfidentialClients:{index}";
+            overrides[$"{prefix}:ClientId"] = clientId;
+            overrides[$"{prefix}:ClientSecret"] = clientSecret;
+            overrides[$"{prefix}:DisplayName"] = displayName;
+            AddValues($"{prefix}:Scopes", scopes);
+        }
+
+        void AddPublicClient(
+            int index,
+            string clientId,
+            string displayName,
+            IReadOnlyList<string> scopes,
+            IReadOnlyList<string> redirectUris,
+            IReadOnlyList<string> postLogoutRedirectUris)
+        {
+            var prefix = $"DatabaseSeed:PublicClients:{index}";
+            overrides[$"{prefix}:ClientId"] = clientId;
+            overrides[$"{prefix}:DisplayName"] = displayName;
+            AddValues($"{prefix}:Scopes", scopes);
+            AddValues($"{prefix}:RedirectUris", redirectUris);
+            AddValues($"{prefix}:PostLogoutRedirectUris", postLogoutRedirectUris);
+        }
+
+        void AddValues(string prefix, IReadOnlyList<string> values)
+        {
+            for (var index = 0; index < values.Count; index++)
+            {
+                overrides[$"{prefix}:{index}"] = values[index];
+            }
         }
     }
 

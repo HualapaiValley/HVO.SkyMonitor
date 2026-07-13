@@ -16,7 +16,5 @@
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Astronomy\HVO.SkyMonitor.Astronomy.csproj" />
-    <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent\HVO.SkyMonitor.CameraAgent.csproj" ReferenceOutputAssembly="false" />
-    <ProjectReference Include="..\..\src\HVO.SkyMonitor.LogicHost\HVO.SkyMonitor.LogicHost.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>
