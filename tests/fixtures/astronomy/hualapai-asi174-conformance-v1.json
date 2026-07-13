@@ -2,6 +2,21 @@
   "schemaVersion": 1,
   "fixtureId": "hualapai-asi174-conformance-v1",
   "astronomyAlgorithm": "visible-scene-iau1976-constellation-v2",
+  "astronomyModel": {
+    "catalogFrame": "ICRS/J2000 mean equatorial",
+    "precessionModel": "IAU 1976",
+    "precessionAlgorithmVersion": "visible-scene-iau1976-constellation-v2",
+    "precessionReference": "Lieske et al. 1977, Astronomy and Astrophysics 58, 1-16",
+    "epochTimeScaleApproximation": "UTC used as practical approximation to TT",
+    "effects": {
+      "precession": true,
+      "nutation": false,
+      "annualAberration": false,
+      "properMotion": false,
+      "parallax": false,
+      "refraction": false
+    }
+  },
   "catalog": {
     "name": "Canonical Hipparcos four-star fixture",
     "version": "J2000-v1",

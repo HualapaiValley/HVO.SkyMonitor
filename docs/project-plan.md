@@ -1,935 +1,903 @@
-# HVO.SkyMonitor Project Plan
+# HVO SkyMonitor Virtual-First Completion Plan
 
-## 1. Purpose
+Status date: 2026-07-13
 
-HVO.SkyMonitor is a distributed all-sky imaging system. Operators run one or
-more self-contained CameraAgent instances near their cameras, often on
-Raspberry Pi or other Linux hosts. Each agent acquires images, controls the
-camera, performs bounded local processing, retains a limited local history,
-and eventually uploads selected artifacts to a central LogicHost.
+This is the authoritative roadmap and architecture source for HVO SkyMonitor.
+Live coordination is tracked by the
+[Virtual-First Platform Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/1)
+and [epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89).
+Detailed execution rules and reusable agent prompts are maintained in:
 
-LogicHost is the durable system of record. It receives artifacts from many
-agents, stores image data and metadata, runs heavier or cross-frame processing,
-and provides historical browsing, visualization, and future event analysis.
+- [Agent execution protocol](planning/agent-execution.md)
+- [Agent prompts](planning/agent-prompts.md)
+- [Performance validation](planning/performance-validation.md)
+- [Requirements crosswalk](planning/requirements-crosswalk.md)
+- [Document migration](planning/document-migration.md)
 
-The immediate priority is a complete CameraAgent vertical slice using a
-planetarium-backed virtual ASI174-family camera. Central ingestion follows
-after the agent can reliably produce, process, retain, and expose realistic
-images.
+Aggregate phase status belongs here; live issue/PR execution state and evidence
+belong in linked GitHub issues. Normative subsystem behavior belongs in the
+owning specification. Dated measurements belong in validation or calibration
+evidence.
 
-This document is the authoritative product description, architecture, and
-implementation plan. Status claims in this document must reflect working code
-and executable tests, not scaffolding or configuration flags.
+## 1. Objective
 
-## 2. Product Model
+Complete the automated CameraAgent and LogicHost software path using VirtualSky
+before implementing production physical camera modules.
 
-### 2.1 Deployment
+The target system must:
 
-- A CameraAgent process owns exactly one camera.
-- A host may run multiple isolated CameraAgent processes or containers.
-- Each agent has its own configuration, local Identity UI, device identity,
-  pipeline, filesystem history, telemetry, and central registration.
-- Camera hardware is selected through an in-process `ICameraModule`; a camera
-  does not require a separate service unless its vendor SDK requires one.
-- An agent must continue capturing and retaining data during a LogicHost or
-  network outage.
-- One LogicHost accepts data from $1..n$ agents across $1..n$ observatories.
+1. Acquire an immutable virtual raw frame through the ordinary camera contract.
+2. Durably accept the raw payload before optional processing.
+3. Fan out durable references to independent standard, upload, and secondary
+   processing lanes.
+4. Execute versioned local recipes for calibration, combination, preview, and
+   annotation.
+5. Upload a reconstruction-complete raw contract to LogicHost.
+6. Reconstruct the raw frame centrally without consulting current device state.
+7. Execute the same shared recipes centrally, with optional enhanced central
+   configuration and contextual inputs.
+8. Execute deterministic weather, cloud, and transient workflows through the
+   same durable processing substrate.
+9. Recover correctly across CameraAgent, network, LogicHost, SQL, object-store,
+   and worker failures.
+10. Expose durable operational state through authenticated APIs and secondary
+    operator UI.
 
-### 2.2 CameraAgent responsibilities
-
-The CameraAgent owns work that must remain close to the camera:
-
-1. Camera discovery, initialization, acquisition, and health reporting.
-2. Exposure and gain selection within configured hardware limits.
-3. Raw-frame normalization into shared pixel and metadata contracts.
-4. Configurable local processing such as calibration and rolling combination.
-5. Creation of preview and optional annotated derivative images.
-6. Bounded filesystem retention of raw and derived artifacts.
-7. A local authenticated UI for setup, monitoring, history, and diagnostics.
-8. A durable upload outbox so temporary central outages do not lose work.
-9. Telemetry for cadence, queue depth, processing latency, disk use, and errors.
-10. A local read-only astronomy catalog snapshot so acquisition and processing work while disconnected from LogicHost.
-
-### 2.3 LogicHost responsibilities
-
-LogicHost owns work requiring durable or centralized resources:
-
-1. Agent registration, credential validation, and rig-profile versioning.
-2. Idempotent streamed ingestion into MinIO and metadata into SQL Server.
-3. Durable historical retention and lifecycle policy enforcement.
-4. Cross-frame and cross-agent processing, including timelapses and detection.
-5. Central previews, galleries, search, overlays, and operational dashboards.
-6. Reprocessing old captures against updated catalogs or algorithms.
-
-LogicHost must not be required for normal camera acquisition. CameraAgent must
-not become the permanent historical archive.
-
-## 3. Architectural Decisions
-
-### 3.1 Keep the current repository
-
-The existing repository already has the correct deployment boundaries,
-configuration model, module factory, capture loop, processing-step discovery,
-local UI, registration flow, and LogicHost foundation. Development continues
-here. Legacy V5 and V6 repositories are algorithm and behavior references only.
-
-Code may be ported only after its behavior is understood and covered by new
-tests. Legacy host topology, service registration, persistence models, and
-configuration are not copied wholesale.
-
-### 3.2 Shared project boundaries
-
-The intended project dependency direction is:
+The final automated flow is:
 
 ```text
-HVO.SkyMonitor.AgentCore
-  ^
-  +--- HVO.SkyMonitor.Astronomy
-         ^
-         +--- HVO.SkyMonitor.Imaging
-
-HVO.SkyMonitor.Catalog.Sqlite ---> HVO.SkyMonitor.Astronomy
-
-HVO.SkyMonitor.CameraAgent.Common ---> AgentCore + Astronomy + Imaging
-HVO.SkyMonitor.CameraAgent        ---> CameraAgent.Common + Catalog.Sqlite
-HVO.SkyMonitor.LogicHost          ---> AgentCore + Astronomy + Imaging + Catalog.Sqlite
+VirtualSky acquisition
+  -> SQLite/file durable raw ingress
+  -> standard, upload, and secondary lanes
+  -> local derivatives and durable history
+  -> manifest-v2 upload
+  -> LogicHost reconstructable ingest
+  -> shared central recipe execution
+  -> multi-source and window processing
+  -> weather/cloud and virtual transient processing
+  -> authenticated retrieval, operations, and review
 ```
 
-CameraAgent and LogicHost must not reference each other. They share stable
-contracts, projection, catalog, and imaging behavior through the dedicated
-libraries. LogicHost does not own camera acquisition or the edge processing
-pipeline, and CameraAgent does not own central persistence or processing.
+## 2. Explicit Exclusions
 
-#### `HVO.SkyMonitor.AgentCore`
+The milestone does not require:
 
-Contains stable, transport-neutral agent and artifact contracts only:
+- A production physical camera module.
+- Camera SDK or native interop in CameraAgent.
+- USB/readout characterization.
+- Physical lens or sensor calibration.
+- Raspberry Pi performance acceptance.
+- Hardware-specific metering thresholds.
+- A production external weather-provider selection.
+- Real-event detector sensitivity or false-positive acceptance.
 
-- Camera module lifecycle and capabilities.
-- Rig, sensor, optics, orientation, and observatory configuration records.
-- Raw frame layout and capture metadata.
-- Frame identity and artifact provenance contracts.
-- Pipeline and artifact-role vocabulary shared across hosts.
+Hardware-neutral timing, metering, ownership, and adapter-facing contracts are
+included. Physical implementation and acceptance remain later work.
 
-It must not depend on SkiaSharp, EF Core, MinIO, ASP.NET Core, or a camera SDK.
+## 3. Architecture Decisions
 
-#### `HVO.SkyMonitor.Astronomy` (new)
+### 3.1 Deployment and ownership
 
-Contains reusable astronomy and catalog behavior:
+| ID | Requirement |
+| --- | --- |
+| `SYS-001` | One CameraAgent process owns exactly one configured camera; a host may run multiple isolated CameraAgent processes or containers. |
+| `SYS-002` | Each CameraAgent owns its configuration, local identity/device state, pipeline, bounded history, and telemetry. |
+| `SYS-003` | Camera modules normally run in process behind `ICameraModule`; a separate vendor service requires an explicit adapter decision. |
+| `SYS-004` | CameraAgent continues acquisition and bounded retention during LogicHost or network outage. |
+| `SYS-005` | One LogicHost accepts many CameraAgents across many observatories without becoming part of acquisition correctness. |
+| `SYS-006` | CameraAgent is not the permanent archive; LogicHost is the durable central system of record after verified ingest. |
 
-- UTC, Julian date, and local sidereal time calculations.
-- Equatorial, horizontal, ENU, camera-ray, and pixel transformations.
-- Configurable atmospheric refraction.
-- Projection contracts, implementations, and a projector factory.
-- Star, planet, constellation, and deep-sky-object domain records.
-- Catalog query contracts and storage-neutral catalog implementations.
-- Planet ephemeris and constellation topology services.
+CameraAgent owns camera discovery/acquisition, setpoint control, raw
+normalization, local recipes and derivatives, bounded local history, offline
+authenticated operation, outbox, telemetry, and a local read-only catalog.
+LogicHost owns agent registration and profile history, streamed idempotent
+ingest, central lifecycle, contextual and cross-agent processing, durable
+history/UI, and reprocessing. These ownership statements are tracked as
+`OWN-EDGE-001` through `OWN-EDGE-010` and `OWN-CENTRAL-001` through
+`OWN-CENTRAL-006` in the
+[requirements crosswalk](planning/requirements-crosswalk.md).
 
-The existing `IImageProjector`, `PixelPoint`, and `AltAzPoint` contracts move
-from `AgentCore` into this project when it is introduced. Projection is
-astronomy domain behavior and is not part of the camera-module transport
-contract.
+### 3.2 Project boundaries
 
-This project must be deterministic, thread-safe, and free of ambient state for
-a supplied time, location, rig, and catalog. It must not depend on CameraAgent,
-LogicHost, Imaging, EF Core, SkiaSharp, or UI code.
-
-Catalog persistence is host infrastructure, not Astronomy domain behavior. Each
-LogicHost and CameraAgent receives the same versioned, read-only SQLite catalog
-snapshot locally. Catalog data must never be added to the shared SQL Server
-schema or fetched during normal CameraAgent acquisition/processing.
-
-The optional `HVO.SkyMonitor.Catalog.Sqlite` infrastructure adapter owns concrete
-SQLite access, snapshot validation, and process-cached query execution. It may
-reference Astronomy catalog contracts; Astronomy must not reference it. Both
-hosts may compose the adapter without referencing each other. Architecture tests
-must enforce this direction when the adapter project is introduced.
-
-#### `HVO.SkyMonitor.Imaging` (new)
-
-Contains reusable pixel and image algorithms:
-
-- Validated image layout, stride, bit depth, and buffer ownership helpers.
-- Mono8 and Mono16 operations required by the first vertical slice.
-- Planetarium rendering using `HVO.SkyMonitor.Astronomy` projections.
-- Rolling frame combination and future calibration primitives.
-- Preview rendering, celestial annotation, and image/FITS encoding.
-
-Rendering and annotation may use SkiaSharp internally, but public domain
-contracts must not expose disposable Skia objects. Both CameraAgent and
-LogicHost use this project when they need identical preview or annotation
-behavior.
-
-#### `HVO.SkyMonitor.CameraAgent.Common`
-
-Owns edge orchestration:
-
-- Capture scheduling and module execution.
-- Ordered processing pipelines and backpressure.
-- Exposure control policy.
-- Artifact-set creation and processing context.
-- Local storage, retention, upload outbox, and telemetry.
-- Module implementations that do not require a separate distributable.
-
-#### `HVO.SkyMonitor.CameraAgent`
-
-Owns the runnable edge host, local Identity, API, Blazor UI, configuration,
-health checks, and deployment packaging.
-
-### 3.3 Shared projection contract
-
-Projection is a single shared implementation used in three places:
-
-1. The CameraAgent virtual camera projects catalog and ephemeris objects into
-  raw simulated sensor coordinates.
-2. CameraAgent processing projects labels and annotations into local
-  derivatives.
-3. LogicHost projects labels and annotations when creating or reprocessing
-  central derivatives.
-
-No host project may implement its own sidereal-time, coordinate-conversion,
-camera-basis, refraction, or optical-projection math. Host code constructs an
-immutable projection context and calls `HVO.SkyMonitor.Astronomy` interfaces.
-The context contains UTC, observatory location, sensor geometry, optics,
-boresight, roll, horizon/refraction policy, and relevant rig-profile version.
-
-Projection implementations are stateless after construction and safe for
-concurrent use. APIs use explicit units in names or dedicated value types,
-return a failure/visibility result for out-of-domain objects, and never signal
-normal visibility conditions through exceptions.
-
-Every generated derivative records:
-
-- Projection model identifier and algorithm version.
-- Rig-profile version and hash.
-- Catalog snapshot identifier and checksum.
-- Ephemeris and refraction model identifiers where applicable.
-- Rendering or annotation recipe version.
-
-CameraAgent and LogicHost must run the same projection conformance fixture.
-Given identical context and celestial coordinates, both consumers must produce
-the same visibility result and pixel coordinate within a documented numeric
-tolerance. Package-version drift is observable in artifact metadata and must
-not silently overwrite an existing derivative recipe.
-
-### 3.4 One acquisition lifecycle, many pipelines
-
-Every camera follows the same lifecycle:
-
-```mermaid
-flowchart LR
-    A[Schedule capture] --> B[ICameraModule acquisition]
-    B --> C[Preserve raw artifact]
-    C --> D[Normalize and calibrate]
-    D --> E[Combine or stack]
-    E --> F[Create preview and annotations]
-    F --> G[Store local artifacts]
-    G --> H[Queue selected artifacts for upload]
-    H --> I[Publish telemetry and latest state]
-```
-
-Pipeline profiles decide which optional steps run and which artifacts are
-retained or uploaded. Camera modules acquire frames; they do not stack, encode,
-persist, upload, or annotate them.
-
-### 3.5 Raw and derived artifacts are distinct
-
-The current single mutable `CameraFrame` processing model must become an
-artifact set. A processing step may add a derivative but must not erase the
-original capture.
-
-Initial artifact roles are:
-
-| Role | Meaning | Typical encoding |
+| Project | Owns | Must not own |
 | --- | --- | --- |
-| `Raw` | Immutable camera output | Native bytes or FITS |
-| `Calibrated` | Corrected linear image | Mono16/FITS |
-| `Combined` | Rolling combination of recent frames | Mono16/FITS |
-| `Preview` | Display-ready derivative | JPEG or PNG |
-| `AnnotatedPreview` | Preview with celestial labels | JPEG or PNG |
-| `Metadata` | Capture, rig, processing, and provenance data | JSON |
-
-Each artifact requires a stable artifact ID, frame/sequence ID, role, media
-type, dimensions, pixel format where applicable, byte length, checksum,
-creation time, source artifact IDs, processing recipe/version, and rig-profile
-version.
-
-### 3.6 Backpressure and ownership
-
-- Until issue #59 is deliberately implemented, use one bounded channel between
-  capture and the ordered local pipeline. Issue #59 may replace that top-level
-  coordinator only with durable raw ingress and independently observable lanes;
-  it must preserve the configured standard pipeline as one lane and must not
-  introduce hidden queues inside processing steps.
-- Do not recreate V5's nested processing queues.
-- The configured full-mode policy must be explicit and observable.
-- Raw data must be preserved before a fallible derivative step.
-- Buffer ownership and disposal must be explicit; pooled memory cannot outlive
-  its owner.
-- A failed optional step records failure telemetry and preserves available
-  artifacts. It must not silently substitute a different artifact role.
-
-## 4. First Vertical Slice: Virtual ASI174 Family
-
-The virtual camera is not a UI animation or a special simulator workflow. It is
-an `ICameraModule` that emits the same raw contract expected from later ZWO,
-SBIG, DSLR, UVC, or RTSP adapters.
-
-The detailed sensor, lens, compatibility, fixture, and external comparison
-requirements are defined in
-[`virtual-camera.md`](virtual-camera.md).
-
-### 4.1 Sensor profile
-
-The initial virtual sensors model the Sony IMX174 geometry used by ASI174MM and
-ASI174MC:
-
-- 1936 × 1216 active pixels.
-- 5.86 µm square pixels.
-- Configurable monochrome or color response.
-- Mono16 as the canonical monochrome raw format.
-- RGB24 as the initial color-rendering compatibility format.
-- Explicit Bayer16 CFA output after frame-layout contracts can describe its
-  pattern, packing, stride, endianness, and levels.
-- Configurable exposure, gain, readout delay, and deterministic random seed.
-
-Physical response values such as read noise, full-well capacity, dark current,
-quantum efficiency, and gain conversion must be documented from a source or
-labeled as simulation parameters. Legacy heuristic values are not presented as
-measured IMX174 characteristics.
-
-### 4.2 Scene inputs
-
-For a supplied UTC instant, observatory, and rig, the renderer produces the sky
-that falls on the configured sensor:
-
-- HYG stars filtered by magnitude and projected field of view.
-- Solar-system objects from the selected ephemeris implementation.
-- Optional deep-sky objects for validation and annotation.
-- Background level, vignetting, configurable horizon mask, and sensor noise.
-- Optional deterministic clouds or transient injections for later tests.
-
-Constellation lines and labels are derivatives. They are not burned into the
-raw virtual-camera output.
-
-The same celestial scene must render through configurable fisheye and
-rectilinear/telescope optics. Fisheye support includes equidistant,
-equisolid-angle, orthographic, and stereographic mappings. Rectilinear support
-uses perspective/gnomonic projection with intrinsics derived from physical
-focal length and pixel pitch or supplied by calibration.
-
-### 4.3 Determinism
-
-The module accepts a `TimeProvider` and seed. Identical time, location, rig,
-catalog, exposure, gain, and seed must produce identical pixel data. This makes
-astronomy, exposure, combination, storage, and API tests reproducible.
-
-### 4.4 Virtual-camera acceptance criteria
-
-- The module is selected only by configuration through `ICameraModuleFactory`.
-- It emits valid 1936 × 1216 Mono16 and RGB24 frames with complete metadata.
-- Mono and color profiles support fisheye, rectilinear, and telescope optics
-  without camera-module-specific projection code.
-- Stars move consistently when time advances and rotate consistently when rig
-  orientation changes.
-- A catalog star projected by the renderer lands at the same pixel used by the
-  annotation service within a documented tolerance.
-- Increased exposure or gain changes image statistics predictably without
-  changing celestial geometry.
-- Frames pass through the ordinary processing, storage, latest-frame, and
-  telemetry paths without simulator-specific branches.
-- A fixed fixture produces a golden test image and stable pixel checksum.
-- A pinned headless planetarium validation compares selected rendered centroids,
-  annotation anchors, projection boundaries, orientation, and constellation
-  endpoint/clipping geometry. It runs explicitly or on a manual/scheduled
-  workflow rather than making every unit test depend on a GUI stack.
-
-## 5. Projection and Catalog Plan
-
-### 5.1 Coordinate pipeline
-
-Implement and test each transformation independently:
-
-1. Normalize UTC and calculate Julian date.
-2. Calculate Greenwich and local sidereal time.
-3. Convert catalog RA/Dec to topocentric altitude/azimuth.
-4. Apply optional atmospheric refraction above a configured altitude floor.
-5. Convert horizontal coordinates into an ENU unit vector.
-6. Transform the vector into the camera basis from boresight and roll.
-7. Apply the configured optical projection to sensor coordinates.
-8. Reject points behind the camera, below the horizon mask, or off sensor.
-
-Implement equidistant, equisolid-angle, orthographic, and stereographic fisheye
-mappings plus perspective/gnomonic rectilinear mapping. Projection
-implementations must support forward and inverse mapping and define behavior at
-the optical axis, horizon, image edge, and invalid domain.
-
-The shared API accepts an immutable projection context rather than resolving
-configuration, clocks, catalogs, or services internally. Catalog querying and
-pixel drawing are separate concerns: projection maps coordinates, catalog
-services select objects, and imaging services render the projected result.
-
-### 5.2 Catalog contracts
-
-Use immutable records and query interfaces rather than exposing CSV rows or EF
-entities. The initial catalog API must support:
-
-- Magnitude limit.
-- Sky region or projected-frame filtering.
-- Maximum result count with deterministic brightest-first selection.
-- Stable object identifiers and display names.
-- Optional color index or spectral data for rendering.
-
-Load and index the local HYG SQLite snapshot once per process. Do not query a
-central service, parse source data, or create a service scope for every frame.
-Catalog licensing, source URL, version, checksum, and preprocessing steps must
-be documented beside the packaged data. Snapshot updates are explicitly
-distributed and applied atomically; CameraAgent continues using its current
-snapshot while offline.
-
-The initial region contract is an optional inclusive J2000 spherical cap on the
-candidate query. Astronomy derives a conservative cap from the calibrated
-projection and horizon policy, while adapters may use it only to reduce
-candidates. Exact visibility and `MaximumResults` remain Astronomy concerns.
-Refraction falls back to the geometric-horizon cap or an all-sky query where an
-optical cap cannot be proven conservative. The process-cached SQLite adapter
-filters its validated immutable rows without changing the snapshot schema.
-
-### 5.3 Astronomy validation
-
-- Unit tests use published reference cases for sidereal time and coordinate
-  conversion.
-- Projection round trips are tested across center, cardinal directions,
-  horizon, edge, and out-of-domain inputs.
-- Catalog selection is deterministic and bounded.
-- Planet positions are compared with a trusted ephemeris at fixed instants.
-- End-to-end fixtures verify known stars at known pixels for Hualapai Valley
-  Observatory and at least one second latitude.
-- A shared conformance suite runs against the projection API as consumed from
-  CameraAgent and LogicHost test projects, preventing host-specific math or
-  dependency drift.
-- Public APIs are covered for invalid units, non-finite values, below-horizon
-  objects, off-sensor results, and projection singularities.
-- Fixture manifests record all time, location, sensor, lens, orientation,
-  catalog, refraction, and version inputs needed to reproduce an image.
-- Representative output is compared with a configured external planetarium and
-  later with the operator-provided comparison system as described in the
-  virtual-camera specification.
-
-## 6. CameraAgent Pipeline Plan
-
-### 6.1 Capture and exposure control
-
-Exposure selection is a host policy, not virtual-camera logic. The first
-controller uses configured day/night defaults and clamps every result to the
-rig's exposure envelope. The next controller adds feedback from a measured
-linear-image statistic such as median or percentile ADU.
-
-Required behavior:
-
-- Explicit transition policy for day, twilight, and night.
-- Configurable target ADU and tolerance.
-- Bounded changes per capture to avoid oscillation.
-- Independent exposure and gain limits and preference order.
-- Recovery after saturation, darkness, capture failure, or stale feedback.
-- Recorded reason for every setpoint change.
-
-The controller consumes prior-frame measurements and produces the next
-`CaptureSetpoint`. Camera adapters apply and report the effective settings.
-
-### 6.2 Rolling combination
-
-Port the proven V5 behavior as an initial algorithm, not its host design:
-
-- Keep immutable snapshots of compatible linear frames.
-- Emit a combined artifact after every capture, including warm-up.
-- Use the newest configured number of compatible frames.
-- Compute a linear arithmetic mean with sufficient accumulator precision.
-- Record contributing frame IDs, count, and total integration time.
-- Reset compatibility state when dimensions, format, rig version, orientation,
-  horizon, or projection-affecting configuration changes.
-- Retain enough inputs to satisfy configured minimum frame and integration
-  windows without interpreting those values as batch flush triggers.
-
-The first version intentionally excludes image registration, sigma clipping,
-dark subtraction, and motion compensation. Those become separate algorithms
-after the baseline is measured.
-
-### 6.3 Preview and annotation
-
-- Generate display-ready previews from raw, calibrated, or combined sources as
-  selected by pipeline configuration.
-- Apply a deterministic stretch without changing the source artifact.
-- Use the same projector and catalog query as the virtual camera.
-- Support optional star, planet, DSO, constellation, cardinal-direction, and
-  horizon overlays.
-- Real-camera constellation overlays may resolve topology endpoint geometry
-  omitted by the base visible-object selection, but they never synthesize star
-  pixels or claim a physical detection.
-- VirtualSky may expose an explicit `IncludeConstellationEndpointStars` render
-  option that adds omitted topology stars to the simulated scene before raw
-  generation. The option is virtual-only, versioned in the render recipe, and
-  recorded in provenance; the annotation step still never mutates raw data.
-- Draw complete figures when their topology is inside the calibrated view and
-  clip partial figures against sensor, image-circle, projection-domain, and
-  horizon boundaries rather than requiring both endpoints to be on-screen.
-- Make constellation line value/color, thickness, opacity, and endpoint-star
-  inclusion explicit deterministic recipe options.
-- Keep label placement bounded to the image and record the catalog/recipe
-  version used to create the derivative.
-
-### 6.4 Local storage and retention
-
-Replace no-op storage with a real artifact store. The initial filesystem layout
-is organized by agent, UTC date, frame ID, and artifact role. Writes use a
-temporary path followed by atomic rename. Metadata and checksums are committed
-with the artifact.
-
-Retention is policy-based per role:
-
-- Raw frames may have the shortest edge retention.
-- Combined frames and previews may be retained longer.
-- Outbox-referenced files cannot be removed until upload succeeds or an
-  operator explicitly abandons them.
-- Cleanup operates by stored metadata and policy, not filename assumptions.
-- Disk-pressure thresholds can shorten eligible history while preserving the
-  current frame and pending uploads.
-
-### 6.5 Local API and UI
-
-The existing local authenticated CameraAgent experience remains. The first
-complete workflow exposes:
-
-- Current camera/module state and active rig version.
-- Latest raw statistics, combined preview, and optional annotated preview.
-- Exposure/gain decision and stack contribution count.
-- Pipeline step duration and failure state.
-- Capture queue, outbox, filesystem usage, and retention state.
-- A bounded local gallery by UTC date and artifact role.
-- Capture start/stop and safe configuration validation where already allowed.
-
-The local UI is operational tooling, not a replacement for the central archive.
-
-## 7. Implementation Phases
-
-Status values are `Not started`, `In progress`, `Blocked`, or `Complete`.
-Complete requires the listed acceptance checks to pass.
-
-### Phase 0: Baseline and contracts — In progress
-
-Deliverables:
-
-- Consolidate project documentation and remove contradictory status documents.
-- Fix active Dockerfiles and remove references to deleted projects.
-- Resolve pending EF model/migration drift so integration hosts start.
-- Upgrade, replace, or remove dependencies responsible for package audit
-  warnings, then enable warnings-as-errors centrally for local and CI builds.
-- Record the initial coverage baseline and add non-regression enforcement to CI.
-- Define frame identity, image layout, artifact role, provenance, and artifact
-  set contracts without breaking camera-module isolation.
-- Add architecture tests for project dependency direction.
-
-Exit criteria:
-
-- Full solution builds with zero errors and zero warnings in Debug and Release.
-- Known vulnerable package advisories are resolved rather than hidden with
-  `NoWarn`; the current `NU1902` and `NU1903` baseline is reduced to zero.
-- Existing warning suppressions are audited. Any retained suppression is as
-  narrow as possible and documents why changing the code would be incorrect or
-  incompatible with framework/generated-code requirements.
-- Unit and integration test hosts start from a clean checkout.
-- A raw artifact survives a deliberately failing downstream processing step.
-- No current documentation claims an unimplemented simulator or upload path is
-  complete.
-
-### Phase 1: Astronomy and projection foundation — In progress
-
-Deliverables:
-
-- Create `HVO.SkyMonitor.Astronomy` and its MSTest project.
-- Move projector contracts and coordinate value types out of `AgentCore` while
-  preserving a deliberate compatibility migration for current consumers.
-- Implement time, coordinates, refraction, camera basis, and equidistant
-  projection with forward/inverse tests.
-- Implement the required fisheye and rectilinear projection compatibility
-  matrix from the virtual-camera specification.
-- Add catalog contracts and a process-cached HYG implementation.
-- Add initial planet and constellation data services.
-- Add project-reference architecture tests that prevent either host from
-  defining or substituting private projection math.
-
-Exit criteria:
-
-- Published astronomy fixtures and projection round trips pass.
-- Catalog licensing and version are documented.
-- Known object-to-pixel fixtures pass at two observatory locations.
-- CameraAgent and LogicHost projection conformance fixtures return matching
-  visibility and pixel results from the shared assembly.
-
-### Phase 2: Imaging and virtual ASI174MM — In progress
-
-Deliverables:
-
-- Create `HVO.SkyMonitor.Imaging` and its MSTest project.
-- Port the useful V5/V6 starfield rendering behavior behind new contracts.
-- Implement deterministic mono and color background, stars, planets,
-  vignetting, and sensor-noise stages.
-- Implement `VirtualSkyCameraModule` with ASI174MM and ASI174MC profiles in the
-  agent module layer.
-- Add realistic fisheye, rectilinear, and telescope sample configurations.
-
-Exit criteria:
-
-- Virtual-camera acceptance criteria in section 4.4 pass.
-- A development run continuously produces realistic raw frames through the
-  existing capture worker.
-- CPU, allocation, frame size, and generation latency baselines are recorded
-  on x64 and the intended Raspberry Pi architecture when available.
-
-### Phase 3: Artifact pipeline and local persistence — In progress
-
-Deliverables:
-
-- Replace mutable single-frame processing with artifact-set processing.
-- Preserve raw before optional transformation.
-- Implement real filesystem artifact storage and metadata indexing.
-- Implement preview encoding for Mono16.
-- Update latest-frame access and local gallery to select artifact roles.
-- Add retention and disk-pressure policies.
-
-Exit criteria:
-
-- Raw and preview artifacts survive process restart and can be browsed locally.
-- Retention removes only eligible artifacts.
-- Failed encoding or annotation cannot remove raw data.
-- Sustained capture demonstrates bounded memory and channel behavior.
-
-### Phase 4: Exposure control and rolling combination — In progress
-
-Deliverables:
-
-- Implement day/night setpoint policy and ADU feedback controller.
-- Implement rolling linear combination with compatibility resets.
-- Emit combination provenance and integration metadata.
-- Surface exposure decisions and combination state in telemetry and local UI.
-
-Exit criteria:
+| `HVO.SkyMonitor.AgentCore` | Stable transport-neutral camera, rig, capture timing, frame-layout, artifact, identity, lineage, and version-descriptor contracts | Executable recipes, event assessments, ASP.NET Core, EF Core, MinIO, SQLite, SkiaSharp, camera SDKs, host orchestration |
+| `HVO.SkyMonitor.Astronomy` | Catalog contracts, time, coordinates, ephemerides, camera geometry, projection, and visible-scene behavior | Storage, jobs, image filters, host APIs |
+| `HVO.SkyMonitor.Imaging` | Pure raw/image layout validation, renderers, calibration primitives, combination, demosaic, encoding, annotation, masks, and image-analysis algorithms | Host orchestration, SQL, MinIO, UI |
+| `HVO.SkyMonitor.Processing` | Host-neutral recipe definitions/execution contracts, selectors, transforms, analyzers, gates, windows, environmental/event products, assessments, outcomes, and canonical recipe identity | Host persistence, HTTP, UI, background-service policy |
+| `HVO.SkyMonitor.Catalog.Sqlite` | Shared read-only SQLite catalog adapter | Shared SQL schema, mutable catalog state |
+| `HVO.SkyMonitor.Common` | Reusable ASP.NET security, identity, API, middleware, and observability infrastructure used by either host | Camera acquisition, recipes/image algorithms, central/edge workflow ownership, or shared domain persistence |
+| `HVO.SkyMonitor.CameraAgent.Common` | Edge acquisition orchestration, SQLite WAL journal, durable lanes, local storage, outbox, retention, telemetry, and configuration | LogicHost references or central persistence |
+| `HVO.SkyMonitor.CameraAgent` | Local ASP.NET/Blazor host, local Identity, authenticated local APIs and composition | Central persistence or private processing algorithms |
+| `HVO.SkyMonitor.LogicHost` | Central SQL/Redis/MinIO services, durable jobs, workers, fleet state, history, retrieval, and central UI | CameraAgent references or host-private projection/image algorithms |
+
+CameraAgent and LogicHost must never reference each other. Shared behavior moves
+through AgentCore, Astronomy, Imaging, Processing, or another explicitly
+approved host-neutral project.
+
+The intended production reference graph is below. `A --> B` means project `B`
+may reference or consume project `A`; arrows point from dependency to consumer.
+
+```text
+AgentCore
+  +--> Astronomy
+  +--> Imaging (also references Astronomy)
+  +--> Processing (may reference Astronomy and Imaging)
+
+Astronomy --> Catalog.Sqlite
+
+AgentCore + Astronomy + Imaging + Processing
+  +--> CameraAgent.Common --> CameraAgent
+  +--> LogicHost
+
+Common --------------------> CameraAgent and LogicHost only
+Catalog.Sqlite ------------> CameraAgent and LogicHost composition roots
+```
+
+`TestSupport` may reference production projects and may be referenced only by
+test projects. Phase 0 architecture and publish checks must enforce the complete
+graph, including transitive production output.
+
+### 3.3 Acquisition and raw evidence
+
+- Camera modules only acquire frames and report capabilities.
+- A capture receives stable identity before optional processing.
+- Raw bytes are immutable primary evidence.
+- Raw acceptance means durable payload, sidecar, and discoverable journal state,
+  not merely an in-memory channel write.
+- Optional processing cannot silently drop raw evidence.
+- Finite storage cannot guarantee unlimited nonblocking capture. If ingress
+  cannot accept another frame, CameraAgent enters an explicit unhealthy state
+  and pauses or stops according to policy.
+
+### 3.4 CameraAgent persistence
+
+- Raw and derivative payloads remain files.
+- SQLite WAL stores transactional ingress, lane, retry, acknowledgement, and
+  quarantine state.
+- Payload and sidecar temporary files are published atomically.
+- Discoverable SQLite work is committed only after required files exist.
+- In-memory channels are bounded wake-up accelerators, never the source of
+  durable truth.
+- Raw deletion waits for every required consumer acknowledgement and retention
+  eligibility.
+
+### 3.5 Processing model
+
+Shared processing supports four operation kinds:
+
+- Transforms produce image or encoded artifacts.
+- Analyzers produce structured assessments, geometry, masks, or measurements.
+- Gates produce explicit run/skip decisions and reason codes.
+- Window processors consume compatible ordered captures.
+
+Every operation returns one of:
+
+- `Produced`
+- `Skipped` with a reason
+- `RetryableFailure`
+- `TerminalFailure`
+
+Recipe identity includes name, semantic version, implementation version,
+canonical options, and parameter SHA-256. Changing options without changing
+identity is prohibited.
+
+### 3.6 LogicHost processing
+
+- SQL is authoritative for jobs, leases, state transitions, lineage, and
+  historical metadata.
+- MinIO is authoritative for immutable payload bytes.
+- Redis may accelerate notifications or caches but is never authoritative job
+  state.
+- HTTP ingest records durable work but never performs derivative rendering.
+- Workers load, verify, reconstruct, execute, persist, and complete jobs.
+- Job output and completion are idempotent and recoverable after crashes.
+- Central processing may execute the same local recipe or a separately versioned
+  enhanced recipe.
+
+### 3.7 Virtual-first simulation
+
+- VirtualSky remains an ordinary `ICameraModule`.
+- Astronomy determines visible sources and geometry.
+- Simulation applies optics, environment, sensor response, noise, CFA sampling,
+  and quantization before normal processing begins.
+- Cloud and transient scenarios pass through ordinary raw capture paths.
+- Expected scenario labels remain test-oracle data and are not available to the
+  detector under test.
+
+### 3.8 Configuration and artifact contracts
+
+- Module implementation options remain separate from physical/virtual rig
+  profiles.
+- Rig and pipeline configuration used by a capture are versioned and validated
+  before camera initialization.
+- Operator configuration uses stable aliases. Unknown operations, unsupported
+  formats, incompatible dependencies, and cycles fail with actionable errors.
+- Assembly-qualified operation type names remain an explicit advanced extension
+  mechanism; ordinary operator samples and UI use stable aliases.
+- Secrets never live in camera rig or processing-profile files.
+- Reduced deterministic CI and full-resolution performance profiles are both
+  maintained.
+
+Raw, Calibrated, Combined, Preview, AnnotatedPreview, and Metadata are distinct
+artifact roles. Raw bytes are immutable. Every artifact records stable artifact
+and capture identity, role and variant, media/layout, byte length/checksum,
+creation time, ordered source identities, canonical recipe identity, and the
+capture-time profile identity. A failed optional operation cannot erase raw or
+silently substitute a different role.
+
+## 4. Performance Is a Design Requirement
+
+Performance-sensitive work is identified by the `performance` GitHub label and
+must follow these requirements.
+
+| ID | Requirement |
+| --- | --- |
+| `PERF-001` | Record reproducible baseline/after measurements using equivalent workloads and environment. For a genuinely new path with no valid before implementation, record the nearest-path or first-simple-correct comparison; otherwise mark before `N/A` with reason and establish an absolute candidate baseline. |
+| `PERF-002` | Measure relevant I/O bytes and operations, CPU time, allocations/working set, throughput, latency, queue depth, and oldest-work age. |
+| `PERF-003` | Prefer streaming, pooled or ownership-safe buffers, durable references, batched I/O, and indexed queries over full-frame copies and repeated scans. |
+| `PERF-004` | Full-resolution payloads must not be duplicated merely to fan out work. |
+| `PERF-005` | Optional lane backlog must remain memory-bounded and observable. |
+| `PERF-006` | SQLite transactions and indexes must be designed around measured ingest, claim, acknowledgement, and recovery access patterns. |
+| `PERF-007` | Central reads and writes stream payloads and verify checksums without buffering entire objects unless the algorithm requires contiguous memory. |
+| `PERF-008` | Algorithm complexity, temporary memory, and compatibility-window size are part of recipe documentation. |
+| `PERF-009` | Logs, metrics, and traces must use bounded cardinality and avoid payloads, credentials, or unbounded IDs as metric dimensions. |
+| `PERF-010` | No universal threshold is invented without evidence, but unexplained regression blocks merge. A more complex implementation is acceptable when evidence shows meaningful bounded benefit. |
+
+Performance results are descriptive until an issue establishes an approved
+budget. x64 virtual measurements are required now. ARM64 and physical-camera
+measurements remain later acceptance evidence.
+
+Canonical workloads, measurement fields, phase-specific metrics, and the rule
+for accepting additional complexity are defined in
+[`docs/planning/performance-validation.md`](planning/performance-validation.md).
+Every performance-sensitive issue and PR must link its selected workload and
+evidence; a generic statement that performance was considered is insufficient.
+
+## 5. Requirement Ownership
+
+Detailed behavior remains normative in the owning subsystem specification. The
+[requirements crosswalk](planning/requirements-crosswalk.md) maps every retained
+requirement group from superseded plans to a phase, issue, and retained source.
+In particular:
+
+- [`docs/virtual-camera.md`](virtual-camera.md) owns VirtualSky sensor, optics,
+  scene, rendering, annotation, fixture, and conformance behavior.
+- [`docs/projects/fireball-transient-detection.md`](projects/fireball-transient-detection.md)
+  owns transient lane, detector, event, execution-mode, and reconstruction
+  behavior.
+- Catalog documents own source, licensing, checksum, and derivation provenance.
+- Validation and calibration documents own dated evidence and external or
+  deferred hardware procedures, not implementation order.
+- Runbooks own only commands and procedures that are executable against the
+  current repository topology.
+
+## 6. Implemented Baseline
+
+The plan starts from the following completed foundation:
+
+- Shared Astronomy and Imaging projects with extensive numerical tests.
+- Read-only local HYG catalog adapter and versioned catalog evidence.
+- VirtualSky Mono16, RGB24, and ASI178 RGGB16 acquisition.
+- Fisheye, rectilinear, and telescope projection implementations.
+- Shared solar-system, catalog, and constellation behavior.
+- Local ordered processing, raw artifact preservation, rolling combination,
+  preview, annotation, storage, browse indexes, retention, and outbox v1.
+- Multipart checksum-verified LogicHost ingest into MinIO and SQL.
+- Normalized central frame and artifact records.
+- Bounded central history APIs.
+- Durable derivative scheduling, leases, retries, expiry recovery, terminal
+  failure, and idempotent completion.
+- CameraAgent local bootstrap and LogicHost device/observatory administration.
+- Accelerated CameraAgent soak, projection conformance, Testcontainers
+  integration, and scheduled/manual Stellarium validation.
+- Standalone ASI profile characterization, which is evidence and not a physical
+  CameraAgent module.
+
+The baseline is not yet a reconstruction-complete or executable central
+pipeline.
+
+## 7. Phase 0 - Planning, Boundaries, and Quality
+
+Issues:
+
+- [#90 Consolidate the virtual-first master plan and retire obsolete plans](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/90)
+- [#91 Remove production test-support coupling and enforce architecture boundaries](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/91)
+- [#110 Enforce CI categories and protected-main quality gates](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/110)
+
+Requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `ARCH-001` | Keep this file as the single authoritative roadmap. |
+| `ARCH-002` | Enforce all project-reference directions with executable architecture tests. |
+| `ARCH-003` | Remove production references to TestSupport. |
+| `ARCH-004` | Remove or explicitly deprecate legacy upload scaffolding. |
+| `ARCH-005` | Rename misleading production `NoOp` components or make disabled behavior explicit. |
+| `ARCH-006` | Define `HVO.SkyMonitor.Common` as reusable host infrastructure without domain workflow ownership. |
+| `ARCH-007` | Enforce the complete direct/transitive production graph, TestSupport prohibition, and publish-output boundary. |
+| `QA-001` | Add real Unit, Integration, Manual, Soak, External, and future Hardware test categories. |
+| `QA-002` | Build Debug and Release and treat warnings as errors. |
+| `QA-003` | Enforce formatting, package audit, migration validation, architecture checks, and coverage non-regression. |
+| `QA-004` | Use deterministic focused failing tests for new domain behavior and regressions where feasible; prohibit arbitrary sleeps, live-network unit dependencies, mutable global state, and test-order dependence. |
+| `QA-005` | Never lower the current executable coverage gate. #110 captures a checked-in aggregate baseline and exact path-based risk mapping, then enforces aggregate non-regression to 0.01 percentage point plus 95% line/90% branch for high-risk projection/layout/control/durability logic and 90%/85% for renderer/catalog logic. |
+| `QA-006` | Keep Debug and Release warning-clean without broad suppressions, disabled analyzers, weakened tests, or hidden package advisories. |
+| `QA-007` | Document public shared APIs with units, ranges, ownership/lifetime, failure behavior, and thread safety; cite astronomy constants and algorithms. |
+| `QA-008` | Give defects regression coverage and validate data-producing behavior through bytes, geometry, statistics, identity, lineage, and durable convergence. |
+| `QA-009` | Categorize Unit, Integration, Manual, Soak, External, and future Hardware tests by actual behavior, not project name. |
+| `QA-010` | Keep external, soak, and hardware checks separately selectable and never report an unrun category as passed. |
+| `OPS-001` | Distinguish fixture and full catalog deployment. |
+| `OPS-002` | Mount persistent CameraAgent payload and journal state in container deployment. |
+
+Exit gate `GATE-P00`:
+
+- Documentation has no competing live roadmap.
+- Architecture tests encode the complete intended dependency graph.
+- Production projects do not reference test support.
+- CI filters correspond to real categories.
+- Coverage, warning, package, migration, publish, and architecture gates are
+  executable and report actionable failure.
+
+## 8. Phase 1 - Reconstructable Contracts
+
+Issue:
+
+- [#92 Add reconstructable capture contracts and manifest v2](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/92)
+
+Umbrella relationship:
+
+- [#60 Complete reprocessable raw artifact identity and central job scheduling](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/60)
+
+Requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `CTR-001` | Assign a stable capture ID distinct from artifact IDs. |
+| `CTR-002` | Assign a restart-safe per-agent capture sequence. |
+| `CTR-003` | Record requested start, exposure start/end, readout completion, and durable ingress time. |
+| `CTR-004` | Describe dimensions, stride, pixel format, byte order, sample depth, CFA, packing, and known levels. |
+| `CTR-005` | Identify artifacts by role, variant, and canonical recipe identity. |
+| `CTR-006` | Persist ordered source-artifact lineage. |
+| `CTR-007` | Persist capture-time rig, calibration, mask, sensor, and processing-profile identities. |
+| `CTR-008` | Define canonical recipe name, semantic version, implementation version, options, and hash. |
+| `CTR-009` | Add manifest v2 while preserving v1 parsing as `LegacyIncomplete`. |
+| `CTR-010` | Version local sidecars with the same reconstruction descriptor. |
+
+Exit gate `GATE-P01`:
+
+- Mono16, RGB24, and RGGB16 golden fixtures round-trip without semantic loss.
+- Central tests reconstruct byte-equivalent frames from descriptor plus bytes.
+- Invalid versions, layout, identity, and checksums fail with reason codes.
+
+## 9. Phase 2 - Shared Canonical Processing
+
+Issue:
+
+- [#93 Add shared canonical processing recipes](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/93)
+
+Requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `PROC-001` | Add host-neutral `HVO.SkyMonitor.Processing`. |
+| `PROC-002` | Define transforms, analyzers, gates, windows, selectors, inputs, products, and outcomes. |
+| `PROC-003` | Extract preview and annotation orchestration from CameraAgent.Common. |
+| `PROC-004` | Move shared encoded-image generation into Imaging. |
+| `PROC-005` | Support explicit raw, calibrated, combined, or recipe-result inputs. |
+| `PROC-006` | Support multiple same-role variants. |
+| `PROC-007` | Bind output provenance to recipe options and implementation identity. |
+| `PROC-008` | Keep public shared APIs free of disposable host-specific image objects. |
+
+Initial recipes:
+
+- Raw to calibrated representation.
+- Raw or calibrated to encoded preview.
+- Raw, calibrated, combined, or preview input to annotation.
+- Rolling combination.
+- Image-quality assessment.
+- No-op analyzer for orchestration tests.
+
+Rolling combination preserves these requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `COMB-001` | Emit a combined artifact after every capture, including warm-up. |
+| `COMB-002` | Use the newest configured compatible frames. |
+| `COMB-003` | Compute a linear arithmetic mean. |
+| `COMB-004` | Use sufficient accumulator precision for the declared window and sample depth. |
+| `COMB-005` | Record ordered source IDs, source count, and total integration time. |
+| `COMB-006` | Reset on incompatible dimensions, layout, rig/orientation, calibration, mask, setpoint regime, or processing profile. |
+| `COMB-007` | Support configured frame-count, integration-time, and temporal retention requirements without treating them as batch flush triggers. |
+| `COMB-008` | Never silently substitute raw when a combined input is requested but unavailable. |
+| `COMB-009` | Retain immutable compatible linear source snapshots or ownership-safe references for the active window. |
+| `COMB-010` | Keep registration, sigma clipping, dark subtraction, and motion compensation as separate versioned algorithms rather than implicit baseline-mean behavior. |
+
+Exit gate `GATE-P02`:
+
+- CameraAgent and a LogicHost test adapter produce byte-identical output from
+  equivalent inputs and recipes.
+- Different recipe options create different identities.
+- Invalid source formats fail deterministically.
+
+## 10. Phase 3 - Mandatory Durable Raw Ingress
+
+Issues:
+
+- [#94 Add SQLite-backed durable raw ingress](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/94)
+- [#59 Add durable raw ingress and independent processing lanes](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59)
+
+Requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `EDGE-001` | Add mandatory `IRawCaptureIngress`. |
+| `EDGE-002` | Persist immutable payload and reconstructable sidecar before discoverable journal work. |
+| `EDGE-003` | Use SQLite WAL for transactional ingress and recovery state. |
+| `EDGE-004` | Reconcile temporary files, missing journal work, and conflicting records. |
+| `EDGE-005` | Quarantine malformed or ambiguous records. |
+| `EDGE-006` | Make raw durability independent of configured processing steps. |
+| `EDGE-007` | Enter explicit unhealthy pause/stop behavior when ingress cannot accept another frame. |
+
+Exit gate `GATE-P03`:
+
+- Fault tests at every commit boundary lose no acknowledged capture.
+- Restart discovers committed unfinished work.
+- Ingress failure cannot be reported as stored success.
+- Sustained full-resolution virtual capture remains memory-bounded.
+
+## 11. Phase 4 - Durable Capture Distribution
+
+Issues:
+
+- [#95 Add durable capture distribution and independent lanes](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/95)
+- [#59 umbrella](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59)
+
+Required lanes:
+
+| Lane | Default | Purpose |
+| --- | --- | --- |
+| Standard | Required | Local calibration, combination, preview, and annotation |
+| Upload | Required when central is enabled | Raw and configured artifact export |
+| Secondary | Optional | Cloud, quality, transient, or experimental processing |
+
+Requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `LANE-001` | Fan out durable references, not duplicate full-resolution buffers. |
+| `LANE-002` | Track pending work and acknowledgements per lane in SQLite. |
+| `LANE-003` | Support required/optional policy, retry, quarantine, and bounded backlog. |
+| `LANE-004` | Use in-memory channels only as wake-up accelerators. |
+| `LANE-005` | Pin raw until every required lane acknowledges. |
+| `LANE-006` | Expose count, bytes, oldest age, lag, failure, and throughput. |
+| `LANE-007` | Separate acquisition shutdown from worker drain and recovery. |
+| `LANE-008` | Prohibit nested queues inside arbitrary processing operations. |
+| `LANE-009` | Preserve one ordered stateful standard lane while independent lanes progress separately. |
+| `LANE-010` | Make full-mode, overload, and required/optional pressure policy explicit and observable. |
+| `LANE-011` | Keep payload and pooled-buffer ownership explicit across every lease and reload boundary. |
+
+Exit gate `GATE-P04`:
+
+- A blocked optional lane does not block standard work or acquisition while
+  durable ingress remains healthy.
+- Restart restores all pending lane work.
+- Disabled secondary processing allocates no secondary window.
+
+## 12. Phase 5 - Complete Local Standard Processing
+
+Issue:
+
+- [#96 Finish dependency-based CameraAgent processing and persistence](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/96)
+
+Requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `LOCAL-001` | Replace order-only semantics with declared inputs and dependencies. |
+| `LOCAL-002` | Validate the full graph before camera initialization. |
+| `LOCAL-003` | Add real shared calibration primitives or mark calibration disabled. |
+| `LOCAL-004` | Include layout, rig, orientation, calibration, mask, setpoint, and processing profile in rolling compatibility. |
+| `LOCAL-005` | Support frame-count, integration-time, and temporal windows. |
+| `LOCAL-006` | Support multiple same-role recipe variants. |
+| `LOCAL-007` | Add role- and recipe-specific upload and retention policy. |
+| `LOCAL-008` | Treat upload acknowledgement as hold release, not unconditional deletion. |
+| `LOCAL-009` | Persist processing outcomes and restart-resumable local history. |
+
+Exit gate `GATE-P05`:
+
+- A configuration-selected raw to calibrated to combined to preview to
+  annotation flow works.
+- Invalid dependency graphs fail before capture.
+- Restart resumes work without duplicate outputs.
+
+## 13. Phase 6 - Cadence, Metering, Heartbeat, and Telemetry
+
+Issues:
+
+- [#58 Add capture cadence modes and host-metered exposure control](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58)
+- [#102 Add durable CameraAgent heartbeat and fleet telemetry](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/102)
+
+Requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `CTRL-001` | Add explicit `Continuous` and `MinimumStartInterval` modes. |
+| `CTRL-002` | Keep VirtualSky fixed and deterministic by default. |
+| `CTRL-003` | Base feedback on the active setpoint. |
+| `CTRL-004` | Add day, twilight, and night policy. |
+| `CTRL-005` | Add exposure/gain preference, hysteresis, and saturation rejection. |
+| `CTRL-006` | Add stride-aware sparse ROI/mask and CFA-aware metering. |
+| `CTRL-007` | Skip metering when host automatic control is disabled. |
+| `CTRL-008` | Persist timing and reason-coded decisions. |
+| `FLEET-001` | Send durable heartbeat state with software, capture, CPU, temperature, pipeline, outbox, storage, and profile identity. |
+| `FLEET-002` | Persist current and bounded historical fleet state centrally. |
+| `FLEET-003` | Distinguish module render, readout, ingress, processing, and upload latency. |
+
+Exit gate `GATE-P06`:
 
 - Deterministic brightness sequences converge without oscillation.
-- Warm-up, full-window, reset, and incompatible-frame tests pass.
-- A long-running virtual night produces stable combined images while memory and
-  local storage remain bounded.
+- Optional processing does not affect continuous-mode next-start timing.
+- Heartbeat recovers after central outage.
+- Telemetry never claims durable state from in-memory inference.
 
-### Phase 5: Planetarium derivatives and agent hardening — In progress
+Physical timing measurements are not required to close #58.
 
-Deliverables:
+## 14. Phase 7 - Operational Manifest-v2 Outbox
 
-- Implement annotation and constellation derivative steps.
-- Add health checks for camera, catalog, pipeline, storage, and disk pressure.
-- Complete local operational history and diagnostics.
-- Validate container startup, restart recovery, graceful shutdown, and ARM64
-  deployment documentation. Intended-host preflight is recorded in
-  [`validation/cameraagent-arm64.md`](validation/cameraagent-arm64.md); final
-  deployment and performance characterization await a non-throttled host.
+Issue:
 
-Exit criteria:
+- [#97 Add operational manifest-v2 outbox and quarantine](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/97)
 
-- Rendered stars and labels align through the shared projector.
-- A 24-hour accelerated simulation completes without unbounded growth or lost
-  raw artifacts.
-- The CameraAgent can be installed and operated without LogicHost.
+Requirements:
 
-### Phase 6: Upload contract and durable outbox — Complete
+| ID | Requirement |
+| --- | --- |
+| `OUTBOX-001` | Emit validated manifest v2 from reconstructable local records. |
+| `OUTBOX-002` | Verify equality when an idempotency filename already exists. |
+| `OUTBOX-003` | Persist attempt count, next attempt, status, and last error. |
+| `OUTBOX-004` | Classify retryable and permanent HTTP outcomes. |
+| `OUTBOX-005` | Add quarantine and audited abandonment. |
+| `OUTBOX-006` | Validate structured LogicHost acknowledgement before releasing holds. |
+| `OUTBOX-007` | Make raw-only upload the default and allow role/recipe export policy. |
+| `OUTBOX-008` | Align supported authentication modes with working local defaults. |
 
-This is the transition to LogicHost work, after the local agent is proven.
+Exit gate `GATE-P07`:
 
-Deliverables:
+- Permanent failures do not retry forever.
+- Retry timing survives restart.
+- Conflicting idempotency records fail closed.
+- Malformed records cannot terminate the drain service.
 
-- Finalize a versioned upload manifest using the artifact contracts.
-- Add a durable CameraAgent outbox with retry, backoff, idempotency key, and
-  bandwidth limits.
-- Replace base64 JSON with streamed binary or multipart transport.
-- Define central acknowledgement and safe local cleanup behavior.
+## 15. Phase 8 - Reconstructable LogicHost Ingest and Retrieval
 
-The v1 contract uses streamed multipart payloads, deterministic idempotency
-keys, an atomic filesystem outbox, bounded exponential retry, configurable
-batching, and a streaming bandwidth limit. LogicHost acknowledges only after
-checksum-verified MinIO storage and normalized SQL metadata; mismatched
-idempotency reuse is rejected. Acknowledged local artifacts are then eligible
-for safe removal without coupling upload throughput to acquisition.
+Issues:
 
-Exit criteria:
+- [#98 Add reconstructable LogicHost ingest and exact rig binding](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/98)
+- [#99 Add authorized central artifact retrieval](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/99)
+- [#60 umbrella](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/60)
 
-- Network interruption and agent restart do not duplicate or lose artifacts.
-- Upload throughput does not block acquisition or exhaust local memory.
+Requirements:
 
-### Phase 7: LogicHost durable ingest — Complete
+| ID | Requirement |
+| --- | --- |
+| `CENTRAL-001` | Accept manifest v1 and v2 concurrently. |
+| `CENTRAL-002` | Add capture sequence, timing, layout, metadata, profile identity, and reconstruction status through additive migrations. |
+| `CENTRAL-003` | Add variant, canonical recipe, and normalized source lineage. |
+| `CENTRAL-004` | Bind delayed upload to capture-time rig/profile identity. |
+| `CENTRAL-005` | Add internal streamed MinIO reader and writer abstractions. |
+| `CENTRAL-006` | Add authorized content and range retrieval with checksum verification. |
+| `CENTRAL-007` | Preserve legacy history as explicitly incomplete. |
+| `CENTRAL-008` | Never expose MinIO credentials or browser-direct storage references. |
 
-Deliverables:
+Exit gate `GATE-P08`:
 
-- Stream bytes into MinIO with deterministic object keys and checksums.
-- Store normalized frame/artifact/provenance records in SQL Server.
-- Make ingestion idempotent by agent, frame ID, artifact role, and recipe.
-- Expose latest and historical artifact queries.
-- Add server-side derivative scheduling without coupling it to request handling.
-- Reference the shared Astronomy and Imaging assemblies for central labels and
-  annotations; do not introduce LogicHost-specific projection calculations.
+- LogicHost reconstructs every supported raw layout from central records alone.
+- Delayed upload resolves the correct historical profile.
+- V1/v2 concurrent ingest remains idempotent.
+- Retrieval re-verifies length and checksum.
 
-Central ingest now stores capture identity, registration, observatory, rig
-version, capture time, and scene provenance once per normalized frame. Immutable
-role/recipe artifacts reference that frame and retain their own checksum,
-length, media type, object reference, manifest version, and receive time. The
-additive migration backfills complete durable-upload rows while preserving
-incomplete legacy uploads, and bounded latest/history APIs support partial and
-out-of-order artifact sets. Request-isolated MinIO staging prevents invalid or
-conflicting concurrent payloads from overwriting a verified deterministic
-object. Raw artifacts atomically enqueue versioned central preview and annotated
-preview jobs. SQL-backed row-version leases provide bounded claims, renewal,
-expiry recovery, persisted retry backoff, terminal failure, and idempotent
-completion without running processing inside ingest requests. Existing exact
-targets reconcile jobs as completed, and operational queries expose queue state
-without lease capabilities. Actual derivative rendering remains deferred to a
-worker that uses the shared Astronomy and Imaging assemblies.
+## 16. Phase 9 - Central Derivative Execution
 
-### Phase 8: Central processing and experience — Deferred
+Issue:
 
-Deliverables include timelapses, central annotations and reprocessing, meteor or
-transient detection, historical browsing, dashboards, and cross-agent analysis.
-These features use stored raw artifacts and versioned rig/catalog metadata.
-Fireball/transient preparation and runtime dependencies are defined in
-[`projects/fireball-transient-detection.md`](projects/fireball-transient-detection.md)
-and tracked by epic [#65](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65).
+- [#100 Execute central derivative jobs with shared recipes](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/100)
 
-## 8. Test and Quality Strategy
+Requirements:
 
-Tests are implementation deliverables, not a final hardening activity. Every
-phase starts by translating its acceptance criteria into executable tests and
-ends only after those tests pass at the narrowest useful level and in the full
-solution. A configuration switch, registered service, or compiling stub is not
-evidence that a feature works.
+| ID | Requirement |
+| --- | --- |
+| `WORKER-001` | Register a hosted derivative worker. |
+| `WORKER-002` | Claim and renew durable leases. |
+| `WORKER-003` | Load, verify, and reconstruct recipe inputs. |
+| `WORKER-004` | Execute through shared Processing. |
+| `WORKER-005` | Persist output, recipe identity, and source lineage idempotently. |
+| `WORKER-006` | Recover output written before job completion. |
+| `WORKER-007` | Add worker queue, latency, retry, lease, and quarantine telemetry and health. |
+| `WORKER-008` | Add audited requeue or supersede operations for terminal work. |
 
-### 8.1 Development workflow
+Initial execution includes encoded preview, annotated preview, image quality, and
+explicit reprocessing under a new recipe.
 
-Use red-green-refactor for deterministic domain logic, regressions, and public
-contracts whenever a focused failing test can express the intended behavior:
+Exit gate `GATE-P09`:
 
-1. Add the smallest test that fails for the expected reason.
-2. Run that test and record the failure; a test that passes before the
-   implementation does not prove the new behavior.
-3. Implement the smallest production change that satisfies the behavior.
-4. Run the focused test, then the owning test project.
-5. Refactor only while the tests remain green.
-6. Run affected integration tests, the full non-hardware suite, and warning-
-   clean Debug and Release builds before declaring the slice complete.
+- Raw ingest eventually creates central derivatives.
+- Local and central outputs match for equivalent recipes.
+- Worker crash and lease expiry do not duplicate results.
+- Corrupt input quarantines work without altering source evidence.
 
-Tests must be deterministic. Inject `TimeProvider`, seeded random sources,
-filesystem roots, and external-service boundaries. Do not use wall-clock
-sleeps, network planetarium services, mutable global state, or test ordering in
-unit tests. Numeric tests state units, tolerances, reference source, and the
-reason for each tolerance.
+## 17. Phase 10 - Multi-Source and Windowed Processing
 
-Bug fixes begin with a regression test unless the failure is solely in
-generated code or deployment configuration. In those cases, add the cheapest
-executable configuration, startup, or integration check that would have caught
-the defect.
+Issue:
 
-### 8.2 Unit and conformance tests
+- [#101 Add multi-source and windowed central processing](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/101)
 
-- Coordinate, projection, catalog, and ephemeris reference cases.
-- Forward/inverse projection properties, out-of-domain visibility, poles,
-  horizon boundaries, azimuth wrapping, and every supported lens model.
-- Shared CameraAgent/LogicHost conformance fixtures using identical manifests.
-- Buffer layout and ownership.
-- Mono16, RGB24, and future CFA channel/layout semantics, including malformed
-  buffer rejection.
-- Deterministic virtual-camera output checksums plus geometry and image-
-  statistic assertions.
-- Exposure-controller transitions and limits.
-- Rolling-combination arithmetic and compatibility.
-- Artifact provenance and retention decisions.
-- Configuration validation for every module and processing step.
-- Architecture tests for project references and forbidden host-specific
-  astronomy/projection implementations.
+Requirements:
 
-### 8.3 Integration and contract tests
+| ID | Requirement |
+| --- | --- |
+| `WINDOW-001` | Add ordered multi-source job rows and dependency rows. |
+| `WINDOW-002` | Add waiting, quarantined, canceled, and completed lifecycle states. |
+| `WINDOW-003` | Define sequence offsets, required/optional positions, timeout, and compatibility. |
+| `WINDOW-004` | Resolve by agent and capture sequence, never ingest order. |
+| `WINDOW-005` | Pin every source while active work references it. |
+| `WINDOW-006` | Preserve previous output during historical reprocessing. |
+| `WINDOW-007` | Prove the model with rolling combination or timelapse before transient detection. |
 
-- Virtual camera through capture, pipeline, filesystem, API, and local UI data
-  services.
-- Every required sensor/lens combination in the virtual-camera compatibility
-  matrix at reduced CI resolution, with selected full-resolution fixtures.
-- Restart recovery with stored artifacts and pending outbox entries.
-- Pipeline failure isolation.
-- Configuration-specific pipeline composition.
-- Streamed CameraAgent-to-LogicHost upload with SQL Server and MinIO.
-- Versioned manifest compatibility, idempotency, checksum failure, retry, and
-  partial-write behavior at process and storage boundaries.
+Exit gate `GATE-P10`:
 
-Integration tests use disposable infrastructure and explicit MSTest categories.
-Tests requiring Docker, hardware, external comparison systems, or long runtimes
-must remain separately selectable, but the default CI suite cannot silently
-exclude tests merely because their project name contains `IntegrationTests`.
+- `N-2..N+2` resolves under delayed and out-of-order ingest.
+- Waiting work becomes runnable when inputs arrive.
+- Missing or incompatible windows finish with explicit reason codes.
+- Restart preserves waiting and runnable work.
 
-### 8.4 Long-running, property, and performance tests
+## 18. Phase 11 - Weather and Cloud Processing
 
-- Accelerated day/twilight/night simulation.
-- Sustained bounded-channel pressure.
-- Disk-pressure and retention behavior.
-- Mono16 allocation and combination throughput.
-- Raspberry Pi CPU, memory, temperature, storage, and capture-cadence budgets.
+Issues:
 
-Golden images are useful for deterministic fixtures but must be paired with
-numeric geometry and image-statistic assertions to avoid brittle tests.
+- [#103 Add environmental observation contracts and persistence](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/103)
+- [#104 Add deterministic VirtualSky cloud scenarios](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/104)
+- [#105 Add shared cloud assessment and masks](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/105)
 
-Property-style tests should cover projection round trips, monotonic radial
-mappings, bounded output coordinates, combination invariants, and retention
-invariants over deterministic generated inputs. Performance tests record the
-machine/runtime profile and assert only budgets stable enough for that runner;
-benchmark observations must not be disguised as portable correctness tests.
+Requirements:
 
-### 8.5 Coverage and review gates
+| ID | Requirement |
+| --- | --- |
+| `ENV-001` | Represent observation time, validity, provider, units, quality, and staleness. |
+| `ENV-002` | Support temperature, pressure, humidity, wind, precipitation, and sky quality when available. |
+| `ENV-003` | Persist observations centrally and associate them by time without silent defaults. |
+| `CLOUD-001` | Add seeded clear, scattered, broken, and overcast virtual scenarios. |
+| `CLOUD-002` | Apply deterministic opacity and motion before sensor response. |
+| `CLOUD-003` | Add versioned global cloud score, optional mask, confidence, and quality output. |
+| `CLOUD-004` | Produce identical assessment at edge and central hosts. |
+| `CLOUD-005` | Add weather/cloud overlay as a derivative consuming explicit inputs. |
 
-Coverage is a backstop, not a substitute for meaningful assertions:
+Exit gate `GATE-P11`:
 
-- New or materially changed domain logic targets at least 90% line and 85%
-  branch coverage in the touched production files.
-- Astronomy projection, frame-layout, exposure-control, rolling-combination,
-  artifact-provenance, retention, and upload-idempotency code targets at least
-  95% line and 90% branch coverage.
-- Generated migrations, Razor-generated code, and unavoidable platform shims
-  may be excluded only through a reviewed, path-specific configuration.
-- Overall solution line and branch coverage must not decrease. CI records a
-  reviewed baseline, fails regressions, and raises the baseline as coverage
-  improves.
-- Surviving critical mutants, uncovered error branches, and tests that only
-  assert non-null/success status require review even when percentage targets
-  pass. Mutation testing may run on deterministic shared-domain projects when
-  practical.
+- Fixed environmental scenarios produce stable raw checksums.
+- Cloud motion is deterministic across exposure intervals.
+- Clear, partial, and overcast fixtures satisfy documented numeric ranges.
+- Missing and stale weather remain explicit.
+- Cloud results can gate downstream processing through normal recipe outcomes.
 
-Each implementation PR or handoff report maps acceptance criteria to test
-names, lists commands and results, and identifies any intentionally deferred
-hardware or long-running checks. No test may be deleted, skipped, weakened, or
-recategorized merely to make a gate pass.
+## 19. Phase 12 - Software-Complete Virtual Transient Processing
 
-### 8.6 Documentation and comments
+Issues:
 
-- All public APIs in shared projects have useful XML documentation, including
-  units, valid ranges, ownership/lifetime, failure behavior, and thread-safety
-  where relevant.
-- Astronomical constants and algorithms cite the applicable IAU, IERS,
-  catalog, paper, or pinned legacy source.
-- Non-obvious formulas, coordinate conventions, buffer layouts, concurrency
-  invariants, and durability decisions receive concise rationale comments.
-- Do not narrate obvious code. General knowledge belongs in XML documentation
-  or focused design documentation rather than repetitive inline comments.
-- Behavior or configuration changes update the project plan, runbook, sample
-  configuration, and operator documentation in the same slice.
+- [#61 Add deterministic VirtualSky transient scenarios](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/61)
+- [#62 shared-detector umbrella](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/62)
+- [#113 Define transient event contracts and linear detector inputs](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/113)
+- [#115 Implement transient compatibility, masks, and temporal backgrounds](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/115)
+- [#121 Extract and assess transient candidates with structured geometry](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/121)
+- [#119 Establish deterministic transient detection and performance baselines](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/119)
+- [#63 Add optional CameraAgent transient detection lane](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/63)
+- [#64 central transient umbrella](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/64)
+- [#116 Execute and persist central transient validation jobs](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/116)
+- [#118 Add transient reconstruction, reprocessing, and review state](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/118)
+- [#65 Epic: Fireball and transient detection](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65)
 
-### 8.7 Zero-warning completion gate
+Requirements:
 
-Completion means zero warnings as well as zero errors. The required final gate
-includes restore, Debug and Release builds, tests with coverage, formatting,
-and package vulnerability/deprecation checks. CI treats warnings as errors once
-the Phase 0 warning baseline is removed.
+| ID | Requirement |
+| --- | --- |
+| `EVENT-001` | Simulate meteors, fireballs, fragmentation, boundary crossing, satellites, aircraft, cosmic rays, hot pixels, and environmental artifacts. |
+| `EVENT-002` | Integrate sky events before sensor response and sensor artifacts after optics. |
+| `EVENT-003` | Keep multi-capture events separate from per-capture artifact sets. |
+| `EVENT-004` | Define structured observations, geometry, features, assessments, reason codes, versions, and lineage. |
+| `EVENT-005` | Detect against compatible linear raw/calibrated windows, never annotated display images. |
+| `EVENT-006` | Treat fireball as meteor severity. |
+| `EVENT-007` | Run optional causal edge detection in the durable secondary lane. |
+| `EVENT-008` | Persist restart-safe pending candidates and wait for future context explicitly. |
+| `EVENT-009` | Run authoritative centered central validation and preserve assessment versions. |
+| `EVENT-010` | Persist one/two-frame reconstruction, review state, overrides, and notification state. |
 
-Do not satisfy this gate with broad `NoWarn`, disabled analyzers, reduced
-analysis levels, or blanket `SuppressMessage` attributes. A new suppression is
-allowed only when the diagnostic is a documented false positive or required
-framework/generated-code pattern, is scoped to the smallest member/file, and
-has a specific justification. Package vulnerability warnings are fixed by
-upgrading, replacing, or removing the dependency; any temporary upstream block
-is documented with an owner and expiration and prevents final completion.
+Exit gate `GATE-P12`:
 
-The reusable implementation workflow is available as
-[`../.github/prompts/implement-project-phase.prompt.md`](../.github/prompts/implement-project-phase.prompt.md).
+- Expected scenario labels are unavailable to detector code.
+- Fixed seeds produce stable raw and event outputs.
+- One-frame and multi-frame evidence is reasoned rather than classified by frame
+  count alone.
+- Edge and central submissions converge on one event identity.
+- Restart, retry, and reprocessing preserve every assessment version.
 
-## 9. Configuration Principles
+Physical sensitivity and real-world false-positive claims remain unverified.
 
-- Separate module implementation options from the physical rig profile.
-- Version rig and pipeline configuration used for every artifact.
-- Validate all configuration at startup before capture begins.
-- Pipeline steps use stable aliases in operator configuration; assembly-
-  qualified type names remain an advanced extension mechanism.
-- Unknown steps, unsupported formats, and invalid ordering fail with actionable
-  errors.
-- Secrets never live in camera rig or pipeline files.
+## 20. Phase 13 - Secondary Operator UI
 
-At least two sample profiles will be maintained:
+Issues:
 
-1. A fast, reduced-resolution virtual profile for development and CI.
-2. A full 1936 × 1216 virtual ASI174MM profile for realistic validation.
+- [#106 Add CameraAgent operations and gallery UI](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/106)
+- [#107 Add LogicHost imaging, jobs, weather, and event UI](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/107)
 
-## 10. Legacy Reference Policy
+Requirements:
 
-The external repositories, immutable commits, owning source files, tests, and
-checkout commands are recorded in
-[`reference-code.md`](reference-code.md). Use those sources selectively:
+| ID | Requirement |
+| --- | --- |
+| `UI-001` | UI reads durable backend state and never orchestrates processing directly. |
+| `UI-002` | Authenticate operational pages and artifact content APIs. |
+| `UI-003` | Add CameraAgent ingress, lane, pipeline, outbox, storage, retention, health, weather, and gallery views. |
+| `UI-004` | Add read-only versioned CameraAgent configuration and validate-without-apply behavior. |
+| `UI-005` | Replace the LogicHost placeholder with fleet, ingest, queue, and dependency health. |
+| `UI-006` | Add central frames, artifacts, provenance, jobs, retrieval, and reprocessing views. |
+| `UI-007` | Add weather/cloud timeline and event review/reconstruction views. |
+| `UI-008` | Audit every mutating operation and never expose worker lease tokens. |
 
-- V5 `RollingFrameStacker` for rolling-window semantics and test cases.
-- V5/V6 `StarFieldEngine` for coordinate flow and rendering behavior.
-- V5 celestial and constellation filters for overlay requirements.
-- V5 FITS metadata fields and MinIO object organization as design input.
+Exit gate `GATE-P13`:
 
-Do not copy:
+- bUnit covers loading, empty, stale, failed, and unauthorized states.
+- Browser automation covers local gallery through central gallery.
+- UI remains secondary to automated backend completion.
 
-- The monolithic V5 ASP.NET camera host.
-- Nested processing queues or per-frame service scopes.
-- Disposable Skia objects in domain contracts.
-- Silent fallback from a failed combined artifact to a raw artifact.
-- Base64 payload transport or duplicated archive/delivery objects.
-- Configuration flags without an executable implementation and tests.
+## 21. Phase 14 - End-to-End and Production Readiness
 
-When legacy behavior is adopted, record the repository, pinned commit, and
-source path in the implementing PR and add tests describing the intended
-behavior in current terminology. Do not rely on a temporary checkout or an
-unpinned branch as the only provenance record.
+Issues:
 
-## 11. Near-Term Work Queue
+- [#108 Add full VirtualSky two-host E2E and fault matrix](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/108)
+- [#109 production-readiness umbrella](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/109)
+- [#110 Enforce CI categories and protected-main quality gates](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/110)
+- [#111 Package and verify production astronomy catalog snapshots](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/111)
+- [#114 Persist and recover CameraAgent and shared-service state](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/114)
+- [#120 Replace stale identity and security operations guidance](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/120)
 
-The next implementation work should occur in this order. Ordinary-path
-integration, machine-readable ASI174 evidence, catalog coarse filtering,
-real-image geometry-only constellation overlays, and pinned headless Stellarium
-validation and standalone container/catalog startup are complete.
+Requirements:
 
-1. Validate ARM64 deployment and characterize performance on the intended
-   Raspberry Pi hardware without inventing thresholds. Accelerated 24-hour soak,
-   restart-safe persistence browsing, graceful drain, disk-pressure policy, and
-   bounded capture-failure backoff are complete. The intended host is reachable,
-   but its 2026-07-13 preflight was thermally throttled, so performance validation
-   remains open.
-2. Continue LogicHost durable ingest. The upload manifest/outbox contract,
-   verified streamed ingest, deterministic object identity, normalized central
-   frame/artifact records, bounded latest/history queries, conflict
-   acknowledgements, and durable derivative scheduling are complete. Actual
-   central derivative execution remains deferred to the processing experience.
-3. Continue ASI profile characterization as a standalone hardware-backed work
-   stream without starting a production physical camera module. SDK identity,
-   RAW16 layout, RGGB phase, advertised formats, and bin/mono-bin dimensions are
-   hardware verified. Sensor response remains provisional, and the installed
-   lens and orientation remain explicitly unverified until controlled and
-   clear-sky calibration evidence is available.
-4. After items 1-3, prepare deferred fireball/transient processing through continuous capture
-   cadence [#58](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58),
-   durable raw fan-out [#59](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59),
-   and reconstructable central jobs
-   [#60](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/60). Detector
-   runtime work remains under epic
-   [#65](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65) after the
-   preceding queue and recorded decision gates.
+| ID | Requirement |
+| --- | --- |
+| `E2E-001` | Exercise the real CameraAgent outbox drain against an in-process/test LogicHost and SQL/Redis/MinIO dependencies. |
+| `E2E-002` | Cover raw ingress, local derivatives, outage, restart, upload, central reconstruction, central execution, retrieval, windows, clouds, and transients. |
+| `E2E-003` | Inject crashes at every durable boundary. |
+| `E2E-004` | Verify outputs through checksums, numeric invariants, provenance, and expected durable state. |
+| `E2E-005` | Review logs, metrics, traces, queue age, failures, and bounded cardinality. |
+| `E2E-006` | Keep Stellarium, soak, external, and future hardware gates separate from normal CI. |
 
-## 12. Success Definition for the CameraAgent Milestone
+Production-readiness children may begin after their own prerequisites; #109
+closes only after those children and #108 are complete. It is not a Phase 0
+prerequisite.
 
-The CameraAgent milestone is complete when an operator can start a container on
-a standalone host, select the virtual ASI174MM profile, and observe it running
-for a full simulated night while it:
+Required fault cases:
 
-- Produces astronomically consistent Mono16 and RGB24 frames through fisheye
-  and rectilinear/telescope profiles.
-- Adjusts exposure and gain within policy.
-- Produces traceable rolling combinations and previews.
-- Retains a bounded, browsable filesystem history.
-- Survives optional processing failures and process restarts.
-- Reports useful health and pipeline telemetry through its local UI.
-- Accumulates upload-ready artifacts without requiring LogicHost.
+- Crash during raw payload write.
+- Crash after payload publication but before journal commit.
+- Crash after journal commit but before wake-up.
+- LogicHost/network outage.
+- MinIO failure.
+- SQL failure.
+- Worker crash before output persistence.
+- Worker crash after output persistence but before completion.
+- Out-of-order upload.
+- Permanent upload rejection.
+- Disk pressure.
+- Optional-lane backlog.
 
-That milestone validates the architecture for a later physical camera adapter:
-the adapter replaces only acquisition, while projection validation, processing,
-storage, telemetry, UI, and eventual upload remain unchanged.
+Final automated acceptance:
+
+```text
+VirtualSky capture
+  -> mandatory durable raw ingress
+  -> standard/upload/secondary lanes
+  -> local derivatives and persistent history
+  -> CameraAgent restart and outbox recovery
+  -> manifest-v2 LogicHost ingest
+  -> exact raw reconstruction
+  -> central preview and annotation
+  -> authenticated retrieval
+  -> out-of-order multi-frame window
+  -> deterministic weather/cloud
+  -> deterministic virtual transient
+  -> durable API/UI read models
+```
+
+Every durable boundary must be exercised by a restart or fault test.
+
+Exit gate `GATE-P14`:
+
+- The complete automated flow and fault matrix pass from a clean environment.
+- Finite outage backlogs drain faster than the configured arrival rate.
+- Catalog and persisted application/service state pass documented install,
+  upgrade, backup, restore, and reconciliation drills.
+- Logs, metrics, traces, health, coverage, output evidence, and performance have
+  no unexplained failure or regression.
+
+## 22. Dependency Order
+
+```text
+#90 --> #91 --> #110 CI quality gates
+             +--> #92 reconstructable contracts
+             +--> #111 production catalog
+
+#92 --> #93 shared recipes
+     +--> #94 durable ingress --> #95 lanes --> #58 cadence/control
+                                      +-------> #96 local pipeline (also #93)
+                                      +-------> #97 outbox v2
+
+#97 --> #98 central ingest --> #99 retrieval --> #100 central worker (also #93)
+                                                   +--> #101 windows
+
+#95 + #98 --> #102 heartbeat/fleet
+#98 --> #103 environment --> #104 cloud (also #93) --> #105 cloud assessment
+#92 --> #61 transient scenarios
+#93 --> #113 transient contracts/inputs
+#101 + #105 + #113 --> #115 compatibility/backgrounds
+#61 + #115 --> #121 extraction/assessment --> #119 baselines (under #62)
+#62 + #58 + #95 --> #63 edge transient runtime
+#62 + #99 + #100 + #101 --> #116 --> #118 (under #64)
+
+#58 + #96 + #97 + #102 + #105 --> #106 CameraAgent UI
+#98-#105 + completed #64 children --> #107 LogicHost UI
+
+#94 + #97 + #98 --> #114 persistent state
+#91 --> #120 operations guidance
+all required backend/UI/readiness children --> #108 E2E --> close #109 and #89
+```
+
+Parallel work is allowed only when contracts and migration order are stable.
+Agents must not implement a downstream issue against an unmerged speculative
+contract unless the issues explicitly coordinate one PR series.
+
+## 23. PR and Validation Gate
+
+Every issue follows this sequence:
+
+1. Read the master plan, issue, execution protocol, and relevant specifications.
+2. Inspect the current branch, worktree, open PR state, and recent commits.
+3. Record baseline behavior and performance where relevant.
+4. Implement the smallest coherent issue slice.
+5. Add focused, integration, migration, fault, and UI tests as applicable.
+6. Validate outputs numerically or by checksum where behavior produces data.
+7. Run local restore, build, tests, formatting, architecture, migration, and
+   performance checks required by the issue.
+8. Inspect logs, metrics, traces, health, and durable state.
+9. Commit only issue files and preserve unrelated worktree changes.
+10. Push and open a PR linked to the issue and epic.
+11. Wait for automatic CI and review.
+12. Correct every actionable finding.
+13. Push a new correction commit and wait for replacement CI.
+14. Reply to and resolve review threads only after correction evidence exists.
+15. Merge only when the current head has green required checks and no unresolved
+    actionable review.
+16. Synchronize local `main`, confirm issue closure, and update epic/handoff state.
+
+Any red, canceled, timed-out, flaky, or missing required check blocks merge until
+it is understood and corrected. A stale green run from before a correction does
+not satisfy the gate.
+
+## 24. Definition of Virtual-First Completion
+
+The milestone is complete when:
+
+- `DONE-001`: Every issue in epic #89 is closed or explicitly moved to a later named
+  milestone with a recorded decision.
+- `DONE-002`: The final automated acceptance flow passes from a clean environment.
+- `DONE-003`: CameraAgent raw evidence, lanes, local processing, upload, recovery, telemetry,
+  and authenticated operations are durable and bounded.
+- `DONE-004`: LogicHost reconstructs raw evidence, executes shared recipes, handles windows,
+  supports reprocessing, and exposes authenticated history and operations.
+- `DONE-005`: Weather/cloud and transient scenarios run through ordinary raw paths.
+- `DONE-006`: The software-complete virtual transient path persists and reviews versioned
+  edge and central assessments.
+- `DONE-007`: Output checksums, numerical invariants, migrations, logs, telemetry, health,
+  coverage, and performance evidence are reviewed and green.
+- `DONE-008`: No physical camera module or hardware acceptance is required.
+
+At that point the architecture is ready for a separately planned physical-camera
+adapter without redesigning acquisition ownership, local processing, central
+reprocessing, secondary lanes, or operator experience.

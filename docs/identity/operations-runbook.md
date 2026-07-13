@@ -1,5 +1,14 @@
 # Identity Hardening - Operational Runbooks
 
+> **Historical and non-executable:** This document contains PostgreSQL,
+> Kubernetes, Azure-only, Redis flush, route, and UI procedures that do not
+> match the current SQL Server and Docker Compose repository topology. Do not
+> execute commands from this file. Use `docs/runbooks/local-dev.md`,
+> `docs/runbooks/infra-operations.md`, and current application routes until the
+> issue #120 replaces and validates this
+> runbook. This warning is intentionally retained with the historical material
+> so unsafe instructions cannot be mistaken for supported operations.
+
 This document provides step-by-step procedures for common operational tasks related to the Central Identity system's security and authentication infrastructure.
 
 ## Table of Contents

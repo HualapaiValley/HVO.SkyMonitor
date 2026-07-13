@@ -1,29 +1,11 @@
 # Identity Program Overview
 
-This file replaces `hardening-summary.md`, `operations-index.md`,
-`agent-registration-plan.md`, and `non-azure-delta.md`. It captures the
-current status of the Central Identity initiative, summarizes the device
-registration workflow, and points to the remaining authoritative docs.
+This file replaces historical identity planning narratives and defines the
+device-registration and local-identity architecture only. Live implementation
+status, sequencing, and completion are owned by `docs/project-plan.md`, epic
+#89, and their linked issues.
 
-## 1. Phase Status
-
-- **Identity Hardening:** ✅ Complete as of **15 Nov 2025**.
-- Scope covered: secret storage + rotation, TLS readiness, structured
-  logging, authentication metrics, rate limiting, and runbooks.
-- See `docs/security/secrets.md` for the consolidated secrets catalog and
-  `.env.template` for non-sensitive defaults.
-
-### Key Achievements
-
-| Area | Highlights |
-| --- | --- |
-| Secret storage | Azure Key Vault recipes for OpenIddict certs, signed-ticket HMAC, API-key salt, device bootstrap bundle, and TLS certs. |
-| Operations | `docs/identity/operations-runbook.md` documents key rotation, onboarding, incident response, certificate renewal, and troubleshooting. |
-| Observability | `AuthenticationEventLogger`, `AuthenticationMetrics`, structured logging for auth flows, and Prometheus metrics (`auth.token_requests`, `auth.apikey_authentication`, etc.). |
-| Rate limiting | Token endpoint (60 req/min), API endpoints (1000 req/min), and global policies (10000 req/min) configurable via appsettings/env vars. |
-| Documentation | Runbooks + reference docs now live under `docs/security` and this folder; legacy Aspire/Azure-only guides were removed. |
-
-## 2. Device Registration & Bootstrap Flow
+## 1. Device Registration And Bootstrap Flow
 
 The camera-agent registration model remains cloud-independent so it can
 be replayed after any future rollback. Operators perform the following
@@ -52,7 +34,7 @@ Design goals preserved from the previous plan:
 - Envelope material expires within ~10 minutes and is single-use to
   avoid replay attacks.
 
-## 3. Camera-Agent Local Identity Stack
+## 2. CameraAgent Local Identity Stack
 
 The CameraAgent ships its own ASP.NET Identity instance (SQLite backing)
 so it can run fully offline:
@@ -70,35 +52,35 @@ so it can run fully offline:
 - Its astronomy catalog is a separate local, read-only SQLite snapshot; it is
   not part of local Identity or any shared SQL Server database.
 
-## 4. Operational References
+## 3. Operational References
 
 | Document | Purpose |
 | --- | --- |
 | `docs/security/secrets.md` | Single source for secrets, certificates, and rotation cadence across the platform. |
-| `docs/identity/operations-runbook.md` | Step-by-step procedures (key rotation, onboarding, incident response, certificate mgmt, monitoring). |
+| `docs/identity/operations-runbook.md` | Quarantined historical procedures pending a SQL Server/Compose/current-route replacement; do not execute stale PostgreSQL/Kubernetes/Azure-only commands. |
 | `docs/runbooks/local-dev.md` | How to launch the stack locally, including identity prerequisites. |
 | `docs/runbooks/infra-operations.md` | Docker/Testcontainers maintenance flows referenced by operators. |
 
-## 5. Next Steps & Recommendations
+## 4. Security Invariants
 
-1. **Deploy to staging** with Key Vault-backed secrets, confirm
-   rate-limiting behavior, and validate monitoring dashboards.
-2. **Load testing** to exercise authentication throughput and confirm
-   rate-limit thresholds.
-3. **Security audit** focusing on structured logging (ensure no sensitive
-   data is logged) and envelope revocation paths.
-4. **Production rollout** once staging validation is complete; integrate
-   with TLS automation and incident runbooks.
-5. **Future enhancements** are tracked in the project plan and issues.
-   (certificate automation, HTTPS hardening, additional Testcontainers
-   coverage).
+- No cloud credentials ship in a CameraAgent image.
+- Device credentials are scoped, revocable, and distinct from local operator
+  identity.
+- Bootstrap/envelope material is encrypted, single-use, short-lived, and
+  audited without logging secret content.
+- Data-protection keys and local Identity/device state are persistent runtime
+  state and are never committed.
+- Azure Key Vault may be one production secret provider; it is not required by
+  the platform architecture.
+- Current implementation and operational gaps are tracked only in the project
+  plan and production-readiness issues.
 
-## 6. File Inventory After Cleanup
+## 5. File Inventory
 
 ```
 docs/identity/
   overview.md              # (this file)
-  operations-runbook.md    # authoritative operational procedures
+  operations-runbook.md    # quarantined historical procedures pending replacement
 ```
 
 Use git history if you need the detailed chronicles originally stored in

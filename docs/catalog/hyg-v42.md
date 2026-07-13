@@ -51,3 +51,10 @@ from the calibrated optical projection or geometric horizon and continues to own
 exact horizon/image visibility and `MaximumResults`. The adapter preserves its
 validated immutable cache and deterministic magnitude-then-ID order; this hint
 does not justify a schema, preprocessing, or SQLite index change.
+
+The canonical VirtualSky default query uses magnitude `<= 6.5` and at most
+`2000` visible results. The adapter must not globally truncate candidates to
+`2000` before projection. Astronomy performs exact projection/horizon rejection
+and only then applies the visible-result limit in deterministic
+magnitude-then-ID order. A regression test must prove that brighter off-frame
+rows cannot displace a dimmer in-frame result.

@@ -2,41 +2,31 @@
 
 ## 1. Scope
 
-This document prepares the architecture for optional meteor, fireball, satellite,
-aircraft, and transient detection without moving that work ahead of the current
-CameraAgent hardening and durable-ingest queue. The umbrella work item is issue
+This document defines the subsystem architecture for optional meteor, fireball,
+satellite, aircraft, and transient detection. The umbrella work item is issue
 [#65](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65).
 
 The authoritative status and execution order live in
-[`docs/project-plan.md`](../project-plan.md). This document defines dependencies
-within the deferred fireball work; it does not promote those issues ahead of the
-near-term queue. Fireball-specific runtime work remains deferred until its
-dependencies and open product decisions are resolved.
+[`docs/project-plan.md`](../project-plan.md). This document owns transient
+behavior and invariants only. Runtime work starts only when its linked issue
+meets the readiness rules in `docs/planning/agent-execution.md`.
 
 The initial implementation is not a generic machine-learning platform. It starts
 with deterministic image algorithms, measured heuristics, retained source
 evidence, and reviewable reason-coded classifications.
 
-## 2. Baseline Pipeline Constraints
+## 2. Compatibility Constraints
 
-The baseline entering this design uses one bounded in-memory channel and one
-worker that runs every configured processing step serially for a capture context.
-Issue #59 may replace that top-level coordinator only as described below; it does
-not permit nested queues inside arbitrary processing steps.
+Migration from the existing serial CameraAgent pipeline preserves configured
+standard-step behavior while durable top-level lanes replace the in-memory
+coordinator. It does not permit nested queues inside arbitrary processing
+operations.
 
-The rolling combiner is the only component with frame history. Its private queue
-creates a linear mean from raw Mono16 or RGGB16 frames. Other processing steps do
-not receive that queue. Preview reads the current raw artifact, annotation draws
-on that preview, and the combined frame remains a separate artifact.
-
-Raw preservation is currently an ordered processing step rather than a mandatory
-acquisition boundary. Processing order is configurable, but changing order does
-not change the artifact explicitly selected by a step. There is no generic
-overlay collection, external processing-job queue, multi-frame event model, or
-central raw-artifact loader today.
-
-These facts make a centered temporal detector unsuitable as another synchronous
-step in the standard processing list.
+The rolling combiner and its linear-mean history remain separate from transient
+history. Preview, annotation, combined artifacts, and event observations retain
+their distinct roles and identities. A centered temporal detector is never
+implemented as a synchronous step that waits for future frames in the standard
+processing list.
 
 ## 3. Target Architecture
 
@@ -107,17 +97,22 @@ bounded memory during indefinite overload. Optional processing must not block
 normal acquisition, so durable pending work is the source of truth and in-memory
 channels are wake-up accelerators only.
 
-Ingress assigns stable capture and artifact identity, writes the raw payload and
-complete capture manifest atomically, and commits the discoverable work record
-last. Workers recover pending work after restart and process lane references
-idempotently. Raw deletion requires both retention eligibility and acknowledgement
-from every configured required consumer.
+Ingress assigns stable capture and artifact identity, publishes immutable raw
+payload and sidecar files, and commits discoverable SQLite WAL work only after
+the required files exist. Successful ingress handoff is durable; no
+acknowledged writer-queue crash window is accepted. Workers recover pending work
+after restart and process lane references idempotently. Raw deletion requires
+both retention eligibility and acknowledgement from every configured required
+consumer.
 
 If durable ingress itself cannot accept another frame, CameraAgent enters an
 explicit unhealthy state and pauses or stops according to disk-pressure policy.
-It never silently drops raw evidence. The decision to commit raw durably before
-the next exposure or permit a small ownership-safe writer queue with a documented
-crash window remains open.
+It never silently drops raw evidence. In-memory channels may accelerate wake-up
+but are not authoritative state.
+
+The standard lane is required. Upload is required when central operation is
+enabled. The transient/secondary lane is optional by default; an operator may
+make it required only with explicit retention and pressure consequences.
 
 Issue [#59](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59) owns this
 work.
@@ -183,8 +178,10 @@ of that data, not the authoritative result.
 families initially include meteor, satellite, aircraft, sensor artifact,
 environmental artifact, and unknown.
 
-Issue [#62](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/62) owns the
-shared contracts and pure Imaging algorithms.
+Issue [#62](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/62) coordinates
+the shared detector. Processing owns candidate/event/assessment contracts and
+recipe-facing outcomes; Imaging owns pure pixel, mask, background, component,
+and geometry algorithms.
 
 ## 8. Event and Artifact Model
 
@@ -217,7 +214,9 @@ Supported operating directions are:
 | `Central` | LogicHost analyzes stored raw artifacts |
 | `Hybrid` | CameraAgent triggers quickly; LogicHost performs full-context validation |
 
-Hybrid is the recommended direction, subject to offline and hardware decisions.
+Hybrid is the recommended production direction. The virtual-first milestone
+proves all four software modes without selecting physical sensitivity or target
+hardware budgets.
 The edge lane keeps a restart-safe candidate journal and never waits for future
 frames in the standard pipeline. Central jobs tolerate out-of-order ingest,
 support historical reprocessing, and preserve prior algorithm assessments.
@@ -245,37 +244,49 @@ work.
 
 ## 11. Dependency Order
 
-The project plan decides when this sequence starts. Once promoted, the internal
-dependency order is:
+The authoritative cross-system order is in the project plan. The transient
+subsystem order is:
 
-1. Implement continuous physical cadence and low-latency metering in #58.
-2. Implement durable raw ingress and top-level lanes in #59.
-3. Complete reconstructable upload/ingest and durable central jobs in #60.
-4. Add deterministic transient scenarios in #61.
-5. Prove shared event contracts and detection algorithms in #62.
-6. Add optional edge execution in #63.
-7. Add central validation and persistence in #64.
+1. Complete reconstructable contracts (#92), shared recipes (#93), durable
+   ingress (#94), lanes (#95), outbox/ingest/retrieval/workers/windows
+   (#97-#101), and cloud masks (#105) as required by the target runtime.
+2. Add deterministic transient scenarios in #61.
+3. Complete the shared detector children coordinated by #62.
+4. Add optional edge execution in #63 after hardware-neutral cadence #58 and
+   durable lanes #95.
+5. Complete central validation/persistence children coordinated by #64 after
+   retrieval, worker, and window support.
+6. Add event review in #107, then prove the complete path in #108.
 
-Isolated design experiments do not change the authoritative queue or justify
-runtime configuration before the required infrastructure exists.
+Physical cadence, camera modules, ARM64 budgets, and retained real-event
+evidence are later acceptance and do not block this software sequence.
 
-## 12. Open Decisions
+## 12. Decision Ledger
 
-The epic must not silently resolve these questions during implementation:
+Resolved platform decisions:
+
+| Decision | Resolution | Owner |
+| --- | --- | --- |
+| Local durable state | Immutable payload/sidecar files plus SQLite WAL work state | #94 |
+| Ingress acknowledgement | Required files and discoverable journal work are durable before success | #94 |
+| Lane defaults | Standard required; upload required when central enabled; transient/secondary optional by default | #95 |
+| Queue topology | Observable top-level lanes; no nested queues inside arbitrary operations | #95 |
+| Event contract owner | Processing; pure detector image algorithms remain in Imaging | #62 |
+| Virtual completion | Deterministic software evidence; physical sensitivity, false-positive, and ARM64 acceptance deferred | #65/#89 |
+
+The epic must not silently resolve the remaining product choices during an
+unrelated implementation:
 
 1. Bright-fireball-only initial scope versus faint-meteor sensitivity.
 2. Complete offline edge classification versus provisional offline preservation.
-3. Durable raw commit before the next exposure versus a small writer queue and
-   documented crash window.
-4. Filesystem manifest versus SQLite/WAL local work journal.
-5. Required/optional lane defaults, backlog limits, and disk-pressure policy.
-6. Exposure-first versus gain-first host-control defaults and ROI configuration.
-7. Registration versus star-mask strategy for initial temporal subtraction.
-8. Edge and central assessment authority and notification-update behavior.
-9. Human-review workflow and confidence thresholds.
-10. Aircraft and satellite data sources, licensing, availability, and offline
-    behavior.
-11. Source raw/event retention and later cross-agent correlation.
+3. Backlog byte/age budgets and disk-pressure thresholds.
+4. Exposure-first versus gain-first host-control defaults and ROI configuration.
+5. Registration versus star-mask strategy for initial temporal subtraction.
+6. Edge and central assessment authority and notification-update behavior.
+7. Human-review workflow and confidence thresholds.
+8. Aircraft and satellite data sources, licensing, availability, and offline
+   behavior.
+9. Source raw/event retention and later cross-agent correlation.
 
 Each decision is recorded in the owning issue before its dependent runtime slice
 is accepted.
@@ -283,10 +294,16 @@ is accepted.
 ## 13. Issue Index
 
 - [#58 Continuous cadence and metering](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58)
-- [#59 Durable raw ingress and processing lanes](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59)
-- [#60 Reprocessable artifacts and central jobs](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/60)
+- [#59 Durable raw ingress and processing lanes epic](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59)
+- [#60 Reconstructable artifacts and central processing epic](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/60)
 - [#61 Deterministic transient scenarios](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/61)
-- [#62 Shared detector and event contracts](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/62)
+- [#62 Shared detector and event contracts epic](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/62)
+  ([#113 contracts/inputs](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/113),
+  [#115 compatibility/backgrounds](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/115),
+  [#121 extraction/assessment](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/121),
+  [#119 baselines](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/119))
 - [#63 Optional CameraAgent transient lane](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/63)
-- [#64 LogicHost validation and event persistence](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/64)
+- [#64 LogicHost transient validation and review epic](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/64)
+  ([#116 central validation](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/116),
+  [#118 reconstruction/review](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/118))
 - [#65 Fireball and transient detection epic](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65)
