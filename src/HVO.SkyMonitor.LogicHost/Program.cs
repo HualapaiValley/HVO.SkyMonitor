@@ -527,6 +527,15 @@ public sealed partial class Program
                     return accountType == "User" || accountType == null; // null for backward compatibility
                 });
             });
+
+            options.AddPolicy("DerivativeJobsRead", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context => context.User.Claims
+                    .Where(claim => claim.Type == "scope")
+                    .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                    .Contains("api.admin", StringComparer.Ordinal));
+            });
         });
 
         // Application services
@@ -542,6 +551,9 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceHeartbeatService, DeviceHeartbeatService>();
         builder.Services.AddScoped<IDeviceUploadService, DeviceUploadService>();
         builder.Services.AddScoped<IArtifactIngestService, ArtifactIngestService>();
+        builder.Services.AddSingleton<ICentralDerivativeRecipeCatalog, CentralDerivativeRecipeCatalog>();
+        builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();
+        builder.Services.AddScoped<ICentralDerivativeJobService, CentralDerivativeJobService>();
         builder.Services.AddScoped<IDeviceRigProfileService, DeviceRigProfileService>();
         builder.Services.AddSingleton<ICelestialCatalog>(_ => CreateCatalog(builder.Configuration));
 

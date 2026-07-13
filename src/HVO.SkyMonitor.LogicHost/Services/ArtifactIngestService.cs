@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Minio;
 using Minio.DataModel.Args;
 using Minio.Exceptions;
+using System.Data;
 using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
@@ -20,7 +21,8 @@ internal interface IArtifactIngestService
 internal sealed class ArtifactIngestService(
     ApplicationDbContext dbContext,
     IMinioClient minio,
-    TimeProvider timeProvider) : IArtifactIngestService
+    TimeProvider timeProvider,
+    ICentralDerivativeJobScheduler derivativeJobScheduler) : IArtifactIngestService
 {
     private const string Bucket = "skymonitor-artifacts";
 
@@ -30,14 +32,13 @@ internal sealed class ArtifactIngestService(
         ArgumentNullException.ThrowIfNull(payload);
         manifest.Validate();
 
-        var existing = await dbContext.CentralArtifacts.Include(artifact => artifact.Frame).SingleOrDefaultAsync(
+        var existing = await dbContext.CentralArtifacts.Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts).SingleOrDefaultAsync(
             artifact => artifact.IdempotencyKey == manifest.IdempotencyKey, cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
             EnsureManifestMatches(existing, manifest);
-            EnrichSceneProvenance(existing.Frame!, manifest);
-            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            return CreateResult(existing);
+            dbContext.ChangeTracker.Clear();
+            return await ReconcileExistingAsync(manifest, timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
         }
 
         var registration = await dbContext.DeviceRegistrations.SingleOrDefaultAsync(
@@ -98,8 +99,58 @@ internal sealed class ArtifactIngestService(
         }
     }
 
-    private static bool IsUniqueConstraintViolation(DbUpdateException exception)
-        => exception.InnerException is Microsoft.Data.SqlClient.SqlException { Number: 2601 or 2627 };
+    private static bool IsPersistenceRace(Exception exception)
+    {
+        if (exception is DbUpdateConcurrencyException)
+        {
+            return true;
+        }
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is Microsoft.Data.SqlClient.SqlException { Number: 1205 or 2601 or 2627 })
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private async Task<DeviceUploadResult> ReconcileExistingAsync(
+        ArtifactUploadManifest manifest,
+        DateTimeOffset receivedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        const int maximumAttempts = 5;
+        for (var attempt = 0; attempt < maximumAttempts; attempt++)
+        {
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var existing = await dbContext.CentralArtifacts.Include(artifact => artifact.Frame)!
+                    .ThenInclude(frame => frame!.Artifacts).SingleAsync(
+                        artifact => artifact.IdempotencyKey == manifest.IdempotencyKey,
+                        cancellationToken).ConfigureAwait(false);
+                EnsureManifestMatches(existing, manifest);
+                EnrichSceneProvenance(existing.Frame!, manifest);
+                await derivativeJobScheduler.EnsureRequiredJobsAsync(existing, receivedAtUtc, cancellationToken).ConfigureAwait(false);
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return CreateResult(existing);
+            }
+            catch (Exception exception) when (IsPersistenceRace(exception))
+            {
+                await TryRollbackAsync(transaction).ConfigureAwait(false);
+                dbContext.ChangeTracker.Clear();
+                if (attempt == maximumAttempts - 1)
+                {
+                    throw new ArtifactIngestConflictException(
+                        "The artifact could not be reconciled because of sustained concurrency.", exception);
+                }
+            }
+        }
+        throw new ArtifactIngestConflictException("The artifact could not be reconciled because of sustained concurrency.");
+    }
 
     private async Task<DeviceUploadResult> PersistAsync(
         DeviceRegistration registration,
@@ -108,80 +159,85 @@ internal sealed class ArtifactIngestService(
         DateTimeOffset receivedAtUtc,
         CancellationToken cancellationToken)
     {
-        const int maximumAttempts = 3;
+        const int maximumAttempts = 5;
         for (var attempt = 0; attempt < maximumAttempts; attempt++)
         {
-            var existing = await dbContext.CentralArtifacts.Include(artifact => artifact.Frame).SingleOrDefaultAsync(
-                artifact => artifact.IdempotencyKey == manifest.IdempotencyKey, cancellationToken).ConfigureAwait(false);
-            if (existing is not null)
-            {
-                EnsureManifestMatches(existing, manifest);
-                EnrichSceneProvenance(existing.Frame!, manifest);
-                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                return CreateResult(existing);
-            }
-
-            var devicePublicId = registration.DevicePublicId!.Value;
-            var frame = await dbContext.CentralFrames.Include(item => item.Artifacts).SingleOrDefaultAsync(
-                item => item.DevicePublicId == devicePublicId && item.FrameId == manifest.FrameId,
-                cancellationToken).ConfigureAwait(false);
-            if (frame is null)
-            {
-                frame = new CentralFrame
-                {
-                    RegistrationId = registration.Id,
-                    DevicePublicId = devicePublicId,
-                    ObservatoryId = registration.ObservatoryId,
-                    AgentId = manifest.AgentId,
-                    FrameId = manifest.FrameId,
-                    CapturedAtUtc = manifest.CapturedAtUtc,
-                    FirstReceivedAtUtc = receivedAtUtc,
-                    RigProfileVersion = registration.CurrentRigProfileVersion,
-                    SceneProvenanceJson = SerializeScene(manifest)
-                };
-                dbContext.CentralFrames.Add(frame);
-            }
-            else
-            {
-                EnsureFrameMatches(frame, registration, manifest);
-                EnsureNoLogicalArtifactConflict(frame, manifest);
-            }
-
-            var artifact = new CentralArtifact
-            {
-                CentralFrameId = frame.Id,
-                Frame = frame,
-                ArtifactId = manifest.ArtifactId,
-                Role = manifest.Role,
-                RecipeVersion = manifest.RecipeVersion,
-                ManifestSchemaVersion = manifest.SchemaVersion,
-                MediaType = manifest.MediaType,
-                ByteLength = manifest.ByteLength,
-                ChecksumSha256 = manifest.ChecksumSha256.ToUpperInvariant(),
-                StorageReference = storageReference,
-                ReceivedAtUtc = receivedAtUtc,
-                IdempotencyKey = manifest.IdempotencyKey.ToUpperInvariant()
-            };
-            dbContext.CentralArtifacts.Add(artifact);
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
             try
             {
+                var existing = await dbContext.CentralArtifacts.Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts).SingleOrDefaultAsync(
+                    artifact => artifact.IdempotencyKey == manifest.IdempotencyKey, cancellationToken).ConfigureAwait(false);
+                if (existing is not null)
+                {
+                    EnsureManifestMatches(existing, manifest);
+                    EnrichSceneProvenance(existing.Frame!, manifest);
+                    await derivativeJobScheduler.EnsureRequiredJobsAsync(existing, receivedAtUtc, cancellationToken).ConfigureAwait(false);
+                    await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    return CreateResult(existing);
+                }
+
+                var devicePublicId = registration.DevicePublicId!.Value;
+                var frame = await dbContext.CentralFrames.Include(item => item.Artifacts).SingleOrDefaultAsync(
+                    item => item.DevicePublicId == devicePublicId && item.FrameId == manifest.FrameId,
+                    cancellationToken).ConfigureAwait(false);
+                if (frame is null)
+                {
+                    frame = new CentralFrame
+                    {
+                        RegistrationId = registration.Id,
+                        DevicePublicId = devicePublicId,
+                        ObservatoryId = registration.ObservatoryId,
+                        AgentId = manifest.AgentId,
+                        FrameId = manifest.FrameId,
+                        CapturedAtUtc = manifest.CapturedAtUtc,
+                        FirstReceivedAtUtc = receivedAtUtc,
+                        RigProfileVersion = registration.CurrentRigProfileVersion,
+                        SceneProvenanceJson = SerializeScene(manifest)
+                    };
+                    dbContext.CentralFrames.Add(frame);
+                }
+                else
+                {
+                    EnsureFrameMatches(frame, registration, manifest);
+                    EnsureNoLogicalArtifactConflict(frame, manifest);
+                }
+
+                var artifact = new CentralArtifact
+                {
+                    CentralFrameId = frame.Id,
+                    Frame = frame,
+                    ArtifactId = manifest.ArtifactId,
+                    Role = manifest.Role,
+                    RecipeVersion = manifest.RecipeVersion,
+                    ManifestSchemaVersion = manifest.SchemaVersion,
+                    MediaType = manifest.MediaType,
+                    ByteLength = manifest.ByteLength,
+                    ChecksumSha256 = manifest.ChecksumSha256.ToUpperInvariant(),
+                    StorageReference = storageReference,
+                    ReceivedAtUtc = receivedAtUtc,
+                    IdempotencyKey = manifest.IdempotencyKey.ToUpperInvariant()
+                };
+                dbContext.CentralArtifacts.Add(artifact);
+                await derivativeJobScheduler.EnsureRequiredJobsAsync(artifact, receivedAtUtc, cancellationToken).ConfigureAwait(false);
                 await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 return new DeviceUploadResult(registration.Id, registration.ObservatoryId, storageReference, receivedAtUtc);
             }
-            catch (DbUpdateException exception) when (IsUniqueConstraintViolation(exception))
+            catch (Exception exception) when (IsPersistenceRace(exception))
             {
+                await TryRollbackAsync(transaction).ConfigureAwait(false);
                 dbContext.ChangeTracker.Clear();
-                var concurrent = await dbContext.CentralArtifacts.Include(item => item.Frame).SingleOrDefaultAsync(
-                    item => item.IdempotencyKey == manifest.IdempotencyKey, cancellationToken).ConfigureAwait(false);
-                if (concurrent is not null)
-                {
-                    EnsureManifestMatches(concurrent, manifest);
-                    EnrichSceneProvenance(concurrent.Frame!, manifest);
-                    await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                    return CreateResult(concurrent);
-                }
                 if (attempt == maximumAttempts - 1)
                 {
+                    var concurrent = await dbContext.CentralArtifacts.Include(item => item.Frame).SingleOrDefaultAsync(
+                        item => item.IdempotencyKey == manifest.IdempotencyKey, cancellationToken).ConfigureAwait(false);
+                    if (concurrent is not null)
+                    {
+                        EnsureManifestMatches(concurrent, manifest);
+                        return CreateResult(concurrent);
+                    }
                     throw new ArtifactIngestConflictException(
                         "The frame or artifact identity is already associated with different metadata.", exception);
                 }
@@ -189,6 +245,18 @@ internal sealed class ArtifactIngestService(
         }
 
         throw new ArtifactIngestConflictException("The frame or artifact identity is already associated with different metadata.");
+    }
+
+    private static async Task TryRollbackAsync(Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction)
+    {
+        try
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException)
+        {
+            // SQL Server already rolled back a deadlock victim.
+        }
     }
 
     private async Task RemoveUncommittedObjectAsync(string storageReference, string objectKey)

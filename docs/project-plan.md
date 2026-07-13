@@ -662,7 +662,7 @@ Exit criteria:
 - Network interruption and agent restart do not duplicate or lose artifacts.
 - Upload throughput does not block acquisition or exhaust local memory.
 
-### Phase 7: LogicHost durable ingest — In progress
+### Phase 7: LogicHost durable ingest — Complete
 
 Deliverables:
 
@@ -682,8 +682,13 @@ additive migration backfills complete durable-upload rows while preserving
 incomplete legacy uploads, and bounded latest/history APIs support partial and
 out-of-order artifact sets. Request-isolated MinIO staging prevents invalid or
 conflicting concurrent payloads from overwriting a verified deterministic
-object. Durable server-side derivative scheduling remains the next Phase 7
-deliverable.
+object. Raw artifacts atomically enqueue versioned central preview and annotated
+preview jobs. SQL-backed row-version leases provide bounded claims, renewal,
+expiry recovery, persisted retry backoff, terminal failure, and idempotent
+completion without running processing inside ingest requests. Existing exact
+targets reconcile jobs as completed, and operational queries expose queue state
+without lease capabilities. Actual derivative rendering remains deferred to a
+worker that uses the shared Astronomy and Imaging assemblies.
 
 ### Phase 8: Central processing and experience — Deferred
 
@@ -892,9 +897,9 @@ validation and standalone container/catalog startup are complete.
    remains open.
 2. Continue LogicHost durable ingest. The upload manifest/outbox contract,
    verified streamed ingest, deterministic object identity, normalized central
-   frame/artifact records, bounded latest/history queries, and conflict
-   acknowledgements are complete. Durable derivative scheduling remains in
-   phase 7.
+   frame/artifact records, bounded latest/history queries, conflict
+   acknowledgements, and durable derivative scheduling are complete. Actual
+   central derivative execution remains deferred to the processing experience.
 3. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
    calibration as a separate hardware-backed work stream.
 4. After items 1-3, prepare deferred fireball/transient processing through continuous capture
