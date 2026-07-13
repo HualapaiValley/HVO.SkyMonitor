@@ -41,4 +41,23 @@ public sealed class CentralDerivativeJobServiceTests
 
         action.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    [TestMethod]
+    public void CalculateRetryDelay_WithInvalidMaximum_ReportsMaximumParameter()
+    {
+        var action = () => CentralDerivativeJobService.CalculateRetryDelay(
+            1, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(5));
+
+        action.Should().Throw<ArgumentOutOfRangeException>()
+            .Which.ParamName.Should().Be("maximumDelay");
+    }
+
+    [TestMethod]
+    public void CalculateRetryDelay_WithLargeTicks_DoesNotOverflow()
+    {
+        var initial = TimeSpan.FromTicks(long.MaxValue / 2);
+
+        CentralDerivativeJobService.CalculateRetryDelay(3, initial, TimeSpan.MaxValue)
+            .Should().Be(TimeSpan.MaxValue);
+    }
 }

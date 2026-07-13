@@ -217,13 +217,13 @@ internal sealed class CentralDerivativeJobService(
     internal static TimeSpan CalculateRetryDelay(int attempt, TimeSpan initialDelay, TimeSpan maximumDelay)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(attempt, 1);
-        if (initialDelay <= TimeSpan.Zero || maximumDelay < initialDelay)
-        {
-            throw new ArgumentOutOfRangeException(nameof(initialDelay));
-        }
-        var exponent = Math.Min(attempt - 1, 30);
-        var ticks = Math.Min(initialDelay.Ticks * (1L << exponent), maximumDelay.Ticks);
-        return TimeSpan.FromTicks(ticks);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(initialDelay, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumDelay, initialDelay);
+        var multiplier = 1L << Math.Min(attempt - 1, 30);
+        var ticks = initialDelay.Ticks > maximumDelay.Ticks / multiplier
+            ? maximumDelay.Ticks
+            : initialDelay.Ticks * multiplier;
+        return TimeSpan.FromTicks(Math.Min(ticks, maximumDelay.Ticks));
     }
 
     private async Task<CentralDerivativeJob> LoadJobAsync(Guid jobId, CancellationToken cancellationToken)
