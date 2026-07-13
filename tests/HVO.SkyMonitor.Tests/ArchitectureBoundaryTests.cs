@@ -219,14 +219,9 @@ public sealed class ArchitectureBoundaryTests
         try
         {
             File.WriteAllBytes(Path.Combine(output, $"{TestSupport}.dll"), []);
-            var repository = Repository.Value;
-            var logicHostAssembly = Path.Combine(
-                Path.GetDirectoryName(repository.Projects[LogicHost].Path)!,
-                "bin",
-                "Release",
-                "net10.0",
-                $"{repository.Projects[LogicHost].AssemblyName}.dll");
-            File.Copy(logicHostAssembly, Path.Combine(output, "renamed-host.dll"));
+            var testAssembly = typeof(ArchitectureBoundaryTests).Assembly;
+            var testAssemblyName = testAssembly.GetName().Name!;
+            File.Copy(testAssembly.Location, Path.Combine(output, "renamed-test.dll"));
             File.WriteAllText(Path.Combine(output, "host.deps.json"),
                 JsonSerializer.Serialize(new
                 {
@@ -237,10 +232,10 @@ public sealed class ArchitectureBoundaryTests
                     }
                 }));
 
-            var violations = FindForbiddenPublishArtifacts(output, Set(TestSupport, LogicHost));
+            var violations = FindForbiddenPublishArtifacts(output, Set(TestSupport, testAssemblyName));
 
             Assert.HasCount(4, violations);
-            Assert.IsTrue(violations.Any(violation => violation.Contains(LogicHost, StringComparison.Ordinal)));
+            Assert.IsTrue(violations.Any(violation => violation.Contains(testAssemblyName, StringComparison.Ordinal)));
             Assert.IsTrue(violations.Any(violation => violation.Contains("MSTest", StringComparison.Ordinal)));
         }
         finally
