@@ -100,7 +100,33 @@ public sealed class FileSystemArtifactOutboxTests
         }
     }
 
+    [TestMethod]
+    public async Task List_WithExcludedKey_SkipsDeferredManifest()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-outbox", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var outbox = new FileSystemArtifactOutbox();
+            var deferred = CreateManifest();
+            var ready = CreateManifest();
+            await outbox.EnqueueAsync(root, deferred, CancellationToken.None).ConfigureAwait(false);
+            await outbox.EnqueueAsync(root, ready, CancellationToken.None).ConfigureAwait(false);
+
+            var results = outbox.List(root, 1, new HashSet<string>(StringComparer.Ordinal) { deferred.IdempotencyKey });
+
+            Assert.HasCount(1, results);
+            Assert.AreEqual(ready.IdempotencyKey, results[0].IdempotencyKey);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private static ArtifactUploadManifest CreateManifest() => new(
         "v1", "agent-a", Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw, "application/octet-stream", 4,
-        "0123456789ABCDEF", DateTimeOffset.UnixEpoch, "raw-v1", "frames/1970/01/01/Raw/frame.bin");
+        new string('A', 64), DateTimeOffset.UnixEpoch, "raw-v1", "frames/1970/01/01/Raw/frame.bin");
 }

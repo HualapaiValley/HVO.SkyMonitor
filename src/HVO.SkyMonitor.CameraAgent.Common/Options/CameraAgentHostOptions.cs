@@ -23,6 +23,21 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     [Range(1, 3650)]
     public int DiskPressureRetentionDays { get; init; } = 1;
 
+    [Range(1, 100)]
+    public int UploadBatchSize { get; init; } = 10;
+
+    [Range(1, 3600)]
+    public int UploadPollIntervalSeconds { get; init; } = 10;
+
+    [Range(1, 3600)]
+    public int UploadRetryInitialDelaySeconds { get; init; } = 10;
+
+    [Range(1, 86400)]
+    public int UploadRetryMaximumDelaySeconds { get; init; } = 300;
+
+    [Range(0, int.MaxValue)]
+    public int UploadBandwidthLimitBytesPerSecond { get; init; }
+
     [Required]
     public ObservatoryLocation Observatory { get; init; } = new(0, 0, 0, "UTC");
 
@@ -33,6 +48,13 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             yield return new ValidationResult(
                 "DiskPressureRecoveryPercent must be greater than DiskPressureThresholdPercent.",
                 [nameof(DiskPressureRecoveryPercent), nameof(DiskPressureThresholdPercent)]);
+        }
+
+        if (UploadRetryMaximumDelaySeconds < UploadRetryInitialDelaySeconds)
+        {
+            yield return new ValidationResult(
+                "UploadRetryMaximumDelaySeconds must be greater than or equal to UploadRetryInitialDelaySeconds.",
+                [nameof(UploadRetryMaximumDelaySeconds), nameof(UploadRetryInitialDelaySeconds)]);
         }
     }
 }

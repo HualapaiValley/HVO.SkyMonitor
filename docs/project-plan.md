@@ -627,7 +627,9 @@ Deliverables:
 - Add health checks for camera, catalog, pipeline, storage, and disk pressure.
 - Complete local operational history and diagnostics.
 - Validate container startup, restart recovery, graceful shutdown, and ARM64
-  deployment documentation.
+  deployment documentation. Intended-host preflight is recorded in
+  [`validation/cameraagent-arm64.md`](validation/cameraagent-arm64.md); final
+  deployment and performance characterization await a non-throttled host.
 
 Exit criteria:
 
@@ -636,7 +638,7 @@ Exit criteria:
   raw artifacts.
 - The CameraAgent can be installed and operated without LogicHost.
 
-### Phase 6: Upload contract and durable outbox — In progress
+### Phase 6: Upload contract and durable outbox — Complete
 
 This is the transition to LogicHost work, after the local agent is proven.
 
@@ -647,6 +649,13 @@ Deliverables:
   bandwidth limits.
 - Replace base64 JSON with streamed binary or multipart transport.
 - Define central acknowledgement and safe local cleanup behavior.
+
+The v1 contract uses streamed multipart payloads, deterministic idempotency
+keys, an atomic filesystem outbox, bounded exponential retry, configurable
+batching, and a streaming bandwidth limit. LogicHost acknowledges only after
+checksum-verified MinIO storage and normalized SQL metadata; mismatched
+idempotency reuse is rejected. Acknowledged local artifacts are then eligible
+for safe removal without coupling upload throughput to acquisition.
 
 Exit criteria:
 
@@ -867,8 +876,13 @@ validation and standalone container/catalog startup are complete.
 1. Validate ARM64 deployment and characterize performance on the intended
    Raspberry Pi hardware without inventing thresholds. Accelerated 24-hour soak,
    restart-safe persistence browsing, graceful drain, disk-pressure policy, and
-   bounded capture-failure backoff are complete.
-2. Finish the upload manifest/outbox contract and begin LogicHost durable ingest.
+   bounded capture-failure backoff are complete. The intended host is reachable,
+   but its 2026-07-13 preflight was thermally throttled, so performance validation
+   remains open.
+2. Continue LogicHost durable ingest. The upload manifest/outbox contract,
+   verified streamed ingest, deterministic object identity, normalized central
+   identity fields, and conflict acknowledgements are complete. Central frame
+   normalization and derivative scheduling remain in phase 7.
 3. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
    calibration as a separate hardware-backed work stream.
 4. After items 1-3, prepare deferred fireball/transient processing through continuous capture

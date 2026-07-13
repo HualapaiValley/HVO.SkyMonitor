@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Security.Cryptography;
 using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -25,7 +26,7 @@ public sealed class ArtifactIngestTests
             "scene-id", "rig-v1", "HYG", "4.2", new string('A', 64),
             "EquidistantFisheye", "projection-v1", "scene-v1", "sensor-v1");
         var manifest = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw,
-            "application/octet-stream", 4, "AABBCCDD", DateTimeOffset.UnixEpoch, "raw-v1", "frames/raw.bin", scene);
+            "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch, "raw-v1", "frames/raw.bin", scene);
 
         using var first = await PostAsync(client, manifest).ConfigureAwait(false);
         using var second = await PostAsync(client, manifest).ConfigureAwait(false);
@@ -37,6 +38,9 @@ public sealed class ArtifactIngestTests
         var upload = await db.DeviceImageUploads.SingleAsync(
             item => item.RegistrationId == registrationId).ConfigureAwait(false);
         upload.SceneProvenanceJson.Should().Contain("scene-id");
+        upload.FrameId.Should().Be(manifest.FrameId);
+        upload.RecipeVersion.Should().Be(manifest.RecipeVersion);
+        upload.ManifestSchemaVersion.Should().Be(manifest.SchemaVersion);
     }
 
     [TestMethod]
@@ -47,7 +51,7 @@ public sealed class ArtifactIngestTests
         using var client = fixture.Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
         var manifest = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Preview,
-            "application/octet-stream", 4, "AABBCCDD", DateTimeOffset.UnixEpoch, "preview-v1", "frames/preview.bin");
+            "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch, "preview-v1", "frames/preview.bin");
         using var ingest = await PostAsync(client, manifest).ConfigureAwait(false);
         ingest.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
@@ -58,12 +62,66 @@ public sealed class ArtifactIngestTests
         body.Should().Contain(manifest.ArtifactId.ToString());
     }
 
-    private static async Task<HttpResponseMessage> PostAsync(HttpClient client, ArtifactUploadManifest manifest)
+    [TestMethod]
+    public async Task MultipartIngest_WithWrongChecksum_IsRejectedWithoutMetadata()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        var manifest = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw,
+            "application/octet-stream", 4, new string('A', 64), DateTimeOffset.UnixEpoch, "raw-v1", "frames/raw.bin");
+
+        using var response = await PostAsync(client, manifest).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await db.DeviceImageUploads.AnyAsync(item => item.RegistrationId == registrationId).ConfigureAwait(false)).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task MultipartIngest_WhenIdempotencyKeyHasDifferentArtifact_IsConflict()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, _) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        var frameId = Guid.NewGuid();
+        var first = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), frameId, FrameArtifactRole.Raw,
+            "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch, "raw-v1", "frames/raw.bin");
+        var conflict = first with { ArtifactId = Guid.NewGuid() };
+        using var accepted = await PostAsync(client, first).ConfigureAwait(false);
+
+        using var response = await PostAsync(client, conflict).ConfigureAwait(false);
+
+        accepted.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [TestMethod]
+    public async Task MultipartIngest_WithLowercaseIdempotencyKey_IsAccepted()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, _) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        var manifest = new ArtifactUploadManifest("v1", deviceId, Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw,
+            "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch, "raw-v1", "frames/raw.bin");
+
+        using var response = await PostAsync(client, manifest, ToLowerHex(manifest.IdempotencyKey)).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+    }
+
+    private static async Task<HttpResponseMessage> PostAsync(HttpClient client, ArtifactUploadManifest manifest, string? idempotencyKey = null)
     {
         var content = new MultipartFormDataContent();
         content.Add(new StringContent(JsonSerializer.Serialize(manifest)), "manifest");
         content.Add(new ByteArrayContent([1, 2, 3, 4]) { Headers = { ContentType = new MediaTypeHeaderValue(manifest.MediaType) } }, "payload", "artifact.bin");
-        return await client.PostAsync(new Uri("/api/v1.0/artifacts", UriKind.Relative), content).ConfigureAwait(false);
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri("/api/v1.0/artifacts", UriKind.Relative)) { Content = content };
+        request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey ?? manifest.IdempotencyKey);
+        return await client.SendAsync(request).ConfigureAwait(false);
     }
 
     private static async Task<string> GetSystemTokenAsync(HttpClient client)
@@ -119,4 +177,24 @@ public sealed class ArtifactIngestTests
         await db.SaveChangesAsync().ConfigureAwait(false);
         return (deviceId, registration.Id);
     }
+
+    private static readonly string PayloadChecksum = Convert.ToHexString(SHA256.HashData([1, 2, 3, 4]));
+
+    private static string ToLowerHex(string value)
+        => string.Create(value.Length, value, static (destination, source) =>
+        {
+            for (var index = 0; index < source.Length; index++)
+            {
+                destination[index] = source[index] switch
+                {
+                    'A' => 'a',
+                    'B' => 'b',
+                    'C' => 'c',
+                    'D' => 'd',
+                    'E' => 'e',
+                    'F' => 'f',
+                    var character => character
+                };
+            }
+        });
 }

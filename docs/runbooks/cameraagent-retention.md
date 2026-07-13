@@ -81,6 +81,21 @@ rig pipeline (`captureFailureInitialDelay`, default 250 ms, and
 cancellation interrupts either capture or backoff immediately. Structured logs
 record the failure count/delay and the subsequent recovery transition.
 
+## Upload Drain
+
+The upload drain runs outside the acquisition pipeline and processes at most
+`CameraAgent:UploadBatchSize` manifests per poll. Failed uploads remain in the
+filesystem outbox and retry with exponential delays between
+`UploadRetryInitialDelaySeconds` and `UploadRetryMaximumDelaySeconds`. Restarting
+the agent preserves every manifest and may retry it immediately; LogicHost
+idempotency prevents a duplicate central record.
+
+Set `CameraAgent:UploadBandwidthLimitBytesPerSecond` to a positive value to
+limit streamed payload reads, or leave it at `0` for no application-level
+limit. LogicHost acknowledges only after payload checksum verification, MinIO
+storage, and SQL metadata persistence. Only that success response removes the
+outbox manifest and its protected local artifact.
+
 ## Soak Validation
 
 The normal test suite runs a reduced-resolution VirtualSky day from 289

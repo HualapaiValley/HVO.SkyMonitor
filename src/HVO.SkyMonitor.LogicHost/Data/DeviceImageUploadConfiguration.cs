@@ -46,6 +46,8 @@ internal sealed class DeviceImageUploadConfiguration : IEntityTypeConfiguration<
 
         builder.Property(upload => upload.IdempotencyKey).HasMaxLength(64);
         builder.Property(upload => upload.ArtifactRole).HasMaxLength(32);
+        builder.Property(upload => upload.RecipeVersion).HasMaxLength(128);
+        builder.Property(upload => upload.ManifestSchemaVersion).HasMaxLength(16);
         builder.Property(upload => upload.ChecksumSha256).HasMaxLength(64);
         builder.Property(upload => upload.ByteLength);
         builder.Property(upload => upload.AgentId).HasMaxLength(128);
@@ -57,5 +59,6 @@ internal sealed class DeviceImageUploadConfiguration : IEntityTypeConfiguration<
         builder.HasIndex(upload => upload.CapturedAtUtc);
         builder.HasIndex(upload => upload.IdempotencyKey).IsUnique();
         builder.HasIndex(upload => upload.AgentId);
+        builder.HasIndex(upload => new { upload.AgentId, upload.FrameId, upload.ArtifactRole, upload.RecipeVersion });
     }
 }

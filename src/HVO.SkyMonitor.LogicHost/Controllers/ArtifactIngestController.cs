@@ -18,10 +18,29 @@ internal sealed class ArtifactIngestController(IArtifactIngestService ingestServ
     public async Task<ActionResult<DeviceUploadController.DeviceUploadResponse>> IngestAsync(IFormFile payload, [FromForm] string manifest, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(payload);
-        var parsedManifest = JsonSerializer.Deserialize<ArtifactUploadManifest>(manifest, SerializerOptions);
+        ArtifactUploadManifest? parsedManifest;
+        try
+        {
+            parsedManifest = JsonSerializer.Deserialize<ArtifactUploadManifest>(manifest, SerializerOptions);
+            parsedManifest?.Validate();
+        }
+        catch (JsonException)
+        {
+            return BadRequest(new ProblemDetails { Title = "Invalid artifact manifest" });
+        }
+        catch (ArgumentException)
+        {
+            return BadRequest(new ProblemDetails { Title = "Invalid artifact manifest" });
+        }
         if (parsedManifest is null)
         {
             return BadRequest(new ProblemDetails { Title = "Invalid artifact manifest" });
+        }
+        if (!Request.Headers.TryGetValue("Idempotency-Key", out var idempotencyKey)
+            || idempotencyKey.Count != 1
+            || !string.Equals(idempotencyKey[0], parsedManifest.IdempotencyKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new ProblemDetails { Title = "Idempotency-Key does not match manifest" });
         }
         if (payload.Length != parsedManifest.ByteLength)
         {
@@ -29,7 +48,18 @@ internal sealed class ArtifactIngestController(IArtifactIngestService ingestServ
         }
 
         await using var stream = payload.OpenReadStream();
-        var result = await ingestService.IngestAsync(parsedManifest, stream, cancellationToken).ConfigureAwait(false);
-        return Accepted(new DeviceUploadController.DeviceUploadResponse(result.RegistrationId, result.ObservatoryId, result.StorageReference, result.AcceptedAtUtc));
+        try
+        {
+            var result = await ingestService.IngestAsync(parsedManifest, stream, cancellationToken).ConfigureAwait(false);
+            return Accepted(new DeviceUploadController.DeviceUploadResponse(result.RegistrationId, result.ObservatoryId, result.StorageReference, result.AcceptedAtUtc));
+        }
+        catch (ArtifactIntegrityException exception)
+        {
+            return BadRequest(new ProblemDetails { Title = "Artifact integrity check failed", Detail = exception.Message });
+        }
+        catch (ArtifactIngestConflictException exception)
+        {
+            return Conflict(new ProblemDetails { Title = "Artifact idempotency conflict", Detail = exception.Message });
+        }
     }
 }

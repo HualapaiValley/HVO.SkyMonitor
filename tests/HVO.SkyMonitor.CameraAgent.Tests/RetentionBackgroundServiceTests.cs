@@ -270,7 +270,7 @@ public sealed class RetentionBackgroundServiceTests
     private static ArtifactUploadManifest CreateManifest(Guid artifactId, string relativePath)
         => new(
             "v1", "agent-a", artifactId, Guid.NewGuid(), FrameArtifactRole.Raw,
-            "application/octet-stream", 4, "0123456789ABCDEF", DateTimeOffset.UnixEpoch,
+            "application/octet-stream", 4, new string('A', 64), DateTimeOffset.UnixEpoch,
             "raw-v1", relativePath);
 
     private static string CreateRoot()
