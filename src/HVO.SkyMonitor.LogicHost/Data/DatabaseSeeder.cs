@@ -1,8 +1,10 @@
 using System.Linq;
+using HVO.SkyMonitor.Common.Identity;
 using HVO.SkyMonitor.Common.Security;
-using HVO.SkyMonitor.TestSupport;
+using HVO.SkyMonitor.LogicHost.Configuration;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using OpenIddict.Abstractions;
 using static OpenIddict.Abstractions.OpenIddictConstants;
 
@@ -24,25 +26,32 @@ internal static class DatabaseSeeder
         var userManager = serviceProvider.GetRequiredService<UserManager<ApplicationUser>>();
         var apiKeyHasher = serviceProvider.GetRequiredService<IApiKeyHasher>();
         var dbContext = serviceProvider.GetRequiredService<ApplicationDbContext>();
+        var options = serviceProvider.GetRequiredService<IOptions<DatabaseSeedOptions>>().Value;
+        var bootstrapOptions = serviceProvider.GetRequiredService<IOptions<DeviceBootstrapSecretsOptions>>().Value;
+        var centralIdentityOptions = serviceProvider.GetRequiredService<IOptions<CentralIdentityOptions>>().Value;
+        var bootstrapClient = (bootstrapOptions.CentralIdentity ?? centralIdentityOptions).ClientCredentials;
 
-        // Seed default interactive accounts
-        await SeedDefaultUsersAsync(userManager, logger);
+        // Interactive credentials and integration keys are opt-in configuration.
+        await SeedDefaultUsersAsync(userManager, options.Users, logger);
 
         // Seed system service account
         var systemAccount = await SeedSystemAccountAsync(userManager, logger);
 
         // Seed API keys for system integrations
-        await SeedApiKeysAsync(dbContext, apiKeyHasher, systemAccount, logger);
+        await SeedApiKeysAsync(dbContext, apiKeyHasher, systemAccount, options.ApiKeys, logger);
 
         // Seed OpenIddict scopes and clients
-        await SeedOpenIddictDataAsync(serviceProvider, logger);
+        await SeedOpenIddictDataAsync(serviceProvider, options, bootstrapClient, logger);
 
         await dbContext.SaveChangesAsync();
     }
 
-    private static async Task SeedDefaultUsersAsync(UserManager<ApplicationUser> userManager, ILogger logger)
+    private static async Task SeedDefaultUsersAsync(
+        UserManager<ApplicationUser> userManager,
+        IEnumerable<SeedUserOptions> users,
+        ILogger logger)
     {
-        foreach (var descriptor in GetTestUsers())
+        foreach (var descriptor in users)
         {
             var user = await userManager.FindByEmailAsync(descriptor.Email);
 
@@ -53,7 +62,7 @@ internal static class DatabaseSeeder
                     UserName = descriptor.Username,
                     Email = descriptor.Email,
                     EmailConfirmed = true,
-                    AccountType = descriptor.AccountType
+                    AccountType = AccountType.User
                 };
 
                 var result = await userManager.CreateAsync(user, descriptor.Password);
@@ -74,9 +83,9 @@ internal static class DatabaseSeeder
             }
 
             var needsUpdate = false;
-            if (user.AccountType != descriptor.AccountType)
+            if (user.AccountType != AccountType.User)
             {
-                user.AccountType = descriptor.AccountType;
+                user.AccountType = AccountType.User;
                 needsUpdate = true;
             }
 
@@ -143,7 +152,11 @@ internal static class DatabaseSeeder
         return null;
     }
 
-    private static async Task SeedOpenIddictDataAsync(IServiceProvider serviceProvider, ILogger logger)
+    private static async Task SeedOpenIddictDataAsync(
+        IServiceProvider serviceProvider,
+        DatabaseSeedOptions options,
+        ClientCredentialsOptions? bootstrapClient,
+        ILogger logger)
     {
         var scopeManager = serviceProvider.GetRequiredService<IOpenIddictScopeManager>();
         var applicationManager = serviceProvider.GetRequiredService<IOpenIddictApplicationManager>();
@@ -152,7 +165,7 @@ internal static class DatabaseSeeder
         await SeedScopesAsync(scopeManager, logger);
 
         // Seed OAuth2 applications/clients
-        await SeedApplicationsAsync(applicationManager, logger);
+        await SeedApplicationsAsync(applicationManager, options, bootstrapClient, logger);
     }
 
     private static async Task SeedScopesAsync(IOpenIddictScopeManager scopeManager, ILogger logger)
@@ -194,49 +207,47 @@ internal static class DatabaseSeeder
         }
     }
 
-    private static async Task SeedApplicationsAsync(IOpenIddictApplicationManager applicationManager, ILogger logger)
+    private static async Task SeedApplicationsAsync(
+        IOpenIddictApplicationManager applicationManager,
+        DatabaseSeedOptions options,
+        ClientCredentialsOptions? bootstrapClient,
+        ILogger logger)
     {
-        await EnsureConfidentialClientAsync(
-            applicationManager,
-            logger,
-            TestClients.SystemCameraAgent.ClientId,
-            TestClients.SystemCameraAgent.ClientSecret,
-            TestClients.SystemCameraAgent.DisplayName,
-            TestClients.SystemCameraAgent.Scopes);
+        if (bootstrapClient is not null &&
+            !string.IsNullOrWhiteSpace(bootstrapClient.ClientId) &&
+            !string.IsNullOrWhiteSpace(bootstrapClient.ClientSecret))
+        {
+            await EnsureConfidentialClientAsync(
+                applicationManager,
+                logger,
+                bootstrapClient.ClientId,
+                bootstrapClient.ClientSecret,
+                "Camera Agent Bootstrap Client",
+                bootstrapClient.Scopes.Count > 0 ? bootstrapClient.Scopes : ClientCredentialsOptions.DefaultScopes);
+        }
 
-        await EnsureConfidentialClientAsync(
-            applicationManager,
-            logger,
-            TestClients.SystemInternal.ClientId,
-            TestClients.SystemInternal.ClientSecret,
-            TestClients.SystemInternal.DisplayName,
-            TestClients.SystemInternal.Scopes);
+        foreach (var client in options.ConfidentialClients)
+        {
+            await EnsureConfidentialClientAsync(
+                applicationManager,
+                logger,
+                client.ClientId,
+                client.ClientSecret,
+                client.DisplayName,
+                client.Scopes);
+        }
 
-        await EnsurePublicClientAsync(
-            applicationManager,
-            logger,
-            TestClients.WebUI.ClientId,
-            TestClients.WebUI.DisplayName,
-            TestClients.WebUI.Scopes,
-            redirectUris: new[]
-            {
-                new Uri("https://localhost:5001/signin-oidc"),
-                new Uri("http://localhost:5000/signin-oidc")
-            },
-            postLogoutUris: new[]
-            {
-                new Uri("https://localhost:5001/signout-callback-oidc"),
-                new Uri("http://localhost:5000/signout-callback-oidc")
-            });
-
-        await EnsurePublicClientAsync(
-            applicationManager,
-            logger,
-            TestClients.MobileApp.ClientId,
-            TestClients.MobileApp.DisplayName,
-            TestClients.MobileApp.Scopes,
-            redirectUris: new[] { new Uri("com.skymonitor.mobile://auth-callback") },
-            postLogoutUris: Array.Empty<Uri>());
+        foreach (var client in options.PublicClients)
+        {
+            await EnsurePublicClientAsync(
+                applicationManager,
+                logger,
+                client.ClientId,
+                client.DisplayName,
+                client.Scopes,
+                client.RedirectUris.Select(static value => new Uri(value, UriKind.Absolute)).ToArray(),
+                client.PostLogoutRedirectUris.Select(static value => new Uri(value, UriKind.Absolute)).ToArray());
+        }
     }
 
     private static async Task EnsureConfidentialClientAsync(
@@ -245,7 +256,7 @@ internal static class DatabaseSeeder
         string clientId,
         string clientSecret,
         string displayName,
-        IReadOnlyCollection<string> scopes)
+        IEnumerable<string> scopes)
     {
         if (await applicationManager.FindByClientIdAsync(clientId) != null)
         {
@@ -276,7 +287,6 @@ internal static class DatabaseSeeder
         {
             logger.LogInformation("Created OAuth2 client: {ClientId}", clientId);
         }
-        logger.LogWarning("SECURITY: Client {ClientId} uses default secret. Change it in production!", clientId);
     }
 
     private static async Task EnsurePublicClientAsync(
@@ -284,7 +294,7 @@ internal static class DatabaseSeeder
         ILogger logger,
         string clientId,
         string displayName,
-        IReadOnlyCollection<string> scopes,
+        IEnumerable<string> scopes,
         IReadOnlyCollection<Uri> redirectUris,
         IReadOnlyCollection<Uri> postLogoutUris)
     {
@@ -339,18 +349,11 @@ internal static class DatabaseSeeder
         }
     }
 
-    private static IEnumerable<TestUserDescriptor> GetTestUsers()
-    {
-        yield return new TestUserDescriptor(TestUsers.Admin.Email, TestUsers.Admin.Username, TestUsers.Admin.Password, AccountType.User);
-        yield return new TestUserDescriptor(TestUsers.Operator.Email, TestUsers.Operator.Username, TestUsers.Operator.Password, AccountType.User);
-        yield return new TestUserDescriptor(TestUsers.Viewer.Email, TestUsers.Viewer.Username, TestUsers.Viewer.Password, AccountType.User);
-        yield return new TestUserDescriptor(TestUsers.Regular.Email, TestUsers.Regular.Username, TestUsers.Regular.Password, AccountType.User);
-    }
-
     private static async Task SeedApiKeysAsync(
         ApplicationDbContext dbContext,
         IApiKeyHasher hasher,
         ApplicationUser? systemAccount,
+        IEnumerable<SeedApiKeyOptions> apiKeys,
         ILogger logger)
     {
         if (systemAccount is null)
@@ -359,15 +362,7 @@ internal static class DatabaseSeeder
             return;
         }
 
-        var descriptors = new[]
-        {
-            new ApiKeyDescriptor(systemAccount.Id, TestApiKeys.CameraAgent.Key, TestApiKeys.CameraAgent.Name, ApiKeyAccessLevel.ReadWrite),
-            new ApiKeyDescriptor(systemAccount.Id, TestApiKeys.InternalService.Key, TestApiKeys.InternalService.Name, ApiKeyAccessLevel.ReadWrite),
-            new ApiKeyDescriptor(systemAccount.Id, TestApiKeys.Webhook.Key, TestApiKeys.Webhook.Name, ApiKeyAccessLevel.Read),
-            new ApiKeyDescriptor(systemAccount.Id, TestApiKeys.ReadOnly.Key, TestApiKeys.ReadOnly.Name, ApiKeyAccessLevel.Read)
-        };
-
-        foreach (var descriptor in descriptors)
+        foreach (var descriptor in apiKeys)
         {
             var hashed = hasher.Hash(descriptor.RawKey);
             var exists = await dbContext.ApiKeys.AnyAsync(key => key.HashedKey == hashed);
@@ -378,7 +373,7 @@ internal static class DatabaseSeeder
 
             dbContext.ApiKeys.Add(new ApiKey
             {
-                UserId = descriptor.UserId,
+                UserId = systemAccount.Id,
                 DisplayName = descriptor.DisplayName,
                 AccessLevel = descriptor.AccessLevel,
                 HashedKey = hashed,
@@ -393,9 +388,6 @@ internal static class DatabaseSeeder
         }
     }
 
-    private sealed record TestUserDescriptor(string Email, string Username, string Password, AccountType AccountType);
-
-    private sealed record ApiKeyDescriptor(string UserId, string RawKey, string DisplayName, ApiKeyAccessLevel AccessLevel);
 }
 
 #pragma warning restore CA2007

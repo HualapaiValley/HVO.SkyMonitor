@@ -51,37 +51,9 @@ dotnet user-secrets set "MinIO:Username" "your-username"
 dotnet user-secrets set "MinIO:Password" "your-password"
 ```
 
-## Development Accounts & Credentials
+## Bootstrap Identities
 
-During startup the `DatabaseSeeder` populates standard test identities, API keys, and OAuth/OIDC clients from the shared `HVO.SkyMonitor.TestSupport` project. These are safe for local development only—change them before deploying anywhere else.
-
-### Interactive Users (ASP.NET Core Identity)
-
-| Role | Email | Username | Password | Notes |
-| --- | --- | --- | --- | --- |
-| Administrator | `admin@skymonitor.local` | `admin` | `Admin123!@#` | Full system access (Administrator/Operator/Viewer roles) |
-| Operator | `operator@skymonitor.local` | `operator` | `Operator123!@#` | Operations + Viewer permissions |
-| Viewer | `viewer@skymonitor.local` | `viewer` | `Viewer123!@#` | Read-only access |
-| Regular | `user@skymonitor.local` | `user` | `User123!@#` | No elevated roles |
-| System Service | `system@skymonitor.local` | `system-service` | _No password_ | Used for API keys/client credentials only |
-
-### API Keys (sent via `x-api-key` header)
-
-| Purpose | Raw Key | Scopes |
-| --- | --- | --- |
-| Camera Agent | `test-camera-agent-key-12345678901234567890123456789012` | `api.camera`, `api.frames` |
-| Internal Service | `test-internal-service-key-12345678901234567890123456789012` | `api.admin`, `api.camera`, `api.frames`, `api.images` |
-| Webhook | `test-webhook-key-12345678901234567890123456789012` | `api.webhooks` |
-| Read Only | `test-readonly-key-12345678901234567890123456789012` | `api.viewer` |
-
-### OAuth / OIDC Clients
-
-| Client | Type | Client ID | Secret | Scopes | Notes |
-| --- | --- | --- | --- | --- | --- |
-| Camera Agent | Confidential | `system-camera-agent` | `test-camera-agent-secret-do-not-use-in-production` | `api.camera`, `api.frames`, `api.images` | Client Credentials flow |
-| Internal Service | Confidential | `system-internal` | `test-internal-secret-do-not-use-in-production` | `api.admin`, `api.camera`, `api.frames`, `api.images` | Client Credentials flow |
-| Web UI | Public (PKCE) | `web-ui` | _(none)_ | `openid`, `profile`, `email`, `api.viewer` | Redirect URIs `http://localhost:5000/signin-oidc`, `https://localhost:5001/signin-oidc` |
-| Mobile App | Public (PKCE) | `mobile-app` | _(none)_ | `openid`, `profile`, `email`, `api.viewer`, `offline_access` | Redirect `com.skymonitor.mobile://auth-callback` |
+Startup always creates the non-interactive system account, standard OAuth scopes, and the confidential client described by the effective device-bootstrap identity configuration. Additional interactive users, API keys, and OAuth/OIDC clients are seeded only when supplied through the `DatabaseSeed` configuration section. Keep passwords, raw API keys, and client secrets in user secrets or environment variables, not checked-in settings. Integration tests inject their fixture credentials from `HVO.SkyMonitor.TestSupport`; production does not reference that assembly.
 
 Shared database resets are an operational action on `hvo-docker`, not a repository script. Reapply migrations and reseed as appropriate after an approved reset.
 
