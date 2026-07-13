@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "hvo-asi-characterization-session-v1",
+  "sessionId": "asi178mc-20260713-cloudy-v2",
+  "capturedUtcRange": ["2026-07-13T07:51:35.914Z", "2026-07-13T07:52:46.005Z"],
+  "conditions": {
+    "sky": "considerable cloud cover; not suitable for astrometric calibration",
+    "hostTemperatureC": { "before": 74.0, "after": 73.5 },
+    "sensorTemperatureC": { "minimum": 39.6, "maximum": 39.7 },
+    "throttledBefore": "0xe0000",
+    "throttledAfter": "0xe0000",
+    "currentThrottleBitsClear": true,
+    "armClockAfterHz": 1500398464,
+    "usbPathMbps": 5000
+  },
+  "camera": {
+    "model": "ZWO ASI178MC",
+    "serial": "350f500522000900",
+    "sdkVersion": "1, 41, 0, 0"
+  },
+  "software": {
+    "sourceSha256": "96b7731d2b01590906f5e7afa2715340b3d4816f15cbf822b2adbc36c80b79c1",
+    "arm64BinarySha256": "8a008327909330ec7f5a916b74de5bd082e360fc16a298f44eeaf243c33dab40",
+    "sdkHeaderSha256": "af6ab82e66905b3a0f3313e1e82ccb4fedde272eaa64744588a1be8103f9cf0c",
+    "sdkArm64LibrarySha256": "3ecf511979ed571131e7d7f4a467112aba21940b4dc91d63bd109b9683bf67c4",
+    "sdkLicenseSha256": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+  },
+  "sourceLocation": "/home/roys/asi-capture/captures/profile-20260713-evidence-v2",
+  "commands": [
+    "asi-capture-profile --output-dir <sourceLocation> --profile-only",
+    "asi-capture-profile --output-dir <sourceLocation> --exposure-us 100000 --gain 150 --offset 10 --bin 1 --count 2",
+    "asi-capture-profile --output-dir <sourceLocation> --exposure-us 100000 --gain 150 --offset 10 --bin 2 --count 2",
+    "asi-capture-profile --output-dir <sourceLocation> --exposure-us 100000 --gain 150 --offset 10 --bin 2 --mono-bin --count 2",
+    "asi-capture-profile --output-dir <sourceLocation> --exposure-us 100000 --gain 150 --offset 10 --bin 3 --count 1",
+    "asi-capture-profile --output-dir <sourceLocation> --exposure-us 100000 --gain 150 --offset 10 --bin 3 --mono-bin --count 1",
+    "asi-capture-profile --output-dir <sourceLocation> --exposure-us 100000 --gain 150 --offset 10 --bin 4 --count 1",
+    "asi-capture-profile --output-dir <sourceLocation> --exposure-us 100000 --gain 150 --offset 10 --bin 4 --mono-bin --count 1"
+  ],
+  "failedExperiment": {
+    "command": "asi-capture-profile --output-dir <sourceLocation> --exposure-us 100000 --gain 150 --offset 10 --bin 2 --hardware-bin --count 1",
+    "operation": "ASISetControlValue(hardware bin)",
+    "sdkError": 16,
+    "frameWritten": false
+  },
+  "measurements": [
+    { "bin": 1, "monoBin": 0, "width": 3096, "height": 2080, "byteCount": 12879360, "statusMs": [394.665, 394.669], "downloadMs": [32.830, 11.747], "meanAdu": [65.289, 65.617], "representativeParityMeansAdu": [70.302, 50.670, 51.830, 88.353] },
+    { "bin": 2, "monoBin": 0, "width": 1548, "height": 1040, "byteCount": 3219840, "statusMs": [399.881, 394.569], "downloadMs": [65.114, 44.736], "meanAdu": [84.579, 84.808], "representativeParityMeansAdu": [90.637, 65.872, 66.645, 115.160] },
+    { "bin": 2, "monoBin": 1, "width": 1548, "height": 1040, "byteCount": 3219840, "statusMs": [394.677, 394.654], "downloadMs": [63.456, 41.077], "meanAdu": [83.006, 83.126], "representativeParityMeansAdu": [83.011, 83.030, 83.006, 82.977] },
+    { "bin": 3, "monoBin": 0, "width": 1032, "height": 692, "byteCount": 1428288, "statusMs": [394.754], "downloadMs": [55.765], "meanAdu": [84.065], "representativeParityMeansAdu": [90.088, 65.297, 65.936, 114.941] },
+    { "bin": 3, "monoBin": 1, "width": 1032, "height": 692, "byteCount": 1428288, "statusMs": [394.634], "downloadMs": [48.847], "meanAdu": [83.234], "representativeParityMeansAdu": [81.205, 81.092, 81.334, 89.304] },
+    { "bin": 4, "monoBin": 0, "width": 774, "height": 520, "byteCount": 804960, "statusMs": [396.604], "downloadMs": [84.144], "meanAdu": [84.299], "representativeParityMeansAdu": [90.752, 65.301, 66.393, 114.752] },
+    { "bin": 4, "monoBin": 1, "width": 774, "height": 520, "byteCount": 804960, "statusMs": [404.935], "downloadMs": [43.280], "meanAdu": [64.732], "representativeParityMeansAdu": [64.745, 64.711, 64.728, 64.746] }
+  ],
+  "artifacts": [
+    { "stem": "20260713T075144896Z_exp100000_gain150_offset10_bin1_hwbin0_monobin0_seq1", "sidecarSha256": "39437af3a6615c099cf60550a077151a6667b87c05fbefdd0c82e06b5a9d7f40", "rawSha256": "515ccbe522434024c22e71742ea8ff45989d3ac04825cc97efbcd22166b75828" },
+    { "stem": "20260713T075145758Z_exp100000_gain150_offset10_bin1_hwbin0_monobin0_seq2", "sidecarSha256": "d05c27bf6e40f3a316b9efa3e5998ed816c6c5c80d88450fb993a2b46d723535", "rawSha256": "3e71132f8ae37e374f0f19eccb46bbd77efba58eab2a53f193099fdd85702e1e" },
+    { "stem": "20260713T075154029Z_exp100000_gain150_offset10_bin2_hwbin0_monobin0_seq1", "sidecarSha256": "bc8cdf807b5e1717bc72aeb858b7881050356769b95a018c21842d52e71b2ed5", "rawSha256": "b05e2ebef6cc46a8cee49705098c9bde487a8f7b3d3eb06f3cf75182def21a51" },
+    { "stem": "20260713T075154584Z_exp100000_gain150_offset10_bin2_hwbin0_monobin0_seq2", "sidecarSha256": "377d009e366454c71b657efde4c6fc7d8704fd79780b802a29fb9f0b79fbb388", "rawSha256": "e686ea7c37146e4e1acac1325840119d1e29e5ec43855dedd8216cd98f283e4d" },
+    { "stem": "20260713T075202272Z_exp100000_gain150_offset10_bin2_hwbin0_monobin1_seq1", "sidecarSha256": "7b7bc1ff1b2dd08e395a631356ed74f20ae1b6683e0f5b777a82ed91579038ad", "rawSha256": "d6ff8e7f65bdc754ec8678c9ed19edc9e009907d5281a7a0197ce567af611c0f" },
+    { "stem": "20260713T075202828Z_exp100000_gain150_offset10_bin2_hwbin0_monobin1_seq2", "sidecarSha256": "7a918a5212aeebaef4b8e0c2499ce4e02cefec6760c0d36a01448c966270517d", "rawSha256": "1d7a093b2989b8c093a1df0ccf4acf7df458a3ec825bdc41757c19dd1fc88be5" },
+    { "stem": "20260713T075212034Z_exp100000_gain150_offset10_bin3_hwbin0_monobin0_seq1", "sidecarSha256": "ea6b056f49e5c92804e62ba807bfedffeb2b0334d3d907b32259f9b02dca9770", "rawSha256": "539f9a066ea229c584d010a593a6a97c915733d0daa6f15e5e73decac819604e" },
+    { "stem": "20260713T075221244Z_exp100000_gain150_offset10_bin3_hwbin0_monobin1_seq1", "sidecarSha256": "a54a43b8e5af385c75e6464a46a195d9b467ef35837839041df0191cdb88e417", "rawSha256": "e172ce8c744e7ca5a541216c841ecbbd3b80181c15e0e4f936cd3d4d06b4debe" },
+    { "stem": "20260713T075229384Z_exp100000_gain150_offset10_bin4_hwbin0_monobin0_seq1", "sidecarSha256": "e436d6356f1c47a5a788bfc74207a393f36bdddd565d98df7df5350233c1cca2", "rawSha256": "6f36b0527c4629157c8976ee2450a8cd4c581bafaf1958bd49d5c5734e2901a2" },
+    { "stem": "20260713T075237260Z_exp100000_gain150_offset10_bin4_hwbin0_monobin1_seq1", "sidecarSha256": "65c2f8d48650a324085f5df949a80408e5d2aa3d7e6b8c7f4abf4c141bb3e278", "rawSha256": "2469f82cc6ae020060042fd973517ca15090d0b1a4dd443eb203eaab31b85a35" }
+  ],
+  "sdkProfile": {
+    "file": "asi-profile-350f500522000900-20260713T075135914Z.json",
+    "sha256": "5fafa8bc112e09681b0aa7d4f5e225ae8422cdd676e1f309c184a2060c995cec",
+    "repositoryCopy": "asi178mc-sdk-profile-v1.json"
+  }
+}

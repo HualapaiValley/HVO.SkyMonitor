@@ -4,7 +4,7 @@
     "type": "VirtualSky",
     "options": {
       "seed": 2025,
-      "rigProfileVersion": "virtual-asi178mc-fujinon-candidate-v4",
+      "rigProfileVersion": "virtual-asi178mc-fujinon-unverified-v5",
       "maximumMagnitude": 6.5,
       "maximumResults": 300,
       "magnitudeZeroElectronsPerSecond": 18000.0,
@@ -60,7 +60,8 @@
     "controlPolicy": {
       "autoGain": "Disabled",
       "autoExposure": "Disabled"
-    }
+    },
+    "profileVersion": "virtual-asi178mc-fujinon-unverified-v5"
   },
   "processingSteps": [
     {

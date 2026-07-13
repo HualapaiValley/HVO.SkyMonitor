@@ -900,8 +900,12 @@ validation and standalone container/catalog startup are complete.
    frame/artifact records, bounded latest/history queries, conflict
    acknowledgements, and durable derivative scheduling are complete. Actual
    central derivative execution remains deferred to the processing experience.
-3. Continue physical ASI178 lens, orientation, Bayer response, and mono-bin
-   calibration as a separate hardware-backed work stream.
+3. Continue ASI profile characterization as a standalone hardware-backed work
+   stream without starting a production physical camera module. SDK identity,
+   RAW16 layout, RGGB phase, advertised formats, and bin/mono-bin dimensions are
+   hardware verified. Sensor response remains provisional, and the installed
+   lens and orientation remain explicitly unverified until controlled and
+   clear-sky calibration evidence is available.
 4. After items 1-3, prepare deferred fireball/transient processing through continuous capture
    cadence [#58](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58),
    durable raw fan-out [#59](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59),

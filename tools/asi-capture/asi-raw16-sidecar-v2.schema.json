@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hvoskymonitor.local/schemas/asi-raw16-sidecar-v2.schema.json",
+  "title": "HVO ASI RAW16 capture sidecar v2",
+  "type": "object",
+  "required": [
+    "schemaVersion", "cameraModel", "cameraSerial", "sdkVersion",
+    "sdkProfileFile", "pixelFormat", "sampleLayout", "width", "height",
+    "requestedBin", "bin", "requestedMonoBin", "monoBin",
+    "requestedHardwareBin", "hardwareBin", "requestedFlip", "flip",
+    "rowStrideBytes", "byteCount", "startedUtc", "completedUtc",
+    "exposureElapsedMilliseconds", "downloadElapsedMilliseconds", "statistics"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "hvo-asi-raw16-sidecar-v2" },
+    "pixelFormat": { "const": "RAW16" },
+    "sampleLayout": { "enum": ["Mono16", "RGGB16", "BGGR16", "GRBG16", "GBRG16", "Unspecified"] },
+    "width": { "type": "integer", "minimum": 1 },
+    "height": { "type": "integer", "minimum": 1 },
+    "requestedBin": { "type": "integer", "minimum": 1 },
+    "bin": { "type": "integer", "minimum": 1 },
+    "requestedMonoBin": { "type": "boolean" },
+    "monoBin": { "type": "integer", "minimum": -1, "maximum": 1 },
+    "requestedHardwareBin": { "type": "boolean" },
+    "hardwareBin": { "type": "integer", "minimum": -1, "maximum": 1 },
+    "requestedFlip": { "const": 0 },
+    "flip": { "type": "integer", "minimum": -1, "maximum": 3 },
+    "rowStrideBytes": { "type": "integer", "minimum": 2 },
+    "byteCount": { "type": "integer", "minimum": 2 },
+    "sensorTemperatureC": { "type": ["number", "null"] },
+    "startedUtc": { "type": "string", "format": "date-time" },
+    "completedUtc": { "type": "string", "format": "date-time" },
+    "exposureElapsedMilliseconds": { "type": "number", "minimum": 0 },
+    "downloadElapsedMilliseconds": { "type": "number", "minimum": 0 },
+    "statistics": { "type": "object" }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hvoskymonitor.local/schemas/asi-sdk-profile-v1.schema.json",
+  "title": "HVO ASI SDK capability profile v1",
+  "type": "object",
+  "required": [
+    "schemaVersion", "evidenceType", "probedUtc", "sdkVersion",
+    "cameraModel", "cameraSerial", "maximumWidth", "maximumHeight",
+    "supportedBins", "supportedPixelFormats", "controls"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "hvo-asi-sdk-profile-v1" },
+    "evidenceType": { "const": "sdk-reported" },
+    "probedUtc": { "type": "string", "format": "date-time" },
+    "sdkVersion": { "type": "string" },
+    "cameraModel": { "type": "string" },
+    "cameraSerial": { "type": "string" },
+    "maximumWidth": { "type": "integer", "minimum": 1 },
+    "maximumHeight": { "type": "integer", "minimum": 1 },
+    "supportedBins": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "uniqueItems": true },
+    "supportedPixelFormats": { "type": "array", "items": { "type": "object" } },
+    "controls": { "type": "array", "items": { "type": "object" } }
+  },
+  "additionalProperties": true
+}
