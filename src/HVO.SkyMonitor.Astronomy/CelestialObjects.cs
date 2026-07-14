@@ -146,7 +146,15 @@ public sealed class InMemoryConstellationTopology : IConstellationTopology
     /// <summary>Creates topology from immutable segments.</summary>
     public InMemoryConstellationTopology(
         IEnumerable<ConstellationSegment> segments,
-        ConstellationTopologyMetadata? metadata = null,
+        ConstellationTopologyMetadata? metadata = null)
+        : this(segments, metadata, null)
+    {
+    }
+
+    /// <summary>Creates topology from immutable segments with serialized artifact identity.</summary>
+    public InMemoryConstellationTopology(
+        IEnumerable<ConstellationSegment> segments,
+        ConstellationTopologyMetadata? metadata,
         string? artifactSha256 = null)
     {
         ArgumentNullException.ThrowIfNull(segments);

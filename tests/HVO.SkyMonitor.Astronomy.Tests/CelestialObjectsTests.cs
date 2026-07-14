@@ -84,6 +84,8 @@ public sealed class CelestialObjectsTests
 
         Assert.AreEqual(1, topology.GetSegments("ORI").Count);
         Assert.AreEqual(0, topology.GetSegments("LYR").Count);
+        Assert.IsNotNull(typeof(InMemoryConstellationTopology).GetConstructor(
+            [typeof(IEnumerable<ConstellationSegment>), typeof(ConstellationTopologyMetadata)]));
     }
 
     [TestMethod]
