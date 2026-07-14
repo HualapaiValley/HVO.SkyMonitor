@@ -1,0 +1,1209 @@
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
+using System.Diagnostics.CodeAnalysis;
+using Microsoft.Extensions.Logging.Abstractions;
+using System.Diagnostics;
+
+namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
+
+[TestClass]
+[TestCategory("Unit")]
+[DoNotParallelize]
+public sealed class RawCaptureIngressTests
+{
+    [TestMethod]
+    public async Task AcceptAsync_PublishesV2EvidenceBeforeWalCommitAndIsIdempotent()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var state = new RawIngressState(TimeProvider.System);
+            using var ingress = CreateIngress(root, state);
+            var configuration = CreateConfiguration();
+            var submission = CreateSubmission(Timestamp(2), [1, 2, 3, 4]);
+
+            var first = await ingress.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false);
+            var duplicate = await ingress.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNotNull(first);
+            Assert.IsNotNull(duplicate);
+            Assert.AreEqual(RawIngressOutcome.Committed, first.Outcome);
+            Assert.AreEqual(RawIngressOutcome.Existing, duplicate.Outcome);
+            CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, await File.ReadAllBytesAsync(first.StoredFrame.AbsolutePath).ConfigureAwait(false));
+            var sidecarPath = Path.ChangeExtension(first.StoredFrame.AbsolutePath, ".json");
+            var parsed = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false));
+            Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
+            Assert.AreEqual(first.Manifest.IdempotencyKey, parsed.Document!.Manifest!.IdempotencyKey);
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+            Assert.AreEqual(1, state.Snapshot.PendingCount);
+            Assert.AreEqual(4, state.Snapshot.PendingBytes);
+
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual("wal", await ScalarStringAsync(connection, "PRAGMA journal_mode;").ConfigureAwait(false));
+            Assert.AreEqual(2L, await ScalarLongAsync(connection, "PRAGMA synchronous;").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarLongAsync(connection, "PRAGMA foreign_keys;").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+
+            using var browser = new FileSystemFrameStorageService(
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<FileSystemFrameStorageService>.Instance);
+            var listed = browser.List(root, DateOnly.FromDateTime(first.Manifest.Descriptor.Timing.ExposureStartedUtc.UtcDateTime), FrameArtifactRole.Raw, 10);
+            Assert.HasCount(1, listed);
+            Assert.AreEqual(first.Manifest.Descriptor.Artifact.ArtifactId, parsed.Document.Manifest.Descriptor.Artifact.ArtifactId);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task Restart_AllocatesIncreasingPerAgentSequence()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var configuration = CreateConfiguration();
+            RawCaptureReceipt first;
+            using (var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                first = (await ingress.AcceptAsync(
+                    configuration,
+                    CreateSubmission(Timestamp(3), [1, 1, 1, 1]),
+                    CancellationToken.None).ConfigureAwait(false))!;
+            }
+            using var restarted = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            var second = await restarted.AcceptAsync(
+                configuration,
+                CreateSubmission(Timestamp(3).AddSeconds(1), [2, 2, 2, 2]),
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNotNull(second);
+            Assert.AreEqual(first.Manifest.Descriptor.Capture.CaptureSequence + 1, second.Manifest.Descriptor.Capture.CaptureSequence);
+            Assert.AreNotEqual(first.Manifest.Descriptor.Capture.CaptureId, second.Manifest.Descriptor.Capture.CaptureId);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_WhenCapacityCannotFitNextPayload_RefusesWithoutCommittedSuccess()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressReserveBytes = 10
+            });
+            var state = new RawIngressState(TimeProvider.System);
+            using var ingress = new RawCaptureIngress(
+                options,
+                new FixedCapacityProvider(13),
+                state,
+                TimeProvider.System,
+                new RawIngressTelemetry(state),
+                NullLogger<RawCaptureIngress>.Instance,
+                new NullRawIngressFaultInjector());
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () => await ingress.AcceptAsync(
+                CreateConfiguration(),
+                CreateSubmission(Timestamp(4), [1, 2, 3, 4]),
+                CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+            Assert.AreEqual("capacity-exhausted", state.Snapshot.Reason);
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(0L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_RecoversValidUnjournaledPairAndRepairsMissingIndex()
+    {
+        var root = CreateRoot();
+        try
+        {
+            RawCaptureReceipt accepted;
+            using (var original = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                accepted = (await original.AcceptAsync(
+                    CreateConfiguration(),
+                    CreateSubmission(Timestamp(5), [5, 5, 5, 5]),
+                    CancellationToken.None).ConfigureAwait(false))!;
+            }
+            SqliteConnection.ClearAllPools();
+            foreach (var suffix in new[] { string.Empty, "-wal", "-shm" })
+            {
+                File.Delete(Path.Combine(root, "journal", string.Concat("raw-ingress.db", suffix)));
+            }
+            var indexPath = Path.Combine(root, "index", "frames_2026-07-14.jsonl");
+            File.Delete(indexPath);
+            var state = new RawIngressState(TimeProvider.System);
+            using var recovered = CreateIngress(root, state);
+
+            await recovered.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+            Assert.AreEqual(1, state.Snapshot.PendingCount);
+            Assert.IsTrue(File.Exists(indexPath));
+            StringAssert.Contains(await File.ReadAllTextAsync(indexPath).ConfigureAwait(false),
+                accepted.Manifest.Descriptor.Artifact.ArtifactId.ToString(), StringComparison.OrdinalIgnoreCase);
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_CleansTemporaryAndQuarantinesPublishedPartialEvidence()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var rawDirectory = Path.Combine(root, "frames", "2026", "07", "14", "Raw");
+            Directory.CreateDirectory(rawDirectory);
+            var temporaryPath = Path.Combine(rawDirectory, "capture.bin.temporary.tmp");
+            var orphanPath = Path.Combine(rawDirectory, "capture.bin");
+            await File.WriteAllBytesAsync(temporaryPath, [1, 2]).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(orphanPath, [3, 4]).ConfigureAwait(false);
+            var state = new RawIngressState(TimeProvider.System);
+            using (var ingress = CreateIngress(root, state))
+            {
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(File.Exists(temporaryPath));
+                Assert.IsFalse(File.Exists(orphanPath));
+                Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
+                Assert.AreEqual(1, state.Snapshot.QuarantineCount);
+                Assert.AreEqual(2, state.Snapshot.QuarantineBytes);
+                Assert.HasCount(1, Directory.EnumerateFiles(Path.Combine(root, "quarantine"), "capture.bin", SearchOption.AllDirectories));
+                using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+                Assert.AreEqual(2L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_ingress_reconciliation;").ConfigureAwait(false));
+            }
+            var restartedState = new RawIngressState(TimeProvider.System);
+            using var restarted = CreateIngress(root, restartedState);
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(RawIngressAvailability.Degraded, restartedState.Snapshot.Availability);
+            Assert.AreEqual(1L, restartedState.Snapshot.QuarantineCount);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_WhenCommittedPayloadIsMissing_RemainsUnhealthyAndRefusesStartup()
+    {
+        var root = CreateRoot();
+        try
+        {
+            string payloadPath;
+            using (var original = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                var accepted = await original.AcceptAsync(
+                    CreateConfiguration(),
+                    CreateSubmission(Timestamp(6), [6, 6, 6, 6]),
+                    CancellationToken.None).ConfigureAwait(false);
+                payloadPath = accepted!.StoredFrame.AbsolutePath;
+            }
+            SqliteConnection.ClearAllPools();
+            File.Delete(payloadPath);
+            var state = new RawIngressState(TimeProvider.System);
+            using var restarted = CreateIngress(root, state);
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual("missing_evidence", await ScalarStringAsync(
+                connection, "SELECT state FROM raw_captures;").ConfigureAwait(false));
+            await connection.CloseAsync().ConfigureAwait(false);
+            await File.WriteAllBytesAsync(payloadPath, [6, 6, 6, 6]).ConfigureAwait(false);
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+            using var repaired = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual("committed", await ScalarStringAsync(
+                repaired, "SELECT state FROM raw_captures;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_WhenSchemaIsNewer_FailsClosedWithoutModification()
+    {
+        var root = CreateRoot();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "journal"));
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = "PRAGMA user_version = 2;";
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            var state = new RawIngressState(TimeProvider.System);
+            using var telemetry = new RawIngressTelemetry(state);
+            using var ingress = new RawCaptureIngress(
+                Options.Create(new CameraAgentHostOptions
+                {
+                    RawIngressRoot = root,
+                    RawIngressReserveBytes = 0,
+                    RawIngressSqliteBusyTimeoutSeconds = 1
+                }),
+                new FixedCapacityProvider(long.MaxValue),
+                state,
+                TimeProvider.System,
+                telemetry,
+                NullLogger<RawCaptureIngress>.Instance,
+                new NullRawIngressFaultInjector());
+
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(2L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+            Assert.AreEqual(0L, telemetry.CheckpointCount);
+            Assert.AreEqual(0L, telemetry.CheckpointFailureCount);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture()
+    {
+        foreach (var point in Enum.GetValues<RawIngressFaultPoint>())
+        {
+            var root = CreateRoot();
+            try
+            {
+                var state = new RawIngressState(TimeProvider.System);
+                using var ingress = CreateIngress(root, state, new OneShotFaultInjector(point));
+                var configuration = CreateConfiguration();
+                var submission = CreateSubmission(Timestamp(7), [7, 7, 7, 7]);
+
+                await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(async () =>
+                    await ingress.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false),
+                    $"Fault point {point} did not interrupt ingress.").ConfigureAwait(false);
+                if (point == RawIngressFaultPoint.AfterJournalCommit)
+                {
+                    Assert.AreEqual(1L, state.Snapshot.PendingCount);
+                    Assert.AreEqual(4L, state.Snapshot.PendingBytes);
+                }
+                var recovered = await ingress.AcceptAsync(
+                    configuration, submission, CancellationToken.None).ConfigureAwait(false);
+
+                Assert.IsNotNull(recovered, point.ToString());
+                Assert.IsTrue(File.Exists(recovered.StoredFrame.AbsolutePath), point.ToString());
+                Assert.IsTrue(File.Exists(Path.ChangeExtension(recovered.StoredFrame.AbsolutePath, ".json")), point.ToString());
+                using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+                Assert.AreEqual(1L, await ScalarLongAsync(
+                    connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false), point.ToString());
+            }
+            finally
+            {
+                DeleteRoot(root);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_SameCaptureIdentityWithDifferentBytes_IsConflictWithoutOverwrite()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            var configuration = CreateConfiguration();
+            var timestamp = Timestamp(8);
+            var accepted = await ingress.AcceptAsync(
+                configuration,
+                CreateSubmission(timestamp, [1, 1, 1, 1]),
+                CancellationToken.None).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<RawIngressConflictException>(async () =>
+                await ingress.AcceptAsync(
+                    configuration,
+                    CreateSubmission(timestamp, [2, 2, 2, 2]),
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            var changedConfiguration = configuration with
+            {
+                Rig = configuration.Rig with { ProfileVersion = "rig-v2" }
+            };
+            await Assert.ThrowsExactlyAsync<RawIngressConflictException>(async () =>
+                await ingress.AcceptAsync(
+                    changedConfiguration,
+                    CreateSubmission(timestamp, [1, 1, 1, 1]),
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            CollectionAssert.AreEqual(
+                new byte[] { 1, 1, 1, 1 },
+                await File.ReadAllBytesAsync(accepted!.StoredFrame.AbsolutePath).ConfigureAwait(false));
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_WhenWriterLockExceedsBusyTimeout_FailsWithoutFalseCommitThenRecovers()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            using var lockConnection = await OpenJournalAsync(root).ConfigureAwait(false);
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+            using var lockTransaction = lockConnection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+            var submission = CreateSubmission(Timestamp(9), [9, 9, 9, 9]);
+
+            await Assert.ThrowsExactlyAsync<SqliteException>(async () =>
+                await ingress.AcceptAsync(
+                    CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            await lockTransaction.RollbackAsync().ConfigureAwait(false);
+            var recovered = await ingress.AcceptAsync(
+                CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNotNull(recovered);
+            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarLongAsync(
+                verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_WhenRootIsSymbolicLink_FailsClosed()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var parent = Path.Combine(Path.GetTempPath(), "hvo-raw-ingress-tests", Guid.NewGuid().ToString("N"));
+        var target = Path.Combine(parent, "target");
+        var root = Path.Combine(parent, "root-link");
+        Directory.CreateDirectory(target);
+        Directory.CreateSymbolicLink(root, target);
+        try
+        {
+            var state = new RawIngressState(TimeProvider.System);
+            using var ingress = CreateIngress(root, state);
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+            Assert.IsFalse(File.Exists(Path.Combine(target, "journal", "raw-ingress.db")));
+        }
+        finally
+        {
+            Directory.Delete(root);
+            Directory.Delete(target, recursive: true);
+            Directory.Delete(parent, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_UnclaimedSidecarCannotQuarantineCommittedPayload()
+    {
+        var root = CreateRoot();
+        try
+        {
+            RawCaptureReceipt accepted;
+            using (var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                accepted = (await ingress.AcceptAsync(
+                    CreateConfiguration(), CreateSubmission(Timestamp(11), [11, 11, 11, 11]),
+                    CancellationToken.None).ConfigureAwait(false))!;
+            }
+            var descriptor = accepted.Manifest.Descriptor with
+            {
+                Capture = accepted.Manifest.Descriptor.Capture with
+                {
+                    CaptureSequence = 2,
+                    CaptureId = Guid.NewGuid()
+                },
+                Artifact = accepted.Manifest.Descriptor.Artifact with { ArtifactId = Guid.NewGuid() }
+            };
+            var conflicting = accepted.Manifest with { Descriptor = descriptor };
+            var extraSidecar = Path.Combine(Path.GetDirectoryName(accepted.StoredFrame.AbsolutePath)!, "conflicting.json");
+            await File.WriteAllBytesAsync(extraSidecar, CaptureContractJson.Serialize(conflicting)).ConfigureAwait(false);
+            var state = new RawIngressState(TimeProvider.System);
+            using var restarted = CreateIngress(root, state);
+
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(accepted.StoredFrame.AbsolutePath));
+            Assert.IsFalse(File.Exists(extraSidecar));
+            Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+            Assert.AreEqual("committed", await ScalarStringAsync(connection, "SELECT state FROM raw_captures;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_WhenAnotherIngressOwnsRoot_FailsClosed()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var owner = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            await owner.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var contenderState = new RawIngressState(TimeProvider.System);
+            using var contender = CreateIngress(root, contenderState);
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await contender.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual(RawIngressAvailability.Unhealthy, contenderState.Snapshot.Availability);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_SidecarWithoutPayload_IsQuarantinedWithoutNormalWork()
+    {
+        var root = CreateRoot();
+        try
+        {
+            string sidecarPath;
+            using (var original = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                var accepted = await original.AcceptAsync(
+                    CreateConfiguration(), CreateSubmission(Timestamp(12), [12, 12, 12, 12]),
+                    CancellationToken.None).ConfigureAwait(false);
+                sidecarPath = Path.ChangeExtension(accepted!.StoredFrame.AbsolutePath, ".json");
+                File.Delete(accepted.StoredFrame.AbsolutePath);
+            }
+            SqliteConnection.ClearAllPools();
+            foreach (var suffix in DatabaseSuffixes)
+            {
+                File.Delete(Path.Combine(root, "journal", string.Concat("raw-ingress.db", suffix)));
+            }
+            var state = new RawIngressState(TimeProvider.System);
+            using var restarted = CreateIngress(root, state);
+
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(File.Exists(sidecarPath));
+            Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
+            Assert.AreEqual(0L, state.Snapshot.PendingCount);
+            Assert.AreEqual(1L, state.Snapshot.QuarantineCount);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_WhenCapacityProbeFails_RefusesWithoutStoredSuccess()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var state = new RawIngressState(TimeProvider.System);
+            using var telemetry = new RawIngressTelemetry(state);
+            using var ingress = new RawCaptureIngress(
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 }),
+                new ThrowingCapacityProvider(),
+                state,
+                TimeProvider.System,
+                telemetry,
+                NullLogger<RawCaptureIngress>.Instance,
+                new NullRawIngressFaultInjector());
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await ingress.AcceptAsync(
+                    CreateConfiguration(), CreateSubmission(Timestamp(13), [13, 13, 13, 13]),
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual("capacity-probe-failed", state.Snapshot.Reason);
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(0L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_WhenCanceledWaitingForLifecycleLock_ReleasesAcceptGateAndPreservesHealth()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var state = new RawIngressState(TimeProvider.System);
+            using var ingress = CreateIngress(root, state);
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var lifecycleGate = RawIngressLifecycleLock.ForRoot(root);
+            await lifecycleGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                using var canceled = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+                await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+                    await ingress.AcceptAsync(
+                        CreateConfiguration(), CreateSubmission(Timestamp(12).AddMinutes(1), [1, 2, 3, 4]), canceled.Token).ConfigureAwait(false)).ConfigureAwait(false);
+            }
+            finally
+            {
+                lifecycleGate.Release();
+            }
+
+            var accepted = await ingress.AcceptAsync(
+                CreateConfiguration(), CreateSubmission(Timestamp(12).AddMinutes(1), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNotNull(accepted);
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_WhenCapacityFailsAfterCommit_PreservesDurableBacklogTotals()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var capacity = new MutableCapacityProvider(long.MaxValue);
+            var state = new RawIngressState(TimeProvider.System);
+            using var ingress = new RawCaptureIngress(
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 }),
+                capacity,
+                state,
+                TimeProvider.System,
+                new RawIngressTelemetry(state),
+                NullLogger<RawCaptureIngress>.Instance,
+                new NullRawIngressFaultInjector());
+            await ingress.AcceptAsync(
+                CreateConfiguration(), CreateSubmission(Timestamp(12).AddMinutes(2), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false);
+            capacity.AvailableBytes = 0;
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await ingress.AcceptAsync(
+                    CreateConfiguration(), CreateSubmission(Timestamp(12).AddMinutes(3), [5, 6, 7, 8]), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual(1L, state.Snapshot.PendingCount);
+            Assert.AreEqual(4L, state.Snapshot.PendingBytes);
+            Assert.AreEqual("capacity-exhausted", state.Snapshot.Reason);
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await ingress.AcceptAsync(
+                    CreateConfiguration(), CreateSubmission(Timestamp(12).AddMinutes(3), [5, 6, 7, 8]), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+            capacity.AvailableBytes = long.MaxValue;
+            var recovered = await ingress.AcceptAsync(
+                CreateConfiguration(), CreateSubmission(Timestamp(12).AddMinutes(3), [5, 6, 7, 8]), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(recovered);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_WhenDescendantDirectoryIsSymbolicLink_FailsBeforeFollowingIt()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var root = CreateRoot();
+        var target = string.Concat(root, "-target");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "frames"));
+            Directory.CreateDirectory(target);
+            var marker = Path.Combine(target, "marker.bin");
+            await File.WriteAllBytesAsync(marker, [1]).ConfigureAwait(false);
+            Directory.CreateSymbolicLink(Path.Combine(root, "frames", "2026"), target);
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(marker));
+        }
+        finally
+        {
+            DeleteRoot(root);
+            if (Directory.Exists(target))
+            {
+                Directory.Delete(target, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_WhenOrphanConflictsWithReservedAssignment_QuarantinesEvidence()
+    {
+        var root = CreateRoot();
+        try
+        {
+            RawCaptureReceipt accepted;
+            using (var original = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                accepted = (await original.AcceptAsync(
+                    CreateConfiguration(), CreateSubmission(Timestamp(12).AddMinutes(4), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false))!;
+            }
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                using var delete = connection.CreateCommand();
+                delete.CommandText = "DELETE FROM raw_captures;";
+                await delete.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            var sidecarPath = Path.ChangeExtension(accepted.StoredFrame.AbsolutePath, ".json");
+            var conflicting = accepted.Manifest with
+            {
+                Descriptor = accepted.Manifest.Descriptor with
+                {
+                    Capture = accepted.Manifest.Descriptor.Capture with { AgentId = "conflicting-agent" }
+                }
+            };
+            await File.WriteAllBytesAsync(sidecarPath, CaptureContractJson.Serialize(conflicting)).ConfigureAwait(false);
+            var state = new RawIngressState(TimeProvider.System);
+            using var restarted = CreateIngress(root, state);
+
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
+            Assert.AreEqual(1L, state.Snapshot.QuarantineCount);
+            Assert.IsFalse(File.Exists(accepted.StoredFrame.AbsolutePath));
+            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(0L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_ResumesPlannedSplitQuarantine()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using (var initialized = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                await initialized.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            var rawDirectory = Path.Combine(root, "frames", "2026", "07", "14", "Raw");
+            Directory.CreateDirectory(rawDirectory);
+            var payloadPath = Path.Combine(rawDirectory, "interrupted.bin");
+            var sidecarPath = Path.Combine(rawDirectory, "interrupted.json");
+            await File.WriteAllBytesAsync(payloadPath, [1, 2]).ConfigureAwait(false);
+            await File.WriteAllTextAsync(sidecarPath, "{}").ConfigureAwait(false);
+            var quarantineRelative = "quarantine/20260714/resume-test";
+            var operation = new RawIngressPlannedQuarantine(
+                "quarantine:resume-test",
+                Path.GetRelativePath(root, payloadPath).Replace(Path.DirectorySeparatorChar, '/'),
+                Path.GetRelativePath(root, sidecarPath).Replace(Path.DirectorySeparatorChar, '/'),
+                quarantineRelative,
+                "test-interruption",
+                4);
+            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+            await journal.PlanQuarantineAsync(operation, CancellationToken.None).ConfigureAwait(false);
+            var quarantineDirectory = Path.Combine(root, "quarantine", "20260714", "resume-test");
+            Directory.CreateDirectory(quarantineDirectory);
+            File.Move(payloadPath, Path.Combine(quarantineDirectory, Path.GetFileName(payloadPath)));
+            var state = new RawIngressState(TimeProvider.System);
+            using var restarted = CreateIngress(root, state);
+
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(Path.Combine(quarantineDirectory, "interrupted.bin")));
+            Assert.IsTrue(File.Exists(Path.Combine(quarantineDirectory, "interrupted.json")));
+            Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
+            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual("completed", await ScalarStringAsync(
+                verify, "SELECT operation_state FROM raw_ingress_reconciliation WHERE evidence_key = 'quarantine:resume-test';").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_WhenJournalFileIsSymbolicLink_FailsWithoutFollowingIt()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var root = CreateRoot();
+        var target = string.Concat(root, "-database-target");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "journal"));
+            await File.WriteAllBytesAsync(target, [1, 2, 3]).ConfigureAwait(false);
+            File.CreateSymbolicLink(Path.Combine(root, "journal", "raw-ingress.db"), target);
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, await File.ReadAllBytesAsync(target).ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+            File.Delete(target);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_UsesExposureStartForCanonicalEvidencePath()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var exposureStarted = Timestamp(12).AddMinutes(10);
+            var frameTimestamp = exposureStarted.AddSeconds(2);
+            var frame = new CameraFrame(
+                frameTimestamp, 2, 2, CameraPixelFormat.Mono8, new byte[] { 1, 2, 3, 4 },
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, double.NaN, "Test"), 2);
+            var submission = new CaptureLoopSubmission(
+                new CaptureRequest(exposureStarted, TimeSpan.FromSeconds(1), CaptureMode.Still),
+                new CaptureResult(
+                    frame,
+                    new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null),
+                    TimeSpan.Zero,
+                    CaptureMode.Still,
+                    false)
+                {
+                    AcquisitionTiming = new CaptureAcquisitionTiming(exposureStarted, exposureStarted.AddSeconds(1), frameTimestamp)
+                },
+                exposureStarted,
+                TimeSpan.FromSeconds(1),
+                TimeSpan.Zero);
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+
+            var receipt = await ingress.AcceptAsync(CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNotNull(receipt);
+            StringAssert.Contains(receipt.StoredFrame.RelativePath, "2026-07-14_12-10-00.000Z", StringComparison.Ordinal);
+            Assert.AreEqual(exposureStarted, receipt.StoredFrame.TimestampUtc);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_WhenLockFileIsSymbolicLink_FailsWithoutFollowingIt()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var root = CreateRoot();
+        var target = string.Concat(root, "-lock-target");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "journal"));
+            await File.WriteAllBytesAsync(target, [4, 5, 6]).ConfigureAwait(false);
+            File.CreateSymbolicLink(Path.Combine(root, "journal", "raw-ingress.lock"), target);
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            CollectionAssert.AreEqual(new byte[] { 4, 5, 6 }, await File.ReadAllBytesAsync(target).ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+            File.Delete(target);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_WhenLegacyShapedSidecarHasInvalidFacts_QuarantinesPair()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var rawDirectory = Path.Combine(root, "frames", "2026", "07", "14", "Raw");
+            Directory.CreateDirectory(rawDirectory);
+            var payloadPath = Path.Combine(rawDirectory, "malformed.bin");
+            var sidecarPath = Path.Combine(rawDirectory, "malformed.json");
+            await File.WriteAllBytesAsync(payloadPath, [1, 2]).ConfigureAwait(false);
+            await File.WriteAllTextAsync(sidecarPath, """
+                {"artifactId":null,"role":"Raw","timestampUtc":"invalid","width":0,"height":2,"pixelFormat":"Mono8"}
+                """).ConfigureAwait(false);
+            var state = new RawIngressState(TimeProvider.System);
+            using var ingress = CreateIngress(root, state);
+
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
+            Assert.AreEqual(1L, state.Snapshot.QuarantineCount);
+            Assert.IsFalse(File.Exists(payloadPath));
+            Assert.IsFalse(File.Exists(sidecarPath));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_WhenMigrationWasInterrupted_CompletesSchemaAtomically()
+    {
+        var root = CreateRoot();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "journal"));
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    CREATE TABLE raw_capture_sequences (
+                        agent_id TEXT PRIMARY KEY,
+                        last_sequence INTEGER NOT NULL CHECK (last_sequence >= 0)
+                    ) STRICT;
+                    """;
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(3L, await ScalarLongAsync(
+                verify,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('raw_capture_sequences','raw_capture_assignments','raw_captures');").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_WhenDatabaseIsCorrupt_FailsClosed()
+    {
+        var root = CreateRoot();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "journal"));
+            await File.WriteAllTextAsync(Path.Combine(root, "journal", "raw-ingress.db"), "not-a-sqlite-database").ConfigureAwait(false);
+            var state = new RawIngressState(TimeProvider.System);
+            using var ingress = CreateIngress(root, state);
+
+            await Assert.ThrowsAsync<SqliteException>(async () =>
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("raw-ingress.lock")]
+    [DataRow("raw-ingress.db")]
+    public async Task InitializeAsync_WhenJournalEntryIsDanglingSymbolicLink_DoesNotCreateTarget(string fileName)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var root = CreateRoot();
+        var target = string.Concat(root, "-dangling-target");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "journal"));
+            File.CreateSymbolicLink(Path.Combine(root, "journal", fileName), target);
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.IsFalse(File.Exists(target));
+        }
+        finally
+        {
+            DeleteRoot(root);
+            File.Delete(target);
+        }
+    }
+
+    [TestMethod]
+    public async Task ProcessKill_AfterPayloadPublicationOrJournalCommit_RestartConvergesOnce()
+    {
+        foreach (var point in new[]
+                 {
+                      RawIngressFaultPoint.PayloadPublished,
+                      RawIngressFaultPoint.BeforeJournalTransactionCommit,
+                      RawIngressFaultPoint.AfterJournalCommit,
+                      RawIngressFaultPoint.BeforeWakeUpNotification
+                 })
+        {
+            var root = CreateRoot();
+            try
+            {
+                var exitCode = await RunCrashChildAsync(root, point).ConfigureAwait(false);
+                Assert.AreNotEqual(0, exitCode, point.ToString());
+                var state = new RawIngressState(TimeProvider.System);
+                using var restarted = CreateIngress(root, state);
+                var receipt = await restarted.AcceptAsync(
+                    CreateConfiguration(),
+                    CreateSubmission(Timestamp(10), [10, 10, 10, 10]),
+                    CancellationToken.None).ConfigureAwait(false);
+
+                Assert.IsNotNull(receipt, point.ToString());
+                using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+                Assert.AreEqual(1L, await ScalarLongAsync(
+                    connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false), point.ToString());
+            }
+            finally
+            {
+                DeleteRoot(root);
+            }
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Manual")]
+    public async Task RawIngressCrashChild()
+    {
+        var root = Environment.GetEnvironmentVariable("HVO_RAW_INGRESS_CRASH_ROOT");
+        var pointValue = Environment.GetEnvironmentVariable("HVO_RAW_INGRESS_CRASH_POINT");
+        if (string.IsNullOrWhiteSpace(root) || !Enum.TryParse<RawIngressFaultPoint>(pointValue, out var point))
+        {
+            return;
+        }
+        using var ingress = CreateIngress(
+            root,
+            new RawIngressState(TimeProvider.System),
+            new ProcessKillFaultInjector(point));
+        await ingress.AcceptAsync(
+            CreateConfiguration(),
+            CreateSubmission(Timestamp(10), [10, 10, 10, 10]),
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.Fail("The injected process-kill boundary was not reached.");
+    }
+
+    private static RawCaptureIngress CreateIngress(
+        string root,
+        RawIngressState state,
+        IRawIngressFaultInjector? faultInjector = null)
+    {
+        return new RawCaptureIngress(
+            Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressReserveBytes = 0,
+                RawIngressSqliteBusyTimeoutSeconds = 1
+            }),
+            new FixedCapacityProvider(long.MaxValue),
+            state,
+            TimeProvider.System,
+            new RawIngressTelemetry(state),
+            NullLogger<RawCaptureIngress>.Instance,
+            faultInjector ?? new NullRawIngressFaultInjector());
+    }
+
+    private static CameraModuleConfig CreateConfiguration()
+        => new(
+            new ObservatoryLocation(35, -113, 500, "UTC"),
+            new CameraModuleDescriptor("Test"),
+            new CameraRigConfig(
+                new SensorProfile("test-sensor", 2, 2, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8, SensorRecipeVersion: "sensor-v1"),
+                new OpticsProfile("EquidistantFisheye", 0, 180, 0),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1),
+                ProfileVersion: "rig-v1"),
+            AgentId: "agent-94");
+
+    private static CaptureLoopSubmission CreateSubmission(DateTimeOffset timestamp, byte[] payload)
+    {
+        var frame = new CameraFrame(
+            timestamp,
+            2,
+            2,
+            CameraPixelFormat.Mono8,
+            payload,
+            new FrameMetadata(TimeSpan.FromSeconds(1), 1, double.NaN, "Test"),
+            2);
+        return new CaptureLoopSubmission(
+            new CaptureRequest(timestamp, TimeSpan.FromSeconds(1), CaptureMode.Still, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null)),
+            new CaptureResult(frame, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null), TimeSpan.Zero, CaptureMode.Still, false),
+            timestamp,
+            TimeSpan.FromSeconds(1),
+            TimeSpan.Zero);
+    }
+
+    private static async Task<SqliteConnection> OpenJournalAsync(string root)
+    {
+        var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+        await connection.OpenAsync().ConfigureAwait(false);
+        return connection;
+    }
+
+    private static async Task<int> RunCrashChildAsync(string root, RawIngressFaultPoint point)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        startInfo.ArgumentList.Add("test");
+        startInfo.ArgumentList.Add(typeof(RawCaptureIngressTests).Assembly.Location);
+        startInfo.ArgumentList.Add("--filter");
+        startInfo.ArgumentList.Add($"FullyQualifiedName~{nameof(RawIngressCrashChild)}");
+        startInfo.Environment["HVO_RAW_INGRESS_CRASH_ROOT"] = root;
+        startInfo.Environment["HVO_RAW_INGRESS_CRASH_POINT"] = point.ToString();
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start raw ingress crash child.");
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+        _ = await standardOutput.ConfigureAwait(false);
+        _ = await standardError.ConfigureAwait(false);
+        return process.ExitCode;
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Tests pass only fixed SQL assertions.")]
+    private static async Task<long> ScalarLongAsync(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt64(await command.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Tests pass only fixed SQL assertions.")]
+    private static async Task<string> ScalarStringAsync(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToString(await command.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture)!;
+    }
+
+    private static DateTimeOffset Timestamp(int hour)
+        => new(2026, 7, 14, hour, 0, 0, TimeSpan.Zero);
+
+    private static string CreateRoot()
+        => Path.Combine(Path.GetTempPath(), "hvo-raw-ingress-tests", Guid.NewGuid().ToString("N"));
+
+    private static readonly string[] DatabaseSuffixes = [string.Empty, "-wal", "-shm"];
+
+    private static void DeleteRoot(string root)
+    {
+        SqliteConnection.ClearAllPools();
+        if (Directory.Exists(root))
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class FixedCapacityProvider(long availableBytes) : IStorageCapacityProvider
+    {
+        public StorageCapacity GetCapacity(string storageRoot) => new(long.MaxValue, availableBytes);
+    }
+
+    private sealed class MutableCapacityProvider(long availableBytes) : IStorageCapacityProvider
+    {
+        public long AvailableBytes { get; set; } = availableBytes;
+
+        public StorageCapacity GetCapacity(string storageRoot) => new(long.MaxValue, AvailableBytes);
+    }
+
+    private sealed class ThrowingCapacityProvider : IStorageCapacityProvider
+    {
+        public StorageCapacity GetCapacity(string storageRoot) => throw new IOException("Injected capacity probe failure.");
+    }
+
+    private sealed class OneShotFaultInjector(RawIngressFaultPoint target) : IRawIngressFaultInjector
+    {
+        private int _injected;
+
+        public void Inject(RawIngressFaultPoint point)
+        {
+            if (point == target && Interlocked.Exchange(ref _injected, 1) == 0)
+            {
+                throw new InjectedRawIngressFaultException();
+            }
+        }
+    }
+
+    private sealed class ProcessKillFaultInjector(RawIngressFaultPoint target) : IRawIngressFaultInjector
+    {
+        public void Inject(RawIngressFaultPoint point)
+        {
+            if (point == target)
+            {
+                Environment.FailFast($"Injected raw ingress process termination at {point}.");
+            }
+        }
+    }
+
+    private sealed class InjectedRawIngressFaultException : Exception
+    {
+        public InjectedRawIngressFaultException()
+        {
+        }
+
+        public InjectedRawIngressFaultException(string message)
+            : base(message)
+        {
+        }
+
+        public InjectedRawIngressFaultException(string message, Exception innerException)
+            : base(message, innerException)
+        {
+        }
+    }
+}

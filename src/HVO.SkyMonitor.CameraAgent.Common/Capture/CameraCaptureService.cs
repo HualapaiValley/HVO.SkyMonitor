@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -16,12 +17,14 @@ public sealed class CameraCaptureService(
     ICameraAgentConfigurationAccessor configurationAccessor,
     ICameraModuleFactory moduleFactory,
     ICaptureProcessingPipelineFactory pipelineFactory,
+    IRawCaptureIngress rawCaptureIngress,
     TimeProvider timeProvider,
     ILogger<CameraCaptureService> logger) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly ICameraModuleFactory _moduleFactory = moduleFactory;
     private readonly ICaptureProcessingPipelineFactory _pipelineFactory = pipelineFactory;
+    private readonly IRawCaptureIngress _rawCaptureIngress = rawCaptureIngress;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<CameraCaptureService> _logger = logger;
     private readonly CancellationTokenSource _drainAbort = new();
@@ -40,13 +43,18 @@ public sealed class CameraCaptureService(
 
             try
             {
+                await _rawCaptureIngress.InitializeAsync(stoppingToken).ConfigureAwait(false);
                 await module.InitializeAsync(config, stoppingToken).ConfigureAwait(false);
                 _logger.CameraModuleInitialized(module.DisplayName);
 
                 channel = new FrameProcessingChannel(capacity: 4);
-                var hostContext = new CaptureHostContext(config, channel);
+                var hostContext = new CaptureHostContext(config, channel, _rawCaptureIngress);
                 var processingSteps = _pipelineFactory.CreatePipeline(config);
-                var processingWorker = new FrameProcessingWorker(channel, processingSteps, _logger);
+                var processingWorker = new FrameProcessingWorker(
+                    channel,
+                    processingSteps,
+                    _logger,
+                    _rawCaptureIngress as IRawIngressRecoveryControl);
                 processingTask = processingWorker.RunAsync(_drainAbort.Token);
 
                 var runner = new CameraModuleRunner(module, hostContext, _timeProvider, _logger);
@@ -59,7 +67,15 @@ public sealed class CameraCaptureService(
             }
             catch (Exception ex)
             {
-                _logger.CaptureLoopFailed(ex);
+                if (ex is RawIngressConflictException or IOException or InvalidDataException or
+                    UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
+                {
+                    _logger.RawIngressRefused("capture-loop", "storage-unavailable");
+                }
+                else
+                {
+                    _logger.CaptureLoopFailed(ex);
+                }
                 if (stoppingToken.IsCancellationRequested)
                 {
                     break;
@@ -89,6 +105,10 @@ public sealed class CameraCaptureService(
                         catch (OperationCanceledException) when (_drainAbort.IsCancellationRequested)
                         {
                             _logger.CaptureProcessingDrainAborted();
+                        }
+                        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+                        {
+                            _logger.RawIngressRefused("processing", "evidence-unavailable");
                         }
                     }
                 }

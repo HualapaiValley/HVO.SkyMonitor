@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 
@@ -16,12 +17,16 @@ public sealed class CaptureProcessingContext
     private readonly List<ProcessingOutcome> _processingOutcomes = new();
     private readonly Dictionary<Guid, ProcessingProduct> _processingProductsByArtifactId = new();
 
-    public CaptureProcessingContext(CameraModuleConfig config, CaptureLoopSubmission submission)
+    public CaptureProcessingContext(
+        CameraModuleConfig config,
+        CaptureLoopSubmission submission,
+        RawCaptureReceipt? rawCapture = null)
     {
         Config = config ?? throw new ArgumentNullException(nameof(config));
         _submission = submission ?? throw new ArgumentNullException(nameof(submission));
         _artifacts = submission.Result.Artifacts
             ?? (submission.Result.Frame is { } frame ? new FrameArtifactSet(frame) : null);
+        RawCapture = rawCapture;
     }
 
     public CameraModuleConfig Config { get; }
@@ -31,6 +36,8 @@ public sealed class CaptureProcessingContext
     public CameraFrame? Frame => _submission.Result.Frame;
 
     public FrameArtifactSet? Artifacts => _artifacts;
+
+    public RawCaptureReceipt? RawCapture { get; }
 
     public IReadOnlyList<CaptureProcessingStepTelemetry> StepTelemetry => _stepTelemetry;
 

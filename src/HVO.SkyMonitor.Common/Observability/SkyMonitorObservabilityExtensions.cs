@@ -32,6 +32,10 @@ public static class SkyMonitorObservabilityExtensions
     {
         "Kind", "CatalogVersion", "SchemaVersion", "PreprocessingVersion", "DatabaseSha256", "RowCount"
     };
+    private static readonly HashSet<string> RawIngressHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Availability", "PendingCount", "PendingBytes", "QuarantineCount", "QuarantineBytes"
+    };
 
     /// <summary>
     /// Configures the shared HVO telemetry stack and OTLP export.
@@ -50,6 +54,8 @@ public static class SkyMonitorObservabilityExtensions
             options.EnableStandardMeters = true;
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.Authentication");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Capture");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
         });
 
@@ -60,6 +66,7 @@ public static class SkyMonitorObservabilityExtensions
                 .WithMetrics(metrics => metrics
                     .AddMeter("HVO.SkyMonitor.Authentication")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Capture")
+                    .AddMeter("HVO.SkyMonitor.CameraAgent.RawIngress")
                     .AddOtlpExporter());
         }
 
@@ -113,15 +120,27 @@ public static class SkyMonitorObservabilityExtensions
                 duration = entry.Value.Duration.TotalMilliseconds,
                 error = entry.Value.Exception?.Message,
                 tags = entry.Value.Tags,
-                data = string.Equals(entry.Key, "catalog", StringComparison.Ordinal)
-                    ? entry.Value.Data
-                        .Where(pair => CatalogHealthDataKeys.Contains(pair.Key))
-                        .ToDictionary(static pair => pair.Key, static pair => pair.Value, StringComparer.Ordinal)
-                    : null
+                data = SelectHealthData(entry.Key, entry.Value.Data)
             })
         };
 
         return context.Response.WriteAsJsonAsync(payload);
+    }
+
+    private static Dictionary<string, object>? SelectHealthData(
+        string checkName,
+        IReadOnlyDictionary<string, object> data)
+    {
+        var allowedKeys = checkName switch
+        {
+            "catalog" => CatalogHealthDataKeys,
+            "raw-ingress" => RawIngressHealthDataKeys,
+            _ => null
+        };
+        return allowedKeys is null
+            ? null
+            : data.Where(pair => allowedKeys.Contains(pair.Key))
+                .ToDictionary(static pair => pair.Key, static pair => pair.Value, StringComparer.Ordinal);
     }
 
     private static Task WriteLivenessResponse(HttpContext context, HealthReport report)

@@ -176,7 +176,14 @@ public sealed class VirtualSkyCameraModule(
             render.Pixels,
             new FrameMetadata(setpoint.Exposure, setpoint.Gain, double.NaN, "VirtualSky", extra, Scene: provenance),
             layout.StrideBytes);
-        return new CaptureResult(frame, setpoint, timeProvider.GetElapsedTime(start), request.Mode, false);
+        return new CaptureResult(frame, setpoint, timeProvider.GetElapsedTime(start), request.Mode, false)
+        {
+            // VirtualSky models exposure energy without waiting wall-clock exposure time.
+            AcquisitionTiming = new CaptureAcquisitionTiming(
+                request.RequestedStartUtc,
+                request.RequestedStartUtc,
+                request.RequestedStartUtc)
+        };
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

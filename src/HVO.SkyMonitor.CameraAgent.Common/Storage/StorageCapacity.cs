@@ -93,3 +93,12 @@ internal static class StorageLifecycleLock
     internal static SemaphoreSlim ForRoot(string storageRoot)
         => Gates.GetOrAdd(Path.GetFullPath(storageRoot), static _ => new SemaphoreSlim(1, 1));
 }
+
+internal static class RawIngressLifecycleLock
+{
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> Gates = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+    internal static SemaphoreSlim ForRoot(string storageRoot)
+        => Gates.GetOrAdd(Path.GetFullPath(storageRoot), static _ => new SemaphoreSlim(1, 1));
+}

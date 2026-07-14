@@ -13,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -37,6 +38,12 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IFrameStorageService, FileSystemFrameStorageService>();
         services.AddSingleton<IStorageCapacityProvider, FileSystemStorageCapacityProvider>();
         services.AddSingleton<StoragePressureState>();
+        services.AddSingleton<RawIngressState>();
+        services.AddSingleton<RawIngressTelemetry>();
+        services.AddSingleton<IRawIngressFaultInjector, NullRawIngressFaultInjector>();
+        services.AddSingleton<RawCaptureIngress>();
+        services.AddSingleton<IRawCaptureIngress>(provider => provider.GetRequiredService<RawCaptureIngress>());
+        services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<ICameraModuleFactory, CameraModuleFactory>();
         services.AddSingleton<IProjectedSceneStore, ProjectedSceneStore>();
         services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());

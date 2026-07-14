@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -26,7 +27,8 @@ public sealed class RetentionBackgroundService(
     IArtifactOutbox artifactOutbox,
     IStorageCapacityProvider capacityProvider,
     StoragePressureState pressureState,
-    ILogger<RetentionBackgroundService> logger) : BackgroundService
+    ILogger<RetentionBackgroundService> logger,
+    IRawIngressRetentionHolds? rawIngressHolds = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly CameraAgentHostOptions _hostOptions = hostOptions.Value;
@@ -35,6 +37,8 @@ public sealed class RetentionBackgroundService(
     private readonly IStorageCapacityProvider _capacityProvider = capacityProvider;
     private readonly StoragePressureState _pressureState = pressureState;
     private readonly ILogger<RetentionBackgroundService> _logger = logger;
+    private readonly IRawIngressRetentionHolds? _rawIngressHolds = rawIngressHolds;
+    private readonly IRawIngressPressureReporter? _rawIngressPressureReporter = rawIngressHolds as IRawIngressPressureReporter;
     private static readonly JsonSerializerOptions StepSerializerOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -79,10 +83,19 @@ public sealed class RetentionBackgroundService(
         foreach (var plan in plans)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var rawIngressGate = _rawIngressHolds is not null && PathsEqual(plan.StorageRoot, _hostOptions.RawIngressRoot)
+                ? RawIngressLifecycleLock.ForRoot(plan.StorageRoot)
+                : null;
+            if (rawIngressGate is not null)
+            {
+                await rawIngressGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
             var lifecycleGate = StorageLifecycleLock.ForRoot(plan.StorageRoot);
-            await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var lifecycleGateAcquired = false;
             try
             {
+                await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                lifecycleGateAcquired = true;
                 StorageCapacity capacity;
                 try
                 {
@@ -111,6 +124,10 @@ public sealed class RetentionBackgroundService(
                 var evaluatedUtc = _timeProvider.GetUtcNow();
                 _pressureState.Set(new StoragePressureSnapshot(
                     plan.StorageRoot, capacity, underPressure, effectiveRetentionDays, evaluatedUtc));
+                if (_rawIngressPressureReporter is not null && PathsEqual(plan.StorageRoot, _hostOptions.RawIngressRoot))
+                {
+                    _rawIngressPressureReporter.ReportPressure(underPressure);
+                }
                 if (underPressure && previous?.IsUnderPressure != true)
                 {
                     _logger.DiskPressureEntered(plan.StorageRoot, capacity.AvailablePercent);
@@ -121,7 +138,7 @@ public sealed class RetentionBackgroundService(
                 }
 
                 var cutoffDate = evaluatedUtc.UtcDateTime.Date.AddDays(-effectiveRetentionDays);
-                var pending = ReadPendingArtifacts(plan.StorageRoot, cancellationToken);
+                var pending = await ReadPendingArtifactsAsync(plan.StorageRoot, cancellationToken).ConfigureAwait(false);
                 var deletedFiles = PruneFrameDirectories(plan.StorageRoot, cutoffDate, pending, cancellationToken);
                 var indexGate = FrameIndexLock.ForRoot(plan.StorageRoot);
                 await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -142,7 +159,11 @@ public sealed class RetentionBackgroundService(
             }
             finally
             {
-                lifecycleGate.Release();
+                if (lifecycleGateAcquired)
+                {
+                    lifecycleGate.Release();
+                }
+                rawIngressGate?.Release();
             }
         }
         if (firstFailure is not null)
@@ -151,7 +172,7 @@ public sealed class RetentionBackgroundService(
         }
     }
 
-    private static List<StorageRetentionPlan> BuildRetentionPlans(CameraModuleConfig config)
+    private List<StorageRetentionPlan> BuildRetentionPlans(CameraModuleConfig config)
     {
         var plans = new List<StorageRetentionPlan>();
         foreach (var step in config.ResolveProcessingSteps())
@@ -192,6 +213,15 @@ public sealed class RetentionBackgroundService(
             }
         }
 
+        if (_rawIngressHolds is not null)
+        {
+            var rawRoot = Path.GetFullPath(_hostOptions.RawIngressRoot);
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            if (!plans.Any(plan => string.Equals(plan.StorageRoot, rawRoot, comparison)))
+            {
+                plans.Add(new StorageRetentionPlan(rawRoot, 3650));
+            }
+        }
         return plans;
     }
 
@@ -208,7 +238,15 @@ public sealed class RetentionBackgroundService(
             || implementationName.EndsWith(FileStorageStepName, StringComparison.OrdinalIgnoreCase);
     }
 
-    private PendingArtifacts ReadPendingArtifacts(string storageRoot, CancellationToken cancellationToken)
+    private static bool PathsEqual(string left, string right)
+        => string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private async Task<PendingArtifacts> ReadPendingArtifactsAsync(
+        string storageRoot,
+        CancellationToken cancellationToken)
     {
         var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(storageRoot));
         var rootPrefix = string.Concat(normalizedRoot, Path.DirectorySeparatorChar);
@@ -233,7 +271,36 @@ public sealed class RetentionBackgroundService(
             paths.Add(Path.ChangeExtension(path, ".json"));
             artifactIds.Add(manifest.ArtifactId);
         }
+        if (_rawIngressHolds is not null)
+        {
+            var holds = await _rawIngressHolds.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);
+            foreach (var hold in holds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                AddHeldPath(normalizedRoot, rootPrefix, hold.PayloadRelativePath, paths);
+                AddHeldPath(normalizedRoot, rootPrefix, hold.SidecarRelativePath, paths);
+                artifactIds.Add(hold.ArtifactId);
+            }
+        }
         return new PendingArtifacts(paths, artifactIds);
+    }
+
+    private static void AddHeldPath(
+        string storageRoot,
+        string rootPrefix,
+        string relativePath,
+        HashSet<string> paths)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath))
+        {
+            throw new InvalidDataException("Raw ingress hold contains an invalid relative path.");
+        }
+        var path = Path.GetFullPath(Path.Combine(storageRoot, relativePath));
+        if (!path.StartsWith(rootPrefix, PathComparison) || !File.Exists(path))
+        {
+            throw new InvalidDataException("Raw ingress hold references missing or unsafe evidence.");
+        }
+        paths.Add(path);
     }
 
     private static int PruneFrameDirectories(

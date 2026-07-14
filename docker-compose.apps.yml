@@ -71,6 +71,7 @@ services:
       LocalIdentity__AdminEmail: ${CAMERA_AGENT_ADMIN_EMAIL:-owner@cameraagent.local}
       LocalIdentity__AdminPassword: ${CAMERA_AGENT_ADMIN_PASSWORD:?CAMERA_AGENT_ADMIN_PASSWORD must be set}
       DeviceProvisioning__StateDirectory: /app/data/provisioning
+      CameraAgent__RawIngressRoot: /workspaces/HVO.SkyMonitor/data/agent
       Catalog__Root: /app/catalog
       Catalog__RequiredPackageKind: Production
     ports:

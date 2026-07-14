@@ -303,7 +303,8 @@ public sealed class ReconstructableCaptureContractTests
         Assert.AreEqual(CaptureContractReasonCodes.InvalidSampleDepth,
             (descriptor with { Layout = descriptor.Layout with { SampleDepthBits = 12 } }).Validate().ReasonCode);
         Assert.AreEqual(CaptureContractReasonCodes.InvalidByteOrder,
-            (descriptor with { Layout = descriptor.Layout with { ByteOrder = FrameByteOrder.BigEndian } }).Validate().ReasonCode);
+            (descriptor with { Layout = descriptor.Layout with { ByteOrder = FrameByteOrder.NotApplicable } }).Validate().ReasonCode);
+        Assert.IsTrue((descriptor with { Layout = descriptor.Layout with { ByteOrder = FrameByteOrder.BigEndian } }).Validate().IsValid);
         Assert.AreEqual(CaptureContractReasonCodes.InvalidPacking,
             (descriptor with { Layout = descriptor.Layout with { Packing = FrameSamplePacking.Packed } }).Validate().ReasonCode);
         Assert.AreEqual(CaptureContractReasonCodes.InvalidCfa,

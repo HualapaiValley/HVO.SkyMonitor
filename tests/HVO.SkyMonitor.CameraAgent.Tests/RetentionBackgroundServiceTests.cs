@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -130,6 +131,41 @@ public sealed class RetentionBackgroundServiceTests
             var indexLines = await File.ReadAllLinesAsync(pending.IndexPath).ConfigureAwait(false);
             Assert.HasCount(1, indexLines);
             StringAssert.Contains(indexLines[0], pending.ArtifactId.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_CommittedRawIngressHoldPreservesPayloadSidecarAndIndex()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var held = await CreateStoredArtifactAsync(root, "held-ingress", Guid.NewGuid()).ConfigureAwait(false);
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var service = new RetentionBackgroundService(
+                new StubConfigurationAccessor(),
+                options,
+                new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)),
+                new FileSystemArtifactOutbox(),
+                new FixedCapacityProvider(50),
+                new StoragePressureState(),
+                NullLogger<RetentionBackgroundService>.Instance,
+                new FixedRawIngressHolds([
+                    new RawIngressRetentionHold(
+                        held.ArtifactId,
+                        held.RelativePath,
+                        Path.GetRelativePath(root, held.MetadataPath))
+                ]));
+
+            await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(held.PayloadPath));
+            Assert.IsTrue(File.Exists(held.MetadataPath));
+            Assert.HasCount(1, await File.ReadAllLinesAsync(held.IndexPath).ConfigureAwait(false));
         }
         finally
         {
@@ -364,6 +400,14 @@ public sealed class RetentionBackgroundServiceTests
     private sealed class DelegateCapacityProvider(Func<string, StorageCapacity> getCapacity) : IStorageCapacityProvider
     {
         public StorageCapacity GetCapacity(string storageRoot) => getCapacity(Path.GetFullPath(storageRoot));
+    }
+
+    private sealed class FixedRawIngressHolds(IReadOnlyList<RawIngressRetentionHold> holds) : IRawIngressRetentionHolds
+    {
+        public ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsAsync(
+            string storageRoot,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult(holds);
     }
 
     private sealed class StubConfigurationAccessor : ICameraAgentConfigurationAccessor

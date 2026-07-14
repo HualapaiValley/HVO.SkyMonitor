@@ -23,6 +23,10 @@ public sealed class ArtifactOutboxDrainService(
     {
         var config = await configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
         var storageRoot = ResolveStorageRoot(config);
+        if (storageRoot is null)
+        {
+            return;
+        }
         while (!stoppingToken.IsCancellationRequested)
         {
             var now = timeProvider.GetUtcNow();
@@ -38,9 +42,12 @@ public sealed class ArtifactOutboxDrainService(
                 {
                     _retries.Remove(manifest.IdempotencyKey);
                     await outbox.AcknowledgeAsync(storageRoot, manifest.IdempotencyKey, stoppingToken).ConfigureAwait(false);
-                    var path = Path.Combine(Path.GetFullPath(storageRoot), manifest.RelativeArtifactPath);
-                    removals.Add(new StoredFrameRemoval(new StoredFrameReference(
-                        manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role), manifest.ArtifactId));
+                    if (ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot, manifest))
+                    {
+                        var path = Path.Combine(Path.GetFullPath(storageRoot), manifest.RelativeArtifactPath);
+                        removals.Add(new StoredFrameRemoval(new StoredFrameReference(
+                            manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role), manifest.ArtifactId));
+                    }
                 }
                 else
                 {
@@ -68,7 +75,18 @@ public sealed class ArtifactOutboxDrainService(
         return TimeSpan.FromTicks(Math.Min(ticks, maximumDelay.Ticks));
     }
 
-    private static string ResolveStorageRoot(HVO.SkyMonitor.AgentCore.CameraModuleConfig config)
+    internal static bool ShouldRemoveUploadedArtifact(
+        string storageRoot,
+        string rawIngressRoot,
+        HVO.SkyMonitor.AgentCore.ArtifactUploadManifest manifest)
+        => manifest.Role != HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw
+            || string.IsNullOrWhiteSpace(rawIngressRoot)
+            || !string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(storageRoot)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(rawIngressRoot)),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    internal static string? ResolveStorageRoot(HVO.SkyMonitor.AgentCore.CameraModuleConfig config)
     {
         foreach (var step in config.ResolveProcessingSteps())
         {
@@ -82,7 +100,7 @@ public sealed class ArtifactOutboxDrainService(
             }
         }
 
-        throw new InvalidOperationException("Artifact outbox requires a configured file storage root.");
+        return null;
     }
 
     private sealed record RetryState(int Attempt, DateTimeOffset NextAttemptUtc);

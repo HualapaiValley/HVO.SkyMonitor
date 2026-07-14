@@ -181,7 +181,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["SkyMonitor:BaseUrl"] = apiBase,
             ["Catalog:Root"] = _catalogFixture?.Root,
             ["Catalog:RequiredPackageKind"] = "Fixture",
-            ["CameraAgent:ConfigFilePath"] = _configurationPath
+            ["CameraAgent:ConfigFilePath"] = _configurationPath,
+            ["CameraAgent:RawIngressRoot"] = _storageRoot
         };
 
         var scopePrefix = "CentralIdentity:ClientCredentials:Scopes";
