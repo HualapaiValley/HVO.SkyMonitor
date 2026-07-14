@@ -107,6 +107,78 @@ public sealed class DeviceApiControllerTests
         registration.CurrentRigProfileHash.Should().Be(firstPayload.RigProfileHash);
     }
 
+    [TestMethod]
+    public async Task BootstrapThenRevoke_InvalidatesEnvelopeAndDeviceKey()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var db = services.GetRequiredService<ApplicationDbContext>();
+        var registrationService = services.GetRequiredService<IDeviceRegistrationService>();
+        var envelopeService = services.GetRequiredService<IDeviceRegistrationEnvelopeService>();
+        var bootstrapService = services.GetRequiredService<IDeviceBootstrapService>();
+        var credentialValidator = services.GetRequiredService<IDeviceCredentialValidator>();
+
+        const string ownerId = "identity-lifecycle-integration";
+        var observatory = new Observatory
+        {
+            Id = Guid.NewGuid(),
+            OwnerUserId = ownerId,
+            Name = "Identity Lifecycle Observatory",
+            LatitudeDegrees = 0,
+            LongitudeDegrees = 0,
+            ElevationMeters = 0,
+            TimeZoneId = "UTC",
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            IsActive = true
+        };
+        db.Observatories.Add(observatory);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        var deviceId = $"device-{Guid.NewGuid():N}";
+        var registration = await registrationService.CreatePendingAsync(new DeviceRegistrationCreateRequest(
+            deviceId,
+            "SELFATTEST",
+            observatory.Id,
+            "Lifecycle device",
+            ownerId,
+            "Integration test",
+            null,
+            "SelfAttested",
+            null)).ConfigureAwait(false);
+        var envelope = await envelopeService.CreateEnvelopeAsync(new DeviceRegistrationEnvelopeRequest(
+            registration.Id,
+            deviceId,
+            observatory.Id)).ConfigureAwait(false);
+
+        var bootstrap = await bootstrapService.BootstrapAsync(new DeviceBootstrapRequest(
+            deviceId,
+            envelope.Envelope)).ConfigureAwait(false);
+        var active = await credentialValidator.ValidateAsync(
+            deviceId,
+            bootstrap.DeviceKey,
+            CancellationToken.None).ConfigureAwait(false);
+        active.Id.Should().Be(registration.Id);
+
+        Func<Task> replay = () => bootstrapService.BootstrapAsync(new DeviceBootstrapRequest(
+            deviceId,
+            envelope.Envelope));
+        await replay.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false);
+
+        await registrationService.RevokeAsync(new DeviceRegistrationRevokeRequest(
+            registration.Id,
+            deviceId,
+            ownerId,
+            "Integration test",
+            "TypedDeviceId",
+            "Lifecycle test revocation")).ConfigureAwait(false);
+
+        Func<Task> validateRevoked = () => credentialValidator.ValidateAsync(
+            deviceId,
+            bootstrap.DeviceKey,
+            CancellationToken.None);
+        await validateRevoked.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false);
+    }
+
     private static async Task<(string DeviceId, string DeviceKey, Guid RegistrationId, Guid DevicePublicId, Guid ObservatoryId)>
         SeedBootstrappedActiveDeviceAsync()
     {

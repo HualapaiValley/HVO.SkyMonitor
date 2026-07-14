@@ -69,6 +69,10 @@ public class CentralAuthenticationServiceErrorTests
         }
 
         Assert.IsNotNull(caughtException, "Expected HttpRequestException to be thrown");
+        Assert.IsFalse(caughtException.Message.Contains("invalid_client", StringComparison.Ordinal));
+        Assert.IsFalse(mockLogger.Invocations.Any(invocation =>
+            invocation.Arguments.Any(argument =>
+                argument?.ToString()?.Contains("invalid_client", StringComparison.Ordinal) == true)));
     }
 
     [TestMethod]

@@ -19,6 +19,7 @@ echo
 # Make ignored repository secrets available to this setup process.
 # .devcontainer/devcontainer.local.env overrides the repository .env.
 source /workspaces/HVO.SkyMonitor/.devcontainer/load-repo-env.sh
+unset TAILSCALE_AUTHKEY
 
 command_exists() {
 	command -v "$1" >/dev/null 2>&1
@@ -64,6 +65,14 @@ echo "Running post-create setup..."
 # Fix .dotnet directory ownership
 echo "Fixing .dotnet directory ownership..."
 sudo chown -R vscode:vscode /home/vscode/.dotnet || true
+sudo chown -R vscode:vscode /home/vscode/.config/opencode /home/vscode/.local/share/opencode
+chmod 700 /home/vscode/.config/opencode /home/vscode/.local/share/opencode
+OPENCODE_SERVER_PASSWORD_FILE=/home/vscode/.local/share/opencode/server-password
+if [[ ! -s "$OPENCODE_SERVER_PASSWORD_FILE" ]]; then
+	umask 077
+	openssl rand -hex 32 > "$OPENCODE_SERVER_PASSWORD_FILE"
+fi
+chmod 600 "$OPENCODE_SERVER_PASSWORD_FILE"
 
 # Display .NET version and runtime details
 echo "Checking .NET installation..."
@@ -146,6 +155,8 @@ log_section "Post-create summary"
 echo "Logs captured at: $LOG_FILE"
 echo "Latest log symlink: $LOG_ROOT/latest.log"
 log_tool_version "dotnet-ef" dotnet-ef --version
+log_tool_version "OpenCode" opencode --version
+log_tool_version "Tailscale" tailscale version
 log_tool_version "Docker" docker --version
 log_tool_version "dotnet" dotnet --version
 

@@ -1,943 +1,449 @@
-# Identity Hardening - Operational Runbooks
+# Identity and Security Operations Runbook
 
-> **Historical and non-executable:** This document contains PostgreSQL,
-> Kubernetes, Azure-only, Redis flush, route, and UI procedures that do not
-> match the current SQL Server and Docker Compose repository topology. Do not
-> execute commands from this file. Use `docs/runbooks/local-dev.md`,
-> `docs/runbooks/infra-operations.md`, and current application routes until the
-> issue #120 replaces and validates this
-> runbook. This warning is intentionally retained with the historical material
-> so unsafe instructions cannot be mistaken for supported operations.
+This runbook describes operations supported by the current HVO.SkyMonitor
+source and development deployment. It does not invent administrative controls
+for capabilities that are not implemented.
 
-This document provides step-by-step procedures for common operational tasks related to the Central Identity system's security and authentication infrastructure.
+## Supported Boundary
 
-## Table of Contents
+| Area | Current support |
+| --- | --- |
+| LogicHost users | Self-registration, email confirmation, login, password reset, two-factor authentication, passkeys, and self-service account management under `/Account/*`. |
+| API keys | Owner-managed `Read` and `ReadWrite` keys at `/Account/Manage/ApiKeys`; create, activate, deactivate, and delete are supported. |
+| OAuth | Authorization-code with PKCE, client credentials, password, and refresh-token grants through `/connect/authorize` and `/connect/token`. |
+| Devices | Registration at `/devices/register`, inventory and revocation at `/devices`, and CameraAgent import at `/devices/bootstrap`. |
+| Local CameraAgent users | SQLite-backed local Identity and one configuration-seeded site owner. This identity is separate from LogicHost. |
+| Runtime state | SQL Server `SkyMonitor`, the two approved MinIO buckets, prefixed Redis cache keys, both hosts' Data Protection keys, CameraAgent local Identity, and CameraAgent provisioning files. |
+| Observability | `/alive`, `/health`, `/metrics`, structured token/API-key events, and ASP.NET request traces. |
 
-1. [Key Rotation Procedures](#key-rotation-procedures)
-2. [Account Onboarding](#account-onboarding)
-3. [API Key Management](#api-key-management)
-4. [Access Revocation](#access-revocation)
-5. [Incident Response](#incident-response)
-6. [Troubleshooting 401/403 Errors](#troubleshooting-401403-errors)
-7. [Certificate Management](#certificate-management)
-8. [Monitoring & Alerts](#monitoring--alerts)
+The repository does not currently provide production OpenIddict certificate
+loading, signing-key overlap, OAuth token revocation, revoke-all sessions,
+cross-user API-key administration, device-key rotation, roles, signed-URL
+routes, or an administrator user-management portal. Do not replace those gaps
+with direct database edits.
 
----
+Application Compose is a Development topology over HTTP. A production TLS
+terminator, forwarded-header policy, external issuer, and OpenIddict signing and
+encryption certificate loader must be implemented and tested before this
+Compose file can be treated as a production identity deployment.
 
-## Key Rotation Procedures
+Current authorization also has deployment limits: CameraAgent
+self-registration, its dashboard, and frame endpoints are anonymous; LogicHost
+device listings and envelope issuance are not owner-filtered; and most
+bearer-protected APIs do not enforce a route-specific scope. Treat the current
+topology as a trusted, single-tenant development environment. Do not expose
+either host to an untrusted network or claim multi-tenant least privilege until
+those controls are implemented and tested.
 
-### Overview
+## Safety Rules
 
-Regular key rotation is critical for maintaining security. This section covers rotation procedures for all cryptographic keys used in the Central Identity system.
+1. Never include passwords, connection strings, API keys, client secrets,
+   bearer or refresh tokens, bootstrap envelopes, device keys, Data Protection
+   keys, or full environment dumps in tickets, logs, shell history, or retained
+   evidence.
+2. Use only the `SkyMonitor` SQL Server database, Redis keys beginning with
+   `skymonitor:`, and MinIO buckets `skymonitor-diagnostics` and
+   `skymonitor-artifacts`.
+3. Never clear a Redis database. Redis is not the Identity or OpenIddict store,
+   so deleting Redis data does not revoke cookies or tokens.
+4. Never use MinIO root credentials from an application. They are reserved for
+   provisioning the scoped application service account.
+5. Preserve evidence and obtain an approved backup before reset, deletion, or
+   credential revocation. Record the operator, approver, UTC time, affected
+   identity, reason, validation result, and rollback decision without recording
+   the credential.
+6. Use Identity/OpenIddict services and current UI actions. Direct SQL edits can
+   bypass password hashing, security stamps, concurrency checks, and audits.
 
-### 1. OpenIddict Signing Certificate Rotation
+## Preflight and Smoke Checks
 
-**Frequency:** Every 12 months  
-**Downtime Required:** No (zero-downtime rotation supported)  
-**Estimated Time:** 30 minutes
-
-**Prerequisites:**
-- New X.509 certificate (.pfx) with private key
-- Certificate password
-- Production Key Vault access
-- Maintenance window scheduled (off-peak hours recommended)
-
-**Procedure:**
-
-```bash
-# Step 1: Generate new signing certificate
-openssl req -x509 -newkey rsa:4096 -sha256 -days 365 \
-  -nodes -keyout new-signing-key.pem -out new-signing-cert.pem \
-  -subj "/CN=HVO.SkyMonitor.Signing/O=HVO Observatory/C=US"
-
-openssl pkcs12 -export -out new-signing-cert.pfx \
-  -inkey new-signing-key.pem -in new-signing-cert.pem \
-  -password pass:YourSecurePassword
-
-# Step 2: Upload new certificate to Azure Key Vault
-az keyvault certificate import \
-  --vault-name hvo-skymonitor-prod \
-  --name openiddict-signing-cert-new \
-  --file new-signing-cert.pfx
-
-# Step 3: Update application configuration to use BOTH old and new certificates
-# Edit appsettings.Production.json or environment variables
-# OpenIddict supports multiple signing keys for validation
-
-# Step 4: Deploy updated configuration
-# This allows tokens signed with OLD cert to still validate
-# while NEW tokens will be signed with NEW cert
-
-# Step 5: Wait for token lifetime (30 minutes + buffer = 1 hour)
-sleep 3600
-
-# Step 6: Remove old certificate from configuration
-# Edit appsettings.Production.json to remove old certificate reference
-
-# Step 7: Deploy configuration update
-
-# Step 8: Delete old certificate from Key Vault (after verification)
-az keyvault certificate delete \
-  --vault-name hvo-skymonitor-prod \
-  --name openiddict-signing-cert-old
-
-# Step 9: Verify new certificate is in use
-# Check logs for token issuance events
-# Monitor error rates for authentication failures
-```
-
-**Rollback Procedure:**
-
-If issues arise after deploying new certificate:
-1. Restore old certificate to active configuration
-2. Redeploy immediately
-3. Investigate issues before retrying rotation
-
-**Post-Rotation Checklist:**
-- [ ] New certificate deployed and active
-- [ ] Old certificate removed from configuration
-- [ ] Authentication metrics show no errors
-- [ ] All clients can obtain and validate tokens
-- [ ] Certificate expiration monitoring updated
-
----
-
-### 2. Signed URL HMAC Secret Rotation
-
-**Frequency:** Every 90 days  
-**Downtime Required:** No (overlap window supported)  
-**Estimated Time:** 15 minutes
-
-**Procedure:**
+From the repository root, inspect application state and run the no-secret smoke
+checks:
 
 ```bash
-# Step 1: Generate new HMAC secret (256-bit minimum)
-NEW_SECRET=$(openssl rand -base64 32)
-
-# Step 2: Store new secret in Key Vault with temporary name
-az keyvault secret set \
-  --vault-name hvo-skymonitor-prod \
-  --name SignedTicket--Secret-New \
-  --value "$NEW_SECRET"
-
-# Step 3: Update application to accept BOTH old and new secrets
-# Modify SignedTicketService to validate with both secrets
-# This requires code change to support dual-secret validation
-
-# Step 4: Deploy updated application
-# Now accepts signed URLs created with either old or new secret
-
-# Step 5: Wait for overlap period (default TTL + buffer = 10 minutes)
-sleep 600
-
-# Step 6: Update ticket generation to use NEW secret only
-# Update configuration to point to new secret
-az keyvault secret set \
-  --vault-name hvo-skymonitor-prod \
-  --name SignedTicket--Secret \
-  --value "$NEW_SECRET"
-
-# Step 7: Deploy configuration update
-
-# Step 8: Remove old secret after validation period
-az keyvault secret delete \
-  --vault-name hvo-skymonitor-prod \
-  --name SignedTicket--Secret-Old
+./scripts/infra:status
+./scripts/identity:smoke
 ```
 
-**Validation:**
+The smoke script expects the supported environment to be healthy and verifies:
+
+- `200` from `/alive`, `/health`, OpenID discovery, and anonymous
+  `/api/v1.0/status`.
+- `401` from `/api/v1.0/status/detailed` without an API key.
+- `401` from `/api/v1.0/status/protected` without a bearer token.
+
+To include the API-key success probe without putting the key in the command
+line, read it into the process environment temporarily:
 
 ```bash
-# Generate test signed URL with new secret
-curl -X POST https://skymonitor.hvo.org/api/v1.0/frame/generate-signed-url \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"path": "/api/v1.0/frame/latest", "ttl": 300}'
-
-# Verify signed URL works
-curl "https://skymonitor.hvo.org/api/v1.0/frame/latest?st=<signed-ticket>"
+read -rsp 'SkyMonitor API key: ' SKYMONITOR_API_KEY
+export SKYMONITOR_API_KEY
+./scripts/identity:smoke
+unset SKYMONITOR_API_KEY
 ```
 
-**Post-Rotation Checklist:**
-- [ ] New secret deployed
-- [ ] Signed URL generation working
-- [ ] Signed URL validation working
-- [ ] Old secret removed
-- [ ] No error spikes in logs
-- [ ] Next rotation scheduled (90 days)
+Do not retain terminal capture from a secret-entry session. The anonymous
+`/api/v1.0/status` route is a liveness response and is not evidence that a
+credential works.
 
----
+## Onboarding
 
-### 3. API Key Hashing Salt Rotation
+### LogicHost user
 
-**Frequency:** Annually or on security incident  
-**Downtime Required:** Yes (requires database migration)  
-**Estimated Time:** 1-2 hours (depends on number of API keys)
+1. Open `/Account/Register` and create the user-owned account.
+2. In the development topology, retrieve the confirmation message from the
+   configured Mailpit instance. In another environment, use the configured SMTP
+   provider.
+3. Follow the confirmation link and sign in at `/Account/Login`.
+4. Verify account management at `/Account/Manage`.
 
-**⚠️ WARNING:** This procedure requires re-hashing ALL existing API keys and is destructive. Coordinate with all API key holders.
+There is no invitation workflow, role assignment, or administrator-created
+human account flow. Production onboarding therefore requires a separate
+approved implementation before public self-registration can be enabled.
 
-**Prerequisites:**
-- Database backup completed
-- Maintenance window scheduled
-- Communication sent to all API key holders
-- New API keys ready to distribute
+### CameraAgent site owner
 
-**Procedure:**
+For Compose, set `CAMERA_AGENT_ADMIN_PASSWORD` and the fleet-scoped
+`CAMERA_AGENT_OAUTH_CLIENT_SECRET` in the ignored `.env` before starting the
+stack. For a direct host, store the owner password in the CameraAgent
+user-secrets store:
 
 ```bash
-# Step 1: Create database backup
-pg_dump skymonitordb > backup_before_salt_rotation_$(date +%Y%m%d).sql
-
-# Step 2: Generate new salt
-NEW_SALT=$(openssl rand -base64 32)
-
-# Step 3: Store new salt in Key Vault
-az keyvault secret set \
-  --vault-name hvo-skymonitor-prod \
-  --name ApiKey--HashingSalt \
-  --value "$NEW_SALT"
-
-# Step 4: OPTION A: Invalidate all existing API keys (recommended)
-# Mark all existing API keys as inactive in database
-# Require users to create new API keys with new salt
-
-# Step 4: OPTION B: Re-hash existing keys (complex, requires plaintext keys)
-# This is NOT recommended as we don't store plaintext API keys
-# Users must create new API keys
-
-# Step 5: Update application configuration
-# Deploy application with new salt
-
-# Step 6: Notify users to regenerate API keys
-# Send email to all API key holders
-# Update documentation with cutover date
-
-# Step 7: Monitor for support requests
+./scripts/user-secret:set \
+  src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj \
+  'LocalIdentity:AdminPassword'
 ```
 
-**Note:** Because API keys are hashed on creation, rotation of the hashing salt effectively invalidates all existing keys. This is by design for security.
+The host creates or reconciles the configured `LocalIdentity:AdminEmail` owner
+at startup. It also reconciles the password to
+`LocalIdentity:AdminPassword`, so a password changed in the UI will be reverted
+on the next startup unless configuration is changed at the same time.
 
-**Alternative Approach:** Don't rotate salt; instead rotate individual API keys as needed. The salt rotation is primarily needed after a security breach.
+CameraAgent email delivery is not implemented; its email sender only records a
+development message. Do not rely on local password-reset email as a recovery
+path.
 
----
+### Device registration and bootstrap
 
-## Account Onboarding
+1. Start the CameraAgent, sign in locally, and open `/devices/bootstrap`.
+2. Record the displayed device ID and verification code without placing them in
+   retained logs or screenshots.
+3. Sign in to LogicHost, create an active observatory at `/observatories` if one
+   does not already exist, and open `/devices/register`.
+4. Enter the device ID, self-attested code, observatory, and friendly name. The
+   resulting pending registration and envelope are short-lived.
+5. Return to CameraAgent `/devices/bootstrap`, import the envelope, and wait for
+   successful secret persistence and rig-profile seeding.
+6. Confirm the registration is Active at LogicHost `/devices`. CameraAgent does
+   not currently schedule heartbeat submission, so do not use heartbeat arrival
+   as onboarding evidence.
 
-### Creating a New User Account
+The verification code is not checked against an independent device channel;
+current registration is operator self-attestation, not proof of device
+possession. Successful sequential bootstrap changes the central registration
+from Pending to Active and later replay fails. Concurrent redemption is not
+protected by a SQL concurrency token. Perform bootstrap only on a trusted
+network with one operator until that gap is fixed.
 
-**Prerequisites:**
-- Admin access to HVO.SkyMonitor
-- User's email address
-- Assigned roles/permissions
+The generated device key is unique, but the OAuth client credentials included
+in the current envelope come from shared `DeviceBootstrap:CentralIdentity`
+configuration; they are not generated per device. Treat that client as
+fleet-scoped. The encrypted bootstrap payload and its AES key travel in the
+same HTTP response, so payload encryption is not a substitute for TLS.
 
-**Procedure:**
+Compose persists these CameraAgent files together:
 
-1. **Navigate to Admin Portal**
-   - Log in to https://skymonitor.hvo.org
-   - Navigate to Account Management
+- `/app/App_Data/identity/cameraagent_identity.db`
+- `/app/DataProtection-Keys/*`
+- `/app/data/provisioning/device-identity.json`
+- `/app/data/provisioning/device-secrets.dat`
 
-2. **Create New User**
-   ```
-   - Click "Create User Account"
-   - Enter email address
-   - Select Account Type: USER
-   - Assign roles (Viewer, Operator, Admin)
-   - Click "Create"
-   ```
+The encrypted secrets file and its Data Protection key ring are one recovery
+unit. Restoring only one of them makes the secrets unreadable.
 
-3. **Send Invitation Email**
-   - System automatically sends invitation to user's email
-   - Link expires in 7 days
-   - User must confirm email and set password
+## API-Key Lifecycle
 
-4. **Verify Account Creation**
-   ```bash
-   # Check audit logs for account creation event
-   az monitor log-analytics query \
-     --workspace <workspace-id> \
-     --analytics-query "AppEvents | where Name == 'UserAccountCreated' | where UserId == '<user-id>'"
-   ```
+### Create and validate
 
-5. **Document in Access Control Log**
-   - Record user email, creation date, assigned roles
-   - Update team roster
+1. Sign in to LogicHost and open `/Account/Manage/ApiKeys`.
+2. Select the least privilege required: `Read` or `ReadWrite`.
+3. Set an expiration when the client supports planned replacement.
+4. Create the key and place its one-time plaintext value directly into the
+   approved secret store. Do not paste it into an issue or chat.
+5. Run the API-key smoke probe above. The protected evidence route is
+   `/api/v1.0/status/detailed`.
+6. Confirm the `API Key Created` and `API key used` structured events by key ID,
+   not by raw key.
 
-**Post-Creation Checklist:**
-- [ ] User account created in database
-- [ ] Invitation email sent and received
-- [ ] User confirmed email
-- [ ] User set strong password
-- [ ] Roles/permissions verified
-- [ ] Account documented in access log
+### Make-before-break rotation
 
----
+1. Create replacement key B with the same or narrower access and a distinct
+   display name.
+2. Update one client to key B and validate
+   `/api/v1.0/status/detailed` plus its real least-privilege operation.
+3. Deploy key B to the remaining clients.
+4. Deactivate old key A. Validate that clients continue to work and that an
+   isolated probe using A receives `401`.
+5. Keep A deactivated through the approved rollback interval. Reactivation is
+   the rollback.
+6. Delete A only after rollback is no longer required and audit evidence has
+   been retained.
 
-### Creating a New System Account (Service/Agent)
+Rotation is a manual overlap workflow; there is no atomic rotate action and the
+database `LastUsedUtc` field is not currently updated. Use structured API-key
+events for use review.
 
-**Prerequisites:**
-- Service name and description
-- Justification for system account
-- Required scopes/permissions
+### Compromise or revocation
 
-**Procedure:**
+The owner can immediately deactivate or delete a key at
+`/Account/Manage/ApiKeys`. Prefer deactivation while investigation and rollback
+remain possible. Deletion is irreversible and removes the SQL row. There is no
+cross-user administrator page, so a separate incident-approved implementation
+is required when the owner cannot authenticate.
 
-1. **Navigate to Admin Portal**
-   - Log in to https://skymonitor.hvo.org
-   - Navigate to System Accounts
+## OAuth Client Credentials
 
-2. **Create System Account**
-   ```
-   - Click "Create System Account"
-   - Enter account name (e.g., "camera-agent-01")
-   - Enter description
-   - Select Account Type: SYSTEM
-   - Assign scopes (api:read, api:write, frames:access)
-   - Click "Create"
-   ```
+Confidential clients are configuration-seeded with these exact sections:
 
-3. **Generate Client Credentials**
-   - System generates Client ID and Client Secret
-   - **IMPORTANT:** Copy Client Secret immediately (shown only once)
-   - Store in secure location (Key Vault, password manager)
+- `DatabaseSeed:ConfidentialClients:<index>:ClientId`
+- `DatabaseSeed:ConfidentialClients:<index>:ClientSecret`
+- `DatabaseSeed:ConfidentialClients:<index>:Scopes:<index>`
+- `DeviceBootstrap:CentralIdentity:ClientCredentials:ClientId`
+- `DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret`
+- `DeviceBootstrap:CentralIdentity:ClientCredentials:Scopes:<index>`
 
-4. **Configure Client Application**
-   ```bash
-   # Set environment variables for client
-   export CLIENT_ID="<generated-client-id>"
-   export CLIENT_SECRET="<generated-client-secret>"
-   export TOKEN_ENDPOINT="https://skymonitor.hvo.org/connect/token"
-   ```
+Current scopes are `api.admin`, `api.camera`, `api.frames`, `api.images`,
+`api.viewer`, and `api.webhooks`. Use only scopes consumed by the client.
 
-5. **Test Authentication**
-   ```bash
-   # Test client credentials flow
-   curl -X POST https://skymonitor.hvo.org/connect/token \
-     -H "Content-Type: application/x-www-form-urlencoded" \
-     -d "grant_type=client_credentials" \
-     -d "client_id=$CLIENT_ID" \
-     -d "client_secret=$CLIENT_SECRET" \
-     -d "scope=api:read api:write"
-   ```
+Startup reconciles a changed confidential-client secret immediately. It does
+not retain the old secret, so zero-downtime overlap is not supported through
+configuration seeding. Schedule a coordinated maintenance window or use a
+separate client ID for make-before-break migration. Existing CameraAgents do
+not receive a changed bootstrap client secret until they are reprovisioned.
 
-6. **Verify in Logs**
-   - Check for successful token issuance
-   - Verify correct scopes in token
+## Device Revocation
 
-**Post-Creation Checklist:**
-- [ ] System account created
-- [ ] Client credentials generated and stored securely
-- [ ] Client application configured
-- [ ] Authentication tested successfully
-- [ ] Scopes verified correct
-- [ ] Account documented
+1. Open LogicHost `/devices` and identify the exact registration by device ID,
+   owner, and observatory.
+2. Preserve sanitized heartbeat and incident evidence.
+3. Use the registration's Delete action and type the device ID when prompted.
+   The UI records a fixed portal-revocation note; retain the incident reason in
+   the approved incident record.
+4. Confirm status is Revoked and that heartbeat, upload, and rig-profile calls
+   using the old device key fail.
+5. After central revocation is confirmed, clear imported credentials from the
+   CameraAgent bootstrap page if the local host is controlled.
 
----
+Clearing local credentials does not revoke the central registration. A revoked
+registration cannot be reactivated with the current workflow; recovery is a
+new registration and bootstrap. Device-key renewal or overlap is not
+implemented. Revocation also does not disable the shared fleet OAuth client. If
+an agent may have disclosed that secret, schedule fleet-client replacement and
+reprovision every agent; there is no per-device OAuth containment today.
 
-## API Key Management
+## Certificates, TLS, and Data Protection
 
-### Creating a New API Key (User Self-Service)
+Development and Testing use OpenIddict development signing and encryption
+certificates. Production source currently has no certificate loader, option
+schema, secure mount, or overlap test. Therefore there is no supported
+production OpenIddict certificate-rotation command. Do not adapt an Azure,
+Kubernetes, or certificate-store example without first implementing and testing
+the chosen provider.
 
-**Prerequisites:**
-- Valid user account
-- Logged in to HVO.SkyMonitor
+TLS certificate renewal belongs to the actual TLS termination point. The
+repository's application Compose topology is HTTP-only and does not define that
+owner. Record the terminator, SANs, issuer, expiry, renewal method, deployment,
+and rollback in the production deployment's own runbook.
 
-**Procedure:**
+Both hosts persist ASP.NET Data Protection keys to
+`DataProtection-Keys/`. Compose bind-mounts those paths and LogicHost's
+Development certificate-store home. Losing LogicHost keys
+invalidates cookies and outstanding bootstrap envelopes; losing CameraAgent
+keys makes `device-secrets.dat` unreadable. A rebuild preserves keys. An
+explicit reset deletes the selected host's keys.
 
-1. **Navigate to API Keys Page**
-   - Log in to https://skymonitor.hvo.org
-   - Go to Account → API Keys
+## Backup, Restore, and Reset
 
-2. **Create New API Key**
-   ```
-   - Click "Generate New API Key"
-   - Enter display name (e.g., "Python Script - Data Analysis")
-   - Select access level (Read-only or Read/Write)
-   - Set expiration (optional, recommended: 90 days)
-   - Click "Generate"
-   ```
+### Recovery set
 
-3. **Copy API Key**
-   - **CRITICAL:** Copy the API key immediately
-   - It will only be displayed once
-   - Store in secure location (password manager, Key Vault)
+| State | Authority | Required recovery owner |
+| --- | --- | --- |
+| SQL Server `SkyMonitor` | Users, API keys, OpenIddict, registrations, metadata | SQL Server operator; use an approved SQL Server backup with encryption, retention, and restore verification. |
+| `skymonitor-artifacts` | Immutable artifact payloads | MinIO operator; preserve object keys, metadata, checksums, and version/lifecycle state. |
+| `skymonitor-diagnostics` | Diagnostic objects | MinIO operator; retain only as required by policy. |
+| Redis `skymonitor:*` | Disposable cache | No identity restore dependency; rebuild from authoritative state. |
+| LogicHost Data Protection | Cookies and protected envelopes | Application operator; back up with restricted permissions. |
+| CameraAgent Identity, Data Protection, provisioning | Local users and encrypted device credentials | Site operator; back up and restore as one consistency unit. |
+| CameraAgent `data/agent` and `data/archive` | Capture payloads and durable outbox state for the packaged sample configuration | Site operator; preserve files, sidecars, indexes, and pending upload manifests. |
+| Mailpit | Development email capture | Disposable; never an authoritative account record. |
 
-4. **Test API Key**
-   ```bash
-   # Test API key authentication
-   curl -X GET https://skymonitor.hvo.org/api/v1.0/status \
-     -H "X-API-Key: <your-api-key>"
-   ```
+SQL Server is provisioned separately from repository Compose. The SQL Server
+operator must provide the exact instance/container, backup destination,
+encryption, retention, and tested restore command. Do not substitute a command
+for another database engine. Likewise, MinIO backup must use the approved
+site-specific replication or snapshot procedure; copying SQL metadata without
+the corresponding objects is not a complete backup.
 
-5. **Document Usage**
-   - Note what the API key is used for
-   - Set calendar reminder for rotation/expiration
-
-**Post-Creation Checklist:**
-- [ ] API key generated
-- [ ] API key copied and stored securely
-- [ ] API key tested successfully
-- [ ] Usage documented
-- [ ] Expiration/rotation scheduled
-
----
-
-### Rotating an Existing API Key
-
-**Frequency:** Every 90 days or on security event  
-**Procedure:**
-
-1. **Create New API Key**
-   - Follow creation procedure above
-   - Use same display name with version (e.g., "Python Script - v2")
-
-2. **Update Client Application**
-   ```bash
-   # Update environment variable or configuration
-   export HVO_API_KEY="<new-api-key>"
-   ```
-
-3. **Test New API Key**
-   ```bash
-   curl -X GET https://skymonitor.hvo.org/api/v1.0/status \
-     -H "X-API-Key: $HVO_API_KEY"
-   ```
-
-4. **Deactivate Old API Key**
-   - Navigate to API Keys page
-   - Find old API key
-   - Click "Deactivate" (keeps for audit, stops working)
-   - OR Click "Delete" (removes completely)
-
-5. **Monitor for Errors**
-   - Watch logs for authentication failures with old key
-   - Indicates client still using old key
-
-**Rollback:**
-If new key doesn't work, reactivate old key temporarily while troubleshooting.
-
----
-
-### Revoking a Compromised API Key
-
-**Urgency:** IMMEDIATE  
-**Procedure:**
+Back up bind-mounted application state to an encrypted, access-controlled
+destination outside the runtime data root:
 
 ```bash
-# Option 1: Via Web UI
-1. Log in to https://skymonitor.hvo.org
-2. Navigate to Account → API Keys
-3. Find compromised key
-4. Click "Delete" immediately
-
-# Option 2: Via Admin Console (for admin revoking user's key)
-1. Log in as admin
-2. Navigate to Admin → API Key Management
-3. Search for user or key ID
-4. Click "Revoke" or "Delete"
-5. Document incident
+./scripts/infra:backup-app-state /approved/encrypted/backup-directory
 ```
 
-**Post-Revocation Actions:**
-- [ ] Key deleted from database
-- [ ] User notified (if not their action)
-- [ ] Audit logs checked for unauthorized usage
-- [ ] Incident report filed
-- [ ] New key generated if needed
-- [ ] Security team notified if breach suspected
+The script stops both applications, archives the effective
+`HVO_RUNTIME_DATA_ROOT`, creates a relocatable SHA-256 manifest, validates the
+archive listing, and leaves both applications stopped for coordinated SQL
+Server and MinIO backups. Do not print or attach the archive or checksum
+manifest. Start applications only after all authoritative backups complete.
 
----
-
-## Access Revocation
-
-### Revoking User Access (Offboarding)
-
-**Prerequisites:**
-- Offboarding ticket or HR notification
-- Admin access
-
-**Procedure:**
-
-1. **Disable User Account**
-   ```
-   - Navigate to Admin → User Management
-   - Find user account
-   - Click "Disable Account"
-   - Enter reason (e.g., "Employee Terminated")
-   - Confirm
-   ```
-
-2. **Revoke All API Keys**
-   ```
-   - Navigate to user's API keys
-   - Select all active keys
-   - Click "Revoke All"
-   - Confirm
-   ```
-
-3. **Revoke Active Sessions**
-   ```
-   - Navigate to user's active sessions
-   - Click "End All Sessions"
-   - User will be logged out immediately
-   ```
-
-4. **Revoke OAuth Tokens**
-   ```
-   - Navigate to user's authorized applications
-   - Revoke all access tokens
-   - Revoke all refresh tokens
-   ```
-
-5. **Audit Recent Activity**
-   ```bash
-   # Check user's activity in last 30 days
-   az monitor log-analytics query \
-     --workspace <workspace-id> \
-     --analytics-query "AppEvents | where UserId == '<user-id>' | where TimeGenerated > ago(30d)"
-   ```
-
-6. **Document Revocation**
-   - Record date and time of revocation
-   - Note who performed revocation
-   - File in offboarding records
-
-**Post-Revocation Checklist:**
-- [ ] User account disabled
-- [ ] All API keys revoked
-- [ ] All sessions terminated
-- [ ] OAuth tokens revoked
-- [ ] Activity audited
-- [ ] Revocation documented
-- [ ] No unauthorized access since revocation
-
----
-
-### Emergency Access Revocation
-
-**When to Use:** Security incident, suspected compromise, immediate threat
-
-**Procedure:**
+After the SQL Server and MinIO operator restores are staged, restore application
+state with:
 
 ```bash
-# Step 1: Identify affected accounts/keys
-# From security alert or incident report
-
-# Step 2: Immediately disable/revoke via database (fastest)
-# Connect to database
-psql skymonitordb
-
-# Disable user account
-UPDATE "AspNetUsers" SET "LockoutEnabled" = true, "LockoutEnd" = '9999-12-31' 
-WHERE "Id" = '<user-id>';
-
-# Revoke all API keys for user
-UPDATE "ApiKeys" SET "IsActive" = false 
-WHERE "UserId" = '<user-id>';
-
-# Commit
-COMMIT;
-
-# Step 3: Invalidate all sessions (requires application restart or cache clear)
-# Clear session cache
-redis-cli FLUSHDB
-
-# Step 4: Notify security team
-# Send alert to security@hvo.org
-
-# Step 5: Begin incident response procedure (see below)
+./scripts/infra:restore-app-state \
+  /approved/encrypted/backup-directory/hvo-application-state-UTC_TIMESTAMP.tgz
 ```
 
----
+The restore verifies the adjacent `.sha256` file, rejects unsafe archive paths,
+extracts to staging, retains the old runtime root as a rollback directory, and
+starts LogicHost before CameraAgent. Delete the rollback directory only after
+all post-restore checks pass.
+
+Restore order is:
+
+1. Validate the backup manifest, authorization, and target environment.
+2. Stop both applications.
+3. Restore both hosts' Data Protection state.
+4. Restore MinIO buckets and verify inventory/checksums.
+5. Restore SQL Server and run database consistency checks.
+6. Restore CameraAgent Identity, provisioning, payload, and outbox state as one
+   application-state unit.
+7. Start LogicHost, allow migrations/seeding to complete, then start
+   CameraAgent.
+8. Run health and authentication smoke checks.
+9. Verify users, clients, API-key state, registration state, MinIO object
+   references and direct credential rejection/acceptance without exposing
+   secrets. Heartbeat scheduling is not implemented by CameraAgent.
+
+The seeder may reconcile configured user passwords and confidential-client
+secrets after restore. Confirm the effective secret source before startup.
+
+These commands are destructive and have no automatic rollback:
+
+```bash
+./scripts/infra:start --reset logichost
+./scripts/infra:start --reset cameraagent
+./scripts/infra:reset logichost cameraagent
+```
+
+`--rebuild` preserves mounted state. `--reset logichost` removes LogicHost Data
+Protection keys and its Development certificate store. `--reset cameraagent`
+removes local Identity, Data Protection,
+provisioning, packaged sample payload, archive, and outbox state. Shared SQL
+Server, Redis, MinIO, and Mailpit data are never deleted by these scripts.
+
+## Redis and MinIO Safety
+
+Redis is currently a cache, not an authentication/session authority. To inspect
+repository-owned keys, use cursor-based scanning with the password supplied
+through the process environment and retain only the key-name manifest:
+
+```bash
+(
+  read -rsp 'Redis password: ' REDISCLI_AUTH
+  export REDISCLI_AUTH
+  trap 'unset REDISCLI_AUTH' EXIT
+  umask 077
+  REDIS_KEY_MANIFEST="$(mktemp -t hvo-redis-keys.XXXXXX)"
+  if ! redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -n 0 --scan \
+    --pattern 'skymonitor:*' > "$REDIS_KEY_MANIFEST"; then
+    rm -f "$REDIS_KEY_MANIFEST"
+    exit 1
+  fi
+  printf 'Review Redis key manifest: %s\n' "$REDIS_KEY_MANIFEST"
+)
+```
+
+Review endpoint, logical database, prefix, count, and every matched key before
+any deletion. If deletion is approved, delete only reviewed keys one at a time
+with `UNLINK`; never use a database-wide clear operation. Cache deletion does
+not revoke Identity cookies, OpenIddict tokens, API keys, or device keys. Delete
+the manifest securely after approved review; do not retain it in a support
+bundle.
+
+LogicHost uses `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY`. The root account is
+used only by `./scripts/infra:provision-minio-account`. The current provisioning
+script does not rotate an existing service-account secret, so MinIO credential
+rotation requires an operator-owned MinIO procedure and validation with the
+scoped policy before applications are restarted.
 
 ## Incident Response
 
-### Security Incident Response Procedure
+1. **Detect and classify:** identify affected identities, hosts, UTC interval,
+   and observed behavior from sanitized logs and metrics.
+2. **Preserve evidence:** capture status, selected structured events, bounded
+   metrics, and approved service snapshots. Redact personal data and exclude all
+   credential material and bootstrap payloads.
+3. **Contain:** deactivate the exact API key, revoke the exact device, isolate a
+   client, or stop the affected host. Do not clear shared services.
+4. **Investigate:** correlate key/client/device IDs, grant type, route, status,
+   and correlation ID. Treat unknown secret exposure as compromise.
+5. **Recover:** replace supported credentials, restore authoritative state if
+   required, start dependencies in order, and run the smoke checks.
+6. **Verify:** old credentials fail, replacement credentials have least
+   privilege, health is stable, no unexpected retries occur, and retained
+   evidence contains no secrets.
+7. **Close:** record cause, impact, actions, validation, residual unsupported
+   controls, owner, and follow-up issue.
 
-**Severity Levels:**
-- **CRITICAL:** Active breach, data exfiltration, or widespread compromise
-- **HIGH:** Single account compromise, exposed credentials
-- **MEDIUM:** Suspicious activity, potential vulnerability
-- **LOW:** Policy violation, unusual but benign activity
+User offboarding cannot currently disable another user's account or revoke all
+cookies/tokens through a supported operator API. Preserve the requirement and
+escalate it as an implementation gap; do not publish emergency SQL edits.
 
-### Incident Response Workflow
+## Monitoring and Troubleshooting
 
-**Phase 1: Detection & Triage (0-15 minutes)**
+Current authentication instruments from meter `HVO.SkyMonitor.Authentication`
+are:
 
-1. **Receive Alert**
-   - Monitor alerts from logs, metrics, or user reports
-   - Document time, source, and nature of alert
+| Instrument | Unit | Bounded labels |
+| --- | --- | --- |
+| `auth.token_requests` | requests | `grant_type`, `result` |
+| `auth.token_request_duration` | milliseconds | `grant_type`, `result` |
+| `auth.apikey_authentication` | attempts | `result`, successful `access_level` |
 
-2. **Initial Assessment**
-   ```
-   - What happened?
-   - When did it happen?
-   - What systems/accounts affected?
-   - Is it still ongoing?
-   - What's the severity?
-   ```
+`auth.login_attempts` and `auth.authentication_duration` are defined but not
+currently called. Do not build mandatory alerts from them. Authentication
+loggers do not yet assign stable nonzero event IDs; query by message template
+and structured fields such as client ID, grant type, key ID, access level,
+endpoint, result, and correlation ID. Never use a raw credential or user email
+as a metric label.
 
-3. **Notify Stakeholders**
-   - CRITICAL/HIGH: Notify security team immediately
-   - MEDIUM: Notify on-call engineer
-   - LOW: Create ticket for investigation
+| Symptom | Check |
+| --- | --- |
+| `401` from `/api/v1.0/status/detailed` | Confirm `X-API-Key` is present, active, unexpired, and owned by the caller. Validate with `identity:smoke`; do not use anonymous `/status`. |
+| `401` from `/api/v1.0/status/protected` | Acquire a fresh bearer token and confirm token endpoint, client ID, secret source, expiry, and signature validation. Do not decode or paste the token into support evidence. |
+| `401` or `403` on a mutation after a read succeeds | A multi-scheme challenge or endpoint policy rejected access. Check API-key `Read`/`ReadWrite`, required bearer scope, and the endpoint's current authorization attribute. |
+| Token request fails | Check `/health`, `/connect/token`, configured client permissions, grant type, and sanitized LogicHost logs. |
+| Device bootstrap fails | Confirm Pending status, envelope lifetime, exact device ID, and one-time use. Generate a new pending registration after expiry or consumption. |
+| Device calls fail after restore | Restore CameraAgent `device-secrets.dat` with its matching Data Protection key ring and confirm central registration is Active and unexpired. |
+| Cookies fail after rebuild | Verify the matching host's `DataProtection-Keys` bind mount was preserved and readable. |
+| MinIO access fails | Check scoped application credentials and the two approved buckets; do not switch the application to root credentials. |
 
-**Phase 2: Containment (15-60 minutes)**
+## Validation Evidence
 
-1. **Isolate Affected Systems**
-   - Revoke compromised credentials immediately
-   - Disable compromised accounts
-   - Block suspicious IP addresses
-   - Invalidate active sessions
-
-2. **Preserve Evidence**
-   ```bash
-   # Export relevant logs
-   az monitor log-analytics query \
-     --workspace <workspace-id> \
-     --analytics-query "AppEvents | where TimeGenerated > ago(24h)" \
-     --output tsv > incident_logs_$(date +%Y%m%d_%H%M%S).tsv
-   
-   # Backup database state
-   pg_dump skymonitordb > incident_backup_$(date +%Y%m%d_%H%M%S).sql
-   ```
-
-3. **Stop the Bleeding**
-   - Prevent further damage
-   - Block attack vectors
-   - Implement temporary mitigations
-
-**Phase 3: Investigation (1-4 hours)**
-
-1. **Root Cause Analysis**
-   ```
-   - How did the incident occur?
-   - What vulnerability was exploited?
-   - Timeline of events
-   - Scope of impact
-   ```
-
-2. **Impact Assessment**
-   ```
-   - What data was accessed?
-   - What systems were compromised?
-   - How many users affected?
-   - What's the business impact?
-   ```
-
-3. **Document Findings**
-   - Create incident report
-   - Include timeline, root cause, impact
-   - Attach logs and evidence
-
-**Phase 4: Remediation (4-24 hours)**
-
-1. **Fix Vulnerability**
-   - Patch security holes
-   - Update configurations
-   - Deploy fixes
-
-2. **Rotate All Affected Credentials**
-   - Follow key rotation procedures
-   - Force password resets for affected users
-   - Regenerate API keys
-
-3. **Restore Services**
-   - Bring systems back online
-   - Verify functionality
-   - Monitor for issues
-
-**Phase 5: Post-Incident (1-7 days)**
-
-1. **Complete Incident Report**
-   ```
-   - Executive summary
-   - Detailed timeline
-   - Root cause analysis
-   - Impact assessment
-   - Remediation actions
-   - Lessons learned
-   - Prevention recommendations
-   ```
-
-2. **Implement Preventive Measures**
-   - Add monitoring/alerting
-   - Update security policies
-   - Enhance controls
-   - Conduct training
-
-3. **Communication**
-   - Notify affected users (if required)
-   - Update stakeholders
-   - File breach reports (if required by law)
-
----
-
-## Troubleshooting 401/403 Errors
-
-### 401 Unauthorized Errors
-
-**Common Causes:**
-
-1. **Missing or Invalid API Key**
-   ```
-   Symptom: "401 Unauthorized"
-   Solution: Verify API key is present in X-API-Key header
-   ```
-
-2. **Expired Token**
-   ```
-   Symptom: "401 Unauthorized" with OpenIddict validation
-   Solution: Refresh access token using refresh token
-   ```
-
-3. **Invalid Bearer Token**
-   ```
-   Symptom: "401 Unauthorized" on /api endpoints
-   Solution: Verify token is valid JWT and not expired
-   ```
-
-**Troubleshooting Steps:**
+The executable documentation gate is:
 
 ```bash
-# Step 1: Verify API key exists and is active
-# Via Web UI: Account → API Keys → Check status
-
-# Step 2: Test API key directly
-curl -v -X GET https://skymonitor.hvo.org/api/v1.0/status \
-  -H "X-API-Key: <api-key>"
-# Look for 401 response and response body for details
-
-# Step 3: Check token expiration
-# Decode JWT token
-echo '<jwt-token>' | cut -d. -f2 | base64 -d | jq .
-# Check 'exp' claim (Unix timestamp)
-
-# Step 4: Request new token
-curl -X POST https://skymonitor.hvo.org/connect/token \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=refresh_token" \
-  -d "refresh_token=<refresh-token>" \
-  -d "client_id=<client-id>"
-
-# Step 5: Check server logs for more details
-# Look for authentication handler errors
+./scripts/docs:audit-operations
+bash -n scripts/identity:smoke scripts/infra:start scripts/infra:reset \
+  scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra
+./scripts/test:infra
 ```
 
----
-
-### 403 Forbidden Errors
-
-**Common Causes:**
-
-1. **Insufficient Permissions**
-   ```
-   Symptom: "403 Forbidden" despite valid authentication
-   Cause: User/key lacks required role or scope
-   Solution: Grant appropriate permissions
-   ```
-
-2. **Account Type Mismatch**
-   ```
-   Symptom: "403 Forbidden" on endpoints requiring USER or SYSTEM account
-   Cause: SYSTEM account trying to access USER-only endpoint (or vice versa)
-   Solution: Use correct account type for the operation
-   ```
-
-3. **API Key Access Level Too Low**
-   ```
-   Symptom: "403 Forbidden" on write operations with Read-only key
-   Cause: API key has Read access but operation requires ReadWrite
-   Solution: Use ReadWrite API key or create new one
-   ```
-
-**Troubleshooting Steps:**
-
-```bash
-# Step 1: Check user/key permissions
-# Decode token to check scopes
-echo '<jwt-token>' | cut -d. -f2 | base64 -d | jq .scope
-
-# Step 2: Verify account type
-# Check 'account_type' claim in token
-echo '<jwt-token>' | cut -d. -f2 | base64 -d | jq .account_type
-
-# Step 3: Check API key access level
-# Via Web UI: Account → API Keys → View access level
-
-# Step 4: Review endpoint requirements
-# Check controller code for [Authorize] attributes and required policies
-
-# Step 5: Grant appropriate permissions
-# Via Admin Portal: Update user roles or API key access level
-```
-
----
-
-## Certificate Management
-
-### Monitoring Certificate Expiration
-
-**Automated Monitoring:**
-
-```bash
-# Add to monitoring system (Azure Monitor, Prometheus, etc.)
-# Alert 30 days before expiration
-
-# Check certificate expiration
-openssl x509 -in /path/to/cert.pem -noout -enddate
-
-# Check HTTPS endpoint certificate
-echo | openssl s_client -connect skymonitor.hvo.org:443 2>/dev/null | \
-  openssl x509 -noout -enddate
-```
-
-**Calendar Reminders:**
-- Set reminder 60 days before expiration
-- Set reminder 30 days before expiration
-- Set reminder 7 days before expiration
-
----
-
-### Certificate Renewal (Let's Encrypt)
-
-**Prerequisites:**
-- Certbot installed
-- DNS or HTTP challenge configured
-
-**Procedure:**
-
-```bash
-# Step 1: Test renewal (dry run)
-sudo certbot renew --dry-run
-
-# Step 2: Renew certificate
-sudo certbot renew
-
-# Step 3: Convert to PFX format
-sudo openssl pkcs12 -export \
-  -out /etc/letsencrypt/live/skymonitor.hvo.org/cert.pfx \
-  -inkey /etc/letsencrypt/live/skymonitor.hvo.org/privkey.pem \
-  -in /etc/letsencrypt/live/skymonitor.hvo.org/cert.pem \
-  -certfile /etc/letsencrypt/live/skymonitor.hvo.org/chain.pem \
-  -password pass:YourSecurePassword
-
-# Step 4: Upload to Key Vault
-az keyvault certificate import \
-  --vault-name hvo-skymonitor-prod \
-  --name https-cert \
-  --file /etc/letsencrypt/live/skymonitor.hvo.org/cert.pfx
-
-# Step 5: Restart application to pick up new certificate
-kubectl rollout restart deployment/skymonitor
-```
-
-**Automated Renewal:**
-
-```bash
-# Add to cron (runs twice daily)
-0 0,12 * * * sudo certbot renew --quiet --deploy-hook "/usr/local/bin/deploy-cert.sh"
-```
-
----
-
-## Monitoring & Alerts
-
-### Key Metrics to Monitor
-
-**Authentication Metrics:**
-- Token requests per minute (by client)
-- Authentication success/failure rate
-- API key usage (by key)
-- Active sessions count
-
-**Security Metrics:**
-- Failed login attempts (by IP, by user)
-- Rate limit violations
-- Signed URL validation failures
-- Certificate expiration dates
-
-**Performance Metrics:**
-- Token endpoint latency (p50, p95, p99)
-- API endpoint latency
-- Error rates (4xx, 5xx)
-
-### Setting Up Alerts
-
-**Critical Alerts (Immediate):**
-```
-- Certificate expiring in < 7 days
-- Authentication failure rate > 10% for 5 minutes
-- Rate limit violations from single IP > 100/min
-- System account login attempt (should be impossible)
-```
-
-**Warning Alerts (Next Business Day):**
-```
-- Certificate expiring in < 30 days
-- API key nearing expiration (< 14 days)
-- Unusual spike in token requests
-- New API key created by SYSTEM account
-```
-
-**Info Alerts (Weekly Digest):**
-```
-- New user accounts created
-- API keys created/deleted
-- Key rotation performed
-- Configuration changes
-```
-
-### Log Queries
-
-**Find failed authentication attempts:**
-```kusto
-AppEvents
-| where Name == "ApiKeyAuthenticationFailed" or Name == "LoginFailed"
-| where TimeGenerated > ago(1h)
-| summarize Count=count() by UserId, IpAddress
-| order by Count desc
-```
-
-**Find suspicious API key usage:**
-```kusto
-AppEvents  
-| where Name == "ApiKeyUsed"
-| where TimeGenerated > ago(24h)
-| summarize Count=count(), DistinctIPs=dcount(IpAddress) by ApiKeyId
-| where DistinctIPs > 5  // Same key used from many IPs
-```
-
-**Monitor token issuance rate:**
-```kusto
-AppEvents
-| where Name == "TokenIssued"
-| where TimeGenerated > ago(1h)
-| summarize Count=count() by bin(TimeGenerated, 1m), ClientId
-| order by TimeGenerated desc
-```
-
----
-
-## Summary
-
-This runbook covers the essential operational procedures for Identity Hardening:
-
-- ✅ Key rotation for OpenIddict, signed URLs, API keys
-- ✅ Account onboarding for users and system accounts
-- ✅ API key lifecycle management
-- ✅ Access revocation and offboarding
-- ✅ Security incident response
-- ✅ Troubleshooting authentication and authorization errors
-- ✅ Certificate management and renewal
-- ✅ Monitoring, metrics, and alerting
-
-For additional information:
-- See [../security/secrets.md](../security/secrets.md) for the consolidated secrets catalog and rotation cadence
-- See logs and metrics dashboards for real-time monitoring
-
-**Next Steps:**
-1. Review and familiarize with procedures
-2. Set up monitoring and alerts
-3. Schedule key rotations on calendar
-4. Conduct incident response drill
-5. Update procedures based on operational experience
+Behavioral evidence is provided by the existing Unit and Integration suites for
+token issuance, API-key/bearer protection, client reconciliation, device
+credential validation, CameraAgent bootstrap, dependency health, Redis, MinIO,
+and Mailpit. See [CI pipeline](../runbooks/ci-pipeline.md) for the canonical
+commands and [secrets guidance](../security/secrets.md) for the configuration
+catalog.

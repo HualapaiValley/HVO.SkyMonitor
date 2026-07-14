@@ -43,6 +43,12 @@ jobs:
           printf '%s  %s\n' '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757' /tmp/actionlint.tar.gz | sha256sum --check
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint .github/workflows/*.yml
+      - name: Audit identity and security operations guidance
+        run: |
+          bash -n scripts/docs:audit-operations scripts/identity:smoke scripts/user-secret:set scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra
+          ./scripts/docs:audit-operations
+          ./scripts/test:infra
+          SQLSERVER_PASSWORD=validation-only REDIS_PASSWORD=validation-only MINIO_ACCESS_KEY=validation-only MINIO_SECRET_KEY=validation-only CAMERA_AGENT_ADMIN_PASSWORD=validation-only-password CAMERA_AGENT_OAUTH_CLIENT_SECRET=validation-only-oauth-secret docker compose --env-file .env.template -f docker-compose.apps.yml config --quiet
       - name: Audit vulnerable and deprecated packages
         run: ./scripts/package:audit
       - name: Upload package audit

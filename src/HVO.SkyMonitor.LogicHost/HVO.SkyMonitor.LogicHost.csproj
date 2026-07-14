@@ -3,6 +3,7 @@
   <PropertyGroup>
     <AssemblyName>HVO.SkyMonitor.LogicHost</AssemblyName>
     <RootNamespace>HVO.SkyMonitor.LogicHost</RootNamespace>
+    <UserSecretsId>hvo-skymonitor-logichost</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>

@@ -91,8 +91,11 @@ You can pass specific services to `--rebuild` (for example `--rebuild logichost`
 ./scripts/with-env dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 
 # Camera agent
-dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
+./scripts/with-env dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 ```
+
+Configure the CameraAgent owner password with the protected prompt in
+[`docs/runbooks/local-dev.md`](docs/runbooks/local-dev.md) before its first run.
 
 This mode keeps hot reload and a faster edit/run cycle while still talking to the same SQL Server, Redis, and MinIO containers.
 
@@ -118,6 +121,8 @@ The devcontainer configuration includes:
 - **.NET 10 SDK** - Latest .NET SDK for building and running applications
 - **Docker CLI** - Manage host and remote Docker contexts from the dev container
 - **dotnet-ef CLI** - Pinned Entity Framework Core tooling installed automatically
+- **OpenCode CLI** - Checksum-verified, pinned CLI started automatically on loopback
+- **Tailscale CLI** - Signature-verified, pinned client started with accepted tailnet routes
 - **Command-line tools** - `jq`, `rg`, and `sqlite3` are installed during container setup
 - **C# Dev Kit** - Complete C# development experience with IntelliSense, debugging, and more
 - **GitHub Copilot** - AI-powered code completion and chat
@@ -131,7 +136,13 @@ The devcontainer configuration includes:
 
 ### OpenCode over Tailscale
 
-After installing and authenticating OpenCode and Tailscale through their verified distribution channels, expose the OpenCode server to authenticated devices on the tailnet:
+OpenCode and Tailscale are installed and started automatically. Their credentials and runtime identity are retained under the ignored `.devcontainer/state/` directory, so rebuilding the same workspace does not require authentication again.
+
+For first-time enrollment in a new clone, set a one-time `TAILSCALE_AUTHKEY` in `.env` or `.devcontainer/devcontainer.local.env` and keep that file mode `0600`. Remove the key after successful enrollment; the persisted node state replaces it. The startup script connects as `dev-host-skymonitor`, accepts advertised routes, starts OpenCode on loopback, and exposes it through tailnet-only HTTPS. Set `TAILSCALE_ACCEPT_ROUTES=false` only when advertised routes would conflict with another local network. Authenticate OpenCode providers once with `opencode auth login`; provider credentials then persist across rebuilds in the ignored state directory.
+
+The HTTPS endpoint also requires OpenCode Basic Auth. Its username is `opencode`; a random password is generated at `.devcontainer/state/opencode-data/server-password` and retained across rebuilds.
+
+To start or repair the services manually:
 
 ```bash
 ./scripts/opencode:enable
@@ -167,6 +178,7 @@ The following ports are automatically forwarded and accessible from your host ma
 
 - Copy `.env.template` to `.env` for Docker Compose. Only non-secret defaults live in version control.
 - Place per-developer overrides in `.devcontainer/devcontainer.local.env` (gitignored) and map them via the `remoteEnv` block in `.devcontainer/devcontainer.json`.
+- Treat `.devcontainer/state/` as secret local data. It survives rebuilds but not a fresh clone; restore it securely or re-enroll Tailscale and OpenCode after cloning.
 - Use `.NET` [user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets?view=aspnetcore-8.0&tabs=linux) for local debugging outside containers. The devcontainer mounts your host secrets folder automatically.
 - See `docs/security/secrets.md` for detailed workflows covering Testcontainers, Docker Compose, and production deployments.
 

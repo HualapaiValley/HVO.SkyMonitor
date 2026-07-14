@@ -19,7 +19,7 @@ public sealed class AuthenticationMetrics
         ArgumentNullException.ThrowIfNull(meter);
         _tokenRequestsCounter = meter.CreateCounter<long>(
             "auth.token_requests",
-            description: "Total number of OAuth2 token requests by client and grant type");
+            description: "Total number of OAuth2 token requests by grant type and result");
 
         _apiKeyAuthCounter = meter.CreateCounter<long>(
             "auth.apikey_authentication",
@@ -43,11 +43,10 @@ public sealed class AuthenticationMetrics
     /// <summary>
     /// Records an OAuth2 token request.
     /// </summary>
-    public void RecordTokenRequest(string clientId, string grantType, bool success, double durationMs)
+    public void RecordTokenRequest(string grantType, bool success, double durationMs)
     {
         var tags = new KeyValuePair<string, object?>[]
         {
-            new("client_id", clientId),
             new("grant_type", grantType),
             new("result", success ? "success" : "failure")
         };
@@ -59,7 +58,7 @@ public sealed class AuthenticationMetrics
     /// <summary>
     /// Records an API key authentication attempt.
     /// </summary>
-    public void RecordApiKeyAuthentication(string? keyId, bool success, string? accessLevel = null)
+    public void RecordApiKeyAuthentication(bool success, string? accessLevel = null)
     {
         var tagsList = new List<KeyValuePair<string, object?>>
         {

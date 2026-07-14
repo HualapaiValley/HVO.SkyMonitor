@@ -90,11 +90,11 @@ public class Program
 
         var localIdentitySettings = localIdentitySection.Get<LocalIdentityOptions>() ?? new LocalIdentityOptions();
         var identityDbPath = ResolveIdentityDatabasePath(localIdentitySettings.DatabasePath, builder.Environment.ContentRootPath);
-        Directory.CreateDirectory(Path.GetDirectoryName(identityDbPath)!);
+        DeviceStateFilePermissions.RestrictDirectory(Path.GetDirectoryName(identityDbPath)!);
         var identityConnectionString = $"Data Source={identityDbPath}";
 
         var dataProtectionPath = Path.Combine(builder.Environment.ContentRootPath, "DataProtection-Keys");
-        Directory.CreateDirectory(dataProtectionPath);
+        DeviceStateFilePermissions.RestrictDirectory(dataProtectionPath);
         builder.Services.AddDataProtection()
             .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath));
 
@@ -255,6 +255,7 @@ public class Program
         {
             var seeder = scope.ServiceProvider.GetRequiredService<CameraAgentIdentitySeeder>();
             await seeder.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            DeviceStateFilePermissions.RestrictFile(identityDbPath);
         }
 
         await app.RunAsync().ConfigureAwait(false);

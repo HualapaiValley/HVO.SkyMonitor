@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# Restore a checked application-state archive while retaining a local rollback copy.
+
+set -euo pipefail
+umask 077
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+[[ $# -eq 1 ]] || {
+    printf 'Usage: %s APPLICATION_STATE_ARCHIVE\n' "$0" >&2
+    exit 1
+}
+
+runtime_root_was_set=false
+runtime_root_override=""
+if [[ -v HVO_RUNTIME_DATA_ROOT ]]; then
+    runtime_root_was_set=true
+    runtime_root_override="$HVO_RUNTIME_DATA_ROOT"
+fi
+if [[ -f .env ]]; then
+    set -a
+    source .env
+    set +a
+fi
+if [[ "$runtime_root_was_set" == true ]]; then
+    HVO_RUNTIME_DATA_ROOT="$runtime_root_override"
+fi
+
+readonly RUNTIME_DATA_ROOT="$(realpath -m "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
+readonly ARCHIVE="$(realpath "$1")"
+readonly CHECKSUM="$ARCHIVE.sha256"
+if [[ -z "$RUNTIME_DATA_ROOT" || "$RUNTIME_DATA_ROOT" == "/" ]]; then
+    printf 'Refusing unsafe runtime data root: %s\n' "$RUNTIME_DATA_ROOT" >&2
+    exit 1
+fi
+[[ -f "$CHECKSUM" ]] || {
+    printf 'Checksum manifest not found: %s\n' "$CHECKSUM" >&2
+    exit 1
+}
+mapfile -t checksum_lines < "$CHECKSUM"
+if [[ ${#checksum_lines[@]} -ne 1 ]]; then
+    printf 'Checksum manifest must contain exactly one entry.\n' >&2
+    exit 1
+fi
+read -r expected_digest expected_name extra <<< "${checksum_lines[0]}"
+expected_name="${expected_name#\*}"
+if [[ -n "${extra:-}" || "$expected_name" != "$(basename "$ARCHIVE")" ]]; then
+    printf 'Checksum manifest does not name the selected archive.\n' >&2
+    exit 1
+fi
+actual_digest="$(sha256sum "$ARCHIVE")"
+actual_digest="${actual_digest%% *}"
+if [[ "$actual_digest" != "$expected_digest" ]]; then
+    printf 'Application-state archive checksum mismatch.\n' >&2
+    exit 1
+fi
+
+archive_listing="$(tar --list --gzip --file "$ARCHIVE")"
+while IFS= read -r entry; do
+    case "$entry" in
+        /*|../*|*/../*|..)
+            printf 'Archive contains unsafe path: %s\n' "$entry" >&2
+            exit 1
+            ;;
+    esac
+done <<< "$archive_listing"
+archive_verbose_listing="$(tar --list --verbose --numeric-owner --gzip --file "$ARCHIVE")"
+while IFS= read -r entry; do
+    case "${entry:0:1}" in
+        -|d) ;;
+        *)
+            printf 'Archive contains unsupported link or special entry: %s\n' "$entry" >&2
+            exit 1
+            ;;
+    esac
+done <<< "$archive_verbose_listing"
+
+readonly RUNTIME_PARENT="$(dirname "$RUNTIME_DATA_ROOT")"
+if [[ ! -d "$RUNTIME_PARENT" ]]; then
+    install -d -m 700 "$RUNTIME_PARENT"
+fi
+STAGING_DIRECTORY="$(mktemp -d "$RUNTIME_PARENT/.hvo-restore.XXXXXX")"
+ROLLBACK_DIRECTORY="$RUNTIME_DATA_ROOT.rollback.$(date -u +%Y%m%dT%H%M%SZ)"
+stopped=false
+old_state_moved=false
+new_state_installed=false
+
+wait_for_logic_host() {
+    if [[ "${HVO_SKIP_RUNTIME_HEALTHCHECK:-false}" == "true" ]]; then
+        return 0
+    fi
+
+    local logic_host_url="${LOGIC_HOST_URL:-http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}}"
+    for _ in {1..60}; do
+        if curl --silent --show-error --fail --output /dev/null "${logic_host_url%/}/alive"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+rollback_on_error() {
+    local status=$?
+    trap - EXIT
+    if [[ $status -ne 0 ]]; then
+        if [[ "$stopped" == true ]]; then
+            "$SCRIPT_DIR/infra:stop" logichost cameraagent >/dev/null 2>&1 || true
+        fi
+        if [[ "$new_state_installed" == true ]]; then
+            rm -rf -- "$RUNTIME_DATA_ROOT"
+        fi
+        if [[ "$old_state_moved" == true ]]; then
+            mv -- "$ROLLBACK_DIRECTORY" "$RUNTIME_DATA_ROOT"
+        fi
+    fi
+    rm -rf -- "$STAGING_DIRECTORY"
+    if [[ "$stopped" == true ]]; then
+        if "$SCRIPT_DIR/infra:start" logichost && wait_for_logic_host; then
+            "$SCRIPT_DIR/infra:start" cameraagent
+        fi
+    fi
+    exit "$status"
+}
+trap rollback_on_error EXIT
+
+tar --extract --gzip --file "$ARCHIVE" --directory "$STAGING_DIRECTORY" --no-same-owner
+for relative_path in \
+    logichost/dataprotection \
+    logichost/home \
+    cameraagent/identity \
+    cameraagent/dataprotection \
+    cameraagent/provisioning \
+    agent \
+    archive; do
+    if [[ ! -d "$STAGING_DIRECTORY/$relative_path" || -L "$STAGING_DIRECTORY/$relative_path" ]]; then
+        printf 'Archive is missing required runtime directory: %s\n' "$relative_path" >&2
+        exit 1
+    fi
+done
+"$SCRIPT_DIR/infra:stop" logichost cameraagent
+stopped=true
+if [[ -e "$RUNTIME_DATA_ROOT" ]]; then
+    mv -- "$RUNTIME_DATA_ROOT" "$ROLLBACK_DIRECTORY"
+    old_state_moved=true
+fi
+mv -- "$STAGING_DIRECTORY" "$RUNTIME_DATA_ROOT"
+new_state_installed=true
+
+for directory in \
+    "$RUNTIME_DATA_ROOT/logichost/dataprotection" \
+    "$RUNTIME_DATA_ROOT/logichost/home" \
+    "$RUNTIME_DATA_ROOT/cameraagent/identity" \
+    "$RUNTIME_DATA_ROOT/cameraagent/dataprotection" \
+    "$RUNTIME_DATA_ROOT/cameraagent/provisioning" \
+    "$RUNTIME_DATA_ROOT/agent" \
+    "$RUNTIME_DATA_ROOT/archive"; do
+    install -d -m 700 "$directory"
+    chmod 700 "$directory"
+done
+
+"$SCRIPT_DIR/infra:start" logichost
+if ! wait_for_logic_host; then
+    printf 'LogicHost did not become healthy after restore.\n' >&2
+    exit 1
+fi
+"$SCRIPT_DIR/infra:start" cameraagent
+stopped=false
+trap - EXIT
+
+printf 'Restored application state from %s\n' "$ARCHIVE"
+if [[ "$old_state_moved" == true ]]; then
+    printf 'Rollback state retained at %s until validation completes.\n' "$ROLLBACK_DIRECTORY"
+fi

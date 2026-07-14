@@ -8,6 +8,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 source "$SCRIPT_DIR/load-repo-env.sh"
+unset TAILSCALE_AUTHKEY
 
 # Refresh the persisted key after local developer secrets have been loaded.
 if ! bash "$SCRIPT_DIR/setup-ssh-key.sh"; then
@@ -29,4 +30,8 @@ if command -v docker >/dev/null 2>&1; then
                 --docker "host=$context_endpoint"
         fi
     done
+fi
+
+if ! "$REPO_ROOT/scripts/opencode:enable"; then
+    echo "[post-start] OpenCode over Tailscale did not start; see the message above." >&2
 fi

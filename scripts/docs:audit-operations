@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Check active identity/security guidance for stale commands and source drift.
+
+set -euo pipefail
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+readonly DOCS=(
+    docs/identity/overview.md
+    docs/identity/operations-runbook.md
+    docs/security/secrets.md
+    docs/runbooks/infra-operations.md
+    docs/runbooks/local-dev.md
+)
+
+forbidden_command='^[[:space:]]*(\$[[:space:]]+)?(pg_dump|psql|kubectl|az[[:space:]]+keyvault|redis-cli[^#]*(FLUSHDB|FLUSHALL)|docker[^#]*[[:space:]]env([[:space:]]|$))'
+if grep -Eni "$forbidden_command" "${DOCS[@]}"; then
+    printf 'Active operations guidance contains a prohibited command.\n' >&2
+    exit 1
+fi
+
+if grep -En '/api/v1\.0/frame/' "${DOCS[@]}"; then
+    printf 'Active operations guidance contains the obsolete singular frame route.\n' >&2
+    exit 1
+fi
+
+if grep -En 'Historical and non-executable|quarantined historical' "${DOCS[@]}"; then
+    printf 'Active identity guidance still describes the replacement runbook as quarantined.\n' >&2
+    exit 1
+fi
+
+if grep -En 'MINIO_ROOT_(USER|PASSWORD)' docs/runbooks/local-dev.md; then
+    printf 'Local application troubleshooting must use the scoped MinIO account.\n' >&2
+    exit 1
+fi
+
+if grep -ERn --exclude-dir=bin --exclude-dir=obj --include='appsettings*.json' \
+    '"(AdminPassword|ClientSecret|AccessKey|SecretKey|Key)"[[:space:]]*:[[:space:]]*"[^"[:space:]]+"' \
+    src/HVO.SkyMonitor.CameraAgent src/HVO.SkyMonitor.LogicHost; then
+    printf 'Application appsettings contains a usable committed credential.\n' >&2
+    exit 1
+fi
+
+require_source_reference() {
+    local value="$1"
+    local source_file="$2"
+    if ! grep -Fq -- "$value" "$source_file"; then
+        printf 'Documented value %s is missing from %s.\n' "$value" "$source_file" >&2
+        exit 1
+    fi
+}
+
+require_source_reference '[HttpGet("detailed")]' src/HVO.SkyMonitor.LogicHost/Controllers/StatusController.cs
+require_source_reference '[HttpGet("protected")]' src/HVO.SkyMonitor.LogicHost/Controllers/StatusController.cs
+require_source_reference '/connect/token' src/HVO.SkyMonitor.LogicHost/Program.cs
+require_source_reference 'X-API-Key' src/HVO.SkyMonitor.Common/Security/ApiKeyAuthenticationOptions.cs
+require_source_reference 'Redis__InstanceName: "skymonitor:"' docker-compose.apps.yml
+require_source_reference 'skymonitor-diagnostics' deploy/hvo-docker/minio/skymonitor-policy.json
+require_source_reference 'skymonitor-artifacts' deploy/hvo-docker/minio/skymonitor-policy.json
+require_source_reference 'DeviceProvisioning__StateDirectory: /app/data/provisioning' docker-compose.apps.yml
+require_source_reference 'DeviceBootstrap__CentralIdentity__ClientCredentials__ClientSecret' docker-compose.apps.yml
+
+for document in "${DOCS[@]}"; do
+    while IFS= read -r target; do
+        case "$target" in
+            ''|'#'*|http://*|https://*|mailto:*) continue ;;
+        esac
+        target="${target%%#*}"
+        if [[ ! -e "$(dirname "$document")/$target" ]]; then
+            printf 'Broken relative link in %s: %s\n' "$document" "$target" >&2
+            exit 1
+        fi
+    done < <(perl -ne 'while (/\]\(([^)]+)\)/g) { print "$1\n" }' "$document")
+done
+
+printf 'Identity and security operations documentation audit passed.\n'

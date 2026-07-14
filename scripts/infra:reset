@@ -8,6 +8,59 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+runtime_root_was_set=false
+runtime_root_override=""
+if [[ -v HVO_RUNTIME_DATA_ROOT ]]; then
+    runtime_root_was_set=true
+    runtime_root_override="$HVO_RUNTIME_DATA_ROOT"
+fi
+if [[ -f .env ]]; then
+    set -a
+    source .env
+    set +a
+fi
+if [[ "$runtime_root_was_set" == true ]]; then
+    HVO_RUNTIME_DATA_ROOT="$runtime_root_override"
+fi
+
+readonly RUNTIME_DATA_ROOT="$(realpath -m "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
+if [[ -z "$RUNTIME_DATA_ROOT" || "$RUNTIME_DATA_ROOT" == "/" ]]; then
+    printf 'Refusing unsafe runtime data root: %s\n' "$RUNTIME_DATA_ROOT" >&2
+    exit 1
+fi
+export HVO_RUNTIME_DATA_ROOT="$RUNTIME_DATA_ROOT"
+export LOCAL_UID="$(id -u)"
+export LOCAL_GID="$(id -g)"
+
+validate_runtime_directory() {
+    local directory="$1"
+    if [[ "$(realpath -m "$directory")" != "$directory" ]]; then
+        printf 'Refusing runtime path through a symbolic link: %s\n' "$directory" >&2
+        exit 1
+    fi
+}
+
+reset_runtime_directory() {
+    local directory="$1"
+    case "$directory" in
+        "$RUNTIME_DATA_ROOT/logichost/dataprotection"|\
+        "$RUNTIME_DATA_ROOT/logichost/home"|\
+        "$RUNTIME_DATA_ROOT/cameraagent/identity"|\
+        "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"|\
+        "$RUNTIME_DATA_ROOT/cameraagent/provisioning"|\
+        "$RUNTIME_DATA_ROOT/agent"|\
+        "$RUNTIME_DATA_ROOT/archive") ;;
+        *)
+            printf 'Refusing to reset unexpected path: %s\n' "$directory" >&2
+            exit 1
+            ;;
+    esac
+    validate_runtime_directory "$directory"
+    rm -rf -- "$directory"
+    install -d -m 700 "$directory"
+    chmod 700 "$directory"
+}
+
 services=("$@")
 [[ ${#services[@]} -gt 0 ]] || {
     echo "Usage: $0 [logichost|cameraagent|all]" >&2
@@ -22,7 +75,28 @@ for service in "${services[@]}"; do
     }
 done
 
+for service in "${services[@]}"; do
+    if [[ "$service" == "logichost" ]]; then
+        validate_runtime_directory "$RUNTIME_DATA_ROOT/logichost/dataprotection"
+        validate_runtime_directory "$RUNTIME_DATA_ROOT/logichost/home"
+    else
+        validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/identity"
+        validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"
+        validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/provisioning"
+        validate_runtime_directory "$RUNTIME_DATA_ROOT/agent"
+        validate_runtime_directory "$RUNTIME_DATA_ROOT/archive"
+    fi
+done
+
 docker compose -f docker-compose.apps.yml rm -sf "${services[@]}"
+if [[ " ${services[*]} " == *" logichost "* ]]; then
+    reset_runtime_directory "$RUNTIME_DATA_ROOT/logichost/dataprotection"
+    reset_runtime_directory "$RUNTIME_DATA_ROOT/logichost/home"
+fi
 if [[ " ${services[*]} " == *" cameraagent "* ]]; then
-    rm -f data/cameraagent/identity/* data/cameraagent/dataprotection/* 2>/dev/null || true
+    reset_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/identity"
+    reset_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"
+    reset_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/provisioning"
+    reset_runtime_directory "$RUNTIME_DATA_ROOT/agent"
+    reset_runtime_directory "$RUNTIME_DATA_ROOT/archive"
 fi

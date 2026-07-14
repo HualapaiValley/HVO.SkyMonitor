@@ -5,19 +5,33 @@
 set -euo pipefail
 
 readonly OPENCODE_PID_FILE="/tmp/skymonitor-opencode.pid"
+readonly OPENCODE_PID_METADATA_FILE="/tmp/skymonitor-opencode.pid.meta"
+readonly OPENCODE_PROCESS_METADATA_VERSION="1"
 
 if command -v tailscale >/dev/null 2>&1 && pgrep -x tailscaled >/dev/null 2>&1; then
-    sudo tailscale serve --https=443 off
+    tailscale serve --https=443 off
     echo "Disabled the Tailscale OpenCode proxy."
 fi
 
 if [[ -f "$OPENCODE_PID_FILE" ]]; then
     opencode_pid="$(<"$OPENCODE_PID_FILE")"
-    if kill -0 "$opencode_pid" 2>/dev/null; then
-        kill "$opencode_pid"
-        echo "Stopped OpenCode (PID $opencode_pid)."
+    if [[ "$opencode_pid" =~ ^[0-9]+$ ]] && [[ -f "$OPENCODE_PID_METADATA_FILE" ]]; then
+        opencode_command="$(ps -p "$opencode_pid" -o args= 2>/dev/null || true)"
+        opencode_start_time="$(ps -p "$opencode_pid" -o lstart= 2>/dev/null || true)"
+        mapfile -t opencode_metadata < "$OPENCODE_PID_METADATA_FILE"
+        if kill -0 "$opencode_pid" 2>/dev/null \
+            && [[ "${opencode_metadata[0]:-}" == "$OPENCODE_PROCESS_METADATA_VERSION" ]] \
+            && [[ "${opencode_metadata[1]:-}" == "$opencode_start_time" ]] \
+            && [[ "$opencode_command" == *"opencode serve"* ]]; then
+            kill "$opencode_pid"
+            echo "Stopped OpenCode (PID $opencode_pid)."
+        elif kill -0 "$opencode_pid" 2>/dev/null; then
+            echo "PID $opencode_pid is not OpenCode; leaving that process running." >&2
+        fi
+    else
+        echo "Ignoring invalid OpenCode PID file." >&2
     fi
-    rm -f "$OPENCODE_PID_FILE"
+    rm -f "$OPENCODE_PID_FILE" "$OPENCODE_PID_METADATA_FILE"
 else
     echo "No OpenCode process was started by ./scripts/opencode:enable."
 fi

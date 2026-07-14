@@ -2,7 +2,6 @@ using System;
 using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.Linq;
-using System.Security.Cryptography;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Components.Account.IdentityShared;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -37,13 +36,10 @@ public sealed partial class ApiKeys
     private ApplicationDbContext DbContext { get; set; } = default!;
 
     [Inject]
-    private IApiKeyHasher KeyHasher { get; set; } = default!;
+    private IApiKeyLifecycleService LifecycleService { get; set; } = default!;
 
     [Inject]
     private ILogger<ApiKeys> Logger { get; set; } = default!;
-
-    [Inject]
-    private IApiKeyAuditLogger AuditLogger { get; set; } = default!;
 
     [CascadingParameter]
     private HttpContext HttpContext { get; set; } = default!;
@@ -95,29 +91,15 @@ public sealed partial class ApiKeys
                 expiresUtc = expiresOffset;
             }
 
-            var plainKey = GenerateApiKeySecret();
-            var hashedKey = KeyHasher.Hash(plainKey);
+            var result = await LifecycleService.CreateAsync(
+                user.Id,
+                user.Email ?? user.UserName ?? user.Id,
+                GetDisplayName(model.DisplayName, now),
+                model.AccessLevel,
+                expiresUtc,
+                HttpContext.RequestAborted);
 
-            var entity = new ApiKey
-            {
-                Id = Guid.NewGuid().ToString("n"),
-                UserId = user.Id,
-                DisplayName = GetDisplayName(model.DisplayName, now),
-                AccessLevel = model.AccessLevel,
-                HashedKey = hashedKey,
-                CreatedUtc = now,
-                ExpiresUtc = expiresUtc,
-                CreatedBy = user.Email ?? user.UserName ?? user.Id,
-                IsActive = true
-            };
-
-            DbContext.ApiKeys.Add(entity);
-            await DbContext.SaveChangesAsync(HttpContext.RequestAborted);
-
-            // Audit log the key creation
-            AuditLogger.LogKeyCreated(entity.Id, user.Id, entity.DisplayName, entity.AccessLevel.ToString(), entity.ExpiresUtc);
-
-            generatedPlaintextKey = plainKey;
+            generatedPlaintextKey = result.PlaintextKey;
             statusMessage = "New API key created. Copy it now before navigating away.";
             Input = new();
 
@@ -148,20 +130,11 @@ public sealed partial class ApiKeys
 
         try
         {
-            var key = await DbContext.ApiKeys.FirstOrDefaultAsync(
-                k => k.Id == keyId && k.UserId == user.Id,
-                HttpContext.RequestAborted);
-            if (key is null)
+            if (!await LifecycleService.DeleteAsync(user.Id, keyId, HttpContext.RequestAborted))
             {
                 statusMessage = "Error: API key not found.";
                 return;
             }
-
-            DbContext.ApiKeys.Remove(key);
-            await DbContext.SaveChangesAsync(HttpContext.RequestAborted);
-
-            // Audit log the key deletion
-            AuditLogger.LogKeyDeleted(key.Id, user.Id, key.DisplayName);
 
             statusMessage = "API key deleted.";
             await LoadKeysAsync(HttpContext.RequestAborted);
@@ -191,32 +164,23 @@ public sealed partial class ApiKeys
 
         try
         {
-            var key = await DbContext.ApiKeys.FirstOrDefaultAsync(
-                k => k.Id == keyId && k.UserId == user.Id,
-                HttpContext.RequestAborted);
-            if (key is null)
+            var currentState = apiKeys.FirstOrDefault(key => key.Id == keyId)?.IsActive;
+            if (currentState is null)
             {
                 statusMessage = "Error: API key not found.";
                 return;
             }
 
-            if (key.IsActive == desiredState)
+            if (currentState == desiredState)
             {
                 statusMessage = desiredState ? "API key is already active." : "API key is already inactive.";
                 return;
             }
 
-            key.IsActive = desiredState;
-            await DbContext.SaveChangesAsync(HttpContext.RequestAborted);
-
-            // Audit log the key state change
-            if (desiredState)
+            if (!await LifecycleService.SetActiveAsync(user.Id, keyId, desiredState, HttpContext.RequestAborted))
             {
-                AuditLogger.LogKeyActivated(key.Id, user.Id, key.DisplayName);
-            }
-            else
-            {
-                AuditLogger.LogKeyDeactivated(key.Id, user.Id, key.DisplayName);
+                statusMessage = "Error: API key not found.";
+                return;
             }
 
             statusMessage = desiredState ? "API key activated." : "API key deactivated.";
@@ -255,13 +219,6 @@ public sealed partial class ApiKeys
         apiKeys = items.OrderByDescending(key => key.CreatedAtUtc).ToList();
     }
 
-    private static string GenerateApiKeySecret()
-    {
-        Span<byte> buffer = stackalloc byte[32];
-        RandomNumberGenerator.Fill(buffer);
-        return $"smk_{Convert.ToHexString(buffer).ToLowerInvariant()}";
-    }
-
     private static string GetAccessLevelLabel(ApiKeyAccessLevel level) => level switch
     {
         ApiKeyAccessLevel.Read => "Read",
@@ -295,6 +252,7 @@ public sealed partial class ApiKeys
         public string? DisplayName { get; set; }
 
         [Required]
+        [EnumDataType(typeof(ApiKeyAccessLevel))]
         [Display(Name = "Access level")]
         public ApiKeyAccessLevel AccessLevel { get; set; } = ApiKeyAccessLevel.Read;
 

@@ -92,12 +92,17 @@ internal sealed class CameraAgentIdentitySeeder(
 
         if (!await userManager.CheckPasswordAsync(user, _options.AdminPassword))
         {
+            IdentityResult resetResult;
             if (await userManager.HasPasswordAsync(user))
             {
-                await userManager.RemovePasswordAsync(user);
+                var resetToken = await userManager.GeneratePasswordResetTokenAsync(user);
+                resetResult = await userManager.ResetPasswordAsync(user, resetToken, _options.AdminPassword);
+            }
+            else
+            {
+                resetResult = await userManager.AddPasswordAsync(user, _options.AdminPassword);
             }
 
-            var resetResult = await userManager.AddPasswordAsync(user, _options.AdminPassword);
             if (!resetResult.Succeeded)
             {
                 var errors = string.Join(", ", resetResult.Errors.Select(e => e.Description));

@@ -53,6 +53,8 @@ internal sealed class DeviceSecretStore(
             return null;
         }
 
+        DeviceStateFilePermissions.RestrictDirectory(Path.GetDirectoryName(path)!);
+        DeviceStateFilePermissions.RestrictFile(path);
         await using var stream = File.OpenRead(path);
         using var reader = new StreamReader(stream);
         var protectedPayload = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
@@ -65,12 +67,13 @@ internal sealed class DeviceSecretStore(
         ArgumentNullException.ThrowIfNull(secrets);
 
         var path = options.GetSecretsPath();
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        DeviceStateFilePermissions.RestrictDirectory(Path.GetDirectoryName(path)!);
 
         var json = JsonSerializer.Serialize(secrets, SerializerOptions);
         var protectedPayload = protector.Protect(json);
 
         await File.WriteAllTextAsync(path, protectedPayload, cancellationToken).ConfigureAwait(false);
+        DeviceStateFilePermissions.RestrictFile(path);
         if (logger.IsEnabled(LogLevel.Information))
         {
             logger.LogInformation("Persisted device secrets for {DevicePublicId}", secrets.DevicePublicId);

@@ -32,8 +32,8 @@ narratives without deleting normative requirements or reproducibility evidence.
 | `docs/catalog/*.md` | Catalog and constellation provenance | Same files | Retain immutable provenance |
 | `docs/reference-code.md` | Commit-pinned legacy source map and porting policy | Same file | Retain reference only |
 | `docs/identity/overview.md` | Registration/bootstrap architecture and local identity boundary | Same file; open production rollout/security work moves to plan/issues | Retain and remove live phase status under #90 |
-| `docs/identity/operations-runbook.md` | Historical operational intent only | #120 replaces PostgreSQL/Kubernetes/Azure-only commands with SQL Server/Compose/current routes | Retain quarantined until validated replacement; do not execute stale sections |
-| `docs/security/secrets.md` | Local/CI secret guidance and secret catalog | Same file; mark conditional providers as target state | Retain and correct under #109 |
+| `docs/identity/operations-runbook.md` | Current source-validated identity and security operations | Same file; SQL Server/Compose/current routes replaced the historical procedures under #120 | Retain as active runbook; unsupported controls are explicit implementation gaps |
+| `docs/security/secrets.md` | Consumed secret catalog, supported providers, scope, rotation capability, and leakage controls | Same file | Retain as active guidance; optional providers must not be presented as implemented |
 | `docs/runbooks/ci-pipeline.md` | Current CI reproduction | Same file plus `QA-*` requirements | Retain and update under #109 |
 | `docs/runbooks/local-dev.md` | Daily local workflow | Same file | Retain and update after categories/catalog/storage change |
 | `docs/runbooks/infra-operations.md` | Current shared-service and application-container operations | Same file plus `OPS-*` requirements | Retain and correct fixture/full catalog and persistent storage under #109 |

@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+    <UserSecretsId>hvo-skymonitor-cameraagent</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>

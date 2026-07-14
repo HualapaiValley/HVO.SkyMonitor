@@ -9,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Services.Models;
 using HVO.SkyMonitor.Common.Identity;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using Moq;
 using Moq.Protected;
 
@@ -106,6 +107,48 @@ public sealed class DeviceBootstrapWorkflowTests
         mockSeeder.Verify(
             seeder => seeder.SeedAsync(identity, It.Is<DeviceSecrets>(s => s.RigProfileEndpoint == secretsPayload.RigProfileEndpoint), It.IsAny<CancellationToken>()),
             Times.Once);
+    }
+
+    [TestMethod]
+    public async Task BootstrapAsync_WhenRejected_DoesNotLogResponseBody()
+    {
+        const string sensitiveDetail = "sensitive-bootstrap-response";
+        var mockHttpMessageHandler = new Mock<HttpMessageHandler>();
+        mockHttpMessageHandler.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(() => new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent(sensitiveDetail)
+            });
+
+        using var httpClient = new HttpClient(mockHttpMessageHandler.Object, disposeHandler: false)
+        {
+            BaseAddress = new Uri("https://logichost.example/")
+        };
+        var mockHttpClientFactory = new Mock<IHttpClientFactory>();
+        mockHttpClientFactory.Setup(factory => factory.CreateClient(It.IsAny<string>())).Returns(httpClient);
+        var mockIdentityStore = new Mock<IDeviceIdentityStore>();
+        mockIdentityStore
+            .Setup(store => store.GetOrCreateAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DeviceIdentity("device-123", "SELFATTEST", DateTimeOffset.UtcNow));
+        var logger = new Mock<ILogger<DeviceBootstrapWorkflow>>();
+
+        var workflow = new DeviceBootstrapWorkflow(
+            mockHttpClientFactory.Object,
+            mockIdentityStore.Object,
+            Mock.Of<IDeviceSecretStore>(),
+            Mock.Of<IDeviceRigProfileSeeder>(),
+            logger.Object);
+
+        await Assert.ThrowsAsync<HttpRequestException>(
+            () => workflow.BootstrapAsync("envelope", CancellationToken.None)).ConfigureAwait(false);
+
+        Assert.IsFalse(logger.Invocations.Any(invocation =>
+            invocation.Arguments.Any(argument =>
+                argument?.ToString()?.Contains(sensitiveDetail, StringComparison.Ordinal) == true)));
     }
 
     private static string CreateDeviceKeyBase64()

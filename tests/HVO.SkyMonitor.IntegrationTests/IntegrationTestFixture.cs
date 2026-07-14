@@ -165,8 +165,17 @@ public sealed class IntegrationTestFixture : IDisposable
                         ["Smtp:Host"] = _smtpHost,
                         ["Smtp:Port"] = smtpPort.ToString(CultureInfo.InvariantCulture),
                         ["Smtp:From"] = TestEmail.FromAddress,
-                        ["Smtp:FromDisplayName"] = TestEmail.FromDisplayName
+                        ["Smtp:FromDisplayName"] = TestEmail.FromDisplayName,
+                        ["DeviceBootstrap:CentralIdentity:ServiceUrl"] = "https://logichost.integration",
+                        ["DeviceBootstrap:CentralIdentity:Mode"] = "ClientCredentials",
+                        ["DeviceBootstrap:CentralIdentity:ClientCredentials:ClientId"] = TestClients.SystemCameraAgent.ClientId,
+                        ["DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret"] = TestClients.SystemCameraAgent.ClientSecret
                     };
+
+                    AddValues(
+                        "DeviceBootstrap:CentralIdentity:ClientCredentials:Scopes",
+                        TestClients.SystemCameraAgent.Scopes,
+                        overrides);
 
                     AddDatabaseSeedOverrides(overrides);
 
@@ -291,6 +300,17 @@ public sealed class IntegrationTestFixture : IDisposable
             {
                 overrides[$"{prefix}:{index}"] = values[index];
             }
+        }
+    }
+
+    private static void AddValues(
+        string prefix,
+        string[] values,
+        Dictionary<string, string?> overrides)
+    {
+        for (var index = 0; index < values.Length; index++)
+        {
+            overrides[$"{prefix}:{index}"] = values[index];
         }
     }
 

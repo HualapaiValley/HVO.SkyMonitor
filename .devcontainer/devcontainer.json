@@ -73,22 +73,10 @@
   },
   // Environment variables for dev container (non-sensitive only)
   // Secrets should be provided via User Secrets or .devcontainer/devcontainer.local.env (gitignored)
-  // See docs/security/secrets-guide.md for comprehensive secret management
+  // See docs/security/secrets.md for comprehensive secret management
   "containerEnv": {
     "ASPNETCORE_ENVIRONMENT": "Development",
-    "DOTNET_ENVIRONMENT": "Development",
-    // Identity Hardening - Rate Limiting Configuration (non-sensitive)
-    "RATE_LIMIT_TOKEN_ENDPOINT_PERMITS_PER_MINUTE": "60",
-    "RATE_LIMIT_TOKEN_ENDPOINT_QUEUE_LIMIT": "10",
-    "RATE_LIMIT_API_ENDPOINT_PERMITS_PER_MINUTE": "1000",
-    "RATE_LIMIT_GLOBAL_PERMITS_PER_MINUTE": "10000",
-    // Identity Hardening - Signed URL Configuration (non-sensitive)
-    "SIGNED_TICKET_DEFAULT_TTL_SECONDS": "300",
-    "SIGNED_TICKET_MAX_CLOCK_SKEW_SECONDS": "30",
-    "SIGNED_TICKET_ENFORCE_ALLOWED_PATHS": "true",
-    // Logging Configuration (non-sensitive)
-    "LOGGING_LOGLEVEL_DEFAULT": "Information",
-    "LOGGING_LOGLEVEL_MICROSOFT_ASPNETCORE": "Warning"
+    "DOTNET_ENVIRONMENT": "Development"
   },
   "remoteEnv": {
     // Forward GitHub token from host so gh CLI works without re-auth
@@ -144,9 +132,9 @@
   "otherPortsAttributes": {
     "onAutoForward": "silent"
   },
-  // Ensure host-side secrets directory exists to avoid bind mount errors
-  "initializeCommand": "mkdir -p \"$HOME/.microsoft/usersecrets\"",
-  // Mount the host user-secrets store into the container.
+  // Ensure host-side secret and durable-state directories exist before mounting.
+  "initializeCommand": "bash .devcontainer/initialize.sh",
+  // Mount the host user-secrets store and ignored developer-tool state.
   "mounts": [
     {
       "type": "volume",
@@ -162,6 +150,21 @@
       "type": "volume",
       "source": "hvo-skymonitor-ssh-config",
       "target": "/home/vscode/.ssh"
+    },
+    {
+      "type": "bind",
+      "source": "${localWorkspaceFolder}/.devcontainer/state/tailscale",
+      "target": "/var/lib/tailscale"
+    },
+    {
+      "type": "bind",
+      "source": "${localWorkspaceFolder}/.devcontainer/state/opencode-config",
+      "target": "/home/vscode/.config/opencode"
+    },
+    {
+      "type": "bind",
+      "source": "${localWorkspaceFolder}/.devcontainer/state/opencode-data",
+      "target": "/home/vscode/.local/share/opencode"
     }
   ],
   "postCreateCommand": "bash .devcontainer/post-create.sh",
