@@ -28,6 +28,23 @@ public sealed class FileSystemFrameStorageService(
         string storageRoot,
         FrameArtifact artifact,
         CancellationToken cancellationToken)
+        => await SaveCoreAsync(storageRoot, artifact, null, cancellationToken).ConfigureAwait(false);
+
+    public async ValueTask<StoredFrameReference> SaveAsync(
+        string storageRoot,
+        FrameArtifact artifact,
+        ReconstructionDescriptor descriptor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        return await SaveCoreAsync(storageRoot, artifact, descriptor, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<StoredFrameReference> SaveCoreAsync(
+        string storageRoot,
+        FrameArtifact artifact,
+        ReconstructionDescriptor? descriptor,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
         ArgumentNullException.ThrowIfNull(artifact);
@@ -43,13 +60,9 @@ public sealed class FileSystemFrameStorageService(
             timestamp.Day.ToString("D2", CultureInfo.InvariantCulture),
             artifact.Role.ToString());
 
-        Directory.CreateDirectory(directory);
-
         var stem = string.Concat(timestamp.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture), "-", artifact.ArtifactId.ToString("N"));
 
         var payloadPath = Path.Combine(directory, string.Concat(stem, ".bin"));
-        await WriteAtomicallyAsync(payloadPath, frame.PixelData, cancellationToken).ConfigureAwait(false);
-
         var metadata = new StoredFrameMetadata(
             artifact.ArtifactId,
             artifact.Role,
@@ -68,29 +81,143 @@ public sealed class FileSystemFrameStorageService(
                 frame.Metadata.Scene));
 
         var metadataPath = Path.Combine(directory, string.Concat(stem, ".json"));
-        await WriteAtomicallyAsync(metadataPath, JsonSerializer.SerializeToUtf8Bytes(metadata, SerializerOptions), cancellationToken).ConfigureAwait(false);
+        var relativePayloadPath = Path.GetRelativePath(storageRoot, payloadPath);
+        if (descriptor is not null)
+        {
+            ValidateVersionedDescriptorAgreement(descriptor, artifact, frame);
+        }
 
-        var indexDirectory = Path.Combine(storageRoot, "index");
-        Directory.CreateDirectory(indexDirectory);
-        var indexPath = Path.Combine(indexDirectory, $"frames_{timestamp:yyyy-MM-dd}.jsonl");
-        var indexGate = FrameIndexLock.ForRoot(storageRoot);
-        await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Directory.CreateDirectory(directory);
+        var payloadPublished = false;
+        var sidecarPublished = false;
         try
         {
-            await AppendIndexEntryAsync(indexPath, metadata with { Metadata = null }, cancellationToken).ConfigureAwait(false);
+            await WriteAtomicallyAsync(payloadPath, frame.PixelData, cancellationToken).ConfigureAwait(false);
+            payloadPublished = true;
+
+            var sidecar = descriptor is null
+                ? JsonSerializer.SerializeToUtf8Bytes(metadata, SerializerOptions)
+                : await CreateVersionedSidecarAsync(
+                    descriptor, payloadPath, relativePayloadPath, frame.Metadata.Scene, cancellationToken).ConfigureAwait(false);
+            await WriteAtomicallyAsync(metadataPath, sidecar, cancellationToken).ConfigureAwait(false);
+            sidecarPublished = true;
+
+            var indexDirectory = Path.Combine(storageRoot, "index");
+            Directory.CreateDirectory(indexDirectory);
+            var indexPath = Path.Combine(indexDirectory, $"frames_{timestamp:yyyy-MM-dd}.jsonl");
+            var indexGate = FrameIndexLock.ForRoot(storageRoot);
+            await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await AppendIndexEntryAsync(indexPath, metadata with { Metadata = null }, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                indexGate.Release();
+            }
         }
-        finally
+        catch
         {
-            indexGate.Release();
+            if (descriptor is not null)
+            {
+                if (sidecarPublished)
+                {
+                    TryDelete(metadataPath);
+                }
+                if (payloadPublished)
+                {
+                    TryDelete(payloadPath);
+                }
+            }
+            throw;
         }
 
         _logger.FrameStored(payloadPath);
         return new StoredFrameReference(
-            RelativePath: Path.GetRelativePath(storageRoot, payloadPath),
+            RelativePath: relativePayloadPath,
             AbsolutePath: payloadPath,
             TimestampUtc: timestamp,
             Role: artifact.Role);
     }
+
+    private static void ValidateVersionedDescriptorAgreement(
+        ReconstructionDescriptor descriptor,
+        FrameArtifact artifact,
+        CameraFrame frame)
+    {
+        var validation = descriptor.Validate();
+        var sources = artifact.SourceArtifactIds ?? Array.Empty<Guid>();
+        double? frameTemperature = double.IsFinite(frame.Metadata.TemperatureC) ? frame.Metadata.TemperatureC : null;
+        if (!validation.IsValid ||
+            descriptor.Artifact.ArtifactId != artifact.ArtifactId ||
+            descriptor.Artifact.Role != artifact.Role ||
+            !descriptor.Artifact.SourceArtifactIds.SequenceEqual(sources) ||
+            (artifact.RecipeVersion is null
+                ? artifact.Role != FrameArtifactRole.Raw
+                : !string.Equals(descriptor.Artifact.Recipe.ImplementationVersion, artifact.RecipeVersion, StringComparison.Ordinal)) ||
+            descriptor.Layout.Width != frame.Width ||
+            descriptor.Layout.Height != frame.Height ||
+            descriptor.Layout.PixelFormat != frame.PixelFormat ||
+            descriptor.Layout.StrideBytes != (frame.StrideBytes ?? GetPackedStride(frame.Width, frame.PixelFormat)) ||
+            descriptor.Layout.ByteLength != frame.PixelData.Length ||
+            descriptor.Timing.ExposureStartedUtc != frame.TimestampUtc.ToUniversalTime() ||
+            descriptor.Controls.EffectiveExposure != frame.Metadata.Exposure ||
+            descriptor.Controls.EffectiveGain != frame.Metadata.Gain ||
+            descriptor.Controls.EffectiveOffset != frame.Metadata.Offset ||
+            descriptor.Controls.EffectiveTemperatureC != frameTemperature ||
+            !string.Equals(descriptor.Artifact.SourceId, frame.Metadata.SourceId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"Reconstruction descriptor does not match the stored artifact ({validation.ReasonCode ?? "descriptor.mismatch"}).",
+                nameof(descriptor));
+        }
+    }
+
+    private static async ValueTask<byte[]> CreateVersionedSidecarAsync(
+        ReconstructionDescriptor descriptor,
+        string payloadPath,
+        string relativePayloadPath,
+        SceneProvenance? scene,
+        CancellationToken cancellationToken)
+    {
+        using var payload = new FileStream(
+            payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var checksum = await PayloadChecksum.ComputeSha256Async(payload, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(checksum, descriptor.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("Stored payload checksum does not match the reconstruction descriptor.", nameof(descriptor));
+        }
+
+        return CaptureContractJson.Serialize(new ArtifactManifestV2(
+            ArtifactManifestV2.CurrentSchemaVersion,
+            descriptor,
+            relativePayloadPath,
+            scene));
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static int GetPackedStride(int width, CameraPixelFormat pixelFormat)
+        => checked(width * (pixelFormat switch
+        {
+            CameraPixelFormat.Mono8 => 1,
+            CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 => 2,
+            CameraPixelFormat.Rgb24 => 3,
+            _ => throw new ArgumentOutOfRangeException(nameof(pixelFormat))
+        }));
 
     public async ValueTask RemoveAsync(
         string storageRoot,
@@ -255,8 +382,9 @@ public sealed class FileSystemFrameStorageService(
                 var payloadPath = ResolvePayloadPath(storageRoot, indexedMetadata);
                 var metadataPath = payloadPath is null ? null : Path.ChangeExtension(payloadPath, ".json");
                 if (payloadPath is null || metadataPath is null || !File.Exists(metadataPath) ||
-                    !TryReadMetadataFile(metadataPath, out var sidecarMetadata) ||
-                    !Matches(indexedMetadata, sidecarMetadata))
+                    !TryReadMetadataFile(metadataPath, out var sidecarMetadata, out var versionedBinding) ||
+                    !Matches(indexedMetadata, sidecarMetadata) ||
+                    versionedBinding is not null && !MatchesVersionedBinding(storageRoot, payloadPath, versionedBinding))
                 {
                     _logger.FrameBrowseEntrySkipped(indexPath);
                     continue;
@@ -293,11 +421,54 @@ public sealed class FileSystemFrameStorageService(
         }
     }
 
-    private static bool TryReadMetadataFile(string path, out StoredFrameMetadata metadata)
+    private static bool TryReadMetadataFile(
+        string path,
+        out StoredFrameMetadata metadata,
+        out VersionedSidecarBinding? versionedBinding)
     {
+        versionedBinding = null;
         try
         {
-            metadata = JsonSerializer.Deserialize<StoredFrameMetadata>(File.ReadAllText(path), SerializerOptions)!;
+            var json = File.ReadAllBytes(path);
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                metadata = null!;
+                return false;
+            }
+            if (document.RootElement.TryGetProperty("schemaVersion", out var schemaVersion))
+            {
+                if (schemaVersion.ValueKind != JsonValueKind.String ||
+                    !string.Equals(schemaVersion.GetString(), ArtifactManifestV2.CurrentSchemaVersion, StringComparison.Ordinal))
+                {
+                    metadata = null!;
+                    return false;
+                }
+
+                var parsed = CaptureContractJson.ParseManifest(json);
+                if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
+                {
+                    metadata = null!;
+                    return false;
+                }
+                var descriptor = manifest.Descriptor;
+                metadata = new StoredFrameMetadata(
+                    descriptor.Artifact.ArtifactId,
+                    descriptor.Artifact.Role,
+                    descriptor.Artifact.SourceArtifactIds,
+                    descriptor.Artifact.Recipe.ImplementationVersion,
+                    descriptor.Timing.ExposureStartedUtc,
+                    descriptor.Layout.Width,
+                    descriptor.Layout.Height,
+                    descriptor.Layout.PixelFormat,
+                    null);
+                versionedBinding = new VersionedSidecarBinding(
+                    manifest.RelativeArtifactPath,
+                    descriptor.Layout.ByteLength);
+                return true;
+            }
+
+            metadata = JsonSerializer.Deserialize<StoredFrameMetadata>(json, SerializerOptions)!;
             return metadata is not null;
         }
         catch (JsonException)
@@ -308,6 +479,24 @@ public sealed class FileSystemFrameStorageService(
         catch (IOException)
         {
             metadata = null!;
+            return false;
+        }
+    }
+
+    private static bool MatchesVersionedBinding(
+        string storageRoot,
+        string payloadPath,
+        VersionedSidecarBinding binding)
+    {
+        try
+        {
+            var declaredPath = Path.GetFullPath(Path.Combine(storageRoot, binding.RelativeArtifactPath));
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            return string.Equals(declaredPath, Path.GetFullPath(payloadPath), comparison) &&
+                   new FileInfo(payloadPath).Length == binding.ByteLength;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
             return false;
         }
     }
@@ -418,6 +607,8 @@ public sealed class FileSystemFrameStorageService(
         SceneProvenance? Scene);
 
     private sealed record StoredFrameCandidate(StoredFrameReference Reference, Guid ArtifactId);
+
+    private sealed record VersionedSidecarBinding(string RelativeArtifactPath, long ByteLength);
 
     public void Dispose() => GC.SuppressFinalize(this);
 

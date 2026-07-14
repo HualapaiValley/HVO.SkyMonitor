@@ -6,7 +6,12 @@
   },
   "files": {
     "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.AgentCore/ArtifactManifestV2.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.AgentCore/CameraControlPolicyExtensions.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.AgentCore/CaptureContractJson.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.AgentCore/CaptureContractValidation.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.AgentCore/FrameReconstructor.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.AgentCore/ReconstructionDescriptors.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Astronomy/CameraGeometry.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Astronomy/Projection.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Astronomy/VisibleScene.cs": { "line": 0.95, "branch": 0.90 },

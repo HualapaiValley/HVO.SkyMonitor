@@ -6,6 +6,13 @@ public interface IFrameStorageService
 {
     ValueTask<StoredFrameReference> SaveAsync(string storageRoot, FrameArtifact artifact, CancellationToken cancellationToken);
 
+    ValueTask<StoredFrameReference> SaveAsync(
+        string storageRoot,
+        FrameArtifact artifact,
+        ReconstructionDescriptor descriptor,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This frame storage service does not support versioned reconstruction sidecars.");
+
     ValueTask RemoveAsync(string storageRoot, StoredFrameReference storedFrame, Guid artifactId, CancellationToken cancellationToken);
 
     async ValueTask RemoveBatchAsync(
