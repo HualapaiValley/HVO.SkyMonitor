@@ -1,5 +1,6 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -7,10 +8,12 @@ internal sealed class RawIngressReconciler(
     string root,
     SqliteRawCaptureJournal journal,
     Action? fileFlushRecorder = null,
-    Action? directorySyncRecorder = null)
+    Action? directorySyncRecorder = null,
+    IReadOnlyList<CaptureLaneDefinition>? laneDefinitions = null)
 {
     private readonly string _root = Path.GetFullPath(root);
     private readonly SqliteRawCaptureJournal _journal = journal;
+    private readonly IReadOnlyList<CaptureLaneDefinition> _laneDefinitions = laneDefinitions ?? [];
     private readonly Action? _fileFlushRecorder = fileFlushRecorder;
     private readonly Action? _directorySyncRecorder = directorySyncRecorder;
 
@@ -94,6 +97,10 @@ internal sealed class RawIngressReconciler(
             }
             if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
             {
+                if (!entry.RetentionHold)
+                {
+                    continue;
+                }
                 await _journal.MarkEvidenceFailureAsync(
                     entry.CaptureId, "missing_evidence", "required-file-missing", cancellationToken).ConfigureAwait(false);
                 missingEvidence++;
@@ -199,7 +206,9 @@ internal sealed class RawIngressReconciler(
             SyncDirectory(Path.GetDirectoryName(sidecarPath)!);
             try
             {
-                await _journal.RecoverAsync(entry, cancellationToken).ConfigureAwait(false);
+                await (_laneDefinitions.Count == 0
+                    ? _journal.RecoverAsync(entry, cancellationToken)
+                    : _journal.RecoverAsync(entry, _laneDefinitions, cancellationToken)).ConfigureAwait(false);
             }
             catch (RawIngressConflictException)
             {

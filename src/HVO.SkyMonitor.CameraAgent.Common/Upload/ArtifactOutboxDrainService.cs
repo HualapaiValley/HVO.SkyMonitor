@@ -24,8 +24,8 @@ public sealed class ArtifactOutboxDrainService(
         while (!stoppingToken.IsCancellationRequested)
         {
             var config = await configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
-            var storageRoot = ResolveStorageRoot(config);
-            if (storageRoot is null)
+            var storageRoots = ResolveStorageRoots(config, hostOptions.Value);
+            if (storageRoots.Count == 0)
             {
                 await Task.Delay(
                     TimeSpan.FromSeconds(hostOptions.Value.UploadPollIntervalSeconds),
@@ -33,37 +33,42 @@ public sealed class ArtifactOutboxDrainService(
                     stoppingToken).ConfigureAwait(false);
                 continue;
             }
-            var now = timeProvider.GetUtcNow();
-            var deferred = _retries
-                .Where(retry => retry.Value.NextAttemptUtc > now)
-                .Select(retry => retry.Key)
-                .ToHashSet(StringComparer.Ordinal);
-            var ready = outbox.List(storageRoot, hostOptions.Value.UploadBatchSize, deferred);
-            var removals = new List<StoredFrameRemoval>(ready.Count);
-            foreach (var manifest in ready)
+            foreach (var storageRoot in storageRoots)
             {
-                if (await uploadClient.UploadAsync(storageRoot, manifest, stoppingToken).ConfigureAwait(false))
+                var now = timeProvider.GetUtcNow();
+                var deferred = _retries
+                    .Where(retry => retry.Value.NextAttemptUtc > now && PathsEqual(retry.Value.StorageRoot, storageRoot))
+                    .Select(retry => retry.Value.IdempotencyKey)
+                    .ToHashSet(StringComparer.Ordinal);
+                var ready = outbox.List(storageRoot, hostOptions.Value.UploadBatchSize, deferred);
+                var removals = new List<StoredFrameRemoval>(ready.Count);
+                foreach (var manifest in ready)
                 {
-                    _retries.Remove(manifest.IdempotencyKey);
-                    await outbox.AcknowledgeAsync(storageRoot, manifest.IdempotencyKey, stoppingToken).ConfigureAwait(false);
-                    if (ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot, manifest))
+                    var retryKey = RetryKey(storageRoot, manifest.IdempotencyKey);
+                    if (await uploadClient.UploadAsync(storageRoot, manifest, stoppingToken).ConfigureAwait(false))
                     {
-                        var path = Path.Combine(Path.GetFullPath(storageRoot), manifest.RelativeArtifactPath);
-                        removals.Add(new StoredFrameRemoval(new StoredFrameReference(
-                            manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role), manifest.ArtifactId));
+                        _retries.Remove(retryKey);
+                        await outbox.AcknowledgeAsync(storageRoot, manifest.IdempotencyKey, stoppingToken).ConfigureAwait(false);
+                        if (ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot, manifest))
+                        {
+                            var path = Path.Combine(Path.GetFullPath(storageRoot), manifest.RelativeArtifactPath);
+                            removals.Add(new StoredFrameRemoval(new StoredFrameReference(
+                                manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role), manifest.ArtifactId));
+                        }
+                    }
+                    else
+                    {
+                        var attempt = _retries.TryGetValue(retryKey, out var retry) ? retry.Attempt + 1 : 1;
+                        var delay = CalculateRetryDelay(
+                            attempt,
+                            TimeSpan.FromSeconds(hostOptions.Value.UploadRetryInitialDelaySeconds),
+                            TimeSpan.FromSeconds(hostOptions.Value.UploadRetryMaximumDelaySeconds));
+                        _retries[retryKey] = new RetryState(
+                            Path.GetFullPath(storageRoot), manifest.IdempotencyKey, attempt, timeProvider.GetUtcNow() + delay);
                     }
                 }
-                else
-                {
-                    var attempt = _retries.TryGetValue(manifest.IdempotencyKey, out var retry) ? retry.Attempt + 1 : 1;
-                    var delay = CalculateRetryDelay(
-                        attempt,
-                        TimeSpan.FromSeconds(hostOptions.Value.UploadRetryInitialDelaySeconds),
-                        TimeSpan.FromSeconds(hostOptions.Value.UploadRetryMaximumDelaySeconds));
-                    _retries[manifest.IdempotencyKey] = new RetryState(attempt, timeProvider.GetUtcNow() + delay);
-                }
+                await frameStorageService.RemoveBatchAsync(storageRoot, removals, stoppingToken).ConfigureAwait(false);
             }
-            await frameStorageService.RemoveBatchAsync(storageRoot, removals, stoppingToken).ConfigureAwait(false);
 
             await Task.Delay(TimeSpan.FromSeconds(hostOptions.Value.UploadPollIntervalSeconds), timeProvider, stoppingToken).ConfigureAwait(false);
         }
@@ -107,5 +112,46 @@ public sealed class ArtifactOutboxDrainService(
         return null;
     }
 
-    private sealed record RetryState(int Attempt, DateTimeOffset NextAttemptUtc);
+    internal static IReadOnlyList<string> ResolveStorageRoots(
+        HVO.SkyMonitor.AgentCore.CameraModuleConfig config,
+        CameraAgentHostOptions options)
+    {
+        var roots = new List<string>();
+        if (options.CaptureDistribution.UploadEnabled)
+        {
+            roots.Add(Path.GetFullPath(options.RawIngressRoot));
+        }
+        foreach (var step in config.ResolveProcessingSteps())
+        {
+            if (!step.Type.Contains(nameof(NoOpFileStorageProcessingStep), StringComparison.OrdinalIgnoreCase) || step.Options is not { } stepOptions)
+            {
+                continue;
+            }
+            var parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(stepOptions.GetRawText(), SerializerOptions);
+            if (parsed is { QueueForUpload: true } && !string.IsNullOrWhiteSpace(parsed.StorageRoot))
+            {
+                var root = Path.GetFullPath(parsed.StorageRoot);
+                if (!roots.Any(existing => PathsEqual(existing, root)))
+                {
+                    roots.Add(root);
+                }
+            }
+        }
+        return roots;
+    }
+
+    private static string RetryKey(string storageRoot, string idempotencyKey)
+        => string.Concat(Path.GetFullPath(storageRoot), "\n", idempotencyKey);
+
+    private static bool PathsEqual(string left, string right)
+        => string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private sealed record RetryState(
+        string StorageRoot,
+        string IdempotencyKey,
+        int Attempt,
+        DateTimeOffset NextAttemptUtc);
 }

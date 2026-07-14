@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -30,6 +31,31 @@ public sealed class ArtifactOutboxDrainServiceTests
             AgentId: "agent");
 
         Assert.IsNull(ArtifactOutboxDrainService.ResolveStorageRoot(config));
+    }
+
+    [TestMethod]
+    public void ResolveStorageRoots_WhenUploadLaneIsEnabled_IncludesRawIngressWithoutStorageStep()
+    {
+        var config = new CameraModuleConfig(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            new CameraModuleDescriptor("Test"),
+            new CameraRigConfig(
+                new SensorProfile("Test", 1, 1, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+                new OpticsProfile("EquidistantFisheye", 0, 180, 0),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
+            AgentId: "agent");
+        var root = Path.Combine(Path.GetTempPath(), "raw-ingress");
+        var options = new CameraAgentHostOptions
+        {
+            RawIngressRoot = root,
+            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = true }
+        };
+
+        var roots = ArtifactOutboxDrainService.ResolveStorageRoots(config, options);
+
+        Assert.HasCount(1, roots);
+        Assert.AreEqual(Path.GetFullPath(root), roots[0]);
     }
 
     [TestMethod]

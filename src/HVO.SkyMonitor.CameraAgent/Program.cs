@@ -204,6 +204,7 @@ public class Program
         healthChecks.AddCheck<CameraAgentConfigurationHealthCheck>("camera-configuration", tags: ["dependency"]);
         healthChecks.AddCheck<DiskPressureHealthCheck>("disk-pressure", tags: ["dependency"]);
         healthChecks.AddCheck<RawIngressHealthCheck>("raw-ingress", tags: ["dependency"]);
+        healthChecks.AddCheck<CaptureLanesHealthCheck>("capture-lanes", tags: ["dependency"]);
         builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
         builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
 

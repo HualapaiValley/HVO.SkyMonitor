@@ -2,6 +2,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -40,10 +41,15 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<StoragePressureState>();
         services.AddSingleton<RawIngressState>();
         services.AddSingleton<RawIngressTelemetry>();
+        services.AddSingleton<CaptureLaneState>();
+        services.AddSingleton<CaptureLaneTelemetry>();
         services.AddSingleton<IRawIngressFaultInjector, NullRawIngressFaultInjector>();
+        services.AddSingleton<ICaptureLaneFaultInjector, NullCaptureLaneFaultInjector>();
+        services.AddSingleton<CaptureLanePolicy>();
         services.AddSingleton<RawCaptureIngress>();
         services.AddSingleton<IRawCaptureIngress>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
+        services.AddSingleton<ICaptureLaneStore>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<ICameraModuleFactory, CameraModuleFactory>();
         services.AddSingleton<IProjectedSceneStore, ProjectedSceneStore>();
         services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());
@@ -61,6 +67,12 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         services.AddSingleton<CameraAgentRecipeExecutionAdapter>();
         services.AddSingleton<IArtifactOutbox, FileSystemArtifactOutbox>();
+        services.AddSingleton<StandardCaptureLaneHandler>();
+        services.AddSingleton<UploadCaptureLaneHandler>();
+        services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<StandardCaptureLaneHandler>());
+        services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<UploadCaptureLaneHandler>());
+        services.AddSingleton<CaptureDistributionService>();
+        services.AddSingleton<ICaptureDistributor>(provider => provider.GetRequiredService<CaptureDistributionService>());
         services.AddTransient<ArtifactUploadClient>();
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "Preview", typeof(PreviewCaptureProcessingStep), typeof(PreviewProcessingStepOptions), 50));
@@ -69,6 +81,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "Annotation", typeof(AnnotationCaptureProcessingStep), typeof(AnnotationProcessingStepOptions), 75));
         services.AddHostedService<CameraAgentConfigurationInitializer>();
+        services.AddHostedService(provider => provider.GetRequiredService<CaptureDistributionService>());
         services.AddHostedService<CameraCaptureService>();
         services.AddHostedService<RetentionBackgroundService>();
         services.AddHostedService<ArtifactOutboxDrainService>();

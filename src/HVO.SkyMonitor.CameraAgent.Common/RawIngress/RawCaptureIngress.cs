@@ -3,6 +3,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -14,6 +15,7 @@ internal sealed class RawCaptureIngress :
     IRawIngressRecoveryControl,
     IRawIngressPressureReporter,
     IRawIngressWakeupReporter,
+    ICaptureLaneStore,
     IDisposable
 {
     private readonly CameraAgentHostOptions _options;
@@ -27,6 +29,10 @@ internal sealed class RawCaptureIngress :
     private readonly SemaphoreSlim _acceptGate = new(1, 1);
     private readonly SqliteRawCaptureJournal _journal;
     private readonly RawIngressFileStore _files;
+    private readonly CaptureLanePolicy _lanePolicy;
+    private readonly SqliteCaptureLaneStore _laneStore;
+    private readonly CaptureLaneState? _laneState;
+    private readonly CaptureLaneTelemetry? _laneTelemetry;
     private bool _initialized;
     private bool _capacityRevalidationRequired;
     private long _minimumRecoveryCapacityBytes;
@@ -39,7 +45,11 @@ internal sealed class RawCaptureIngress :
         TimeProvider timeProvider,
         RawIngressTelemetry telemetry,
         ILogger<RawCaptureIngress> logger,
-        IRawIngressFaultInjector faultInjector)
+        IRawIngressFaultInjector faultInjector,
+        CaptureLanePolicy? lanePolicy = null,
+        ICaptureLaneFaultInjector? laneFaultInjector = null,
+        CaptureLaneState? laneState = null,
+        CaptureLaneTelemetry? laneTelemetry = null)
     {
         _options = options.Value;
         _capacityProvider = capacityProvider;
@@ -48,6 +58,10 @@ internal sealed class RawCaptureIngress :
         _telemetry = telemetry;
         _logger = logger;
         _faultInjector = faultInjector;
+        _lanePolicy = lanePolicy ?? new CaptureLanePolicy(options);
+        _laneState = laneState;
+        _laneTelemetry = laneTelemetry;
+        var resolvedLaneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();
         var root = Path.GetFullPath(_options.RawIngressRoot);
         _journal = new SqliteRawCaptureJournal(
             Path.Combine(root, "journal", "raw-ingress.db"),
@@ -55,12 +69,23 @@ internal sealed class RawCaptureIngress :
             telemetry.RecordLockWait,
             faultInjector,
             telemetry.RecordTransaction,
-            telemetry.RecordCheckpoint);
+            telemetry.RecordCheckpoint,
+            _options.CaptureDistribution,
+            resolvedLaneFaultInjector,
+            timeProvider.GetUtcNow);
         _files = new RawIngressFileStore(
             root,
             faultInjector,
             telemetry.RecordFileFlush,
             telemetry.RecordDirectorySync);
+        _laneStore = new SqliteCaptureLaneStore(
+            root,
+            _options.RawIngressSqliteBusyTimeoutSeconds,
+            _options.CaptureDistribution,
+            _lanePolicy,
+            timeProvider,
+            resolvedLaneFaultInjector,
+            laneTelemetry is null ? null : new Action<TimeSpan>(laneTelemetry.RecordLockWait));
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
@@ -82,15 +107,18 @@ internal sealed class RawCaptureIngress :
                 _files.EnsureRootIsPhysical();
                 _processLock ??= AcquireProcessLock();
                 using var migrationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.migrate");
-                await _journal.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                await _journal.InitializeAsync(_lanePolicy.Definitions, cancellationToken).ConfigureAwait(false);
                 migrationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 using var reconciliationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.reconcile");
                 var reconciliation = await new RawIngressReconciler(
                     _options.RawIngressRoot,
                     _journal,
                     _telemetry.RecordFileFlush,
-                    _telemetry.RecordDirectorySync)
-                    .RunAsync(cancellationToken).ConfigureAwait(false);
+                    _telemetry.RecordDirectorySync,
+                    _lanePolicy.Definitions)
+                     .RunAsync(cancellationToken).ConfigureAwait(false);
+                await _laneStore.InitializeLanesAsync(cancellationToken).ConfigureAwait(false);
+                await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
                 reconciliationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 _telemetry.RecordReconciliation(reconciliation);
                 _logger.RawIngressSqliteResult("checkpoint", "success");
@@ -177,11 +205,24 @@ internal sealed class RawCaptureIngress :
         var lifecycleAcquired = false;
         try
         {
+            var stableIds = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
+            var existingCapture = await _journal.ReadCommittedCaptureStateAsync(
+                stableIds.CaptureId, cancellationToken).ConfigureAwait(false);
+            if (existingCapture.Exists && !existingCapture.EvidenceRetained)
+            {
+                throw new RawIngressConflictException("Committed capture evidence is no longer retained.");
+            }
+            if (!existingCapture.Exists)
+            {
+                await _laneStore.EnsureCanAcceptAsync(frame.PixelData.Length, cancellationToken).ConfigureAwait(false);
+            }
             await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             lifecycleAcquired = true;
-            EnsureCapacity(frame.PixelData.Length);
+            if (!existingCapture.Exists)
+            {
+                EnsureCapacity(frame.PixelData.Length);
+            }
             var payloadSha256 = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span));
-            var stableIds = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
             var identity = await _journal.ReserveIdentityAsync(
                 configuration.AgentId,
                 stableIds.CaptureId,
@@ -261,11 +302,26 @@ internal sealed class RawCaptureIngress :
                 manifestJson,
                 committedDescriptor.Timing.ExposureStartedUtc,
                 committedDescriptor.Timing.DurableIngressUtc);
+            var context = CaptureLaneEnvelopeSerializer.Serialize(configuration, submission);
             RawIngressOutcome outcome;
             using (var commitActivity = RawIngressTelemetry.ActivitySource.StartActivity("sqlite.commit"))
             {
                 _faultInjector.Inject(RawIngressFaultPoint.BeforeJournalCommit);
-                outcome = await _journal.CommitAsync(entry, CancellationToken.None).ConfigureAwait(false);
+                outcome = await _journal.CommitAsync(
+                    entry,
+                    context.Json,
+                    context.Sha256,
+                    _lanePolicy.Definitions,
+                    CancellationToken.None).ConfigureAwait(false);
+                if (outcome == RawIngressOutcome.Committed && _laneTelemetry is not null)
+                {
+                    foreach (var laneOutcome in await _journal.ReadLaneOutcomesAsync(
+                                 entry.CaptureId, CancellationToken.None).ConfigureAwait(false))
+                    {
+                        _laneTelemetry.RecordWork(laneOutcome.Lane, laneOutcome.Required, laneOutcome.State);
+                        _logger.CaptureLaneWorkCreated(laneOutcome.Lane, laneOutcome.Required, laneOutcome.State);
+                    }
+                }
                 _faultInjector.Inject(RawIngressFaultPoint.AfterJournalCommit);
                 commitActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             }
@@ -328,6 +384,7 @@ internal sealed class RawCaptureIngress :
             _faultInjector.Inject(RawIngressFaultPoint.BeforeWakeUpNotification);
             var duration = System.Diagnostics.Stopwatch.GetElapsedTime(started);
             _telemetry.RecordCommit(outcome, frame.PixelData.Length, duration);
+            await RefreshLaneStateAsync(CancellationToken.None).ConfigureAwait(false);
             if (outcome == RawIngressOutcome.Committed)
             {
                 _logger.RawIngressCommitted(frame.PixelData.Length, duration.TotalMilliseconds);
@@ -340,6 +397,14 @@ internal sealed class RawCaptureIngress :
             return receipt;
         }
         catch (OperationCanceledException) when (!lifecycleAcquired)
+        {
+            throw;
+        }
+        catch (CaptureLaneBackpressureException)
+        {
+            throw;
+        }
+        catch (RawIngressConflictException)
         {
             throw;
         }
@@ -410,6 +475,86 @@ internal sealed class RawCaptureIngress :
     }
 
     public void ReportWakeup(bool queued) => _telemetry.RecordWakeup(queued);
+
+    public async ValueTask InitializeLanesAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _laneStore.InitializeLanesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask EnsureCanAcceptAsync(long payloadLength, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _laneStore.EnsureCanAcceptAsync(payloadLength, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await RefreshLaneStateAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    public ValueTask<CaptureLaneLease?> ClaimAsync(
+        CaptureLaneDefinition lane,
+        string owner,
+        CameraModuleConfig fallbackConfiguration,
+        CancellationToken cancellationToken)
+    {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        return ClaimCoreAsync(lane, owner, fallbackConfiguration, started, cancellationToken);
+    }
+
+    public ValueTask<bool> RenewAsync(CaptureLaneLease lease, CancellationToken cancellationToken)
+        => _laneStore.RenewAsync(lease, cancellationToken);
+
+    public async ValueTask CompleteAsync(CaptureLaneLease lease, CancellationToken cancellationToken)
+    {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        await _laneStore.CompleteAsync(lease, cancellationToken).ConfigureAwait(false);
+        _logger.CaptureLaneCompleted(lease.Lane);
+        _laneTelemetry?.RecordAcknowledgement(
+            lease,
+            CaptureLaneHandlerOutcome.Completed,
+            System.Diagnostics.Stopwatch.GetElapsedTime(started));
+        await RefreshHeldStateAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<CaptureLaneHandlerOutcome> FailAsync(
+        CaptureLaneLease lease,
+        CaptureLaneHandlerResult result,
+        CancellationToken cancellationToken)
+    {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var actualOutcome = await _laneStore.FailAsync(lease, result, cancellationToken).ConfigureAwait(false);
+        var reason = NormalizeLaneReason(result.Reason);
+        if (actualOutcome == CaptureLaneHandlerOutcome.RetryableFailure)
+        {
+            _logger.CaptureLaneRetryScheduled(lease.Lane, lease.Attempt + 1, reason);
+        }
+        else
+        {
+            _logger.CaptureLaneTerminal(lease.Lane, "quarantined", reason);
+        }
+        _laneTelemetry?.RecordAcknowledgement(
+            lease,
+            actualOutcome,
+            System.Diagnostics.Stopwatch.GetElapsedTime(started));
+        await RefreshHeldStateAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
+        return actualOutcome;
+    }
+
+    public async ValueTask ReleaseAsync(CaptureLaneLease lease, CancellationToken cancellationToken)
+    {
+        await _laneStore.ReleaseAsync(lease, cancellationToken).ConfigureAwait(false);
+        await RefreshHeldStateAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public ValueTask<IReadOnlyList<CaptureLaneBacklog>> ReadBacklogsAsync(CancellationToken cancellationToken)
+        => _laneStore.ReadBacklogsAsync(cancellationToken);
 
     private static string FailureReason(Exception exception) => exception switch
     {
@@ -521,6 +666,85 @@ internal sealed class RawCaptureIngress :
             SetAvailabilityPreservingTotals(RawIngressAvailability.Unhealthy, reason);
         }
     }
+
+    private async Task RefreshHeldStateAsync(CancellationToken cancellationToken)
+    {
+        var held = await _journal.ReadHeldTotalsAsync(cancellationToken).ConfigureAwait(false);
+        var snapshot = _state.Snapshot;
+        _state.Set(
+            snapshot.Availability,
+            snapshot.Reason,
+            held.Count,
+            held.Bytes,
+            snapshot.QuarantineCount,
+            snapshot.QuarantineBytes,
+            held.Oldest);
+    }
+
+    private async ValueTask<CaptureLaneLease?> ClaimCoreAsync(
+        CaptureLaneDefinition lane,
+        string owner,
+        CameraModuleConfig fallbackConfiguration,
+        long started,
+        CancellationToken cancellationToken)
+    {
+        using var activity = CaptureLaneTelemetry.ActivitySource.StartActivity("capture-lanes.claim");
+        var lease = await _laneStore.ClaimAsync(
+            lane, owner, fallbackConfiguration, cancellationToken).ConfigureAwait(false);
+        _laneTelemetry?.RecordClaim(
+            lane,
+            lease is not null,
+            System.Diagnostics.Stopwatch.GetElapsedTime(started));
+        activity?.SetTag("lane", lane.Name);
+        activity?.SetTag("result", lease is null ? "empty" : "claimed");
+        activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+        if (lease is not null)
+        {
+            _logger.CaptureLaneClaimed(lane.Name, lease.Attempt);
+            if (lease.Attempt > 1)
+            {
+                _logger.CaptureLaneRecovered(lane.Name, lease.Attempt);
+            }
+        }
+        await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
+        return lease;
+    }
+
+    private async Task RefreshLaneStateAsync(CancellationToken cancellationToken)
+    {
+        if (_laneState is null)
+        {
+            return;
+        }
+        try
+        {
+            var prior = _laneState.Snapshot;
+            _laneState.Update(await _laneStore.ReadBacklogsAsync(cancellationToken).ConfigureAwait(false));
+            var current = _laneState.Snapshot;
+            if (current.Availability != prior.Availability || !string.Equals(current.Reason, prior.Reason, StringComparison.Ordinal))
+            {
+                if (current.Availability == CaptureLaneAvailability.Healthy)
+                {
+                    _logger.CaptureLanePressureRecovered(current.Availability.ToString());
+                }
+                else
+                {
+                    _logger.CaptureLanePressureChanged(current.Availability.ToString(), current.Reason);
+                }
+            }
+        }
+        catch
+        {
+            _laneState.SetUnhealthy("lane-state-unavailable");
+            throw;
+        }
+    }
+
+    private static string NormalizeLaneReason(string reason)
+        => !string.IsNullOrWhiteSpace(reason) && reason.Length <= 64 &&
+           reason.All(static character => character is >= 'a' and <= 'z' or >= '0' and <= '9' or '-')
+            ? reason
+            : "handler-failure";
 
     public void Dispose()
     {

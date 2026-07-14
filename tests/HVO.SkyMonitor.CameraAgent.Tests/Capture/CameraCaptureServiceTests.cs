@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
@@ -12,56 +13,26 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 public sealed class CameraCaptureServiceTests
 {
     [TestMethod]
-    public async Task StopAsync_DrainsAcceptedFrameBeforeDisposingModule()
+    public async Task StopAsync_CancelsCaptureAndDisposesModule()
     {
         var config = CreateConfig();
         var module = new GatedCameraModule();
-        var step = new GatedProcessingStep();
+        var distributor = new RecordingDistributor();
         var service = new CameraCaptureService(
             new ConfigurationAccessor(config),
             new ModuleFactory(module),
-            new PipelineFactory(step),
             new PassthroughRawIngress(),
+            distributor,
             TimeProvider.System,
             NullLogger<CameraCaptureService>.Instance);
 
         await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
-        await step.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         await module.SecondCaptureStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
-        var stopTask = service.StopAsync(CancellationToken.None);
+        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         await module.CaptureCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        await Task.Delay(50).ConfigureAwait(false);
 
-        Assert.IsFalse(stopTask.IsCompleted);
-        Assert.IsFalse(module.IsDisposed);
-        Assert.IsFalse(step.ProcessingTokenWasCanceled);
-
-        step.Release.TrySetResult();
-        await stopTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-
-        Assert.AreEqual(1, step.ProcessedCount);
-        Assert.IsTrue(module.IsDisposed);
-    }
-
-    [TestMethod]
-    public async Task StopAsync_WhenDrainDeadlineExpires_AbortsProcessingAndDisposesModule()
-    {
-        var module = new GatedCameraModule();
-        var step = new GatedProcessingStep();
-        var service = new CameraCaptureService(
-            new ConfigurationAccessor(CreateConfig()), new ModuleFactory(module), new PipelineFactory(step),
-            new PassthroughRawIngress(), TimeProvider.System, NullLogger<CameraCaptureService>.Instance);
-
-        await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
-        await step.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        await module.SecondCaptureStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
-
-        await service.StopAsync(deadline.Token).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        await module.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-
-        Assert.AreEqual(0, step.ProcessedCount);
+        Assert.AreEqual(1, distributor.EphemeralCount);
         Assert.IsTrue(module.IsDisposed);
     }
 
@@ -90,11 +61,6 @@ public sealed class CameraCaptureServiceTests
     private sealed class ModuleFactory(ICameraModule module) : ICameraModuleFactory
     {
         public ICameraModule Create(string moduleType) => module;
-    }
-
-    private sealed class PipelineFactory(ICaptureProcessingStep step) : ICaptureProcessingPipelineFactory
-    {
-        public IReadOnlyList<ICaptureProcessingStep> CreatePipeline(CameraModuleConfig config) => [step];
     }
 
     private sealed class PassthroughRawIngress : IRawCaptureIngress
@@ -163,26 +129,21 @@ public sealed class CameraCaptureServiceTests
         }
     }
 
-    private sealed class GatedProcessingStep : ICaptureProcessingStep
+    private sealed class RecordingDistributor : ICaptureDistributor
     {
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int EphemeralCount { get; private set; }
 
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public bool ProcessingTokenWasCanceled { get; private set; }
-
-        public int ProcessedCount { get; private set; }
-
-        public string Name => "Gated";
-
-        public int Order => 0;
-
-        public async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        public void NotifyCommittedCapture()
         {
-            ProcessingTokenWasCanceled = cancellationToken.IsCancellationRequested;
-            Entered.TrySetResult();
-            await Release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-            ProcessedCount++;
+        }
+
+        public ValueTask ProcessEphemeralAsync(
+            CameraModuleConfig configuration,
+            CaptureLoopSubmission submission,
+            CancellationToken cancellationToken)
+        {
+            EphemeralCount++;
+            return ValueTask.CompletedTask;
         }
     }
 }

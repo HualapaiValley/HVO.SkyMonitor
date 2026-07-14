@@ -62,7 +62,8 @@ internal sealed record RawIngressJournalEntry(
     byte[] ManifestJson,
     DateTimeOffset ExposureStartedUtc,
     DateTimeOffset DurableIngressUtc,
-    string State = "committed");
+    string State = "committed",
+    bool RetentionHold = true);
 
 internal sealed record RawIngressReconciliationSummary(
     int Inspected,

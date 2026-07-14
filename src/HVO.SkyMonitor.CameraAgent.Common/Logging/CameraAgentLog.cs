@@ -140,4 +140,37 @@ internal static partial class CameraAgentLog
 
     [LoggerMessage(EventId = 2049, Level = LogLevel.Warning, Message = "Raw ingress compatibility index projection failed and will be repaired at restart")]
     public static partial void RawIngressIndexProjectionFailed(this ILogger logger);
+
+    [LoggerMessage(EventId = 2050, Level = LogLevel.Information, Message = "Capture lanes initialized at schema {SchemaVersion} with {LaneCount} configured lanes")]
+    public static partial void CaptureLanesInitialized(this ILogger logger, int schemaVersion, int laneCount);
+
+    [LoggerMessage(EventId = 2051, Level = LogLevel.Information, Message = "Capture lane {Lane} recovered durable work at attempt {Attempt}")]
+    public static partial void CaptureLaneRecovered(this ILogger logger, string lane, int attempt);
+
+    [LoggerMessage(EventId = 2052, Level = LogLevel.Debug, Message = "Capture lane {Lane} created {Outcome} work (Required={Required})")]
+    public static partial void CaptureLaneWorkCreated(this ILogger logger, string lane, bool required, string outcome);
+
+    [LoggerMessage(EventId = 2053, Level = LogLevel.Debug, Message = "Capture lane {Lane} claimed durable work at attempt {Attempt}")]
+    public static partial void CaptureLaneClaimed(this ILogger logger, string lane, int attempt);
+
+    [LoggerMessage(EventId = 2054, Level = LogLevel.Debug, Message = "Capture lane {Lane} completed durable work")]
+    public static partial void CaptureLaneCompleted(this ILogger logger, string lane);
+
+    [LoggerMessage(EventId = 2055, Level = LogLevel.Warning, Message = "Capture lane {Lane} scheduled retry attempt {Attempt} because {Reason}")]
+    public static partial void CaptureLaneRetryScheduled(this ILogger logger, string lane, int attempt, string reason);
+
+    [LoggerMessage(EventId = 2056, Level = LogLevel.Warning, Message = "Capture lane {Lane} reached terminal outcome {Outcome} because {Reason}")]
+    public static partial void CaptureLaneTerminal(this ILogger logger, string lane, string outcome, string reason);
+
+    [LoggerMessage(EventId = 2057, Level = LogLevel.Warning, Message = "Capture lane availability changed to {Availability} because {Reason}")]
+    public static partial void CaptureLanePressureChanged(this ILogger logger, string availability, string reason);
+
+    [LoggerMessage(EventId = 2057, Level = LogLevel.Information, Message = "Capture lane pressure recovered and availability is {Availability}")]
+    public static partial void CaptureLanePressureRecovered(this ILogger logger, string availability);
+
+    [LoggerMessage(EventId = 2058, Level = LogLevel.Information, Message = "Capture lane workers drained before shutdown")]
+    public static partial void CaptureLaneDrainCompleted(this ILogger logger);
+
+    [LoggerMessage(EventId = 2059, Level = LogLevel.Warning, Message = "Capture lane drain reached the shutdown deadline and released recoverable work")]
+    public static partial void CaptureLaneDrainAborted(this ILogger logger);
 }
