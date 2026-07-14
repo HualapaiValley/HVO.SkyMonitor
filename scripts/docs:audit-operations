@@ -16,27 +16,27 @@ readonly DOCS=(
 )
 
 forbidden_command='^[[:space:]]*(\$[[:space:]]+)?(pg_dump|psql|kubectl|az[[:space:]]+keyvault|redis-cli[^#]*(FLUSHDB|FLUSHALL)|docker[^#]*[[:space:]]env([[:space:]]|$))'
-if rg --line-number --ignore-case "$forbidden_command" "${DOCS[@]}"; then
+if grep -Eni "$forbidden_command" "${DOCS[@]}"; then
     printf 'Active operations guidance contains a prohibited command.\n' >&2
     exit 1
 fi
 
-if rg --line-number '/api/v1\.0/frame/' "${DOCS[@]}"; then
+if grep -En '/api/v1\.0/frame/' "${DOCS[@]}"; then
     printf 'Active operations guidance contains the obsolete singular frame route.\n' >&2
     exit 1
 fi
 
-if rg --line-number 'Historical and non-executable|quarantined historical' "${DOCS[@]}"; then
+if grep -En 'Historical and non-executable|quarantined historical' "${DOCS[@]}"; then
     printf 'Active identity guidance still describes the replacement runbook as quarantined.\n' >&2
     exit 1
 fi
 
-if rg --line-number 'MINIO_ROOT_(USER|PASSWORD)' docs/runbooks/local-dev.md; then
+if grep -En 'MINIO_ROOT_(USER|PASSWORD)' docs/runbooks/local-dev.md; then
     printf 'Local application troubleshooting must use the scoped MinIO account.\n' >&2
     exit 1
 fi
 
-if rg --line-number --glob 'appsettings*.json' \
+if grep -ERn --exclude-dir=bin --exclude-dir=obj --include='appsettings*.json' \
     '"(AdminPassword|ClientSecret|AccessKey|SecretKey|Key)"[[:space:]]*:[[:space:]]*"[^"[:space:]]+"' \
     src/HVO.SkyMonitor.CameraAgent src/HVO.SkyMonitor.LogicHost; then
     printf 'Application appsettings contains a usable committed credential.\n' >&2
@@ -46,7 +46,7 @@ fi
 require_source_reference() {
     local value="$1"
     local source_file="$2"
-    if ! rg --fixed-strings --quiet "$value" "$source_file"; then
+    if ! grep -Fq -- "$value" "$source_file"; then
         printf 'Documented value %s is missing from %s.\n' "$value" "$source_file" >&2
         exit 1
     fi
