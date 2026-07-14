@@ -961,6 +961,16 @@ public sealed class ProcessingRecipeTests
                 ProcessingInputSelector.Raw(),
                 [input],
                 "x"), duringExecution.Token).ConfigureAwait(false)).ConfigureAwait(false);
+
+        using var duringNormalization = new CancellationTokenSource();
+        var normalizationExecutor = new ProcessingRecipeExecutor([new CancelingNormalizationRecipe(duringNormalization)]);
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+            await normalizationExecutor.ExecuteAsync(Request(
+                CancelingNormalizationRecipe.Name,
+                EmptyOptions(),
+                ProcessingInputSelector.Raw(),
+                [input],
+                "x"), duringNormalization.Token).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     private static ValueTask<ProcessingOutcome> ExecuteSyntheticFailureAsync(
@@ -1085,6 +1095,26 @@ public sealed class ProcessingRecipeTests
             await cancellation.CancelAsync().ConfigureAwait(false);
             throw new OperationCanceledException(cancellation.Token);
         }
+    }
+
+    private sealed class CancelingNormalizationRecipe(CancellationTokenSource cancellation) : IProcessingRecipe
+    {
+        internal const string Name = "synthetic-normalization-cancel";
+
+        public ProcessingRecipeDefinition Definition { get; } = new(
+            Name, "1.0.0", "synthetic-v1", ProcessingOperationKind.Gate);
+
+        public JsonElement NormalizeOptions(JsonElement options)
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        }
+
+        public ValueTask<ProcessingOutcome> ExecuteAsync(
+            ProcessingExecutionRequest request,
+            ProcessingRecipeIdentity identity,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(ProcessingOutcome.Produced());
     }
 
     private sealed class RetryableRecipe : IProcessingRecipe

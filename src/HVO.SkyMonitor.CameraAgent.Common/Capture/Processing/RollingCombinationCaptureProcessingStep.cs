@@ -64,10 +64,11 @@ internal sealed class RollingCombinationCaptureProcessingStep(
         stackMetadata["stackCount"] = product.SourceArtifactIds.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
         stackMetadata["totalIntegrationMilliseconds"] = product.TotalIntegration.TotalMilliseconds.ToString("F0", System.Globalization.CultureInfo.InvariantCulture);
         var combinedFrame = CameraAgentRecipeExecutionAdapter.CreateFrame(product, raw.Frame, "RollingCombination");
-        context.AddDerivative(FrameArtifactRole.Combined,
+        var artifact = context.AddDerivative(FrameArtifactRole.Combined,
             combinedFrame with { Metadata = combinedFrame.Metadata with { Extra = stackMetadata } },
             $"rolling-mean-v1-n{product.SourceArtifactIds.Count}",
             product.SourceArtifactIds);
+        context.AssociateProcessingProduct(artifact, product);
 
         ProcessingExecutionRequest CreateRequest(IReadOnlyList<ProcessingArtifact> inputs) => new(
             BuiltInProcessingRecipes.RollingMean,

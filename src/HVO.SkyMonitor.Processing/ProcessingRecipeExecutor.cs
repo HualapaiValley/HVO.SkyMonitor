@@ -61,6 +61,10 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
                 normalized, request.Input, request.Annotation);
             identity = ProcessingIdentity.CreateRecipeIdentity(recipe.Definition, effective);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (JsonException)
         {
             return ProcessingOutcome.TerminalFailure(

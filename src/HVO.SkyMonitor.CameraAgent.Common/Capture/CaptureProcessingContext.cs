@@ -14,6 +14,7 @@ public sealed class CaptureProcessingContext
     private readonly List<CaptureProcessingStepTelemetry> _stepTelemetry = new();
     private FrameArtifactSet? _artifacts;
     private readonly List<ProcessingOutcome> _processingOutcomes = new();
+    private readonly Dictionary<Guid, ProcessingProduct> _processingProductsByArtifactId = new();
 
     public CaptureProcessingContext(CameraModuleConfig config, CaptureLoopSubmission submission)
     {
@@ -47,7 +48,7 @@ public sealed class CaptureProcessingContext
         _submission = _submission with { Result = result };
     }
 
-    public void AddDerivative(
+    public FrameArtifact AddDerivative(
         FrameArtifactRole role,
         CameraFrame frame,
         string? recipeVersion = null,
@@ -56,6 +57,7 @@ public sealed class CaptureProcessingContext
         ArgumentNullException.ThrowIfNull(frame);
         _artifacts = (_artifacts ?? new FrameArtifactSet(frame)).WithDerivative(role, frame, recipeVersion, sourceArtifactIds);
         _submission = _submission with { Result = _submission.Result with { Artifacts = _artifacts } };
+        return _artifacts[role];
     }
 
     public void UpdateResult(CaptureResult result)
@@ -75,6 +77,20 @@ public sealed class CaptureProcessingContext
         ArgumentNullException.ThrowIfNull(outcome);
         _processingOutcomes.Add(outcome);
     }
+
+    internal void AssociateProcessingProduct(FrameArtifact artifact, ProcessingProduct product)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        ArgumentNullException.ThrowIfNull(product);
+        if (artifact.Role != product.Role)
+        {
+            throw new ArgumentException("Artifact and processing product roles must match.", nameof(product));
+        }
+        _processingProductsByArtifactId[artifact.ArtifactId] = product;
+    }
+
+    internal ProcessingProduct? GetProcessingProduct(Guid artifactId) =>
+        _processingProductsByArtifactId.GetValueOrDefault(artifactId);
 }
 
 public interface ICaptureProcessingStep

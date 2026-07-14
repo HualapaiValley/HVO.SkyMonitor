@@ -146,6 +146,7 @@ public sealed class CaptureProcessingContextTests
         var preview = context.Artifacts[FrameArtifactRole.Preview].Frame;
         Assert.AreEqual(CameraPixelFormat.Mono8, preview.PixelFormat);
         CollectionAssert.AreEqual(new byte[] { 0, 255 }, preview.PixelData.ToArray());
+        Assert.IsNotNull(context.GetProcessingProduct(context.Artifacts[FrameArtifactRole.Preview].ArtifactId));
     }
 
     [TestMethod]
@@ -329,10 +330,7 @@ public sealed class CaptureProcessingContextTests
             Metadata = new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0, Scene: new SceneProvenance(
                 sceneId, "rig-v1", "test", "1", new string('0', 64), "equidistant", "v1", "v1", "v1"))
         };
-        var preview = new CameraFrame(DateTimeOffset.UnixEpoch, 2, 2, CameraPixelFormat.Mono8,
-            new byte[] { 0, 0, 0, 0 }, raw.Metadata);
         var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
-        context.AddDerivative(FrameArtifactRole.Preview, preview, "preview-v1");
         var staleInput = CameraAgentRecipeExecutionAdapter.CreateArtifact(
             context.Config, context.Artifacts!.Raw, "source");
         var stalePreview = await Adapter.ExecuteAsync(new ProcessingExecutionRequest(
@@ -342,6 +340,9 @@ public sealed class CaptureProcessingContextTests
             [staleInput],
             "stale"), CancellationToken.None).ConfigureAwait(false);
         context.AddProcessingOutcome(stalePreview);
+        var preview = new CameraFrame(DateTimeOffset.UnixEpoch, 2, 2, CameraPixelFormat.Mono8,
+            stalePreview.Products.Single().Payload, raw.Metadata);
+        context.AddDerivative(FrameArtifactRole.Preview, preview, "preview-v1");
         var store = new ProjectedSceneStore();
         var utc = DateTimeOffset.UnixEpoch;
         var catalog = new InMemoryCelestialCatalog([

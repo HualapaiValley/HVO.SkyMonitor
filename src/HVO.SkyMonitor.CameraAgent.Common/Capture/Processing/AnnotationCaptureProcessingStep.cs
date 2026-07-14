@@ -104,8 +104,7 @@ internal sealed class AnnotationCaptureProcessingStep(
             throw new InvalidOperationException("The projected scene required for annotation is unavailable.");
         }
 
-        var previewProduct = context.ProcessingProducts.LastOrDefault(
-            product => product.Role == FrameArtifactRole.Preview && product.Payload.Equals(preview.Frame.PixelData));
+        var previewProduct = context.GetProcessingProduct(preview.ArtifactId);
         var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(
             context.Config,
             preview,
@@ -162,7 +161,7 @@ internal sealed class AnnotationCaptureProcessingStep(
 
         var product = outcome.Products[0];
         var annotated = CameraAgentRecipeExecutionAdapter.CreateFrame(product, frame, "AnnotatedPreview");
-        context.AddDerivative(FrameArtifactRole.AnnotatedPreview,
+        var artifact = context.AddDerivative(FrameArtifactRole.AnnotatedPreview,
             annotated with
             {
                 Metadata = CreateAnnotationMetadata(
@@ -172,6 +171,7 @@ internal sealed class AnnotationCaptureProcessingStep(
             },
             Options.RecipeVersion,
             [preview.ArtifactId]);
+        context.AssociateProcessingProduct(artifact, product);
     }
 
     private static bool IsNamed(string id, string displayName)

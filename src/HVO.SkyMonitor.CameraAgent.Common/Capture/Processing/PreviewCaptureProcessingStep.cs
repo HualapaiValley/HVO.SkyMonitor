@@ -41,10 +41,11 @@ internal sealed class PreviewCaptureProcessingStep(
             return;
         }
         var product = outcome.Products[0];
-        context.AddDerivative(FrameArtifactRole.Preview,
+        var artifact = context.AddDerivative(FrameArtifactRole.Preview,
             CameraAgentRecipeExecutionAdapter.CreateFrame(product, source, "Preview"),
             Options.RecipeVersion,
             product.SourceArtifactIds);
+        context.AssociateProcessingProduct(artifact, product);
     }
 }
 
