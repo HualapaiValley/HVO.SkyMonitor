@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.Processing;
@@ -18,6 +19,7 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
             StringComparer.Ordinal);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The executor boundary converts unexpected recipe failures into stable terminal outcomes.")]
     public async ValueTask<ProcessingOutcome> ExecuteAsync(
         ProcessingExecutionRequest request,
         CancellationToken cancellationToken = default)
@@ -77,6 +79,12 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
                 ProcessingReasonCodes.ExecutionFailed,
                 nameof(request.Options));
         }
+        catch (Exception)
+        {
+            return ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.ExecutionFailed,
+                nameof(request.Options));
+        }
 
         try
         {
@@ -99,6 +107,10 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
                 nameof(request.Inputs));
         }
         catch (InvalidOperationException)
+        {
+            return ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.ExecutionFailed);
+        }
+        catch (Exception)
         {
             return ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.ExecutionFailed);
         }

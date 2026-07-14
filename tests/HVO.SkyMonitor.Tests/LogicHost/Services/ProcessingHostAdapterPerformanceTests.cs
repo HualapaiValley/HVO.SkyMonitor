@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -94,6 +95,7 @@ public sealed class ProcessingHostAdapterPerformanceTests
                     framework = RuntimeInformation.FrameworkDescription,
                     configuration = "Release",
                     concurrency = 1,
+                    serverGarbageCollection = GCSettings.IsServerGC,
                     externalIo = false
                 },
                 measurements = new[] { measurement }
@@ -121,7 +123,7 @@ public sealed class ProcessingHostAdapterPerformanceTests
         ProcessingCompatibilityIdentity? compatibility = null;
         var process = Process.GetCurrentProcess();
         var workingSetStart = process.WorkingSet64;
-        var workingSetPeak = workingSetStart;
+        var workingSetPeak = Math.Max(workingSetStart, process.PeakWorkingSet64);
         var generation0Start = GC.CollectionCount(0);
         var generation1Start = GC.CollectionCount(1);
         var generation2Start = GC.CollectionCount(2);
@@ -145,7 +147,7 @@ public sealed class ProcessingHostAdapterPerformanceTests
             Assert.AreEqual(outputIdentity, product.OutputIdentitySha256);
             Assert.AreEqual(compatibility, product.Compatibility);
             process.Refresh();
-            workingSetPeak = Math.Max(workingSetPeak, process.WorkingSet64);
+            workingSetPeak = Math.Max(workingSetPeak, process.PeakWorkingSet64);
         }
         process.Refresh();
         var workingSetEnd = process.WorkingSet64;
@@ -173,6 +175,7 @@ public sealed class ProcessingHostAdapterPerformanceTests
             workingSetEnd,
             memory.HeapSizeBytes,
             memory.FragmentedBytes,
+            memory.GenerationInfo[3].SizeAfterBytes,
             GC.CollectionCount(0) - generation0Start,
             GC.CollectionCount(1) - generation1Start,
             GC.CollectionCount(2) - generation2Start,
@@ -342,6 +345,7 @@ public sealed class ProcessingHostAdapterPerformanceTests
         long WorkingSetEndBytes,
         long ManagedHeapBytes,
         long FragmentedHeapBytes,
+        long LargeObjectHeapBytes,
         int Generation0Collections,
         int Generation1Collections,
         int Generation2Collections,

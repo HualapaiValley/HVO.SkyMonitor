@@ -105,7 +105,7 @@ internal sealed class AnnotationCaptureProcessingStep(
         }
 
         var previewProduct = context.ProcessingProducts.LastOrDefault(
-            static product => product.Role == FrameArtifactRole.Preview);
+            product => product.Role == FrameArtifactRole.Preview && product.Payload.Equals(preview.Frame.PixelData));
         var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(
             context.Config,
             preview,

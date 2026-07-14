@@ -21,6 +21,10 @@ Object properties are sorted by `CaptureContractJson`; array and source order ar
 significant. The output identity additionally covers the target role, target
 variant, recipe identity, and ordered immediate source artifact IDs. The target
 variant does not change recipe identity, but does change output identity.
+`CreateRequestedIdentity` binds normalized configuration and the input selector
+without runtime annotation geometry. Annotation execution adds its provenance
+identity, so a catalog request identity is intentionally distinct from the
+identity of each produced annotated artifact.
 
 ## Inputs And Outcomes
 

@@ -84,7 +84,7 @@ public sealed record AnnotationResult(
 /// <summary>Draws annotations using only coordinates already present in projected scene records.</summary>
 public static class AnnotationRenderer
 {
-    public const string AlgorithmVersion = "projected-annotation-raster-v1";
+    public const string AlgorithmVersion = "projected-annotation-raster-v2";
 
     /// <summary>Composes the existing monochrome annotation mask over packed RGB24 without altering source pixels.</summary>
     public static AnnotationResult AnnotateRgb24WithSegments(
@@ -155,7 +155,7 @@ public static class AnnotationRenderer
 
         if (projectionOverlay is not null)
         {
-            DrawProjectionOverlay(pixels, width, height, transform, projectionOverlay, options);
+            DrawProjectionOverlay(pixels, width, height, transform, projectionOverlay, options, cancellationToken);
         }
 
         return new AnnotationResult(pixels, result.Anchors);
@@ -318,14 +318,16 @@ public static class AnnotationRenderer
         int height,
         PreviewTransform transform,
         ProjectedAnnotationOverlay overlay,
-        AnnotationOptions options)
+        AnnotationOptions options,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var center = transform.Apply(overlay.Center);
         if (options.DrawImageCircle)
         {
             DrawEllipse(pixels, width, height, center,
                 Math.Abs(overlay.ImageCircleRadius * transform.ScaleX),
-                Math.Abs(overlay.ImageCircleRadius * transform.ScaleY), options.ImageCircleValue);
+                Math.Abs(overlay.ImageCircleRadius * transform.ScaleY), options.ImageCircleValue, cancellationToken);
         }
 
         if (!options.DrawCardinalDirections)
@@ -340,7 +342,14 @@ public static class AnnotationRenderer
     }
 
     private static void DrawEllipse(
-        byte[] pixels, int width, int height, PixelPoint center, double radiusX, double radiusY, byte value)
+        byte[] pixels,
+        int width,
+        int height,
+        PixelPoint center,
+        double radiusX,
+        double radiusY,
+        byte value,
+        CancellationToken cancellationToken)
     {
         if (!double.IsFinite(center.X) || !double.IsFinite(center.Y) ||
             !double.IsFinite(radiusX) || !double.IsFinite(radiusY) || radiusX <= 0 || radiusY <= 0)
@@ -348,13 +357,38 @@ public static class AnnotationRenderer
             return;
         }
 
-        var pointCount = Math.Max(32, (int)Math.Ceiling(2 * Math.PI * Math.Max(radiusX, radiusY)));
-        for (var point = 0; point < pointCount; point++)
+        for (var x = 0; x < width; x++)
         {
-            var angle = 2 * Math.PI * point / pointCount;
-            SetPixelMaximum(pixels, width, height,
-                Round(center.X + radiusX * Math.Cos(angle)),
-                Round(center.Y + radiusY * Math.Sin(angle)), value);
+            cancellationToken.ThrowIfCancellationRequested();
+            var normalized = (x - center.X) / radiusX;
+            if (Math.Abs(normalized) <= 1)
+            {
+                var offset = radiusY * Math.Sqrt(Math.Max(0, 1 - normalized * normalized));
+                SetPixelMaximumIfFinite(pixels, width, height, x, center.Y - offset, value);
+                SetPixelMaximumIfFinite(pixels, width, height, x, center.Y + offset, value);
+            }
+        }
+
+        for (var y = 0; y < height; y++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var normalized = (y - center.Y) / radiusY;
+            if (Math.Abs(normalized) <= 1)
+            {
+                var offset = radiusX * Math.Sqrt(Math.Max(0, 1 - normalized * normalized));
+                SetPixelMaximumIfFinite(pixels, width, height, center.X - offset, y, value);
+                SetPixelMaximumIfFinite(pixels, width, height, center.X + offset, y, value);
+            }
+        }
+    }
+
+    private static void SetPixelMaximumIfFinite(
+        byte[] pixels, int width, int height, double x, double y, byte value)
+    {
+        if (double.IsFinite(x) && double.IsFinite(y) &&
+            x is >= int.MinValue and <= int.MaxValue && y is >= int.MinValue and <= int.MaxValue)
+        {
+            SetPixelMaximum(pixels, width, height, Round(x), Round(y), value);
         }
     }
 

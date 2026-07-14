@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -32,6 +33,9 @@ public sealed class ProcessingRecipePerformanceTests
             ["W1"] = "42CA6AF7B5E237398972AB0DBBA89AF4A96F43A86EE60B5E7D985340E4A10980",
             ["W2"] = "A1AF7A36883C10255CD2CB519B86409E4DA5FA82AB38B640B3A8D0708D30657D"
         };
+    private static readonly ProcessingRecipeIdentity DirectBaselineIdentity = ProcessingIdentity.CreateRecipeIdentity(
+        new ProcessingRecipeDefinition("baseline", "1.0.0", "direct-v1", ProcessingOperationKind.Transform),
+        JsonSerializer.SerializeToElement(new { }));
 
     private static readonly JsonSerializerOptions EvidenceJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -79,6 +83,7 @@ public sealed class ProcessingRecipePerformanceTests
                 configuration = "Release",
                 concurrency = 1,
                 initialBacklog = 0,
+                serverGarbageCollection = GCSettings.IsServerGC,
                 externalIo = false
             },
             results = new[] { result }
@@ -144,7 +149,7 @@ public sealed class ProcessingRecipePerformanceTests
         string? checksum = null;
         var process = Process.GetCurrentProcess();
         var workingSetStart = process.WorkingSet64;
-        var workingSetPeak = workingSetStart;
+        var workingSetPeak = Math.Max(workingSetStart, process.PeakWorkingSet64);
         var generation0Start = GC.CollectionCount(0);
         var generation1Start = GC.CollectionCount(1);
         var generation2Start = GC.CollectionCount(2);
@@ -166,9 +171,13 @@ public sealed class ProcessingRecipePerformanceTests
             {
                 Assert.AreEqual(ExpectedPackedPreviewChecksums[workload.Id], product.ChecksumSha256);
             }
+            if (recipe == "direct-display-baseline")
+            {
+                Assert.AreEqual(product.ChecksumSha256, ProcessingIdentity.ComputePayloadSha256(product.Payload));
+            }
             outputBytes = product.Payload.Length;
             process.Refresh();
-            workingSetPeak = Math.Max(workingSetPeak, process.WorkingSet64);
+            workingSetPeak = Math.Max(workingSetPeak, process.PeakWorkingSet64);
         }
         process.Refresh();
         var workingSetEnd = process.WorkingSet64;
@@ -196,6 +205,7 @@ public sealed class ProcessingRecipePerformanceTests
             workingSetEnd,
             memory.HeapSizeBytes,
             memory.FragmentedBytes,
+            memory.GenerationInfo[3].SizeAfterBytes,
             GC.CollectionCount(0) - generation0Start,
             GC.CollectionCount(1) - generation1Start,
             GC.CollectionCount(2) - generation2Start,
@@ -252,10 +262,8 @@ public sealed class ProcessingRecipePerformanceTests
             "application/x-hvo-packed-image",
             null,
             pixels,
-            ProcessingIdentity.ComputePayloadSha256(pixels),
-            ProcessingIdentity.CreateRecipeIdentity(
-                new ProcessingRecipeDefinition("baseline", "1.0.0", "direct-v1", ProcessingOperationKind.Transform),
-                EmptyOptions()),
+            ExpectedPackedPreviewChecksums[workload.Id],
+            DirectBaselineIdentity,
             [],
             [workload.Artifact.ArtifactId],
             workload.Artifact.Integration,
@@ -457,6 +465,7 @@ public sealed class ProcessingRecipePerformanceTests
         long WorkingSetEndBytes,
         long ManagedHeapBytes,
         long FragmentedHeapBytes,
+        long LargeObjectHeapBytes,
         int Generation0Collections,
         int Generation1Collections,
         int Generation2Collections,

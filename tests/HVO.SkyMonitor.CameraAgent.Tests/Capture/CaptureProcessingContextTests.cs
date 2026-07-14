@@ -333,6 +333,15 @@ public sealed class CaptureProcessingContextTests
             new byte[] { 0, 0, 0, 0 }, raw.Metadata);
         var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
         context.AddDerivative(FrameArtifactRole.Preview, preview, "preview-v1");
+        var staleInput = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            context.Config, context.Artifacts!.Raw, "source");
+        var stalePreview = await Adapter.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.EncodedPreview,
+            System.Text.Json.JsonSerializer.SerializeToElement(new EncodedPreviewOptions(OutputEncoding: "Packed")),
+            ProcessingInputSelector.Raw("source"),
+            [staleInput],
+            "stale"), CancellationToken.None).ConfigureAwait(false);
+        context.AddProcessingOutcome(stalePreview);
         var store = new ProjectedSceneStore();
         var utc = DateTimeOffset.UnixEpoch;
         var catalog = new InMemoryCelestialCatalog([
@@ -357,8 +366,13 @@ public sealed class CaptureProcessingContextTests
         CollectionAssert.AreEqual(
             new[] { context.Artifacts[FrameArtifactRole.Preview].ArtifactId },
             context.Artifacts[FrameArtifactRole.AnnotatedPreview].SourceArtifactIds!.ToArray());
-        Assert.AreEqual("preview-v1", context.ProcessingProducts.Single().Recipe.Descriptor.Options
-            .GetProperty("input").GetProperty("variant").GetString());
+        var annotationProduct = context.ProcessingProducts.Single(
+            product => product.Role == FrameArtifactRole.AnnotatedPreview);
+        var annotationSelector = annotationProduct.Recipe.Descriptor.Options.GetProperty("input");
+        Assert.AreEqual("preview-v1", annotationSelector.GetProperty("variant").GetString());
+        Assert.AreNotEqual(
+            stalePreview.Products.Single().Recipe.IdentitySha256,
+            annotationSelector.GetProperty("recipeIdentitySha256").GetString());
     }
 
     [TestMethod]

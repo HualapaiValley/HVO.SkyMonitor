@@ -36,6 +36,21 @@ public sealed class LogicHostProcessingConformanceTests
             "jpeg").ConfigureAwait(false);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, jpeg.Status);
         Assert.AreEqual(HVO.SkyMonitor.Imaging.JpegImageCodec.MediaType, jpeg.Products.Single().MediaType);
+
+        var invalidChecksum = descriptor with
+        {
+            Artifact = descriptor.Artifact with { ChecksumSha256 = new string('0', 64) }
+        };
+        var invalid = await adapter.ExecuteAsync(
+            invalidChecksum,
+            ProcessingConformanceFixture.Payload,
+            request.RecipeName,
+            request.Options,
+            request.Input,
+            request.OutputVariant).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, invalid.Status);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidInput, invalid.ReasonCode);
+        Assert.AreEqual("payload", invalid.Field);
     }
 
     [TestMethod]

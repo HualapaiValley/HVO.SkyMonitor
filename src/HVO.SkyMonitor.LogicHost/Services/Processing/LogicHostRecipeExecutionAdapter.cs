@@ -51,7 +51,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             if (!reconstruction.IsValid)
             {
                 return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
-                    ProcessingReasonCodes.InvalidLayout,
+                    MapReconstructionReason(reconstruction.ReasonCode),
                     reconstruction.FieldPath));
             }
             var descriptor = input.Descriptor;
@@ -75,6 +75,21 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             outputVariant,
             annotation), cancellationToken);
     }
+
+    private static string MapReconstructionReason(string? reasonCode) => reasonCode switch
+    {
+        CaptureContractReasonCodes.InvalidDimensions or
+        CaptureContractReasonCodes.InvalidStride or
+        CaptureContractReasonCodes.InvalidByteOrder or
+        CaptureContractReasonCodes.InvalidSampleDepth or
+        CaptureContractReasonCodes.InvalidPacking or
+        CaptureContractReasonCodes.InvalidCfa or
+        CaptureContractReasonCodes.InvalidLevels or
+        CaptureContractReasonCodes.PayloadLengthMismatch => ProcessingReasonCodes.InvalidLayout,
+        CaptureContractReasonCodes.UnsupportedFormat => ProcessingReasonCodes.UnsupportedFormat,
+        CaptureContractReasonCodes.InvalidLineage => ProcessingReasonCodes.InvalidLineage,
+        _ => ProcessingReasonCodes.InvalidInput
+    };
 
     private static ProcessingCompatibilityIdentity CreateCompatibility(ReconstructionDescriptor descriptor)
     {

@@ -46,12 +46,16 @@ public static class ProcessingIdentity
         ArgumentException.ThrowIfNullOrWhiteSpace(variant);
         ArgumentException.ThrowIfNullOrWhiteSpace(recipeIdentitySha256);
         ArgumentNullException.ThrowIfNull(sourceArtifactIds);
+        if (recipeIdentitySha256.Length != 64 || recipeIdentitySha256.Any(static character => !Uri.IsHexDigit(character)))
+        {
+            throw new ArgumentException("Recipe identity must be a SHA-256 value.", nameof(recipeIdentitySha256));
+        }
         var envelope = JsonSerializer.SerializeToElement(new
         {
             schema = "hvo-processing-output-v1",
             role = role.ToString(),
             variant,
-            recipeIdentitySha256,
+            recipeIdentitySha256 = recipeIdentitySha256.ToUpperInvariant(),
             sourceArtifactIds
         }, SerializerOptions);
         return CaptureContractJson.ComputeCanonicalJsonSha256(envelope);

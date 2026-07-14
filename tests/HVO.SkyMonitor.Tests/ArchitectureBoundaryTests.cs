@@ -483,7 +483,7 @@ public sealed class ArchitectureBoundaryTests
             IReadOnlyDictionary<string, IReadOnlySet<string>> allowedReferences)
         {
             var violations = new List<string>();
-            foreach (var required in allowedReferences.Keys.Where(name => name != Processing && !Projects.ContainsKey(name)))
+            foreach (var required in allowedReferences.Keys.Where(name => !Projects.ContainsKey(name)))
             {
                 violations.Add($"ARCH-MISSING: Documented production project '{required}' was not found.");
             }

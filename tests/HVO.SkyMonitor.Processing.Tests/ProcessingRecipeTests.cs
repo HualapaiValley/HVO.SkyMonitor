@@ -92,6 +92,14 @@ public sealed class ProcessingRecipeTests
         Assert.AreEqual(
             uppercaseProducer.Products[0].Recipe.IdentitySha256,
             lowercaseProducer.Products[0].Recipe.IdentitySha256);
+        var sourceIds = new[] { input.ArtifactId };
+        Assert.AreEqual(
+            ProcessingIdentity.CreateOutputIdentity(
+                FrameArtifactRole.Preview, "case", new string('A', 64), sourceIds),
+            ProcessingIdentity.CreateOutputIdentity(
+                FrameArtifactRole.Preview, "case", new string('a', 64), sourceIds));
+        Assert.ThrowsExactly<ArgumentException>(() => ProcessingIdentity.CreateOutputIdentity(
+            FrameArtifactRole.Preview, "case", "invalid", sourceIds));
 
         var requestedWithUndefinedOptions = BuiltInProcessingRecipes.CreateRequestedIdentity(
             BuiltInProcessingRecipes.NoOpAnalyzer,
@@ -846,6 +854,10 @@ public sealed class ProcessingRecipeTests
             new InvalidOperationException(), throwDuringNormalization: false, input).ConfigureAwait(false);
         var normalizationFailure = await ExecuteSyntheticFailureAsync(
             new InvalidOperationException(), throwDuringNormalization: true, input).ConfigureAwait(false);
+        var unexpectedExecutionFailure = await ExecuteSyntheticFailureAsync(
+            new NotSupportedException(), throwDuringNormalization: false, input).ConfigureAwait(false);
+        var unexpectedNormalizationFailure = await ExecuteSyntheticFailureAsync(
+            new NotSupportedException(), throwDuringNormalization: true, input).ConfigureAwait(false);
         var explicitRetryable = await new ProcessingRecipeExecutor([new RetryableRecipe()]).ExecuteAsync(Request(
             RetryableRecipe.Name,
             EmptyOptions(),
@@ -860,6 +872,8 @@ public sealed class ProcessingRecipeTests
         Assert.AreEqual(ProcessingReasonCodes.ExecutionFailed, executionFailure.ReasonCode);
         Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, normalizationFailure.Status);
         Assert.AreEqual(ProcessingReasonCodes.ExecutionFailed, normalizationFailure.ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.ExecutionFailed, unexpectedExecutionFailure.ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.ExecutionFailed, unexpectedNormalizationFailure.ReasonCode);
         Assert.AreEqual(ProcessingOutcomeStatus.RetryableFailure, explicitRetryable.Status);
         Assert.AreEqual(ProcessingReasonCodes.ExecutionFailed, explicitRetryable.ReasonCode);
 

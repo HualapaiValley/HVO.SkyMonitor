@@ -491,7 +491,7 @@ public sealed record AnnotationRecipeOptions(
 internal sealed class AnnotationRecipe : IProcessingRecipe
 {
     public ProcessingRecipeDefinition Definition { get; } = new(
-        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v1",
+        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v2",
         ProcessingOperationKind.Transform);
 
     public JsonElement NormalizeOptions(JsonElement options)

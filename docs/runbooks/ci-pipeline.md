@@ -8,18 +8,18 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | --- | --- |
 | **Quality** | Pinned local tools, formatting, vulnerability audit, and exact reviewed deprecation allowlist. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. |
-| **Unit Tests** | 377 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. |
-| **Integration Tests** | 111 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. |
+| **Unit Tests** | 436 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. |
+| **Integration Tests** | 122 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. |
 | **Architecture & Publish** | Six repository graph/MSBuild/publish checks plus retained host publish manifests. |
 | **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
-| **Coverage** | Exact source-path and branch merge of nine expected reports, checked-in aggregate non-regression, and risk-file floors. |
+| **Coverage** | Exact source-path and branch merge of ten expected reports, checked-in aggregate non-regression, and risk-file floors. |
 | **Required CI** | Current-head aggregate that fails when any required check fails, times out, is canceled, or is missing. |
 
-Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected nine, preventing missing or overwritten evidence.
+Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected ten, preventing missing or overwritten evidence.
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=406`, `Integration=122`, `Manual=2`, `Soak=1`, `External=0`, and `Hardware=0`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=436`, `Integration=122`, `Manual=5`, `Soak=1`, `External=0`, and `Hardware=0`.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. No Hardware check is published until real device tests and a suitable runner exist.
 
@@ -39,11 +39,11 @@ dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "
 
 Use the exact per-project commands in `.github/workflows/ci.yml` when producing coverage evidence; solution-level TRX names are not collision-proof.
 
-Use a fresh result root for every collection. Before merging, require exactly one report from each of the nine category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those nine explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
+Use a fresh result root for every collection. Before merging, require exactly one report from each of the ten category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those ten explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
 ```bash
 reports=(TestResults/unit/*/*/coverage.cobertura.xml TestResults/integration/*/*/coverage.cobertura.xml TestResults/architecture/*/coverage.cobertura.xml)
-[[ "${#reports[@]}" -eq 9 ]]
+[[ "${#reports[@]}" -eq 10 ]]
 dotnet reportgenerator "-reports:$(IFS=';'; echo "${reports[*]}")" -targetdir:coverage-report -reporttypes:"Html;TextSummary;MarkdownSummaryGithub;Badges;Cobertura"
 ./scripts/coverage:enforce --merged coverage-report/Cobertura.xml
 ```

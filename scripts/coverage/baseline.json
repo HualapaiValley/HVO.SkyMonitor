@@ -18,6 +18,7 @@
     "HVO.SkyMonitor.Imaging/ImageLayout.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Imaging/BayerRggb16Demosaicer.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Imaging/ImageStatisticsCalculator.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.Imaging/JpegImageCodec.cs": { "line": 0.95, "branch": 0.80 },
     "HVO.SkyMonitor.Imaging/Linear16ArithmeticMean.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Imaging/SceneRenderers.cs": { "line": 0.90, "branch": 0.85 },
     "HVO.SkyMonitor.Processing/BuiltInProcessingRecipes.cs": { "line": 0.95, "branch": 0.90 },
