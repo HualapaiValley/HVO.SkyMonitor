@@ -673,7 +673,8 @@ internal sealed class SqliteRawCaptureJournal(
             : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2));
         var age = _utcNow() - oldest;
         var hard = count + 1 > _distributionOptions.OptionalMaximumPendingCount ||
-                   bytes + payloadLength > _distributionOptions.OptionalMaximumPendingBytes ||
+                   CaptureLanePressureMath.ExceedsAfterAdding(
+                       bytes, payloadLength, _distributionOptions.OptionalMaximumPendingBytes) ||
                    age >= TimeSpan.FromMinutes(_distributionOptions.OptionalMaximumOldestAgeMinutes);
         using var readPressure = connection.CreateCommand();
         readPressure.Transaction = transaction;
@@ -683,10 +684,16 @@ internal sealed class SqliteRawCaptureJournal(
             await readPressure.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture);
         var recovered = count * 100 < _distributionOptions.OptionalMaximumPendingCount * _distributionOptions.PressureRecoveryPercent &&
-                        bytes * 100 < _distributionOptions.OptionalMaximumPendingBytes * _distributionOptions.PressureRecoveryPercent &&
+                        !CaptureLanePressureMath.IsAtOrAbovePercentage(
+                            bytes,
+                            _distributionOptions.OptionalMaximumPendingBytes,
+                            _distributionOptions.PressureRecoveryPercent) &&
                         age.TotalMinutes * 100 < _distributionOptions.OptionalMaximumOldestAgeMinutes * _distributionOptions.PressureRecoveryPercent;
         var warning = count * 100 >= _distributionOptions.OptionalMaximumPendingCount * _distributionOptions.PressureRecoveryPercent ||
-                      bytes * 100 >= _distributionOptions.OptionalMaximumPendingBytes * _distributionOptions.PressureRecoveryPercent;
+                      CaptureLanePressureMath.IsAtOrAbovePercentage(
+                          bytes,
+                          _distributionOptions.OptionalMaximumPendingBytes,
+                          _distributionOptions.PressureRecoveryPercent);
         var next = hard || prior == 2 && !recovered ? 2 : warning ? 1 : 0;
         using var updatePressure = connection.CreateCommand();
         updatePressure.Transaction = transaction;

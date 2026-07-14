@@ -50,15 +50,22 @@ internal sealed class SqliteCaptureLaneStore(
             var backlog = await ReadBacklogAsync(connection, lane, transaction, cancellationToken).ConfigureAwait(false);
             var age = backlog.OldestPendingUtc is { } oldest ? now - oldest : TimeSpan.Zero;
             var hard = backlog.QuarantineCount > 0 ||
-                       backlog.PendingCount + 1 > _options.RequiredMaximumPendingCount ||
-                       backlog.PendingBytes + payloadLength > _options.RequiredMaximumPendingBytes ||
+                       backlog.PendingCount >= _options.RequiredMaximumPendingCount ||
+                       CaptureLanePressureMath.ExceedsAfterAdding(
+                           backlog.PendingBytes, payloadLength, _options.RequiredMaximumPendingBytes) ||
                        age >= TimeSpan.FromMinutes(_options.RequiredMaximumOldestAgeMinutes);
             var recovered = backlog.QuarantineCount == 0 &&
                             backlog.PendingCount * 100 < _options.RequiredMaximumPendingCount * _options.PressureRecoveryPercent &&
-                            backlog.PendingBytes * 100 < _options.RequiredMaximumPendingBytes * _options.PressureRecoveryPercent &&
+                            !CaptureLanePressureMath.IsAtOrAbovePercentage(
+                                backlog.PendingBytes,
+                                _options.RequiredMaximumPendingBytes,
+                                _options.PressureRecoveryPercent) &&
                             age.TotalMinutes * 100 < _options.RequiredMaximumOldestAgeMinutes * _options.PressureRecoveryPercent;
             var warning = backlog.PendingCount * 100 >= _options.RequiredMaximumPendingCount * _options.PressureRecoveryPercent ||
-                          backlog.PendingBytes * 100 >= _options.RequiredMaximumPendingBytes * _options.PressureRecoveryPercent;
+                          CaptureLanePressureMath.IsAtOrAbovePercentage(
+                              backlog.PendingBytes,
+                              _options.RequiredMaximumPendingBytes,
+                              _options.PressureRecoveryPercent);
             var next = hard || backlog.PressureLevel == 2 && !recovered ? 2 : warning ? 1 : 0;
             using var update = connection.CreateCommand();
             update.Transaction = transaction;

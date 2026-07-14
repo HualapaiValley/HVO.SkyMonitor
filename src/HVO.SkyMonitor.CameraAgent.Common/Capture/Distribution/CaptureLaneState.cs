@@ -71,7 +71,8 @@ public sealed class CaptureLaneState(
                        age >= ageMaximum;
             var warning = hard ||
                           backlog.PendingCount * 100 >= countMaximum * _options.PressureRecoveryPercent ||
-                          backlog.PendingBytes >= bytesMaximum * _options.PressureRecoveryPercent / 100;
+                          CaptureLanePressureMath.IsAtOrAbovePercentage(
+                              backlog.PendingBytes, bytesMaximum, _options.PressureRecoveryPercent);
             var pressure = Math.Max(backlog.PressureLevel, hard ? 2 : warning ? 1 : 0);
             hard = pressure == 2;
             warning = pressure >= 1;

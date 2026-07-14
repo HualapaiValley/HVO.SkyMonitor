@@ -116,3 +116,12 @@ internal interface ICaptureLaneStore
 
     ValueTask<IReadOnlyList<CaptureLaneBacklog>> ReadBacklogsAsync(CancellationToken cancellationToken);
 }
+
+internal static class CaptureLanePressureMath
+{
+    internal static bool IsAtOrAbovePercentage(long value, long maximum, int percentage)
+        => (decimal)value * 100 >= (decimal)maximum * percentage;
+
+    internal static bool ExceedsAfterAdding(long current, long addition, long maximum)
+        => current > maximum || addition > maximum - current;
+}

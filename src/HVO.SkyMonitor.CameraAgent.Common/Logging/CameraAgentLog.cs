@@ -165,7 +165,7 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2057, Level = LogLevel.Warning, Message = "Capture lane availability changed to {Availability} because {Reason}")]
     public static partial void CaptureLanePressureChanged(this ILogger logger, string availability, string reason);
 
-    [LoggerMessage(EventId = 2057, Level = LogLevel.Information, Message = "Capture lane pressure recovered and availability is {Availability}")]
+    [LoggerMessage(EventId = 2063, Level = LogLevel.Information, Message = "Capture lane pressure recovered and availability is {Availability}")]
     public static partial void CaptureLanePressureRecovered(this ILogger logger, string availability);
 
     [LoggerMessage(EventId = 2058, Level = LogLevel.Information, Message = "Capture lane workers drained before shutdown")]

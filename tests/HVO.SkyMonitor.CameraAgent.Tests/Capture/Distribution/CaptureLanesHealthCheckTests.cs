@@ -39,5 +39,11 @@ public sealed class CaptureLanesHealthCheckTests
         CollectionAssert.AreEquivalent(
             ExpectedDataKeys,
             unhealthy.Data.Keys.ToArray());
+        Assert.IsFalse(CaptureLanePressureMath.IsAtOrAbovePercentage(
+            long.MaxValue / 2, long.MaxValue, 80));
+        Assert.IsTrue(CaptureLanePressureMath.IsAtOrAbovePercentage(
+            long.MaxValue - 1, long.MaxValue, 80));
+        Assert.IsTrue(CaptureLanePressureMath.ExceedsAfterAdding(
+            long.MaxValue - 1, 2, long.MaxValue));
     }
 }

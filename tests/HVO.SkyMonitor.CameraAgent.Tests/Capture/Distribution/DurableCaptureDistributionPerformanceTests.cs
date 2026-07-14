@@ -192,9 +192,13 @@ public sealed class DurableCaptureDistributionPerformanceTests
             var runtimeEvidence = new
             {
                 Revision = revision,
-                ExpectedLogEventRange = new { Minimum = 2050, Maximum = 2059 },
+                ExpectedLogEventRanges = new[]
+                {
+                    new { Minimum = 2050, Maximum = 2059 },
+                    new { Minimum = 2060, Maximum = 2063 }
+                },
                 ObservedLogEvents = runtimeSnapshot.EventIds
-                    .Where(static eventId => eventId is >= 2050 and <= 2059)
+                    .Where(static eventId => eventId is >= 2050 and <= 2063)
                     .Select(eventId => new { EventId = eventId, Name = runtimeSnapshot.EventNames[eventId] })
                     .ToArray(),
                 Metrics = new
