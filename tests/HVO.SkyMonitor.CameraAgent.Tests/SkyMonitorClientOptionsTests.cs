@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "MSTest test classes must be public.")]
 [TestClass]
+[TestCategory("Unit")]
 public class SkyMonitorClientOptionsTests
 {
     [TestMethod]

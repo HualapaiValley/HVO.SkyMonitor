@@ -173,14 +173,15 @@ undrained work, or reports misleading telemetry is a failed result.
 
 ## 7. Coverage Baseline
 
-Until #110 replaces it, the executable gate is
-`./scripts/coverage:enforce`: aggregate
-40 percent line/30 percent branch plus the exact filename sets currently listed
-in `scripts/coverage/Program.cs`. No PR may lower or bypass that gate.
+The executable gate is `./scripts/coverage:enforce` with the reviewed baseline
+and exact source-path risk mapping in `scripts/coverage/baseline.json`. The
+aggregate baseline is 60.570016 percent line and 56.224066 percent branch with a
+maximum 0.01 percentage-point regression. High-risk paths retain 95 percent
+line/90 percent branch floors, and renderer/catalog paths retain 90/85 floors.
 
-#110 must capture the reviewed aggregate baseline, replace basename merging with
-exact source paths, check in the risk-class mapping, document report collection
-and merge commands, and enforce aggregate non-regression to 0.01 percentage
-point. Approved generated/platform exclusions are path-specific; ordinary
-coverage regressions are corrected rather than accepted through a generic
-disposition.
+ReportGenerator is the single authoritative merger. CI collects nine explicit
+Unit, Integration, and architecture reports, creates one canonical Cobertura
+report, and enforces and publishes that same result. Pull requests cannot remove
+risk paths, lower thresholds, or widen tolerance relative to the target branch.
+Approved generated/platform exclusions remain path-specific; ordinary coverage
+regressions are corrected rather than accepted through a generic disposition.

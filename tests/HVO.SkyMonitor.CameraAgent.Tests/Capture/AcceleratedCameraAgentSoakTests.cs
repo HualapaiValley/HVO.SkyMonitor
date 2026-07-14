@@ -14,6 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
+[TestCategory("Soak")]
 public sealed class AcceleratedCameraAgentSoakTests
 {
     [TestMethod]

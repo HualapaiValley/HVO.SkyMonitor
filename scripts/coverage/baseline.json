@@ -1,0 +1,15 @@
+{
+  "aggregate": {
+    "line": 0.60570016,
+    "branch": 0.56224066,
+    "tolerancePercentagePoints": 0.01
+  },
+  "files": {
+    "HVO.SkyMonitor.Astronomy/CameraGeometry.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.Astronomy/Projection.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.Astronomy/VisibleScene.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.Imaging/ImageLayout.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.Imaging/SceneRenderers.cs": { "line": 0.90, "branch": 0.85 },
+    "HVO.SkyMonitor.Catalog.Sqlite/SqliteCelestialCatalog.cs": { "line": 0.90, "branch": 0.85 }
+  }
+}

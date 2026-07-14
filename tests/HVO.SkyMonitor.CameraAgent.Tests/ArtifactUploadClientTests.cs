@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed class ArtifactUploadClientTests
 {
     [TestMethod]
+    [TestCategory("Integration")]
     public async Task UploadAsync_MissingPayload_ReturnsFalseWithoutRequest()
     {
         using var client = new HttpClient(new ThrowingHandler()) { BaseAddress = new Uri("http://localhost/") };
@@ -23,6 +24,7 @@ public sealed class ArtifactUploadClientTests
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
     public async Task UploadAsync_TransportFailure_ReturnsFalseForLaterRetry()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
@@ -49,6 +51,7 @@ public sealed class ArtifactUploadClientTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task BandwidthLimitedReadStream_BoundsEachStreamingChunk()
     {
         using var source = new MemoryStream(new byte[100]);

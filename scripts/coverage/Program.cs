@@ -1,27 +1,26 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Xml.Linq;
 
-const double MinimumAggregateLine = 0.40;
-const double MinimumAggregateBranch = 0.30;
-
-var highRisk = new HashSet<string>(StringComparer.Ordinal)
+if (args.Length < 2)
 {
-    "CameraGeometry.cs", "Projection.cs", "VisibleScene.cs", "ImageLayout.cs"
-};
-var rendererCatalog = new HashSet<string>(StringComparer.Ordinal)
-{
-    "SceneRenderers.cs", "SqliteCelestialCatalog.cs"
-};
-var requiredFiles = new HashSet<string>(highRisk, StringComparer.Ordinal);
-requiredFiles.UnionWith(rendererCatalog);
-var files = new Dictionary<string, Coverage>(StringComparer.Ordinal);
-
-if (args.Length == 0)
-{
-    throw new ArgumentException("At least one Cobertura report is required.");
+    throw new ArgumentException("A baseline file and at least one Cobertura report are required.");
 }
 
-foreach (var report in args)
+using var baselineDocument = JsonDocument.Parse(File.ReadAllText(args[0]));
+var aggregate = baselineDocument.RootElement.GetProperty("aggregate");
+var baselineLine = aggregate.GetProperty("line").GetDouble();
+var baselineBranch = aggregate.GetProperty("branch").GetDouble();
+var tolerance = aggregate.GetProperty("tolerancePercentagePoints").GetDouble() / 100;
+var thresholds = baselineDocument.RootElement.GetProperty("files").EnumerateObject().ToDictionary(
+    static property => property.Name,
+    static property => new Threshold(
+        property.Value.GetProperty("line").GetDouble(),
+        property.Value.GetProperty("branch").GetDouble()),
+    StringComparer.Ordinal);
+var files = new Dictionary<string, Coverage>(StringComparer.Ordinal);
+
+foreach (var report in args.Skip(1))
 {
     var document = XDocument.Load(report, LoadOptions.None);
     var classElements = document.Descendants("class").ToArray();
@@ -33,12 +32,11 @@ foreach (var report in args)
     foreach (var classElement in classElements)
     {
         var className = RequiredAttribute(classElement, "name");
-        var sourcePath = RequiredAttribute(classElement, "filename");
-        var filename = Path.GetFileName(sourcePath.Replace('\\', '/'));
-        if (!files.TryGetValue(filename, out var coverage))
+        var sourcePath = NormalizeSourcePath(RequiredAttribute(classElement, "filename"));
+        if (!files.TryGetValue(sourcePath, out var coverage))
         {
             coverage = new Coverage();
-            files.Add(filename, coverage);
+            files.Add(sourcePath, coverage);
         }
 
         foreach (var line in classElement.Element("lines")?.Elements("line") ?? [])
@@ -51,70 +49,91 @@ foreach (var report in args)
             }
 
             var conditionCoverage = line.Attribute("condition-coverage")?.Value;
-            if (conditionCoverage is not null && TryParseConditionCoverage(conditionCoverage, out var covered, out var total))
+            var conditions = line.Element("conditions")?.Elements("condition").ToArray() ?? [];
+            if (conditionCoverage is not null && conditions.Length == 0)
             {
-                var key = (className, number);
-                if (!coverage.Branches.TryGetValue(key, out var existing))
+                if (!TryParseConditionCoverage(conditionCoverage, out var covered, out var total))
                 {
-                    coverage.Branches.Add(key, new BranchCoverage(covered, total));
+                    throw new InvalidDataException(
+                        $"Coverage report '{report}' has invalid branch data for '{sourcePath}:{number}'.");
                 }
-                else
-                {
-                    coverage.Branches[key] = new BranchCoverage(
-                        Math.Max(existing.Covered, covered), Math.Max(existing.Total, total));
-                }
+
+                coverage.Branches[new BranchKey(className, number, "aggregate")] = new BranchCoverage(covered, total);
+                continue;
+            }
+
+            var lineBranchTotal = 0;
+            if (conditionCoverage is not null &&
+                (!TryParseConditionCoverage(conditionCoverage, out _, out lineBranchTotal) ||
+                 lineBranchTotal % conditions.Length != 0))
+            {
+                throw new InvalidDataException(
+                    $"Coverage report '{report}' has invalid branch totals for '{sourcePath}:{number}'.");
+            }
+
+            var branchesPerCondition = conditions.Length == 0 ? 0 : lineBranchTotal / conditions.Length;
+            foreach (var condition in conditions)
+            {
+                var key = new BranchKey(className, number, RequiredAttribute(condition, "number"));
+                var covered = (int)Math.Round(
+                    ParsePercentage(RequiredAttribute(condition, "coverage")) * branchesPerCondition / 100,
+                    MidpointRounding.AwayFromZero);
+                var current = coverage.Branches.GetValueOrDefault(key);
+                coverage.Branches[key] = new BranchCoverage(
+                    Math.Max(current.Covered, covered), Math.Max(current.Total, branchesPerCondition));
             }
         }
     }
 }
 
 var failures = new List<string>();
+foreach (var requiredPath in thresholds.Keys.Order(StringComparer.Ordinal))
+{
+    if (!files.ContainsKey(requiredPath))
+    {
+        failures.Add($"required coverage path '{requiredPath}' is missing from the supplied reports");
+    }
+}
+
 var totalLines = 0;
 var coveredLines = 0;
 var totalBranches = 0;
 var coveredBranches = 0;
-foreach (var requiredFile in requiredFiles.Order(StringComparer.Ordinal))
-{
-    if (!files.ContainsKey(requiredFile))
-    {
-        failures.Add($"required coverage file '{requiredFile}' is missing from the supplied reports");
-    }
-}
-
-foreach (var (filename, coverage) in files)
+foreach (var (sourcePath, coverage) in files)
 {
     totalLines += coverage.Lines.Count;
     coveredLines += coverage.HitLines.Count;
-    var fileTotalBranches = coverage.Branches.Values.Sum(static item => item.Total);
-    var fileCoveredBranches = coverage.Branches.Values.Sum(static item => item.Covered);
-    totalBranches += fileTotalBranches;
-    coveredBranches += fileCoveredBranches;
+    totalBranches += coverage.Branches.Values.Sum(static branch => branch.Total);
+    coveredBranches += coverage.Branches.Values.Sum(static branch => branch.Covered);
 
-    (double Lines, double Branches)? threshold = highRisk.Contains(filename)
-        ? (0.95, 0.90)
-        : rendererCatalog.Contains(filename) ? (0.90, 0.85) : null;
-    if (threshold is not { } minimum)
+    if (!thresholds.TryGetValue(sourcePath, out var minimum))
     {
         continue;
     }
 
     var lineRate = Rate(coverage.HitLines.Count, coverage.Lines.Count, 1);
-    var branchRate = Rate(fileCoveredBranches, fileTotalBranches, 1);
-    if (lineRate < minimum.Lines || branchRate < minimum.Branches)
+    var fileBranches = coverage.Branches.Values.Sum(static branch => branch.Total);
+    var fileCoveredBranches = coverage.Branches.Values.Sum(static branch => branch.Covered);
+    var branchRate = Rate(fileCoveredBranches, fileBranches, 1);
+    Console.WriteLine(FormattableString.Invariant(
+        $"{sourcePath}: line {lineRate:P2} ({coverage.HitLines.Count}/{coverage.Lines.Count}), branch {branchRate:P2} ({fileCoveredBranches}/{fileBranches})"));
+    if (lineRate < minimum.Line || branchRate < minimum.Branch)
     {
         failures.Add(FormattableString.Invariant(
-            $"{filename}: line {lineRate:P2} (min {minimum.Lines:P0}), branch {branchRate:P2} (min {minimum.Branches:P0})"));
+            $"{sourcePath}: line {lineRate:P2} (min {minimum.Line:P0}), branch {branchRate:P2} (min {minimum.Branch:P0})"));
     }
 }
 
 var aggregateLineRate = Rate(coveredLines, totalLines, 0);
 var aggregateBranchRate = Rate(coveredBranches, totalBranches, 0);
+var minimumLine = baselineLine - tolerance;
+var minimumBranch = baselineBranch - tolerance;
 Console.WriteLine(FormattableString.Invariant(
-    $"Aggregate coverage: line {aggregateLineRate:P2}, branch {aggregateBranchRate:P2}"));
-if (aggregateLineRate < MinimumAggregateLine || aggregateBranchRate < MinimumAggregateBranch)
+    $"Aggregate coverage: line {aggregateLineRate:P4} ({coveredLines}/{totalLines}), branch {aggregateBranchRate:P4} ({coveredBranches}/{totalBranches})"));
+if (aggregateLineRate < minimumLine || aggregateBranchRate < minimumBranch)
 {
     failures.Add(FormattableString.Invariant(
-        $"aggregate: line {aggregateLineRate:P2} (baseline {MinimumAggregateLine:P0}), branch {aggregateBranchRate:P2} (baseline {MinimumAggregateBranch:P0})"));
+        $"aggregate: line {aggregateLineRate:P4} (min {minimumLine:P4}), branch {aggregateBranchRate:P4} (min {minimumBranch:P4})"));
 }
 
 if (failures.Count > 0)
@@ -128,13 +147,25 @@ if (failures.Count > 0)
     return 1;
 }
 
-var status = "passed";
-Console.WriteLine(string.Concat("Coverage gate ", status, "."));
+Console.WriteLine(string.Concat("Coverage gate ", "passed."));
 return 0;
 
 static string RequiredAttribute(XElement element, string name)
     => element.Attribute(name)?.Value
         ?? throw new InvalidDataException($"Coverage XML element '{element.Name}' is missing attribute '{name}'.");
+
+static string NormalizeSourcePath(string path)
+{
+    var normalized = path.Replace('\\', '/');
+    var sourceMarker = normalized.LastIndexOf("/src/", StringComparison.Ordinal);
+    return sourceMarker >= 0 ? normalized[(sourceMarker + 5)..] : normalized.TrimStart('/');
+}
+
+static double ParsePercentage(string value)
+{
+    var percent = value.EndsWith('%') ? value[..^1] : value;
+    return double.Parse(percent, CultureInfo.InvariantCulture);
+}
 
 static bool TryParseConditionCoverage(string value, out int covered, out int total)
 {
@@ -154,7 +185,9 @@ sealed class Coverage
 {
     public HashSet<int> Lines { get; } = [];
     public HashSet<int> HitLines { get; } = [];
-    public Dictionary<(string ClassName, int Line), BranchCoverage> Branches { get; } = [];
+    public Dictionary<BranchKey, BranchCoverage> Branches { get; } = [];
 }
 
+readonly record struct BranchKey(string ClassName, int Line, string Condition);
 readonly record struct BranchCoverage(int Covered, int Total);
+readonly record struct Threshold(double Line, double Branch);

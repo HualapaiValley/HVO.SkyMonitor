@@ -3,6 +3,7 @@ using HVO.SkyMonitor.Imaging;
 namespace HVO.SkyMonitor.Imaging.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class BayerRggb16DemosaicerTests
 {
     [TestMethod]

@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class CaptureProcessingContextTests
 {
     [TestMethod]
@@ -251,6 +252,7 @@ public sealed class CaptureProcessingContextTests
         Assert.AreEqual((ushort)100, BitConverter.ToUInt16(firstContext.Artifacts![FrameArtifactRole.Combined].Frame.PixelData.Span));
         Assert.AreEqual((ushort)200, BitConverter.ToUInt16(secondContext.Artifacts![FrameArtifactRole.Combined].Frame.PixelData.Span));
         Assert.AreSame(second, secondContext.Artifacts.Raw.Frame);
+        Assert.AreEqual(2, step.BufferedFrameCount);
     }
 
     [TestMethod]

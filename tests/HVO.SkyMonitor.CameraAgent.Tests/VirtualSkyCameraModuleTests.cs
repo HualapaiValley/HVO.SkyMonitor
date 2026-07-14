@@ -17,6 +17,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class VirtualSkyCameraModuleTests
 {
     [TestMethod]

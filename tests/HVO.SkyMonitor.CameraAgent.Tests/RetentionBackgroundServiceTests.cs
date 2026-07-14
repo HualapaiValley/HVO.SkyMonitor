@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class RetentionBackgroundServiceTests
 {
     [TestMethod]

@@ -11,27 +11,56 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: cameraagent-real-duration-soak
+  cancel-in-progress: false
+
 jobs:
+  accelerated:
+    name: Accelerated Soak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Run accelerated soak category
+        run: |
+          dotnet restore tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --filter "TestCategory=Soak" --results-directory TestResults/accelerated-soak --logger "trx;LogFileName=accelerated-soak.trx"
+      - name: Upload accelerated soak evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: accelerated-soak-${{ github.run_id }}
+          path: TestResults/accelerated-soak/
+          if-no-files-found: error
+          retention-days: 30
+
   soak:
+    needs: accelerated
     runs-on: [self-hosted, linux, skymonitor-soak]
     timeout-minutes: 1560
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
       - name: Run CameraAgent soak
         env:
           SOAK_DURATION: ${{ inputs.duration }}
         run: ./scripts/run:cameraagent-soak "$SOAK_DURATION"
-      - name: Remove any interrupted soak container
-        if: always()
-        run: |
-          docker ps -aq --filter 'name=hvo-cameraagent-soak-' | xargs -r docker rm -f
-          find TestResults/cameraagent-soak -type d -name data -prune -exec rm -rf {} + 2>/dev/null || true
       - name: Upload compact diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: cameraagent-soak-${{ github.run_id }}
           path: |
             TestResults/cameraagent-soak/*/report.json
             TestResults/cameraagent-soak/*/cameraagent.log
+          if-no-files-found: error
           retention-days: 30

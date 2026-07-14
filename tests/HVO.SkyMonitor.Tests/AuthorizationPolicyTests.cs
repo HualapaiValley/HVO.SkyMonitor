@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.Tests;
 /// Tests for authorization policies (RequireSystemAccount, RequireUserAccount, API key access levels).
 /// </summary>
 [TestClass]
+[TestCategory("Unit")]
 public class AuthorizationPolicyTests
 {
     [TestMethod]

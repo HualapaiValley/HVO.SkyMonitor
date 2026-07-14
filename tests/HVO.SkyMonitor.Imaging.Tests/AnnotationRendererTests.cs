@@ -5,6 +5,7 @@ using HVO.SkyMonitor.Imaging;
 namespace HVO.SkyMonitor.Imaging.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class AnnotationRendererTests
 {
     [TestMethod]
@@ -151,6 +152,42 @@ public sealed class AnnotationRendererTests
         Assert.IsTrue(HasMarkedPixel(result.Pixels.Span, 100, 40, 68, 60, 80));
         Assert.IsTrue(HasMarkedPixel(result.Pixels.Span, 100, 88, 30, 100, 50));
         Assert.AreEqual(0, source[40 * 100 + 5]);
+    }
+
+    [TestMethod]
+    public void AnnotateMono8WithProjectionOverlay_WhenCardinalsAreDisabled_DrawsOnlyImageCircle()
+    {
+        var source = new byte[20 * 20];
+        var overlay = new ProjectedAnnotationOverlay(
+            new PixelPoint(10, 10), 8,
+            new PixelPoint(10, 2),
+            new PixelPoint(2, 10),
+            new PixelPoint(10, 18),
+            new PixelPoint(18, 10));
+        var options = new AnnotationOptions
+        {
+            DrawLabels = false,
+            DrawImageCircle = true,
+            DrawCardinalDirections = false,
+            ImageCircleValue = 80
+        };
+        var shiftedCardinals = overlay with
+        {
+            North = new PixelPoint(1, 1),
+            East = new PixelPoint(1, 18),
+            South = new PixelPoint(18, 18),
+            West = new PixelPoint(18, 1)
+        };
+
+        var result = AnnotationRenderer.AnnotateMono8WithSegments(
+            source, 20, 20, [], [], new PreviewTransform(1, 1), options, overlay);
+        var shiftedResult = AnnotationRenderer.AnnotateMono8WithSegments(
+            source, 20, 20, [], [], new PreviewTransform(1, 1), options, shiftedCardinals);
+
+        Assert.IsTrue(result.Pixels.Span.Contains((byte)80));
+        Assert.IsFalse(result.Pixels.Span.Contains(byte.MaxValue));
+        CollectionAssert.AreEqual(result.Pixels.ToArray(), shiftedResult.Pixels.ToArray());
+        Assert.IsTrue(source.AsSpan().IndexOfAnyExcept((byte)0) < 0);
     }
 
     private static bool HasMarkedPixel(

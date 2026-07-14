@@ -160,18 +160,27 @@ Use the SDK pinned by `global.json` and the solution
 `HVO.SkyMonitor.v9.slnx`.
 
 ```bash
+dotnet tool restore
 dotnet restore
-dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
+dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Debug -warnaserror
+dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror
+dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
+./scripts/package:audit
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
 dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-  --filter "TestCategory!=Integration&TestCategory!=Manual" \
+  --filter "TestCategory=Unit" \
   --settings tests/coverage.runsettings \
   --collect:"XPlat Code Coverage"
-./scripts/coverage:enforce
+dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
+  --filter "TestCategory=Integration" \
+  --settings tests/coverage.runsettings \
+  --collect:"XPlat Code Coverage"
 ```
 
-Until issue #110 adds real categories, the filter still
-runs Testcontainers and requires Docker. Run focused tests during development,
-then run the issue's full required gate before push.
+The positive Unit filter must pass with an invalid Docker endpoint. Integration
+is a separate required gate and requires Docker for the Testcontainers
+assemblies. Run focused tests during development, then run the issue's full
+required gate before push.
 
 Additional issue-specific gates may include:
 

@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class CameraAgentHostOptionsTests
 {
     [TestMethod]

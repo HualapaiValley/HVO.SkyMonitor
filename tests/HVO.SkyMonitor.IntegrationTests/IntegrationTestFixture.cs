@@ -89,6 +89,7 @@ public sealed class IntegrationTestFixture : IDisposable
         }
 
         _sqlServerContainer = new MsSqlBuilder()
+            .WithImage("mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04@sha256:c1aa8afe9b06eab64c9774a4802dcd032205d1be785b1fd51e1c0151e7586b74")
             .WithPassword(SqlServerPassword)
             .Build();
 
@@ -102,7 +103,7 @@ public sealed class IntegrationTestFixture : IDisposable
         // Start Redis container (RedisBuilder provides a wait strategy that verifies
         // the server responds to commands, not just that the TCP port is open)
         _redisContainer = new RedisBuilder()
-            .WithImage("redis:7-alpine")
+            .WithImage("redis:7.4.9-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99")
             .Build();
 
         await _redisContainer.StartAsync().ConfigureAwait(false);
@@ -112,7 +113,7 @@ public sealed class IntegrationTestFixture : IDisposable
 
         // Start MinIO container
         _minioContainer = new ContainerBuilder()
-            .WithImage("minio/minio:latest")
+            .WithImage("minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e")
             .WithPortBinding(_minioHostPort, 9000)
             .WithEnvironment(new Dictionary<string, string>
             {
@@ -130,7 +131,7 @@ public sealed class IntegrationTestFixture : IDisposable
 
         // Start SMTP (Mailpit) container
         _smtpContainer = new ContainerBuilder()
-            .WithImage("axllent/mailpit:latest")
+            .WithImage("axllent/mailpit:v1.30.4@sha256:5a49a77c5bdbe7c5474450b4f46348d09949df3695257729c93a30369382d4f6")
             .WithPortBinding(1025, true)
             .WithPortBinding(8025, true)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(1025))

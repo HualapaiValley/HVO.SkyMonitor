@@ -11,6 +11,7 @@ using Moq;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Controllers;
 
 [TestClass]
+[TestCategory("Unit")]
 public class FramesControllerTests
 {
     [TestMethod]

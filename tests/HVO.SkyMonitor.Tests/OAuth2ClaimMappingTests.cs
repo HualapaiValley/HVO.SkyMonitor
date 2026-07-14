@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.Tests;
 /// These are unit tests that verify the claim structure without requiring full integration.
 /// </summary>
 [TestClass]
+[TestCategory("Unit")]
 public class OAuth2ClaimMappingTests
 {
     [TestMethod]

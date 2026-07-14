@@ -5,6 +5,7 @@ using HVO.SkyMonitor.LogicHost.Data;
 namespace HVO.SkyMonitor.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public class AccountTypeTests
 {
     [TestMethod]

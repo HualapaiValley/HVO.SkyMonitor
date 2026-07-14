@@ -4,13 +4,19 @@
 
 - Use the SDK pinned in `global.json` (`10.0.100`, prerelease permitted) and the solution `HVO.SkyMonitor.v9.slnx`.
 - Package versions are centralized in `Directory.Packages.props`; do not put `Version` attributes on individual `PackageReference` items.
-- Reproduce CI with:
+- Run the core validation with:
   ```bash
+  dotnet tool restore
   dotnet restore
-  dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
-  dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory!=Integration&TestCategory!=Manual" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
+  dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Debug -warnaserror
+  dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror
+  dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
+  ./scripts/package:audit
+  DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Unit" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
+  dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Integration" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
   ```
-- There are currently no `TestCategory` attributes in the test source, so CI's filter does not exclude the Testcontainers suites. Docker must be available for the solution test command.
+- Reproduce the exact category/project evidence, architecture/publish, migration, and canonical coverage gates with `docs/runbooks/ci-pipeline.md` and `.github/workflows/ci.yml`.
+- Unit selection is positive and passes with an invalid Docker endpoint. Integration selection is a separate required gate and requires Docker for the Testcontainers assemblies.
 - Run a focused MSTest with `dotnet test <project> --filter "FullyQualifiedName~Namespace.Class.Method"`.
 - `tests/coverage.runsettings` excludes test assemblies, `TestSupport`, migrations, and build output; keep coverage configuration aligned when adding projects.
 

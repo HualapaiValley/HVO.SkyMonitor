@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Upload;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class FileSystemArtifactOutboxTests
 {
     [TestMethod]

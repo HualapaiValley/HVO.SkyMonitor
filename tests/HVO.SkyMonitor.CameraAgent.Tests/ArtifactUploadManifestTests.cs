@@ -3,6 +3,7 @@ using HVO.SkyMonitor.AgentCore;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class ArtifactUploadManifestTests
 {
     [TestMethod]
