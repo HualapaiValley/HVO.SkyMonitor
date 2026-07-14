@@ -21,11 +21,23 @@ public sealed record Mono16DisplayStretchOptions(
 /// <summary>Creates an 8-bit display derivative without modifying linear Mono16 source data.</summary>
 public static class Mono16DisplayStretch
 {
+    public const string AlgorithmVersion = "mono16-display-stretch-v1";
+
     /// <summary>Applies percentile black/white points and an asinh transfer function.</summary>
     public static byte[] Apply(
         int width,
         int height,
         ReadOnlyMemory<byte> pixelData,
+        int? strideBytes = null,
+        Mono16DisplayStretchOptions? options = null)
+        => Apply(width, height, pixelData, CancellationToken.None, strideBytes, options);
+
+    /// <summary>Applies the display stretch while observing cancellation at row boundaries.</summary>
+    public static byte[] Apply(
+        int width,
+        int height,
+        ReadOnlyMemory<byte> pixelData,
+        CancellationToken cancellationToken,
         int? strideBytes = null,
         Mono16DisplayStretchOptions? options = null)
     {
@@ -43,6 +55,7 @@ public static class Mono16DisplayStretch
         var activeCount = 0;
         for (var y = 0; y < height; y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = 0; x < width; x++)
             {
                 var offset = y * stride + x * 2;
@@ -72,6 +85,7 @@ public static class Mono16DisplayStretch
         var denominator = Math.Asinh(options.AsinhStrength);
         for (var y = 0; y < height; y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = 0; x < width; x++)
             {
                 var offset = y * stride + x * 2;

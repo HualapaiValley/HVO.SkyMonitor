@@ -1,60 +1,50 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
-using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 /// <summary>Creates a deterministic Mono8 display preview while retaining the source raw artifact.</summary>
 internal sealed class PreviewCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
-    PreviewProcessingStepOptions options) : ConfigurableCaptureProcessingStep<PreviewProcessingStepOptions>(metadata, options)
+    PreviewProcessingStepOptions options,
+    CameraAgentRecipeExecutionAdapter adapter) : ConfigurableCaptureProcessingStep<PreviewProcessingStepOptions>(metadata, options)
 {
-    public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+    public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (!Options.Enabled || context.Artifacts?.Raw.Frame is not { } source ||
+        if (!Options.Enabled || context.Artifacts?.Raw is not { } raw ||
+            raw.Frame is not { } source ||
             source.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 or CameraPixelFormat.Rgb24))
         {
-            return ValueTask.CompletedTask;
+            return;
         }
 
-        var stretch = new Mono16DisplayStretchOptions(
-            Options.BlackPercentile, Options.WhitePercentile, Options.AsinhStrength);
-        var preview = source.PixelFormat switch
+        var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source");
+        var recipeOptions = JsonSerializer.SerializeToElement(new EncodedPreviewOptions(
+            Options.BlackPercentile,
+            Options.WhitePercentile,
+            Options.AsinhStrength,
+            OutputEncoding: "Packed"));
+        var outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.EncodedPreview,
+            recipeOptions,
+            ProcessingInputSelector.Raw("source"),
+            [input],
+            Options.OutputVariant), cancellationToken).ConfigureAwait(false);
+        context.AddProcessingOutcome(outcome);
+        CameraAgentRecipeExecutionAdapter.ThrowIfFailure(outcome);
+        if (outcome.Status != ProcessingOutcomeStatus.Produced)
         {
-            CameraPixelFormat.BayerRggb16 => BayerRggb16Demosaicer.DemosaicToRgb24(
-                source.Width, source.Height, source.PixelData, source.StrideBytes, stretch),
-            CameraPixelFormat.Rgb24 => CopyRgb24(source),
-            _ => Mono16DisplayStretch.Apply(
-                source.Width, source.Height, source.PixelData, source.StrideBytes, stretch)
-        };
-        var previewFormat = source.PixelFormat is CameraPixelFormat.BayerRggb16 or CameraPixelFormat.Rgb24
-            ? CameraPixelFormat.Rgb24
-            : CameraPixelFormat.Mono8;
-
+            return;
+        }
+        var product = outcome.Products[0];
         context.AddDerivative(FrameArtifactRole.Preview,
-            new CameraFrame(source.TimestampUtc, source.Width, source.Height, previewFormat, preview,
-                source.Metadata with { SourceId = "Preview" }), Options.RecipeVersion);
-        return ValueTask.CompletedTask;
-    }
-
-    private static byte[] CopyRgb24(CameraFrame source)
-    {
-        var packedStride = checked(source.Width * 3);
-        var sourceStride = source.StrideBytes ?? packedStride;
-        if (sourceStride < packedStride || source.PixelData.Length != checked(sourceStride * source.Height))
-        {
-            throw new ArgumentException("RGB24 source layout is invalid.", nameof(source));
-        }
-
-        var preview = new byte[checked(packedStride * source.Height)];
-        for (var y = 0; y < source.Height; y++)
-        {
-            source.PixelData.Span.Slice(y * sourceStride, packedStride)
-                .CopyTo(preview.AsSpan(y * packedStride, packedStride));
-        }
-        return preview;
+            CameraAgentRecipeExecutionAdapter.CreateFrame(product, source, "Preview"),
+            Options.RecipeVersion,
+            product.SourceArtifactIds);
     }
 }
 
@@ -64,6 +54,9 @@ public sealed class PreviewProcessingStepOptions : IValidatableObject
 
     [Required(AllowEmptyStrings = false)]
     public string RecipeVersion { get; init; } = "mono16-asinh-v2";
+
+    [Required(AllowEmptyStrings = false)]
+    public string OutputVariant { get; init; } = "default";
 
     [Range(0, 0.999999)]
     public double BlackPercentile { get; init; } = 0.5;

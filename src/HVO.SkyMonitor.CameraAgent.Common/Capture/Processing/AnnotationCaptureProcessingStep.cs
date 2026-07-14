@@ -1,9 +1,11 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -12,7 +14,8 @@ internal sealed class AnnotationCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     AnnotationProcessingStepOptions options,
     IProjectedSceneStore sceneStore,
-    IAnnotationSceneProvider annotationSceneProvider)
+    IAnnotationSceneProvider annotationSceneProvider,
+    CameraAgentRecipeExecutionAdapter adapter)
     : ConfigurableCaptureProcessingStep<AnnotationProcessingStepOptions>(metadata, options)
 {
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
@@ -47,85 +50,128 @@ internal sealed class AnnotationCaptureProcessingStep(
         var transform = new PreviewTransform(
             (double)frame.Width / artifacts.Raw.Frame.Width,
             (double)frame.Height / artifacts.Raw.Frame.Height);
-        var annotationOptions = new AnnotationOptions
-        {
-            MarkRadius = Options.MarkRadius,
-            MarkerValue = Options.MarkerValue,
-            DrawLabels = Options.DrawLabels,
-            LabelScale = Options.LabelScale,
-            DrawImageCircle = Options.DrawImageCircle,
-            DrawCardinalDirections = Options.DrawCardinalDirections,
-            ImageCircleValue = Options.ImageCircleValue,
-            CardinalValue = Options.CardinalValue,
-            CardinalScale = Options.CardinalScale,
-            ConstellationLineValue = Options.ConstellationLineValue,
-            ConstellationLineRed = Options.ConstellationLineRed,
-            ConstellationLineGreen = Options.ConstellationLineGreen,
-            ConstellationLineBlue = Options.ConstellationLineBlue,
-            ConstellationLineThickness = Options.ConstellationLineThickness,
-            ConstellationLineOpacity = Options.ConstellationLineOpacity
-        };
-        AnnotationResult annotation;
+        IReadOnlyList<ProjectedAnnotationObject> objects;
+        IReadOnlyList<ProjectedAnnotationSegment> segments;
+        ProjectedAnnotationOverlay? projectionOverlay;
         if (projectionOnly is { } projection)
         {
-            annotation = Annotate(
-                frame.PixelData, frame.Width, frame.Height, [], [], transform, annotationOptions,
-                CreateProjectionOverlay(projection));
+            objects = [];
+            segments = [];
+            projectionOverlay = CreateProjectionOverlay(projection);
         }
         else if (generatedScene is not null)
         {
-            annotation = Annotate(
-                frame.PixelData, frame.Width, frame.Height,
-                Array.Empty<ProjectedAnnotationObject>(),
-                generatedScene.Scene.Segments.Select(static item => new ProjectedAnnotationSegment(
-                    item.ConstellationId, item.FromPixel, item.ToPixel)),
-                transform, annotationOptions, CreateProjectionOverlay(generatedScene.Scene.Request.Projection));
+            objects = [];
+            segments = generatedScene.Scene.Segments.Select(static item => new ProjectedAnnotationSegment(
+                item.ConstellationId, item.FromPixel, item.ToPixel)).ToArray();
+            projectionOverlay = CreateProjectionOverlay(generatedScene.Scene.Request.Projection);
         }
         else if (sceneStore.TryGet(provenance!.SceneId, out var scene) && scene is not null)
         {
-            annotation = Annotate(
-                frame.PixelData, frame.Width, frame.Height,
-                scene.Objects.Select(item =>
-                {
-                    var annotate = IsNamed(item.Id, item.DisplayName) &&
-                        (item.Kind == CelestialObjectKind.SolarSystemBody || item.Magnitude <= Options.MaximumLabelMagnitude);
-                    return new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel, annotate, annotate);
-                }),
-                Options.DrawConstellationLines
-                    ? scene.Segments.Where(item => IsSelectedConstellation(item.ConstellationId))
-                        .Select(static item => new ProjectedAnnotationSegment(
-                        item.ConstellationId, item.FromPixel, item.ToPixel))
-                    : [],
-                transform, annotationOptions, CreateProjectionOverlay(scene.Request.Projection));
+            objects = scene.Objects.Select(item =>
+            {
+                var annotate = IsNamed(item.Id, item.DisplayName) &&
+                    (item.Kind == CelestialObjectKind.SolarSystemBody || item.Magnitude <= Options.MaximumLabelMagnitude);
+                return new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel, annotate, annotate);
+            }).ToArray();
+            segments = Options.DrawConstellationLines
+                ? scene.Segments.Where(item => IsSelectedConstellation(item.ConstellationId))
+                    .Select(static item => new ProjectedAnnotationSegment(
+                        item.ConstellationId, item.FromPixel, item.ToPixel)).ToArray()
+                : [];
+            projectionOverlay = CreateProjectionOverlay(scene.Request.Projection);
         }
-        else if (provenance.Objects is { } objects)
+        else if (provenance.Objects is { } persistedObjects)
         {
-            annotation = Annotate(
-                frame.PixelData, frame.Width, frame.Height,
-                objects.Select(item =>
-                {
-                    var annotate = IsNamed(item.Id, item.DisplayName) &&
-                        (item.Id.StartsWith("solar-system:", StringComparison.Ordinal) ||
-                         item.Magnitude <= Options.MaximumLabelMagnitude);
-                    return new ProjectedAnnotationObject(
-                        item.Id, item.DisplayName, new PixelPoint(item.PixelX, item.PixelY), annotate, annotate);
-                }),
-                Options.DrawConstellationLines
-                    ? provenance.Segments?.Where(item => IsSelectedConstellation(item.ConstellationId))
-                        .Select(static item => new ProjectedAnnotationSegment(
+            objects = persistedObjects.Select(item =>
+            {
+                var annotate = IsNamed(item.Id, item.DisplayName) &&
+                    (item.Id.StartsWith("solar-system:", StringComparison.Ordinal) ||
+                     item.Magnitude <= Options.MaximumLabelMagnitude);
+                return new ProjectedAnnotationObject(
+                    item.Id, item.DisplayName, new PixelPoint(item.PixelX, item.PixelY), annotate, annotate);
+            }).ToArray();
+            segments = Options.DrawConstellationLines
+                ? provenance.Segments?.Where(item => IsSelectedConstellation(item.ConstellationId))
+                    .Select(static item => new ProjectedAnnotationSegment(
                         item.ConstellationId, new PixelPoint(item.FromPixelX, item.FromPixelY),
-                        new PixelPoint(item.ToPixelX, item.ToPixelY))) ?? []
-                    : [],
-                transform, annotationOptions, null);
+                        new PixelPoint(item.ToPixelX, item.ToPixelY))).ToArray() ?? []
+                : [];
+            projectionOverlay = null;
         }
         else
         {
             throw new InvalidOperationException("The projected scene required for annotation is unavailable.");
         }
+
+        var previewProduct = context.ProcessingProducts.LastOrDefault(
+            static product => product.Role == FrameArtifactRole.Preview);
+        var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            context.Config,
+            preview,
+            previewProduct?.Variant ?? "legacy-preview");
+        if (previewProduct is not null)
+        {
+            input = input with { RecipeIdentitySha256 = previewProduct.Recipe.IdentitySha256 };
+        }
+        var annotationInput = new ProcessingAnnotationInput(
+            objects,
+            segments,
+            transform,
+            projectionOverlay,
+            CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
+            {
+                sceneId = provenance?.SceneId,
+                objects,
+                segments,
+                projectionOverlay
+            })));
+        var recipeOptions = JsonSerializer.SerializeToElement(new AnnotationRecipeOptions(
+            MarkRadius: Options.MarkRadius,
+            MarkerValue: Options.MarkerValue,
+            DrawLabels: Options.DrawLabels,
+            LabelScale: Options.LabelScale,
+            DrawImageCircle: Options.DrawImageCircle,
+            DrawCardinalDirections: Options.DrawCardinalDirections,
+            ImageCircleValue: Options.ImageCircleValue,
+            CardinalValue: Options.CardinalValue,
+            CardinalScale: Options.CardinalScale,
+            ConstellationLineValue: Options.ConstellationLineValue,
+            ConstellationLineRed: Options.ConstellationLineRed,
+            ConstellationLineGreen: Options.ConstellationLineGreen,
+            ConstellationLineBlue: Options.ConstellationLineBlue,
+            ConstellationLineThickness: Options.ConstellationLineThickness,
+            ConstellationLineOpacity: Options.ConstellationLineOpacity,
+            OutputEncoding: "Packed"));
+        var outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.Annotation,
+            recipeOptions,
+            ProcessingInputSelector.RecipeResult(
+                FrameArtifactRole.Preview,
+                input.Variant,
+                input.RecipeIdentitySha256),
+            [input],
+            Options.OutputVariant,
+            annotationInput), cancellationToken).ConfigureAwait(false);
+        context.AddProcessingOutcome(outcome);
+        CameraAgentRecipeExecutionAdapter.ThrowIfFailure(outcome);
+        if (outcome.Status != ProcessingOutcomeStatus.Produced)
+        {
+            return;
+        }
+
+        var product = outcome.Products[0];
+        var annotated = CameraAgentRecipeExecutionAdapter.CreateFrame(product, frame, "AnnotatedPreview");
         context.AddDerivative(FrameArtifactRole.AnnotatedPreview,
-            new CameraFrame(frame.TimestampUtc, frame.Width, frame.Height, frame.PixelFormat, annotation.Pixels,
-                CreateAnnotationMetadata(frame.Metadata, generatedScene?.Provenance)),
-            Options.RecipeVersion, [preview.ArtifactId]);
+            annotated with
+            {
+                Metadata = CreateAnnotationMetadata(
+                    annotated.Metadata,
+                    generatedScene?.Provenance,
+                    product.Recipe.IdentitySha256)
+            },
+            Options.RecipeVersion,
+            [preview.ArtifactId]);
     }
 
     private static bool IsNamed(string id, string displayName)
@@ -135,12 +181,16 @@ internal sealed class AnnotationCaptureProcessingStep(
         => Options.ConstellationIds.Count == 0 ||
            Options.ConstellationIds.Contains(id, StringComparer.OrdinalIgnoreCase);
 
-    private FrameMetadata CreateAnnotationMetadata(FrameMetadata metadata, SceneProvenance? generatedProvenance)
+    private FrameMetadata CreateAnnotationMetadata(
+        FrameMetadata metadata,
+        SceneProvenance? generatedProvenance,
+        string recipeIdentity)
     {
         var extra = metadata.Extra is null
             ? new Dictionary<string, string>(StringComparer.Ordinal)
             : new Dictionary<string, string>(metadata.Extra, StringComparer.Ordinal);
         extra["annotationRecipeVersion"] = Options.RecipeVersion;
+        extra["annotationRecipeIdentitySha256"] = recipeIdentity;
         extra["constellationLineValue"] = Options.ConstellationLineValue.ToString(
             System.Globalization.CultureInfo.InvariantCulture);
         extra["constellationLineRgb"] = string.Create(System.Globalization.CultureInfo.InvariantCulture,
@@ -157,21 +207,6 @@ internal sealed class AnnotationCaptureProcessingStep(
             Scene = generatedProvenance ?? metadata.Scene
         };
     }
-
-    private static AnnotationResult Annotate(
-        ReadOnlyMemory<byte> preview,
-        int width,
-        int height,
-        IEnumerable<ProjectedAnnotationObject> objects,
-        IEnumerable<ProjectedAnnotationSegment> segments,
-        PreviewTransform transform,
-        AnnotationOptions options,
-        ProjectedAnnotationOverlay? projectionOverlay)
-        => preview.Length == checked(width * height * 3)
-            ? AnnotationRenderer.AnnotateRgb24WithSegments(
-                preview, width, height, objects, segments, transform, options, projectionOverlay)
-            : AnnotationRenderer.AnnotateMono8WithSegments(
-                preview, width, height, objects, segments, transform, options, projectionOverlay);
 
     private static ProjectedAnnotationOverlay? CreateProjectionOverlay(ProjectionContext projection)
     {
@@ -248,6 +283,9 @@ public sealed class AnnotationProcessingStepOptions : IValidatableObject
 
     [Required(AllowEmptyStrings = false)]
     public string RecipeVersion { get; init; } = "projected-scene-annotation-v2";
+
+    [Required(AllowEmptyStrings = false)]
+    public string OutputVariant { get; init; } = "default";
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {

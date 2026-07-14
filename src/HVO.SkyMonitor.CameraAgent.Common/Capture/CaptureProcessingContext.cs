@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 
@@ -12,6 +13,7 @@ public sealed class CaptureProcessingContext
     private CaptureLoopSubmission _submission;
     private readonly List<CaptureProcessingStepTelemetry> _stepTelemetry = new();
     private FrameArtifactSet? _artifacts;
+    private readonly List<ProcessingOutcome> _processingOutcomes = new();
 
     public CaptureProcessingContext(CameraModuleConfig config, CaptureLoopSubmission submission)
     {
@@ -30,6 +32,11 @@ public sealed class CaptureProcessingContext
     public FrameArtifactSet? Artifacts => _artifacts;
 
     public IReadOnlyList<CaptureProcessingStepTelemetry> StepTelemetry => _stepTelemetry;
+
+    public IReadOnlyList<ProcessingOutcome> ProcessingOutcomes => _processingOutcomes;
+
+    public IReadOnlyList<ProcessingProduct> ProcessingProducts =>
+        _processingOutcomes.SelectMany(static outcome => outcome.Products).ToArray();
 
     public void ReplaceFrame(CameraFrame frame)
     {
@@ -61,6 +68,12 @@ public sealed class CaptureProcessingContext
     {
         ArgumentNullException.ThrowIfNull(telemetry);
         _stepTelemetry.Add(telemetry);
+    }
+
+    internal void AddProcessingOutcome(ProcessingOutcome outcome)
+    {
+        ArgumentNullException.ThrowIfNull(outcome);
+        _processingOutcomes.Add(outcome);
     }
 }
 

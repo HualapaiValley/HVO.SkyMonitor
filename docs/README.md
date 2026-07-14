@@ -17,6 +17,7 @@ documents link back without maintaining a competing roadmap.
 | Pull request evidence template | `.github/pull_request_template.md` | Required scope, validation, output, performance, runtime, correction, and current-head green evidence. |
 | Virtual camera and validation | `docs/virtual-camera.md` | Mono/color sensor modes, fisheye/rectilinear optics, fixtures, and planetarium comparison strategy. |
 | Capture manifest v2 | `docs/contracts/capture-manifest-v2.md` | Reconstructable identity, timing, layout, profile, recipe, lineage, compatibility, validation, and zero-copy semantics. |
+| Processing recipes v1 | `docs/contracts/processing-recipes-v1.md` | Canonical recipe identity, selectors, variants, products, outcomes, algorithms, memory ownership, and host-adapter boundaries. |
 | Fireball/transient architecture | `docs/projects/fireball-transient-detection.md` | Subsystem constraints and design decisions; roadmap status and promotion remain in `docs/project-plan.md` and issues #61-#65. |
 | Legacy implementation references | `docs/reference-code.md` | Commit-pinned V5/V6 source map, behavior notes, caveats, and checkout instructions. |
 | Secrets & configuration | `docs/security/secrets.md` | Consolidates `SECRETS_MANAGEMENT.md`, `SECRETS_QUICKSTART.md`, `SECRETS_SUMMARY.md`, and identity-specific `secrets-reference.md`. |

@@ -106,6 +106,7 @@ jobs:
         run: |
           dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/astronomy --logger "trx;LogFileName=unit-astronomy.trx"
           dotnet test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/imaging --logger "trx;LogFileName=unit-imaging.trx"
+          dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/processing --logger "trx;LogFileName=unit-processing.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
           dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/logichost --logger "trx;LogFileName=unit-logichost.trx"
       - name: Upload Unit evidence
@@ -289,6 +290,7 @@ jobs:
           patterns=(
             'TestResults/unit/astronomy/*/coverage.cobertura.xml'
             'TestResults/unit/imaging/*/coverage.cobertura.xml'
+            'TestResults/unit/processing/*/coverage.cobertura.xml'
             'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
             'TestResults/unit/logichost/*/coverage.cobertura.xml'
             'TestResults/integration/catalog-sqlite/*/coverage.cobertura.xml'

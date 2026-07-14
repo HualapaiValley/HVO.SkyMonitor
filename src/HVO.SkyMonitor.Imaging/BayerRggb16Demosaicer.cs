@@ -3,6 +3,8 @@ namespace HVO.SkyMonitor.Imaging;
 /// <summary>Creates display-only RGB24 derivatives from linear little-endian RGGB RAW16 photosites.</summary>
 public static class BayerRggb16Demosaicer
 {
+    public const string AlgorithmVersion = "bilinear-rggb16-demosaic-v1";
+
     /// <summary>Applies one global raw stretch, then bilinearly interpolates missing RGGB channels.</summary>
     public static byte[] DemosaicToRgb24(
         int width,
@@ -10,11 +12,24 @@ public static class BayerRggb16Demosaicer
         ReadOnlyMemory<byte> pixelData,
         int? strideBytes = null,
         Mono16DisplayStretchOptions? stretchOptions = null)
+        => DemosaicToRgb24(
+            width, height, pixelData, CancellationToken.None, strideBytes, stretchOptions);
+
+    /// <summary>Demosaics while observing cancellation at row boundaries.</summary>
+    public static byte[] DemosaicToRgb24(
+        int width,
+        int height,
+        ReadOnlyMemory<byte> pixelData,
+        CancellationToken cancellationToken,
+        int? strideBytes = null,
+        Mono16DisplayStretchOptions? stretchOptions = null)
     {
-        var mosaic = Mono16DisplayStretch.Apply(width, height, pixelData, strideBytes, stretchOptions);
+        var mosaic = Mono16DisplayStretch.Apply(
+            width, height, pixelData, cancellationToken, strideBytes, stretchOptions);
         var output = new byte[checked(width * height * 3)];
         for (var y = 0; y < height; y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = 0; x < width; x++)
             {
                 var sourceChannel = ChannelAt(x, y);

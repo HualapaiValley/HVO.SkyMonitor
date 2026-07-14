@@ -84,6 +84,8 @@ public sealed record AnnotationResult(
 /// <summary>Draws annotations using only coordinates already present in projected scene records.</summary>
 public static class AnnotationRenderer
 {
+    public const string AlgorithmVersion = "projected-annotation-raster-v1";
+
     /// <summary>Composes the existing monochrome annotation mask over packed RGB24 without altering source pixels.</summary>
     public static AnnotationResult AnnotateRgb24WithSegments(
         ReadOnlyMemory<byte> preview,
@@ -93,8 +95,10 @@ public static class AnnotationRenderer
         IEnumerable<ProjectedAnnotationSegment> segments,
         PreviewTransform transform,
         AnnotationOptions? options = null,
-        ProjectedAnnotationOverlay? projectionOverlay = null)
+        ProjectedAnnotationOverlay? projectionOverlay = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(segments);
         if (preview.Length != checked(width * height * 3))
         {
@@ -105,11 +109,16 @@ public static class AnnotationRenderer
         options ??= new AnnotationOptions();
         options.Validate();
         var pixels = preview.ToArray();
-        DrawRgbSegments(pixels, width, height, segments, transform, options);
+        DrawRgbSegments(pixels, width, height, segments, transform, options, cancellationToken);
         var overlay = AnnotateMono8WithSegments(
-            new byte[checked(width * height)], width, height, objects, [], transform, options, projectionOverlay);
+            new byte[checked(width * height)], width, height, objects, [], transform, options, projectionOverlay,
+            cancellationToken);
         for (var pixel = 0; pixel < width * height; pixel++)
         {
+            if (pixel % width == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
             var value = overlay.Pixels.Span[pixel];
             if (value == 0)
             {
@@ -131,15 +140,17 @@ public static class AnnotationRenderer
         IEnumerable<ProjectedAnnotationSegment> segments,
         PreviewTransform transform,
         AnnotationOptions? options = null,
-        ProjectedAnnotationOverlay? projectionOverlay = null)
+        ProjectedAnnotationOverlay? projectionOverlay = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(segments);
         transform.Validate();
         options ??= new AnnotationOptions();
         options.Validate();
         var pixels = preview.ToArray();
-        DrawMonoSegments(pixels, width, height, segments, transform, options);
-        var result = AnnotateMono8(pixels, width, height, objects, transform, options);
+        DrawMonoSegments(pixels, width, height, segments, transform, options, cancellationToken);
+        var result = AnnotateMono8(pixels, width, height, objects, transform, options, cancellationToken);
         pixels = result.Pixels.ToArray();
 
         if (projectionOverlay is not null)
@@ -194,12 +205,13 @@ public static class AnnotationRenderer
         int height,
         IEnumerable<ProjectedCelestialObject> objects,
         PreviewTransform transform,
-        AnnotationOptions? options = null)
+        AnnotationOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(objects);
         return AnnotateMono8(preview, width, height,
             objects.Select(static item => new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel)),
-            transform, options);
+            transform, options, cancellationToken);
     }
 
     /// <summary>Copies a packed Mono8 preview and annotates persisted projected-object metadata.</summary>
@@ -209,8 +221,10 @@ public static class AnnotationRenderer
         int height,
         IEnumerable<ProjectedAnnotationObject> objects,
         PreviewTransform transform,
-        AnnotationOptions? options = null)
+        AnnotationOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(objects);
         transform.Validate();
         options ??= new AnnotationOptions();
@@ -234,6 +248,7 @@ public static class AnnotationRenderer
         var anchors = new List<AnnotationAnchor>();
         foreach (var item in objects)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var anchor = transform.Apply(item.Pixel);
             if (!double.IsFinite(anchor.X) || !double.IsFinite(anchor.Y))
             {
@@ -388,11 +403,13 @@ public static class AnnotationRenderer
         int height,
         IEnumerable<ProjectedAnnotationSegment> segments,
         PreviewTransform transform,
-        AnnotationOptions options)
+        AnnotationOptions options,
+        CancellationToken cancellationToken)
     {
         bool[]? mask = null;
         foreach (var segment in segments)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (TryTransformAndClip(segment, transform, width, height, out var from, out var to))
             {
                 mask ??= new bool[checked(width * height)];
@@ -406,6 +423,10 @@ public static class AnnotationRenderer
         }
         for (var index = 0; index < mask.Length; index++)
         {
+            if (index % width == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
             if (mask[index])
             {
                 pixels[index] = Blend(pixels[index], options.ConstellationLineValue, options.ConstellationLineOpacity);
@@ -419,11 +440,13 @@ public static class AnnotationRenderer
         int height,
         IEnumerable<ProjectedAnnotationSegment> segments,
         PreviewTransform transform,
-        AnnotationOptions options)
+        AnnotationOptions options,
+        CancellationToken cancellationToken)
     {
         bool[]? mask = null;
         foreach (var segment in segments)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (TryTransformAndClip(segment, transform, width, height, out var from, out var to))
             {
                 mask ??= new bool[checked(width * height)];
@@ -437,6 +460,10 @@ public static class AnnotationRenderer
         }
         for (var pixel = 0; pixel < mask.Length; pixel++)
         {
+            if (pixel % width == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
             if (mask[pixel])
             {
                 var index = pixel * 3;

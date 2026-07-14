@@ -1,5 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\HVO.SkyMonitor.Astronomy\HVO.SkyMonitor.Astronomy.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
   </ItemGroup>
 </Project>

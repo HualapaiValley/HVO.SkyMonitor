@@ -20,6 +20,11 @@ public sealed class CentralDerivativeJobServiceTests
             && recipe.RecipeVersion == CentralDerivativeRecipeCatalog.PreviewRecipeVersion);
         recipes.Should().Contain(recipe => recipe.TargetRole == FrameArtifactRole.AnnotatedPreview
             && recipe.RecipeVersion == CentralDerivativeRecipeCatalog.AnnotatedPreviewRecipeVersion);
+        recipes.Should().OnlyContain(recipe => recipe.RequestedRecipeIdentitySha256.Length == 64);
+        recipes.Single(recipe => recipe.TargetRole == FrameArtifactRole.Preview)
+            .RequestedRecipeIdentitySha256.Should().Be(CentralDerivativeRecipeCatalog.PreviewRequestedRecipeIdentity);
+        recipes.Single(recipe => recipe.TargetRole == FrameArtifactRole.AnnotatedPreview)
+            .RequestedRecipeIdentitySha256.Should().Be(CentralDerivativeRecipeCatalog.AnnotatedPreviewRequestedRecipeIdentity);
         catalog.GetRequiredRecipes(FrameArtifactRole.Preview).Should().BeEmpty();
     }
 

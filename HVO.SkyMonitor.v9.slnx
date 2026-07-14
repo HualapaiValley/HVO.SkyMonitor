@@ -5,6 +5,7 @@
     <Project Path="src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj" />
     <Project Path="src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj" />
     <Project Path="src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj" />
+    <Project Path="src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj" />
     <Project Path="src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj" />
     <Project Path="src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj" />
         <Project Path="src/HVO.SkyMonitor.TestSupport/HVO.SkyMonitor.TestSupport.csproj" />
@@ -16,5 +17,6 @@
         <Project Path="tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj" />
         <Project Path="tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj" />
         <Project Path="tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj" />
+        <Project Path="tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj" />
     </Folder>
 </Solution>
