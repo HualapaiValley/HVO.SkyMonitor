@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -154,6 +155,63 @@ public sealed class RetentionBackgroundServiceTests
             Assert.IsFalse(File.Exists(artifact.PayloadPath));
             Assert.IsFalse(File.Exists(artifact.MetadataPath));
             Assert.IsFalse(File.Exists(artifact.IndexPath));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_V2SidecarIsHeldUntilV1OutboxAcknowledgement()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var payload = new byte[8];
+            var template = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono16, 2, 2, 4, payload).Descriptor;
+            var requested = new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero);
+            var descriptor = template with
+            {
+                Timing = new(
+                    requested,
+                    requested.AddSeconds(1),
+                    requested.AddSeconds(2),
+                    requested.AddSeconds(3),
+                    requested.AddSeconds(4)),
+                Artifact = template.Artifact with { CreatedUtc = requested.AddSeconds(4) }
+            };
+            var frame = new CameraFrame(
+                descriptor.Timing.ExposureStartedUtc,
+                descriptor.Layout.Width,
+                descriptor.Layout.Height,
+                descriptor.Layout.PixelFormat,
+                payload,
+                new FrameMetadata(
+                    descriptor.Controls.EffectiveExposure,
+                    descriptor.Controls.EffectiveGain,
+                    descriptor.Controls.EffectiveTemperatureC!.Value,
+                    descriptor.Artifact.SourceId,
+                    Offset: descriptor.Controls.EffectiveOffset),
+                descriptor.Layout.StrideBytes);
+            var artifact = new FrameArtifact(descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, frame);
+            var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var stored = await storage.SaveAsync(root, artifact, descriptor, CancellationToken.None).ConfigureAwait(false);
+            var outbox = new FileSystemArtifactOutbox();
+            var hold = CreateManifest(descriptor.Artifact.ArtifactId, stored.RelativePath);
+            await outbox.EnqueueAsync(root, hold, CancellationToken.None).ConfigureAwait(false);
+
+            await CreateService(outbox).ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(stored.AbsolutePath));
+            Assert.IsTrue(File.Exists(Path.ChangeExtension(stored.AbsolutePath, ".json")));
+
+            await outbox.AcknowledgeAsync(root, hold.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+            await CreateService(outbox).ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(File.Exists(stored.AbsolutePath));
+            Assert.IsFalse(File.Exists(Path.ChangeExtension(stored.AbsolutePath, ".json")));
         }
         finally
         {

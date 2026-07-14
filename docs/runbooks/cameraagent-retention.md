@@ -58,6 +58,21 @@ date/role listing from that index and requires the matching payload and JSON
 sidecar to exist and agree on artifact identity, role, timestamp, dimensions,
 and pixel format. Malformed, duplicate, or incomplete entries are skipped and
 logged rather than exposed as valid artifacts or blocking the rest of the day.
+New callers that supply a complete `ReconstructionDescriptor` store an
+`ArtifactManifestV2` sidecar containing the same validated descriptor used for
+transport. Existing callers continue to write the unversioned legacy sidecar,
+and browsing reads both forms without rewriting or inventing missing legacy
+facts. A malformed or unsupported versioned sidecar is never downgraded to the
+legacy parser.
+Before publishing a v2 sidecar, storage verifies every overlapping frame and
+artifact fact, writes the payload, then streams SHA-256 from the published file.
+An ordinary v2 save failure makes a best-effort attempt to remove payload or
+sidecar files published by that invocation without hiding the original error.
+Browsing also requires the sidecar path and byte length to match the selected
+payload; checksum verification remains mandatory when bytes are reconstructed
+or transferred rather than forcing a full-frame scan for every gallery listing.
+Residual files, crash reconciliation, and fsync-backed durable ingress are
+owned by #94 and are not implied by this additive sidecar API.
 Before appending, the writer terminates any torn final line so a later valid
 commit remains independently browseable. Listings also inspect adjacent daily
 indexes to retain discovery of pre-hardening entries written with non-UTC offsets.

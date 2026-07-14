@@ -1,6 +1,8 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Text.Json.Nodes;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -8,6 +10,212 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestCategory("Integration")]
 public sealed class FileSystemFrameStorageServiceTests
 {
+    [TestMethod]
+    public async Task SaveAsync_WithReconstructionDescriptor_WritesReadableV2Sidecar()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var payload = new byte[8];
+            var manifest = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono16, 2, 2, 4, payload);
+            var descriptor = manifest.Descriptor;
+            var frame = new CameraFrame(
+                descriptor.Timing.ExposureStartedUtc,
+                descriptor.Layout.Width,
+                descriptor.Layout.Height,
+                descriptor.Layout.PixelFormat,
+                payload,
+                new FrameMetadata(
+                    descriptor.Controls.EffectiveExposure,
+                    descriptor.Controls.EffectiveGain,
+                    descriptor.Controls.EffectiveTemperatureC!.Value,
+                    descriptor.Artifact.SourceId,
+                    Offset: descriptor.Controls.EffectiveOffset),
+                descriptor.Layout.StrideBytes);
+            var artifact = new FrameArtifact(
+                descriptor.Artifact.ArtifactId,
+                descriptor.Artifact.Role,
+                frame,
+                descriptor.Artifact.SourceArtifactIds,
+                recipeVersion: null);
+            var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+
+            var stored = await service.SaveAsync(root, artifact, descriptor, CancellationToken.None).ConfigureAwait(false);
+            var sidecarJson = await File.ReadAllBytesAsync(Path.ChangeExtension(stored.AbsolutePath, ".json")).ConfigureAwait(false);
+            var parsed = CaptureContractJson.ParseManifest(sidecarJson);
+            var listed = service.List(
+                root,
+                DateOnly.FromDateTime(descriptor.Timing.ExposureStartedUtc.UtcDateTime),
+                FrameArtifactRole.Raw,
+                10);
+
+            Assert.IsTrue(parsed.IsValid);
+            Assert.AreEqual(CaptureManifestCompleteness.Complete, parsed.Document!.Completeness);
+            Assert.AreEqual(stored.RelativePath, parsed.Document.Manifest!.RelativeArtifactPath);
+            Assert.AreEqual(
+                CaptureContractJson.ComputeDescriptorSha256(descriptor),
+                CaptureContractJson.ComputeDescriptorSha256(parsed.Document.Manifest.Descriptor));
+            Assert.HasCount(1, listed);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_WithMismatchedReconstructionDescriptor_WritesNoPayload()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var payload = new byte[8];
+            var manifest = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono16, 2, 2, 4, payload);
+            var descriptor = manifest.Descriptor;
+            var frame = new CameraFrame(
+                descriptor.Timing.ExposureStartedUtc,
+                2,
+                2,
+                CameraPixelFormat.Mono16,
+                payload,
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0),
+                4);
+            var artifact = new FrameArtifact(
+                descriptor.Artifact.ArtifactId,
+                FrameArtifactRole.Raw,
+                frame,
+                descriptor.Artifact.SourceArtifactIds,
+                descriptor.Artifact.Recipe.ImplementationVersion);
+            var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+
+            await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+                await service.SaveAsync(root, artifact, descriptor, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.IsFalse(Directory.Exists(root) && Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Any());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task List_WithMalformedV2Sidecar_SkipsItAndContinues()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var payload = new byte[8];
+            var manifest = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono16, 2, 2, 4, payload);
+            var descriptor = manifest.Descriptor;
+            var frame = CreateMatchingFrame(descriptor, payload);
+            var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var versioned = await service.SaveAsync(
+                root,
+                CreateMatchingArtifact(descriptor, frame),
+                descriptor,
+                CancellationToken.None).ConfigureAwait(false);
+            var legacy = await service.SaveAsync(
+                root,
+                new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Raw, frame),
+                CancellationToken.None).ConfigureAwait(false);
+            await File.WriteAllTextAsync(
+                Path.ChangeExtension(versioned.AbsolutePath, ".json"),
+                "{\"schemaVersion\":2}").ConfigureAwait(false);
+
+            var listed = service.List(
+                root,
+                DateOnly.FromDateTime(frame.TimestampUtc.UtcDateTime),
+                FrameArtifactRole.Raw,
+                10);
+
+            Assert.HasCount(1, listed);
+            Assert.AreEqual(legacy.AbsolutePath, listed[0].AbsolutePath);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task List_WithV2PathOrLengthDisagreement_SkipsArtifact()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var payload = new byte[8];
+            var manifest = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono16, 2, 2, 4, payload);
+            var descriptor = manifest.Descriptor;
+            var frame = CreateMatchingFrame(descriptor, payload);
+            var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var stored = await service.SaveAsync(
+                root,
+                CreateMatchingArtifact(descriptor, frame),
+                descriptor,
+                CancellationToken.None).ConfigureAwait(false);
+            var sidecarPath = Path.ChangeExtension(stored.AbsolutePath, ".json");
+            var originalSidecar = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            var sidecar = JsonNode.Parse(originalSidecar)!.AsObject();
+            sidecar["relativeArtifactPath"] = "frames/different.bin";
+            await File.WriteAllTextAsync(sidecarPath, sidecar.ToJsonString()).ConfigureAwait(false);
+
+            Assert.IsEmpty(service.List(
+                root, DateOnly.FromDateTime(frame.TimestampUtc.UtcDateTime), FrameArtifactRole.Raw, 10));
+
+            await File.WriteAllBytesAsync(sidecarPath, originalSidecar).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(stored.AbsolutePath, [1]).ConfigureAwait(false);
+
+            Assert.IsEmpty(service.List(
+                root, DateOnly.FromDateTime(frame.TimestampUtc.UtcDateTime), FrameArtifactRole.Raw, 10));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static CameraFrame CreateMatchingFrame(ReconstructionDescriptor descriptor, byte[] payload)
+        => new(
+            descriptor.Timing.ExposureStartedUtc,
+            descriptor.Layout.Width,
+            descriptor.Layout.Height,
+            descriptor.Layout.PixelFormat,
+            payload,
+            new FrameMetadata(
+                descriptor.Controls.EffectiveExposure,
+                descriptor.Controls.EffectiveGain,
+                descriptor.Controls.EffectiveTemperatureC!.Value,
+                descriptor.Artifact.SourceId,
+                Offset: descriptor.Controls.EffectiveOffset),
+            descriptor.Layout.StrideBytes);
+
+    private static FrameArtifact CreateMatchingArtifact(ReconstructionDescriptor descriptor, CameraFrame frame)
+        => new(
+            descriptor.Artifact.ArtifactId,
+            descriptor.Artifact.Role,
+            frame,
+            descriptor.Artifact.SourceArtifactIds,
+            descriptor.Artifact.Role == FrameArtifactRole.Raw
+                ? null
+                : descriptor.Artifact.Recipe.ImplementationVersion);
+
     [TestMethod]
     public async Task SaveAsync_WritesRawPayloadAndMetadataWithoutTemporaryFiles()
     {
