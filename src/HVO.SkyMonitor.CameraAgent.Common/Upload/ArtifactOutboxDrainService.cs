@@ -21,14 +21,18 @@ public sealed class ArtifactOutboxDrainService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var config = await configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
-        var storageRoot = ResolveStorageRoot(config);
-        if (storageRoot is null)
-        {
-            return;
-        }
         while (!stoppingToken.IsCancellationRequested)
         {
+            var config = await configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
+            var storageRoot = ResolveStorageRoot(config);
+            if (storageRoot is null)
+            {
+                await Task.Delay(
+                    TimeSpan.FromSeconds(hostOptions.Value.UploadPollIntervalSeconds),
+                    timeProvider,
+                    stoppingToken).ConfigureAwait(false);
+                continue;
+            }
             var now = timeProvider.GetUtcNow();
             var deferred = _retries
                 .Where(retry => retry.Value.NextAttemptUtc > now)

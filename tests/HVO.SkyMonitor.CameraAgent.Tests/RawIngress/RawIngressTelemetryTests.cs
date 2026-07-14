@@ -20,7 +20,8 @@ public sealed class RawIngressTelemetryTests
         "camera_agent.ingress.quarantine.bytes",
         "camera_agent.ingress.reconciliation.records",
         "camera_agent.ingress.sqlite.transactions",
-        "camera_agent.ingress.sqlite.checkpoints"
+        "camera_agent.ingress.sqlite.checkpoints",
+        "camera_agent.ingress.wakeups"
     ];
 
     [TestMethod]
@@ -51,6 +52,7 @@ public sealed class RawIngressTelemetryTests
         telemetry.RecordFailure("accept", "io");
         telemetry.RecordReconciliation(new RawIngressReconciliationSummary(4, 1, 1, 1, 1, 20));
         telemetry.RecordCheckpoint(succeeded: true);
+        telemetry.RecordWakeup(queued: false);
         listener.RecordObservableInstruments();
 
         var names = measurements.Select(static sample => sample.Name).ToHashSet(StringComparer.Ordinal);

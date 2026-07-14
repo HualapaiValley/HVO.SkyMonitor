@@ -13,6 +13,7 @@ internal sealed class RawCaptureIngress :
     IRawIngressRetentionHolds,
     IRawIngressRecoveryControl,
     IRawIngressPressureReporter,
+    IRawIngressWakeupReporter,
     IDisposable
 {
     private readonly CameraAgentHostOptions _options;
@@ -407,6 +408,8 @@ internal sealed class RawCaptureIngress :
             snapshot.QuarantineBytes,
             snapshot.OldestPendingUtc);
     }
+
+    public void ReportWakeup(bool queued) => _telemetry.RecordWakeup(queued);
 
     private static string FailureReason(Exception exception) => exception switch
     {

@@ -31,6 +31,7 @@ internal sealed class CaptureHostContext(
         {
             Result = submission.Result with { Frame = null, Artifacts = null }
         };
-        _channel.TryWrite(new FrameProcessingItem(_configuration, lightweightSubmission, receipt));
+        var queued = _channel.TryWrite(new FrameProcessingItem(_configuration, lightweightSubmission, receipt));
+        (_rawCaptureIngress as IRawIngressWakeupReporter)?.ReportWakeup(queued);
     }
 }

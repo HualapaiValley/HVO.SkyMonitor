@@ -19,6 +19,7 @@ public sealed class RawIngressTelemetry : IDisposable
     private readonly Counter<long> _reconciliationRecords;
     private readonly Counter<long> _transactions;
     private readonly Counter<long> _checkpoints;
+    private readonly Counter<long> _wakeups;
     private long _lockWaitTicks;
     private long _lockWaitSamples;
     private long _transactionCount;
@@ -39,6 +40,7 @@ public sealed class RawIngressTelemetry : IDisposable
         _reconciliationRecords = _meter.CreateCounter<long>("camera_agent.ingress.reconciliation.records", "{record}");
         _transactions = _meter.CreateCounter<long>("camera_agent.ingress.sqlite.transactions", "{transaction}");
         _checkpoints = _meter.CreateCounter<long>("camera_agent.ingress.sqlite.checkpoints", "{checkpoint}");
+        _wakeups = _meter.CreateCounter<long>("camera_agent.ingress.wakeups", "{notification}");
 
         _meter.CreateObservableGauge("camera_agent.ingress.accepting", ObserveAccepting);
         _meter.CreateObservableGauge("camera_agent.ingress.pending", ObservePending, "{capture}");
@@ -117,6 +119,9 @@ public sealed class RawIngressTelemetry : IDisposable
     internal long CheckpointCount => Interlocked.Read(ref _checkpointCount);
 
     internal long CheckpointFailureCount => Interlocked.Read(ref _checkpointFailureCount);
+
+    internal void RecordWakeup(bool queued)
+        => _wakeups.Add(1, RootTag, new("result", queued ? "queued" : "dropped"));
 
     private void RecordOutcome(string outcome, int count)
     {

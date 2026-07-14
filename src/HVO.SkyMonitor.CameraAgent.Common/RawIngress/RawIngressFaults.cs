@@ -38,6 +38,11 @@ internal interface IRawIngressPressureReporter
     void ReportPressure(bool underPressure);
 }
 
+internal interface IRawIngressWakeupReporter
+{
+    void ReportWakeup(bool queued);
+}
+
 internal sealed class NullRawIngressFaultInjector : IRawIngressFaultInjector
 {
     public void Inject(RawIngressFaultPoint point)

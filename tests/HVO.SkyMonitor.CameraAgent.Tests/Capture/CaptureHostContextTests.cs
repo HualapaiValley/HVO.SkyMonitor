@@ -57,6 +57,7 @@ public sealed class CaptureHostContextTests
         Assert.IsNull(queued.Submission.Result.Artifacts);
         Assert.AreSame(receipt, queued.RawCapture);
         Assert.AreSame(frame, submission.Result.Frame);
+        Assert.IsTrue(ingress.LastWakeupQueued);
     }
 
     [TestMethod]
@@ -88,6 +89,7 @@ public sealed class CaptureHostContextTests
         Assert.IsTrue(ingress.CompletedBeforeReturn);
         Assert.AreEqual(2, channel.CurrentDepth);
         Assert.AreEqual(2L, channel.AcceptedCount);
+        Assert.IsFalse(ingress.LastWakeupQueued);
     }
 
     private static CameraModuleConfig CreateConfig()
@@ -101,9 +103,11 @@ public sealed class CaptureHostContextTests
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
             AgentId: "agent");
 
-    private sealed class RecordingIngress(RawCaptureReceipt receipt) : IRawCaptureIngress
+    private sealed class RecordingIngress(RawCaptureReceipt receipt) : IRawCaptureIngress, IRawIngressWakeupReporter
     {
         public bool CompletedBeforeReturn { get; private set; }
+
+        public bool? LastWakeupQueued { get; private set; }
 
         public ValueTask InitializeAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
@@ -115,5 +119,7 @@ public sealed class CaptureHostContextTests
             CompletedBeforeReturn = true;
             return ValueTask.FromResult<RawCaptureReceipt?>(receipt);
         }
+
+        public void ReportWakeup(bool queued) => LastWakeupQueued = queued;
     }
 }

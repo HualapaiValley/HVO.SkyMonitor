@@ -1014,7 +1014,6 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
-    [TestCategory("Manual")]
     public async Task RawIngressCrashChild()
     {
         var root = Environment.GetEnvironmentVariable("HVO_RAW_INGRESS_CRASH_ROOT");
