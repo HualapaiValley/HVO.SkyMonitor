@@ -1,50 +1,68 @@
 # CI Pipeline Runbook
 
-This document describes the build and validation stages executed in GitHub Actions (and how to reproduce them locally).
+This runbook describes the required current-head checks in `.github/workflows/ci.yml` and their local equivalents.
 
-## Overview
+## Required Checks
 
-| Stage | Purpose |
+| Check | Enforced behavior |
 | --- | --- |
-| **Restore & Build** | `dotnet restore` + `dotnet build HVO.SkyMonitor.v9.slnx` in Release. |
-| **Tests** | `dotnet test` across the solution with the `Integration` and `Manual` category filter. |
-| **Artifacts** | Publish coverage and build logs for download. |
-| **Stellarium Oracle** | Separate manual/Monday pinned container run; never a required PR gate. |
+| **Quality** | Pinned local tools, formatting, vulnerability audit, and exact reviewed deprecation allowlist. |
+| **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. |
+| **Unit Tests** | 372 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. |
+| **Integration Tests** | 109 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. |
+| **Architecture & Publish** | Six repository graph/MSBuild/publish checks plus retained host publish manifests. |
+| **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
+| **Coverage** | Exact source-path and branch merge of nine expected reports, checked-in aggregate non-regression, and risk-file floors. |
+| **Required CI** | Current-head aggregate that fails when any required check fails, times out, is canceled, or is missing. |
 
-## Workflow Configuration
+Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected nine, preventing missing or overwritten evidence.
 
-- Located at `.github/workflows/ci.yml`.
-- Runs on GitHub-hosted `ubuntu-latest` with the .NET 10 SDK installed by `actions/setup-dotnet`.
-- Testcontainers starts disposable SQL Server, Redis, MinIO, and Mailpit containers during the test run. Coverage badge publication uses the configured gist secrets.
-- `.github/workflows/stellarium.yml` independently runs the pinned headless
-  external geometry oracle on `ubuntu-24.04` by schedule or manual dispatch and
-  retains diagnostics for 30 days.
+## Categories
 
-## Reproducing Locally
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=372`, `Integration=115`, `Manual=1`, `Soak=1`, `External=0`, and `Hardware=0`.
 
-1. **Restore and build**
-   ```bash
-   dotnet restore
-   dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
-   ```
-2. **CI-equivalent tests**
-   ```bash
-   dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory!=Integration&TestCategory!=Manual" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
-   ```
-3. **Optional external geometry oracle**
-   ```bash
-   ./scripts/test:stellarium
-   ./scripts/validate:stellarium-container
-   ```
+`External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. No Hardware check is published until real device tests and a suitable runner exist.
 
-## Handling Failures
+## Local Validation
 
-- **Restore errors**: usually missing feeds—confirm `NuGet.config` matches CI and private feeds are reachable.
-- **Testcontainers failures**: ensure Docker is running and plenty of disk space exists for volumes.
-- **Database schema drift**: regenerate SQL Server migrations, then rerun integration tests.
+```bash
+dotnet tool restore
+dotnet restore HVO.SkyMonitor.v9.slnx
+dotnet build HVO.SkyMonitor.v9.slnx --no-restore --no-incremental --configuration Debug -warnaserror
+dotnet build HVO.SkyMonitor.v9.slnx --no-restore --no-incremental --configuration Release -warnaserror
+dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
+./scripts/package:audit
+dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Unit"
+dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Integration"
+```
 
-## Pull Request Expectations
+Use the exact per-project commands in `.github/workflows/ci.yml` when producing coverage evidence; solution-level TRX names are not collision-proof.
 
-1. Run the CI-equivalent restore, build, and test commands locally before pushing.
-2. Attach logs from failing CI runs to PR discussion when requesting help.
-3. Never disable tests in CI without filing an issue and referencing it in the PR.
+Use a fresh result root for every collection. Before merging, require exactly one report from each of the nine category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those nine explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
+
+```bash
+reports=(TestResults/unit/*/*/coverage.cobertura.xml TestResults/integration/*/*/coverage.cobertura.xml TestResults/architecture/*/coverage.cobertura.xml)
+[[ "${#reports[@]}" -eq 9 ]]
+dotnet reportgenerator "-reports:$(IFS=';'; echo "${reports[*]}")" -targetdir:coverage-report -reporttypes:"Html;TextSummary;MarkdownSummaryGithub;Badges;Cobertura"
+./scripts/coverage:enforce --merged coverage-report/Cobertura.xml
+```
+
+Pending-model checks use the pinned `dotnet-ef` tool:
+
+```bash
+dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --startup-project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --context HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext --configuration Release --no-build
+ConnectionStrings__skymonitordb="Server=127.0.0.1,1433;Database=ModelCheck;User Id=sa;Password=Model_check1!;TrustServerCertificate=True" dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --startup-project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --context HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext --configuration Release --no-build
+```
+
+## Protection And Review
+
+Protect `main` with the stable `Required CI` check and require branches to be current before merge. The project uses an independent PR review plus corrected-head reruns and resolved review threads; it does not impose a self-approval rule that a single-author workflow cannot satisfy. Stale, canceled, timed-out, failed, or absent checks do not satisfy `Required CI`.
+
+## Failure Triage
+
+- Formatting or package failures name the command, package, version, project, and reviewed allowlist status.
+- Category failures name uncategorized, multiply categorized, unknown, or count-drifted tests.
+- Migration failures identify the host context with pending model changes.
+- Coverage failures name exact source paths, covered/valid counts, observed rates, and required floors.
+- Integration failures retain separate project/category TRX and Cobertura evidence for 30 days.

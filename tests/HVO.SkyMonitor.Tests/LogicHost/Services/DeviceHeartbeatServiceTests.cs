@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class DeviceHeartbeatServiceTests
 {
     [TestMethod]

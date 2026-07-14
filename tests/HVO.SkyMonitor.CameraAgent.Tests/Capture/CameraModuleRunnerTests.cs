@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class CameraModuleRunnerTests
 {
     [TestMethod]
@@ -64,6 +65,21 @@ public sealed class CameraModuleRunnerTests
         Assert.AreEqual(1, module.Attempts);
     }
 
+    [TestMethod]
+    public async Task RunAsync_Mono16FrameFeedsMeasuredBrightnessIntoNextRequest()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var module = new FeedbackModule();
+        var context = new FeedbackHostContext(CreateFeedbackConfig(), cancellation);
+        var runner = new CameraModuleRunner(module, context, TimeProvider.System, NullLogger.Instance);
+
+        await runner.RunAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        Assert.HasCount(2, module.Requests);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), module.Requests[1].RequestedSetpoint!.Exposure);
+        Assert.AreEqual(100d, module.Requests[1].RequestedSetpoint!.Gain);
+    }
+
     private static CameraModuleConfig CreateConfig(TimeSpan initialBackoff)
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"), new CameraModuleDescriptor("Test"),
@@ -75,6 +91,19 @@ public sealed class CameraModuleRunnerTests
                     TimeSpan.FromMilliseconds(1), 0, 0,
                     CaptureFailureInitialDelay: initialBackoff,
                     CaptureFailureMaximumDelay: TimeSpan.FromSeconds(5))));
+
+    private static CameraModuleConfig CreateFeedbackConfig()
+        => new(
+            new ObservatoryLocation(0, 0, 0, "UTC"), new CameraModuleDescriptor("Test"),
+            new CameraRigConfig(
+                new SensorProfile("Test", 2, 2, 1, SensorColorMode.Mono, CameraPixelFormat.Mono16),
+                new OpticsProfile("EquidistantFisheye", 0, 180, 0), new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(
+                    TimeSpan.Zero, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(4), 1, 100,
+                    new ExposureEnvelope(
+                        TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), 1, 200,
+                        new ExposureDefaults(TimeSpan.FromSeconds(1), 1),
+                        new ExposureDefaults(TimeSpan.FromSeconds(4), 100), 0.65))));
 
     private sealed class RecordingHostContext(
         CameraModuleConfig configuration,
@@ -128,6 +157,51 @@ public sealed class CameraModuleRunnerTests
             Attempted.TrySetResult();
             return Task.FromException<CaptureResult>(new IOException("failure"));
         }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class FeedbackHostContext(
+        CameraModuleConfig configuration,
+        CancellationTokenSource cancellation) : ICaptureHostContext
+    {
+        private int _published;
+        public CameraModuleConfig Configuration => configuration;
+
+        public async ValueTask PublishAsync(CaptureLoopSubmission submission, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _published) == 2)
+            {
+                await cancellation.CancelAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    private sealed class FeedbackModule : ICameraModule
+    {
+        public List<CaptureRequest> Requests { get; } = [];
+        public string Id => "feedback";
+        public string DisplayName => "Feedback";
+        public string ModuleType => "Test";
+        public CameraModuleCapabilities Capabilities => CameraModuleCapabilities.StillFrames;
+        public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            var frame = Requests.Count == 1
+                ? new CameraFrame(
+                    DateTimeOffset.UnixEpoch, 2, 2, CameraPixelFormat.Mono16,
+                    new byte[] { 0, 0, 0, 0, 255, 255, 255, 255 },
+                    new FrameMetadata(TimeSpan.FromSeconds(4), 100, 0))
+                : null;
+            return Task.FromResult(new CaptureResult(
+                frame,
+                new CaptureSetpoint(request.RequestedSetpoint!.Exposure, request.RequestedSetpoint.Gain, TimeSpan.Zero, null),
+                TimeSpan.Zero,
+                CaptureMode.Still,
+                false));
+        }
+
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

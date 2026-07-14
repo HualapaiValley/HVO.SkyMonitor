@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class FileSystemFrameStorageServiceTests
 {
     [TestMethod]
@@ -45,9 +46,11 @@ public sealed class FileSystemFrameStorageServiceTests
             await service.SaveAsync(root, new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Preview, frame), CancellationToken.None).ConfigureAwait(false);
 
             var artifacts = service.List(root, DateOnly.FromDateTime(DateTime.UnixEpoch), FrameArtifactRole.Preview, 10);
+            var adjacentDate = service.List(root, DateOnly.FromDateTime(DateTime.UnixEpoch).AddDays(1), null, 10);
 
             Assert.AreEqual(1, artifacts.Count);
             Assert.AreEqual(FrameArtifactRole.Preview, artifacts[0].Role);
+            Assert.IsEmpty(adjacentDate);
         }
         finally
         {

@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class RealCameraAnnotationPipelineTests
 {
     private static readonly DateTimeOffset Utc = new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);

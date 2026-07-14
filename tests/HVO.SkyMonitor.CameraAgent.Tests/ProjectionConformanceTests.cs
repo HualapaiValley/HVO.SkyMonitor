@@ -3,6 +3,7 @@ using HVO.SkyMonitor.TestSupport;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class ProjectionConformanceTests
 {
     [TestMethod]

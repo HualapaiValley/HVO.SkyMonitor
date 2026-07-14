@@ -15,6 +15,7 @@ using Moq.Protected;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class DeviceBootstrapWorkflowTests
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);

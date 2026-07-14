@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public class SignedUrlTests
 {
     private ISignedTicketService? _signedTicketService;

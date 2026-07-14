@@ -16,6 +16,7 @@ using System.Globalization;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class DashboardTests
 {
     [TestMethod]

@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Upload;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class ArtifactOutboxDrainServiceTests
 {
     [TestMethod]

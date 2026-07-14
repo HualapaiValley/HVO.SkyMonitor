@@ -4,6 +4,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Security;
 
 [TestClass]
+[TestCategory("Unit")]
 public class ReturnUrlHelperTests
 {
     [TestMethod]

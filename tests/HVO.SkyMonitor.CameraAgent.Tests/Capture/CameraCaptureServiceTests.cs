@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class CameraCaptureServiceTests
 {
     [TestMethod]

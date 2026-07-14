@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.Imaging.Tests;
 public sealed class Mono16SceneRendererTests
 {
     [TestMethod]
+    [TestCategory("Unit")]
     public void RelativeFlux_UsesDocumentedMagnitudeFormulaAndIsMonotonic()
     {
         Assert.AreEqual(1, Mono16SceneRenderer.RelativeFlux(0), 1e-14);
@@ -19,6 +20,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     [DataRow(double.NaN)]
     [DataRow(double.PositiveInfinity)]
     [DataRow(double.NegativeInfinity)]
@@ -26,6 +28,7 @@ public sealed class Mono16SceneRendererTests
         => Assert.Throws<ArgumentOutOfRangeException>(() => Mono16SceneRenderer.RelativeFlux(magnitude));
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_RejectsNullSceneWrongFormatAndProjectionDimensionMismatch()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(3, 3, 2).ConfigureAwait(false);
@@ -41,6 +44,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_RejectsEveryInvalidLinearOption()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(3, 3, 2).ConfigureAwait(false);
@@ -88,6 +92,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_AppliesFixedAndOffsetDefectsAfterNoiseAndRejectsOutOfBoundsDefects()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(5, 5, 2).ConfigureAwait(false);
@@ -114,6 +119,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_ExercisesShotAndDarkNoisePoissonRegimesDeterministically()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(3, 3, 2).ConfigureAwait(false);
@@ -133,6 +139,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_TracksLowClippingAndEmptyMaskStatistics()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(3, 3, 1).ConfigureAwait(false);
@@ -152,6 +159,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_RejectsMalformedProjectedObjectDataAndHandlesZeroFluxOutsideMask()
     {
         var source = await SceneTestFactory.CreateCenteredAsync(5, 5).ConfigureAwait(false);
@@ -169,6 +177,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_CenteredPsfIsSymmetricBoundedAndConservesEnergy()
     {
         var scene = await SceneTestFactory.CreateCenteredAsync(21, 21).ConfigureAwait(false);
@@ -186,6 +195,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_EdgePsfLosesEnergyWithoutRenormalization()
     {
         var centered = await SceneTestFactory.CreateCenteredAsync(21, 21).ConfigureAwait(false);
@@ -199,6 +209,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_EnforcesCircleAndRadialVignetting()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(9, 9, 4).ConfigureAwait(false);
@@ -213,6 +224,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_QuantizesLittleEndianClipsAndHandlesZeroExposure()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(3, 3, 2).ConfigureAwait(false);
@@ -234,6 +246,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_GainAndSeededNoiseAreDeterministic()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(9, 9, 4).ConfigureAwait(false);
@@ -249,6 +262,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public void Asi174MmSensorModel_UsesDocumentedGainAndReadNoiseResponse()
     {
         var gainZero = Asi174MmSensorModel.Resolve(0);
@@ -262,6 +276,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_PhysicalResponseScalesExposureAndClipsAtNativeAdcMaximum()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(3, 3, 2).ConfigureAwait(false);
@@ -298,6 +313,7 @@ public sealed class Mono16SceneRendererTests
     }
 
     [TestMethod]
+    [TestCategory("Manual")]
     public async Task FocusedRenderTiming()
     {
         var scene = await SceneTestFactory.CreateCenteredAsync(512, 512).ConfigureAwait(false);

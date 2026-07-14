@@ -52,6 +52,7 @@ public sealed class ArchitectureBoundaryTests
         };
 
     [TestMethod]
+    [TestCategory("Integration")]
     public void ProductionProjectReferencesFollowDocumentedGraph()
     {
         var repository = Repository.Value;
@@ -61,6 +62,7 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
     public void ProductionTransitiveGraphDoesNotReachHostsOrTestProjects()
     {
         var repository = Repository.Value;
@@ -70,6 +72,7 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public void EveryForbiddenProductionPairIsRejectedByTheAllowlist()
     {
         foreach (var source in AllowedProductionReferences.Keys)
@@ -87,6 +90,7 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public void SyntheticTransitiveHostAndTestSupportPathsAreRejected()
     {
         var projects = new Dictionary<string, ProjectInfo>(StringComparer.Ordinal)
@@ -108,6 +112,7 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
     public void AgentCoreHasNoHostInfrastructureOrImagingDependencies()
     {
         var repository = Repository.Value;
@@ -127,6 +132,7 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
     public void EvaluatedGraphIncludesImportedReferencesAndExcludesDisabledConditions()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-evaluation-{Guid.NewGuid():N}");
@@ -160,6 +166,7 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
     public void TestSupportDirectionRejectsNonTestConsumersAndNonProductionDependencies()
     {
         const string tool = "Architecture.Tool";
@@ -181,9 +188,11 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
     public async Task HostReleasePublishOutputsContainNoTestAssemblies()
     {
         var repository = Repository.Value;
+        var evidenceRoot = Environment.GetEnvironmentVariable("HVO_PUBLISH_EVIDENCE_ROOT");
         var testAssemblies = repository.Projects.Values
             .Where(project => project.Kind == ProjectKind.Test)
             .Select(project => project.AssemblyName)
@@ -191,7 +200,13 @@ public sealed class ArchitectureBoundaryTests
 
         foreach (var hostName in new[] { CameraAgent, LogicHost })
         {
-            var output = Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-{hostName}-{Guid.NewGuid():N}");
+            var output = string.IsNullOrWhiteSpace(evidenceRoot)
+                ? Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-{hostName}-{Guid.NewGuid():N}")
+                : Path.Combine(evidenceRoot, hostName == CameraAgent ? "cameraagent" : "logichost");
+            if (Directory.Exists(output))
+            {
+                Directory.Delete(output, recursive: true);
+            }
             Directory.CreateDirectory(output);
 
             try
@@ -205,12 +220,16 @@ public sealed class ArchitectureBoundaryTests
             }
             finally
             {
-                Directory.Delete(output, recursive: true);
+                if (string.IsNullOrWhiteSpace(evidenceRoot))
+                {
+                    Directory.Delete(output, recursive: true);
+                }
             }
         }
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
     public void PublishScannerReportsTestAssemblyFilesAndDependencyEntries()
     {
         var output = Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-scanner-{Guid.NewGuid():N}");

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class CameraAgentConfigurationHealthCheckTests
 {
     [TestMethod]

@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class FrameProcessingChannelTests
 {
     [TestMethod]

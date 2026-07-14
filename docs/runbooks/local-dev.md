@@ -49,23 +49,24 @@ Each agent reads central identity and LogicHost endpoints from configuration or 
 
 1. **Unit tests**
    ```bash
-   dotnet test HVO.SkyMonitor.v9.slnx --filter "TestCategory!=Integration&TestCategory!=Manual"
+   DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+     dotnet test HVO.SkyMonitor.v9.slnx --filter "TestCategory=Unit"
    ```
 
 2. **Integration tests only**
    ```bash
-   dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj
-   dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj
+   dotnet test HVO.SkyMonitor.v9.slnx --filter "TestCategory=Integration"
    ```
 
-3. **Full solution**
+3. **Manual diagnostic and accelerated soak tests**
    ```bash
-   dotnet test HVO.SkyMonitor.v9.slnx
+   dotnet test HVO.SkyMonitor.v9.slnx --filter "TestCategory=Manual"
+   dotnet test HVO.SkyMonitor.v9.slnx --filter "TestCategory=Soak"
    ```
 
 ### Hardware Tests
 
-Hardware suites are opt-in when added. The current test sources have no category attributes, so CI's category filter still runs the Testcontainers suites.
+Hardware suites are opt-in when added and use the reserved `Hardware` category. There are currently no Hardware MSTest cases, so no successful Hardware check is published. External Stellarium validation remains in `.github/workflows/stellarium.yml` rather than being represented by an empty MSTest category.
 
 ## Troubleshooting
 

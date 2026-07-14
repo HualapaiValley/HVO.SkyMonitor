@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class DeviceRegistrationServiceTests
 {
     [TestMethod]

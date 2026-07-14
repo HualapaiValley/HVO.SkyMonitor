@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+output_dir="${1:-$repo_root/TestResults/package-audit}"
+mkdir -p "$output_dir"
+
+dotnet package list --project "$repo_root/HVO.SkyMonitor.v9.slnx" \
+  --vulnerable --include-transitive --format json --output-version 1 --no-restore \
+  > "$output_dir/vulnerable.json"
+dotnet package list --project "$repo_root/HVO.SkyMonitor.v9.slnx" \
+  --deprecated --include-transitive --format json --output-version 1 --no-restore \
+  > "$output_dir/deprecated.json"
+
+dotnet run --project "$repo_root/scripts/package-audit/HVO.SkyMonitor.PackageAudit.csproj" \
+  --configuration Release -- \
+  "$output_dir/vulnerable.json" \
+  "$output_dir/deprecated.json" \
+  "$repo_root/scripts/package-audit/allowlist.json"

@@ -6,6 +6,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class CentralIdentityOptionsValidatorTests
 {
     private readonly CentralIdentityOptionsValidator _validator = new();

@@ -2,157 +2,367 @@ name: CI
 
 on:
   push:
-    branches: [ main, 'feature/**', 'fix/**', 'release/**' ]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 permissions:
   contents: read
-  checks: write
-  pull-requests: write
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
-  DOTNET_VERSION: '10.0.x'
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
-  TEST_FILTER: 'TestCategory!=Integration&TestCategory!=Manual'
 
 jobs:
-  build:
-    name: Build & Test
-    runs-on: ubuntu-latest
-
+  quality:
+    name: Quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Build
-        run: dotnet build --no-restore --configuration Release
-
-      - name: Test with coverage
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Restore dependencies and tools
         run: |
-          dotnet test HVO.SkyMonitor.v9.slnx \
-            --no-build \
-            --configuration Release \
-            --filter "${{ env.TEST_FILTER }}" \
-            --settings tests/coverage.runsettings \
-            --collect:"XPlat Code Coverage" \
-            --results-directory ./TestResults \
-            --logger "trx;LogFileName=test-results.trx"
-
-      - name: Enforce coverage baseline
-        run: ./scripts/coverage:enforce TestResults/*/coverage.cobertura.xml
-
-      - name: Install ReportGenerator
-        if: always()
-        run: dotnet tool install --global dotnet-reportgenerator-globaltool
-
-      - name: Generate coverage report
-        if: always()
+          dotnet tool restore
+          dotnet restore HVO.SkyMonitor.v9.slnx
+      - name: Verify formatting
+        run: dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
+      - name: Lint GitHub Actions workflows
         run: |
-          reportgenerator \
-            -reports:"TestResults/**/coverage.cobertura.xml" \
-            -targetdir:"coverage-report" \
-            -reporttypes:"Html;TextSummary;MarkdownSummaryGithub;Badges;Cobertura"
-
-      - name: Parse coverage and test results for badges
+          curl -fsSL -o /tmp/actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          printf '%s  %s\n' '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757' /tmp/actionlint.tar.gz | sha256sum --check
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint .github/workflows/*.yml
+      - name: Audit vulnerable and deprecated packages
+        run: ./scripts/package:audit
+      - name: Upload package audit
         if: always()
-        id: coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: package-audit
+          path: TestResults/package-audit/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Restore
+        run: dotnet restore HVO.SkyMonitor.v9.slnx
+      - name: Warning-clean Debug build
+        run: dotnet build HVO.SkyMonitor.v9.slnx --no-restore --no-incremental --configuration Debug -warnaserror
+      - name: Warning-clean Release build
+        run: dotnet build HVO.SkyMonitor.v9.slnx --no-restore --no-incremental --configuration Release -warnaserror
+      - name: Audit behavioral test categories
+        run: dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release
+
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
+      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Restore and build Release
         run: |
-          LINE_COV=$(grep 'Line coverage' coverage-report/Summary.txt | grep -oP '[\d.]+(?=%)' || echo "0")
-          BRANCH_COV=$(grep 'Branch coverage' coverage-report/Summary.txt | grep -oP '[\d.]+(?=%)' || echo "0")
-          METHOD_COV=$(grep 'Method coverage' coverage-report/Summary.txt | grep -oP '[\d.]+(?=%)' || echo "0")
-          echo "line=$LINE_COV" >> "$GITHUB_OUTPUT"
-          echo "branch=$BRANCH_COV" >> "$GITHUB_OUTPUT"
-          echo "method=$METHOD_COV" >> "$GITHUB_OUTPUT"
+          dotnet restore HVO.SkyMonitor.v9.slnx
+          dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
+      - name: Run Docker-disabled Unit suites
+        run: |
+          dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/astronomy --logger "trx;LogFileName=unit-astronomy.trx"
+          dotnet test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/imaging --logger "trx;LogFileName=unit-imaging.trx"
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
+          dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/logichost --logger "trx;LogFileName=unit-logichost.trx"
+      - name: Upload Unit evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unit-test-evidence
+          path: TestResults/unit/
+          if-no-files-found: error
+          retention-days: 30
 
-          # Parse test count from TRX file
-          TESTS_PASSED=$(grep -oP 'passed="\K[0-9]+' TestResults/test-results.trx 2>/dev/null || echo "0")
-          TESTS_FAILED=$(grep -oP 'failed="\K[0-9]+' TestResults/test-results.trx 2>/dev/null || echo "0")
-          TESTS_TOTAL=$(grep -oP 'total="\K[0-9]+' TestResults/test-results.trx 2>/dev/null || echo "0")
-          echo "tests_passed=$TESTS_PASSED" >> "$GITHUB_OUTPUT"
-          echo "tests_failed=$TESTS_FAILED" >> "$GITHUB_OUTPUT"
-          echo "tests_total=$TESTS_TOTAL" >> "$GITHUB_OUTPUT"
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Restore and build Release
+        run: |
+          dotnet restore HVO.SkyMonitor.v9.slnx
+          dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
+      - name: Run Integration suites
+        run: |
+          dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/catalog-sqlite --logger "trx;LogFileName=integration-catalog-sqlite.trx"
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx"
+          dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/logichost --logger "trx;LogFileName=integration-logichost.trx"
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-host --logger "trx;LogFileName=integration-cameraagent-host.trx"
+      - name: Upload Integration evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: integration-test-evidence
+          path: TestResults/integration/
+          if-no-files-found: error
+          retention-days: 30
 
-          echo "### Code Coverage" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Line coverage | ${LINE_COV}% |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Branch coverage | ${BRANCH_COV}% |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Method coverage | ${METHOD_COV}% |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Tests | ${TESTS_PASSED} passed / ${TESTS_TOTAL} total |" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+  architecture:
+    name: Architecture & Publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Restore and build Release
+        run: |
+          dotnet restore HVO.SkyMonitor.v9.slnx
+          dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
+      - name: Validate architecture graph and publish outputs
+        env:
+          HVO_PUBLISH_EVIDENCE_ROOT: ${{ github.workspace }}/TestResults/publish
+        run: |
+          dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj --no-build --configuration Release --filter "TestCategory=Integration&FullyQualifiedName~ArchitectureBoundaryTests" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/architecture --logger "trx;LogFileName=architecture-publish.trx"
+      - name: Create retained publish manifests
+        run: |
+          (cd TestResults/publish/cameraagent && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../cameraagent.sha256)
+          (cd TestResults/publish/logichost && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../logichost.sha256)
+          cameraagent_files=$(find TestResults/publish/cameraagent -type f | wc -l)
+          cameraagent_bytes=$(find TestResults/publish/cameraagent -type f -printf '%s\n' | awk '{total += $1} END {print total}')
+          cameraagent_dependencies=$(find TestResults/publish/cameraagent -maxdepth 1 -type f -name '*.dll' | wc -l)
+          logichost_files=$(find TestResults/publish/logichost -type f | wc -l)
+          logichost_bytes=$(find TestResults/publish/logichost -type f -printf '%s\n' | awk '{total += $1} END {print total}')
+          logichost_dependencies=$(find TestResults/publish/logichost -maxdepth 1 -type f -name '*.dll' | wc -l)
+          printf 'CameraAgent files=%s bytes=%s dependencies=%s\nLogicHost files=%s bytes=%s dependencies=%s\n' \
+            "$cameraagent_files" "$cameraagent_bytes" "$cameraagent_dependencies" \
+            "$logichost_files" "$logichost_bytes" "$logichost_dependencies" \
+            > TestResults/publish/summary.txt
+      - name: Upload architecture coverage
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: architecture-test-evidence
+          path: TestResults/architecture/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload publish evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: publish-evidence
+          path: |
+            TestResults/publish/*.sha256
+            TestResults/publish/summary.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  migrations:
+    name: Migrations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Restore tools and build Release
+        run: |
+          dotnet tool restore
+          dotnet restore HVO.SkyMonitor.v9.slnx
+          dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
+      - name: Reject pending CameraAgent model changes
+        run: dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --startup-project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --context HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext --configuration Release --no-build
+      - name: Reject pending LogicHost model changes
+        env:
+          ConnectionStrings__skymonitordb: Server=127.0.0.1,1433;Database=ModelCheck;User Id=sa;Password=Model_check1!;TrustServerCertificate=True
+        run: dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --startup-project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --context HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext --configuration Release --no-build
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: [unit, integration, architecture]
+    outputs:
+      line: ${{ steps.coverage-metrics.outputs.line }}
+      branch: ${{ steps.coverage-metrics.outputs.branch }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Restore coverage tool
+        run: dotnet tool restore
+      - name: Download Unit evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: unit-test-evidence
+          path: TestResults/unit
+      - name: Download Integration evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: integration-test-evidence
+          path: TestResults/integration
+      - name: Download architecture evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: architecture-test-evidence
+          path: TestResults/architecture
+      - name: Reject weakened coverage thresholds
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if git cat-file -e "origin/$BASE_REF:scripts/coverage/baseline.json" 2>/dev/null; then
+            git show "origin/$BASE_REF:scripts/coverage/baseline.json" > /tmp/base-coverage.json
+            jq --exit-status --slurpfile base /tmp/base-coverage.json '
+              . as $candidate |
+              $candidate.aggregate.line >= $base[0].aggregate.line and
+              $candidate.aggregate.branch >= $base[0].aggregate.branch and
+              $candidate.aggregate.tolerancePercentagePoints <= $base[0].aggregate.tolerancePercentagePoints and
+              all($base[0].files | to_entries[];
+                $candidate.files[.key] != null and
+                $candidate.files[.key].line >= .value.line and
+                $candidate.files[.key].branch >= .value.branch)
+            ' scripts/coverage/baseline.json
+          fi
+      - name: Enforce exact-path coverage baseline
+        run: |
+          patterns=(
+            'TestResults/unit/astronomy/*/coverage.cobertura.xml'
+            'TestResults/unit/imaging/*/coverage.cobertura.xml'
+            'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
+            'TestResults/unit/logichost/*/coverage.cobertura.xml'
+            'TestResults/integration/catalog-sqlite/*/coverage.cobertura.xml'
+            'TestResults/integration/cameraagent-storage/*/coverage.cobertura.xml'
+            'TestResults/integration/logichost/*/coverage.cobertura.xml'
+            'TestResults/integration/cameraagent-host/*/coverage.cobertura.xml'
+            'TestResults/architecture/*/coverage.cobertura.xml'
+          )
+          reports=()
+          for pattern in "${patterns[@]}"; do
+            mapfile -t matches < <(compgen -G "$pattern" || true)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              printf 'Expected one coverage report for %s, found %s\n' "$pattern" "${#matches[@]}" >&2
+              exit 1
+            fi
+            reports+=("${matches[0]}")
+          done
+          dotnet reportgenerator "-reports:$(IFS=';'; echo "${reports[*]}")" -targetdir:coverage-report -reporttypes:"Html;TextSummary;MarkdownSummaryGithub;Badges;Cobertura"
+          ./scripts/coverage:enforce --merged coverage-report/Cobertura.xml
           cat coverage-report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Publish test results
-        uses: dorny/test-reporter@v2
+      - name: Read coverage metrics
+        if: success()
+        id: coverage-metrics
+        run: |
+          line=$(awk '/Line coverage:/ {gsub("%", "", $3); print $3}' coverage-report/Summary.txt)
+          branch=$(awk '/Branch coverage:/ {gsub("%", "", $3); print $3}' coverage-report/Summary.txt)
+          printf 'line=%s\nbranch=%s\n' "$line" "$branch" >> "$GITHUB_OUTPUT"
+      - name: Upload merged coverage
         if: always()
-        with:
-          name: Test Results
-          path: TestResults/test-results.trx
-          reporter: dotnet-trx
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v7
-        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: coverage-report
           path: coverage-report/
+          if-no-files-found: error
           retention-days: 30
 
-      - name: Upload coverage badges
-        uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: coverage-badges
-          path: coverage-report/badge_*.svg
-          retention-days: 90
-
-      # -------------------------------------------------------------------
-      # Dynamic badges via gist (requires GIST_TOKEN secret with gist scope)
-      # -------------------------------------------------------------------
+  badges:
+    name: Coverage Badges
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: coverage
+    steps:
       - name: Update line coverage badge
-        if: github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.7.0
+        uses: schneegans/dynamic-badges-action@e9a478b16159b4d31420099ba146cdc50f134483 # v1.7.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: ${{ secrets.COVERAGE_GIST_ID }}
           filename: coverage-line.json
           label: line coverage
-          message: ${{ steps.coverage.outputs.line }}%
-          valColorRange: ${{ steps.coverage.outputs.line }}
+          message: ${{ needs.coverage.outputs.line }}%
+          valColorRange: ${{ needs.coverage.outputs.line }}
           minColorRange: 40
           maxColorRange: 80
-
       - name: Update branch coverage badge
-        if: github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.7.0
+        uses: schneegans/dynamic-badges-action@e9a478b16159b4d31420099ba146cdc50f134483 # v1.7.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: ${{ secrets.COVERAGE_GIST_ID }}
           filename: coverage-branch.json
           label: branch coverage
-          message: ${{ steps.coverage.outputs.branch }}%
-          valColorRange: ${{ steps.coverage.outputs.branch }}
+          message: ${{ needs.coverage.outputs.branch }}%
+          valColorRange: ${{ needs.coverage.outputs.branch }}
           minColorRange: 30
           maxColorRange: 70
 
-      - name: Update tests badge
-        if: github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.7.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: ${{ secrets.COVERAGE_GIST_ID }}
-          filename: tests.json
-          label: tests
-          message: "${{ steps.coverage.outputs.tests_passed }} passed"
-          color: ${{ steps.coverage.outputs.tests_failed == '0' && 'brightgreen' || 'red' }}
+  required:
+    name: Required CI
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [quality, build, unit, integration, architecture, migrations, coverage]
+    steps:
+      - name: Require every current-head gate
+        env:
+          RESULTS: ${{ join(needs.*.result, ',') }}
+        run: |
+          for result in ${RESULTS//,/ }; do
+            if [[ "$result" != "success" ]]; then
+              printf 'Required gate results: %s\n' "$RESULTS" >&2
+              exit 1
+            fi
+          done

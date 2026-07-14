@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using HVO.SkyMonitor.Astronomy;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
@@ -17,21 +16,41 @@ public interface IProjectedSceneStore
 public sealed class ProjectedSceneStore : IProjectedSceneStore
 {
     private const int Capacity = 32;
-    private readonly ConcurrentDictionary<string, VisibleScene> _scenes = new(StringComparer.Ordinal);
-    private readonly ConcurrentQueue<string> _order = new();
+    private readonly Dictionary<string, VisibleScene> _scenes = new(StringComparer.Ordinal);
+    private readonly LinkedList<string> _order = [];
+    private readonly object _gate = new();
 
-    internal int Count => _scenes.Count;
+    internal int Count
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _scenes.Count;
+            }
+        }
+    }
 
     /// <inheritdoc />
     public void Put(string sceneId, VisibleScene scene)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sceneId);
         ArgumentNullException.ThrowIfNull(scene);
-        _scenes[sceneId] = scene;
-        _order.Enqueue(sceneId);
-        while (_scenes.Count > Capacity && _order.TryDequeue(out var expired))
+        lock (_gate)
         {
-            _scenes.TryRemove(expired, out _);
+            if (_scenes.ContainsKey(sceneId))
+            {
+                _order.Remove(sceneId);
+            }
+
+            _scenes[sceneId] = scene;
+            _order.AddLast(sceneId);
+            while (_scenes.Count > Capacity)
+            {
+                var expired = _order.First!.Value;
+                _order.RemoveFirst();
+                _scenes.Remove(expired);
+            }
         }
     }
 
@@ -39,6 +58,9 @@ public sealed class ProjectedSceneStore : IProjectedSceneStore
     public bool TryGet(string sceneId, out VisibleScene? scene)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sceneId);
-        return _scenes.TryGetValue(sceneId, out scene);
+        lock (_gate)
+        {
+            return _scenes.TryGetValue(sceneId, out scene);
+        }
     }
 }
