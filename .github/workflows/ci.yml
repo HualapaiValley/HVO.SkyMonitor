@@ -45,9 +45,10 @@ jobs:
           /tmp/actionlint .github/workflows/*.yml
       - name: Audit identity and security operations guidance
         run: |
-          bash -n scripts/docs:audit-operations scripts/identity:smoke scripts/user-secret:set scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra
+          bash -n scripts/docs:audit-operations scripts/identity:smoke scripts/user-secret:set scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/catalog/*.sh scripts/catalog:install
           ./scripts/docs:audit-operations
           ./scripts/test:infra
+          ./scripts/catalog/smoke-test.sh
           SQLSERVER_PASSWORD=validation-only REDIS_PASSWORD=validation-only MINIO_ACCESS_KEY=validation-only MINIO_SECRET_KEY=validation-only CAMERA_AGENT_ADMIN_PASSWORD=validation-only-password CAMERA_AGENT_OAUTH_CLIENT_SECRET=validation-only-oauth-secret docker compose --env-file .env.template -f docker-compose.apps.yml config --quiet
       - name: Audit vulnerable and deprecated packages
         run: ./scripts/package:audit
@@ -107,6 +108,7 @@ jobs:
           dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/astronomy --logger "trx;LogFileName=unit-astronomy.trx"
           dotnet test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/imaging --logger "trx;LogFileName=unit-imaging.trx"
           dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/processing --logger "trx;LogFileName=unit-processing.trx"
+          dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/catalog-sqlite --logger "trx;LogFileName=unit-catalog-sqlite.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
           dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/logichost --logger "trx;LogFileName=unit-logichost.trx"
       - name: Upload Unit evidence
@@ -139,7 +141,6 @@ jobs:
           dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
       - name: Run Integration suites
         run: |
-          dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/catalog-sqlite --logger "trx;LogFileName=integration-catalog-sqlite.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx"
           dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/logichost --logger "trx;LogFileName=integration-logichost.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-host --logger "trx;LogFileName=integration-cameraagent-host.trx"
@@ -291,9 +292,9 @@ jobs:
             'TestResults/unit/astronomy/*/coverage.cobertura.xml'
             'TestResults/unit/imaging/*/coverage.cobertura.xml'
             'TestResults/unit/processing/*/coverage.cobertura.xml'
+            'TestResults/unit/catalog-sqlite/*/coverage.cobertura.xml'
             'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
             'TestResults/unit/logichost/*/coverage.cobertura.xml'
-            'TestResults/integration/catalog-sqlite/*/coverage.cobertura.xml'
             'TestResults/integration/cameraagent-storage/*/coverage.cobertura.xml'
             'TestResults/integration/logichost/*/coverage.cobertura.xml'
             'TestResults/integration/cameraagent-host/*/coverage.cobertura.xml'

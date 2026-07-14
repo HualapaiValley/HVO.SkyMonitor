@@ -43,6 +43,12 @@ It is Development-only and HTTP-only.
 
 Do not run a direct host while its container owns the same port.
 
+Both direct hosts require a verified production snapshot under
+`${HVO_RUNTIME_DATA_ROOT:-./data}/catalog`. Build and install it once using
+[`docs/catalog/production-install.md`](../catalog/production-install.md).
+`with-env` supplies this root and requires production package kind; it never
+falls back to the nine-row test fixture.
+
 LogicHost requires the root `.env` translation performed by `with-env`:
 
 ```bash

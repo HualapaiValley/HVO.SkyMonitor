@@ -158,6 +158,7 @@ fi
 
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/logichost/dataprotection"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/logichost/home"
+prepare_runtime_directory "$RUNTIME_DATA_ROOT/catalog"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/identity"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/provisioning"

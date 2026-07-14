@@ -29,6 +29,17 @@ bash scripts/catalog/build-d3-constellation-topology.sh \
 
 The script downloads both pinned source files, verifies their hashes, maps each
 line endpoint's exact J2000 coordinate pair to the matching HIP identifier, and
-fails unless every endpoint resolves and the expected counts match. Runtime
-scene construction then joins those HIP identifiers to catalog objects. No
-network or source JSON parsing occurs during application startup.
+fails unless every endpoint resolves, the expected counts match, and the
+serialized resource has the pinned generated SHA-256. Runtime recomputes that
+same embedded-resource hash before checking production topology endpoints and
+joining those HIP identifiers to catalog objects. No network or source JSON
+parsing occurs during application startup.
+
+## HYG 4.2 Compatibility
+
+The 743 D3 segments contain 757 distinct HIP endpoints. HYG 4.2 resolves 756 of
+them; HIP `55203`, used only by the `UMA` segment from HIP `55219`, is absent
+from the pinned HYG source. Production startup verifies the complete endpoint
+set and fails unless this is the only unresolved HIP. Scene construction omits
+that single segment rather than fabricating a star outside the HYG provenance
+chain. Any future source/topology version must review this compatibility rule.

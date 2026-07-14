@@ -25,7 +25,6 @@ RUN dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csp
 
 # Copy source code
 COPY src/ src/
-COPY tests/fixtures/catalog/hyg-v42-bright-stars.sqlite tests/fixtures/catalog/hyg-v42-bright-stars.sqlite
 
 # Build and publish
 WORKDIR /src/src/HVO.SkyMonitor.CameraAgent

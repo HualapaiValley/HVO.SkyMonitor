@@ -33,6 +33,8 @@ services:
       DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__0: api.camera
       DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__1: api.frames
       DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__2: api.images
+      Catalog__Root: /app/catalog
+      Catalog__RequiredPackageKind: Production
     ports:
       - "${LOGIC_HOST_HTTP_PORT:-5174}:8080"
     volumes:
@@ -42,6 +44,10 @@ services:
       - type: bind
         source: ${HVO_RUNTIME_DATA_ROOT:-./data}/logichost/home
         target: /home/app
+      - type: bind
+        source: ${HVO_RUNTIME_DATA_ROOT:-./data}/catalog
+        target: /app/catalog
+        read_only: true
     restart: unless-stopped
     networks:
       - skymonitor-network
@@ -65,6 +71,8 @@ services:
       LocalIdentity__AdminEmail: ${CAMERA_AGENT_ADMIN_EMAIL:-owner@cameraagent.local}
       LocalIdentity__AdminPassword: ${CAMERA_AGENT_ADMIN_PASSWORD:?CAMERA_AGENT_ADMIN_PASSWORD must be set}
       DeviceProvisioning__StateDirectory: /app/data/provisioning
+      Catalog__Root: /app/catalog
+      Catalog__RequiredPackageKind: Production
     ports:
       - "${CAMERA_AGENT_HTTP_PORT:-5130}:8080"
     volumes:
@@ -83,6 +91,10 @@ services:
       - type: bind
         source: ${HVO_RUNTIME_DATA_ROOT:-./data}/archive
         target: /workspaces/HVO.SkyMonitor/data/archive
+      - type: bind
+        source: ${HVO_RUNTIME_DATA_ROOT:-./data}/catalog
+        target: /app/catalog
+        read_only: true
     restart: unless-stopped
     networks:
       - skymonitor-network

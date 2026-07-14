@@ -4,6 +4,7 @@ set -euo pipefail
 readonly VERSION="v0.7.32"
 readonly LINES_SHA256="294f66bef5d5cf50b1e17f16d2efa1d97a15131612c68dd935adef6e7373e13c"
 readonly STARS_SHA256="8e76cd774d38f8d232cfccfb0b72d6fba5832d36eeff1f514e46c25423e2ecb8"
+readonly GENERATED_SHA256="70c253a00e0909ae0236dec0411afe837ebf8e493b2be7f84373b63c95c91621"
 readonly BASE_URL="https://raw.githubusercontent.com/ofrohn/d3-celestial/$VERSION/data"
 
 if [[ $# -ne 1 ]]; then
@@ -11,7 +12,7 @@ if [[ $# -ne 1 ]]; then
   exit 2
 fi
 
-for command in curl jq sha256sum sqlite3; do
+for command in curl dirname jq mv realpath sha256sum sqlite3 sync; do
   command -v "$command" >/dev/null || { printf 'missing required command: %s\n' "$command" >&2; exit 1; }
 done
 
@@ -39,7 +40,10 @@ jq -r '
   @tsv
 ' "$lines" > "$segment_rows"
 
-output="$1"
+output="$(realpath -m "$1")"
+output_parent="$(dirname "$output")"
+[[ -d "$output_parent" && ! -L "$output_parent" ]] || { printf 'output parent is missing or unsafe: %s\n' "$output_parent" >&2; exit 1; }
+generated="$temporary_directory/generated-topology.tsv"
 sqlite3 "$database" <<SQL
 .bail on
 CREATE TABLE stars (longitude TEXT NOT NULL, latitude TEXT NOT NULL, hip TEXT NOT NULL);
@@ -54,7 +58,7 @@ CREATE TABLE segments (
 .mode tabs
 .import '$star_rows' stars
 .import '$segment_rows' segments
-.output '$output'
+.output '$generated'
 SELECT '# D3-Celestial v0.7.32; BSD-3-Clause; constellation,from-HIP,to-HIP';
 SELECT s.constellation_id, f.hip, t.hip
 FROM segments s
@@ -71,5 +75,9 @@ if [[ "$segment_count" -ne 743 || "$resolved_count" -ne 743 || "$constellation_c
   printf 'unexpected topology counts: %s constellations, %s segments, %s resolved\n' "$constellation_count" "$segment_count" "$resolved_count" >&2
   exit 1
 fi
+printf '%s  %s\n' "$GENERATED_SHA256" "$generated" | sha256sum --check --status
+sync -f "$generated"
+mv -Tf -- "$generated" "$output"
+sync -f "$output_parent"
 
 printf 'Generated %s constellations and %s segments: %s\n' "$constellation_count" "$segment_count" "$output"

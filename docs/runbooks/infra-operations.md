@@ -35,6 +35,7 @@ that root for isolated command testing.
 | --- | --- | --- |
 | LogicHost | `data/logichost/dataprotection` | `/app/DataProtection-Keys` |
 | LogicHost | `data/logichost/home` | `/home/app` |
+| Both hosts | `data/catalog` | `/app/catalog` (read-only) |
 | CameraAgent | `data/cameraagent/identity` | `/app/App_Data/identity` |
 | CameraAgent | `data/cameraagent/dataprotection` | `/app/DataProtection-Keys` |
 | CameraAgent | `data/cameraagent/provisioning` | `/app/data/provisioning` |
@@ -43,9 +44,14 @@ that root for isolated command testing.
 
 A rebuild or ordinary container recreation preserves these mounts. An explicit
 reset deletes the selected host's listed state. CameraAgent provisioning and its
-Data Protection key ring are one recovery unit.
+Data Protection key ring are one recovery unit. The verified catalog root is
+preserved by application reset and can be reinstalled independently.
 
 ## Common Operations
+
+Install the verified production catalog before starting either application. The
+build and offline installation procedure is in
+[`docs/catalog/production-install.md`](../catalog/production-install.md).
 
 Start both applications or a selected application:
 
@@ -83,15 +89,17 @@ curl --fail http://localhost:${CAMERA_AGENT_HTTP_PORT:-5130}/health
 ./scripts/identity:smoke
 ```
 
-After an image rebuild, verify both packaged catalogs:
+After installation or an image rebuild, verify the mounted active catalog from
+both containers:
 
 ```bash
-docker exec skymonitor-logichost sha256sum /app/catalog/hyg_v42.sqlite
-docker exec skymonitor-cameraagent sha256sum /app/catalog/hyg_v42.sqlite
+docker exec skymonitor-logichost sha256sum /app/catalog/current/hyg_v42.sqlite
+docker exec skymonitor-cameraagent sha256sum /app/catalog/current/hyg_v42.sqlite
 ```
 
 The expected digest is
-`f80689217769a6b13c1b9bfb9711485d3cb1ad8de009d3d6b0f0b0a4f1fa9840`.
+`b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2`.
+The fixture digest is never valid for a production host.
 
 ## Reset
 
@@ -111,6 +119,8 @@ Reset is destructive and requires an approved backup and rollback decision:
   state.
 - `infra:start --reset` rebuilds and starts the selected services after reset.
 - `infra:reset` removes selected containers and state but does not restart them.
+- Neither reset command deletes `data/catalog`; activation and rollback remain
+  separately controlled catalog operations.
 
 `./scripts/test:infra` validates command-selection and cleanup behavior with an
 isolated temporary runtime-data root. It does not touch repository `data/` or

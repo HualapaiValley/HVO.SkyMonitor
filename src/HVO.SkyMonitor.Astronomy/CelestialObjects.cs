@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+
 namespace HVO.SkyMonitor.Astronomy;
 
 /// <summary>Identifies a solar-system body supported by an ephemeris provider.</summary>
@@ -145,6 +147,15 @@ public sealed class InMemoryConstellationTopology : IConstellationTopology
     public InMemoryConstellationTopology(
         IEnumerable<ConstellationSegment> segments,
         ConstellationTopologyMetadata? metadata = null)
+        : this(segments, metadata, null)
+    {
+    }
+
+    /// <summary>Creates topology from immutable segments with serialized artifact identity.</summary>
+    public InMemoryConstellationTopology(
+        IEnumerable<ConstellationSegment> segments,
+        ConstellationTopologyMetadata? metadata,
+        string? artifactSha256 = null)
     {
         ArgumentNullException.ThrowIfNull(segments);
         var values = segments.ToArray();
@@ -157,13 +168,21 @@ public sealed class InMemoryConstellationTopology : IConstellationTopology
 
         _segments = values.GroupBy(segment => segment.ConstellationId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => (IReadOnlyList<ConstellationSegment>)group.ToArray(), StringComparer.Ordinal);
+        AllSegments = Array.AsReadOnly(values);
         Metadata = metadata ?? new ConstellationTopologyMetadata(
             "in-memory", "fixture", new Uri("https://example.invalid/constellations"),
             "unspecified", "unspecified", "fixture-v1");
+        ArtifactSha256 = artifactSha256;
     }
 
     /// <inheritdoc />
     public ConstellationTopologyMetadata Metadata { get; }
+
+    /// <summary>Gets all validated segments in deterministic source order.</summary>
+    public IReadOnlyList<ConstellationSegment> AllSegments { get; }
+
+    /// <summary>Gets the SHA-256 of the serialized topology artifact when one exists.</summary>
+    public string? ArtifactSha256 { get; }
 
     /// <inheritdoc />
     public IReadOnlyList<ConstellationSegment> GetSegments(string constellationId)
@@ -179,6 +198,7 @@ public sealed class InMemoryConstellationTopology : IConstellationTopology
 /// <summary>Creates the standard D3-Celestial constellation artwork.</summary>
 public static class StandardConstellationTopology
 {
+    private const string ExpectedArtifactSha256 = "70C253A00E0909AE0236DEC0411AFE837EBF8E493B2BE7F84373B63C95C91621";
     private const string ResourceName =
         "HVO.SkyMonitor.Astronomy.Data.d3-celestial-v0.7.32-topology.tsv";
 
@@ -187,7 +207,15 @@ public static class StandardConstellationTopology
     {
         using var source = typeof(StandardConstellationTopology).Assembly.GetManifestResourceStream(ResourceName)
             ?? throw new InvalidOperationException($"Embedded topology resource '{ResourceName}' was not found.");
-        using var reader = new StreamReader(source);
+        using var content = new MemoryStream();
+        source.CopyTo(content);
+        var bytes = content.ToArray();
+        var checksum = Convert.ToHexString(SHA256.HashData(bytes));
+        if (!string.Equals(checksum, ExpectedArtifactSha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Embedded constellation topology SHA-256 does not match its pinned identity.");
+        }
+        using var reader = new StreamReader(new MemoryStream(bytes, writable: false));
         var segments = new List<ConstellationSegment>();
         while (reader.ReadLine() is { } line)
         {
@@ -215,6 +243,6 @@ public static class StandardConstellationTopology
             new Uri("https://github.com/ofrohn/d3-celestial/tree/v0.7.32/data"),
             "294f66bef5d5cf50b1e17f16d2efa1d97a15131612c68dd935adef6e7373e13c",
             "BSD-3-Clause",
-            "hip-coordinate-map-v1"));
+            "hip-coordinate-map-v1"), checksum);
     }
 }

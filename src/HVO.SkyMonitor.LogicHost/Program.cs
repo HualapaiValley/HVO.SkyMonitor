@@ -121,6 +121,7 @@ public sealed partial class Program
         // Health checks
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks()
             .AddDbContextCheck<ApplicationDbContext>("database", tags: ["dependency"]);
+        healthChecks.AddInstalledCelestialCatalogHealthCheck();
 
         if (!string.IsNullOrWhiteSpace(redisConfiguration))
         {
@@ -567,9 +568,10 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();
         builder.Services.AddScoped<ICentralDerivativeJobService, CentralDerivativeJobService>();
         builder.Services.AddScoped<IDeviceRigProfileService, DeviceRigProfileService>();
-        builder.Services.AddSingleton<ICelestialCatalog>(_ => CreateCatalog(builder.Configuration));
+        builder.Services.AddInstalledCelestialCatalog();
 
         var app = builder.Build();
+        _ = app.Services.GetRequiredService<CatalogSnapshotResult>();
 
         // Configure the HTTP request pipeline
 
@@ -713,13 +715,6 @@ public sealed partial class Program
         !string.IsNullOrWhiteSpace(credentials.ClientSecret) &&
         credentials.Scopes.Count > 0 &&
         credentials.Scopes.All(static scope => !string.IsNullOrWhiteSpace(scope));
-    }
-
-    private static SqliteCelestialCatalog CreateCatalog(ConfigurationManager configuration)
-    {
-        var path = configuration["Catalog:Path"] ?? Path.Combine(AppContext.BaseDirectory, "catalog", "hyg_v42.sqlite");
-        var checksum = configuration["Catalog:Sha256"] ?? "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
-        return new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(path, checksum, "2", "3"));
     }
 
     private static partial class Log

@@ -1,14 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="MSTest" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="coverlet.collector"><PrivateAssets>all</PrivateAssets></PackageReference>
   </ItemGroup>
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Catalog.Sqlite\HVO.SkyMonitor.Catalog.Sqlite.csproj" />
-  </ItemGroup>
-  <ItemGroup>
-    <Content Include="..\fixtures\catalog\hyg-v42-bright-stars.sqlite" Link="Fixtures\hyg-v42-bright-stars.sqlite" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -5,8 +5,11 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/.devcontainer/load-repo-env.sh"
+runtime_data_root="$(realpath -m "${HVO_RUNTIME_DATA_ROOT:-$repo_root/data}")"
 
 if [[ "$*" == *"HVO.SkyMonitor.LogicHost"* ]]; then
+    export Catalog__Root="$runtime_data_root/catalog"
+    export Catalog__RequiredPackageKind="Production"
     export "ConnectionStrings__skymonitordb=Server=${SQLSERVER_HOST:?SQLSERVER_HOST must be set},${SQLSERVER_PORT:?SQLSERVER_PORT must be set};Database=${SQLSERVER_DATABASE:?SQLSERVER_DATABASE must be set};User Id=${SQLSERVER_USER:?SQLSERVER_USER must be set};Password=${SQLSERVER_PASSWORD:?SQLSERVER_PASSWORD must be set};TrustServerCertificate=True"
     export "Redis__Configuration=${REDIS_HOST:?REDIS_HOST must be set}:${REDIS_PORT:?REDIS_PORT must be set},password=${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
     export Redis__InstanceName="skymonitor:"
@@ -27,6 +30,8 @@ if [[ "$*" == *"HVO.SkyMonitor.LogicHost"* ]]; then
     export DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__2="api.images"
 fi
 if [[ "$*" == *"HVO.SkyMonitor.CameraAgent"* ]]; then
+    export Catalog__Root="$runtime_data_root/catalog"
+    export Catalog__RequiredPackageKind="Production"
     export SkyMonitor__BaseUrl="${CAMERA_AGENT_PUBLIC_LOGIC_BASEURL:-http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}}"
     export CentralIdentity__ServiceUrl="$SkyMonitor__BaseUrl"
 fi

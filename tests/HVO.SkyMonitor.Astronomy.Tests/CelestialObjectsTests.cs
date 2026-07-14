@@ -84,6 +84,8 @@ public sealed class CelestialObjectsTests
 
         Assert.AreEqual(1, topology.GetSegments("ORI").Count);
         Assert.AreEqual(0, topology.GetSegments("LYR").Count);
+        Assert.IsNotNull(typeof(InMemoryConstellationTopology).GetConstructor(
+            [typeof(IEnumerable<ConstellationSegment>), typeof(ConstellationTopologyMetadata)]));
     }
 
     [TestMethod]
@@ -91,6 +93,9 @@ public sealed class CelestialObjectsTests
     {
         var topology = StandardConstellationTopology.CreateD3Celestial();
 
+        Assert.HasCount(743, ((InMemoryConstellationTopology)topology).AllSegments);
+        Assert.AreEqual("70C253A00E0909AE0236DEC0411AFE837EBF8E493B2BE7F84373B63C95C91621",
+            ((InMemoryConstellationTopology)topology).ArtifactSha256);
         Assert.HasCount(24, topology.GetSegments("ORI"));
         Assert.HasCount(21, topology.GetSegments("UMA"));
         Assert.AreEqual("24436", topology.GetSegments("ORI")[15].FromHipparcosId);

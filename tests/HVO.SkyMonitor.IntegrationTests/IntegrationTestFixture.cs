@@ -36,6 +36,7 @@ public sealed class IntegrationTestFixture : IDisposable
     private RedisContainer? _redisContainer;
     private IContainer? _minioContainer;
     private IContainer? _smtpContainer;
+    private CatalogFixtureInstallation? _catalogFixture;
     private bool _initialized;
     private string? _originalSqlServerConnectionString;
     private string? _originalDefaultConnectionString;
@@ -87,6 +88,9 @@ public sealed class IntegrationTestFixture : IDisposable
         {
             return;
         }
+
+        _catalogFixture = CatalogFixtureInstallation.Create(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"));
 
         _sqlServerContainer = new MsSqlBuilder()
             .WithImage("mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04@sha256:c1aa8afe9b06eab64c9774a4802dcd032205d1be785b1fd51e1c0151e7586b74")
@@ -166,6 +170,8 @@ public sealed class IntegrationTestFixture : IDisposable
                         ["Smtp:Port"] = smtpPort.ToString(CultureInfo.InvariantCulture),
                         ["Smtp:From"] = TestEmail.FromAddress,
                         ["Smtp:FromDisplayName"] = TestEmail.FromDisplayName,
+                        ["Catalog:Root"] = _catalogFixture.Root,
+                        ["Catalog:RequiredPackageKind"] = "Fixture",
                         ["DeviceBootstrap:CentralIdentity:ServiceUrl"] = "https://logichost.integration",
                         ["DeviceBootstrap:CentralIdentity:Mode"] = "ClientCredentials",
                         ["DeviceBootstrap:CentralIdentity:ClientCredentials:ClientId"] = TestClients.SystemCameraAgent.ClientId,
@@ -323,6 +329,8 @@ public sealed class IntegrationTestFixture : IDisposable
         {
             Factory.Dispose();
         }
+
+        _catalogFixture?.Dispose();
 
         Environment.SetEnvironmentVariable("ConnectionStrings__skymonitordb", _originalSqlServerConnectionString);
         Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", _originalDefaultConnectionString);

@@ -1,39 +1,114 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
-readonly SOURCE_OID="5ca9431ff364c8002a4a3efa91b2b9296746aea1543374db4cb6b4fab049d601"
-readonly COMPRESSED_SHA256="$SOURCE_OID"
-readonly DECOMPRESSED_SHA256="b2983a8d934e4f031cdb67bdd6c3437f8c5143cd6606a9573a9a9ac4b6375fd2"
-readonly GENERATED_SHA256="b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2"
-readonly SOURCE_URL="https://codeberg.org/astronexus/hyg.git/info/lfs/objects/$SOURCE_OID"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/catalog/catalog-common.sh
+source "$SCRIPT_DIR/catalog-common.sh"
 
-if [[ $# -ne 1 ]]; then
-  printf 'usage: %s OUTPUT_DIRECTORY\n' "$0" >&2
-  exit 2
-fi
+usage() {
+    cat >&2 <<USAGE
+Usage: $0 (--source COMPRESSED_FILE | --fetch) [--install-root INSTALL_ROOT] OUTPUT_DIRECTORY
 
-for command in curl cut gzip sqlite3 sha256sum; do
-  command -v "$command" >/dev/null || { printf 'missing required command: %s\n' "$command" >&2; exit 1; }
+--source uses an existing compressed HYG 4.2 input and performs no network I/O.
+--fetch explicitly downloads the pinned compressed input over HTTPS.
+USAGE
+}
+
+source_file=""
+fetch=false
+install_root=""
+output_argument=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --source)
+            [[ $# -ge 2 ]] || { usage; exit 2; }
+            source_file="$2"
+            shift 2
+            ;;
+        --fetch)
+            fetch=true
+            shift
+            ;;
+        --install-root)
+            [[ $# -ge 2 ]] || { usage; exit 2; }
+            install_root="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            usage
+            exit 2
+            ;;
+        *)
+            [[ -z "$output_argument" ]] || { usage; exit 2; }
+            output_argument="$1"
+            shift
+            ;;
+    esac
 done
 
-readonly REQUIRED_SQLITE_VERSION="3.45.1"
-actual_sqlite_version="$(sqlite3 --version | cut -d' ' -f1)"
-if [[ "$actual_sqlite_version" != "$REQUIRED_SQLITE_VERSION" ]]; then
-  printf 'sqlite3 %s is required for reproducible bytes; found %s\n' "$REQUIRED_SQLITE_VERSION" "$actual_sqlite_version" >&2
-  exit 1
+if [[ $# -ne 0 || -z "$output_argument" || ( -n "$source_file" && "$fetch" == true ) || ( -z "$source_file" && "$fetch" == false ) ]]; then
+    usage
+    exit 2
 fi
 
-output_dir="$1"
-mkdir -p "$output_dir"
-compressed="$output_dir/hyg_v42.csv.gz"
-csv="$output_dir/hyg_v42.csv"
-database="$output_dir/hyg_v42.sqlite"
+hyg_require_commands gzip mv realpath sha256sum sqlite3 sync wc
+hyg_check_sqlite_version
+if [[ "$fetch" == true ]]; then
+    hyg_require_commands curl
+fi
 
-curl --fail --location --proto '=https' --tlsv1.2 "$SOURCE_URL" --output "$compressed"
-printf '%s  %s\n' "$COMPRESSED_SHA256" "$compressed" | sha256sum --check --status
+if [[ -n "$source_file" ]]; then
+    source_file="$(realpath "$source_file")"
+fi
+readonly OUTPUT="$(realpath -m "$output_argument")"
+readonly OUTPUT_PARENT="$(dirname "$OUTPUT")"
+readonly BUNDLE_NAME="$HYG_PACKAGE_VERSION.bundle"
+
+[[ "$OUTPUT" != "/" ]] || hyg_fail "refusing root as the output directory"
+[[ ! -e "$OUTPUT" && ! -L "$OUTPUT" ]] || hyg_fail "output directory already exists: $OUTPUT"
+mkdir -p "$OUTPUT_PARENT"
+[[ -d "$OUTPUT_PARENT" && ! -L "$OUTPUT_PARENT" ]] || hyg_fail "output parent is not a safe directory: $OUTPUT_PARENT"
+
+staging="$(mktemp -d "$OUTPUT_PARENT/.hyg-build.XXXXXX")"
+cleanup() {
+    local status=$?
+    trap - EXIT
+    if [[ -n "$staging" ]]; then
+        chmod -R u+w "$staging" 2>/dev/null || true
+        rm -rf -- "$staging"
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+
+compressed="$staging/hyg_v42.csv.gz"
+csv="$staging/hyg_v42.csv"
+database="$staging/$HYG_DATABASE_FILE"
+
+if [[ "$fetch" == true ]]; then
+    printf 'Fetching explicitly requested pinned HYG source: %s\n' "$HYG_SOURCE_URL"
+    curl --fail --location --proto '=https' --tlsv1.2 "$HYG_SOURCE_URL" --output "$compressed"
+else
+    cp -- "$source_file" "$compressed"
+fi
+hyg_verify_file "$compressed" "$HYG_COMPRESSED_LENGTH" "$HYG_COMPRESSED_SHA256" "compressed HYG source"
 gzip --decompress --stdout "$compressed" > "$csv"
-printf '%s  %s\n' "$DECOMPRESSED_SHA256" "$csv" | sha256sum --check --status
-rm -f "$database"
+hyg_verify_file "$csv" "$HYG_DECOMPRESSED_LENGTH" "$HYG_DECOMPRESSED_SHA256" "decompressed HYG source"
+
+case "$csv" in
+    *$'\n'*|*'"'*) hyg_fail "output path contains a character unsupported by sqlite3 .import" ;;
+esac
+
 sqlite3 "$database" <<SQL
 .bail on
 PRAGMA page_size = 4096;
@@ -79,6 +154,21 @@ DROP TABLE source_hyg;
 CREATE INDEX celestial_objects_magnitude_id ON celestial_objects (magnitude, id COLLATE BINARY);
 VACUUM;
 SQL
-printf '%s  %s\n' "$GENERATED_SHA256" "$database" | sha256sum --check --status
 
-printf 'Validated HYG 4.2 snapshot: %s\n' "$database"
+hyg_validate_database "$database"
+"$SCRIPT_DIR/bundle-hyg-v42.sh" "$database" "$staging/$BUNDLE_NAME"
+chmod 0444 "$compressed" "$csv" "$database"
+sync -f "$compressed"
+sync -f "$csv"
+sync -f "$database"
+sync -f "$staging"
+mv -T -- "$staging" "$OUTPUT"
+staging=""
+sync -f "$OUTPUT_PARENT"
+trap - EXIT
+
+printf 'Built deterministic HYG 4.2 artifacts: %s\n' "$OUTPUT"
+printf 'Installable bundle: %s\n' "$OUTPUT/$BUNDLE_NAME"
+if [[ -n "$install_root" ]]; then
+    "$SCRIPT_DIR/install-hyg-v42.sh" install "$OUTPUT/$BUNDLE_NAME" "$install_root"
+fi

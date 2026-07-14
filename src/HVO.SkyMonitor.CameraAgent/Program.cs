@@ -150,6 +150,7 @@ public class Program
 
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks();
         healthChecks.AddDbContextCheck<ApplicationDbContext>("identity-database", tags: ["dependency"]);
+        healthChecks.AddInstalledCelestialCatalogHealthCheck();
         builder.Services.AddOpenTelemetry()
             .WithMetrics(metrics =>
             {
@@ -198,7 +199,7 @@ public class Program
             .Bind(builder.Configuration.GetSection("CapturePreview"))
             .ValidateDataAnnotations()
             .ValidateOnStart();
-        builder.Services.AddSingleton<ICelestialCatalog>(_ => CreateCatalog(builder.Configuration));
+        builder.Services.AddInstalledCelestialCatalog();
         builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
         healthChecks.AddCheck<CameraAgentConfigurationHealthCheck>("camera-configuration", tags: ["dependency"]);
         healthChecks.AddCheck<DiskPressureHealthCheck>("disk-pressure", tags: ["dependency"]);
@@ -206,6 +207,7 @@ public class Program
         builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
 
         var app = builder.Build();
+        _ = app.Services.GetRequiredService<CatalogSnapshotResult>();
 
         if (app.Environment.IsDevelopment())
         {
@@ -273,10 +275,4 @@ public class Program
             : Path.GetFullPath(configuredPath, contentRoot);
     }
 
-    private static SqliteCelestialCatalog CreateCatalog(ConfigurationManager configuration)
-    {
-        var path = configuration["Catalog:Path"] ?? Path.Combine(AppContext.BaseDirectory, "catalog", "hyg_v42.sqlite");
-        var checksum = configuration["Catalog:Sha256"] ?? "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
-        return new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(path, checksum, "2", "3"));
-    }
 }

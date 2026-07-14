@@ -34,6 +34,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     private JsonWebKeySet? _jwksDocument;
     private string? _configurationPath;
     private string? _storageRoot;
+    private CatalogFixtureInstallation? _catalogFixture;
 
     /// <summary>
     /// Initializes the host and camera agent factories.
@@ -44,6 +45,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
 
         _storageRoot = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-integration-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_storageRoot);
+        _catalogFixture = CatalogFixtureInstallation.Create(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"));
         _configurationPath = Path.Combine(_storageRoot, "cameraagent.integration.json");
         var template = await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.integration.json")).ConfigureAwait(false);
@@ -155,6 +158,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     {
         _agentFactory?.Dispose();
         _agentBaseFactory?.Dispose();
+        _catalogFixture?.Dispose();
         _hostFixture.Dispose();
         if (_storageRoot is not null && Directory.Exists(_storageRoot))
         {
@@ -175,8 +179,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["LocalIdentity:AdminEmail"] = "owner@cameraagent.integration",
             ["LocalIdentity:AdminPassword"] = "IntegrationOwner!123",
             ["SkyMonitor:BaseUrl"] = apiBase,
-            ["Catalog:Path"] = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"),
-            ["Catalog:Sha256"] = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+            ["Catalog:Root"] = _catalogFixture?.Root,
+            ["Catalog:RequiredPackageKind"] = "Fixture",
             ["CameraAgent:ConfigFilePath"] = _configurationPath
         };
 

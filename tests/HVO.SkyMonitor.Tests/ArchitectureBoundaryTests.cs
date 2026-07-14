@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.Tests;
@@ -18,6 +19,7 @@ public sealed class ArchitectureBoundaryTests
     private const string CameraAgent = "HVO.SkyMonitor.CameraAgent";
     private const string LogicHost = "HVO.SkyMonitor.LogicHost";
     private const string TestSupport = "HVO.SkyMonitor.TestSupport";
+    private const string FixtureCatalogSha256 = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
 
     private static readonly string[] ProjectSearchDirectories = ["src", "tests", "scripts"];
 
@@ -229,6 +231,20 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
+    public void HostDockerfilesDoNotPackageTestCatalogFixtures()
+    {
+        var repositoryRoot = Repository.Value.Root;
+
+        foreach (var hostName in new[] { CameraAgent, LogicHost })
+        {
+            var dockerfile = File.ReadAllText(Path.Combine(repositoryRoot, "src", hostName, "Dockerfile"));
+            Assert.IsFalse(dockerfile.Contains("tests/fixtures/catalog", StringComparison.OrdinalIgnoreCase),
+                $"ARCH-PUBLISH: '{hostName}' Dockerfile must not package a test catalog fixture.");
+        }
+    }
+
+    [TestMethod]
     [TestCategory("Integration")]
     public void PublishScannerReportsTestAssemblyFilesAndDependencyEntries()
     {
@@ -241,6 +257,11 @@ public sealed class ArchitectureBoundaryTests
             var testAssembly = typeof(ArchitectureBoundaryTests).Assembly;
             var testAssemblyName = testAssembly.GetName().Name!;
             File.Copy(testAssembly.Location, Path.Combine(output, "renamed-test.dll"));
+            File.Copy(
+                Path.Combine(Repository.Value.Root, "tests", "fixtures", "catalog", "hyg-v42-bright-stars.sqlite"),
+                Path.Combine(output, "renamed-catalog.dat"));
+            File.WriteAllText(Path.Combine(output, "catalog-package.json"),
+                """{"package":{"kind":"fixture"}}""");
             File.WriteAllText(Path.Combine(output, "host.deps.json"),
                 JsonSerializer.Serialize(new
                 {
@@ -253,7 +274,7 @@ public sealed class ArchitectureBoundaryTests
 
             var violations = FindForbiddenPublishArtifacts(output, Set(TestSupport, testAssemblyName));
 
-            Assert.HasCount(4, violations);
+            Assert.HasCount(6, violations);
             Assert.IsTrue(violations.Any(violation => violation.Contains(testAssemblyName, StringComparison.Ordinal)));
             Assert.IsTrue(violations.Any(violation => violation.Contains("MSTest", StringComparison.Ordinal)));
         }
@@ -349,6 +370,18 @@ public sealed class ArchitectureBoundaryTests
                 }
             }
 
+            if (new FileInfo(file).Length == 16_384 &&
+                string.Equals(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file))),
+                    FixtureCatalogSha256, StringComparison.Ordinal))
+            {
+                violations.Add($"File '{Path.GetRelativePath(output, file)}' contains the test catalog fixture.");
+            }
+
+            if (fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase) && ContainsFixtureCatalogManifest(file))
+            {
+                violations.Add($"File '{Path.GetRelativePath(output, file)}' contains a fixture catalog manifest.");
+            }
+
             if (!fileName.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
@@ -372,6 +405,22 @@ public sealed class ArchitectureBoundaryTests
         }
 
         return violations.Order(StringComparer.Ordinal).ToArray();
+    }
+
+    private static bool ContainsFixtureCatalogManifest(string path)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllBytes(path));
+            return document.RootElement.TryGetProperty("package", out var package) &&
+                package.ValueKind == JsonValueKind.Object &&
+                package.TryGetProperty("kind", out var kind) &&
+                string.Equals(kind.GetString(), "fixture", StringComparison.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static string? ReadManagedAssemblyName(string path)

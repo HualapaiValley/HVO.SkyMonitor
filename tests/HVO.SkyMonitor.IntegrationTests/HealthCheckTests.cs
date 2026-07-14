@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -23,7 +24,7 @@ public sealed class HealthCheckTests
     }
 
     [TestMethod]
-    public async Task HealthCheckReturnsHealthyAsync()
+    public async Task HealthCheckReportsExplicitFixtureCatalogAsync()
     {
         // Arrange
         var request = new Uri("/health", UriKind.Relative);
@@ -34,6 +35,19 @@ public sealed class HealthCheckTests
         // Assert
         response.EnsureSuccessStatusCode();
         Assert.AreEqual(System.Net.HttpStatusCode.OK, response.StatusCode);
+        using var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
+        Assert.AreEqual("Degraded", payload.RootElement.GetProperty("status").GetString());
+        var catalog = payload.RootElement.GetProperty("checks").EnumerateArray()
+            .Single(check => check.GetProperty("name").GetString() == "catalog");
+        Assert.AreEqual("Degraded", catalog.GetProperty("status").GetString());
+        StringAssert.Contains(
+            catalog.GetProperty("description").GetString(),
+            "Fixture celestial catalog snapshot",
+            StringComparison.Ordinal);
+        var identity = catalog.GetProperty("data");
+        Assert.AreEqual("Fixture", identity.GetProperty("Kind").GetString());
+        Assert.AreEqual("4.2-fixture.1", identity.GetProperty("CatalogVersion").GetString());
+        Assert.AreEqual(9, identity.GetProperty("RowCount").GetInt64());
     }
 
     [TestMethod]
