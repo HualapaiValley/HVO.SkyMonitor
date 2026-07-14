@@ -23,6 +23,7 @@
     <ProjectReference Include="..\HVO.SkyMonitor.Astronomy\HVO.SkyMonitor.Astronomy.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Catalog.Sqlite\HVO.SkyMonitor.Catalog.Sqlite.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Imaging\HVO.SkyMonitor.Imaging.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -47,6 +48,9 @@
     <PackageReference Include="OpenIddict.EntityFrameworkCore" />
     <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" />
     <PackageReference Include="Scalar.AspNetCore" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" />
   </ItemGroup>
 
   <PropertyGroup>

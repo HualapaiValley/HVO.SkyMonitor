@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Astronomy;
 using Microsoft.Extensions.Logging.Abstractions;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
@@ -11,6 +12,9 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 [TestCategory("Unit")]
 public sealed class CaptureProcessingContextTests
 {
+    private static CameraAgentRecipeExecutionAdapter Adapter { get; } =
+        new(new ProcessingRecipeExecutor());
+
     [TestMethod]
     public void PreviewStep_RejectsInvertedPercentilesDuringConstruction()
     {
@@ -22,7 +26,7 @@ public sealed class CaptureProcessingContextTests
 
         Assert.Throws<System.ComponentModel.DataAnnotations.ValidationException>(() =>
             new PreviewCaptureProcessingStep(
-                new CaptureProcessingStepMetadata("Preview", "Preview", 0), options));
+                new CaptureProcessingStepMetadata("Preview", "Preview", 0), options, Adapter));
     }
 
     [TestMethod]
@@ -134,7 +138,7 @@ public sealed class CaptureProcessingContextTests
             new byte[] { 0, 0, 0, 255 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
         var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
         var step = new PreviewCaptureProcessingStep(
-            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions());
+            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions(), Adapter);
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
@@ -142,6 +146,7 @@ public sealed class CaptureProcessingContextTests
         var preview = context.Artifacts[FrameArtifactRole.Preview].Frame;
         Assert.AreEqual(CameraPixelFormat.Mono8, preview.PixelFormat);
         CollectionAssert.AreEqual(new byte[] { 0, 255 }, preview.PixelData.ToArray());
+        Assert.IsNotNull(context.GetProcessingProduct(context.Artifacts[FrameArtifactRole.Preview].ArtifactId));
     }
 
     [TestMethod]
@@ -151,11 +156,13 @@ public sealed class CaptureProcessingContextTests
             new byte[] { 0, 255 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
         var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
         var step = new PreviewCaptureProcessingStep(
-            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions { RecipeVersion = "custom-preview-v2" });
+            new CaptureProcessingStepMetadata("Preview", "Preview", 0),
+            new PreviewProcessingStepOptions { RecipeVersion = "custom-preview-v2" }, Adapter);
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual("custom-preview-v2", context.Artifacts![FrameArtifactRole.Preview].RecipeVersion);
+        Assert.AreEqual("default", context.ProcessingProducts.Single().Variant);
     }
 
     [TestMethod]
@@ -166,7 +173,7 @@ public sealed class CaptureProcessingContextTests
             new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0), StrideBytes: 6);
         var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
         var step = new PreviewCaptureProcessingStep(
-            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions());
+            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions(), Adapter);
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
@@ -188,7 +195,7 @@ public sealed class CaptureProcessingContextTests
             rawBytes, new FrameMetadata(TimeSpan.FromSeconds(1), 150, 0));
         var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
         var step = new PreviewCaptureProcessingStep(
-            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions());
+            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions(), Adapter);
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
@@ -207,7 +214,7 @@ public sealed class CaptureProcessingContextTests
             rawBytes, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
         var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
         var step = new PreviewCaptureProcessingStep(
-            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions());
+            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions(), Adapter);
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
@@ -225,7 +232,7 @@ public sealed class CaptureProcessingContextTests
             new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0), StrideBytes: 4);
         var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
         var step = new PreviewCaptureProcessingStep(
-            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions());
+            new CaptureProcessingStepMetadata("Preview", "Preview", 0), new PreviewProcessingStepOptions(), Adapter);
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
@@ -238,7 +245,8 @@ public sealed class CaptureProcessingContextTests
     public async Task RollingCombinationStep_EmitsCombinedDerivativeAfterEveryCapture()
     {
         var step = new RollingCombinationCaptureProcessingStep(
-            new CaptureProcessingStepMetadata("Rolling", "Rolling", 0), new RollingCombinationProcessingStepOptions { WindowSize = 2 });
+            new CaptureProcessingStepMetadata("Rolling", "Rolling", 0),
+            new RollingCombinationProcessingStepOptions { WindowSize = 2 }, Adapter);
         var first = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono16,
             new byte[] { 100, 0 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
         var second = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono16,
@@ -253,6 +261,19 @@ public sealed class CaptureProcessingContextTests
         Assert.AreEqual((ushort)200, BitConverter.ToUInt16(secondContext.Artifacts![FrameArtifactRole.Combined].Frame.PixelData.Span));
         Assert.AreSame(second, secondContext.Artifacts.Raw.Frame);
         Assert.AreEqual(2, step.BufferedFrameCount);
+
+        var ageBoundedStep = new RollingCombinationCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("Rolling", "Rolling", 0),
+            new RollingCombinationProcessingStepOptions { WindowSize = 2, MaximumAgeMilliseconds = 500 }, Adapter);
+        await ageBoundedStep.ProcessAsync(
+            new CaptureProcessingContext(CreateConfig(), CreateSubmission(first)),
+            CancellationToken.None).ConfigureAwait(false);
+        var later = second with { TimestampUtc = DateTimeOffset.UnixEpoch.AddSeconds(1) };
+        var laterContext = new CaptureProcessingContext(CreateConfig(), CreateSubmission(later));
+        await ageBoundedStep.ProcessAsync(laterContext, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual((ushort)300, BitConverter.ToUInt16(
+            laterContext.Artifacts![FrameArtifactRole.Combined].Frame.PixelData.Span));
+        Assert.AreEqual(1, ageBoundedStep.BufferedFrameCount);
     }
 
     [TestMethod]
@@ -260,7 +281,7 @@ public sealed class CaptureProcessingContextTests
     {
         var step = new RollingCombinationCaptureProcessingStep(
             new CaptureProcessingStepMetadata("Rolling", "Rolling", 0),
-            new RollingCombinationProcessingStepOptions { WindowSize = 2 });
+            new RollingCombinationProcessingStepOptions { WindowSize = 2 }, Adapter);
         var first = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.BayerRggb16,
             new byte[] { 100, 0 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
         var second = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.BayerRggb16,
@@ -277,6 +298,30 @@ public sealed class CaptureProcessingContextTests
     }
 
     [TestMethod]
+    public async Task RollingCombinationStep_CancellationDoesNotCommitTentativeWindow()
+    {
+        var step = new RollingCombinationCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("Rolling", "Rolling", 0),
+            new RollingCombinationProcessingStepOptions { WindowSize = 2 }, Adapter);
+        var first = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono16,
+            new byte[] { 10, 0 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+        await step.ProcessAsync(
+            new CaptureProcessingContext(CreateConfig(), CreateSubmission(first)),
+            CancellationToken.None).ConfigureAwait(false);
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync().ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+            await step.ProcessAsync(
+                new CaptureProcessingContext(CreateConfig(), CreateSubmission(new CameraFrame(
+                    DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono16,
+                    new byte[] { 20, 0 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0)))),
+                cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(1, step.BufferedFrameCount);
+    }
+
+    [TestMethod]
     public async Task AnnotationStep_CreatesAnnotatedPreviewAndPreservesPreview()
     {
         const string sceneId = "annotation-test-scene";
@@ -285,9 +330,18 @@ public sealed class CaptureProcessingContextTests
             Metadata = new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0, Scene: new SceneProvenance(
                 sceneId, "rig-v1", "test", "1", new string('0', 64), "equidistant", "v1", "v1", "v1"))
         };
-        var preview = new CameraFrame(DateTimeOffset.UnixEpoch, 2, 2, CameraPixelFormat.Mono8,
-            new byte[] { 0, 0, 0, 0 }, raw.Metadata);
         var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
+        var staleInput = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            context.Config, context.Artifacts!.Raw, "source");
+        var stalePreview = await Adapter.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.EncodedPreview,
+            System.Text.Json.JsonSerializer.SerializeToElement(new EncodedPreviewOptions(OutputEncoding: "Packed")),
+            ProcessingInputSelector.Raw("source"),
+            [staleInput],
+            "stale"), CancellationToken.None).ConfigureAwait(false);
+        context.AddProcessingOutcome(stalePreview);
+        var preview = new CameraFrame(DateTimeOffset.UnixEpoch, 2, 2, CameraPixelFormat.Mono8,
+            stalePreview.Products.Single().Payload, raw.Metadata);
         context.AddDerivative(FrameArtifactRole.Preview, preview, "preview-v1");
         var store = new ProjectedSceneStore();
         var utc = DateTimeOffset.UnixEpoch;
@@ -304,7 +358,7 @@ public sealed class CaptureProcessingContextTests
         var step = new AnnotationCaptureProcessingStep(
             new CaptureProcessingStepMetadata("Annotation", "Annotation", 0),
             new AnnotationProcessingStepOptions { MarkRadius = 0, DrawLabels = false }, store,
-            new UnexpectedAnnotationSceneProvider());
+            new UnexpectedAnnotationSceneProvider(), Adapter);
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
@@ -313,6 +367,13 @@ public sealed class CaptureProcessingContextTests
         CollectionAssert.AreEqual(
             new[] { context.Artifacts[FrameArtifactRole.Preview].ArtifactId },
             context.Artifacts[FrameArtifactRole.AnnotatedPreview].SourceArtifactIds!.ToArray());
+        var annotationProduct = context.ProcessingProducts.Single(
+            product => product.Role == FrameArtifactRole.AnnotatedPreview);
+        var annotationSelector = annotationProduct.Recipe.Descriptor.Options.GetProperty("input");
+        Assert.AreEqual("preview-v1", annotationSelector.GetProperty("variant").GetString());
+        Assert.AreNotEqual(
+            stalePreview.Products.Single().Recipe.IdentitySha256,
+            annotationSelector.GetProperty("recipeIdentitySha256").GetString());
     }
 
     [TestMethod]
@@ -333,7 +394,7 @@ public sealed class CaptureProcessingContextTests
         var step = new AnnotationCaptureProcessingStep(
             new CaptureProcessingStepMetadata("Annotation", "Annotation", 0),
             new AnnotationProcessingStepOptions { MarkRadius = 0, DrawLabels = false },
-            new ProjectedSceneStore(), new UnexpectedAnnotationSceneProvider());
+            new ProjectedSceneStore(), new UnexpectedAnnotationSceneProvider(), Adapter);
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 

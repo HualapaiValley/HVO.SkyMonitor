@@ -38,6 +38,16 @@ public sealed class Mono16DisplayStretchTests
     }
 
     [TestMethod]
+    public void Apply_PreCanceledTokenThrows()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => Mono16DisplayStretch.Apply(
+            1, 1, new byte[2], cancellation.Token));
+    }
+
+    [TestMethod]
     public void SkyBrightnessModel_ScalesAroundBortleThreeReference()
     {
         Assert.AreEqual(2, SkyBrightnessModel.BackgroundElectronsPerSecond(3, 2), 1e-12);

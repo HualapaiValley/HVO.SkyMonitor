@@ -1,24 +1,19 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.InteropServices;
 using HVO.Core.Results;
 using HVO.SkyMonitor.Imaging;
-using SkiaSharp;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Imaging;
 
 /// <summary>
-/// Provides SkiaSharp-backed helpers for encoding preview imagery.
+/// Provides compatibility helpers for encoding preview imagery.
 /// </summary>
-/// <remarks>
-/// TODO: add RGB/Bayer encoders once the camera pipeline exposes those buffers so downstream callers reuse the same zero-copy path.
-/// </remarks>
 public static class SkiaPreviewEncoder
 {
     private const int DefaultQuality = 80;
 
     /// <summary>
-    /// Encodes a grayscale (Mono8) pixel buffer into a JPEG payload using SkiaSharp.
+    /// Encodes a grayscale (Mono8) pixel buffer into a JPEG payload.
     /// </summary>
     /// <param name="width">Frame width in pixels.</param>
     /// <param name="height">Frame height in pixels.</param>
@@ -34,35 +29,14 @@ public static class SkiaPreviewEncoder
                 return Result<byte[]>.Failure(new ArgumentOutOfRangeException(nameof(width), "Frame dimensions must be positive."));
             }
 
-            var qualityClamp = Math.Clamp(quality, 1, 100);
-            var info = new SKImageInfo(width, height, SKColorType.Gray8, SKAlphaType.Opaque);
-            if (pixelData.Length != info.BytesSize)
+            var expectedLength = checked(width * height);
+            if (pixelData.Length != expectedLength)
             {
-                return Result<byte[]>.Failure(new InvalidOperationException($"Pixel buffer length {pixelData.Length} does not match expected size {info.BytesSize} for {width}x{height}."));
+                return Result<byte[]>.Failure(new InvalidOperationException($"Pixel buffer length {pixelData.Length} does not match expected size {expectedLength} for {width}x{height}."));
             }
 
-            if (!MemoryMarshal.TryGetArray(pixelData, out ArraySegment<byte> segment) || segment.Array is null)
-            {
-                return Result<byte[]>.Failure(new InvalidOperationException("Pixel buffer must be array-backed."));
-            }
-
-            var handle = GCHandle.Alloc(segment.Array, GCHandleType.Pinned);
-            try
-            {
-                var pixelPtr = handle.AddrOfPinnedObject() + segment.Offset;
-                using var image = SKImage.FromPixelCopy(info, pixelPtr, info.RowBytes);
-                using var data = image.Encode(SKEncodedImageFormat.Jpeg, qualityClamp);
-                if (data is null)
-                {
-                    return Result<byte[]>.Failure(new InvalidOperationException("SkiaSharp returned null data for JPEG encoding."));
-                }
-
-                return Result<byte[]>.Success(data.ToArray());
-            }
-            finally
-            {
-                handle.Free();
-            }
+            return Result<byte[]>.Success(JpegImageCodec.EncodeMono8ToJpeg(
+                width, height, pixelData, quality: Math.Clamp(quality, 1, 100)));
         }
         catch (Exception ex)
         {
@@ -80,24 +54,10 @@ public static class SkiaPreviewEncoder
             return Result<byte[]>.Failure(new InvalidOperationException("Pixel buffer does not match the RGB24 dimensions."));
         }
 
-        var rgba = new byte[checked(width * height * 4)];
-        var source = pixelData.Span;
-        for (var pixel = 0; pixel < width * height; pixel++)
-        {
-            rgba[pixel * 4] = source[pixel * 3];
-            rgba[pixel * 4 + 1] = source[pixel * 3 + 1];
-            rgba[pixel * 4 + 2] = source[pixel * 3 + 2];
-            rgba[pixel * 4 + 3] = byte.MaxValue;
-        }
-
         try
         {
-            var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Opaque);
-            using var image = SKImage.FromPixelCopy(info, rgba, info.RowBytes);
-            using var data = image.Encode(SKEncodedImageFormat.Jpeg, Math.Clamp(quality, 1, 100));
-            return data is null
-                ? Result<byte[]>.Failure(new InvalidOperationException("SkiaSharp returned null data for JPEG encoding."))
-                : Result<byte[]>.Success(data.ToArray());
+            return Result<byte[]>.Success(JpegImageCodec.EncodeRgb24ToJpeg(
+                width, height, pixelData, quality: Math.Clamp(quality, 1, 100)));
         }
         catch (Exception exception)
         {

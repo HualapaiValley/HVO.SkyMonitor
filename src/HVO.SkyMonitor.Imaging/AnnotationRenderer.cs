@@ -84,6 +84,8 @@ public sealed record AnnotationResult(
 /// <summary>Draws annotations using only coordinates already present in projected scene records.</summary>
 public static class AnnotationRenderer
 {
+    public const string AlgorithmVersion = "projected-annotation-raster-v2";
+
     /// <summary>Composes the existing monochrome annotation mask over packed RGB24 without altering source pixels.</summary>
     public static AnnotationResult AnnotateRgb24WithSegments(
         ReadOnlyMemory<byte> preview,
@@ -93,8 +95,10 @@ public static class AnnotationRenderer
         IEnumerable<ProjectedAnnotationSegment> segments,
         PreviewTransform transform,
         AnnotationOptions? options = null,
-        ProjectedAnnotationOverlay? projectionOverlay = null)
+        ProjectedAnnotationOverlay? projectionOverlay = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(segments);
         if (preview.Length != checked(width * height * 3))
         {
@@ -105,11 +109,16 @@ public static class AnnotationRenderer
         options ??= new AnnotationOptions();
         options.Validate();
         var pixels = preview.ToArray();
-        DrawRgbSegments(pixels, width, height, segments, transform, options);
+        DrawRgbSegments(pixels, width, height, segments, transform, options, cancellationToken);
         var overlay = AnnotateMono8WithSegments(
-            new byte[checked(width * height)], width, height, objects, [], transform, options, projectionOverlay);
+            new byte[checked(width * height)], width, height, objects, [], transform, options, projectionOverlay,
+            cancellationToken);
         for (var pixel = 0; pixel < width * height; pixel++)
         {
+            if (pixel % width == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
             var value = overlay.Pixels.Span[pixel];
             if (value == 0)
             {
@@ -131,20 +140,22 @@ public static class AnnotationRenderer
         IEnumerable<ProjectedAnnotationSegment> segments,
         PreviewTransform transform,
         AnnotationOptions? options = null,
-        ProjectedAnnotationOverlay? projectionOverlay = null)
+        ProjectedAnnotationOverlay? projectionOverlay = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(segments);
         transform.Validate();
         options ??= new AnnotationOptions();
         options.Validate();
         var pixels = preview.ToArray();
-        DrawMonoSegments(pixels, width, height, segments, transform, options);
-        var result = AnnotateMono8(pixels, width, height, objects, transform, options);
+        DrawMonoSegments(pixels, width, height, segments, transform, options, cancellationToken);
+        var result = AnnotateMono8(pixels, width, height, objects, transform, options, cancellationToken);
         pixels = result.Pixels.ToArray();
 
         if (projectionOverlay is not null)
         {
-            DrawProjectionOverlay(pixels, width, height, transform, projectionOverlay, options);
+            DrawProjectionOverlay(pixels, width, height, transform, projectionOverlay, options, cancellationToken);
         }
 
         return new AnnotationResult(pixels, result.Anchors);
@@ -194,12 +205,13 @@ public static class AnnotationRenderer
         int height,
         IEnumerable<ProjectedCelestialObject> objects,
         PreviewTransform transform,
-        AnnotationOptions? options = null)
+        AnnotationOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(objects);
         return AnnotateMono8(preview, width, height,
             objects.Select(static item => new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel)),
-            transform, options);
+            transform, options, cancellationToken);
     }
 
     /// <summary>Copies a packed Mono8 preview and annotates persisted projected-object metadata.</summary>
@@ -209,8 +221,10 @@ public static class AnnotationRenderer
         int height,
         IEnumerable<ProjectedAnnotationObject> objects,
         PreviewTransform transform,
-        AnnotationOptions? options = null)
+        AnnotationOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(objects);
         transform.Validate();
         options ??= new AnnotationOptions();
@@ -234,6 +248,7 @@ public static class AnnotationRenderer
         var anchors = new List<AnnotationAnchor>();
         foreach (var item in objects)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var anchor = transform.Apply(item.Pixel);
             if (!double.IsFinite(anchor.X) || !double.IsFinite(anchor.Y))
             {
@@ -303,14 +318,16 @@ public static class AnnotationRenderer
         int height,
         PreviewTransform transform,
         ProjectedAnnotationOverlay overlay,
-        AnnotationOptions options)
+        AnnotationOptions options,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var center = transform.Apply(overlay.Center);
         if (options.DrawImageCircle)
         {
             DrawEllipse(pixels, width, height, center,
                 Math.Abs(overlay.ImageCircleRadius * transform.ScaleX),
-                Math.Abs(overlay.ImageCircleRadius * transform.ScaleY), options.ImageCircleValue);
+                Math.Abs(overlay.ImageCircleRadius * transform.ScaleY), options.ImageCircleValue, cancellationToken);
         }
 
         if (!options.DrawCardinalDirections)
@@ -325,7 +342,14 @@ public static class AnnotationRenderer
     }
 
     private static void DrawEllipse(
-        byte[] pixels, int width, int height, PixelPoint center, double radiusX, double radiusY, byte value)
+        byte[] pixels,
+        int width,
+        int height,
+        PixelPoint center,
+        double radiusX,
+        double radiusY,
+        byte value,
+        CancellationToken cancellationToken)
     {
         if (!double.IsFinite(center.X) || !double.IsFinite(center.Y) ||
             !double.IsFinite(radiusX) || !double.IsFinite(radiusY) || radiusX <= 0 || radiusY <= 0)
@@ -333,13 +357,38 @@ public static class AnnotationRenderer
             return;
         }
 
-        var pointCount = Math.Max(32, (int)Math.Ceiling(2 * Math.PI * Math.Max(radiusX, radiusY)));
-        for (var point = 0; point < pointCount; point++)
+        for (var x = 0; x < width; x++)
         {
-            var angle = 2 * Math.PI * point / pointCount;
-            SetPixelMaximum(pixels, width, height,
-                Round(center.X + radiusX * Math.Cos(angle)),
-                Round(center.Y + radiusY * Math.Sin(angle)), value);
+            cancellationToken.ThrowIfCancellationRequested();
+            var normalized = (x - center.X) / radiusX;
+            if (Math.Abs(normalized) <= 1)
+            {
+                var offset = radiusY * Math.Sqrt(Math.Max(0, 1 - normalized * normalized));
+                SetPixelMaximumIfFinite(pixels, width, height, x, center.Y - offset, value);
+                SetPixelMaximumIfFinite(pixels, width, height, x, center.Y + offset, value);
+            }
+        }
+
+        for (var y = 0; y < height; y++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var normalized = (y - center.Y) / radiusY;
+            if (Math.Abs(normalized) <= 1)
+            {
+                var offset = radiusX * Math.Sqrt(Math.Max(0, 1 - normalized * normalized));
+                SetPixelMaximumIfFinite(pixels, width, height, center.X - offset, y, value);
+                SetPixelMaximumIfFinite(pixels, width, height, center.X + offset, y, value);
+            }
+        }
+    }
+
+    private static void SetPixelMaximumIfFinite(
+        byte[] pixels, int width, int height, double x, double y, byte value)
+    {
+        if (double.IsFinite(x) && double.IsFinite(y) &&
+            x is >= int.MinValue and <= int.MaxValue && y is >= int.MinValue and <= int.MaxValue)
+        {
+            SetPixelMaximum(pixels, width, height, Round(x), Round(y), value);
         }
     }
 
@@ -388,11 +437,13 @@ public static class AnnotationRenderer
         int height,
         IEnumerable<ProjectedAnnotationSegment> segments,
         PreviewTransform transform,
-        AnnotationOptions options)
+        AnnotationOptions options,
+        CancellationToken cancellationToken)
     {
         bool[]? mask = null;
         foreach (var segment in segments)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (TryTransformAndClip(segment, transform, width, height, out var from, out var to))
             {
                 mask ??= new bool[checked(width * height)];
@@ -406,6 +457,10 @@ public static class AnnotationRenderer
         }
         for (var index = 0; index < mask.Length; index++)
         {
+            if (index % width == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
             if (mask[index])
             {
                 pixels[index] = Blend(pixels[index], options.ConstellationLineValue, options.ConstellationLineOpacity);
@@ -419,11 +474,13 @@ public static class AnnotationRenderer
         int height,
         IEnumerable<ProjectedAnnotationSegment> segments,
         PreviewTransform transform,
-        AnnotationOptions options)
+        AnnotationOptions options,
+        CancellationToken cancellationToken)
     {
         bool[]? mask = null;
         foreach (var segment in segments)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (TryTransformAndClip(segment, transform, width, height, out var from, out var to))
             {
                 mask ??= new bool[checked(width * height)];
@@ -437,6 +494,10 @@ public static class AnnotationRenderer
         }
         for (var pixel = 0; pixel < mask.Length; pixel++)
         {
+            if (pixel % width == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
             if (mask[pixel])
             {
                 var index = pixel * 3;

@@ -188,6 +188,22 @@ public sealed class AnnotationRendererTests
         Assert.IsFalse(result.Pixels.Span.Contains(byte.MaxValue));
         CollectionAssert.AreEqual(result.Pixels.ToArray(), shiftedResult.Pixels.ToArray());
         Assert.IsTrue(source.AsSpan().IndexOfAnyExcept((byte)0) < 0);
+
+        var enormousOverlay = overlay with { ImageCircleRadius = double.MaxValue / 2 };
+        var enormousResult = AnnotationRenderer.AnnotateMono8WithSegments(
+            source, 20, 20, [], [], new PreviewTransform(1, 1), options, enormousOverlay);
+        Assert.HasCount(source.Length, enormousResult.Pixels.ToArray());
+
+        using var cancellation = new CancellationTokenSource();
+        Assert.ThrowsExactly<OperationCanceledException>(() => AnnotationRenderer.AnnotateMono8WithSegments(
+            source, 20, 20, CancelAfterEnumeration(cancellation), [], new PreviewTransform(1, 1), options, overlay,
+            cancellation.Token));
+    }
+
+    private static IEnumerable<ProjectedAnnotationObject> CancelAfterEnumeration(CancellationTokenSource cancellation)
+    {
+        yield return new ProjectedAnnotationObject("star", "Star", new PixelPoint(10, 10));
+        cancellation.Cancel();
     }
 
     private static bool HasMarkedPixel(

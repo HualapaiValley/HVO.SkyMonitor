@@ -40,12 +40,18 @@ public sealed class RealCameraAnnotationPipelineTests
 
         Assert.AreSame(raw, first.Artifacts!.Raw.Frame);
         CollectionAssert.AreEqual(expectedRawBytes, first.Artifacts.Raw.Frame.PixelData.ToArray());
+        Assert.IsNotEmpty(first.ProcessingOutcomes);
+        Assert.AreEqual(HVO.SkyMonitor.Processing.ProcessingOutcomeStatus.Produced,
+            first.ProcessingOutcomes[0].Status,
+            $"{first.ProcessingOutcomes[0].ReasonCode}: {first.ProcessingOutcomes[0].Field}");
         var preview = first.Artifacts[FrameArtifactRole.Preview];
         var annotated = first.Artifacts[FrameArtifactRole.AnnotatedPreview];
         Assert.IsTrue(preview.Frame.PixelData.Span.IndexOfAnyExcept((byte)0) < 0);
         Assert.IsTrue(annotated.Frame.PixelData.Span.IndexOf((byte)200) >= 0);
         CollectionAssert.AreEqual(new[] { preview.ArtifactId }, annotated.SourceArtifactIds!.ToArray());
         Assert.AreEqual("real-constellation-test-v1", annotated.RecipeVersion);
+        Assert.AreEqual("default",
+            first.ProcessingProducts.Single(product => product.Role == FrameArtifactRole.AnnotatedPreview).Variant);
         Assert.AreEqual("AnnotatedPreview", annotated.Frame.Metadata.SourceId);
 
         var provenance = annotated.Frame.Metadata.Scene;

@@ -38,7 +38,11 @@ public sealed class VirtualSkyPipelineTests
         CollectionAssert.AreEqual(
             ExpectedProcessingSteps,
             sample.ProcessingSteps.Select(step => step.Name).ToArray());
-        Assert.IsTrue(sample.ProcessingSteps.All(step => step.Succeeded));
+        Assert.IsTrue(
+            sample.ProcessingSteps.All(step => step.Succeeded),
+            string.Join("; ", sample.ProcessingSteps
+                .Where(step => !step.Succeeded)
+                .Select(step => $"{step.Name}: {step.ErrorMessage}")));
 
         Assert.IsTrue(latest.TryGetSnapshot(FrameArtifactRole.Raw, out var raw));
         Assert.AreEqual(CameraPixelFormat.Mono16, raw.PixelFormat);

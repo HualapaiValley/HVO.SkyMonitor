@@ -37,4 +37,14 @@ public sealed class BayerRggb16DemosaicerTests
         Assert.IsGreaterThan(rgb[interiorRed + 1], rgb[interiorRed]);
         Assert.IsGreaterThan(rgb[interiorRed + 2], rgb[interiorRed + 1]);
     }
+
+    [TestMethod]
+    public void DemosaicToRgb24_PreCanceledTokenThrows()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => BayerRggb16Demosaicer.DemosaicToRgb24(
+            1, 1, new byte[2], cancellation.Token));
+    }
 }

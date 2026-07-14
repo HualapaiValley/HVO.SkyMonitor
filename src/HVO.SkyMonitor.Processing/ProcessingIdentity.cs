@@ -1,0 +1,96 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
+
+namespace HVO.SkyMonitor.Processing;
+
+public static class ProcessingIdentity
+{
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+
+    public static ProcessingRecipeIdentity CreateRecipeIdentity(
+        ProcessingRecipeDefinition definition,
+        JsonElement effectiveOptions)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        var descriptor = RecipeIdentityDescriptor.Create(
+            definition.Name,
+            definition.SemanticVersion,
+            definition.ImplementationVersion,
+            effectiveOptions);
+        return CreateRecipeIdentity(descriptor);
+    }
+
+    public static ProcessingRecipeIdentity CreateRecipeIdentity(RecipeIdentityDescriptor descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        var envelope = JsonSerializer.SerializeToElement(new
+        {
+            schema = "hvo-processing-recipe-v1",
+            name = descriptor.Name,
+            semanticVersion = descriptor.SemanticVersion,
+            implementationVersion = descriptor.ImplementationVersion,
+            options = descriptor.Options
+        }, SerializerOptions);
+        return new ProcessingRecipeIdentity(
+            descriptor,
+            CaptureContractJson.ComputeCanonicalJsonSha256(envelope));
+    }
+
+    public static string CreateOutputIdentity(
+        FrameArtifactRole role,
+        string variant,
+        string recipeIdentitySha256,
+        IReadOnlyList<Guid> sourceArtifactIds)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(variant);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recipeIdentitySha256);
+        ArgumentNullException.ThrowIfNull(sourceArtifactIds);
+        if (recipeIdentitySha256.Length != 64 || recipeIdentitySha256.Any(static character => !Uri.IsHexDigit(character)))
+        {
+            throw new ArgumentException("Recipe identity must be a SHA-256 value.", nameof(recipeIdentitySha256));
+        }
+        var envelope = JsonSerializer.SerializeToElement(new
+        {
+            schema = "hvo-processing-output-v1",
+            role = role.ToString(),
+            variant,
+            recipeIdentitySha256 = recipeIdentitySha256.ToUpperInvariant(),
+            sourceArtifactIds
+        }, SerializerOptions);
+        return CaptureContractJson.ComputeCanonicalJsonSha256(envelope);
+    }
+
+    public static string ComputePayloadSha256(ReadOnlyMemory<byte> payload) =>
+        Convert.ToHexString(SHA256.HashData(payload.Span));
+
+    internal static JsonElement BindExecutionInputs(
+        JsonElement normalizedOptions,
+        ProcessingInputSelector selector,
+        ProcessingAnnotationInput? annotation)
+    {
+        var annotationIdentity = annotation is null
+            ? null
+            : CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
+            {
+                ProvenanceSha256 = annotation.ProvenanceSha256.ToUpperInvariant(),
+                annotation.Transform,
+                annotation.Objects,
+                annotation.Segments,
+                annotation.ProjectionOverlay
+            }, SerializerOptions));
+        var envelope = JsonSerializer.SerializeToElement(new
+        {
+            input = new
+            {
+                kind = selector.Kind.ToString(),
+                role = selector.Role.ToString(),
+                selector.Variant,
+                recipeIdentitySha256 = selector.RecipeIdentitySha256?.ToUpperInvariant()
+            },
+            parameters = normalizedOptions,
+            annotationIdentitySha256 = annotationIdentity
+        }, SerializerOptions);
+        return CaptureContractJson.Canonicalize(envelope);
+    }
+}

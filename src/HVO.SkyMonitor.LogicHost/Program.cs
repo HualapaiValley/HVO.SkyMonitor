@@ -14,6 +14,8 @@ using HVO.SkyMonitor.LogicHost.Components.Account;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.LogicHost.Services.Processing;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Common.Observability;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -560,6 +562,8 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceUploadService, DeviceUploadService>();
         builder.Services.AddScoped<IArtifactIngestService, ArtifactIngestService>();
         builder.Services.AddSingleton<ICentralDerivativeRecipeCatalog, CentralDerivativeRecipeCatalog>();
+        builder.Services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
+        builder.Services.AddSingleton<LogicHostRecipeExecutionAdapter>();
         builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();
         builder.Services.AddScoped<ICentralDerivativeJobService, CentralDerivativeJobService>();
         builder.Services.AddScoped<IDeviceRigProfileService, DeviceRigProfileService>();

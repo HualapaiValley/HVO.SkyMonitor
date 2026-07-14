@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -50,6 +51,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICaptureTelemetrySink>(sp => sp.GetRequiredService<CaptureTelemetrySink>());
         services.AddSingleton<ICaptureTelemetryProvider>(sp => sp.GetRequiredService<CaptureTelemetrySink>());
         services.AddSingleton<ICaptureProcessingPipelineFactory, CaptureProcessingPipelineFactory>();
+        services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
+        services.AddSingleton<CameraAgentRecipeExecutionAdapter>();
         services.AddSingleton<IArtifactOutbox, FileSystemArtifactOutbox>();
         services.AddTransient<ArtifactUploadClient>();
         services.AddSingleton(new CaptureProcessingStepRegistration(
