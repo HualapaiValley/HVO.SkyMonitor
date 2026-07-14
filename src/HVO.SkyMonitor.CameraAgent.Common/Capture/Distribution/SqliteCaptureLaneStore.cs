@@ -109,6 +109,7 @@ internal sealed class SqliteCaptureLaneStore(
                 return null;
             }
 
+            var token = Guid.NewGuid().ToString("N");
             CaptureLaneHandlerContext context;
             try
             {
@@ -136,7 +137,9 @@ internal sealed class SqliteCaptureLaneStore(
                     candidate.AttemptCount + 1,
                     envelope.Configuration,
                     envelope.Submission,
-                    receipt);
+                    receipt,
+                    candidate.WorkId,
+                    token);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
             {
@@ -151,7 +154,6 @@ internal sealed class SqliteCaptureLaneStore(
                 return null;
             }
 
-            var token = Guid.NewGuid().ToString("N");
             var expires = now.AddSeconds(_options.LeaseSeconds);
             using (var update = connection.CreateCommand())
             {

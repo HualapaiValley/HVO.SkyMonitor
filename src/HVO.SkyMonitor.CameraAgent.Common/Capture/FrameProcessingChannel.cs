@@ -10,7 +10,9 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 internal sealed record FrameProcessingItem(
     CameraModuleConfig Config,
     CaptureLoopSubmission Submission,
-    RawCaptureReceipt? RawCapture = null);
+    RawCaptureReceipt? RawCapture = null,
+    long WorkId = 0,
+    string? LeaseToken = null);
 
 internal sealed class FrameProcessingChannel
 {

@@ -67,18 +67,44 @@
   },
   "processingSteps": [
     {
+      "id": "Calibration",
+      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CalibrationCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "order": 10,
+      "options": {
+        "enabled": true,
+        "strategy": "None",
+        "outputVariant": "none"
+      }
+    },
+    {
       "id": "RollingCombination",
       "type": "RollingCombination",
       "order": 25,
+      "dependsOn": ["Calibration"],
       "options": {
         "enabled": true,
         "windowSize": 2
       }
     },
     {
+      "id": "CalibratedPreview",
+      "type": "Preview",
+      "order": 45,
+      "dependsOn": ["Calibration"],
+      "options": {
+        "enabled": true,
+        "recipeVersion": "integration-calibrated-preview-v1",
+        "outputVariant": "calibrated-display",
+        "blackPercentile": 0.5,
+        "whitePercentile": 0.999,
+        "asinhStrength": 4.0
+      }
+    },
+    {
       "id": "Preview",
       "type": "Preview",
       "order": 50,
+      "dependsOn": ["RollingCombination"],
       "options": {
         "enabled": true,
         "recipeVersion": "integration-mono16-preview-v1",
@@ -91,6 +117,7 @@
       "id": "Annotation",
       "type": "Annotation",
       "order": 75,
+      "dependsOn": ["Preview"],
       "options": {
         "enabled": true,
         "drawLabels": true,
@@ -104,17 +131,28 @@
       "id": "LocalStorage",
       "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
       "order": 100,
+      "dependsOn": ["Annotation", "CalibratedPreview"],
       "options": {
         "storageRoot": __STORAGE_ROOT__,
         "retentionDays": 1,
         "updateLatestFrame": true,
-        "queueForUpload": true
+        "queueForUpload": true,
+        "policies": [
+          {
+            "role": "Preview",
+            "variant": "calibrated-display",
+            "recipeName": "encoded-preview",
+            "queueForUpload": false,
+            "retentionDays": 7
+          }
+        ]
       }
     },
     {
       "id": "Telemetry",
       "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
-      "order": 1000
+      "order": 1000,
+      "dependsOn": ["LocalStorage"]
     }
   ]
 }

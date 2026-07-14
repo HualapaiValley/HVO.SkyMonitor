@@ -85,15 +85,31 @@
             "id": "RollingCombination",
             "type": "RollingCombination",
             "order": 25,
+            "dependsOn": ["Calibration"],
             "options": {
                 "enabled": true,
                 "windowSize": 5
             }
         },
         {
+            "id": "CalibratedPreview",
+            "type": "Preview",
+            "order": 45,
+            "dependsOn": ["Calibration"],
+            "options": {
+                "enabled": true,
+                "recipeVersion": "calibrated-preview-v1",
+                "outputVariant": "calibrated-display",
+                "blackPercentile": 0.5,
+                "whitePercentile": 0.9999,
+                "asinhStrength": 4.0
+            }
+        },
+        {
             "id": "Preview",
             "type": "Preview",
             "order": 50,
+            "dependsOn": ["RollingCombination"],
             "options": {
                 "enabled": true,
                 "recipeVersion": "mono16-asinh-v2",
@@ -106,6 +122,7 @@
             "id": "Annotation",
             "type": "Annotation",
             "order": 75,
+            "dependsOn": ["Preview"],
             "options": {
                 "enabled": true,
                 "markRadius": 6,
@@ -137,13 +154,15 @@
                 "enabled": true,
                 "calibrationPasses": 2,
                 "maxCalibrationSeconds": 30,
-                "strategy": "NightlyBias"
+                "strategy": "None",
+                "outputVariant": "none"
             }
         },
         {
             "id": "LocalStorage",
             "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
             "order": 100,
+            "dependsOn": ["Annotation", "CalibratedPreview"],
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
                 "retentionDays": 7,
@@ -155,6 +174,7 @@
             "id": "ArchiveStorage",
             "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
             "order": 110,
+            "dependsOn": ["LocalStorage"],
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/archive",
                 "retentionDays": 30,
@@ -166,6 +186,7 @@
             "id": "Upload",
             "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpUploadProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
             "order": 500,
+            "dependsOn": ["LocalStorage"],
             "options": {
                 "enabled": true,
                 "uploadAllFrames": false,
@@ -177,7 +198,8 @@
         {
             "id": "Telemetry",
             "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
-            "order": 1000
+            "order": 1000,
+            "dependsOn": ["ArchiveStorage", "Upload"]
         }
     ]
 }

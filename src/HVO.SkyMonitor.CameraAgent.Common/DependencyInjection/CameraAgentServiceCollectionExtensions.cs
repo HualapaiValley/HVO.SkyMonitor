@@ -64,6 +64,13 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICaptureTelemetrySink>(sp => sp.GetRequiredService<CaptureTelemetrySink>());
         services.AddSingleton<ICaptureTelemetryProvider>(sp => sp.GetRequiredService<CaptureTelemetrySink>());
         services.AddSingleton<ICaptureProcessingPipelineFactory, CaptureProcessingPipelineFactory>();
+        services.AddSingleton<CaptureProcessingState>();
+        services.AddSingleton<CaptureProcessingTelemetry>();
+        services.AddSingleton<SqliteCaptureProcessingStore>();
+        services.AddSingleton<CaptureProcessingPersistence>();
+        services.AddHostedService<CaptureProcessingStateRefreshService>();
+        services.AddSingleton<IProcessingRetentionHolds>(provider =>
+            provider.GetRequiredService<CaptureProcessingPersistence>());
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         services.AddSingleton<CameraAgentRecipeExecutionAdapter>();
         services.AddSingleton<IArtifactOutbox, FileSystemArtifactOutbox>();

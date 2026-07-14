@@ -379,7 +379,7 @@ internal sealed class EncodedPreviewRecipe : IProcessingRecipe
         {
             return ValueTask.FromResult(layoutFailure!);
         }
-        if (input.Role is not (FrameArtifactRole.Raw or FrameArtifactRole.Calibrated))
+        if (input.Role is not (FrameArtifactRole.Raw or FrameArtifactRole.Calibrated or FrameArtifactRole.Combined))
         {
             return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.InvalidSelector,

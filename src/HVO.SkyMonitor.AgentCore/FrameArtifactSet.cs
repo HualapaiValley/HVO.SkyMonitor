@@ -166,7 +166,8 @@ public sealed class FrameArtifactSet
         FrameArtifactRole role,
         CameraFrame frame,
         string? recipeVersion = null,
-        IReadOnlyList<Guid>? sourceArtifactIds = null)
+        IReadOnlyList<Guid>? sourceArtifactIds = null,
+        Guid? artifactId = null)
     {
         ArgumentNullException.ThrowIfNull(frame);
         if (role == FrameArtifactRole.Raw)
@@ -176,7 +177,7 @@ public sealed class FrameArtifactSet
 
         var artifacts = _artifacts.ToDictionary(static pair => pair.Key, static pair => pair.Value);
         artifacts[role] = new FrameArtifact(
-            Guid.NewGuid(),
+            artifactId ?? Guid.NewGuid(),
             role,
             frame,
             sourceArtifactIds ?? [Raw.ArtifactId],

@@ -1,6 +1,8 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -9,12 +11,14 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed class ArtifactOutboxDrainServiceTests
 {
     [TestMethod]
-    public void ShouldRemoveUploadedArtifact_WhenRawArtifactIsHeldByIngress_ReturnsFalse()
+    public void ShouldRemoveUploadedArtifact_OnlyRemovesCopiesOutsideDurableIngressRoot()
     {
         var root = Path.Combine(Path.GetTempPath(), "raw-ingress");
 
         Assert.IsFalse(ArtifactOutboxDrainService.ShouldRemoveUploadedArtifact(root, root, TestManifest(FrameArtifactRole.Raw)));
-        Assert.IsTrue(ArtifactOutboxDrainService.ShouldRemoveUploadedArtifact(root, root, TestManifest(FrameArtifactRole.Preview)));
+        Assert.IsFalse(ArtifactOutboxDrainService.ShouldRemoveUploadedArtifact(root, root, TestManifest(FrameArtifactRole.Preview)));
+        Assert.IsTrue(ArtifactOutboxDrainService.ShouldRemoveUploadedArtifact(
+            Path.Combine(root, "archive"), root, TestManifest(FrameArtifactRole.Preview)));
     }
 
     [TestMethod]
@@ -56,6 +60,44 @@ public sealed class ArtifactOutboxDrainServiceTests
 
         Assert.HasCount(1, roots);
         Assert.AreEqual(Path.GetFullPath(root), roots[0]);
+    }
+
+    [TestMethod]
+    public void ResolveStorageRoots_WhenOnlyArtifactPolicyUploads_IncludesStorageRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "policy-storage");
+        var config = new CameraModuleConfig(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            new CameraModuleDescriptor("Test"),
+            new CameraRigConfig(
+                new SensorProfile("Test", 1, 1, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+                new OpticsProfile("EquidistantFisheye", 0, 180, 0),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
+            [new CaptureProcessingStepConfig(
+                nameof(NoOpFileStorageProcessingStep),
+                Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                {
+                    StorageRoot = root,
+                    QueueForUpload = false,
+                    Policies = [new ArtifactStoragePolicyOptions { Role = FrameArtifactRole.Preview, QueueForUpload = true }]
+                }))],
+            AgentId: "agent");
+
+        var roots = ArtifactOutboxDrainService.ResolveStorageRoots(config, new CameraAgentHostOptions());
+
+        Assert.HasCount(1, roots);
+        Assert.AreEqual(Path.GetFullPath(root), roots[0]);
+    }
+
+    [TestMethod]
+    public void UploadIdentity_SameRoleWithDistinctVariantRecipeLabels_DoesNotCollide()
+    {
+        var frameId = Guid.NewGuid();
+        var first = TestManifest(FrameArtifactRole.Preview) with { FrameId = frameId, RecipeVersion = "preview-v1:display" };
+        var second = TestManifest(FrameArtifactRole.Preview) with { FrameId = frameId, RecipeVersion = "preview-v1:local" };
+
+        Assert.AreNotEqual(first.IdempotencyKey, second.IdempotencyKey);
     }
 
     [TestMethod]

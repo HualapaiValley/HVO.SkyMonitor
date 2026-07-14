@@ -41,19 +41,31 @@ public sealed class ArtifactOutboxDrainService(
                     .Select(retry => retry.Value.IdempotencyKey)
                     .ToHashSet(StringComparer.Ordinal);
                 var ready = outbox.List(storageRoot, hostOptions.Value.UploadBatchSize, deferred);
-                var removals = new List<StoredFrameRemoval>(ready.Count);
                 foreach (var manifest in ready)
                 {
                     var retryKey = RetryKey(storageRoot, manifest.IdempotencyKey);
                     if (await uploadClient.UploadAsync(storageRoot, manifest, stoppingToken).ConfigureAwait(false))
                     {
                         _retries.Remove(retryKey);
-                        await outbox.AcknowledgeAsync(storageRoot, manifest.IdempotencyKey, stoppingToken).ConfigureAwait(false);
-                        if (ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot, manifest))
+                        var lifecycleGate = StorageLifecycleLock.ForRoot(storageRoot);
+                        await lifecycleGate.WaitAsync(stoppingToken).ConfigureAwait(false);
+                        try
                         {
-                            var path = Path.Combine(Path.GetFullPath(storageRoot), manifest.RelativeArtifactPath);
-                            removals.Add(new StoredFrameRemoval(new StoredFrameReference(
-                                manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role), manifest.ArtifactId));
+                            await outbox.AcknowledgeAsync(storageRoot, manifest.IdempotencyKey, stoppingToken).ConfigureAwait(false);
+                            if (ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot, manifest))
+                            {
+                                var path = Path.Combine(Path.GetFullPath(storageRoot), manifest.RelativeArtifactPath);
+                                await frameStorageService.RemoveAsync(
+                                    storageRoot,
+                                    new StoredFrameReference(
+                                        manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role),
+                                    manifest.ArtifactId,
+                                    stoppingToken).ConfigureAwait(false);
+                            }
+                        }
+                        finally
+                        {
+                            lifecycleGate.Release();
                         }
                     }
                     else
@@ -67,7 +79,6 @@ public sealed class ArtifactOutboxDrainService(
                             Path.GetFullPath(storageRoot), manifest.IdempotencyKey, attempt, timeProvider.GetUtcNow() + delay);
                     }
                 }
-                await frameStorageService.RemoveBatchAsync(storageRoot, removals, stoppingToken).ConfigureAwait(false);
             }
 
             await Task.Delay(TimeSpan.FromSeconds(hostOptions.Value.UploadPollIntervalSeconds), timeProvider, stoppingToken).ConfigureAwait(false);
@@ -88,8 +99,7 @@ public sealed class ArtifactOutboxDrainService(
         string storageRoot,
         string rawIngressRoot,
         HVO.SkyMonitor.AgentCore.ArtifactUploadManifest manifest)
-        => manifest.Role != HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw
-            || string.IsNullOrWhiteSpace(rawIngressRoot)
+        => string.IsNullOrWhiteSpace(rawIngressRoot)
             || !string.Equals(
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(storageRoot)),
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(rawIngressRoot)),
@@ -102,7 +112,7 @@ public sealed class ArtifactOutboxDrainService(
             if (step.Type.Contains(nameof(NoOpFileStorageProcessingStep), StringComparison.OrdinalIgnoreCase) && step.Options is { } options)
             {
                 var parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(options.GetRawText(), SerializerOptions);
-                if (parsed is { QueueForUpload: true } && !string.IsNullOrWhiteSpace(parsed.StorageRoot))
+                if (parsed is not null && IsUploadEnabled(parsed) && !string.IsNullOrWhiteSpace(parsed.StorageRoot))
                 {
                     return parsed.StorageRoot;
                 }
@@ -128,7 +138,7 @@ public sealed class ArtifactOutboxDrainService(
                 continue;
             }
             var parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(stepOptions.GetRawText(), SerializerOptions);
-            if (parsed is { QueueForUpload: true } && !string.IsNullOrWhiteSpace(parsed.StorageRoot))
+            if (parsed is not null && IsUploadEnabled(parsed) && !string.IsNullOrWhiteSpace(parsed.StorageRoot))
             {
                 var root = Path.GetFullPath(parsed.StorageRoot);
                 if (!roots.Any(existing => PathsEqual(existing, root)))
@@ -139,6 +149,9 @@ public sealed class ArtifactOutboxDrainService(
         }
         return roots;
     }
+
+    private static bool IsUploadEnabled(NoOpFileStorageProcessingStepOptions options)
+        => options.QueueForUpload || (options.Policies ?? []).Any(static policy => policy.QueueForUpload == true);
 
     private static string RetryKey(string storageRoot, string idempotencyKey)
         => string.Concat(Path.GetFullPath(storageRoot), "\n", idempotencyKey);

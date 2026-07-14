@@ -53,6 +53,7 @@
       "id": "Annotation",
       "type": "Annotation",
       "order": 75,
+      "dependsOn": ["Preview"],
       "options": {
         "enabled": true,
         "drawLabels": true,

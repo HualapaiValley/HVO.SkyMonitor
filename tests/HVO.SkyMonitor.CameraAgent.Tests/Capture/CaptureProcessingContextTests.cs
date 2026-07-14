@@ -298,6 +298,32 @@ public sealed class CaptureProcessingContextTests
     }
 
     [TestMethod]
+    public async Task RollingCombinationStep_CompatibilityChangeStartsFreshWindow()
+    {
+        var step = new RollingCombinationCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("Rolling", "Rolling", 0),
+            new RollingCombinationProcessingStepOptions { WindowSize = 2 }, Adapter);
+        var first = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono16,
+            new byte[] { 100, 0 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+        var second = new CameraFrame(DateTimeOffset.UnixEpoch.AddSeconds(1), 1, 1, CameraPixelFormat.Mono16,
+            new byte[] { 44, 1 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+        var changed = CreateConfig() with
+        {
+            Rig = CreateConfig().Rig with { Orientation = new RigOrientation(1, 0, 0) }
+        };
+
+        await step.ProcessAsync(
+            new CaptureProcessingContext(CreateConfig(), CreateSubmission(first)),
+            CancellationToken.None).ConfigureAwait(false);
+        var changedContext = new CaptureProcessingContext(changed, CreateSubmission(second));
+        await step.ProcessAsync(changedContext, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual((ushort)300, BitConverter.ToUInt16(
+            changedContext.Artifacts![FrameArtifactRole.Combined].Frame.PixelData.Span));
+        Assert.AreEqual(1, step.BufferedFrameCount);
+    }
+
+    [TestMethod]
     public async Task RollingCombinationStep_CancellationDoesNotCommitTentativeWindow()
     {
         var step = new RollingCombinationCaptureProcessingStep(

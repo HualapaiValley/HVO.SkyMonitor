@@ -10,19 +10,42 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 internal sealed class PreviewCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     PreviewProcessingStepOptions options,
-    CameraAgentRecipeExecutionAdapter adapter) : ConfigurableCaptureProcessingStep<PreviewProcessingStepOptions>(metadata, options)
+    CameraAgentRecipeExecutionAdapter adapter) : ConfigurableCaptureProcessingStep<PreviewProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep
 {
+    public bool Enabled => Options.Enabled;
+
+    public string RecipeName => BuiltInProcessingRecipes.EncodedPreview;
+
+    public FrameArtifactRole OutputRole => FrameArtifactRole.Preview;
+
+    public string OutputVariant => Options.OutputVariant;
+
+    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw, FrameArtifactRole.Calibrated, FrameArtifactRole.Combined };
+
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (!Options.Enabled || context.Artifacts?.Raw is not { } raw ||
-            raw.Frame is not { } source ||
-            source.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 or CameraPixelFormat.Rgb24))
+        var sourceArtifact = context.GetDependencyArtifacts()
+            .SingleOrDefault(artifact => AcceptedInputRoles.Contains(artifact.Role));
+        if (sourceArtifact is null && !context.HasDeclaredDependencies)
+        {
+            sourceArtifact = context.Artifacts?.Raw;
+        }
+        if (!Options.Enabled || sourceArtifact is null ||
+            sourceArtifact.Frame is not { } source ||
+            source.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 or CameraPixelFormat.Rgb24))
         {
             return;
         }
 
-        var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source");
+        var sourceProduct = context.GetProcessingProduct(sourceArtifact.ArtifactId);
+        var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            context.Config, sourceArtifact, sourceProduct?.Variant ?? "source");
+        if (sourceProduct is not null)
+        {
+            input = input with { RecipeIdentitySha256 = sourceProduct.Recipe.IdentitySha256 };
+        }
         var recipeOptions = JsonSerializer.SerializeToElement(new EncodedPreviewOptions(
             Options.BlackPercentile,
             Options.WhitePercentile,
@@ -31,11 +54,10 @@ internal sealed class PreviewCaptureProcessingStep(
         var outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.EncodedPreview,
             recipeOptions,
-            ProcessingInputSelector.Raw("source"),
+            CameraAgentRecipeExecutionAdapter.CreateSelector(sourceArtifact, sourceProduct, "source"),
             [input],
             Options.OutputVariant), cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
-        CameraAgentRecipeExecutionAdapter.ThrowIfFailure(outcome);
         if (outcome.Status != ProcessingOutcomeStatus.Produced)
         {
             return;
@@ -44,7 +66,8 @@ internal sealed class PreviewCaptureProcessingStep(
         var artifact = context.AddDerivative(FrameArtifactRole.Preview,
             CameraAgentRecipeExecutionAdapter.CreateFrame(product, source, "Preview"),
             Options.RecipeVersion,
-            product.SourceArtifactIds);
+            product.SourceArtifactIds,
+            CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
         context.AssociateProcessingProduct(artifact, product);
     }
 }

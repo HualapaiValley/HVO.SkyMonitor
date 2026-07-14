@@ -16,13 +16,26 @@ internal sealed class AnnotationCaptureProcessingStep(
     IProjectedSceneStore sceneStore,
     IAnnotationSceneProvider annotationSceneProvider,
     CameraAgentRecipeExecutionAdapter adapter)
-    : ConfigurableCaptureProcessingStep<AnnotationProcessingStepOptions>(metadata, options)
+    : ConfigurableCaptureProcessingStep<AnnotationProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep
 {
+    public bool Enabled => Options.Enabled;
+
+    public string RecipeName => BuiltInProcessingRecipes.Annotation;
+
+    public FrameArtifactRole OutputRole => FrameArtifactRole.AnnotatedPreview;
+
+    public string OutputVariant => Options.OutputVariant;
+
+    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview };
+
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (!Options.Enabled || context.Artifacts is not { } artifacts ||
-            !artifacts.Artifacts.TryGetValue(FrameArtifactRole.Preview, out var preview) ||
+        var preview = context.GetDependencyArtifacts()
+            .LastOrDefault(static artifact => artifact.Role == FrameArtifactRole.Preview)
+            ?? context.Artifacts?.Artifacts.GetValueOrDefault(FrameArtifactRole.Preview);
+        if (!Options.Enabled || context.Artifacts is not { } artifacts || preview is null ||
             preview.Frame.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24))
         {
             return;
@@ -153,7 +166,6 @@ internal sealed class AnnotationCaptureProcessingStep(
             Options.OutputVariant,
             annotationInput), cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
-        CameraAgentRecipeExecutionAdapter.ThrowIfFailure(outcome);
         if (outcome.Status != ProcessingOutcomeStatus.Produced)
         {
             return;
@@ -170,7 +182,8 @@ internal sealed class AnnotationCaptureProcessingStep(
                     product.Recipe.IdentitySha256)
             },
             Options.RecipeVersion,
-            [preview.ArtifactId]);
+            [preview.ArtifactId],
+            CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
         context.AssociateProcessingProduct(artifact, product);
     }
 

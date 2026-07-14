@@ -173,4 +173,31 @@ internal static partial class CameraAgentLog
 
     [LoggerMessage(EventId = 2059, Level = LogLevel.Warning, Message = "Capture lane drain reached the shutdown deadline and released recoverable work")]
     public static partial void CaptureLaneDrainAborted(this ILogger logger);
+
+    [LoggerMessage(EventId = 2064, Level = LogLevel.Information, Message = "Validated capture processing graph with {NodeCount} nodes")]
+    public static partial void CaptureProcessingGraphValidated(this ILogger logger, int nodeCount);
+
+    [LoggerMessage(EventId = 2065, Level = LogLevel.Debug, Message = "Capture processing node {Step} started at attempt {Attempt}")]
+    public static partial void CaptureProcessingNodeStarted(this ILogger logger, string step, int attempt);
+
+    [LoggerMessage(EventId = 2066, Level = LogLevel.Debug, Message = "Capture processing node {Step} completed with {Outcome}")]
+    public static partial void CaptureProcessingNodeOutcome(this ILogger logger, string step, string outcome);
+
+    [LoggerMessage(EventId = 2067, Level = LogLevel.Warning, Message = "Capture processing node {Step} requested retry because {Reason}")]
+    public static partial void CaptureProcessingNodeRetry(this ILogger logger, string step, string reason);
+
+    [LoggerMessage(EventId = 2068, Level = LogLevel.Error, Message = "Capture processing node {Step} reached terminal outcome because {Reason}")]
+    public static partial void CaptureProcessingNodeTerminal(this ILogger logger, string step, string reason);
+
+    [LoggerMessage(EventId = 2069, Level = LogLevel.Debug, Message = "Capture processing node {Step} reused an existing immutable output")]
+    public static partial void CaptureProcessingOutputExisting(this ILogger logger, string step);
+
+    [LoggerMessage(EventId = 2070, Level = LogLevel.Debug, Message = "Capture processing node {Step} persisted {OutputCount} outputs totaling {OutputBytes} bytes")]
+    public static partial void CaptureProcessingOutputPersisted(this ILogger logger, string step, int outputCount, long outputBytes);
+
+    [LoggerMessage(EventId = 2071, Level = LogLevel.Information, Message = "Capture processing node {Step} recovered {OutputCount} durable outputs")]
+    public static partial void CaptureProcessingNodeRecovered(this ILogger logger, string step, int outputCount);
+
+    [LoggerMessage(EventId = 2072, Level = LogLevel.Information, Message = "Capture processing graph completed with {Outcome}")]
+    public static partial void CaptureProcessingGraphCompleted(this ILogger logger, string outcome);
 }

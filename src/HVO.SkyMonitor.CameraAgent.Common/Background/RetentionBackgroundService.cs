@@ -18,7 +18,10 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Background;
 
-internal readonly record struct StorageRetentionPlan(string StorageRoot, int RetentionDays);
+internal readonly record struct StorageRetentionPlan(
+    string StorageRoot,
+    int RetentionDays,
+    IReadOnlyList<ArtifactStoragePolicyOptions>? Policies = null);
 
 public sealed class RetentionBackgroundService(
     ICameraAgentConfigurationAccessor configurationAccessor,
@@ -28,7 +31,8 @@ public sealed class RetentionBackgroundService(
     IStorageCapacityProvider capacityProvider,
     StoragePressureState pressureState,
     ILogger<RetentionBackgroundService> logger,
-    IRawIngressRetentionHolds? rawIngressHolds = null) : BackgroundService
+    IRawIngressRetentionHolds? rawIngressHolds = null,
+    IProcessingRetentionHolds? processingHolds = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly CameraAgentHostOptions _hostOptions = hostOptions.Value;
@@ -38,6 +42,7 @@ public sealed class RetentionBackgroundService(
     private readonly StoragePressureState _pressureState = pressureState;
     private readonly ILogger<RetentionBackgroundService> _logger = logger;
     private readonly IRawIngressRetentionHolds? _rawIngressHolds = rawIngressHolds;
+    private readonly IProcessingRetentionHolds? _processingHolds = processingHolds;
     private readonly IRawIngressPressureReporter? _rawIngressPressureReporter = rawIngressHolds as IRawIngressPressureReporter;
     private static readonly JsonSerializerOptions StepSerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -139,6 +144,7 @@ public sealed class RetentionBackgroundService(
 
                 var cutoffDate = evaluatedUtc.UtcDateTime.Date.AddDays(-effectiveRetentionDays);
                 var pending = await ReadPendingArtifactsAsync(plan.StorageRoot, cancellationToken).ConfigureAwait(false);
+                pending = AddPolicyRetentionHolds(plan, evaluatedUtc, pending, cancellationToken);
                 var deletedFiles = PruneFrameDirectories(plan.StorageRoot, cutoffDate, pending, cancellationToken);
                 var indexGate = FrameIndexLock.ForRoot(plan.StorageRoot);
                 await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -205,7 +211,7 @@ public sealed class RetentionBackgroundService(
                     continue;
                 }
 
-                plans.Add(new StorageRetentionPlan(normalizedRoot, retentionDays));
+                plans.Add(new StorageRetentionPlan(normalizedRoot, retentionDays, options.Policies));
             }
             catch (JsonException)
             {
@@ -213,7 +219,7 @@ public sealed class RetentionBackgroundService(
             }
         }
 
-        if (_rawIngressHolds is not null)
+        if (_rawIngressHolds is not null || _processingHolds is not null)
         {
             var rawRoot = Path.GetFullPath(_hostOptions.RawIngressRoot);
             var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
@@ -282,6 +288,17 @@ public sealed class RetentionBackgroundService(
                 artifactIds.Add(hold.ArtifactId);
             }
         }
+        if (_processingHolds is not null)
+        {
+            var holds = await _processingHolds.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);
+            foreach (var hold in holds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                AddHeldPath(normalizedRoot, rootPrefix, hold.PayloadRelativePath, paths);
+                AddHeldPath(normalizedRoot, rootPrefix, hold.SidecarRelativePath, paths);
+                artifactIds.Add(hold.ArtifactId);
+            }
+        }
         return new PendingArtifacts(paths, artifactIds);
     }
 
@@ -303,6 +320,58 @@ public sealed class RetentionBackgroundService(
         paths.Add(path);
     }
 
+    private static PendingArtifacts AddPolicyRetentionHolds(
+        StorageRetentionPlan plan,
+        DateTimeOffset evaluatedUtc,
+        PendingArtifacts pending,
+        CancellationToken cancellationToken)
+    {
+        var policies = plan.Policies?.Where(static policy => policy.RetentionDays.HasValue).ToArray() ?? [];
+        var framesRoot = Path.Combine(plan.StorageRoot, "frames");
+        if (policies.Length == 0 || !Directory.Exists(framesRoot))
+        {
+            return pending;
+        }
+        RawIngressFileStore.EnsureNoSymbolicLinks(plan.StorageRoot, framesRoot);
+        var paths = pending.AbsolutePaths.ToHashSet(PathComparer);
+        var artifactIds = pending.ArtifactIds.ToHashSet();
+        foreach (var sidecarPath in Directory.EnumerateFiles(framesRoot, "*.json", SearchOption.AllDirectories))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RawIngressFileStore.EnsureNoSymbolicLinks(plan.StorageRoot, sidecarPath);
+            var parsed = CaptureContractJson.ParseManifest(File.ReadAllBytes(sidecarPath));
+            var manifest = parsed.Document?.Manifest;
+            if (!parsed.IsValid || manifest is null)
+            {
+                continue;
+            }
+            var artifact = manifest.Descriptor.Artifact;
+            var policy = policies
+                .Where(policy => policy.Role is null || policy.Role == artifact.Role)
+                .Where(policy => policy.Variant is null || string.Equals(policy.Variant, artifact.Variant, StringComparison.Ordinal))
+                .Where(policy => policy.RecipeName is null || string.Equals(
+                    policy.RecipeName, artifact.Recipe.Name, StringComparison.Ordinal))
+                .OrderByDescending(static policy =>
+                    (policy.Role is null ? 0 : 1) + (policy.Variant is null ? 0 : 1) + (policy.RecipeName is null ? 0 : 1))
+                .FirstOrDefault();
+            if (policy?.RetentionDays is not { } retentionDays ||
+                artifact.CreatedUtc < evaluatedUtc.AddDays(-retentionDays))
+            {
+                continue;
+            }
+            var payloadPath = Path.GetFullPath(Path.Combine(plan.StorageRoot, manifest.RelativeArtifactPath));
+            RawIngressFileStore.EnsureNoSymbolicLinks(plan.StorageRoot, payloadPath);
+            if (!File.Exists(payloadPath))
+            {
+                throw new InvalidDataException("Artifact retention policy references a missing payload.");
+            }
+            paths.Add(payloadPath);
+            paths.Add(sidecarPath);
+            artifactIds.Add(artifact.ArtifactId);
+        }
+        return new PendingArtifacts(paths, artifactIds);
+    }
+
     private static int PruneFrameDirectories(
         string storageRoot,
         DateTime cutoffDate,
@@ -314,16 +383,20 @@ public sealed class RetentionBackgroundService(
         {
             return 0;
         }
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, framesRoot);
 
         var deletedFiles = 0;
         foreach (var yearDirectory in Directory.EnumerateDirectories(framesRoot))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, yearDirectory);
             foreach (var monthDirectory in Directory.EnumerateDirectories(yearDirectory))
             {
+                RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, monthDirectory);
                 foreach (var dayDirectory in Directory.EnumerateDirectories(monthDirectory))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, dayDirectory);
                     var dateString = string.Join('-',
                         Path.GetFileName(yearDirectory),
                         Path.GetFileName(monthDirectory),
@@ -344,6 +417,7 @@ public sealed class RetentionBackgroundService(
                         foreach (var file in Directory.EnumerateFiles(dayDirectory, "*", SearchOption.AllDirectories))
                         {
                             cancellationToken.ThrowIfCancellationRequested();
+                            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, file);
                             if (!pending.AbsolutePaths.Contains(Path.GetFullPath(file)))
                             {
                                 File.Delete(file);
@@ -379,11 +453,13 @@ public sealed class RetentionBackgroundService(
         {
             return 0;
         }
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, indexRoot);
 
         var deletedFiles = 0;
         foreach (var file in Directory.EnumerateFiles(indexRoot, "frames_*.jsonl"))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, file);
             var fileName = Path.GetFileNameWithoutExtension(file);
             var datePart = fileName.Replace("frames_", string.Empty, StringComparison.OrdinalIgnoreCase);
             if (DateTime.TryParseExact(datePart, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var fileDate)
@@ -396,12 +472,14 @@ public sealed class RetentionBackgroundService(
                 if (retainedLines.Length == 0)
                 {
                     File.Delete(file);
+                    FrameIndexIdentityCache.Invalidate(file);
                     deletedFiles++;
                     _logger.IndexFileDeleted(file);
                 }
                 else
                 {
                     File.WriteAllLines(file, retainedLines);
+                    FrameIndexIdentityCache.Invalidate(file);
                 }
             }
         }
@@ -419,11 +497,13 @@ public sealed class RetentionBackgroundService(
         {
             return 0;
         }
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, derivedRoot);
 
         var deletedFiles = 0;
         foreach (var file in Directory.EnumerateFiles(derivedRoot, "*", SearchOption.AllDirectories))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, file);
             var lastWrite = File.GetLastWriteTimeUtc(file).Date;
             if (lastWrite <= cutoffDate && !pendingPaths.Contains(Path.GetFullPath(file)))
             {
@@ -436,6 +516,7 @@ public sealed class RetentionBackgroundService(
         foreach (var directory in Directory.EnumerateDirectories(derivedRoot, "*", SearchOption.AllDirectories).OrderByDescending(d => d.Length))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, directory);
             if (!Directory.EnumerateFileSystemEntries(directory).Any())
             {
                 Directory.Delete(directory, recursive: false);

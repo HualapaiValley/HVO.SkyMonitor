@@ -77,6 +77,7 @@
       "id": "Preview",
       "type": "Preview",
       "order": 50,
+      "dependsOn": ["RollingCombination"],
       "options": {
         "enabled": true,
         "recipeVersion": "bayer-rggb16-bilinear-asinh-v1",
@@ -89,6 +90,7 @@
       "id": "Annotation",
       "type": "Annotation",
       "order": 75,
+      "dependsOn": ["Preview"],
       "options": {
         "enabled": true,
         "markRadius": 6,
@@ -116,6 +118,7 @@
       "id": "LocalStorage",
       "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
       "order": 100,
+      "dependsOn": ["Annotation"],
       "options": {
         "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
         "retentionDays": 7,
@@ -126,7 +129,8 @@
     {
       "id": "Telemetry",
       "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
-      "order": 1000
+      "order": 1000,
+      "dependsOn": ["LocalStorage"]
     }
   ]
 }
