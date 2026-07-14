@@ -50,8 +50,10 @@ internal sealed class DeviceIdentityStore(
             }
 
             var path = options.GetIdentityPath();
+            DeviceStateFilePermissions.RestrictDirectory(Path.GetDirectoryName(path)!);
             if (File.Exists(path))
             {
+                DeviceStateFilePermissions.RestrictFile(path);
                 await using var stream = File.OpenRead(path);
                 cached = await JsonSerializer.DeserializeAsync<DeviceIdentity>(stream, SerializerOptions, cancellationToken).ConfigureAwait(false)
                     ?? throw new InvalidOperationException("Device identity file was empty or malformed.");
@@ -63,11 +65,11 @@ internal sealed class DeviceIdentityStore(
                 GenerateVerificationCode(),
                 timeProvider.GetUtcNow());
 
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             await using (var stream = File.Create(path))
             {
                 await JsonSerializer.SerializeAsync(stream, identity, SerializerOptions, cancellationToken).ConfigureAwait(false);
             }
+            DeviceStateFilePermissions.RestrictFile(path);
 
             if (logger.IsEnabled(LogLevel.Information))
             {

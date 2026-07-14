@@ -172,6 +172,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["CentralIdentity:Mode"] = "ClientCredentials",
             ["CentralIdentity:ClientCredentials:ClientId"] = TestClients.SystemCameraAgent.ClientId,
             ["CentralIdentity:ClientCredentials:ClientSecret"] = TestClients.SystemCameraAgent.ClientSecret,
+            ["LocalIdentity:AdminEmail"] = "owner@cameraagent.integration",
+            ["LocalIdentity:AdminPassword"] = "IntegrationOwner!123",
             ["SkyMonitor:BaseUrl"] = apiBase,
             ["Catalog:Path"] = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"),
             ["Catalog:Sha256"] = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",

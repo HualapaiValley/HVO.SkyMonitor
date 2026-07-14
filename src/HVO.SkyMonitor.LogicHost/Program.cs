@@ -77,18 +77,16 @@ public sealed partial class Program
 
         var centralIdentitySection = builder.Configuration.GetSection("CentralIdentity");
         builder.Services.AddOptions<CentralIdentityOptions>()
-            .Bind(centralIdentitySection)
-            .ConfigureCentralIdentityDefaults();
+            .Bind(centralIdentitySection);
 
-        builder.Services.Configure<DeviceBootstrapSecretsOptions>(
-            builder.Configuration.GetSection("DeviceBootstrap"));
+        builder.Services.AddOptions<DeviceBootstrapSecretsOptions>()
+            .Bind(builder.Configuration.GetSection("DeviceBootstrap"))
+            .Validate(HasUsableDeviceBootstrapCredentials,
+                "DeviceBootstrap:CentralIdentity must contain a service URL and scoped client credentials.")
+            .ValidateOnStart();
 
         builder.Services.Configure<DatabaseSeedOptions>(
             builder.Configuration.GetSection(DatabaseSeedOptions.SectionName));
-
-        var centralIdentitySettings = centralIdentitySection.Exists()
-            ? centralIdentitySection.Get<CentralIdentityOptions>()
-            : null;
 
         // HTTP logging
         builder.Services.AddHttpLogging(logging =>
@@ -440,6 +438,12 @@ public sealed partial class Program
         // Data Protection - persist keys to avoid cookie invalidation on restart
         var dataProtectionPath = Path.Combine(builder.Environment.ContentRootPath, "DataProtection-Keys");
         Directory.CreateDirectory(dataProtectionPath);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(
+                dataProtectionPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
         builder.Services.AddDataProtection()
             .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath))
             .SetApplicationName("HVO.SkyMonitor");
@@ -545,6 +549,7 @@ public sealed partial class Program
         builder.Services.AddSingleton<IApiKeyHasher, ApiKeyHasher>();
         builder.Services.AddScoped<IApiKeyValidator, DatabaseApiKeyValidator>();
         builder.Services.AddScoped<IApiKeyAuditLogger, ApiKeyAuditLogger>();
+        builder.Services.AddScoped<IApiKeyLifecycleService, ApiKeyLifecycleService>();
         builder.Services.AddScoped<IAuthenticationEventLogger, AuthenticationEventLogger>();
         builder.Services.AddScoped<IDeviceRegistrationService, DeviceRegistrationService>();
         builder.Services.AddScoped<IDeviceRegistrationEnvelopeService, DeviceRegistrationEnvelopeService>();
@@ -688,6 +693,22 @@ public sealed partial class Program
         app.MapSkyMonitorHealthEndpoints();
 
         await app.RunAsync().ConfigureAwait(false);
+    }
+
+    private static bool HasUsableDeviceBootstrapCredentials(DeviceBootstrapSecretsOptions options)
+    {
+        var identity = options.CentralIdentity;
+        var credentials = identity?.ClientCredentials;
+        return identity is
+        {
+            Mode: AuthenticationMode.ClientCredentials,
+            ServiceUrl.IsAbsoluteUri: true
+        } &&
+        credentials is not null &&
+        !string.IsNullOrWhiteSpace(credentials.ClientId) &&
+        !string.IsNullOrWhiteSpace(credentials.ClientSecret) &&
+        credentials.Scopes.Count > 0 &&
+        credentials.Scopes.All(static scope => !string.IsNullOrWhiteSpace(scope));
     }
 
     private static SqliteCelestialCatalog CreateCatalog(ConfigurationManager configuration)

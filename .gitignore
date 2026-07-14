@@ -18,6 +18,7 @@
 .env.staging
 .devcontainer/devcontainer.local.env
 .devcontainer/hvo-docker.key
+.devcontainer/state/
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
@@ -448,6 +449,9 @@ src.zip
 src/HVO.SkyMonitor.CameraAgent/App_Data/
 data/cameraagent/identity/
 data/cameraagent/dataprotection/
+data/cameraagent/provisioning/
+data/logichost/dataprotection/
+data/logichost/home/
 data/agent/
 data/archive/
 data/calibration/

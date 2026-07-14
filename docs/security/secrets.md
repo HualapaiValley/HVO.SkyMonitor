@@ -1,176 +1,196 @@
-# Secrets & Configuration Guide
+# Secrets and Configuration Guide
 
-This guide replaces `SECRETS_MANAGEMENT.md`, `SECRETS_QUICKSTART.md`,
-`SECRETS_SUMMARY.md`, and `identity/secrets-reference.md`. It captures
-how we handle configuration from local development through production and
-summarizes every sensitive value the platform requires.
+This guide is the source of truth for secret-bearing configuration currently
+consumed by HVO.SkyMonitor. It distinguishes repository-supported providers
+from possible production providers that are not wired in source.
 
-> Use the Docker/Testcontainers toolchain (`./scripts/infra:*`,
-> `deploy/hvo-docker/docker-compose.shared-services.yml`, `docker-compose.apps.yml`, and
-> direct project runs under `src/`) when applying the steps below.
-> Aspire/AppHost flows are no longer supported.
+## Configuration Layers
 
-## 1. Layered Configuration Model
+Later .NET providers override earlier providers:
 
-| Layer | Usage | Notes |
-| --- | --- | --- |
-| `appsettings*.json` | Non-sensitive defaults | Keep checked into git; document defaults only. |
-| `.env` | Developer service configuration and credentials | Copy `.env.template` and keep it git-ignored. |
-| .NET User Secrets | Local secrets for any project (`dotnet user-secrets`) | Preferred for developers and Testcontainers. |
-| Dev Container env files | `.devcontainer/devcontainer.local.env` | Git-ignored opt-in for contributors who prefer env files. |
-| Environment variables | Runtime overrides (containers, CI, production) | Use double underscores for nested config (`MINIO__ACCESSKEY`). |
-| Azure Key Vault | Production/staging secrets | Add via `builder.Configuration.AddAzureKeyVault(...)`. |
-| GitHub Secrets | CI/CD pipelines | The active workflow defines the secrets it consumes. |
+1. `appsettings.json` and `appsettings.{Environment}.json` contain defaults and
+   Development-only fixture credentials.
+2. .NET User Secrets are enabled for both web projects and are preferred for
+   direct local runs.
+3. Environment variables use double underscores for nested .NET keys.
+4. Command-line configuration has the highest normal application precedence.
 
-Configuration sources later in the list override earlier ones. Use
-User Secrets or env vars for anything sensitive; never commit secrets
-into git.
+Repository helpers also load the ignored root `.env` and optional ignored
+`.devcontainer/devcontainer.local.env`. Root `.env` names such as
+`MINIO_ACCESS_KEY` are a Compose/script contract; Compose and
+`./scripts/with-env` translate them to .NET names such as
+`Minio__AccessKey`.
 
-## 2. Quick Start (Local Development)
+`CAMERA_AGENT_LOGIC_BASEURL` is the container-internal LogicHost URL.
+`CAMERA_AGENT_PUBLIC_LOGIC_BASEURL` is the agent-reachable URL embedded by a
+direct LogicHost bootstrap response. Do not use Docker DNS names in direct-host
+credentials.
+
+The repository does not currently call `AddAzureKeyVault`, configure another
+cloud secret provider, or protect Data Protection keys with a key-management
+service. A production deployment may add a provider-neutral or cloud-specific
+store, but that provider, workload identity, availability model, rotation, and
+recovery must be implemented and tested in that deployment.
+
+## Local Setup
+
+Keep `.env` mode `0600` and shell-compatible because repository helpers source
+it. Do not commit it.
 
 ```bash
-cp .env.template .env                # Add shared hvo-docker credentials
-./scripts/infra:start logichost
-cd src/HVO.SkyMonitor.LogicHost
-
-# Optional: initialize user secrets for application-only credentials
-dotnet user-secrets init
-dotnet user-secrets set "SignedTicket:Secret" "$(openssl rand -base64 32)"
-
-# Run the host
-cd ../..
-./scripts/with-env dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --configuration Debug
+cp .env.template .env
+chmod 600 .env
 ```
 
-Shared-service credentials must be configured in the ignored `.env`; no default credentials are provided.
+Choose one application workflow:
 
-## 3. Secrets Catalog
+- Containers: populate required `.env` values, including
+  `CAMERA_AGENT_ADMIN_PASSWORD` and `CAMERA_AGENT_OAUTH_CLIENT_SECRET`, then run
+  `./scripts/infra:start`.
+- Direct LogicHost: run `./scripts/with-env dotnet run --project
+  src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj`.
+- Direct CameraAgent: set project User Secrets and run `./scripts/with-env
+  dotnet run --project
+  src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj` so Docker
+  DNS defaults are replaced with the configured public LogicHost URL.
 
-### 3.1 Non-Sensitive (stay in git)
+Do not start a LogicHost container and direct LogicHost on the same host port.
 
+Set a direct-run secret without placing its value in the command line:
+
+```bash
+./scripts/user-secret:set \
+  src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj \
+  'LocalIdentity:AdminPassword'
 ```
-ASPNETCORE_ENVIRONMENT=Development
-DOTNET_ENVIRONMENT=Development
-REDIS_PORT=6379
-SQLSERVER_PORT=1433
-MINIO_API_PORT=9000
-LOGIC_HOST_HTTP_PORT=5174
-```
 
-### 3.2 Sensitive (never in git)
+The helper keeps the value out of the process command line and removes its
+owner-only temporary input file on exit. Use the corresponding LogicHost
+project for LogicHost keys.
 
-| Key | Description | Min Entropy | Recommended Store |
-| --- | --- | --- | --- |
-| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | Shared MinIO administrator credentials, used only to provision the service | strong password | Root `.env` / Key Vault |
-| `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` | SkyMonitor bucket-scoped application credentials | strong password | Root `.env` / Key Vault |
-| `SQLSERVER_USER`, `SQLSERVER_PASSWORD` | Shared database login | strong password | Root `.env` / Key Vault |
-| `REDIS_PASSWORD` | Shared Redis credential | strong password | Root `.env` / Key Vault |
-| `SignedTicket:Secret` | HMAC key for signed URLs | 256-bit random | User Secrets / Key Vault |
-| `ApiKey:HashingSalt` | Optional salt for API key hashing | 256-bit random | Key Vault |
-| `OpenIddict:*Certificate:*` | Signing/encryption certificates | RSA 4096 | Key Vault / secure file mount |
-| `DeviceBootstrap:CentralIdentity:ClientCredentials:*` | Scoped client for camera agents | depends | Key Vault |
-| `Kestrel:Certificates:Default:*` | HTTPS certificate | n/a | Key Vault / file mount |
-| `DataProtection:KeyVaultUri` | URI used for key persistence | n/a | appsettings / env |
+## Secret Catalog
 
-Generate random material with `openssl rand -base64 32` (Linux/macOS)
-or the PowerShell equivalent shown in the legacy docs.
-
-## 4. Environment-Specific Guidance
-
-### Development + Dev Container
-- `.env.template` → `.env` for shared-service endpoints, credentials, and
-  application ports.
-- User Secrets are automatically mounted inside the Dev Container
-  (`~/.microsoft/usersecrets`).
-- Optional `.devcontainer/devcontainer.local.env` holds extra env vars and
-  stays git-ignored.
-
-### CI/CD (GitHub Actions)
-- Add required secrets under **Settings → Secrets and variables → Actions**.
-- The current CI workflow requires no application-service credentials because
-  Testcontainers supplies its disposable dependencies. Coverage badge updates
-  require the configured gist secrets.
-- Reference them via `${{ secrets.NAME }}` inside workflow yaml.
-
-### Production / Staging
-- Store certificates, database credentials, signed-ticket secrets, and
-  Central Identity client secrets in Azure Key Vault.
-- Configure the app in `Program.cs`:
-  ```csharp
-  builder.Configuration.AddAzureKeyVault(
-      new Uri(builder.Configuration["KeyVaultUri"]!),
-      new DefaultAzureCredential());
-  ```
-- Persist ASP.NET Data Protection keys to Azure Storage/Key Vault so
-  multiple instances share encryption material.
-- Use environment variables to point Kestrel at the mounted HTTPS
-  certificate:
-  ```bash
-  export KESTREL__CERTIFICATES__DEFAULT__PATH=/certs/skymonitor.pfx
-  export KESTREL__CERTIFICATES__DEFAULT__PASSWORD="<secret>"
-  ```
-
-## 5. Identity-Specific Secrets
-
-### 5.1 OpenIddict Certificates
-- Development: `AddDevelopmentEncryptionCertificate()` and
-  `AddDevelopmentSigningCertificate()` already generate ephemeral keys.
-- Production: supply `.pfx` files + passwords (store in Key Vault).
-- Rotate at least every 12 months; load both old and new certs during the
-  cutover window to avoid downtime.
-
-### 5.2 Signed URL HMAC
-- `SignedTicket:Secret` must be a 32-byte (256-bit) key.
-- Configure TTL, skew, and allowed path list via appsettings (non-secret).
-- Rotate every 90 days. During rotation, accept both old and new secrets
-  until the previous TTL expires.
-
-### 5.3 API Key Hashing Salt
-- Optional enhancement that mixes a random salt into API key hashes.
-- Rotation requires issuing new API keys because plaintext values are
-  never stored.
-
-### 5.4 Camera Agent Bootstrap Bundle
-- `DeviceBootstrap:CentralIdentity:*` supplies the scoped confidential
-  client we hand to camera agents during registration.
-- Store `ClientSecret` in Key Vault and scope the granted API permissions
-  to only what agents need (`api.camera`, `api.frames`, `api.images`).
-
-### 5.5 Data Protection & TLS
-- Persist keys to Key Vault/Azure Storage for multi-instance
-  deployments:
-  ```csharp
-  builder.Services.AddDataProtection()
-      .PersistKeysToAzureBlobStorage(new Uri(builder.Configuration["DataProtection:BlobUri"]!))
-      .ProtectKeysWithAzureKeyVault(new Uri(builder.Configuration["DataProtection:KeyVaultKeyUri"]!), new DefaultAzureCredential())
-      .SetApplicationName("HVO.SkyMonitor");
-  ```
-- Configure production HTTPS endpoints via `Kestrel:Certificates` or a
-  fronting ingress (Application Gateway, Front Door, etc.).
-
-## 6. Secret Rotation Checklist
-
-| Secret | Frequency | Notes |
+| Secret | Consumer and purpose | Supported local source |
 | --- | --- | --- |
-| Signed URL HMAC | 90 days | Accept both old/new secrets during overlap window. |
-| MinIO / SQL Server credentials | 90 days (shared env) | Update secrets store first, then recycle containers. |
-| OpenIddict certificates | 12 months | Load new cert alongside old before revoking. |
-| Camera agent confidential client | With any suspected compromise | Update envelope service and restart LogicHost. |
-| TLS certificates | Per CA lifetime | Automate with Let's Encrypt or Key Vault rotation. |
+| `SQLSERVER_PASSWORD` / `ConnectionStrings:skymonitordb` | LogicHost SQL Server `SkyMonitor` database | Ignored `.env`; direct nested environment override |
+| `REDIS_PASSWORD` / `Redis:Configuration` | LogicHost prefixed distributed cache | Ignored `.env`; direct nested environment override |
+| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | MinIO administration and service-account provisioning only | Ignored `.env` available only to operator scripts |
+| `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` / `Minio:AccessKey`, `Minio:SecretKey` | LogicHost access to the two approved buckets | Ignored `.env`; direct nested environment override |
+| `Smtp:Username`, `Smtp:Password` | Authenticated SMTP where required | User Secrets or environment variables |
+| `DatabaseSeed:Users:*:Password` | Optional configured LogicHost seed users | User Secrets or environment variables |
+| `DatabaseSeed:ApiKeys:*:RawKey` | Optional configured integration keys | User Secrets or environment variables |
+| `DatabaseSeed:ConfidentialClients:*:ClientSecret` | Optional OpenIddict clients | User Secrets or environment variables |
+| `DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret` | Fleet-scoped client included in bootstrap responses | User Secrets or environment variables |
+| `CentralIdentity:ClientCredentials:ClientSecret` | CameraAgent outbound client-credentials mode | Imported encrypted device state, User Secrets, or environment variables |
+| `CentralIdentity:ApiKey:Key` | CameraAgent outbound API-key mode | Imported encrypted device state, User Secrets, or environment variables |
+| `CAMERA_AGENT_ADMIN_PASSWORD` / `LocalIdentity:AdminPassword` | Configuration-seeded local site owner | Ignored `.env` or CameraAgent User Secrets |
+| `CentralIdentity:LocalFallback:AccessCodeHash` | Reserved option; no runtime fallback handler is implemented | Do not configure as an active control |
+| OpenIddict signing/encryption private keys | Token, code, and refresh-token cryptography | Development certificate store only; production loader not implemented |
+| Kestrel/TLS private key and password | HTTPS when Kestrel owns TLS | Framework configuration is available, but repository Compose has no HTTPS profile or secure mount |
+| LogicHost and CameraAgent Data Protection key rings | Cookies, bootstrap envelopes, and CameraAgent encrypted secrets | Bind-mounted `DataProtection-Keys` directories; never configuration values |
+| CameraAgent device key, registration token, and OAuth secret | Device authentication and outbound central access | Data Protection-encrypted `device-secrets.dat` |
+| `GH_PAT`, `SSH_PRIVATE_KEY`, `TAILSCALE_AUTHKEY` | Developer tooling, not application runtime | Host environment or ignored devcontainer env only |
+| `GIST_TOKEN`, `COVERAGE_GIST_ID` | Optional CI coverage badge publication | GitHub Actions secrets/variables |
 
-## 7. Troubleshooting
+Application appsettings contain no usable owner password, API key, OAuth client
+secret, or MinIO credential. Integration tests inject isolated fixture
+credentials. Compose requires explicit CameraAgent owner and fleet OAuth client
+secrets from the ignored `.env`.
 
-| Symptom | Checks |
+## Runtime Secret Files
+
+The following paths contain secret or security-sensitive state and must stay
+ignored, access-controlled, and out of support bundles:
+
+- `data/logichost/dataprotection/`
+- `data/logichost/home/` (Development certificate store)
+- `data/cameraagent/identity/`
+- `data/cameraagent/dataprotection/`
+- `data/cameraagent/provisioning/`
+- `data/agent/` and `data/archive/`
+- `src/HVO.SkyMonitor.CameraAgent/App_Data/`
+- any host `DataProtection-Keys/` directory
+- `.env` and `.devcontainer/devcontainer.local.env`
+
+`device-secrets.dat` is encrypted with CameraAgent Data Protection. Encryption
+does not make it safe to publish, and it cannot be recovered without the
+matching key ring. `device-identity.json` contains a verification code and is
+also sensitive operational state.
+
+## Credential Scope
+
+- SQL Server must point only to `SkyMonitor`. The current `.env` template uses
+  an instance administrator for local compatibility; production must use
+  operator-approved migration/runtime least privilege.
+- Redis keys must use `Redis:InstanceName=skymonitor:`. Redis is not an identity
+  authority or session revocation store.
+- LogicHost uses only `skymonitor-diagnostics` and
+  `skymonitor-artifacts` through the scoped MinIO application account.
+- MinIO root credentials never belong in LogicHost configuration.
+- OAuth scopes are dot-separated: `api.admin`, `api.camera`, `api.frames`,
+  `api.images`, `api.viewer`, and `api.webhooks`.
+- API keys use `Read` or `ReadWrite`; choose `Read` unless mutation is required.
+
+## Rotation Capability
+
+| Credential | Current supported operation |
 | --- | --- |
-| Secret not loading locally | `dotnet user-secrets list --project <csproj>` and confirm `UserSecretsId` exists in the `.csproj`. |
-| Container cannot see secrets | Ensure `.env` or `--env-file` is passed, or exec into the container and run `env` to confirm values. |
-| CI build missing secret | Verify GitHub repo/organization secrets scope and workflow name matches. |
-| Token/signature errors after rotation | Confirm both old and new certs/secrets were deployed during the overlap period before revoking the old value. |
+| User password | User self-service change/reset; CameraAgent owner configuration must change at the same time because startup reconciles it. |
+| LogicHost API key | Manual make-before-break create, deploy, validate, deactivate, rollback/reactivate, then delete. |
+| Device key | Central revocation and full re-registration only; renewal/overlap is not implemented. |
+| Confidential OAuth client | Startup replaces a changed secret immediately; use coordinated downtime or a new client ID because same-client overlap is not implemented. |
+| Fleet bootstrap OAuth client | Change affects newly issued envelopes; existing agents require reprovisioning. |
+| MinIO application account | Operator-owned; current provisioning script does not update an existing secret. |
+| SQL Server or Redis password | Rotate server side using the service owner's procedure, update the secret source, then restart and validate applications. Repository code does not orchestrate overlap. |
+| OpenIddict signing/encryption certificate | Production loading and overlap are not implemented. |
+| TLS certificate | Owned by the actual TLS terminator, which repository Compose does not define. |
+| Data Protection keys | Automatic key generation in the persisted ring; deletion is not rotation and invalidates protected data. |
 
-## 8. References
+Use the step-by-step procedures and rollback rules in the
+[identity operations runbook](../identity/operations-runbook.md).
 
-- `.env.template` – list of non-sensitive environment variables.
-- `docs/runbooks/local-dev.md` – end-to-end local workflow that links back
-  to this guide.
-- `docs/identity/operations-runbook.md` – operational procedures (key
-  rotation, incident response) for Central Identity.
+## Leakage Controls
+
+- Never run a full environment dump for troubleshooting. Query only a known
+  non-secret key or verify that a secret is present without printing its value.
+- Do not put secrets directly in command arguments. Prefer an interactive
+  prompt, User Secrets prompt, protected input file, or deployment secret
+  provider.
+- HTTP logging is limited to method, path, status, duration, and correlation
+  headers. Request and response bodies and authorization headers must remain
+  disabled.
+- CameraAgent token and bootstrap failures log status only; identity-provider
+  and bootstrap response bodies are not retained.
+- Metrics may include bounded grant type, result, and access level. Do not add
+  user, key, client, device, path, IP, or token values as labels.
+- Redact personal data from retained evidence. Prefer internal IDs and UTC
+  intervals when correlation is required.
+- Treat terminal scrollback, shell history, CI output, traces, crash dumps, and
+  support archives as possible leakage channels.
+
+## Certificates and Data Protection
+
+Development and Testing use OpenIddict development signing and encryption
+certificates. Production has no repository-supported certificate option schema
+or loader, so production startup and overlap rotation must remain blocked until
+that implementation exists.
+
+Both hosts persist Data Protection keys to filesystem directories. Compose
+mounts those directories so rebuilds preserve cookies and protected state.
+Back up LogicHost keys with protected envelopes and CameraAgent keys with
+`device-secrets.dat`. Never reset a key ring as a certificate-rotation method.
+
+## Troubleshooting
+
+| Symptom | Safe check |
+| --- | --- |
+| Configuration is ignored | Confirm whether the value uses a root `.env` name or a nested .NET name, and confirm the intended project/environment without printing the value. |
+| CameraAgent owner password reverts | Update `LocalIdentity:AdminPassword` in the effective secret source before restart. |
+| Token acquisition fails | Verify configured service URL, client ID, grant permissions, scopes, and secret presence; inspect status-only logs. |
+| API key fails | Use `/api/v1.0/status/detailed`, verify active/expiry/access state, and inspect key-ID audit events. |
+| CameraAgent secrets cannot decrypt | Restore matching provisioning and Data Protection state; do not fall back silently to fixture credentials. |
+| MinIO authorization fails | Verify the scoped application account and approved bucket policy, not the root account. |
+| Cookies fail after recreation | Verify the correct Data Protection bind mount exists and is readable by the container. |
+
+Run `./scripts/docs:audit-operations` after changing identity routes,
+configuration, deployment, or this guide.

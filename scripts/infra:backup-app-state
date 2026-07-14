@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Back up bind-mounted application state. SQL Server and MinIO require separate operator backups.
+
+set -euo pipefail
+umask 077
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+[[ $# -eq 1 ]] || {
+    printf 'Usage: %s BACKUP_DIRECTORY\n' "$0" >&2
+    exit 1
+}
+
+runtime_root_was_set=false
+runtime_root_override=""
+if [[ -v HVO_RUNTIME_DATA_ROOT ]]; then
+    runtime_root_was_set=true
+    runtime_root_override="$HVO_RUNTIME_DATA_ROOT"
+fi
+if [[ -f .env ]]; then
+    set -a
+    source .env
+    set +a
+fi
+if [[ "$runtime_root_was_set" == true ]]; then
+    HVO_RUNTIME_DATA_ROOT="$runtime_root_override"
+fi
+
+readonly RUNTIME_DATA_ROOT="$(realpath -m "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
+readonly BACKUP_DIRECTORY="$(realpath -m "$1")"
+if [[ -z "$RUNTIME_DATA_ROOT" || "$RUNTIME_DATA_ROOT" == "/" ]]; then
+    printf 'Refusing unsafe runtime data root: %s\n' "$RUNTIME_DATA_ROOT" >&2
+    exit 1
+fi
+if [[ -z "$BACKUP_DIRECTORY" || "$BACKUP_DIRECTORY" == "/" ]]; then
+    printf 'Refusing unsafe backup directory: %s\n' "$BACKUP_DIRECTORY" >&2
+    exit 1
+fi
+case "$BACKUP_DIRECTORY/" in
+    "$RUNTIME_DATA_ROOT/"*)
+        printf 'Backup destination must be outside the runtime data root.\n' >&2
+        exit 1
+        ;;
+esac
+
+install -d -m 700 "$BACKUP_DIRECTORY"
+readonly TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+readonly ARCHIVE="$BACKUP_DIRECTORY/hvo-application-state-$TIMESTAMP.tgz"
+readonly CHECKSUM="$ARCHIVE.sha256"
+readonly REQUIRED_DIRECTORIES=(
+    logichost/dataprotection
+    logichost/home
+    cameraagent/identity
+    cameraagent/dataprotection
+    cameraagent/provisioning
+    agent
+    archive
+)
+
+for relative_path in "${REQUIRED_DIRECTORIES[@]}"; do
+    if [[ ! -d "$RUNTIME_DATA_ROOT/$relative_path" || -L "$RUNTIME_DATA_ROOT/$relative_path" ]]; then
+        printf 'Required runtime directory is missing or unsafe: %s\n' "$relative_path" >&2
+        exit 1
+    fi
+done
+
+"$SCRIPT_DIR/infra:stop" logichost cameraagent
+tar --create --gzip --file "$ARCHIVE" --directory "$RUNTIME_DATA_ROOT" .
+(cd "$BACKUP_DIRECTORY" && sha256sum "$(basename "$ARCHIVE")" > "$(basename "$CHECKSUM")")
+archive_verbose_listing="$(tar --list --verbose --numeric-owner --gzip --file "$ARCHIVE")"
+while IFS= read -r entry; do
+    case "${entry:0:1}" in
+        -|d) ;;
+        *)
+            rm -f "$ARCHIVE" "$CHECKSUM"
+            printf 'Backup contains unsupported link or special entry: %s\n' "$entry" >&2
+            exit 1
+            ;;
+    esac
+done <<< "$archive_verbose_listing"
+
+printf 'Application state backup: %s\n' "$ARCHIVE"
+printf 'Checksum manifest: %s\n' "$CHECKSUM"
+printf 'Applications remain stopped for coordinated SQL Server and MinIO backup.\n'

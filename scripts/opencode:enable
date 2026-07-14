@@ -4,10 +4,31 @@
 
 set -euo pipefail
 
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+source "$REPO_ROOT/.devcontainer/load-repo-env.sh"
+
+readonly TAILSCALE_AUTHKEY_VALUE="${TAILSCALE_AUTHKEY:-}"
+unset TAILSCALE_AUTHKEY
+
 readonly OPENCODE_HOST="127.0.0.1"
 readonly OPENCODE_PORT="${OPENCODE_PORT:-4096}"
+readonly TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-dev-host-skymonitor}"
+readonly TAILSCALE_ACCEPT_ROUTES="${TAILSCALE_ACCEPT_ROUTES:-true}"
 readonly OPENCODE_PID_FILE="/tmp/skymonitor-opencode.pid"
+readonly OPENCODE_PID_METADATA_FILE="/tmp/skymonitor-opencode.pid.meta"
 readonly OPENCODE_LOG_FILE="/tmp/skymonitor-opencode.log"
+readonly OPENCODE_SERVER_PASSWORD_FILE="$HOME/.local/share/opencode/server-password"
+readonly OPENCODE_PROCESS_METADATA_VERSION="1"
+
+case "$TAILSCALE_ACCEPT_ROUTES" in
+    true|false) ;;
+    *)
+        echo "TAILSCALE_ACCEPT_ROUTES must be 'true' or 'false'." >&2
+        exit 1
+        ;;
+esac
 
 if ! command -v opencode >/dev/null 2>&1; then
     echo "OpenCode is not installed. Rebuild the dev container to run its post-create setup." >&2
@@ -22,44 +43,149 @@ fi
 if ! pgrep -x tailscaled >/dev/null 2>&1; then
     echo "Starting Tailscale daemon..."
     sudo mkdir -p /var/lib/tailscale /var/run/tailscale
-    sudo nohup tailscaled \
+    sudo env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        nohup tailscaled \
         --state=/var/lib/tailscale/tailscaled.state \
         --socket=/var/run/tailscale/tailscaled.sock \
         --tun=userspace-networking \
         >/tmp/tailscaled.log 2>&1 &
-    sleep 1
 fi
 
-if ! pgrep -x tailscaled >/dev/null 2>&1; then
+for _ in {1..20}; do
+    if tailscale status --json >/dev/null 2>&1; then
+        break
+    fi
+    sleep 0.25
+done
+
+if ! pgrep -x tailscaled >/dev/null 2>&1 || ! tailscale status --json >/dev/null 2>&1; then
     echo "Tailscale daemon did not start. See /tmp/tailscaled.log for details." >&2
     exit 1
 fi
 
-if [[ "$(tailscale status --json | jq -r '.BackendState')" != "Running" ]]; then
-    echo "Tailscale is not authenticated. Run 'sudo tailscale up' before enabling OpenCode." >&2
+tailscale_state="$(tailscale status --json | jq -r '.BackendState')"
+case "$tailscale_state" in
+    Running)
+        ;;
+    Stopped)
+        echo "Restarting the authenticated Tailscale node..."
+        sudo tailscale up
+        ;;
+    NeedsLogin|NoState)
+        if [[ -z "$TAILSCALE_AUTHKEY_VALUE" ]]; then
+            echo "Tailscale needs first-time enrollment. Set TAILSCALE_AUTHKEY in .env or .devcontainer/devcontainer.local.env, then rerun this script." >&2
+            exit 1
+        fi
+
+        auth_key_file="$(mktemp)"
+        trap 'rm -f "$auth_key_file"' EXIT
+        chmod 0600 "$auth_key_file"
+        printf '%s' "$TAILSCALE_AUTHKEY_VALUE" > "$auth_key_file"
+
+        echo "Authenticating Tailscale as ${TAILSCALE_HOSTNAME}..."
+        sudo tailscale up \
+            --auth-key="file:$auth_key_file" \
+            --accept-routes="$TAILSCALE_ACCEPT_ROUTES" \
+            --hostname="$TAILSCALE_HOSTNAME" \
+            --operator="$(id -un)"
+        rm -f "$auth_key_file"
+        trap - EXIT
+        ;;
+    *)
+        echo "Tailscale did not become ready (backend state: $tailscale_state)." >&2
+        exit 1
+        ;;
+esac
+
+sudo tailscale set \
+    --accept-routes="$TAILSCALE_ACCEPT_ROUTES" \
+    --hostname="$TAILSCALE_HOSTNAME" \
+    --operator="$(id -un)"
+
+# A Serve configuration outlives the local process. Keep it disabled until the
+# intended authenticated OpenCode listener has passed all checks below.
+tailscale_serve_status="$(tailscale serve status --json)"
+if jq -e '.TCP["443"].HTTPS == true' <<< "$tailscale_serve_status" >/dev/null; then
+    tailscale serve --https=443 off >/dev/null
+fi
+
+if [[ ! -s "$OPENCODE_SERVER_PASSWORD_FILE" ]]; then
+    echo "OpenCode server password is missing. Rerun the devcontainer post-create setup." >&2
     exit 1
 fi
 
-if [[ -f "$OPENCODE_PID_FILE" ]] && kill -0 "$(<"$OPENCODE_PID_FILE")" 2>/dev/null; then
-    echo "OpenCode is already running on ${OPENCODE_HOST}:${OPENCODE_PORT}."
+opencode_pid=""
+if [[ -f "$OPENCODE_PID_FILE" ]]; then
+    opencode_pid="$(<"$OPENCODE_PID_FILE")"
+fi
+
+is_managed_opencode=false
+if [[ "$opencode_pid" =~ ^[0-9]+$ ]] \
+    && [[ -f "$OPENCODE_PID_METADATA_FILE" ]] \
+    && kill -0 "$opencode_pid" 2>/dev/null; then
+    opencode_command="$(ps -p "$opencode_pid" -o args= 2>/dev/null || true)"
+    opencode_start_time="$(ps -p "$opencode_pid" -o lstart= 2>/dev/null || true)"
+    mapfile -t opencode_metadata < "$OPENCODE_PID_METADATA_FILE"
+    if [[ "${opencode_metadata[0]:-}" == "$OPENCODE_PROCESS_METADATA_VERSION" ]] \
+        && [[ "${opencode_metadata[1]:-}" == "$opencode_start_time" ]] \
+        && [[ "$opencode_command" == *"opencode serve"* ]] \
+        && [[ "$opencode_command" == *"--port $OPENCODE_PORT"* ]]; then
+        is_managed_opencode=true
+    fi
+fi
+
+if [[ "$is_managed_opencode" == false ]]; then
+    rm -f "$OPENCODE_PID_FILE" "$OPENCODE_PID_METADATA_FILE"
+fi
+
+if [[ "$is_managed_opencode" == true ]] \
+    && [[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://${OPENCODE_HOST}:${OPENCODE_PORT}/global/health")" == 401 ]]; then
+    echo "OpenCode is already running securely on ${OPENCODE_HOST}:${OPENCODE_PORT}."
+elif [[ "$is_managed_opencode" == true ]]; then
+    echo "Restarting OpenCode to apply secure server settings..."
+    kill "$opencode_pid"
+    wait "$opencode_pid" 2>/dev/null || true
+    rm -f "$OPENCODE_PID_FILE" "$OPENCODE_PID_METADATA_FILE"
 elif ss -ltn "sport = :${OPENCODE_PORT}" | grep -q LISTEN; then
-    rm -f "$OPENCODE_PID_FILE"
-    echo "Port ${OPENCODE_PORT} is already in use; proxying the existing local server."
-else
+    echo "Port ${OPENCODE_PORT} is already in use by a process not managed by this script; refusing to expose it." >&2
+    exit 1
+fi
+
+if [[ ! -f "$OPENCODE_PID_FILE" ]]; then
     rm -f "$OPENCODE_PID_FILE"
     echo "Starting OpenCode on ${OPENCODE_HOST}:${OPENCODE_PORT}..."
-    nohup opencode serve --hostname "$OPENCODE_HOST" --port "$OPENCODE_PORT" \
+    env -i \
+        HOME="$HOME" \
+        PATH="$PATH" \
+        LANG="${LANG:-C.UTF-8}" \
+        NO_PROXY="${NO_PROXY:-localhost,127.0.0.1}" \
+        HTTP_PROXY="${HTTP_PROXY:-}" \
+        HTTPS_PROXY="${HTTPS_PROXY:-}" \
+        NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-}" \
+        OPENCODE_SERVER_PASSWORD="$(<"$OPENCODE_SERVER_PASSWORD_FILE")" \
+        nohup opencode serve --hostname "$OPENCODE_HOST" --port "$OPENCODE_PORT" \
         >"$OPENCODE_LOG_FILE" 2>&1 &
     echo $! >"$OPENCODE_PID_FILE"
-    sleep 1
+    printf '%s\n%s\n' \
+        "$OPENCODE_PROCESS_METADATA_VERSION" \
+        "$(ps -p "$!" -o lstart=)" \
+        > "$OPENCODE_PID_METADATA_FILE"
 
-    if ! kill -0 "$(<"$OPENCODE_PID_FILE")" 2>/dev/null; then
-        rm -f "$OPENCODE_PID_FILE"
-        echo "OpenCode failed to start. See $OPENCODE_LOG_FILE for details." >&2
+    for _ in {1..40}; do
+        if [[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://${OPENCODE_HOST}:${OPENCODE_PORT}/global/health" 2>/dev/null || true)" == 401 ]]; then
+            break
+        fi
+        sleep 0.25
+    done
+
+    if ! kill -0 "$(<"$OPENCODE_PID_FILE")" 2>/dev/null \
+        || [[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://${OPENCODE_HOST}:${OPENCODE_PORT}/global/health" 2>/dev/null || true)" != 401 ]]; then
+        rm -f "$OPENCODE_PID_FILE" "$OPENCODE_PID_METADATA_FILE"
+        echo "OpenCode failed to start with Basic Auth. See $OPENCODE_LOG_FILE for details." >&2
         exit 1
     fi
 fi
 
-sudo tailscale serve --bg --yes "$OPENCODE_PORT"
+tailscale serve --bg --yes "$OPENCODE_PORT"
 echo "OpenCode is available within the tailnet at:"
-sudo tailscale serve status
+tailscale serve status

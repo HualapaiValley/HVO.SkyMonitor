@@ -5,7 +5,7 @@ Blazor Server host for a self-contained SkyMonitor camera agent. It provides loc
 ## Highlights
 
 - **Modern UI**: Main layout, reconnect modal, scoped CSS/JS, and shared components using the local `hvo-dark` theme.
-- **Identity**: Local-only ASP.NET Core Identity with confirmation email flow, cookie auth, and profile/email/password management pages.
+- **Identity**: Local-only ASP.NET Core Identity with cookie auth and profile/email/password management pages. Local email delivery is not implemented.
 - **Frame APIs**: Versioned `/api/v1.0/frames` endpoints that stream the most recent exposure from the simulated capture pipeline.
 - **Diagnostics**: Structured JSON logging, custom correlation-id middleware, ProblemDetails enrichment, OpenTelemetry metrics/traces, Scalar UI, Prometheus scraping, and health checks.
 - **SQLite Storage**: Identity tables managed through EF Core migrations stored under `Data/Migrations`.
@@ -13,8 +13,11 @@ Blazor Server host for a self-contained SkyMonitor camera agent. It provides loc
 ## Run It
 
 ```bash
-cd /workspaces/HVO.SkyMonitor/src/HVO.SkyMonitor.CameraAgent
-dotnet run
+./scripts/user-secret:set \
+  src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj \
+  'LocalIdentity:AdminPassword'
+./scripts/with-env dotnet run \
+  --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 ```
 
 - UI: `http://localhost:5130/`
@@ -37,8 +40,9 @@ The app applies pending migrations automatically on startup.
 
 ## Configuration
 
-- `appsettings.json` contains the `LocalIdentity` section (admin email/password/username) and optional `DatabasePath` override used during seeding.
+- `LocalIdentity` configures the seeded owner email/password and optional `DatabasePath`. Use CameraAgent User Secrets for the password in a direct run and `CAMERA_AGENT_ADMIN_PASSWORD` for Compose.
 - Data-protection keys persist under `DataProtection-Keys/` (or the path you mount in Docker) so browser sessions survive restarts.
+- Device identity and encrypted central credentials persist under `DeviceProvisioning:StateDirectory`; restore them with the matching Data Protection keys.
 
 ## Theme Usage
 

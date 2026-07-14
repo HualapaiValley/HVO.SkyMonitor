@@ -1,84 +1,129 @@
 # Local Development Runbook
 
-This runbook describes the day-to-day workflow for developing and validating HVO.SkyMonitor on a developer workstation or Codespace.
+This runbook describes supported day-to-day development workflows for
+HVO.SkyMonitor.
 
 ## Prerequisites
 
-- Docker Engine with Compose plugin (the devcontainer already has both).
-- .NET SDK 10.x as pinned in `global.json`.
-- Access to repository secrets (see `docs/security/secrets.md`).
-- Devcontainer recommended; if running locally ensure environment variables from `.env.template` are populated.
+- Docker Engine with Compose; the devcontainer includes both.
+- Exact .NET SDK from `global.json`.
+- `jq` for protected JSON input to .NET User Secrets.
+- Access to development shared-service credentials.
+- An ignored root `.env` based on `.env.template`.
+
+Redis, MinIO, and Mailpit topology is defined by
+`deploy/hvo-docker/docker-compose.shared-services.yml` and normally runs
+persistently on `hvo-docker.hvo.lan`. SQL Server is provisioned separately on
+that host.
 
 ## Environment Setup
 
-1. **Configure shared infrastructure.** Copy `.env.template` to the ignored `.env` and provide the `hvo-docker.hvo.lan` endpoints and credentials. SQL Server, Redis, MinIO, and Mailpit are persistent services managed outside this repository.
+```bash
+cp .env.template .env
+chmod 600 .env
+```
 
-2. **Start application containers** when needed:
-    ```bash
-    ./scripts/infra:start
-    ```
+Populate every required password in `.env`. In particular,
+`CAMERA_AGENT_ADMIN_PASSWORD` and `CAMERA_AGENT_OAUTH_CLIENT_SECRET` have no
+Compose fallback. Use unique values for every reachable development deployment.
 
-3. **Stop local application containers** using the matching helper:
-   ```bash
-   ./scripts/infra:stop
-   ```
-    This does not stop or clear shared-service data.
+Start and stop application containers without changing shared-service data:
 
-## Application Workflows
+```bash
+./scripts/infra:start
+./scripts/infra:status
+./scripts/infra:stop logichost cameraagent
+```
 
-### Running the main host
+The application Compose topology exposes LogicHost at
+`http://localhost:5174` and CameraAgent at `http://localhost:5130` by default.
+It is Development-only and HTTP-only.
 
-1. Ensure `.env` is configured and invoke `dotnet run` through `./scripts/with-env` so the shared-service settings are loaded.
-2. From `/workspaces/HVO.SkyMonitor` execute:
-    ```bash
-    ./scripts/with-env dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
-    ```
-3. The HTTPS direct-run profile exposes LogicHost at `https://localhost:7096`; the container profile exposes it at `http://localhost:5174`.
+## Direct Hosts
 
-### Running camera agents
+Do not run a direct host while its container owns the same port.
 
-- **Camera Agent**:
-  ```bash
-   dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
-  ```
+LogicHost requires the root `.env` translation performed by `with-env`:
 
+```bash
+./scripts/with-env dotnet run \
+  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+```
 
-Each agent reads central identity and LogicHost endpoints from configuration or environment variables. When running side-by-side with the direct-run host, use `https://localhost:7096`; the container profile uses `http://localhost:5174`.
+CameraAgent supports project User Secrets. Set its local owner password through
+the prompt before a direct run:
 
-## Testing Workflow
+```bash
+./scripts/user-secret:set \
+  src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj \
+  'LocalIdentity:AdminPassword'
+./scripts/with-env dotnet run \
+  --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
+```
 
-1. **Unit tests**
-   ```bash
-   DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
-     dotnet test HVO.SkyMonitor.v9.slnx --filter "TestCategory=Unit"
-   ```
+The launch profiles include HTTPS endpoints for direct development. Repository
+Compose does not provide HTTPS termination and must not be described as a
+production identity deployment.
 
-2. **Integration tests only**
-   ```bash
-   dotnet test HVO.SkyMonitor.v9.slnx --filter "TestCategory=Integration"
-   ```
+## Identity Workflow
 
-3. **Manual diagnostic and accelerated soak tests**
-   ```bash
-   dotnet test HVO.SkyMonitor.v9.slnx --filter "TestCategory=Manual"
-   dotnet test HVO.SkyMonitor.v9.slnx --filter "TestCategory=Soak"
-   ```
+After startup:
 
-### Hardware Tests
+```bash
+./scripts/identity:smoke
+```
 
-Hardware suites are opt-in when added and use the reserved `Hardware` category. There are currently no Hardware MSTest cases, so no successful Hardware check is published. External Stellarium validation remains in `.github/workflows/stellarium.yml` rather than being represented by an empty MSTest category.
+- LogicHost user registration is `/Account/Register`.
+- LogicHost API-key management is `/Account/Manage/ApiKeys`.
+- Device registration is `/devices/register` and inventory is `/devices`.
+- CameraAgent import is `/devices/bootstrap`.
+- API-key proof uses `/api/v1.0/status/detailed`; anonymous
+  `/api/v1.0/status` does not validate a key.
+
+Use Mailpit for LogicHost confirmation/reset email in the development topology.
+CameraAgent's local email sender does not deliver recovery links.
+
+## Testing
+
+Use the exact SDK and canonical commands from the
+[CI pipeline runbook](ci-pipeline.md). Fast selections are:
+
+```bash
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+  dotnet test HVO.SkyMonitor.v9.slnx --filter 'TestCategory=Unit'
+
+dotnet test HVO.SkyMonitor.v9.slnx --filter 'TestCategory=Integration'
+```
+
+Integration selection requires Docker. Manual and Soak remain opt-in; External
+validation is owned by its separate workflow; no Hardware MSTest cases
+currently exist.
+
+Validate infrastructure and active documentation commands with:
+
+```bash
+./scripts/test:infra
+./scripts/docs:audit-operations
+```
+
+The infrastructure test uses a temporary runtime-data root and does not clear
+developer state.
 
 ## Troubleshooting
 
 | Symptom | Action |
 | --- | --- |
-| Database migration failures | Verify the `SQLSERVER_*` values in `.env`, then apply migrations against the shared SQL Server. |
-| MinIO credential errors | Verify `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` in `.env` match the shared MinIO service. |
-| Redis connection timeouts | Verify the `REDIS_*` values in `.env` and the availability of `hvo-docker.hvo.lan:6379`. |
-| SMTP emails missing | Verify the `SMTP_*` values in `.env`, then inspect Mailpit on `hvo-docker`. |
+| Database migration fails | Verify `SQLSERVER_*` endpoint/database/login values in `.env` and confirm the login owns approved migration rights on `SkyMonitor`. |
+| MinIO authorization fails | Verify `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` and the scoped policy for the two approved buckets. Root credentials are not application credentials. |
+| Redis connection times out | Verify `REDIS_*`, the selected endpoint, and the `skymonitor:` instance prefix. |
+| SMTP email is missing | Verify `SMTP_*`, then inspect the configured Mailpit instance without retaining confirmation links. |
+| CameraAgent startup rejects configuration | Set `CAMERA_AGENT_ADMIN_PASSWORD` for Compose or `LocalIdentity:AdminPassword` in CameraAgent User Secrets. |
+| CameraAgent owner password reverted | Change the effective `LocalIdentity:AdminPassword`; startup intentionally reconciles the configured owner. |
+| Cookies fail after reset | Reset removes the selected host's Data Protection keys. Restore the approved key-ring backup or sign in/bootstrap again. |
+| Device secrets cannot decrypt | Restore CameraAgent provisioning and Data Protection state from the same backup set. |
 
-## Additional References
+## References
 
-- `docs/security/secrets.md` for onboarding and rotation guidance.
-- `docs/identity/overview.md` for authentication deep dives.
-- `docs/runbooks/infra-operations.md` for production-like reset flows.
+- [Identity operations](../identity/operations-runbook.md)
+- [Secrets and configuration](../security/secrets.md)
+- [Infrastructure operations](infra-operations.md)

@@ -31,8 +31,7 @@ internal sealed class DeviceBootstrapWorkflow(
         using var response = await client.PostAsJsonAsync("api/device/bootstrap", request, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            var detail = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            logger.LogWarning("Device bootstrap failed with status {StatusCode}: {Detail}", response.StatusCode, detail);
+            logger.LogWarning("Device bootstrap failed with status {StatusCode}", response.StatusCode);
             response.EnsureSuccessStatusCode();
         }
 

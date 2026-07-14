@@ -8,8 +8,8 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | --- | --- |
 | **Quality** | Pinned local tools, formatting, vulnerability audit, and exact reviewed deprecation allowlist. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. |
-| **Unit Tests** | 372 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. |
-| **Integration Tests** | 109 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. |
+| **Unit Tests** | 377 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. |
+| **Integration Tests** | 111 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. |
 | **Architecture & Publish** | Six repository graph/MSBuild/publish checks plus retained host publish manifests. |
 | **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
 | **Coverage** | Exact source-path and branch merge of nine expected reports, checked-in aggregate non-regression, and risk-file floors. |
@@ -19,7 +19,7 @@ Each test invocation owns a category/project-specific result directory and TRX n
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=372`, `Integration=115`, `Manual=1`, `Soak=1`, `External=0`, and `Hardware=0`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=377`, `Integration=117`, `Manual=1`, `Soak=1`, `External=0`, and `Hardware=0`.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. No Hardware check is published until real device tests and a suitable runner exist.
 

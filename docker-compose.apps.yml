@@ -6,9 +6,11 @@ services:
       context: .
       dockerfile: src/HVO.SkyMonitor.LogicHost/Dockerfile
     container_name: skymonitor-logichost
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
+      HOME: /home/app
       OTEL_SERVICE_NAME: hvo-skymonitor
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:?OTEL_EXPORTER_OTLP_PROTOCOL must be set}
@@ -24,9 +26,22 @@ services:
       Smtp__Host: ${SMTP_HOST:?SMTP_HOST must be set}
       Smtp__Port: ${SMTP_PORT:?SMTP_PORT must be set}
       Smtp__From: ${SMTP_FROM:-no-reply@skymonitor.local}
-      IdentityServer__Issuer: ${IDENTITYSERVER_ISSUER:-http://logichost:8080/}
+      DeviceBootstrap__CentralIdentity__ServiceUrl: ${CAMERA_AGENT_LOGIC_BASEURL:-http://logichost:8080}
+      DeviceBootstrap__CentralIdentity__Mode: ClientCredentials
+      DeviceBootstrap__CentralIdentity__ClientCredentials__ClientId: ${CAMERA_AGENT_OAUTH_CLIENT_ID:-system-camera-agent}
+      DeviceBootstrap__CentralIdentity__ClientCredentials__ClientSecret: ${CAMERA_AGENT_OAUTH_CLIENT_SECRET:?CAMERA_AGENT_OAUTH_CLIENT_SECRET must be set}
+      DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__0: api.camera
+      DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__1: api.frames
+      DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__2: api.images
     ports:
       - "${LOGIC_HOST_HTTP_PORT:-5174}:8080"
+    volumes:
+      - type: bind
+        source: ${HVO_RUNTIME_DATA_ROOT:-./data}/logichost/dataprotection
+        target: /app/DataProtection-Keys
+      - type: bind
+        source: ${HVO_RUNTIME_DATA_ROOT:-./data}/logichost/home
+        target: /home/app
     restart: unless-stopped
     networks:
       - skymonitor-network
@@ -36,6 +51,7 @@ services:
       context: .
       dockerfile: src/HVO.SkyMonitor.CameraAgent/Dockerfile
     container_name: skymonitor-cameraagent
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
@@ -46,11 +62,27 @@ services:
       CentralIdentity__ServiceUrl: ${CAMERA_AGENT_IDENTITY_URL:-http://logichost:8080}
       CentralIdentity__InteractiveClient__PublicAuthority: ${CAMERA_AGENT_IDENTITY_PUBLIC_URL:-http://localhost:5174}
       LocalIdentity__DatabasePath: ${CAMERA_AGENT_IDENTITY_DB_PATH:-/app/App_Data/identity/cameraagent_identity.db}
+      LocalIdentity__AdminEmail: ${CAMERA_AGENT_ADMIN_EMAIL:-owner@cameraagent.local}
+      LocalIdentity__AdminPassword: ${CAMERA_AGENT_ADMIN_PASSWORD:?CAMERA_AGENT_ADMIN_PASSWORD must be set}
+      DeviceProvisioning__StateDirectory: /app/data/provisioning
     ports:
       - "${CAMERA_AGENT_HTTP_PORT:-5130}:8080"
     volumes:
-      - ./data/cameraagent/identity:/app/App_Data/identity
-      - ./data/cameraagent/dataprotection:/app/DataProtection-Keys
+      - type: bind
+        source: ${HVO_RUNTIME_DATA_ROOT:-./data}/cameraagent/identity
+        target: /app/App_Data/identity
+      - type: bind
+        source: ${HVO_RUNTIME_DATA_ROOT:-./data}/cameraagent/dataprotection
+        target: /app/DataProtection-Keys
+      - type: bind
+        source: ${HVO_RUNTIME_DATA_ROOT:-./data}/cameraagent/provisioning
+        target: /app/data/provisioning
+      - type: bind
+        source: ${HVO_RUNTIME_DATA_ROOT:-./data}/agent
+        target: /workspaces/HVO.SkyMonitor/data/agent
+      - type: bind
+        source: ${HVO_RUNTIME_DATA_ROOT:-./data}/archive
+        target: /workspaces/HVO.SkyMonitor/data/archive
     restart: unless-stopped
     networks:
       - skymonitor-network

@@ -284,9 +284,8 @@ public sealed class AuthorizationController : Controller
         }
         finally
         {
-            // Identity Hardening: Record token request metrics
             stopwatch.Stop();
-            _metrics.RecordTokenRequest(clientId, grantType, success, stopwatch.Elapsed.TotalMilliseconds);
+            _metrics.RecordTokenRequest(grantType, success, stopwatch.Elapsed.TotalMilliseconds);
         }
     }
 

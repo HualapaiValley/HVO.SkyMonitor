@@ -3,11 +3,14 @@
 .env
 .env.*
 !.env.template
+.devcontainer/devcontainer.local.env
+.devcontainer/state
 **/bin
 **/obj
 **/TestResults
 TestResults
 coverage-report
+data/
 App_Data
 DataProtection-Keys
 *.user

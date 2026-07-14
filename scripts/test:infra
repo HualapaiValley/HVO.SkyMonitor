@@ -22,8 +22,29 @@ chmod +x "$TEMP_DIR/docker"
 
 run_case() {
     : > "$TEMP_DIR/docker.log"
-    PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" "$REPO_ROOT/scripts/infra:start" "$@" >/dev/null
+    PATH="$TEMP_DIR:$PATH" \
+        DOCKER_LOG="$TEMP_DIR/docker.log" \
+        HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
+        "$REPO_ROOT/scripts/infra:start" "$@" >/dev/null
 }
+
+mkdir -p \
+    "$TEMP_DIR/runtime-data/logichost/dataprotection" \
+    "$TEMP_DIR/runtime-data/logichost/home" \
+    "$TEMP_DIR/runtime-data/cameraagent/identity" \
+    "$TEMP_DIR/runtime-data/cameraagent/dataprotection" \
+    "$TEMP_DIR/runtime-data/cameraagent/provisioning/nested" \
+    "$TEMP_DIR/runtime-data/agent" \
+    "$TEMP_DIR/runtime-data/archive"
+touch \
+    "$TEMP_DIR/runtime-data/logichost/dataprotection/key.xml" \
+    "$TEMP_DIR/runtime-data/logichost/home/certificate.pfx" \
+    "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db" \
+    "$TEMP_DIR/runtime-data/cameraagent/dataprotection/key.xml" \
+    "$TEMP_DIR/runtime-data/cameraagent/provisioning/.device-identity.json" \
+    "$TEMP_DIR/runtime-data/cameraagent/provisioning/nested/device-secrets.dat" \
+    "$TEMP_DIR/runtime-data/agent/frame.bin" \
+    "$TEMP_DIR/runtime-data/archive/frame.bin"
 
 run_case --reset cameraagent
 grep -Fqx 'compose -f docker-compose.apps.yml rm -sf cameraagent' "$TEMP_DIR/docker.log"
@@ -33,6 +54,15 @@ if grep -q logichost "$TEMP_DIR/docker.log"; then
     echo "A CameraAgent-only reset unexpectedly selected LogicHost." >&2
     exit 1
 fi
+test -f "$TEMP_DIR/runtime-data/logichost/dataprotection/key.xml"
+test -f "$TEMP_DIR/runtime-data/logichost/home/certificate.pfx"
+test ! -e "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
+test ! -e "$TEMP_DIR/runtime-data/cameraagent/dataprotection/key.xml"
+test ! -e "$TEMP_DIR/runtime-data/cameraagent/provisioning/.device-identity.json"
+test ! -e "$TEMP_DIR/runtime-data/cameraagent/provisioning/nested"
+test ! -e "$TEMP_DIR/runtime-data/agent/frame.bin"
+test ! -e "$TEMP_DIR/runtime-data/archive/frame.bin"
+test "$(stat -c '%a' "$TEMP_DIR/runtime-data/cameraagent/provisioning")" = "700"
 
 run_case --rebuild logichost
 grep -Fqx 'compose -f docker-compose.apps.yml build logichost' "$TEMP_DIR/docker.log"
@@ -41,9 +71,64 @@ if grep -q cameraagent "$TEMP_DIR/docker.log"; then
     echo "A LogicHost-only rebuild unexpectedly selected CameraAgent." >&2
     exit 1
 fi
+test -f "$TEMP_DIR/runtime-data/logichost/dataprotection/key.xml"
 
 run_case --reset
 grep -Fqx 'compose -f docker-compose.apps.yml build logichost cameraagent' "$TEMP_DIR/docker.log"
 grep -Fqx 'compose -f docker-compose.apps.yml up -d logichost cameraagent' "$TEMP_DIR/docker.log"
+test ! -e "$TEMP_DIR/runtime-data/logichost/dataprotection/key.xml"
+test ! -e "$TEMP_DIR/runtime-data/logichost/home/certificate.pfx"
+
+touch "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
+PATH="$TEMP_DIR:$PATH" \
+    DOCKER_LOG="$TEMP_DIR/docker.log" \
+    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
+    "$REPO_ROOT/scripts/infra:reset" cameraagent >/dev/null
+test ! -e "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
+
+mkdir -p "$TEMP_DIR/outside-runtime"
+touch "$TEMP_DIR/outside-runtime/key.xml"
+rm -rf "$TEMP_DIR/runtime-data/logichost/dataprotection"
+ln -s "$TEMP_DIR/outside-runtime" "$TEMP_DIR/runtime-data/logichost/dataprotection"
+if PATH="$TEMP_DIR:$PATH" \
+    DOCKER_LOG="$TEMP_DIR/docker.log" \
+    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
+    "$REPO_ROOT/scripts/infra:reset" logichost >/dev/null 2>&1; then
+    echo "A reset through a symbolic link unexpectedly succeeded." >&2
+    exit 1
+fi
+test -f "$TEMP_DIR/outside-runtime/key.xml"
+rm "$TEMP_DIR/runtime-data/logichost/dataprotection"
+mkdir -p "$TEMP_DIR/runtime-data/logichost/dataprotection"
+
+touch "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
+PATH="$TEMP_DIR:$PATH" \
+    DOCKER_LOG="$TEMP_DIR/docker.log" \
+    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
+    "$REPO_ROOT/scripts/infra:backup-app-state" "$TEMP_DIR/backups" >/dev/null
+archive=("$TEMP_DIR"/backups/hvo-application-state-*.tgz)
+test -f "${archive[0]}"
+test -f "${archive[0]}.sha256"
+cp "${archive[0]}" "$TEMP_DIR/backups/mispaired.tgz"
+cp "${archive[0]}.sha256" "$TEMP_DIR/backups/mispaired.tgz.sha256"
+if PATH="$TEMP_DIR:$PATH" \
+    DOCKER_LOG="$TEMP_DIR/docker.log" \
+    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
+    HVO_SKIP_RUNTIME_HEALTHCHECK=true \
+    "$REPO_ROOT/scripts/infra:restore-app-state" "$TEMP_DIR/backups/mispaired.tgz" >/dev/null 2>&1; then
+    echo "A mispaired checksum manifest unexpectedly passed." >&2
+    exit 1
+fi
+mkdir -p "$TEMP_DIR/transported"
+cp "${archive[0]}" "${archive[0]}.sha256" "$TEMP_DIR/transported/"
+rm "${archive[0]}" "${archive[0]}.sha256"
+archive=("$TEMP_DIR"/transported/hvo-application-state-*.tgz)
+rm -f "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
+PATH="$TEMP_DIR:$PATH" \
+    DOCKER_LOG="$TEMP_DIR/docker.log" \
+    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
+    HVO_SKIP_RUNTIME_HEALTHCHECK=true \
+    "$REPO_ROOT/scripts/infra:restore-app-state" "${archive[0]}" >/dev/null
+test -f "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
 
 echo "Infrastructure command contract passed."

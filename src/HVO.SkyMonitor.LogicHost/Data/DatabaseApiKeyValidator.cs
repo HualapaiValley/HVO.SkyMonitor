@@ -40,15 +40,13 @@ internal sealed class DatabaseApiKeyValidator : IApiKeyValidator
 
         if (key == null)
         {
-            // Identity Hardening: Record failed API key authentication
-            _metrics?.RecordApiKeyAuthentication(null, success: false);
+            _metrics?.RecordApiKeyAuthentication(success: false);
             return new ApiKeyValidationResult { IsValid = false };
         }
 
         if (key.ExpiresUtc.HasValue && key.ExpiresUtc.Value < DateTime.UtcNow)
         {
-            // Identity Hardening: Record expired API key attempt
-            _metrics?.RecordApiKeyAuthentication(key.Id, success: false);
+            _metrics?.RecordApiKeyAuthentication(success: false);
             return new ApiKeyValidationResult { IsValid = false };
         }
 
@@ -58,13 +56,11 @@ internal sealed class DatabaseApiKeyValidator : IApiKeyValidator
 
         if (user == null)
         {
-            // Identity Hardening: Record orphaned API key (user deleted)
-            _metrics?.RecordApiKeyAuthentication(key.Id, success: false);
+            _metrics?.RecordApiKeyAuthentication(success: false);
             return new ApiKeyValidationResult { IsValid = false };
         }
 
-        // Identity Hardening: Record successful API key authentication and log usage
-        _metrics?.RecordApiKeyAuthentication(key.Id, success: true, key.AccessLevel.ToString());
+        _metrics?.RecordApiKeyAuthentication(success: true, key.AccessLevel.ToString());
 
         var endpoint = _httpContextAccessor?.HttpContext?.Request.Path.Value ?? "unknown";
         _eventLogger?.LogApiKeyUsed(key.Id, key.UserId, key.AccessLevel.ToString(), endpoint);
