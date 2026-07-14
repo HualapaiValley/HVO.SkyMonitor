@@ -25,7 +25,6 @@ RUN dotnet restore src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 
 # Copy source code
 COPY src/ src/
-COPY tests/fixtures/catalog/hyg-v42-bright-stars.sqlite tests/fixtures/catalog/hyg-v42-bright-stars.sqlite
 
 # Build and publish
 WORKDIR /src/src/HVO.SkyMonitor.LogicHost

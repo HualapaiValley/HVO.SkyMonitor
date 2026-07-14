@@ -31,6 +31,7 @@ run_case() {
 mkdir -p \
     "$TEMP_DIR/runtime-data/logichost/dataprotection" \
     "$TEMP_DIR/runtime-data/logichost/home" \
+    "$TEMP_DIR/runtime-data/catalog/versions/installed" \
     "$TEMP_DIR/runtime-data/cameraagent/identity" \
     "$TEMP_DIR/runtime-data/cameraagent/dataprotection" \
     "$TEMP_DIR/runtime-data/cameraagent/provisioning/nested" \
@@ -39,6 +40,7 @@ mkdir -p \
 touch \
     "$TEMP_DIR/runtime-data/logichost/dataprotection/key.xml" \
     "$TEMP_DIR/runtime-data/logichost/home/certificate.pfx" \
+    "$TEMP_DIR/runtime-data/catalog/versions/installed/manifest.json" \
     "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db" \
     "$TEMP_DIR/runtime-data/cameraagent/dataprotection/key.xml" \
     "$TEMP_DIR/runtime-data/cameraagent/provisioning/.device-identity.json" \
@@ -56,6 +58,7 @@ if grep -q logichost "$TEMP_DIR/docker.log"; then
 fi
 test -f "$TEMP_DIR/runtime-data/logichost/dataprotection/key.xml"
 test -f "$TEMP_DIR/runtime-data/logichost/home/certificate.pfx"
+test -f "$TEMP_DIR/runtime-data/catalog/versions/installed/manifest.json"
 test ! -e "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
 test ! -e "$TEMP_DIR/runtime-data/cameraagent/dataprotection/key.xml"
 test ! -e "$TEMP_DIR/runtime-data/cameraagent/provisioning/.device-identity.json"
@@ -78,6 +81,7 @@ grep -Fqx 'compose -f docker-compose.apps.yml build logichost cameraagent' "$TEM
 grep -Fqx 'compose -f docker-compose.apps.yml up -d logichost cameraagent' "$TEMP_DIR/docker.log"
 test ! -e "$TEMP_DIR/runtime-data/logichost/dataprotection/key.xml"
 test ! -e "$TEMP_DIR/runtime-data/logichost/home/certificate.pfx"
+test -f "$TEMP_DIR/runtime-data/catalog/versions/installed/manifest.json"
 
 touch "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
 PATH="$TEMP_DIR:$PATH" \

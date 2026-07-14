@@ -87,6 +87,8 @@ You can pass specific services to `--rebuild` (for example `--rebuild logichost`
  - **Camera Agent** - http://localhost:5130
 
 ```bash
+# First install the verified HYG bundle as documented in docs/catalog/production-install.md.
+
 # Main site
 ./scripts/with-env dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
 
@@ -96,6 +98,8 @@ You can pass specific services to `--rebuild` (for example `--rebuild logichost`
 
 Configure the CameraAgent owner password with the protected prompt in
 [`docs/runbooks/local-dev.md`](docs/runbooks/local-dev.md) before its first run.
+Both hosts require the same verified production catalog installed under the
+configured runtime-data root; production builds do not package the test fixture.
 
 This mode keeps hot reload and a faster edit/run cycle while still talking to the same SQL Server, Redis, and MinIO containers.
 

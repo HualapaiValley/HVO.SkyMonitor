@@ -102,8 +102,8 @@ internal sealed class SqliteCelestialCatalogTests
     [TestMethod]
     public void ConstructorRejectsMissingCatalogTables()
     {
-        AssertGeneratedCatalogThrows<SqliteException>("DROP TABLE catalog_metadata;");
-        AssertGeneratedCatalogThrows<SqliteException>("DROP TABLE celestial_objects;");
+        AssertGeneratedCatalogThrows<InvalidDataException>("DROP TABLE catalog_metadata;");
+        AssertGeneratedCatalogThrows<InvalidDataException>("DROP TABLE celestial_objects;");
     }
 
     [TestMethod]
@@ -126,11 +126,11 @@ internal sealed class SqliteCelestialCatalogTests
     {
         var blank = AssertGeneratedCatalogThrows<InvalidDataException>(
             "UPDATE catalog_metadata SET value = '   ' WHERE key = 'name';");
-        var duplicate = AssertGeneratedCatalogThrows<InvalidDataException>(
-            "INSERT INTO catalog_metadata(key, value) VALUES ('name', 'duplicate');");
+        var incompatible = AssertGeneratedCatalogThrows<InvalidDataException>(
+            "ALTER TABLE catalog_metadata ADD COLUMN unexpected TEXT;");
 
         StringAssert.Contains(blank.Message, "missing required key 'name'", StringComparison.Ordinal);
-        StringAssert.Contains(duplicate.Message, "duplicate keys", StringComparison.Ordinal);
+        StringAssert.Contains(incompatible.Message, "required schema", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -186,6 +186,51 @@ internal sealed class SqliteCelestialCatalogTests
     }
 
     [TestMethod]
+    public void ConstructorRejectsSidecarsAndDoesNotCreateThem()
+    {
+        var path = CopyFixture();
+        var sidecar = path + "-wal";
+        try
+        {
+            File.WriteAllText(sidecar, "unexpected");
+            var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
+                _ = new SqliteCelestialCatalog(CreateOptions(path, Checksum(path))));
+            StringAssert.Contains(exception.Message, "sidecar", StringComparison.Ordinal);
+
+            File.Delete(sidecar);
+            _ = new SqliteCelestialCatalog(CreateOptions(path, Checksum(path)));
+            Assert.IsFalse(File.Exists(path + "-journal"));
+            Assert.IsFalse(File.Exists(path + "-wal"));
+            Assert.IsFalse(File.Exists(path + "-shm"));
+        }
+        finally
+        {
+            File.Delete(sidecar);
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public void ConstructorRejectsIncompatibleSchemaIndexSolAndHipparcosIdentity()
+    {
+        AssertGeneratedCatalogThrows<InvalidDataException>("CREATE TABLE unexpected(value TEXT);");
+        AssertGeneratedCatalogThrows<InvalidDataException>("DROP INDEX celestial_objects_magnitude_id;");
+        AssertGeneratedCatalogThrows<InvalidDataException>(
+            "DROP INDEX celestial_objects_magnitude_id; CREATE INDEX celestial_objects_magnitude_id ON celestial_objects(id, magnitude);");
+        AssertGeneratedCatalogThrows<InvalidDataException>("UPDATE celestial_objects SET id = '0' WHERE id = 'a';");
+        AssertGeneratedCatalogThrows<InvalidDataException>("UPDATE celestial_objects SET hipparcos_id = '1' WHERE id = 'b';");
+        AssertGeneratedCatalogThrows<InvalidDataException>("UPDATE celestial_objects SET hipparcos_id = '01' WHERE id = 'a';");
+        AssertGeneratedCatalogThrows<InvalidDataException>("UPDATE celestial_objects SET hipparcos_id = ' ' WHERE id = 'a';");
+    }
+
+    [TestMethod]
+    public void ConstructorValidatesExpectedRowCountAndCatalogVersion()
+    {
+        AssertGeneratedCatalogThrows<InvalidDataException>(expectedRowCount: 3);
+        AssertGeneratedCatalogThrows<InvalidDataException>(expectedCatalogVersion: "other");
+    }
+
+    [TestMethod]
     public void MetadataReportsSnapshotAndSourceEvidence()
     {
         var catalog = CreateCatalog();
@@ -197,6 +242,7 @@ internal sealed class SqliteCelestialCatalogTests
         Assert.AreEqual("CC BY-SA 4.0", catalog.Metadata.License);
         Assert.AreEqual("2", catalog.Metadata.SchemaVersion);
         Assert.AreEqual("3", catalog.PreprocessingVersion);
+        Assert.AreEqual(9, catalog.ObjectCount);
         Assert.AreEqual(FixturePath, catalog.Options.DatabasePath);
     }
 
@@ -351,14 +397,19 @@ internal sealed class SqliteCelestialCatalogTests
         return Convert.ToHexString(SHA256.HashData(source));
     }
 
-    private static T AssertGeneratedCatalogThrows<T>(string mutation = "", string schemaVersion = "1")
+    private static T AssertGeneratedCatalogThrows<T>(
+        string mutation = "",
+        string schemaVersion = "1",
+        long? expectedRowCount = null,
+        string? expectedCatalogVersion = null)
         where T : Exception
     {
         var path = CreateGeneratedFixture(mutation);
         try
         {
             return Assert.ThrowsExactly<T>(() =>
-                _ = new SqliteCelestialCatalog(CreateOptions(path, Checksum(path), schemaVersion, "1")));
+                _ = new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(
+                    path, Checksum(path), schemaVersion, "1", expectedRowCount, expectedCatalogVersion)));
         }
         finally
         {
@@ -375,7 +426,7 @@ internal sealed class SqliteCelestialCatalogTests
 #pragma warning disable CA2100 // Statements are constants supplied only by this test class.
         command.CommandText = """
             PRAGMA user_version = 1;
-            CREATE TABLE catalog_metadata (key TEXT NOT NULL, value TEXT NOT NULL);
+            CREATE TABLE catalog_metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL) WITHOUT ROWID;
             INSERT INTO catalog_metadata(key, value) VALUES
                 ('name', 'Generated test catalog'),
                 ('catalog_version', 'test-1'),
@@ -384,15 +435,17 @@ internal sealed class SqliteCelestialCatalogTests
                 ('schema_version', '1'),
                 ('preprocessing_version', '1');
             CREATE TABLE celestial_objects (
-                id TEXT NOT NULL,
+                id TEXT PRIMARY KEY NOT NULL,
                 display_name TEXT NOT NULL,
                 right_ascension_hours REAL NOT NULL,
                 declination_degrees REAL NOT NULL,
                 magnitude REAL NOT NULL,
-                color_index REAL NULL);
+                color_index REAL NULL,
+                hipparcos_id TEXT NULL) WITHOUT ROWID;
             INSERT INTO celestial_objects VALUES
-                ('a', 'Alpha', 0, -90, -1.46, NULL),
-                ('b', 'Beta', 23.999, 90, 6.5, 0.25);
+                ('a', 'Alpha', 0, -90, -1.46, NULL, '1'),
+                ('b', 'Beta', 23.999, 90, 6.5, 0.25, '2');
+            CREATE INDEX celestial_objects_magnitude_id ON celestial_objects (magnitude, id COLLATE BINARY);
             """ + mutation;
 #pragma warning restore CA2100
         command.ExecuteNonQuery();

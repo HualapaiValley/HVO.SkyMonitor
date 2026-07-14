@@ -5,4 +5,6 @@ public sealed record SqliteCelestialCatalogOptions(
     string DatabasePath,
     string ExpectedSha256,
     string ExpectedSchemaVersion,
-    string ExpectedPreprocessingVersion);
+    string ExpectedPreprocessingVersion,
+    long? ExpectedRowCount = null,
+    string? ExpectedCatalogVersion = null);

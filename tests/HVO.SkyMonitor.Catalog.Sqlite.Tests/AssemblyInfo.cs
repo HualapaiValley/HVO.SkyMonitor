@@ -1,4 +1,4 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 [assembly: DiscoverInternals]
-[assembly: TestCategory("Integration")]
+[assembly: TestCategory("Unit")]

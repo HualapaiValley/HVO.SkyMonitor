@@ -1,9 +1,11 @@
 # HYG 4.2 catalog snapshot
 
 The SQLite catalog is an explicitly built deployment artifact. Normal capture,
-application startup, and package build do not download or preprocess catalog
-data. An operator runs `scripts/catalog/build-hyg-v42.sh OUTPUT_DIRECTORY`, then
-installs the validated `hyg_v42.sqlite` atomically at the host-configured path.
+application startup, and installation do not download or preprocess catalog
+data. Source acquisition is explicit: an operator supplies `--source` for an
+offline build or `--fetch` to request the pinned HTTPS download. The build emits
+a self-contained production bundle that the installer validates and activates
+atomically. See [Production Catalog Build and Installation](production-install.md).
 
 ## Pinned evidence
 
@@ -22,12 +24,21 @@ installs the validated `hyg_v42.sqlite` atomically at the host-configured path.
 - SQLite serializer: `sqlite3 3.45.1`
 - Generated SQLite SHA-256:
   `b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2`
+- Compressed input length: `13,636,976` bytes
+- Decompressed input length: `33,932,800` bytes
+- Generated SQLite length: `9,302,016` bytes
+- Expected post-Sol-exclusion rows: `119,625`
 
-The script validates all three hashes and fails closed. Updating source,
-preprocessing code, Python/SQLite serialization behavior, or schema requires a
-reviewed checksum update. The script requires the pinned SQLite serializer;
+The scripts validate all three hashes and byte lengths and fail closed. Updating
+source, preprocessing SQL, SQLite serialization behavior, or schema requires a
+reviewed checksum update. The build requires the pinned SQLite serializer;
 SQLite library changes can legitimately alter serialization and must not be
 accepted without review.
+
+The retained HYG license and attribution notices are
+[`hyg-v42-license.md`](hyg-v42-license.md) and
+[`hyg-v42-attribution.md`](hyg-v42-attribution.md). They are copied into every
+production bundle and covered by that bundle's payload hashes.
 
 The legacy SQLite checksum
 `95A720585139452227F2201BDDB03E8DD7E98094E378D3FFB3D9EBC1AFAA2C76`

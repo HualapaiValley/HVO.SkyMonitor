@@ -28,6 +28,10 @@ public static class SkyMonitorObservabilityExtensions
 {
     private const string HealthEndpointPath = "/health";
     private const string AlivenessEndpointPath = "/alive";
+    private static readonly HashSet<string> CatalogHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Kind", "CatalogVersion", "SchemaVersion", "PreprocessingVersion", "DatabaseSha256", "RowCount"
+    };
 
     /// <summary>
     /// Configures the shared HVO telemetry stack and OTLP export.
@@ -108,7 +112,12 @@ public static class SkyMonitorObservabilityExtensions
                 description = entry.Value.Description,
                 duration = entry.Value.Duration.TotalMilliseconds,
                 error = entry.Value.Exception?.Message,
-                tags = entry.Value.Tags
+                tags = entry.Value.Tags,
+                data = string.Equals(entry.Key, "catalog", StringComparison.Ordinal)
+                    ? entry.Value.Data
+                        .Where(pair => CatalogHealthDataKeys.Contains(pair.Key))
+                        .ToDictionary(static pair => pair.Key, static pair => pair.Value, StringComparer.Ordinal)
+                    : null
             })
         };
 

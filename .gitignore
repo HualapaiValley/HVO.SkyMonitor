@@ -452,6 +452,7 @@ data/cameraagent/dataprotection/
 data/cameraagent/provisioning/
 data/logichost/dataprotection/
 data/logichost/home/
+data/catalog/
 data/agent/
 data/archive/
 data/calibration/
