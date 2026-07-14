@@ -39,10 +39,11 @@ dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "
 
 Use the exact per-project commands in `.github/workflows/ci.yml` when producing coverage evidence; solution-level TRX names are not collision-proof.
 
-Merge the nine explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
+Use a fresh result root for every collection. Before merging, require exactly one report from each of the nine category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those nine explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
 ```bash
 reports=(TestResults/unit/*/*/coverage.cobertura.xml TestResults/integration/*/*/coverage.cobertura.xml TestResults/architecture/*/coverage.cobertura.xml)
+[[ "${#reports[@]}" -eq 9 ]]
 dotnet reportgenerator "-reports:$(IFS=';'; echo "${reports[*]}")" -targetdir:coverage-report -reporttypes:"Html;TextSummary;MarkdownSummaryGithub;Badges;Cobertura"
 ./scripts/coverage:enforce --merged coverage-report/Cobertura.xml
 ```

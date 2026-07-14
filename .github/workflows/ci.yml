@@ -230,6 +230,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: [unit, integration, architecture]
+    outputs:
+      line: ${{ steps.coverage-metrics.outputs.line }}
+      branch: ${{ steps.coverage-metrics.outputs.branch }}
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -315,28 +318,34 @@ jobs:
           path: coverage-report/
           if-no-files-found: error
           retention-days: 30
+
+  badges:
+    name: Coverage Badges
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: coverage
+    steps:
       - name: Update line coverage badge
-        if: github.ref == 'refs/heads/main' && success()
         uses: schneegans/dynamic-badges-action@e9a478b16159b4d31420099ba146cdc50f134483 # v1.7.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: ${{ secrets.COVERAGE_GIST_ID }}
           filename: coverage-line.json
           label: line coverage
-          message: ${{ steps.coverage-metrics.outputs.line }}%
-          valColorRange: ${{ steps.coverage-metrics.outputs.line }}
+          message: ${{ needs.coverage.outputs.line }}%
+          valColorRange: ${{ needs.coverage.outputs.line }}
           minColorRange: 40
           maxColorRange: 80
       - name: Update branch coverage badge
-        if: github.ref == 'refs/heads/main' && success()
         uses: schneegans/dynamic-badges-action@e9a478b16159b4d31420099ba146cdc50f134483 # v1.7.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: ${{ secrets.COVERAGE_GIST_ID }}
           filename: coverage-branch.json
           label: branch coverage
-          message: ${{ steps.coverage-metrics.outputs.branch }}%
-          valColorRange: ${{ steps.coverage-metrics.outputs.branch }}
+          message: ${{ needs.coverage.outputs.branch }}%
+          valColorRange: ${{ needs.coverage.outputs.branch }}
           minColorRange: 30
           maxColorRange: 70
 
