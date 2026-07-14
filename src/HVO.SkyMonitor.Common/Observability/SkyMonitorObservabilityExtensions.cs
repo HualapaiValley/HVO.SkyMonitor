@@ -36,6 +36,10 @@ public static class SkyMonitorObservabilityExtensions
     {
         "Availability", "PendingCount", "PendingBytes", "QuarantineCount", "QuarantineBytes"
     };
+    private static readonly HashSet<string> CaptureLaneHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Availability", "LaneCount", "PendingCount", "PendingBytes", "LeasedCount", "QuarantineCount"
+    };
 
     /// <summary>
     /// Configures the shared HVO telemetry stack and OTLP export.
@@ -55,7 +59,9 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.Authentication");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Capture");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
             options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
         });
 
@@ -67,6 +73,7 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.Authentication")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Capture")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.RawIngress")
+                    .AddMeter("HVO.SkyMonitor.CameraAgent.CaptureLanes")
                     .AddOtlpExporter());
         }
 
@@ -135,6 +142,7 @@ public static class SkyMonitorObservabilityExtensions
         {
             "catalog" => CatalogHealthDataKeys,
             "raw-ingress" => RawIngressHealthDataKeys,
+            "capture-lanes" => CaptureLaneHealthDataKeys,
             _ => null
         };
         return allowedKeys is null

@@ -3,17 +3,18 @@ using System.Threading;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 
 internal sealed class CaptureHostContext(
     CameraModuleConfig configuration,
-    FrameProcessingChannel channel,
-    IRawCaptureIngress rawCaptureIngress) : ICaptureHostContext
+    IRawCaptureIngress rawCaptureIngress,
+    ICaptureDistributor captureDistributor) : ICaptureHostContext
 {
     private readonly CameraModuleConfig _configuration = configuration;
-    private readonly FrameProcessingChannel _channel = channel;
     private readonly IRawCaptureIngress _rawCaptureIngress = rawCaptureIngress;
+    private readonly ICaptureDistributor _captureDistributor = captureDistributor;
 
     public CameraModuleConfig Configuration => _configuration;
 
@@ -23,15 +24,10 @@ internal sealed class CaptureHostContext(
         var receipt = await _rawCaptureIngress.AcceptAsync(_configuration, submission, cancellationToken).ConfigureAwait(false);
         if (receipt is null)
         {
-            await _channel.WriteAsync(new FrameProcessingItem(_configuration, submission), cancellationToken).ConfigureAwait(false);
+            await _captureDistributor.ProcessEphemeralAsync(
+                _configuration, submission, cancellationToken).ConfigureAwait(false);
             return;
         }
-
-        var lightweightSubmission = submission with
-        {
-            Result = submission.Result with { Frame = null, Artifacts = null }
-        };
-        var queued = _channel.TryWrite(new FrameProcessingItem(_configuration, lightweightSubmission, receipt));
-        (_rawCaptureIngress as IRawIngressWakeupReporter)?.ReportWakeup(queued);
+        _captureDistributor.NotifyCommittedCapture();
     }
 }

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
 
@@ -16,19 +17,52 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentNullException.ThrowIfNull(manifest);
         manifest.Validate();
-        var directory = Path.Combine(Path.GetFullPath(root), "outbox");
+        root = Path.GetFullPath(root);
+        var directory = Path.Combine(root, "outbox");
+        var directoryExisted = Directory.Exists(directory);
         Directory.CreateDirectory(directory);
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
+        if (!directoryExisted)
+        {
+            RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
+        }
         var path = Path.Combine(directory, string.Concat(manifest.IdempotencyKey, ".json"));
+        var content = JsonSerializer.SerializeToUtf8Bytes(manifest, SerializerOptions);
         if (File.Exists(path))
         {
+            ValidateExisting(root, directory, path, content);
             return;
         }
 
         var temporaryPath = string.Concat(path, ".", Guid.NewGuid().ToString("N"), ".tmp");
         try
         {
-            await File.WriteAllBytesAsync(temporaryPath, JsonSerializer.SerializeToUtf8Bytes(manifest, SerializerOptions), cancellationToken).ConfigureAwait(false);
-            File.Move(temporaryPath, path, overwrite: false);
+            using (var stream = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       16 * 1024,
+                       FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
+                stream.Flush(flushToDisk: true);
+#pragma warning restore CA1849
+            }
+            RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
+            try
+            {
+                File.Move(temporaryPath, path, overwrite: false);
+            }
+            catch (IOException) when (File.Exists(path))
+            {
+                ValidateExisting(root, directory, path, content);
+                return;
+            }
+            RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
+            RawIngressFileStore.SyncDirectory(directory);
         }
         finally
         {
@@ -123,5 +157,21 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
         {
             throw new InvalidDataException($"Outbox manifest '{path}' is invalid.", exception);
         }
+    }
+
+    private static void ValidateExisting(
+        string root,
+        string directory,
+        string path,
+        ReadOnlySpan<byte> expected)
+    {
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
+        var existing = File.ReadAllBytes(path);
+        if (!existing.AsSpan().SequenceEqual(expected))
+        {
+            throw new InvalidDataException($"Outbox manifest '{path}' conflicts with the requested upload.");
+        }
+        RawIngressFileStore.SyncFile(root, path);
+        RawIngressFileStore.SyncDirectory(directory);
     }
 }

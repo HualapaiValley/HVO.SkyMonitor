@@ -75,8 +75,16 @@ public sealed class VirtualSkyPipelineTests
         using var journal = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
         await journal.OpenAsync().ConfigureAwait(false);
         using var countCommand = journal.CreateCommand();
-        countCommand.CommandText = "SELECT COUNT(*) FROM raw_captures WHERE state = 'committed' AND retention_hold = 1;";
+        countCommand.CommandText = "SELECT COUNT(*) FROM raw_captures WHERE state = 'committed';";
         Assert.IsGreaterThan(0L, Convert.ToInt64(
+            await countCommand.ExecuteScalarAsync().ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture));
+        countCommand.CommandText = "SELECT COUNT(*) FROM capture_lane_work WHERE state <> 'completed';";
+        Assert.AreEqual(0L, Convert.ToInt64(
+            await countCommand.ExecuteScalarAsync().ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture));
+        countCommand.CommandText = "SELECT COUNT(*) FROM raw_captures WHERE retention_hold = 1;";
+        Assert.AreEqual(0L, Convert.ToInt64(
             await countCommand.ExecuteScalarAsync().ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture));
 

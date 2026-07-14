@@ -2,6 +2,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
@@ -25,7 +26,7 @@ public sealed class CaptureHostContextTests
                 manifest.Descriptor.Timing.ExposureStartedUtc,
                 FrameArtifactRole.Raw));
         var ingress = new RecordingIngress(receipt);
-        var channel = new FrameProcessingChannel(2);
+        var distributor = new RecordingDistributor();
         var config = CreateConfig();
         var frame = new CameraFrame(
             manifest.Descriptor.Timing.ExposureStartedUtc,
@@ -41,27 +42,17 @@ public sealed class CaptureHostContextTests
             frame.TimestampUtc,
             TimeSpan.FromSeconds(1),
             TimeSpan.Zero);
-        var context = new CaptureHostContext(config, channel, ingress);
+        var context = new CaptureHostContext(config, ingress, distributor);
 
         await context.PublishAsync(submission, CancellationToken.None).ConfigureAwait(false);
-        channel.Complete();
-        FrameProcessingItem? queued = null;
-        await foreach (var item in channel.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
-        {
-            queued = item;
-        }
 
         Assert.IsTrue(ingress.CompletedBeforeReturn);
-        Assert.IsNotNull(queued);
-        Assert.IsNull(queued.Submission.Result.Frame);
-        Assert.IsNull(queued.Submission.Result.Artifacts);
-        Assert.AreSame(receipt, queued.RawCapture);
         Assert.AreSame(frame, submission.Result.Frame);
-        Assert.IsTrue(ingress.LastWakeupQueued);
+        Assert.AreEqual(1, distributor.NotificationCount);
     }
 
     [TestMethod]
-    public async Task PublishAsync_WhenWakeUpChannelIsFull_ReturnsAfterDurableCommitWithoutBlocking()
+    public async Task PublishAsync_NotifiesDistributorAfterDurableCommitWithoutBlocking()
     {
         var payload = new byte[8];
         var manifest = ReconstructableCaptureContractTests.CreateManifest(
@@ -71,7 +62,7 @@ public sealed class CaptureHostContextTests
             manifest,
             new StoredFrameReference(manifest.RelativeArtifactPath, "/tmp/committed.bin", manifest.Descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw));
         var ingress = new RecordingIngress(receipt);
-        var channel = new FrameProcessingChannel(2);
+        var distributor = new RecordingDistributor();
         var config = CreateConfig();
         var frame = new CameraFrame(
             manifest.Descriptor.Timing.ExposureStartedUtc, 2, 2, CameraPixelFormat.Mono16, payload,
@@ -80,16 +71,12 @@ public sealed class CaptureHostContextTests
             new CaptureRequest(frame.TimestampUtc, TimeSpan.FromSeconds(1), CaptureMode.Still),
             new CaptureResult(frame, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null), TimeSpan.Zero, CaptureMode.Still, false),
             frame.TimestampUtc, TimeSpan.FromSeconds(1), TimeSpan.Zero);
-        await channel.WriteAsync(new FrameProcessingItem(config, submission), CancellationToken.None).ConfigureAwait(false);
-        await channel.WriteAsync(new FrameProcessingItem(config, submission), CancellationToken.None).ConfigureAwait(false);
-        var context = new CaptureHostContext(config, channel, ingress);
+        var context = new CaptureHostContext(config, ingress, distributor);
 
         await context.PublishAsync(submission, CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
 
         Assert.IsTrue(ingress.CompletedBeforeReturn);
-        Assert.AreEqual(2, channel.CurrentDepth);
-        Assert.AreEqual(2L, channel.AcceptedCount);
-        Assert.IsFalse(ingress.LastWakeupQueued);
+        Assert.AreEqual(1, distributor.NotificationCount);
     }
 
     private static CameraModuleConfig CreateConfig()
@@ -103,11 +90,9 @@ public sealed class CaptureHostContextTests
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
             AgentId: "agent");
 
-    private sealed class RecordingIngress(RawCaptureReceipt receipt) : IRawCaptureIngress, IRawIngressWakeupReporter
+    private sealed class RecordingIngress(RawCaptureReceipt receipt) : IRawCaptureIngress
     {
         public bool CompletedBeforeReturn { get; private set; }
-
-        public bool? LastWakeupQueued { get; private set; }
 
         public ValueTask InitializeAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
@@ -119,7 +104,18 @@ public sealed class CaptureHostContextTests
             CompletedBeforeReturn = true;
             return ValueTask.FromResult<RawCaptureReceipt?>(receipt);
         }
+    }
 
-        public void ReportWakeup(bool queued) => LastWakeupQueued = queued;
+    private sealed class RecordingDistributor : ICaptureDistributor
+    {
+        public int NotificationCount { get; private set; }
+
+        public void NotifyCommittedCapture() => NotificationCount++;
+
+        public ValueTask ProcessEphemeralAsync(
+            CameraModuleConfig configuration,
+            CaptureLoopSubmission submission,
+            CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
     }
 }

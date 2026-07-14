@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
@@ -16,18 +17,17 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 public sealed class CameraCaptureService(
     ICameraAgentConfigurationAccessor configurationAccessor,
     ICameraModuleFactory moduleFactory,
-    ICaptureProcessingPipelineFactory pipelineFactory,
     IRawCaptureIngress rawCaptureIngress,
+    ICaptureDistributor captureDistributor,
     TimeProvider timeProvider,
     ILogger<CameraCaptureService> logger) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly ICameraModuleFactory _moduleFactory = moduleFactory;
-    private readonly ICaptureProcessingPipelineFactory _pipelineFactory = pipelineFactory;
     private readonly IRawCaptureIngress _rawCaptureIngress = rawCaptureIngress;
+    private readonly ICaptureDistributor _captureDistributor = captureDistributor;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<CameraCaptureService> _logger = logger;
-    private readonly CancellationTokenSource _drainAbort = new();
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
@@ -38,24 +38,13 @@ public sealed class CameraCaptureService(
         while (!stoppingToken.IsCancellationRequested)
         {
             var module = _moduleFactory.Create(config.ModuleType);
-            FrameProcessingChannel? channel = null;
-            Task? processingTask = null;
-
             try
             {
                 await _rawCaptureIngress.InitializeAsync(stoppingToken).ConfigureAwait(false);
                 await module.InitializeAsync(config, stoppingToken).ConfigureAwait(false);
                 _logger.CameraModuleInitialized(module.DisplayName);
 
-                channel = new FrameProcessingChannel(capacity: 4);
-                var hostContext = new CaptureHostContext(config, channel, _rawCaptureIngress);
-                var processingSteps = _pipelineFactory.CreatePipeline(config);
-                var processingWorker = new FrameProcessingWorker(
-                    channel,
-                    processingSteps,
-                    _logger,
-                    _rawCaptureIngress as IRawIngressRecoveryControl);
-                processingTask = processingWorker.RunAsync(_drainAbort.Token);
+                var hostContext = new CaptureHostContext(config, _rawCaptureIngress, _captureDistributor);
 
                 var runner = new CameraModuleRunner(module, hostContext, _timeProvider, _logger);
                 await runner.RunAsync(stoppingToken).ConfigureAwait(false);
@@ -92,53 +81,8 @@ public sealed class CameraCaptureService(
             }
             finally
             {
-                try
-                {
-                    channel?.Complete();
-                    if (processingTask is not null)
-                    {
-                        try
-                        {
-                            await processingTask.ConfigureAwait(false);
-                            _logger.CaptureProcessingDrainCompleted();
-                        }
-                        catch (OperationCanceledException) when (_drainAbort.IsCancellationRequested)
-                        {
-                            _logger.CaptureProcessingDrainAborted();
-                        }
-                        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
-                        {
-                            _logger.RawIngressRefused("processing", "evidence-unavailable");
-                        }
-                    }
-                }
-                finally
-                {
-                    await module.DisposeAsync().ConfigureAwait(false);
-                }
+                await module.DisposeAsync().ConfigureAwait(false);
             }
         }
-    }
-
-    public override async Task StopAsync(CancellationToken cancellationToken)
-    {
-        using var registration = cancellationToken.Register(_drainAbort.Cancel);
-        try
-        {
-            await base.StopAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                await _drainAbort.CancelAsync().ConfigureAwait(false);
-            }
-        }
-    }
-
-    public override void Dispose()
-    {
-        _drainAbort.Dispose();
-        base.Dispose();
     }
 }

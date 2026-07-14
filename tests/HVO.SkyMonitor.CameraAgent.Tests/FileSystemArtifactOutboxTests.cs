@@ -55,6 +55,60 @@ public sealed class FileSystemArtifactOutboxTests
     }
 
     [TestMethod]
+    public async Task Enqueue_WhenExistingManifestConflicts_ThrowsInsteadOfAcknowledgingHandoff()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-outbox", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var outbox = new FileSystemArtifactOutbox();
+            var manifest = CreateManifest();
+            await outbox.EnqueueAsync(root, manifest, CancellationToken.None).ConfigureAwait(false);
+            var path = Path.Combine(root, "outbox", string.Concat(manifest.IdempotencyKey, ".json"));
+            await File.WriteAllTextAsync(path, "{}", CancellationToken.None).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await outbox.EnqueueAsync(root, manifest, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task Enqueue_WhenExistingManifestIsSymbolicLink_RefusesHandoff()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-outbox", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var outbox = new FileSystemArtifactOutbox();
+            var manifest = CreateManifest();
+            await outbox.EnqueueAsync(root, manifest, CancellationToken.None).ConfigureAwait(false);
+            var path = Path.Combine(root, "outbox", string.Concat(manifest.IdempotencyKey, ".json"));
+            var target = Path.Combine(root, "moved-manifest.json");
+            File.Move(path, target);
+            File.CreateSymbolicLink(path, target);
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await outbox.EnqueueAsync(root, manifest, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task EnumeratePending_ReturnsEveryManifestWithoutListLimit()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-outbox", Guid.NewGuid().ToString("N"));

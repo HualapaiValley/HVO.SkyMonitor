@@ -9,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -41,7 +42,7 @@ internal sealed class FrameProcessingWorker
         {
             try
             {
-                await ProcessItemAsync(item, cancellationToken).ConfigureAwait(false);
+                await ProcessItemAsync(item, _steps, _logger, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
             {
@@ -53,7 +54,11 @@ internal sealed class FrameProcessingWorker
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Processing must continue even if individual steps fail.")]
-    private async ValueTask ProcessItemAsync(FrameProcessingItem item, CancellationToken cancellationToken)
+    internal static async ValueTask<CaptureLaneHandlerResult> ProcessItemAsync(
+        FrameProcessingItem item,
+        IReadOnlyList<ICaptureProcessingStep> steps,
+        ILogger logger,
+        CancellationToken cancellationToken)
     {
         var submission = item.Submission;
         var rawCapture = item.RawCapture;
@@ -92,7 +97,8 @@ internal sealed class FrameProcessingWorker
             };
         }
         var context = new CaptureProcessingContext(item.Config, submission, rawCapture);
-        foreach (var step in _steps)
+        var failed = false;
+        foreach (var step in steps)
         {
             var stopwatch = Stopwatch.StartNew();
             var succeeded = false;
@@ -108,8 +114,9 @@ internal sealed class FrameProcessingWorker
             }
             catch (Exception ex)
             {
-                _logger.CaptureProcessingStepFailed(step.Name, context.Submission.CaptureStartedUtc, ex);
+                logger.CaptureProcessingStepFailed(step.Name, context.Submission.CaptureStartedUtc, ex);
                 errorMessage = ex.Message;
+                failed = true;
             }
             finally
             {
@@ -121,5 +128,8 @@ internal sealed class FrameProcessingWorker
                     errorMessage));
             }
         }
+        return failed
+            ? CaptureLaneHandlerResult.Retry("processing-step")
+            : CaptureLaneHandlerResult.Success;
     }
 }

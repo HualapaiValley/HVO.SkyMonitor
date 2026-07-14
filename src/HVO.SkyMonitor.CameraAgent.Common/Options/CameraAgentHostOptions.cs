@@ -19,6 +19,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     [Range(1, 300)]
     public int RawIngressSqliteBusyTimeoutSeconds { get; init; } = 5;
 
+    [Required]
+    public CaptureDistributionOptions CaptureDistribution { get; init; } = new();
+
     public string? AgentId { get; init; }
 
     [Range(1, 1440)]
@@ -66,5 +69,136 @@ public sealed class CameraAgentHostOptions : IValidatableObject
                 "UploadRetryMaximumDelaySeconds must be greater than or equal to UploadRetryInitialDelaySeconds.",
                 [nameof(UploadRetryMaximumDelaySeconds), nameof(UploadRetryInitialDelaySeconds)]);
         }
+
+        var distributionResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            CaptureDistribution,
+            new ValidationContext(CaptureDistribution),
+            distributionResults,
+            validateAllProperties: true);
+        foreach (var result in distributionResults)
+        {
+            yield return result;
+        }
+    }
+}
+
+public sealed class CaptureDistributionOptions : IValidatableObject
+{
+    public bool UploadEnabled { get; init; }
+
+    [Range(100, 60_000)]
+    public int PollIntervalMilliseconds { get; init; } = 1_000;
+
+    [Range(10, 3_600)]
+    public int LeaseSeconds { get; init; } = 120;
+
+    [Range(1, 1_200)]
+    public int LeaseRenewalSeconds { get; init; } = 30;
+
+    [Range(1, 3_600)]
+    public int RetryInitialDelaySeconds { get; init; } = 1;
+
+    [Range(1, 86_400)]
+    public int RetryMaximumDelaySeconds { get; init; } = 60;
+
+    [Range(1, 100)]
+    public int MaximumAttempts { get; init; } = 5;
+
+    [Range(1, 600)]
+    public int ShutdownDrainSeconds { get; init; } = 30;
+
+    [Range(1, 1_000_000)]
+    public int RequiredMaximumPendingCount { get; init; } = 10_000;
+
+    [Range(1, long.MaxValue)]
+    public long RequiredMaximumPendingBytes { get; init; } = 128_793_600_000;
+
+    [Range(1, 525_600)]
+    public int RequiredMaximumOldestAgeMinutes { get; init; } = 10_080;
+
+    [Range(1, 1_000_000)]
+    public int OptionalMaximumPendingCount { get; init; } = 1_000;
+
+    [Range(1, long.MaxValue)]
+    public long OptionalMaximumPendingBytes { get; init; } = 12_879_360_000;
+
+    [Range(1, 525_600)]
+    public int OptionalMaximumOldestAgeMinutes { get; init; } = 1_440;
+
+    [Range(1, 99)]
+    public int PressureRecoveryPercent { get; init; } = 80;
+
+    public IReadOnlyList<SecondaryCaptureLaneOptions> SecondaryLanes { get; init; } = [];
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (LeaseRenewalSeconds * 2 >= LeaseSeconds)
+        {
+            yield return new ValidationResult(
+                "LeaseRenewalSeconds must be less than half of LeaseSeconds.",
+                [nameof(LeaseRenewalSeconds), nameof(LeaseSeconds)]);
+        }
+
+        if (RetryMaximumDelaySeconds < RetryInitialDelaySeconds)
+        {
+            yield return new ValidationResult(
+                "RetryMaximumDelaySeconds must be greater than or equal to RetryInitialDelaySeconds.",
+                [nameof(RetryMaximumDelaySeconds), nameof(RetryInitialDelaySeconds)]);
+        }
+
+        if (SecondaryLanes.Count > 16)
+        {
+            yield return new ValidationResult(
+                "No more than 16 secondary capture lanes may be configured.",
+                [nameof(SecondaryLanes)]);
+        }
+
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var lane in SecondaryLanes)
+        {
+            if (!CaptureLaneName.IsValid(lane.Name) || lane.Name is "standard" or "upload")
+            {
+                yield return new ValidationResult(
+                    "Secondary lane names must be lowercase, begin with a letter, contain only letters, digits, or hyphens, and must not use a reserved name.",
+                    [nameof(SecondaryLanes)]);
+            }
+            else if (!names.Add(lane.Name))
+            {
+                yield return new ValidationResult(
+                    $"Secondary capture lane '{lane.Name}' is configured more than once.",
+                    [nameof(SecondaryLanes)]);
+            }
+            if (lane.Required && !lane.Enabled)
+            {
+                yield return new ValidationResult(
+                    $"Required secondary capture lane '{lane.Name}' must be enabled.",
+                    [nameof(SecondaryLanes)]);
+            }
+        }
+    }
+}
+
+public sealed class SecondaryCaptureLaneOptions
+{
+    [Required(AllowEmptyStrings = false)]
+    public string Name { get; init; } = string.Empty;
+
+    public bool Enabled { get; init; }
+
+    public bool Required { get; init; }
+}
+
+internal static class CaptureLaneName
+{
+    internal static bool IsValid(string? value)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length > 32 || value[0] is < 'a' or > 'z')
+        {
+            return false;
+        }
+
+        return value.All(static character =>
+            character is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
     }
 }
