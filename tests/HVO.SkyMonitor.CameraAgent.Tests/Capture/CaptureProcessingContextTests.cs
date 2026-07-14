@@ -357,6 +357,8 @@ public sealed class CaptureProcessingContextTests
         CollectionAssert.AreEqual(
             new[] { context.Artifacts[FrameArtifactRole.Preview].ArtifactId },
             context.Artifacts[FrameArtifactRole.AnnotatedPreview].SourceArtifactIds!.ToArray());
+        Assert.AreEqual("preview-v1", context.ProcessingProducts.Single().Recipe.Descriptor.Options
+            .GetProperty("input").GetProperty("variant").GetString());
     }
 
     [TestMethod]

@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -7,6 +9,7 @@ using HVO.SkyMonitor.Processing;
 namespace HVO.SkyMonitor.Processing.Tests;
 
 [TestClass]
+[SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class ProcessingRecipeTests
 {
     private static readonly ProcessingCompatibilityIdentity Compatibility = new(
@@ -63,15 +66,15 @@ public sealed class ProcessingRecipeTests
         var first = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.EncodedPreview,
             Json("""{"jpegQuality":80,"asinhStrength":4,"whitePercentile":0.9999,"blackPercentile":0.5}"""),
-            ProcessingInputSelector.Raw(), [input], "display"));
+            ProcessingInputSelector.Raw(), [input], "display")).ConfigureAwait(false);
         var reordered = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.EncodedPreview,
             Json("""{"blackPercentile":0.5,"whitePercentile":0.9999,"asinhStrength":4,"jpegQuality":80}"""),
-            ProcessingInputSelector.Raw(), [input], "display"));
+            ProcessingInputSelector.Raw(), [input], "display")).ConfigureAwait(false);
         var changed = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.EncodedPreview,
             Json("""{"jpegQuality":81}"""),
-            ProcessingInputSelector.Raw(), [input], "display"));
+            ProcessingInputSelector.Raw(), [input], "display")).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, first.Status);
         Assert.AreEqual(first.Products[0].Recipe.IdentitySha256, reordered.Products[0].Recipe.IdentitySha256);
@@ -82,10 +85,10 @@ public sealed class ProcessingRecipeTests
 
         var uppercaseProducer = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.NoOpAnalyzer, EmptyOptions(), ProcessingInputSelector.Raw(),
-            [input with { RecipeIdentitySha256 = new string('A', 64) }], "case"));
+            [input with { RecipeIdentitySha256 = new string('A', 64) }], "case")).ConfigureAwait(false);
         var lowercaseProducer = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.NoOpAnalyzer, EmptyOptions(), ProcessingInputSelector.Raw(),
-            [input with { RecipeIdentitySha256 = new string('a', 64) }], "case"));
+            [input with { RecipeIdentitySha256 = new string('a', 64) }], "case")).ConfigureAwait(false);
         Assert.AreEqual(
             uppercaseProducer.Products[0].Recipe.IdentitySha256,
             lowercaseProducer.Products[0].Recipe.IdentitySha256);
@@ -129,7 +132,7 @@ public sealed class ProcessingRecipeTests
             EmptyOptions(),
             ProcessingInputSelector.Raw(),
             [source],
-            "none"));
+            "none")).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status);
         var product = outcome.Products[0];
@@ -146,14 +149,14 @@ public sealed class ProcessingRecipeTests
         var executor = new ProcessingRecipeExecutor();
         var missing = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.LinearNormalization, EmptyOptions(), ProcessingInputSelector.Raw("missing"),
-            [source], "none"));
+            [source], "none")).ConfigureAwait(false);
         var invalidLayout = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.LinearNormalization, EmptyOptions(), ProcessingInputSelector.Raw(),
-            [source with { Layout = null }], "none"));
+            [source with { Layout = null }], "none")).ConfigureAwait(false);
         var calibrated = source with { ArtifactId = Guid.NewGuid(), Role = FrameArtifactRole.Calibrated };
         var invalidRole = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.LinearNormalization, EmptyOptions(), ProcessingInputSelector.Calibrated(),
-            [calibrated], "none"));
+            [calibrated], "none")).ConfigureAwait(false);
         Assert.AreEqual(ProcessingReasonCodes.MissingInput, missing.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidLayout, invalidLayout.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidSelector, invalidRole.ReasonCode);
@@ -174,9 +177,9 @@ public sealed class ProcessingRecipeTests
         var executor = new ProcessingRecipeExecutor();
 
         var monoOutcome = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.EncodedPreview, EmptyOptions(), ProcessingInputSelector.Raw("mono"), [mono], "mono-jpeg"));
+            BuiltInProcessingRecipes.EncodedPreview, EmptyOptions(), ProcessingInputSelector.Raw("mono"), [mono], "mono-jpeg")).ConfigureAwait(false);
         var colorOutcome = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.EncodedPreview, EmptyOptions(), ProcessingInputSelector.Calibrated("color"), [bayer], "color-jpeg"));
+            BuiltInProcessingRecipes.EncodedPreview, EmptyOptions(), ProcessingInputSelector.Calibrated("color"), [bayer], "color-jpeg")).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, monoOutcome.Status);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, colorOutcome.Status);
@@ -195,25 +198,25 @@ public sealed class ProcessingRecipeTests
             Json("""{"outputEncoding":"Packed"}"""),
             ProcessingInputSelector.Raw("mono8"),
             [mono8],
-            "mono-packed"));
+            "mono-packed")).ConfigureAwait(false);
         var packedRgb = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.EncodedPreview,
             Json("""{"outputEncoding":"Packed"}"""),
             ProcessingInputSelector.Calibrated("rgb"),
             [rgb24],
-            "rgb-packed"));
+            "rgb-packed")).ConfigureAwait(false);
         var invalidRole = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.EncodedPreview,
             EmptyOptions(),
             ProcessingInputSelector.Combined(),
             [mono with { ArtifactId = Guid.NewGuid(), Role = FrameArtifactRole.Combined }],
-            "invalid"));
+            "invalid")).ConfigureAwait(false);
         var missing = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.EncodedPreview,
             EmptyOptions(),
             ProcessingInputSelector.Raw("missing"),
             [mono],
-            "missing"));
+            "missing")).ConfigureAwait(false);
         CollectionAssert.AreEqual(new byte[] { 1, 2 }, packedMono.Products[0].Payload.ToArray());
         CollectionAssert.AreEqual(new byte[] { 3, 4, 5 }, packedRgb.Products[0].Payload.ToArray());
         Assert.AreEqual(CameraPixelFormat.Mono8, packedMono.Products[0].Layout!.PixelFormat);
@@ -230,7 +233,7 @@ public sealed class ProcessingRecipeTests
             Enumerable.Range(0, 64).SelectMany(value => new[] { (byte)value, (byte)0 }).ToArray());
         var executor = new ProcessingRecipeExecutor();
         var preview = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.EncodedPreview, EmptyOptions(), ProcessingInputSelector.Raw(), [raw], "display"));
+            BuiltInProcessingRecipes.EncodedPreview, EmptyOptions(), ProcessingInputSelector.Raw(), [raw], "display")).ConfigureAwait(false);
         var previewProduct = preview.Products[0];
         var previewArtifact = new ProcessingArtifact(
             Guid.Parse("20000000-0000-0000-0000-000000000001"),
@@ -240,7 +243,7 @@ public sealed class ProcessingRecipeTests
             previewProduct.MediaType,
             previewProduct.Layout,
             previewProduct.Payload,
-            DateTimeOffset.Parse("2025-01-15T08:00:01Z"),
+            DateTimeOffset.Parse("2025-01-15T08:00:01Z", CultureInfo.InvariantCulture),
             previewProduct.TotalIntegration,
             previewProduct.Compatibility);
         var annotation = new ProcessingAnnotationInput(
@@ -259,7 +262,7 @@ public sealed class ProcessingRecipeTests
                 previewProduct.Recipe.IdentitySha256),
             [previewArtifact],
             "stars",
-            annotation));
+            annotation)).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status);
         Assert.AreEqual(FrameArtifactRole.AnnotatedPreview, outcome.Products[0].Role);
@@ -276,7 +279,7 @@ public sealed class ProcessingRecipeTests
                 previewProduct.Recipe.IdentitySha256),
             [previewArtifact],
             "stars",
-            annotation with { ProvenanceSha256 = new string('B', 64) }));
+            annotation with { ProvenanceSha256 = new string('B', 64) })).ConfigureAwait(false);
         Assert.AreNotEqual(outcome.Products[0].Recipe.IdentitySha256, differentGeometry.Products[0].Recipe.IdentitySha256);
 
         var lowercaseProvenance = await executor.ExecuteAsync(Request(
@@ -288,7 +291,7 @@ public sealed class ProcessingRecipeTests
                 previewProduct.Recipe.IdentitySha256),
             [previewArtifact],
             "stars",
-            annotation with { ProvenanceSha256 = new string('a', 64) }));
+            annotation with { ProvenanceSha256 = new string('a', 64) })).ConfigureAwait(false);
         Assert.AreEqual(outcome.Products[0].Recipe.IdentitySha256, lowercaseProvenance.Products[0].Recipe.IdentitySha256);
 
         var differentTransform = await executor.ExecuteAsync(Request(
@@ -300,7 +303,7 @@ public sealed class ProcessingRecipeTests
                 previewProduct.Recipe.IdentitySha256),
             [previewArtifact],
             "stars",
-            annotation with { Transform = new PreviewTransform(0.5, 0.5) }));
+            annotation with { Transform = new PreviewTransform(0.5, 0.5) })).ConfigureAwait(false);
         Assert.AreNotEqual(outcome.Products[0].Recipe.IdentitySha256, differentTransform.Products[0].Recipe.IdentitySha256);
 
         var linearInputs = new[]
@@ -319,7 +322,7 @@ public sealed class ProcessingRecipeTests
                 selector,
                 [artifact],
                 "linear-annotation",
-                annotation));
+                annotation)).ConfigureAwait(false);
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, linearAnnotation.Status);
             Assert.AreEqual("application/x-hvo-packed-image", linearAnnotation.Products[0].MediaType);
         }
@@ -347,7 +350,7 @@ public sealed class ProcessingRecipeTests
                 selector,
                 [artifact],
                 "formatted",
-                annotation));
+                annotation)).ConfigureAwait(false);
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, formatted.Status);
         }
 
@@ -356,7 +359,7 @@ public sealed class ProcessingRecipeTests
             EmptyOptions(),
             ProcessingInputSelector.Raw(),
             [raw],
-            "missing"));
+            "missing")).ConfigureAwait(false);
         var invalidRecipeResult = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.Annotation,
             EmptyOptions(),
@@ -370,21 +373,21 @@ public sealed class ProcessingRecipeTests
                 RecipeIdentitySha256 = new string('A', 64)
             }],
             "invalid",
-            annotation));
+            annotation)).ConfigureAwait(false);
         var missingInput = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.Annotation,
             EmptyOptions(),
             ProcessingInputSelector.Raw("missing"),
             [raw],
             "missing",
-            annotation));
+            annotation)).ConfigureAwait(false);
         var invalidLayout = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.Annotation,
             EmptyOptions(),
             ProcessingInputSelector.Raw(),
             [raw with { Layout = null }],
             "invalid-layout",
-            annotation));
+            annotation)).ConfigureAwait(false);
         Assert.AreEqual(ProcessingReasonCodes.MissingAnnotation, missingAnnotation.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidSelector, invalidRecipeResult.ReasonCode);
 
@@ -395,14 +398,14 @@ public sealed class ProcessingRecipeTests
                 FrameArtifactRole.Preview, previewProduct.Variant, previewProduct.Recipe.IdentitySha256),
             [previewArtifact with { Layout = raw.Layout }],
             "invalid-jpeg",
-            annotation));
+            annotation)).ConfigureAwait(false);
         var rawJpeg = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.Annotation,
             EmptyOptions(),
             ProcessingInputSelector.Raw("source"),
             [previewArtifact with { Role = FrameArtifactRole.Raw, Variant = "source" }],
             "invalid-jpeg",
-            annotation));
+            annotation)).ConfigureAwait(false);
         Assert.AreEqual(ProcessingReasonCodes.InvalidLayout, jpegWithLayout.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidLayout, rawJpeg.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.MissingInput, missingInput.ReasonCode);
@@ -419,7 +422,7 @@ public sealed class ProcessingRecipeTests
             Guid.Parse("30000000-0000-0000-0000-000000000002"),
             Guid.Parse("30000000-0000-0000-0000-000000000003")
         };
-        var start = DateTimeOffset.Parse("2025-01-15T08:00:00Z");
+        var start = DateTimeOffset.Parse("2025-01-15T08:00:00Z", CultureInfo.InvariantCulture);
         var mutableNewest = new byte[] { 40, 0 };
         var inputs = new[]
         {
@@ -432,7 +435,7 @@ public sealed class ProcessingRecipeTests
             Json("""{"maximumFrameCount":2}"""),
             ProcessingInputSelector.Raw("source"),
             inputs,
-            "mean-2"));
+            "mean-2")).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status);
         CollectionAssert.AreEqual(new byte[] { 30, 0 }, outcome.Products[0].Payload.ToArray());
@@ -445,13 +448,13 @@ public sealed class ProcessingRecipeTests
             Json("""{"maximumFrameCount":3,"maximumIntegrationMilliseconds":1500}"""),
             ProcessingInputSelector.Raw("source"),
             inputs,
-            "integration-bounded"));
+            "integration-bounded")).ConfigureAwait(false);
         var ageBounded = await new ProcessingRecipeExecutor().ExecuteAsync(Request(
             BuiltInProcessingRecipes.RollingMean,
             Json("""{"maximumFrameCount":3,"maximumAgeMilliseconds":500}"""),
             ProcessingInputSelector.Raw("source"),
             inputs,
-            "age-bounded"));
+            "age-bounded")).ConfigureAwait(false);
         Assert.ContainsSingle(integrationBounded.Products[0].SourceArtifactIds);
         Assert.ContainsSingle(ageBounded.Products[0].SourceArtifactIds);
         Assert.AreEqual(ids[2], integrationBounded.Products[0].SourceArtifactIds[0]);
@@ -469,7 +472,7 @@ public sealed class ProcessingRecipeTests
             EmptyOptions(),
             ProcessingInputSelector.Calibrated("bayer"),
             bayerInputs,
-            "bayer-mean"));
+            "bayer-mean")).ConfigureAwait(false);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, bayerMean.Status);
         Assert.AreEqual(CameraPixelFormat.BayerRggb16, bayerMean.Products[0].Layout!.PixelFormat);
 
@@ -503,7 +506,7 @@ public sealed class ProcessingRecipeTests
         foreach (var mismatch in compatibilityMismatches)
         {
             var incompatible = await executor.ExecuteAsync(Request(
-                BuiltInProcessingRecipes.RollingMean, EmptyOptions(), ProcessingInputSelector.Raw(), [first, mismatch], "mean"));
+                BuiltInProcessingRecipes.RollingMean, EmptyOptions(), ProcessingInputSelector.Raw(), [first, mismatch], "mean")).ConfigureAwait(false);
             Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, incompatible.Status);
             Assert.AreEqual(ProcessingReasonCodes.IncompatibleInput, incompatible.ReasonCode);
         }
@@ -515,9 +518,9 @@ public sealed class ProcessingRecipeTests
             Payload = new byte[] { 10, 0, 0, 0 }
         };
         var incompatibleLayout = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.RollingMean, EmptyOptions(), ProcessingInputSelector.Raw(), [first, strideMismatch], "mean"));
+            BuiltInProcessingRecipes.RollingMean, EmptyOptions(), ProcessingInputSelector.Raw(), [first, strideMismatch], "mean")).ConfigureAwait(false);
         var combinedMissing = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.ImageQuality, EmptyOptions(), ProcessingInputSelector.Combined(), [first], "combined-quality"));
+            BuiltInProcessingRecipes.ImageQuality, EmptyOptions(), ProcessingInputSelector.Combined(), [first], "combined-quality")).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, incompatibleLayout.Status);
         Assert.AreEqual(ProcessingReasonCodes.IncompatibleInput, incompatibleLayout.ReasonCode);
@@ -526,22 +529,22 @@ public sealed class ProcessingRecipeTests
 
         var outOfOrder = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.RollingMean, EmptyOptions(), ProcessingInputSelector.Raw(),
-            [changed with { CreatedUtc = first.CreatedUtc.AddSeconds(1) }, first], "mean"));
+            [changed with { CreatedUtc = first.CreatedUtc.AddSeconds(1) }, first], "mean")).ConfigureAwait(false);
         var duplicate = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.RollingMean, EmptyOptions(), ProcessingInputSelector.Raw(),
-            [first, first], "mean"));
+            [first, first], "mean")).ConfigureAwait(false);
         Assert.AreEqual(ProcessingReasonCodes.InvalidLineage, outOfOrder.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidLineage, duplicate.ReasonCode);
 
         var missing = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.RollingMean, EmptyOptions(), ProcessingInputSelector.Raw("missing"),
-            [first], "mean"));
+            [first], "mean")).ConfigureAwait(false);
         var invalidSelector = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.RollingMean,
             EmptyOptions(),
             new ProcessingInputSelector(ProcessingInputKind.Raw, FrameArtifactRole.Calibrated),
             [first],
-            "mean"));
+            "mean")).ConfigureAwait(false);
         var recipeResultSource = first with
         {
             ArtifactId = Guid.NewGuid(),
@@ -555,13 +558,13 @@ public sealed class ProcessingRecipeTests
             ProcessingInputSelector.RecipeResult(
                 FrameArtifactRole.Combined, recipeResultSource.Variant, recipeResultSource.RecipeIdentitySha256),
             [recipeResultSource],
-            "mean"));
+            "mean")).ConfigureAwait(false);
         var missingLayout = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.RollingMean, EmptyOptions(), ProcessingInputSelector.Raw(),
-            [first with { Layout = null }], "mean"));
+            [first with { Layout = null }], "mean")).ConfigureAwait(false);
         var mono8 = CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono8, 1, 1, [1]);
         var unsupportedLinear = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.RollingMean, EmptyOptions(), ProcessingInputSelector.Raw(), [mono8], "mean"));
+            BuiltInProcessingRecipes.RollingMean, EmptyOptions(), ProcessingInputSelector.Raw(), [mono8], "mean")).ConfigureAwait(false);
         Assert.AreEqual(ProcessingReasonCodes.MissingInput, missing.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidSelector, invalidSelector.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidSelector, recipeResult.ReasonCode);
@@ -588,13 +591,13 @@ public sealed class ProcessingRecipeTests
             EmptyOptions(),
             ProcessingInputSelector.RecipeResult(FrameArtifactRole.Preview, "wide", new string('B', 64)),
             [first, second],
-            "noop"));
+            "noop")).ConfigureAwait(false);
         var ambiguous = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.NoOpAnalyzer,
             EmptyOptions(),
             new ProcessingInputSelector(ProcessingInputKind.RecipeResult, FrameArtifactRole.Preview, "wide", null),
             [first, second],
-            "noop"));
+            "noop")).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, exact.Status);
         Assert.AreEqual(second.ArtifactId, exact.Products[0].SourceArtifactIds[0]);
@@ -608,17 +611,20 @@ public sealed class ProcessingRecipeTests
             EmptyOptions(),
             ProcessingInputSelector.Raw("raw"),
             [raw, rawDuplicate],
-            "noop"));
+            "noop")).ConfigureAwait(false);
         Assert.AreEqual(ProcessingReasonCodes.AmbiguousInput, genuinelyAmbiguous.ReasonCode);
 
         var invalidSelectors = new[]
         {
             new ProcessingInputSelector(ProcessingInputKind.Raw, FrameArtifactRole.Calibrated),
+            new ProcessingInputSelector(ProcessingInputKind.Raw, FrameArtifactRole.Raw, " "),
             new ProcessingInputSelector(ProcessingInputKind.Raw, FrameArtifactRole.Raw, RecipeIdentitySha256: new string('A', 64)),
             new ProcessingInputSelector(ProcessingInputKind.Calibrated, FrameArtifactRole.Raw),
+            new ProcessingInputSelector(ProcessingInputKind.Calibrated, FrameArtifactRole.Calibrated, " "),
             new ProcessingInputSelector(ProcessingInputKind.Calibrated, FrameArtifactRole.Calibrated,
                 RecipeIdentitySha256: new string('A', 64)),
             new ProcessingInputSelector(ProcessingInputKind.Combined, FrameArtifactRole.Raw),
+            new ProcessingInputSelector(ProcessingInputKind.Combined, FrameArtifactRole.Combined, " "),
             new ProcessingInputSelector(ProcessingInputKind.Combined, FrameArtifactRole.Combined,
                 RecipeIdentitySha256: new string('A', 64)),
             ProcessingInputSelector.RecipeResult(FrameArtifactRole.Raw, "raw", new string('A', 64)),
@@ -629,7 +635,7 @@ public sealed class ProcessingRecipeTests
         foreach (var selector in invalidSelectors)
         {
             var invalid = await executor.ExecuteAsync(Request(
-                BuiltInProcessingRecipes.NoOpAnalyzer, EmptyOptions(), selector, [raw], "noop"));
+                BuiltInProcessingRecipes.NoOpAnalyzer, EmptyOptions(), selector, [raw], "noop")).ConfigureAwait(false);
             Assert.AreEqual(ProcessingReasonCodes.InvalidSelector, invalid.ReasonCode);
         }
     }
@@ -641,9 +647,9 @@ public sealed class ProcessingRecipeTests
         var input = CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono8, 2, 2, [0, 1, 254, 255]);
         var executor = new ProcessingRecipeExecutor();
         var quality = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.ImageQuality, EmptyOptions(), ProcessingInputSelector.Raw(), [input], "quality"));
+            BuiltInProcessingRecipes.ImageQuality, EmptyOptions(), ProcessingInputSelector.Raw(), [input], "quality")).ConfigureAwait(false);
         var noOp = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.NoOpAnalyzer, EmptyOptions(), ProcessingInputSelector.Raw(), [input], "noop"));
+            BuiltInProcessingRecipes.NoOpAnalyzer, EmptyOptions(), ProcessingInputSelector.Raw(), [input], "noop")).ConfigureAwait(false);
 
         using var qualityJson = JsonDocument.Parse(quality.Products[0].Payload);
         Assert.AreEqual(4L, qualityJson.RootElement.GetProperty("sampleCount").GetInt64());
@@ -667,7 +673,7 @@ public sealed class ProcessingRecipeTests
                 EmptyOptions(),
                 ProcessingInputSelector.Raw(artifact.Variant),
                 [artifact with { Layout = artifact.Layout! with { WhiteLevel = null } }],
-                "quality"));
+                "quality")).ConfigureAwait(false);
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, formatQuality.Status);
         }
     }
@@ -679,39 +685,39 @@ public sealed class ProcessingRecipeTests
         var input = CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono16, 1, 1, [1, 0]);
         var executor = new ProcessingRecipeExecutor();
         var unknown = await executor.ExecuteAsync(Request(
-            "not-a-recipe", EmptyOptions(), ProcessingInputSelector.Raw(), [input], "x"));
+            "not-a-recipe", EmptyOptions(), ProcessingInputSelector.Raw(), [input], "x")).ConfigureAwait(false);
         var blankRecipe = await executor.ExecuteAsync(Request(
-            " ", EmptyOptions(), ProcessingInputSelector.Raw(), [input], "x"));
+            " ", EmptyOptions(), ProcessingInputSelector.Raw(), [input], "x")).ConfigureAwait(false);
         var missingInputs = await executor.ExecuteAsync(new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.NoOpAnalyzer,
             EmptyOptions(),
             ProcessingInputSelector.Raw(),
             null!,
-            "x"));
+            "x")).ConfigureAwait(false);
         var missingSelector = await executor.ExecuteAsync(new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.NoOpAnalyzer,
             EmptyOptions(),
             null!,
             [input],
-            "x"));
+            "x")).ConfigureAwait(false);
         var missingVariant = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.NoOpAnalyzer,
             EmptyOptions(),
             ProcessingInputSelector.Raw(),
             [input],
-            " "));
+            " ")).ConfigureAwait(false);
         var invalidOptions = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.EncodedPreview,
             Json("""{"jpegQuality":0}"""),
-            ProcessingInputSelector.Raw(), [input], "x"));
+            ProcessingInputSelector.Raw(), [input], "x")).ConfigureAwait(false);
         var unsupported = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.EncodedPreview,
             EmptyOptions(),
             ProcessingInputSelector.Raw(),
             [input with { Layout = input.Layout! with { PixelFormat = (CameraPixelFormat)999 } }],
-            "x"));
+            "x")).ConfigureAwait(false);
         using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
+        await cancellation.CancelAsync().ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, unknown.Status);
         Assert.AreEqual(ProcessingReasonCodes.UnknownRecipe, unknown.ReasonCode);
@@ -724,9 +730,9 @@ public sealed class ProcessingRecipeTests
         Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, unsupported.Status);
 
         var acceptedUndefinedOptions = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.NoOpAnalyzer, default, ProcessingInputSelector.Raw(), [input], "undefined"));
+            BuiltInProcessingRecipes.NoOpAnalyzer, default, ProcessingInputSelector.Raw(), [input], "undefined")).ConfigureAwait(false);
         var acceptedNullOptions = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.NoOpAnalyzer, Json("null"), ProcessingInputSelector.Raw(), [input], "null"));
+            BuiltInProcessingRecipes.NoOpAnalyzer, Json("null"), ProcessingInputSelector.Raw(), [input], "null")).ConfigureAwait(false);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, acceptedUndefinedOptions.Status);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, acceptedNullOptions.Status);
 
@@ -761,7 +767,7 @@ public sealed class ProcessingRecipeTests
         foreach (var (recipe, options) in invalidOptionCases)
         {
             var invalid = await executor.ExecuteAsync(Request(
-                recipe, Json(options), ProcessingInputSelector.Raw(), [input], "invalid-options"));
+                recipe, Json(options), ProcessingInputSelector.Raw(), [input], "invalid-options")).ConfigureAwait(false);
             Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, invalid.ReasonCode, $"{recipe}: {options}");
         }
 
@@ -770,14 +776,14 @@ public sealed class ProcessingRecipeTests
             EmptyOptions(),
             ProcessingInputSelector.Raw(),
             [input with { RecipeIdentitySha256 = "invalid" }],
-            "invalid"));
+            "invalid")).ConfigureAwait(false);
         Assert.AreEqual(ProcessingReasonCodes.InvalidInput, invalidProducer.ReasonCode);
 
         var malformedInputs = new[]
         {
             input with { Variant = " " },
             input with { MediaType = " " },
-            input with { CreatedUtc = DateTimeOffset.Parse("2025-01-15T08:00:00+01:00") },
+            input with { CreatedUtc = DateTimeOffset.Parse("2025-01-15T08:00:00+01:00", CultureInfo.InvariantCulture) },
             input with { Integration = TimeSpan.FromTicks(-1) },
             input with { Compatibility = null! },
             input with { Compatibility = Compatibility with { Sensor = " " } }
@@ -789,7 +795,7 @@ public sealed class ProcessingRecipeTests
                 EmptyOptions(),
                 ProcessingInputSelector.Raw(),
                 [malformedInput],
-                "invalid"));
+                "invalid")).ConfigureAwait(false);
             Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, malformed.Status);
             Assert.AreEqual(ProcessingReasonCodes.InvalidInput, malformed.ReasonCode);
         }
@@ -823,29 +829,29 @@ public sealed class ProcessingRecipeTests
                 ProcessingInputSelector.Raw(),
                 [input],
                 "invalid",
-                malformedAnnotation));
+                malformedAnnotation)).ConfigureAwait(false);
             Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, malformed.Status);
             Assert.AreEqual(ProcessingReasonCodes.InvalidAnnotation, malformed.ReasonCode);
         }
 
         var jsonFailure = await ExecuteSyntheticFailureAsync(
-            new JsonException(), throwDuringNormalization: true, input);
+            new JsonException(), throwDuringNormalization: true, input).ConfigureAwait(false);
         var optionFailure = await ExecuteSyntheticFailureAsync(
-            new ArgumentException(), throwDuringNormalization: true, input);
+            new ArgumentException(), throwDuringNormalization: true, input).ConfigureAwait(false);
         var layoutFailure = await ExecuteSyntheticFailureAsync(
-            new ArgumentException(), throwDuringNormalization: false, input);
+            new ArgumentException(), throwDuringNormalization: false, input).ConfigureAwait(false);
         var overflowFailure = await ExecuteSyntheticFailureAsync(
-            new OverflowException(), throwDuringNormalization: false, input);
+            new OverflowException(), throwDuringNormalization: false, input).ConfigureAwait(false);
         var executionFailure = await ExecuteSyntheticFailureAsync(
-            new InvalidOperationException(), throwDuringNormalization: false, input);
+            new InvalidOperationException(), throwDuringNormalization: false, input).ConfigureAwait(false);
         var normalizationFailure = await ExecuteSyntheticFailureAsync(
-            new InvalidOperationException(), throwDuringNormalization: true, input);
+            new InvalidOperationException(), throwDuringNormalization: true, input).ConfigureAwait(false);
         var explicitRetryable = await new ProcessingRecipeExecutor([new RetryableRecipe()]).ExecuteAsync(Request(
             RetryableRecipe.Name,
             EmptyOptions(),
             ProcessingInputSelector.Raw(),
             [input],
-            "retry"));
+            "retry")).ConfigureAwait(false);
         Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, jsonFailure.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, optionFailure.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidLayout, layoutFailure.ReasonCode);
@@ -879,7 +885,7 @@ public sealed class ProcessingRecipeTests
                 EmptyOptions(),
                 ProcessingInputSelector.Raw(),
                 [input with { Layout = layout }],
-                "invalid"));
+                "invalid")).ConfigureAwait(false);
             Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, invalidLayout.Status);
             Assert.AreEqual(ProcessingReasonCodes.InvalidLayout, invalidLayout.ReasonCode);
         }
@@ -913,7 +919,7 @@ public sealed class ProcessingRecipeTests
                 EmptyOptions(),
                 ProcessingInputSelector.Raw(malformedInput.Variant),
                 [malformedInput],
-                "invalid"));
+                "invalid")).ConfigureAwait(false);
             Assert.AreEqual(ProcessingReasonCodes.InvalidLayout, invalidLayout.ReasonCode);
         }
 
@@ -922,7 +928,7 @@ public sealed class ProcessingRecipeTests
             EmptyOptions(),
             ProcessingInputSelector.Raw(),
             [input with { Payload = new byte[] { 1, 0, 2 } }],
-            "invalid"));
+            "invalid")).ConfigureAwait(false);
         Assert.AreEqual(ProcessingReasonCodes.InvalidLayout, trailingBytes.ReasonCode);
         await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
             await executor.ExecuteAsync(Request(
@@ -930,7 +936,7 @@ public sealed class ProcessingRecipeTests
                 EmptyOptions(),
                 ProcessingInputSelector.Raw(),
                 [input],
-                "x"), cancellation.Token));
+                "x"), cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
 
         using var duringExecution = new CancellationTokenSource();
         var cancelingExecutor = new ProcessingRecipeExecutor([new CancelingRecipe(duringExecution)]);
@@ -940,7 +946,7 @@ public sealed class ProcessingRecipeTests
                 EmptyOptions(),
                 ProcessingInputSelector.Raw(),
                 [input],
-                "x"), duringExecution.Token));
+                "x"), duringExecution.Token).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     private static ValueTask<ProcessingOutcome> ExecuteSyntheticFailureAsync(
@@ -987,7 +993,7 @@ public sealed class ProcessingRecipeTests
             "application/x-hvo-frame",
             layout,
             bytes,
-            createdUtc ?? DateTimeOffset.Parse("2025-01-15T08:00:00Z"),
+            createdUtc ?? DateTimeOffset.Parse("2025-01-15T08:00:00Z", CultureInfo.InvariantCulture),
             TimeSpan.FromSeconds(1),
             Compatibility);
     }
@@ -1057,14 +1063,13 @@ public sealed class ProcessingRecipeTests
 
         public JsonElement NormalizeOptions(JsonElement options) => options;
 
-        public ValueTask<ProcessingOutcome> ExecuteAsync(
+        public async ValueTask<ProcessingOutcome> ExecuteAsync(
             ProcessingExecutionRequest request,
             ProcessingRecipeIdentity identity,
             CancellationToken cancellationToken)
         {
-            cancellation.Cancel();
-            return ValueTask.FromException<ProcessingOutcome>(
-                new OperationCanceledException(cancellation.Token));
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            throw new OperationCanceledException(cancellation.Token);
         }
     }
 

@@ -109,7 +109,7 @@ internal sealed class AnnotationCaptureProcessingStep(
         var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(
             context.Config,
             preview,
-            previewProduct?.Variant ?? "legacy-preview");
+            previewProduct?.Variant ?? preview.RecipeVersion ?? "legacy-preview");
         if (previewProduct is not null)
         {
             input = input with { RecipeIdentitySha256 = previewProduct.Recipe.IdentitySha256 };

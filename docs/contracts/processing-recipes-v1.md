@@ -67,6 +67,10 @@ optional integration-time and age limits. It emits during warm-up. All selected
 sources must match dimensions, stride, pixel format, byte order, sample/container
 depth, packing, CFA, black/white levels, and capture-time rig/orientation,
 calibration, mask, sensor, setpoint-regime, and processing-profile identities.
+Capture manifest v2 carries orientation inside the aggregate rig profile identity,
+so the `Rig` and `Orientation` axes both contain that profile hash until a separately
+versioned orientation profile is introduced. An orientation change still changes both
+axes and resets the window.
 The arithmetic is a linear integer mean using UInt64 accumulation. Registration,
 sigma clipping, dark subtraction, and motion compensation are not implicit.
 

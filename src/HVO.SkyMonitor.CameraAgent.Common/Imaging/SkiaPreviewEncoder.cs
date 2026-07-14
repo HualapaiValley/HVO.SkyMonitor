@@ -1,6 +1,5 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.InteropServices;
 using HVO.Core.Results;
 using HVO.SkyMonitor.Imaging;
 
@@ -34,11 +33,6 @@ public static class SkiaPreviewEncoder
             if (pixelData.Length != expectedLength)
             {
                 return Result<byte[]>.Failure(new InvalidOperationException($"Pixel buffer length {pixelData.Length} does not match expected size {expectedLength} for {width}x{height}."));
-            }
-
-            if (!MemoryMarshal.TryGetArray(pixelData, out ArraySegment<byte> segment) || segment.Array is null)
-            {
-                return Result<byte[]>.Failure(new InvalidOperationException("Pixel buffer must be array-backed."));
             }
 
             return Result<byte[]>.Success(JpegImageCodec.EncodeMono8ToJpeg(

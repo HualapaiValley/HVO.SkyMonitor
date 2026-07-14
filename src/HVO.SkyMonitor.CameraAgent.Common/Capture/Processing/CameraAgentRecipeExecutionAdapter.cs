@@ -111,9 +111,11 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             : null;
         var setpoint = string.Create(CultureInfo.InvariantCulture,
             $"exposure={frame.Metadata.Exposure.TotalMilliseconds:R};gain={frame.Metadata.Gain:R};offset={frame.Metadata.Offset:R};temperatureSetpoint={temperatureSetpoint:R}");
+        // Manifest v2 identifies orientation within the aggregate rig profile rather than as a separate profile.
+        var rigProfile = RigProjectionContextFactory.CreateProfileHashSha256(config.Rig);
         return new ProcessingCompatibilityIdentity(
-            RigProjectionContextFactory.CreateProfileHashSha256(config.Rig),
-            RigProjectionContextFactory.CreateProfileHashSha256(config.Rig),
+            rigProfile,
+            rigProfile,
             HashText($"calibration:{config.Rig.Optics.CalibrationVersion}"),
             HashText("mask:none"),
             CaptureContractJson.ComputeCanonicalJsonSha256(

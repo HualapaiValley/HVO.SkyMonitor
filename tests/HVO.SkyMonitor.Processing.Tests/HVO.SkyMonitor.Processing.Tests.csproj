@@ -8,7 +8,4 @@
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
   </ItemGroup>
-  <PropertyGroup>
-    <NoWarn>$(NoWarn);CA1515;CA2007;CA1305;CA1849;CA1861;CA1859</NoWarn>
-  </PropertyGroup>
 </Project>

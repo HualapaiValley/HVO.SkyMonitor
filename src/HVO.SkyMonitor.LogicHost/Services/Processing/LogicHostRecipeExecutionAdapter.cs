@@ -76,8 +76,10 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             annotation), cancellationToken);
     }
 
-    private static ProcessingCompatibilityIdentity CreateCompatibility(ReconstructionDescriptor descriptor) =>
-        new(
+    private static ProcessingCompatibilityIdentity CreateCompatibility(ReconstructionDescriptor descriptor)
+    {
+        // Manifest v2 identifies orientation within the aggregate rig profile rather than as a separate profile.
+        return new(
             descriptor.Profiles.Rig.Sha256,
             descriptor.Profiles.Rig.Sha256,
             descriptor.Profiles.Calibration.Sha256,
@@ -86,4 +88,5 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             string.Create(CultureInfo.InvariantCulture,
                 $"exposure={descriptor.Controls.EffectiveExposure.TotalMilliseconds:R};gain={descriptor.Controls.EffectiveGain:R};offset={descriptor.Controls.EffectiveOffset:R};temperatureSetpoint={descriptor.Controls.TemperatureSetpointC:R}"),
             descriptor.Profiles.Processing.Sha256);
+    }
 }

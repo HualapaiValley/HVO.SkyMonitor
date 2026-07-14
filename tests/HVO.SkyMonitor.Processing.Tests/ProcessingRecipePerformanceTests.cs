@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -10,6 +11,7 @@ namespace HVO.SkyMonitor.Processing.Tests;
 
 [TestClass]
 [DoNotParallelize]
+[SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class ProcessingRecipePerformanceTests
 {
     private static readonly string[] WorkloadIds = ["W1", "W2"];
@@ -24,7 +26,7 @@ public sealed class ProcessingRecipePerformanceTests
         "image-quality",
         "no-op-analyzer"
     ];
-    private static readonly IReadOnlyDictionary<string, string> ExpectedPackedPreviewChecksums =
+    private static readonly Dictionary<string, string> ExpectedPackedPreviewChecksums =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["W1"] = "42CA6AF7B5E237398972AB0DBBA89AF4A96F43A86EE60B5E7D985340E4A10980",

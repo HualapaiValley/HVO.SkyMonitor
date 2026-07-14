@@ -256,9 +256,12 @@ internal static class ProcessingRecipeSupport
 
     private static bool SelectorIsValid(ProcessingInputSelector selector) => selector.Kind switch
     {
-        ProcessingInputKind.Raw => selector.Role == FrameArtifactRole.Raw && selector.RecipeIdentitySha256 is null,
-        ProcessingInputKind.Calibrated => selector.Role == FrameArtifactRole.Calibrated && selector.RecipeIdentitySha256 is null,
-        ProcessingInputKind.Combined => selector.Role == FrameArtifactRole.Combined && selector.RecipeIdentitySha256 is null,
+        ProcessingInputKind.Raw => selector.Role == FrameArtifactRole.Raw && selector.RecipeIdentitySha256 is null &&
+            VariantIsValid(selector.Variant),
+        ProcessingInputKind.Calibrated => selector.Role == FrameArtifactRole.Calibrated && selector.RecipeIdentitySha256 is null &&
+            VariantIsValid(selector.Variant),
+        ProcessingInputKind.Combined => selector.Role == FrameArtifactRole.Combined && selector.RecipeIdentitySha256 is null &&
+            VariantIsValid(selector.Variant),
         ProcessingInputKind.RecipeResult => selector.Role != FrameArtifactRole.Raw &&
             !string.IsNullOrWhiteSpace(selector.Variant) &&
             IsSha256(selector.RecipeIdentitySha256),
@@ -274,6 +277,8 @@ internal static class ProcessingRecipeSupport
             StringComparison.OrdinalIgnoreCase));
 
     private static bool IsFinite(double? value) => !value.HasValue || double.IsFinite(value.Value);
+
+    private static bool VariantIsValid(string? variant) => variant is null || !string.IsNullOrWhiteSpace(variant);
 
     private static bool IsSha256(string? value) =>
         value is { Length: 64 } && value.All(Uri.IsHexDigit);
