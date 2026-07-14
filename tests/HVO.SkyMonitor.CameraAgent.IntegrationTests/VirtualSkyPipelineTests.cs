@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 
@@ -69,11 +70,24 @@ public sealed class VirtualSkyPipelineTests
         Assert.IsTrue(pending.All(item => item.AgentId == "cameraagent-integration-test"));
         Assert.IsTrue(pending.All(item => File.Exists(Path.Combine(Fixture.StorageRoot, item.RelativeArtifactPath))));
         Assert.IsTrue(pending.Any(item => item.Scene is not null));
+        Assert.IsTrue(pending.Where(item => item.Role == FrameArtifactRole.Raw).All(item => item.FrameId != item.ArtifactId));
+
+        using var journal = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
+        await journal.OpenAsync().ConfigureAwait(false);
+        using var countCommand = journal.CreateCommand();
+        countCommand.CommandText = "SELECT COUNT(*) FROM raw_captures WHERE state = 'committed' AND retention_hold = 1;";
+        Assert.IsGreaterThan(0L, Convert.ToInt64(
+            await countCommand.ExecuteScalarAsync().ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture));
 
         using var client = Fixture.CreateCameraAgentClient();
         using var response = await client.GetAsync(new Uri("/api/v1.0/frames/latest", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
         Assert.AreEqual("image/jpeg", response.Content.Headers.ContentType?.MediaType);
+        using var health = await client.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
+        var healthJson = await health.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, health.StatusCode);
+        StringAssert.Contains(healthJson, "raw-ingress", StringComparison.Ordinal);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)

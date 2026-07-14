@@ -110,7 +110,13 @@ public sealed class RandomImageCameraModule(TimeProvider timeProvider) : ICamera
             NextSetpoint: nextSetpoint,
             ProcessingLatency: processingLatency,
             Mode: request.Mode,
-            RequiresImmediateUpload: false);
+            RequiresImmediateUpload: false)
+        {
+            AcquisitionTiming = new CaptureAcquisitionTiming(
+                frame.TimestampUtc,
+                frame.TimestampUtc,
+                frame.TimestampUtc)
+        };
 
         return Task.FromResult(result);
     }

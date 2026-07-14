@@ -9,6 +9,16 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     [MinLength(1)]
     public string ConfigFilePath { get; init; } = "cameraagent.sample.json";
 
+    [Required]
+    [MinLength(1)]
+    public string RawIngressRoot { get; init; } = string.Empty;
+
+    [Range(0, long.MaxValue)]
+    public long RawIngressReserveBytes { get; init; } = 64L * 1024 * 1024;
+
+    [Range(1, 300)]
+    public int RawIngressSqliteBusyTimeoutSeconds { get; init; } = 5;
+
     public string? AgentId { get; init; }
 
     [Range(1, 1440)]

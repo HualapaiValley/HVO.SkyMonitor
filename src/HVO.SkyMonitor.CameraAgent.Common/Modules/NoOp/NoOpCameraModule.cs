@@ -53,7 +53,12 @@ internal sealed class NoOpCameraModule(ILogger<NoOpCameraModule> logger) : ICame
             nextSetpoint,
             TimeSpan.FromMilliseconds(1),
             request.Mode,
-            _options.RequiresImmediateUpload);
+            _options.RequiresImmediateUpload)
+        {
+            AcquisitionTiming = frame is null
+                ? null
+                : new CaptureAcquisitionTiming(frame.TimestampUtc, frame.TimestampUtc, frame.TimestampUtc)
+        };
 
         return Task.FromResult(result);
     }

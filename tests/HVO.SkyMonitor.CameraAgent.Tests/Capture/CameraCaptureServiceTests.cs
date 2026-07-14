@@ -2,6 +2,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
@@ -20,6 +21,7 @@ public sealed class CameraCaptureServiceTests
             new ConfigurationAccessor(config),
             new ModuleFactory(module),
             new PipelineFactory(step),
+            new PassthroughRawIngress(),
             TimeProvider.System,
             NullLogger<CameraCaptureService>.Instance);
 
@@ -49,7 +51,7 @@ public sealed class CameraCaptureServiceTests
         var step = new GatedProcessingStep();
         var service = new CameraCaptureService(
             new ConfigurationAccessor(CreateConfig()), new ModuleFactory(module), new PipelineFactory(step),
-            TimeProvider.System, NullLogger<CameraCaptureService>.Instance);
+            new PassthroughRawIngress(), TimeProvider.System, NullLogger<CameraCaptureService>.Instance);
 
         await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
         await step.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -93,6 +95,17 @@ public sealed class CameraCaptureServiceTests
     private sealed class PipelineFactory(ICaptureProcessingStep step) : ICaptureProcessingPipelineFactory
     {
         public IReadOnlyList<ICaptureProcessingStep> CreatePipeline(CameraModuleConfig config) => [step];
+    }
+
+    private sealed class PassthroughRawIngress : IRawCaptureIngress
+    {
+        public ValueTask InitializeAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask<RawCaptureReceipt?> AcceptAsync(
+            CameraModuleConfig configuration,
+            CaptureLoopSubmission submission,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult<RawCaptureReceipt?>(null);
     }
 
     private sealed class GatedCameraModule : ICameraModule

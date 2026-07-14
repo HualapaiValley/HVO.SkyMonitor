@@ -208,7 +208,10 @@ internal static class ReconstructionDescriptorValidator
         {
             return Failure(CaptureContractReasonCodes.InvalidSampleDepth, "descriptor.layout.sampleDepthBits");
         }
-        if (layout.ByteOrder != byteOrder)
+        var byteOrderIsValid = containerDepth > 8
+            ? layout.ByteOrder is FrameByteOrder.LittleEndian or FrameByteOrder.BigEndian
+            : layout.ByteOrder == byteOrder;
+        if (!byteOrderIsValid)
         {
             return Failure(CaptureContractReasonCodes.InvalidByteOrder, "descriptor.layout.byteOrder");
         }

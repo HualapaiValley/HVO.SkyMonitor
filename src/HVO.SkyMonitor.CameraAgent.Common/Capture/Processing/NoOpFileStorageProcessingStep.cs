@@ -43,11 +43,24 @@ internal sealed class NoOpFileStorageProcessingStep(
         {
             foreach (var artifact in artifacts.Artifacts.Values)
             {
-                var stored = await _frameStorageService.SaveAsync(Options.StorageRoot, artifact, cancellationToken).ConfigureAwait(false);
+                StoredFrameReference stored;
+                if (artifact.Role == FrameArtifactRole.Raw && context.RawCapture is { } ingress)
+                {
+                    if (!IsStoredUnderRoot(ingress.StoredFrame, Options.StorageRoot))
+                    {
+                        continue;
+                    }
+                    stored = ingress.StoredFrame;
+                }
+                else
+                {
+                    stored = await _frameStorageService.SaveAsync(Options.StorageRoot, artifact, cancellationToken).ConfigureAwait(false);
+                }
                 if (Options.QueueForUpload)
                 {
+                    var captureId = context.RawCapture?.Manifest.Descriptor.Capture.CaptureId ?? artifacts.Raw.ArtifactId;
                     await _artifactOutbox.EnqueueAsync(Options.StorageRoot, new ArtifactUploadManifest(
-                        "v1", context.Config.AgentId, artifact.ArtifactId, artifacts.Raw.ArtifactId, artifact.Role,
+                        "v1", context.Config.AgentId, artifact.ArtifactId, captureId, artifact.Role,
                         MediaTypeFor(artifact.Frame.PixelFormat), artifact.Frame.PixelData.Length,
                         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(artifact.Frame.PixelData.Span)),
                         artifact.Frame.TimestampUtc, artifact.RecipeVersion ?? "raw-v1", stored.RelativePath,
@@ -78,6 +91,12 @@ internal sealed class NoOpFileStorageProcessingStep(
         }
 
     }
+
+    private static bool IsStoredUnderRoot(StoredFrameReference storedFrame, string storageRoot)
+        => string.Equals(
+            Path.GetFullPath(Path.Combine(storageRoot, storedFrame.RelativePath)),
+            Path.GetFullPath(storedFrame.AbsolutePath),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     private static string MediaTypeFor(HVO.SkyMonitor.AgentCore.CameraPixelFormat pixelFormat) => pixelFormat switch
     {

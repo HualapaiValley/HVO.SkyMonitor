@@ -14,7 +14,16 @@ public sealed record CaptureResult(
     TimeSpan ProcessingLatency,
     CaptureMode Mode,
     bool RequiresImmediateUpload,
-    FrameArtifactSet? Artifacts = null);
+    FrameArtifactSet? Artifacts = null)
+{
+    /// <summary>Exact module-reported acquisition boundaries, when available.</summary>
+    public CaptureAcquisitionTiming? AcquisitionTiming { get; init; }
+}
+
+public sealed record CaptureAcquisitionTiming(
+    DateTimeOffset ExposureStartedUtc,
+    DateTimeOffset ExposureEndedUtc,
+    DateTimeOffset ReadoutCompletedUtc);
 
 public sealed record CaptureSetpoint(
     TimeSpan Exposure,

@@ -109,4 +109,35 @@ internal static partial class CameraAgentLog
 
     [LoggerMessage(EventId = 2024, Level = LogLevel.Debug, Message = "Calibration step {Step} applying {Strategy} strategy with {Passes} passes and max {MaxSeconds}s window")]
     public static partial void CalibrationApplying(this ILogger logger, string Step, string Strategy, int Passes, int MaxSeconds);
+
+    [LoggerMessage(EventId = 2040, Level = LogLevel.Information, Message = "Raw ingress initialized at schema {SchemaVersion} with {PendingCount} held captures")]
+    public static partial void RawIngressInitialized(this ILogger logger, int schemaVersion, long pendingCount);
+
+    [LoggerMessage(EventId = 2041, Level = LogLevel.Information, Message = "Raw ingress reconciliation inspected {Inspected}, recovered {Recovered}, cleaned {Cleaned}, quarantined {Quarantined}, and found {MissingEvidence} missing committed records")]
+    public static partial void RawIngressReconciled(
+        this ILogger logger, int inspected, int recovered, int cleaned, int quarantined, int missingEvidence);
+
+    [LoggerMessage(EventId = 2042, Level = LogLevel.Debug, Message = "Raw ingress committed {PayloadBytes} bytes in {DurationMilliseconds} ms")]
+    public static partial void RawIngressCommitted(this ILogger logger, long payloadBytes, double durationMilliseconds);
+
+    [LoggerMessage(EventId = 2043, Level = LogLevel.Debug, Message = "Raw ingress accepted an existing idempotent capture in {DurationMilliseconds} ms")]
+    public static partial void RawIngressExisting(this ILogger logger, double durationMilliseconds);
+
+    [LoggerMessage(EventId = 2044, Level = LogLevel.Error, Message = "Raw ingress refused capture during {Phase} because {Reason}")]
+    public static partial void RawIngressRefused(this ILogger logger, string phase, string reason);
+
+    [LoggerMessage(EventId = 2045, Level = LogLevel.Information, Message = "Raw ingress recovered and is accepting captures")]
+    public static partial void RawIngressRecovered(this ILogger logger);
+
+    [LoggerMessage(EventId = 2046, Level = LogLevel.Warning, Message = "Raw ingress reconciliation quarantined {RecordCount} records totaling {PayloadBytes} bytes")]
+    public static partial void RawIngressQuarantined(this ILogger logger, int recordCount, long payloadBytes);
+
+    [LoggerMessage(EventId = 2047, Level = LogLevel.Critical, Message = "Raw ingress schema or integrity validation failed because {Reason}")]
+    public static partial void RawIngressIntegrityFailed(this ILogger logger, string reason);
+
+    [LoggerMessage(EventId = 2048, Level = LogLevel.Warning, Message = "Raw ingress SQLite operation {Operation} completed with result {Result}")]
+    public static partial void RawIngressSqliteResult(this ILogger logger, string operation, string result);
+
+    [LoggerMessage(EventId = 2049, Level = LogLevel.Warning, Message = "Raw ingress compatibility index projection failed and will be repaired at restart")]
+    public static partial void RawIngressIndexProjectionFailed(this ILogger logger);
 }

@@ -203,6 +203,7 @@ public class Program
         builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
         healthChecks.AddCheck<CameraAgentConfigurationHealthCheck>("camera-configuration", tags: ["dependency"]);
         healthChecks.AddCheck<DiskPressureHealthCheck>("disk-pressure", tags: ["dependency"]);
+        healthChecks.AddCheck<RawIngressHealthCheck>("raw-ingress", tags: ["dependency"]);
         builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
         builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
 

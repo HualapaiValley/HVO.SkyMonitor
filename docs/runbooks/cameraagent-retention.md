@@ -10,7 +10,9 @@ daily index entry.
 After every successful retention sweep, every pending outbox manifest still
 references an existing payload beneath the same storage root. Expiration does
 not override this hold. Once central ingestion acknowledges the manifest and
-the outbox removes it, the next eligible sweep may delete the artifact.
+the outbox removes it, the next eligible sweep may delete a derivative. Raw
+ingress evidence remains held by `raw-ingress.db` until durable
+required-consumer acknowledgements are added.
 
 Retention fails closed for a storage root before deleting anything when:
 
@@ -71,8 +73,8 @@ sidecar files published by that invocation without hiding the original error.
 Browsing also requires the sidecar path and byte length to match the selected
 payload; checksum verification remains mandatory when bytes are reconstructed
 or transferred rather than forcing a full-frame scan for every gallery listing.
-Residual files, crash reconciliation, and fsync-backed durable ingress are
-owned by #94 and are not implied by this additive sidecar API.
+Raw ingress reconciles residual files and repairs this projection at startup;
+the JSONL index remains compatibility browsing state rather than durable truth.
 Before appending, the writer terminates any torn final line so a later valid
 commit remains independently browseable. Listings also inspect adjacent daily
 indexes to retain discovery of pre-hardening entries written with non-UTC offsets.
@@ -108,8 +110,32 @@ idempotency prevents a duplicate central record.
 Set `CameraAgent:UploadBandwidthLimitBytesPerSecond` to a positive value to
 limit streamed payload reads, or leave it at `0` for no application-level
 limit. LogicHost acknowledges only after payload checksum verification, MinIO
-storage, and SQL metadata persistence. Only that success response removes the
-outbox manifest and its protected local artifact.
+storage, and SQL metadata persistence. That response removes the outbox manifest
+and a derivative's local artifact. It does not remove an ingress-owned raw
+payload or manifest-v2 sidecar while the SQLite retention hold remains active.
+
+## Raw Ingress Recovery
+
+`CameraAgent:RawIngressRoot` is mandatory and must identify persistent local
+storage. The authoritative journal is
+`<raw-ingress-root>/journal/raw-ingress.db`; do not edit it or delete its WAL/SHM
+files while CameraAgent is running. `/health` reports `raw-ingress` as healthy
+only after schema verification, integrity checking, reconciliation, and a
+passive checkpoint complete.
+
+On restart, complete valid manifest-v2 pairs are recovered exactly once, stale
+temporary files are recorded and removed, compatibility indexes are repaired,
+and malformed or conflicting evidence moves beneath `quarantine/`. A committed
+row with missing evidence makes ingress unhealthy and requires restoring the
+exact payload/sidecar or an explicit operator disposition. Never clear the
+journal merely to make health green: committed rows are retention holds and the
+only durable record of unfinished raw work.
+
+Disk exhaustion, failed capacity probes, inaccessible storage, SQLite lock
+timeout, integrity failure, and unsupported newer schemas stop further capture
+acceptance. Restore capacity or access, preserve all evidence, then restart the
+agent and confirm `raw-ingress` health, pending count/bytes, oldest age, and
+quarantine totals before resuming normal operation.
 
 ## Soak Validation
 

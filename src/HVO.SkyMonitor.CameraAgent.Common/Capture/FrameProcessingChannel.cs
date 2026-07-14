@@ -3,10 +3,14 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 
-internal sealed record FrameProcessingItem(CameraModuleConfig Config, CaptureLoopSubmission Submission);
+internal sealed record FrameProcessingItem(
+    CameraModuleConfig Config,
+    CaptureLoopSubmission Submission,
+    RawCaptureReceipt? RawCapture = null);
 
 internal sealed class FrameProcessingChannel
 {
@@ -42,6 +46,16 @@ internal sealed class FrameProcessingChannel
     {
         await _channel.Writer.WriteAsync(item, cancellationToken).ConfigureAwait(false);
         Interlocked.Increment(ref _acceptedCount);
+    }
+
+    public bool TryWrite(FrameProcessingItem item)
+    {
+        if (!_channel.Writer.TryWrite(item))
+        {
+            return false;
+        }
+        Interlocked.Increment(ref _acceptedCount);
+        return true;
     }
 
     public async IAsyncEnumerable<FrameProcessingItem> ReadAllAsync(
