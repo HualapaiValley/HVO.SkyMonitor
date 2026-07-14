@@ -21,9 +21,10 @@ public sealed class ReconstructableFrameContractTests
         var manifest = CreateManifest(format, byteOrder, cfa, bytesPerPixel, payload);
 
         var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest));
-        var result = FrameReconstructor.TryReconstruct(parsed.Document!.Manifest!.Descriptor, payload, out var frame);
-
         Assert.IsTrue(parsed.IsValid);
+        var descriptor = parsed.Document!.Manifest!.Descriptor;
+        var result = FrameReconstructor.TryReconstruct(descriptor, payload, out var frame);
+
         Assert.IsTrue(result.IsValid);
         CollectionAssert.AreEqual(payload, frame!.PixelData.ToArray());
         Assert.AreEqual(payload.Length, frame.StrideBytes);

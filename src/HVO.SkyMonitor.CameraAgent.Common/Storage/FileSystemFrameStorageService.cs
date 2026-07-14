@@ -430,16 +430,14 @@ public sealed class FileSystemFrameStorageService(
         try
         {
             var json = File.ReadAllBytes(path);
-            using var document = JsonDocument.Parse(json);
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            if (!TryReadSchemaVersion(json, out var hasSchemaVersion, out var schemaVersion))
             {
                 metadata = null!;
                 return false;
             }
-            if (document.RootElement.TryGetProperty("schemaVersion", out var schemaVersion))
+            if (hasSchemaVersion)
             {
-                if (schemaVersion.ValueKind != JsonValueKind.String ||
-                    !string.Equals(schemaVersion.GetString(), ArtifactManifestV2.CurrentSchemaVersion, StringComparison.Ordinal))
+                if (!string.Equals(schemaVersion, ArtifactManifestV2.CurrentSchemaVersion, StringComparison.Ordinal))
                 {
                     metadata = null!;
                     return false;
@@ -481,6 +479,50 @@ public sealed class FileSystemFrameStorageService(
             metadata = null!;
             return false;
         }
+    }
+
+    private static bool TryReadSchemaVersion(
+        ReadOnlySpan<byte> json,
+        out bool hasSchemaVersion,
+        out string? schemaVersion)
+    {
+        hasSchemaVersion = false;
+        schemaVersion = null;
+        var reader = new Utf8JsonReader(json);
+        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+        {
+            return false;
+        }
+
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndObject)
+            {
+                return true;
+            }
+            if (reader.TokenType != JsonTokenType.PropertyName)
+            {
+                return false;
+            }
+
+            var isSchemaVersion = reader.ValueTextEquals("schemaVersion"u8);
+            if (!reader.Read())
+            {
+                return false;
+            }
+            if (isSchemaVersion)
+            {
+                hasSchemaVersion = true;
+                if (reader.TokenType != JsonTokenType.String)
+                {
+                    return false;
+                }
+                schemaVersion = reader.GetString();
+                return true;
+            }
+            reader.Skip();
+        }
+        return false;
     }
 
     private static bool MatchesVersionedBinding(
