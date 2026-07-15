@@ -13,6 +13,9 @@ internal sealed class CentralDerivativeJobScheduler(
     ApplicationDbContext dbContext,
     ICentralDerivativeRecipeCatalog recipeCatalog) : ICentralDerivativeJobScheduler
 {
+    internal const string SourceInvalidatedReason = "The derivative source artifact is not usable.";
+    internal const string ResultInvalidatedReason = "The derivative result artifact is not usable.";
+
     public async Task EnsureRequiredJobsAsync(
         CentralArtifact artifact,
         DateTimeOffset now,
@@ -20,6 +23,11 @@ internal sealed class CentralDerivativeJobScheduler(
     {
         ArgumentNullException.ThrowIfNull(artifact);
         var frame = artifact.Frame ?? throw new InvalidOperationException("The artifact frame must be loaded before scheduling derivatives.");
+        if (artifact.ObjectState != CentralArtifactObjectState.Available
+            || artifact.ReconstructionState is not (CentralReconstructionState.Complete or CentralReconstructionState.LegacyIncomplete))
+        {
+            return;
+        }
         if (artifact.Role == FrameArtifactRole.Raw)
         {
             foreach (var recipe in recipeCatalog.GetRequiredRecipes(artifact.Role))
@@ -34,20 +42,31 @@ internal sealed class CentralDerivativeJobScheduler(
                         && job.TargetRecipeVersion == recipe.RecipeVersion,
                         cancellationToken).ConfigureAwait(false);
                 var target = frame.Artifacts.FirstOrDefault(candidate =>
-                    candidate.Role == recipe.TargetRole && candidate.RecipeVersion == recipe.RecipeVersion);
+                    candidate.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion
+                    && candidate.Role == recipe.TargetRole
+                    && candidate.RecipeVersion == recipe.RecipeVersion
+                    && IsUsable(candidate));
                 if (existing is null)
                 {
                     dbContext.CentralDerivativeJobs.Add(CreateJob(artifact, recipe, target, now));
                 }
-                else if (target is not null)
+                else if (target is not null && !IsInvalidationFailure(existing))
                 {
                     Complete(existing, target, now);
+                }
+                else
+                {
+                    Restore(existing, artifact, now);
                 }
             }
             return;
         }
 
-        var sources = frame.Artifacts.Where(candidate => candidate.Role == FrameArtifactRole.Raw).ToArray();
+        var sources = frame.Artifacts.Where(candidate => candidate.Role == FrameArtifactRole.Raw && IsUsable(candidate)).ToArray();
+        if (artifact.ManifestSchemaVersion != ArtifactUploadManifest.CurrentSchemaVersion)
+        {
+            return;
+        }
         foreach (var source in sources)
         {
             var recipe = recipeCatalog.GetRequiredRecipes(source.Role).FirstOrDefault(candidate =>
@@ -70,6 +89,10 @@ internal sealed class CentralDerivativeJobScheduler(
                 job = CreateJob(source, recipe, artifact, now);
                 dbContext.CentralDerivativeJobs.Add(job);
             }
+            else if (IsInvalidationFailure(job))
+            {
+                Restore(job, source, now);
+            }
             else
             {
                 Complete(job, artifact, now);
@@ -91,7 +114,7 @@ internal sealed class CentralDerivativeJobScheduler(
             Status = result is null ? CentralDerivativeJobStatus.Pending : CentralDerivativeJobStatus.Completed,
             AttemptCount = 0,
             MaxAttempts = recipe.MaxAttempts,
-            AvailableAtUtc = result is null ? now : null,
+            AvailableAtUtc = result is null && IsUsable(source) ? now : null,
             CreatedAtUtc = now,
             UpdatedAtUtc = now,
             CompletedAtUtc = result is null ? null : now,
@@ -111,5 +134,32 @@ internal sealed class CentralDerivativeJobScheduler(
         job.LeaseOwner = null;
         job.LeaseAcquiredAtUtc = null;
         job.LeaseExpiresAtUtc = null;
+        job.LastError = null;
     }
+
+    private static void Restore(CentralDerivativeJob job, CentralArtifact source, DateTimeOffset now)
+    {
+        if (!IsUsable(source)
+            || job.AvailableAtUtc.HasValue
+            || job.Status != CentralDerivativeJobStatus.Pending
+                && (job.Status != CentralDerivativeJobStatus.RetryableFailure
+                    || !IsInvalidationFailure(job)))
+        {
+            return;
+        }
+        job.Status = CentralDerivativeJobStatus.Pending;
+        job.AttemptCount = 0;
+        job.AvailableAtUtc = now;
+        job.LastError = null;
+        job.UpdatedAtUtc = now;
+    }
+
+    private static bool IsInvalidationFailure(CentralDerivativeJob job)
+        => string.Equals(job.LastError, SourceInvalidatedReason, StringComparison.Ordinal)
+            || string.Equals(job.LastError, ResultInvalidatedReason, StringComparison.Ordinal);
+
+    private static bool IsUsable(CentralArtifact artifact)
+        => artifact.ObjectState == CentralArtifactObjectState.Available
+            && artifact.ReconstructionState is CentralReconstructionState.Complete
+                or CentralReconstructionState.LegacyIncomplete;
 }

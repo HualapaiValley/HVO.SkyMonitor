@@ -1,6 +1,4 @@
 using HVO.SkyMonitor.AgentCore;
-using System.Security.Cryptography;
-using System.Text.Json;
 
 namespace HVO.SkyMonitor.Astronomy;
 
@@ -13,7 +11,7 @@ public static class RigProjectionContextFactory
     public static string CreateProfileHashSha256(CameraRigConfig rig)
     {
         ArgumentNullException.ThrowIfNull(rig);
-        return Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(rig)));
+        return CameraRigProfileIdentity.ComputeSha256(rig);
     }
 
     /// <summary>Creates and validates the projection defined by the supplied rig.</summary>

@@ -3,6 +3,9 @@ using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using HVO.SkyMonitor.AgentCore;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
@@ -10,6 +13,8 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 [TestCategory("Unit")]
 public sealed class DeviceRigProfileServiceTests
 {
+    private static readonly JsonSerializerOptions RigSerializerOptions = CreateRigSerializerOptions();
+
     [TestMethod]
     public async Task UpsertAsync_WhenFirstProfile_CreatesVersion1_AndUpdatesRegistrationCurrent()
     {
@@ -101,6 +106,48 @@ public sealed class DeviceRigProfileServiceTests
             .WithMessage("*bootstrap*");
     }
 
+    [TestMethod]
+    public async Task UpsertAsync_WithTypedRig_PersistsCaptureContractIdentity()
+    {
+        await using var context = CreateContext();
+        var now = new DateTimeOffset(2025, 12, 18, 13, 10, 0, TimeSpan.Zero);
+        var timeProvider = new FixedTimeProvider(now);
+        var registration = await SeedRegistrationAsync(context, bootstrapped: true).ConfigureAwait(false);
+        registration.DeviceKeyHash = DeviceRegistrationService.ComputeSha256("device-key");
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var rig = new CameraRigConfig(
+            new SensorProfile("sensor", 2, 2, 4.8, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+            new OpticsProfile("EquidistantFisheye", 1.5, 180, 0),
+            new RigOrientation(90, 0, 0),
+            new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 2),
+            ProfileVersion: "rig-v7");
+        var service = new DeviceRigProfileService(
+            new DeviceCredentialValidator(context, timeProvider), context, timeProvider, NullLogger<DeviceRigProfileService>.Instance);
+
+        await service.UpsertAsync(new DeviceRigProfileUpsertRequest(
+            registration.DeviceId, "device-key", JsonSerializer.Serialize(rig, RigSerializerOptions)), CancellationToken.None).ConfigureAwait(false);
+
+        var profile = await context.DeviceRigProfiles.SingleAsync().ConfigureAwait(false);
+        profile.ProfileName.Should().Be("rig");
+        profile.ProfileVersion.Should().Be("rig-v7");
+        profile.ProfileSha256.Should().Be(CameraRigProfileIdentity.ComputeSha256(rig));
+    }
+
+    [TestMethod]
+    public void CameraRigProfileIdentity_UsesCaptureContractEnumSerialization()
+    {
+        var rig = new CameraRigConfig(
+            new SensorProfile("sensor", 2, 2, 4.8, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+            new OpticsProfile("EquidistantFisheye", 1.5, 180, 0),
+            new RigOrientation(90, 0, 0),
+            new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 2),
+            ProfileVersion: "rig-v7");
+        var contractJson = JsonSerializer.SerializeToElement(rig, RigSerializerOptions);
+
+        CameraRigProfileIdentity.ComputeSha256(rig).Should().Be(
+            CaptureContractJson.ComputeCanonicalJsonSha256(contractJson));
+    }
+
     private static async Task<DeviceRegistration> SeedRegistrationAsync(ApplicationDbContext context, bool bootstrapped)
     {
         var registration = new DeviceRegistration
@@ -128,6 +175,13 @@ public sealed class DeviceRigProfileServiceTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         return new ApplicationDbContext(options);
+    }
+
+    private static JsonSerializerOptions CreateRigSerializerOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        options.Converters.Add(new JsonStringEnumConverter());
+        return options;
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider

@@ -33,6 +33,10 @@ internal sealed class DeviceRigProfileConfiguration : IEntityTypeConfiguration<D
             .HasMaxLength(262144)
             .IsRequired();
 
+        builder.Property(profile => profile.ProfileName).HasMaxLength(128);
+        builder.Property(profile => profile.ProfileVersion).HasMaxLength(128);
+        builder.Property(profile => profile.ProfileSha256).HasMaxLength(64);
+
         builder.Property(profile => profile.SoftwareVersion)
             .HasMaxLength(64);
 
@@ -48,11 +52,12 @@ internal sealed class DeviceRigProfileConfiguration : IEntityTypeConfiguration<D
         builder.HasIndex(profile => new { profile.RegistrationId, profile.Version });
 
         builder.HasIndex(profile => profile.ObservatoryId);
+        builder.HasIndex(profile => new { profile.DevicePublicId, profile.ProfileName, profile.ProfileVersion, profile.ProfileSha256 });
 
         builder.HasOne(profile => profile.Registration)
             .WithMany()
             .HasForeignKey(profile => profile.RegistrationId)
-            .OnDelete(DeleteBehavior.Cascade)
+            .OnDelete(DeleteBehavior.Restrict)
             .IsRequired();
     }
 }

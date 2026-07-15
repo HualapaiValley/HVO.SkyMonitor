@@ -120,7 +120,8 @@ public sealed partial class Program
 
         // Health checks
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks()
-            .AddDbContextCheck<ApplicationDbContext>("database", tags: ["dependency"]);
+            .AddDbContextCheck<ApplicationDbContext>("database", tags: ["dependency"])
+            .AddCheck<CentralArtifactConsistencyHealthCheck>("artifact-consistency", tags: ["consistency"]);
         healthChecks.AddInstalledCelestialCatalogHealthCheck();
 
         if (!string.IsNullOrWhiteSpace(redisConfiguration))
@@ -166,6 +167,7 @@ public sealed partial class Program
             {
                 metrics.AddPrometheusExporter();
                 metrics.AddMeter("HVO.SkyMonitor.Authentication");
+                metrics.AddMeter(CentralIngestTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             });
 
@@ -572,6 +574,8 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceHeartbeatService, DeviceHeartbeatService>();
         builder.Services.AddScoped<IDeviceUploadService, DeviceUploadService>();
         builder.Services.AddScoped<IArtifactIngestService, ArtifactIngestService>();
+        builder.Services.AddSingleton<CentralIngestTelemetry>();
+        builder.Services.AddHostedService<CentralArtifactReconciliationService>();
         builder.Services.AddSingleton<ICentralDerivativeRecipeCatalog, CentralDerivativeRecipeCatalog>();
         builder.Services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         builder.Services.AddSingleton<LogicHostRecipeExecutionAdapter>();

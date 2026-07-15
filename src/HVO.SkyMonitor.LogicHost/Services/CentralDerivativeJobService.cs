@@ -56,6 +56,8 @@ internal sealed class CentralDerivativeJobService(
             var candidate = await dbContext.CentralDerivativeJobs
                 .Include(job => job.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)
                 .Where(job => job.AttemptCount < job.MaxAttempts
+                    && job.SourceArtifact!.ObjectState == CentralArtifactObjectState.Available
+                    && job.SourceArtifact.ReconstructionState == CentralReconstructionState.Complete
                     && ((job.Status == CentralDerivativeJobStatus.Pending
                             || job.Status == CentralDerivativeJobStatus.RetryableFailure)
                         && job.AvailableAtUtc <= now
@@ -102,7 +104,9 @@ internal sealed class CentralDerivativeJobService(
                 job.Id == jobId
                 && job.Status == CentralDerivativeJobStatus.Leased
                 && job.LeaseToken == leaseToken
-                && job.LeaseExpiresAtUtc > now)
+                && job.LeaseExpiresAtUtc > now
+                && job.SourceArtifact!.ObjectState == CentralArtifactObjectState.Available
+                && job.SourceArtifact.ReconstructionState == CentralReconstructionState.Complete)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(job => job.LeaseExpiresAtUtc, now + leaseDuration)
                 .SetProperty(job => job.UpdatedAtUtc, now), cancellationToken).ConfigureAwait(false);
@@ -123,7 +127,9 @@ internal sealed class CentralDerivativeJobService(
         var job = await LoadJobAsync(jobId, cancellationToken).ConfigureAwait(false);
         if (job.Status == CentralDerivativeJobStatus.Completed)
         {
-            if (job.ResultArtifact?.ArtifactId == resultArtifactId)
+            if (job.ResultArtifact?.ArtifactId == resultArtifactId
+                && IsUsable(job.SourceArtifact)
+                && IsUsable(job.ResultArtifact))
             {
                 return;
             }
@@ -141,13 +147,22 @@ internal sealed class CentralDerivativeJobService(
         {
             throw new CentralDerivativeJobStateException("The derivative result does not satisfy the job target identity.");
         }
+        if (!IsUsable(job.SourceArtifact) || !IsUsable(result))
+        {
+            throw new CentralDerivativeJobStateException("The derivative source and result artifacts must be available and completely reconstructed.");
+        }
 
         var now = timeProvider.GetUtcNow();
         var affected = await dbContext.CentralDerivativeJobs.Where(candidate =>
                 candidate.Id == jobId
                 && candidate.Status == CentralDerivativeJobStatus.Leased
                 && candidate.LeaseToken == leaseToken
-                && candidate.LeaseExpiresAtUtc > now)
+                && candidate.LeaseExpiresAtUtc > now
+                && candidate.SourceArtifact!.ObjectState == CentralArtifactObjectState.Available
+                && candidate.SourceArtifact.ReconstructionState == CentralReconstructionState.Complete
+                && dbContext.CentralArtifacts.Any(artifact => artifact.Id == result.Id
+                    && artifact.ObjectState == CentralArtifactObjectState.Available
+                    && artifact.ReconstructionState == CentralReconstructionState.Complete))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(candidate => candidate.Status, CentralDerivativeJobStatus.Completed)
                 .SetProperty(candidate => candidate.ResultCentralArtifactId, result.Id)
@@ -252,6 +267,11 @@ internal sealed class CentralDerivativeJobService(
             frame.CapturedAtUtc, frame.RigProfileVersion, frame.SceneProvenanceJson,
             job.TargetRole, job.TargetRecipeVersion, job.AttemptCount, job.MaxAttempts);
     }
+
+    private static bool IsUsable(CentralArtifact? artifact)
+        => artifact?.ObjectState == CentralArtifactObjectState.Available
+            && artifact.ReconstructionState is CentralReconstructionState.Complete
+                or CentralReconstructionState.LegacyIncomplete;
 }
 
 internal sealed record CentralDerivativeJobLease(

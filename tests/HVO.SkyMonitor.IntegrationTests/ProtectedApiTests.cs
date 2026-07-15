@@ -12,6 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class ProtectedApiTests
 {
     private HttpClient? _client;

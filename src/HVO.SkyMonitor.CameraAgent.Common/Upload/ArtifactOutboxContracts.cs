@@ -32,6 +32,17 @@ public sealed record ArtifactUploadResult(
     TimeSpan? RetryAfter = null,
     ArtifactUploadAcknowledgement? Acknowledgement = null);
 
+internal sealed record ArtifactDeliveryDescriptor(
+    string SchemaVersion,
+    string IdempotencyKey,
+    Guid ArtifactId,
+    FrameArtifactRole Role,
+    string RelativeArtifactPath,
+    string ChecksumSha256,
+    long ByteLength,
+    string MediaType,
+    DateTimeOffset CapturedAtUtc);
+
 public sealed record ArtifactOutboxRecord(
     string IdempotencyKey,
     ArtifactOutboxManifestKind ManifestKind,

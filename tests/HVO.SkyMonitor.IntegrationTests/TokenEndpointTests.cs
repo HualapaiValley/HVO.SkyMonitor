@@ -4,6 +4,7 @@ using HVO.SkyMonitor.TestSupport;
 namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class TokenEndpointTests
 {
     private HttpClient? _client;

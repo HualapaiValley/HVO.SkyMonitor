@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -53,6 +54,7 @@ internal sealed class DeviceRigProfileService(
 
         var canonicalJson = CanonicalizeJson(request.RigConfigJson);
         var configHash = ComputeSha256Hex(canonicalJson);
+        var identity = HistoricalRigProfileResolver.TryResolveIdentity(canonicalJson);
 
         var latest = await dbContext.Set<DeviceRigProfile>()
             .Where(profile => profile.DevicePublicId == registration.DevicePublicId.Value)
@@ -62,6 +64,10 @@ internal sealed class DeviceRigProfileService(
 
         if (latest is not null && string.Equals(latest.ConfigHash, configHash, StringComparison.Ordinal))
         {
+            if (identity is not null && latest.ProfileSha256 is null)
+            {
+                ApplyIdentity(latest, identity);
+            }
             registration.LastSeenUtc = now;
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
@@ -85,6 +91,9 @@ internal sealed class DeviceRigProfileService(
             Version = nextVersion,
             ConfigHash = configHash,
             ConfigJson = canonicalJson,
+            ProfileName = identity?.Name,
+            ProfileVersion = identity?.Version,
+            ProfileSha256 = identity?.Sha256,
             SoftwareVersion = string.IsNullOrWhiteSpace(request.SoftwareVersion) ? null : request.SoftwareVersion.Trim(),
             CreatedAtUtc = now,
             EffectiveFromUtc = now
@@ -122,6 +131,13 @@ internal sealed class DeviceRigProfileService(
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(bytes);
+    }
+
+    private static void ApplyIdentity(DeviceRigProfile profile, ProfileIdentityDescriptor identity)
+    {
+        profile.ProfileName = identity.Name;
+        profile.ProfileVersion = identity.Version;
+        profile.ProfileSha256 = identity.Sha256;
     }
 
     private static string CanonicalizeJson(string json)

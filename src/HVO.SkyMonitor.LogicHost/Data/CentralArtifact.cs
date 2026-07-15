@@ -13,6 +13,8 @@ internal sealed class CentralArtifact
 
     public Guid ArtifactId { get; set; }
 
+    public Guid? DevicePublicId { get; set; }
+
     public FrameArtifactRole Role { get; set; }
 
     public string RecipeVersion { get; set; } = string.Empty;
@@ -30,4 +32,28 @@ internal sealed class CentralArtifact
     public DateTimeOffset ReceivedAtUtc { get; set; }
 
     public string IdempotencyKey { get; set; } = string.Empty;
+
+    public string? SourceId { get; set; }
+
+    public string? Variant { get; set; }
+
+    public DateTimeOffset? CreatedUtc { get; set; }
+
+    public CentralArtifactObjectState ObjectState { get; set; } = CentralArtifactObjectState.Available;
+
+    public CentralReconstructionState ReconstructionState { get; set; } = CentralReconstructionState.LegacyIncomplete;
+
+    public string? StateReasonCode { get; set; }
+
+    public DateTimeOffset? ReconciledAtUtc { get; set; }
+
+    public byte[] RowVersion { get; set; } = [];
+
+    public CentralArtifactLayout? Layout { get; set; }
+
+    public CentralArtifactRecipe? Recipe { get; set; }
+
+    public ICollection<CentralArtifactSource> Sources { get; } = [];
+
+    public ICollection<CentralArtifactIngestIdentity> IngestIdentities { get; } = [];
 }

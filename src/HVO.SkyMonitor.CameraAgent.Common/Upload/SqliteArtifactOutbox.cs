@@ -351,12 +351,12 @@ public sealed class SqliteArtifactOutbox(
         ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(acknowledgement);
         acknowledgement.Validate();
-        var deliveredManifest = ArtifactUploadClient.CreateCompatibilityManifest(lease.Record);
-        if (!string.Equals(acknowledgement.IdempotencyKey, deliveredManifest.IdempotencyKey, StringComparison.OrdinalIgnoreCase)
-            || acknowledgement.ArtifactId != deliveredManifest.ArtifactId
-            || !string.Equals(acknowledgement.ChecksumSha256, deliveredManifest.ChecksumSha256, StringComparison.OrdinalIgnoreCase)
-            || acknowledgement.ByteLength != deliveredManifest.ByteLength
-            || !string.Equals(acknowledgement.AcceptedManifestSchemaVersion, deliveredManifest.SchemaVersion, StringComparison.Ordinal))
+        var delivery = ArtifactUploadClient.ResolveDelivery(lease.Record);
+        if (!string.Equals(acknowledgement.IdempotencyKey, delivery.IdempotencyKey, StringComparison.OrdinalIgnoreCase)
+            || acknowledgement.ArtifactId != delivery.ArtifactId
+            || !string.Equals(acknowledgement.ChecksumSha256, delivery.ChecksumSha256, StringComparison.OrdinalIgnoreCase)
+            || acknowledgement.ByteLength != delivery.ByteLength
+            || !string.Equals(acknowledgement.AcceptedManifestSchemaVersion, delivery.SchemaVersion, StringComparison.Ordinal))
         {
             throw new ArtifactOutboxConflictException("Artifact upload acknowledgement does not match the leased delivery.");
         }

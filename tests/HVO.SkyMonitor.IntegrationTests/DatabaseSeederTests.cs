@@ -9,6 +9,7 @@ using static OpenIddict.Abstractions.OpenIddictConstants;
 namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class DatabaseSeederTests
 {
     [TestMethod]

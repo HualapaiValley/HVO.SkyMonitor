@@ -104,7 +104,7 @@ internal sealed class DeviceRegistrationConfiguration : IEntityTypeConfiguration
         builder.HasOne(registration => registration.Observatory)
             .WithMany(observatory => observatory.DeviceRegistrations)
             .HasForeignKey(registration => registration.ObservatoryId)
-            .OnDelete(DeleteBehavior.Cascade)
+            .OnDelete(DeleteBehavior.Restrict)
             .IsRequired();
     }
 }

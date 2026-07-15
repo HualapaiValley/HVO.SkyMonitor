@@ -4,6 +4,7 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260715073033_ReconstructableCentralIngest")]
+    partial class ReconstructableCentralIngest
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -171,9 +174,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<DateTimeOffset?>("CreatedUtc")
                         .HasColumnType("datetimeoffset");
 
-                    b.Property<Guid?>("DevicePublicId")
-                        .HasColumnType("uniqueidentifier");
-
                     b.Property<string>("IdempotencyKey")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -245,12 +245,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasIndex("CentralFrameId", "ArtifactId")
                         .IsUnique();
-
-                    b.HasIndex("DevicePublicId", "ArtifactId")
-                        .IsUnique()
-                        .HasFilter("[DevicePublicId] IS NOT NULL");
-
-                    b.HasIndex("ObjectState", "ReconstructionState", "ReceivedAtUtc");
 
                     b.HasIndex("CentralFrameId", "Role", "RecipeVersion");
 
@@ -1522,7 +1516,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
                         .WithMany("DeviceRegistrations")
                         .HasForeignKey("ObservatoryId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Observatory");

@@ -21,7 +21,23 @@ internal sealed class CentralFrame
 
     public int? RigProfileVersion { get; set; }
 
+    public Guid? DeviceRigProfileId { get; set; }
+
+    public DeviceRigProfile? DeviceRigProfile { get; set; }
+
+    public string? RigId { get; set; }
+
+    public long? CaptureSequence { get; set; }
+
+    public string? CycleEvidenceJson { get; set; }
+
     public string? SceneProvenanceJson { get; set; }
 
     public ICollection<CentralArtifact> Artifacts { get; } = [];
+
+    public CentralCaptureTiming? Timing { get; set; }
+
+    public CentralCaptureControl? Control { get; set; }
+
+    public ICollection<CentralCaptureProfile> Profiles { get; } = [];
 }

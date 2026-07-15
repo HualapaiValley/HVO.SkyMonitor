@@ -9,6 +9,8 @@ using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.TestSupport;
+using HVO.SkyMonitor.AgentCore;
+using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -16,6 +18,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Minio;
 using Minio.DataModel.Args;
 using Testcontainers.MsSql;
@@ -120,6 +123,34 @@ public sealed class IntegrationTestFixture : IDisposable
             DevicePublicId = Guid.NewGuid(),
             DeviceKeyHash = DeviceRegistrationService.ComputeSha256("cameraagent-integration-key")
         });
+        await db.SaveChangesAsync().ConfigureAwait(false);
+    }
+
+    public async Task SeedRigProfileAsync(string deviceId, CameraRigConfig rig)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+        ArgumentNullException.ThrowIfNull(rig);
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var registration = await db.DeviceRegistrations.SingleAsync(
+            item => item.DeviceId == deviceId).ConfigureAwait(false);
+        var now = DateTimeOffset.UtcNow;
+        var profileHash = CameraRigProfileIdentity.ComputeSha256(rig);
+        db.DeviceRigProfiles.Add(new DeviceRigProfile
+        {
+            RegistrationId = registration.Id,
+            DevicePublicId = registration.DevicePublicId!.Value,
+            ObservatoryId = registration.ObservatoryId,
+            Version = 1,
+            ConfigHash = profileHash,
+            ConfigJson = JsonSerializer.Serialize(rig),
+            ProfileName = "rig",
+            ProfileVersion = rig.ProfileVersion,
+            ProfileSha256 = profileHash,
+            CreatedAtUtc = now,
+            EffectiveFromUtc = now
+        });
+        registration.CurrentRigProfileVersion = 1;
         await db.SaveChangesAsync().ConfigureAwait(false);
     }
 
@@ -234,6 +265,13 @@ public sealed class IntegrationTestFixture : IDisposable
 
                 builder.ConfigureTestServices(services =>
                 {
+                    foreach (var descriptor in services.Where(static descriptor =>
+                                 descriptor.ServiceType == typeof(IHostedService)
+                                 && descriptor.ImplementationType == typeof(CentralArtifactReconciliationService)).ToArray())
+                    {
+                        services.Remove(descriptor);
+                    }
+
                     // Remove the existing DbContext registration
                     services.RemoveAll<DbContextOptions<ApplicationDbContext>>();
                     services.RemoveAll<ApplicationDbContext>();

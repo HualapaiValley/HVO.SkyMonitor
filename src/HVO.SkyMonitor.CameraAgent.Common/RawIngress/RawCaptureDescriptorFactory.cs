@@ -41,7 +41,7 @@ internal static class RawCaptureDescriptorFactory
         var frame = submission.Result.Frame ?? throw new ArgumentException("A raw frame is required.", nameof(submission));
         var timing = ResolveTiming(submission, frame, durableIngressUtc);
         var requestedSetpoint = submission.Request.RequestedSetpoint;
-        var rigElement = JsonSerializer.SerializeToElement(configuration.Rig);
+        var rigElement = CaptureContractJson.SerializeToElement(configuration.Rig);
         var sensorElement = JsonSerializer.SerializeToElement(configuration.Rig.Sensor);
         var processingSteps = configuration.ResolveProcessingSteps();
         var processingElement = JsonSerializer.SerializeToElement(processingSteps);
@@ -51,7 +51,7 @@ internal static class RawCaptureDescriptorFactory
         var calibrationElement = calibrationSteps.Length == 0
             ? NoneOptions
             : JsonSerializer.SerializeToElement(calibrationSteps);
-        var rigHash = CaptureContractJson.ComputeCanonicalJsonSha256(rigElement);
+        var rigHash = CameraRigProfileIdentity.ComputeSha256(configuration.Rig);
         var stride = frame.StrideBytes ?? GetPackedStride(frame.Width, frame.PixelFormat);
         var (byteOrder, sampleDepth, containerDepth, cfa) = LayoutFacts(
             frame.PixelFormat,

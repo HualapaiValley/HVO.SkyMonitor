@@ -58,6 +58,18 @@ public static class CaptureContractJson
         return Convert.ToHexString(SHA256.HashData(canonical));
     }
 
+    public static string ComputeCanonicalJsonSha256<T>(T value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return ComputeCanonicalJsonSha256(SerializeToElement(value));
+    }
+
+    public static JsonElement SerializeToElement<T>(T value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return JsonSerializer.SerializeToElement(value, SerializerOptions);
+    }
+
     public static string ComputeManifestSha256(ArtifactManifestV2 manifest)
         => Convert.ToHexString(SHA256.HashData(Serialize(manifest)));
 

@@ -18,6 +18,13 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralFrame> CentralFrames => Set<CentralFrame>();
     internal DbSet<CentralArtifact> CentralArtifacts => Set<CentralArtifact>();
     internal DbSet<CentralDerivativeJob> CentralDerivativeJobs => Set<CentralDerivativeJob>();
+    internal DbSet<CentralCaptureTiming> CentralCaptureTimings => Set<CentralCaptureTiming>();
+    internal DbSet<CentralCaptureControl> CentralCaptureControls => Set<CentralCaptureControl>();
+    internal DbSet<CentralCaptureProfile> CentralCaptureProfiles => Set<CentralCaptureProfile>();
+    internal DbSet<CentralArtifactLayout> CentralArtifactLayouts => Set<CentralArtifactLayout>();
+    internal DbSet<CentralArtifactRecipe> CentralArtifactRecipes => Set<CentralArtifactRecipe>();
+    internal DbSet<CentralArtifactSource> CentralArtifactSources => Set<CentralArtifactSource>();
+    internal DbSet<CentralArtifactIngestIdentity> CentralArtifactIngestIdentities => Set<CentralArtifactIngestIdentity>();
     internal DbSet<Observatory> Observatories => Set<Observatory>();
 
     protected override void OnModelCreating(ModelBuilder builder)
@@ -32,6 +39,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.ApplyConfiguration(new CentralFrameConfiguration());
         builder.ApplyConfiguration(new CentralArtifactConfiguration());
         builder.ApplyConfiguration(new CentralDerivativeJobConfiguration());
+        CentralReconstructionConfiguration.Configure(builder);
         builder.ApplyConfiguration(new ObservatoryConfiguration());
 
         // Configure OpenIddict entities to use the default Entity Framework Core conventions

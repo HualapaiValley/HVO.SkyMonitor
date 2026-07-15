@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class DeviceApiControllerTests
 {
     private HttpClient? _client;

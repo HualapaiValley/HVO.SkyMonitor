@@ -1,3 +1,4 @@
+using System.Data;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.Common.Identity;
@@ -74,8 +75,31 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
             throw new DeviceRegistrationException("Device identifier mismatch.");
         }
 
-        var registration = await dbContext.DeviceRegistrations
-            .Where(reg => reg.Id == envelope.RegistrationId)
+        var isRelational = dbContext.Database.IsRelational();
+        await using var transaction = isRelational
+            ? await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false)
+            : null;
+        IQueryable<Observatory> observatoryQuery = isRelational
+            ? dbContext.Observatories.FromSqlInterpolated($"""
+                SELECT * FROM [Observatories] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [Id] = {envelope.ObservatoryId}
+                """)
+            : dbContext.Observatories.Where(observatory => observatory.Id == envelope.ObservatoryId);
+        var observatoryIsActive = await observatoryQuery
+            .AnyAsync(observatory => observatory.IsActive, cancellationToken)
+            .ConfigureAwait(false);
+        if (!observatoryIsActive)
+        {
+            throw new DeviceRegistrationException("Observatory is not active.");
+        }
+        IQueryable<DeviceRegistration> registrationQuery = isRelational
+            ? dbContext.DeviceRegistrations.FromSqlInterpolated($"""
+                SELECT * FROM [DeviceRegistrations] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [Id] = {envelope.RegistrationId}
+                """)
+            : dbContext.DeviceRegistrations.Where(registration => registration.Id == envelope.RegistrationId);
+        var registration = await registrationQuery
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false)
             ?? throw new DeviceRegistrationException("Device registration not found.");
@@ -122,6 +146,10 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
         registration.ExpiresAtUtc = secrets.ExpiresAtUtc;
 
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         if (logger.IsEnabled(LogLevel.Information))
         {

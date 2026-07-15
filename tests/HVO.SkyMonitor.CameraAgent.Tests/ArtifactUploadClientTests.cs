@@ -90,6 +90,83 @@ public sealed class ArtifactUploadClientTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task UploadAsync_RetryableCentralStatus_DoesNotReadOrTransmitPayloadAgain()
+    {
+        using var root = new TemporaryRoot();
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifest(payload);
+        var requestCount = 0;
+        using var client = new HttpClient(new ResponseHandler(request =>
+        {
+            requestCount++;
+            Assert.AreEqual("/api/v1.0/artifacts/status", request.RequestUri!.AbsolutePath);
+            Assert.AreEqual("application/json", request.Content!.Headers.ContentType!.MediaType);
+            return new HttpResponseMessage((HttpStatusCode)425);
+        }))
+        {
+            BaseAddress = new Uri("http://localhost/")
+        };
+        var retryRecord = CreateRecord(manifest) with { AttemptCount = 2 };
+
+        var result = await CreateUploadClient(client).UploadAsync(
+            root.Path, retryRecord, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(ArtifactUploadDisposition.Retry, result.Disposition);
+        Assert.AreEqual("http-425", result.Reason);
+        Assert.AreEqual(1, requestCount);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow(401)]
+    [DataRow(403)]
+    public async Task UploadAsync_ManifestPreflightAuthenticationRejection_IsQuarantined(int statusCode)
+    {
+        var manifest = CreateManifest([1, 2, 3, 4]);
+        using var client = new HttpClient(new ResponseHandler(_ => new HttpResponseMessage((HttpStatusCode)statusCode)))
+        {
+            BaseAddress = new Uri("http://localhost/")
+        };
+
+        var result = await CreateUploadClient(client).UploadAsync(
+            Path.GetTempPath(), CreateRecord(manifest) with { AttemptCount = 2 }, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(ArtifactUploadDisposition.Quarantine, result.Disposition);
+        Assert.AreEqual("authentication-rejected", result.Reason);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow("credentials", ArtifactUploadDisposition.Quarantine, "authentication-rejected")]
+    [DataRow("configuration", ArtifactUploadDisposition.Quarantine, "authentication-configuration-invalid")]
+    [DataRow("json", ArtifactUploadDisposition.Quarantine, "authentication-response-invalid")]
+    [DataRow("network", ArtifactUploadDisposition.Retry, "status-transport-failure")]
+    public async Task UploadAsync_ManifestPreflightException_IsClassified(
+        string failure,
+        ArtifactUploadDisposition expectedDisposition,
+        string expectedReason)
+    {
+        var manifest = CreateManifest([1, 2, 3, 4]);
+        using var client = new HttpClient(new ExceptionHandler(() => failure switch
+        {
+            "credentials" => new HttpRequestException("Invalid client credentials.", null, HttpStatusCode.Unauthorized),
+            "configuration" => new InvalidOperationException("Authentication is not configured."),
+            "json" => new JsonException("Token response is invalid."),
+            _ => new HttpRequestException("Authentication endpoint is unavailable.")
+        }))
+        {
+            BaseAddress = new Uri("http://localhost/")
+        };
+
+        var result = await CreateUploadClient(client).UploadAsync(
+            Path.GetTempPath(), CreateRecord(manifest) with { AttemptCount = 2 }, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(expectedDisposition, result.Disposition);
+        Assert.AreEqual(expectedReason, result.Reason);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task UploadAsync_MismatchedAcknowledgement_IsQuarantined()
     {
         using var root = new TemporaryRoot();
@@ -171,6 +248,12 @@ public sealed class ArtifactUploadClientTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(response(request));
+    }
+
+    private sealed class ExceptionHandler(Func<Exception> exception) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromException<HttpResponseMessage>(exception());
     }
 
     private sealed class TestHttpClientFactory(HttpClient client) : IHttpClientFactory

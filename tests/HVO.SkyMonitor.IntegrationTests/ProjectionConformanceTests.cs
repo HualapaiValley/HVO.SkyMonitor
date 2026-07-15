@@ -3,6 +3,7 @@ using HVO.SkyMonitor.TestSupport;
 namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class ProjectionConformanceTests
 {
     [TestMethod]
