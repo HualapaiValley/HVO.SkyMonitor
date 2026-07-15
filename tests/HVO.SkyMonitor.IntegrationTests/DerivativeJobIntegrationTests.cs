@@ -29,7 +29,12 @@ public sealed class DerivativeJobIntegrationTests
             second.ClaimNextAsync("worker-2", TimeSpan.FromMinutes(1), CancellationToken.None)).ConfigureAwait(false);
 
         leases.Count(lease => lease is not null).Should().Be(1);
-        leases.Single(lease => lease is not null)!.JobId.Should().Be(jobId);
+        var lease = leases.Single(item => item is not null)!;
+        lease.JobId.Should().Be(jobId);
+        lease.SourceDevicePublicId.Should().NotBeEmpty();
+        lease.SourceContentUri.Should().Be(
+            $"/api/v1.0/devices/{lease.SourceDevicePublicId:D}/artifacts/{lease.SourceArtifactId:D}/content");
+        lease.SourceContentUri.Should().NotContain("minio://");
         await using var verificationScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = verificationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var job = await db.CentralDerivativeJobs.SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
@@ -299,8 +304,22 @@ public sealed class DerivativeJobIntegrationTests
             .Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
 
         source.ObjectState = CentralArtifactObjectState.Available;
-        source.ReconstructionState = CentralReconstructionState.Complete;
+        source.ReconstructionState = CentralReconstructionState.LegacyIncomplete;
+        await db.SaveChangesAsync().ConfigureAwait(false);
         var scheduler = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>();
+        await scheduler.EnsureRequiredJobsAsync(source, now, CancellationToken.None).ConfigureAwait(false);
+        var resultId = result.Id;
+        db.ChangeTracker.Clear();
+        source = await db.CentralArtifacts.Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
+            .SingleAsync(artifact => artifact.CentralFrameId == frameId && artifact.Role == FrameArtifactRole.Raw)
+            .ConfigureAwait(false);
+        result = source.Frame!.Artifacts.Single(artifact => artifact.Id == resultId);
+        job = await db.CentralDerivativeJobs.SingleAsync(candidate => candidate.Id == jobId).ConfigureAwait(false);
+        job.Status.Should().Be(CentralDerivativeJobStatus.RetryableFailure);
+        job.AvailableAtUtc.Should().BeNull();
+
+        source.ReconstructionState = CentralReconstructionState.Complete;
+        await db.SaveChangesAsync().ConfigureAwait(false);
         await scheduler.EnsureRequiredJobsAsync(source, now, CancellationToken.None).ConfigureAwait(false);
         await db.SaveChangesAsync().ConfigureAwait(false);
         job.Status.Should().Be(CentralDerivativeJobStatus.Pending);

@@ -4,7 +4,8 @@ internal enum CentralArtifactObjectState
 {
     Pending,
     Available,
-    Quarantined
+    Quarantined,
+    Expired
 }
 
 internal enum CentralReconstructionState

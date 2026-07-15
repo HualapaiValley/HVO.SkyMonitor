@@ -76,6 +76,7 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Outbox");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Ingest");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Retrieval");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureControl");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
@@ -98,6 +99,7 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.CameraAgent.ProcessingGraph")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Outbox")
                     .AddMeter("HVO.SkyMonitor.LogicHost.Ingest")
+                    .AddMeter("HVO.SkyMonitor.LogicHost.Retrieval")
                     .AddOtlpExporter());
         }
 

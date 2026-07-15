@@ -3,13 +3,14 @@ using HVO.SkyMonitor.AgentCore;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using HVO.SkyMonitor.LogicHost.Services;
 
 namespace HVO.SkyMonitor.LogicHost.Controllers;
 
 /// <summary>Provides bounded central history queries over durably ingested artifact metadata.</summary>
 [ApiController]
 [Route("api/v1.0/artifacts")]
-[Authorize(AuthenticationSchemes = "Bearer")]
+[Authorize(Policy = "ArtifactRetrieval")]
 internal sealed class ArtifactHistoryController(ApplicationDbContext dbContext) : ControllerBase
 {
     [HttpGet]
@@ -19,6 +20,11 @@ internal sealed class ArtifactHistoryController(ApplicationDbContext dbContext) 
         [FromQuery] int take = 100,
         CancellationToken cancellationToken = default)
     {
+        var ownerId = CentralArtifactCredentialAccess.GetOwnerId(User);
+        if (string.IsNullOrWhiteSpace(ownerId) || !CentralArtifactCredentialAccess.HasOwnerCredential(User))
+        {
+            return Forbid();
+        }
         if (take is < 1 or > 500)
         {
             return BadRequest(new ProblemDetails { Title = "take must be between 1 and 500" });
@@ -35,7 +41,9 @@ internal sealed class ArtifactHistoryController(ApplicationDbContext dbContext) 
             parsedRole = parsed;
         }
 
-        var centralQuery = dbContext.CentralArtifacts.AsNoTracking().AsQueryable();
+        var centralQuery = dbContext.CentralArtifacts.AsNoTracking().Where(artifact =>
+            dbContext.DeviceRegistrations.Any(registration => registration.Id == artifact.Frame!.RegistrationId
+                && registration.OwnerUserId == ownerId));
         if (!string.IsNullOrWhiteSpace(agentId))
         {
             centralQuery = centralQuery.Where(artifact => artifact.Frame!.AgentId == agentId);
@@ -50,8 +58,10 @@ internal sealed class ArtifactHistoryController(ApplicationDbContext dbContext) 
             .ToListAsync(cancellationToken).ConfigureAwait(false);
 
         var legacyQuery = dbContext.DeviceImageUploads.AsNoTracking().Where(upload =>
-            upload.IdempotencyKey == null
-            || !dbContext.CentralArtifacts.Any(artifact => artifact.IdempotencyKey == upload.IdempotencyKey));
+            dbContext.DeviceRegistrations.Any(registration => registration.Id == upload.RegistrationId
+                && registration.OwnerUserId == ownerId)
+            && (upload.IdempotencyKey == null
+                || !dbContext.CentralArtifacts.Any(artifact => artifact.IdempotencyKey == upload.IdempotencyKey)));
         if (!string.IsNullOrWhiteSpace(agentId))
         {
             legacyQuery = legacyQuery.Where(upload => upload.AgentId == agentId);
@@ -68,11 +78,17 @@ internal sealed class ArtifactHistoryController(ApplicationDbContext dbContext) 
         var results = central.Select(artifact => new ArtifactHistoryItem(
                 artifact.ArtifactId, artifact.Role.ToString(), artifact.Frame!.CapturedAtUtc, artifact.ReceivedAtUtc,
                 artifact.MediaType, artifact.ByteLength, artifact.ChecksumSha256,
-                artifact.StorageReference, artifact.Frame.RigProfileVersion))
+                artifact.DevicePublicId,
+                artifact.DevicePublicId.HasValue
+                    && artifact.ObjectState == CentralArtifactObjectState.Available
+                    && artifact.ReconstructionState == CentralReconstructionState.Complete
+                        ? $"/api/v1.0/devices/{artifact.DevicePublicId:D}/artifacts/{artifact.ArtifactId:D}/content"
+                        : null,
+                artifact.Frame.RigProfileVersion))
             .Concat(legacy.Select(upload => new ArtifactHistoryItem(
                 upload.ArtifactId, upload.ArtifactRole, upload.CapturedAtUtc, upload.ReceivedAtUtc,
                 upload.ContentType, upload.ByteLength, upload.ChecksumSha256,
-                upload.StorageReference, upload.RigProfileVersion)))
+                upload.DevicePublicId, null, upload.RigProfileVersion)))
             .OrderByDescending(item => item.CapturedAtUtc)
             .ThenByDescending(item => item.ArtifactId)
             .Take(take)
@@ -88,6 +104,7 @@ internal sealed class ArtifactHistoryController(ApplicationDbContext dbContext) 
         string ContentType,
         long? ByteLength,
         string? ChecksumSha256,
-        string StorageReference,
+        Guid? DevicePublicId,
+        string? ContentUri,
         int? RigProfileVersion);
 }

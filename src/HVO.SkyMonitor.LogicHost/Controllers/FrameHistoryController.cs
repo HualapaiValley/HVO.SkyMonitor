@@ -4,13 +4,14 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json.Serialization;
+using HVO.SkyMonitor.LogicHost.Services;
 
 namespace HVO.SkyMonitor.LogicHost.Controllers;
 
 /// <summary>Provides bounded frame-oriented queries over normalized central ingest records.</summary>
 [ApiController]
 [Route("api/v1.0/frames")]
-[Authorize(AuthenticationSchemes = "Bearer")]
+[Authorize(Policy = "ArtifactRetrieval")]
 internal sealed class FrameHistoryController(ApplicationDbContext dbContext) : ControllerBase
 {
     [HttpGet]
@@ -20,13 +21,18 @@ internal sealed class FrameHistoryController(ApplicationDbContext dbContext) : C
         [FromQuery] int take = 100,
         CancellationToken cancellationToken = default)
     {
+        var ownerId = GetOwnerId();
+        if (ownerId is null)
+        {
+            return Forbid();
+        }
         var validation = Validate(role, take);
         if (validation.Error is not null)
         {
             return BadRequest(validation.Error);
         }
 
-        var frames = await ApplyFilters(dbContext.CentralFrames.AsNoTracking(), agentId, validation.Role)
+        var frames = await ApplyFilters(dbContext.CentralFrames.AsNoTracking(), ownerId, agentId, validation.Role)
             .Include(frame => frame.Artifacts)
             .OrderByDescending(frame => frame.CapturedAtUtc)
             .ThenByDescending(frame => frame.FrameId)
@@ -41,13 +47,18 @@ internal sealed class FrameHistoryController(ApplicationDbContext dbContext) : C
         [FromQuery] string? role,
         CancellationToken cancellationToken = default)
     {
+        var ownerId = GetOwnerId();
+        if (ownerId is null)
+        {
+            return Forbid();
+        }
         var validation = Validate(role, 1);
         if (validation.Error is not null)
         {
             return BadRequest(validation.Error);
         }
 
-        var frame = await ApplyFilters(dbContext.CentralFrames.AsNoTracking(), agentId, validation.Role)
+        var frame = await ApplyFilters(dbContext.CentralFrames.AsNoTracking(), ownerId, agentId, validation.Role)
             .Include(item => item.Artifacts)
             .OrderByDescending(frame => frame.CapturedAtUtc)
             .ThenByDescending(frame => frame.FrameId)
@@ -55,11 +66,14 @@ internal sealed class FrameHistoryController(ApplicationDbContext dbContext) : C
         return frame is null ? NotFound() : Ok(Project(frame));
     }
 
-    private static IQueryable<CentralFrame> ApplyFilters(
+    private IQueryable<CentralFrame> ApplyFilters(
         IQueryable<CentralFrame> query,
+        string ownerId,
         string? agentId,
         FrameArtifactRole? role)
     {
+        query = query.Where(frame => dbContext.DeviceRegistrations.Any(registration =>
+            registration.Id == frame.RegistrationId && registration.OwnerUserId == ownerId));
         if (!string.IsNullOrWhiteSpace(agentId))
         {
             query = query.Where(frame => frame.AgentId == agentId);
@@ -74,6 +88,7 @@ internal sealed class FrameHistoryController(ApplicationDbContext dbContext) : C
     private static CentralFrameHistoryItem Project(CentralFrame frame)
         => new(
             frame.FrameId,
+            frame.DevicePublicId,
             frame.AgentId,
             frame.CapturedAtUtc,
             frame.FirstReceivedAtUtc,
@@ -83,7 +98,11 @@ internal sealed class FrameHistoryController(ApplicationDbContext dbContext) : C
                 .Select(artifact => new CentralFrameArtifactItem(
                     artifact.ArtifactId, artifact.Role, artifact.RecipeVersion, artifact.ManifestSchemaVersion,
                     artifact.MediaType, artifact.ByteLength, artifact.ChecksumSha256,
-                    artifact.StorageReference, artifact.ReceivedAtUtc))
+                    artifact.ObjectState == CentralArtifactObjectState.Available
+                        && artifact.ReconstructionState == CentralReconstructionState.Complete
+                            ? $"/api/v1.0/devices/{frame.DevicePublicId:D}/artifacts/{artifact.ArtifactId:D}/content"
+                            : null,
+                    artifact.ReceivedAtUtc))
                 .ToList());
 
     private static (FrameArtifactRole? Role, ProblemDetails? Error) Validate(string? role, int take)
@@ -104,8 +123,18 @@ internal sealed class FrameHistoryController(ApplicationDbContext dbContext) : C
         return (null, null);
     }
 
+    private string? GetOwnerId()
+    {
+        if (!CentralArtifactCredentialAccess.HasOwnerCredential(User))
+        {
+            return null;
+        }
+        return CentralArtifactCredentialAccess.GetOwnerId(User);
+    }
+
     internal sealed record CentralFrameHistoryItem(
         Guid FrameId,
+        Guid DevicePublicId,
         string AgentId,
         DateTimeOffset CapturedAtUtc,
         DateTimeOffset FirstReceivedAtUtc,
@@ -121,6 +150,6 @@ internal sealed class FrameHistoryController(ApplicationDbContext dbContext) : C
         string MediaType,
         long ByteLength,
         string ChecksumSha256,
-        string StorageReference,
+        string? ContentUri,
         DateTimeOffset ReceivedAtUtc);
 }

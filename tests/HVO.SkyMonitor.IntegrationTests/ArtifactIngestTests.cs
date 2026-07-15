@@ -8,6 +8,7 @@ using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -75,12 +76,10 @@ public sealed class ArtifactIngestTests
         frame.Artifacts.Should().ContainSingle();
         frame.Artifacts.Single().RecipeVersion.Should().Be(manifest.RecipeVersion);
         frame.Artifacts.Single().ManifestSchemaVersion.Should().Be(manifest.SchemaVersion);
+        frame.Artifacts.Single().ReconstructionState.Should().Be(CentralReconstructionState.LegacyIncomplete);
         var jobs = await db.CentralDerivativeJobs.Where(job => job.SourceArtifact!.CentralFrameId == frame.Id)
             .ToListAsync().ConfigureAwait(false);
-        jobs.Should().HaveCount(2);
-        jobs.Should().OnlyHaveUniqueItems(job => new { job.TargetRole, job.TargetRecipeVersion });
-        jobs.Should().OnlyContain(job => job.Status == CentralDerivativeJobStatus.Pending
-            && job.AvailableAtUtc != null);
+        jobs.Should().BeEmpty();
     }
 
     [TestMethod]
@@ -543,6 +542,7 @@ public sealed class ArtifactIngestTests
             "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch, "preview-v1", "frames/preview.bin");
         using var ingest = await PostAsync(client, manifest).ConfigureAwait(false);
         ingest.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetUserTokenAsync(client).ConfigureAwait(false));
 
         using var history = await client.GetAsync(new Uri($"/api/v1.0/artifacts?agentId={deviceId}&role=preview", UriKind.Relative)).ConfigureAwait(false);
 
@@ -1236,6 +1236,7 @@ public sealed class ArtifactIngestTests
             frame.SceneProvenanceJson.Should().Contain("late-scene");
         }
 
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetUserTokenAsync(client).ConfigureAwait(false));
         using var latest = await client.GetAsync(
             new Uri($"/api/v1.0/frames/latest?agentId={deviceId}&role=raw", UriKind.Relative)).ConfigureAwait(false);
         latest.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -1335,6 +1336,7 @@ public sealed class ArtifactIngestTests
     {
         var fixture = AssemblyHooks.Fixture;
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var lateArtifactId = Guid.NewGuid();
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -1351,7 +1353,6 @@ public sealed class ArtifactIngestTests
                 StorageReference = "stubs://legacy/visible",
                 AgentId = deviceId
             });
-            var lateArtifactId = Guid.NewGuid();
             db.DeviceImageUploads.Add(new DeviceImageUpload
             {
                 RegistrationId = registration.Id,
@@ -1375,15 +1376,17 @@ public sealed class ArtifactIngestTests
             await db.SaveChangesAsync().ConfigureAwait(false);
         }
         using var client = fixture.Factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetUserTokenAsync(client).ConfigureAwait(false));
 
         using var history = await client.GetAsync(
             new Uri($"/api/v1.0/artifacts?agentId={deviceId}", UriKind.Relative)).ConfigureAwait(false);
 
         history.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await history.Content.ReadAsStringAsync().ConfigureAwait(false);
-        body.Should().Contain("stubs://legacy/visible");
-        body.Should().Contain("minio://legacy/late-complete");
+        body.Should().Contain(lateArtifactId.ToString());
+        body.Should().NotContain("stubs://");
+        body.Should().NotContain("minio://");
+        body.Should().NotContain("StorageReference");
     }
 
     [TestMethod]
@@ -1391,7 +1394,7 @@ public sealed class ArtifactIngestTests
     {
         var fixture = AssemblyHooks.Fixture;
         using var client = fixture.Factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetUserTokenAsync(client).ConfigureAwait(false));
 
         using var artifacts = await client.GetAsync(new Uri("/api/v1.0/artifacts?role=999", UriKind.Relative)).ConfigureAwait(false);
         using var frames = await client.GetAsync(new Uri("/api/v1.0/frames?role=999", UriKind.Relative)).ConfigureAwait(false);
@@ -1441,7 +1444,7 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
-    public async Task MultipartIngest_TargetBeforeRawCompletesMatchingDerivativeJob()
+    public async Task MultipartIngest_LegacyTargetBeforeRawDoesNotScheduleDerivativeJobs()
     {
         var fixture = AssemblyHooks.Fixture;
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
@@ -1461,21 +1464,12 @@ public sealed class ArtifactIngestTests
         rawResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var jobs = await db.CentralDerivativeJobs.Include(job => job.ResultArtifact)
-            .Where(job => job.SourceArtifact!.Frame!.RegistrationId == registrationId)
-            .ToListAsync().ConfigureAwait(false);
-        jobs.Should().HaveCount(2);
-        var previewJob = jobs.Single(job => job.TargetRole == FrameArtifactRole.Preview);
-        previewJob.Status.Should().Be(CentralDerivativeJobStatus.Completed);
-        previewJob.AvailableAtUtc.Should().BeNull();
-        previewJob.ResultArtifact!.ArtifactId.Should().Be(preview.ArtifactId);
-        var annotatedJob = jobs.Single(job => job.TargetRole == FrameArtifactRole.AnnotatedPreview);
-        annotatedJob.Status.Should().Be(CentralDerivativeJobStatus.Pending);
-        annotatedJob.AvailableAtUtc.Should().NotBeNull();
+        (await db.CentralDerivativeJobs.CountAsync(job => job.SourceArtifact!.Frame!.RegistrationId == registrationId)
+            .ConfigureAwait(false)).Should().Be(0);
     }
 
     [TestMethod]
-    public async Task MultipartIngest_ConcurrentRawAndCanonicalTargetConvergeOnCompletedJob()
+    public async Task MultipartIngest_ConcurrentLegacyRawAndTargetDoNotScheduleDerivativeJobs()
     {
         var fixture = AssemblyHooks.Fixture;
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
@@ -1500,12 +1494,8 @@ public sealed class ArtifactIngestTests
         previewResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var job = await db.CentralDerivativeJobs.Include(item => item.ResultArtifact).SingleAsync(item =>
-            item.SourceArtifact!.Frame!.RegistrationId == registrationId
-            && item.TargetRole == FrameArtifactRole.Preview).ConfigureAwait(false);
-        job.Status.Should().Be(CentralDerivativeJobStatus.Completed);
-        job.AvailableAtUtc.Should().BeNull();
-        job.ResultArtifact!.ArtifactId.Should().Be(preview.ArtifactId);
+        (await db.CentralDerivativeJobs.CountAsync(job => job.SourceArtifact!.Frame!.RegistrationId == registrationId)
+            .ConfigureAwait(false)).Should().Be(0);
     }
 
     private static async Task<HttpResponseMessage> PostAsync(
@@ -1743,15 +1733,28 @@ public sealed class ArtifactIngestTests
         return document.RootElement.GetProperty("access_token").GetString()!;
     }
 
+    private static async Task<string> GetUserTokenAsync(HttpClient client)
+    {
+        var token = await HttpHelpers.GetPasswordTokenAsync(
+            client,
+            "/connect/token",
+            TestUsers.Operator.Username,
+            TestUsers.Operator.Password,
+            TestClients.WebUI.ClientId,
+            string.Join(' ', TestClients.WebUI.Scopes)).ConfigureAwait(false);
+        return token.AccessToken;
+    }
+
     private static async Task<(string DeviceId, Guid RegistrationId)> SeedActiveDeviceAsync(string? requestedDeviceId = null)
     {
         var deviceId = requestedDeviceId ?? $"artifact-device-{Guid.NewGuid():N}";
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var owner = await db.Users.SingleAsync(user => user.Email == TestUsers.Operator.Email).ConfigureAwait(false);
         var observatory = new Observatory
         {
             Id = Guid.NewGuid(),
-            OwnerUserId = "integration-tests",
+            OwnerUserId = owner.Id,
             Name = "Artifact Observatory",
             TimeZoneId = "UTC",
             CreatedAtUtc = DateTimeOffset.UtcNow,
@@ -1765,8 +1768,8 @@ public sealed class ArtifactIngestTests
             ObservatoryName = observatory.Name,
             ObservatoryTimeZoneId = "UTC",
             FriendlyName = "Artifact Device",
-            OwnerUserId = "integration-tests",
-            OwnerDisplayName = "Integration Tests",
+            OwnerUserId = owner.Id,
+            OwnerDisplayName = TestUsers.Operator.FullName,
             OwnerConfirmationMethod = "SelfAttested",
             Status = DeviceRegistrationStatus.Active,
             VerificationCodeHash = DeviceRegistrationService.ComputeSha256("ABCDE"),

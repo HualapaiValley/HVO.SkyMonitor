@@ -1,6 +1,8 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using System.Data;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -22,9 +24,61 @@ internal sealed class CentralDerivativeJobScheduler(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(artifact);
+        IDbContextTransaction? ownedTransaction = null;
+        try
+        {
+            if (dbContext.Database.CurrentTransaction is null)
+            {
+                ownedTransaction = await dbContext.Database.BeginTransactionAsync(
+                    IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+            }
+            if (ownedTransaction is not null)
+            {
+                await CentralArtifactRetentionLock.AcquireAsync(dbContext, artifact.Id, cancellationToken)
+                    .ConfigureAwait(false);
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                if (!await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(candidate =>
+                    candidate.Id == artifact.Id
+                    && candidate.ObjectState == CentralArtifactObjectState.Available
+                    && candidate.ReconstructionState == CentralReconstructionState.Complete, cancellationToken)
+                    .ConfigureAwait(false))
+                {
+                    await ownedTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+            }
+            await EnsureRequiredJobsCoreAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+            if (ownedTransaction is not null)
+            {
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            throw;
+        }
+        finally
+        {
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task EnsureRequiredJobsCoreAsync(
+        CentralArtifact artifact,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
         var frame = artifact.Frame ?? throw new InvalidOperationException("The artifact frame must be loaded before scheduling derivatives.");
         if (artifact.ObjectState != CentralArtifactObjectState.Available
-            || artifact.ReconstructionState is not (CentralReconstructionState.Complete or CentralReconstructionState.LegacyIncomplete))
+            || artifact.ReconstructionState != CentralReconstructionState.Complete)
         {
             return;
         }
@@ -160,6 +214,5 @@ internal sealed class CentralDerivativeJobScheduler(
 
     private static bool IsUsable(CentralArtifact artifact)
         => artifact.ObjectState == CentralArtifactObjectState.Available
-            && artifact.ReconstructionState is CentralReconstructionState.Complete
-                or CentralReconstructionState.LegacyIncomplete;
+            && artifact.ReconstructionState == CentralReconstructionState.Complete;
 }
