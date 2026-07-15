@@ -8,9 +8,9 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | --- | --- |
 | **Quality** | Pinned local tools, formatting, vulnerability audit, and exact reviewed deprecation allowlist. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. |
-| **Unit Tests** | 560 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. |
-| **Integration Tests** | 121 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. |
-| **Architecture & Publish** | Six repository graph/MSBuild/publish checks plus retained host publish manifests. |
+| **Unit Tests** | 689 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. |
+| **Integration Tests** | 118 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. |
+| **Architecture & Publish** | The remaining six Integration-category repository graph/MSBuild/publish cases plus retained host publish manifests. |
 | **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
 | **Coverage** | Exact source-path and branch merge of ten expected reports, checked-in aggregate non-regression, and risk-file floors. |
 | **Required CI** | Current-head aggregate that fails when any required check fails, times out, is canceled, or is missing. |
@@ -19,7 +19,7 @@ Each test invocation owns a category/project-specific result directory and TRX n
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=560`, `Integration=121`, `Manual=11`, `Soak=1`, `External=0`, and `Hardware=0`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=689`, `Integration=124`, `Manual=12`, `Soak=1`, `External=0`, and `Hardware=0`.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. No Hardware check is published until real device tests and a suitable runner exist.
 
@@ -42,8 +42,27 @@ Use the exact per-project commands in `.github/workflows/ci.yml` when producing 
 Use a fresh result root for every collection. Before merging, require exactly one report from each of the ten category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those ten explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
 ```bash
-reports=(TestResults/unit/*/*/coverage.cobertura.xml TestResults/integration/*/*/coverage.cobertura.xml TestResults/architecture/*/coverage.cobertura.xml)
-[[ "${#reports[@]}" -eq 10 ]]
+patterns=(
+  'TestResults/unit/astronomy/*/coverage.cobertura.xml'
+  'TestResults/unit/imaging/*/coverage.cobertura.xml'
+  'TestResults/unit/processing/*/coverage.cobertura.xml'
+  'TestResults/unit/catalog-sqlite/*/coverage.cobertura.xml'
+  'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
+  'TestResults/unit/logichost/*/coverage.cobertura.xml'
+  'TestResults/integration/cameraagent-storage/*/coverage.cobertura.xml'
+  'TestResults/integration/logichost/*/coverage.cobertura.xml'
+  'TestResults/integration/cameraagent-host/*/coverage.cobertura.xml'
+  'TestResults/architecture/*/coverage.cobertura.xml'
+)
+reports=()
+for pattern in "${patterns[@]}"; do
+  mapfile -t matches < <(compgen -G "$pattern" || true)
+  if [[ "${#matches[@]}" -ne 1 ]]; then
+    printf 'Expected one coverage report for %s, found %s\n' "$pattern" "${#matches[@]}" >&2
+    exit 1
+  fi
+  reports+=("${matches[0]}")
+done
 dotnet reportgenerator "-reports:$(IFS=';'; echo "${reports[*]}")" -targetdir:coverage-report -reporttypes:"Html;TextSummary;MarkdownSummaryGithub;Badges;Cobertura"
 ./scripts/coverage:enforce --merged coverage-report/Cobertura.xml
 ```

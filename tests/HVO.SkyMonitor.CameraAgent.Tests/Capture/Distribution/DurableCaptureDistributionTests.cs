@@ -154,6 +154,66 @@ public sealed class DurableCaptureDistributionTests
     }
 
     [TestMethod]
+    public async Task EnrichedEvidence_SurvivesFrameStrippedContextClaimAndRestart()
+    {
+        using var fixture = CreateFixture(new CaptureDistributionOptions());
+        var submission = fixture.CreateSubmission(0, includeCycleEvidence: true);
+        var expected = submission.CycleEvidence;
+        var receipt = await fixture.Ingress.AcceptAsync(
+            fixture.Configuration, submission, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(receipt);
+        Assert.AreEqual(expected, receipt.Manifest.Descriptor.CycleEvidence);
+
+        byte[] contextJson;
+        string contextSha256;
+        using (var connection = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            contextJson = await ScalarBytesAsync(
+                connection, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
+            contextSha256 = await ScalarStringAsync(
+                connection, "SELECT context_sha256 FROM capture_lane_contexts;").ConfigureAwait(false);
+        }
+        var envelope = CaptureLaneEnvelopeSerializer.Deserialize(contextJson, contextSha256);
+        Assert.IsNull(envelope.Submission.Result.Frame);
+        Assert.IsNull(envelope.Submission.Result.Artifacts);
+        Assert.AreEqual(expected, envelope.Submission.CycleEvidence);
+
+        var restarted = fixture.RestartLaneStore();
+        await restarted.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
+        var lease = await restarted.ClaimAsync(
+            fixture.Policy.Definitions.Single(static definition => definition.Name == "standard"),
+            "restart-owner",
+            fixture.Configuration,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(lease);
+        Assert.IsNull(lease.Context.Submission.Result.Frame);
+        Assert.AreEqual(expected, lease.Context.Submission.CycleEvidence);
+        Assert.AreEqual(expected, lease.Context.RawCapture.Manifest.Descriptor.CycleEvidence);
+    }
+
+    [TestMethod]
+    public async Task LegacyDescriptorFallback_KeepsCycleEvidenceNull()
+    {
+        using var fixture = CreateFixture(new CaptureDistributionOptions());
+        var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
+        Assert.IsNull(receipt.Manifest.Descriptor.CycleEvidence);
+        using (var connection = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM capture_lane_contexts;";
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+
+        var lease = await fixture.ClaimAsync("standard").ConfigureAwait(false);
+
+        Assert.IsNotNull(lease);
+        Assert.IsNull(lease.Context.Submission.Result.Frame);
+        Assert.IsNull(lease.Context.Submission.CycleEvidence);
+        Assert.IsNull(lease.Context.RawCapture.Manifest.Descriptor.CycleEvidence);
+    }
+
+    [TestMethod]
     public async Task Service_RediscoversWithoutWakeupAndBlockedOptionalLaneDoesNotBlockStandard()
     {
         using var fixture = CreateFixture(new CaptureDistributionOptions
@@ -205,6 +265,32 @@ public sealed class DurableCaptureDistributionTests
         Assert.AreEqual(2L, await ScalarLongAsync(
             connection,
             "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'secondary' AND state = 'pending';").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task CameraModuleRunner_DurableLaneOutagesDoNotChangeCaptureCadence()
+    {
+        foreach (var cadenceMode in new[] { CaptureCadenceMode.MinimumStartInterval, CaptureCadenceMode.Continuous })
+        {
+            var baseline = await RunCadenceScenarioAsync(cadenceMode, blockedLane: null).ConfigureAwait(false);
+            var optionalOutage = await RunCadenceScenarioAsync(cadenceMode, "secondary").ConfigureAwait(false);
+            var uploadOutage = await RunCadenceScenarioAsync(cadenceMode, "upload").ConfigureAwait(false);
+
+            CollectionAssert.AreEqual(baseline.RequestedStarts, optionalOutage.RequestedStarts, cadenceMode.ToString());
+            CollectionAssert.AreEqual(baseline.RequestedStarts, uploadOutage.RequestedStarts, cadenceMode.ToString());
+            CollectionAssert.AreEqual(baseline.ActualStarts, optionalOutage.ActualStarts, cadenceMode.ToString());
+            CollectionAssert.AreEqual(baseline.ActualStarts, uploadOutage.ActualStarts, cadenceMode.ToString());
+            CollectionAssert.AreEqual(baseline.MonotonicJitter, optionalOutage.MonotonicJitter, cadenceMode.ToString());
+            CollectionAssert.AreEqual(baseline.MonotonicJitter, uploadOutage.MonotonicJitter, cadenceMode.ToString());
+            Assert.IsTrue(baseline.MonotonicJitter.All(static jitter => jitter >= TimeSpan.Zero), cadenceMode.ToString());
+            Assert.IsTrue(optionalOutage.MonotonicJitter.All(static jitter => jitter >= TimeSpan.Zero), cadenceMode.ToString());
+            Assert.IsTrue(uploadOutage.MonotonicJitter.All(static jitter => jitter >= TimeSpan.Zero), cadenceMode.ToString());
+
+            var expectedTimerCount = cadenceMode == CaptureCadenceMode.Continuous ? 0 : 3;
+            Assert.AreEqual(expectedTimerCount, baseline.TimerCreationCount, cadenceMode.ToString());
+            Assert.AreEqual(expectedTimerCount, optionalOutage.TimerCreationCount, cadenceMode.ToString());
+            Assert.AreEqual(expectedTimerCount, uploadOutage.TimerCreationCount, cadenceMode.ToString());
+        }
     }
 
     [TestMethod]
@@ -697,7 +783,8 @@ public sealed class DurableCaptureDistributionTests
     private static Fixture CreateFixture(
         CaptureDistributionOptions distribution,
         ICaptureLaneFaultInjector? laneFaultInjector = null,
-        IRawIngressFaultInjector? rawFaultInjector = null)
+        IRawIngressFaultInjector? rawFaultInjector = null,
+        CameraModuleConfig? configuration = null)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-lanes-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -726,7 +813,155 @@ public sealed class DurableCaptureDistributionTests
             resolvedLaneFaultInjector,
             laneState,
             laneTelemetry);
-        return new Fixture(root, time, telemetry, ingress, policy, hostOptions, laneState, laneTelemetry);
+        return new Fixture(
+            root,
+            time,
+            telemetry,
+            ingress,
+            policy,
+            hostOptions,
+            laneState,
+            laneTelemetry,
+            configuration ?? CreateConfiguration());
+    }
+
+    private static async Task<CadenceScenario> RunCadenceScenarioAsync(
+        CaptureCadenceMode cadenceMode,
+        string? blockedLane)
+    {
+        const int captureCount = 4;
+        var interval = TimeSpan.FromSeconds(1);
+        var acquisitionDuration = TimeSpan.FromMilliseconds(100);
+        var configuration = CreateCadenceConfiguration(interval, cadenceMode);
+        using var fixture = CreateFixture(
+            new CaptureDistributionOptions
+            {
+                UploadEnabled = true,
+                ShutdownDrainSeconds = 1,
+                RequiredMaximumPendingCount = 16,
+                OptionalMaximumPendingCount = 16,
+                SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
+            },
+            configuration: configuration);
+        using var standard = new StandardCaptureLaneHandler(
+            new EmptyPipelineFactory(),
+            NullLogger<StandardCaptureLaneHandler>.Instance,
+            fixture.Ingress);
+        var gate = blockedLane is null ? null : new GatedLaneHandler(blockedLane);
+        ICaptureLaneHandler upload = blockedLane == "upload" ? gate! : new SuccessfulLaneHandler("upload");
+        ICaptureLaneHandler secondary = blockedLane == "secondary" ? gate! : new SuccessfulLaneHandler("secondary");
+        using var service = new CaptureDistributionService(
+            new ConfigurationAccessor(configuration),
+            fixture.Ingress,
+            fixture.Store,
+            fixture.Policy,
+            [standard, upload, secondary],
+            standard,
+            fixture.Options,
+            fixture.Time,
+            new NullCaptureLaneFaultInjector(),
+            fixture.LaneTelemetry,
+            fixture.LaneState,
+            NullLogger<CaptureDistributionService>.Instance);
+        using var cancellation = new CancellationTokenSource();
+        var recordingIngress = new RecordingRawCaptureIngress(fixture.Ingress, cancellation, captureCount);
+        var hostContext = new CaptureHostContext(configuration, recordingIngress, service);
+        var runnerTime = new DeterministicTimeProvider(fixture.Time.GetUtcNow());
+        var module = new ScriptedFrameCameraModule(runnerTime, fixture.Time, acquisitionDuration);
+        var runner = new CameraModuleRunner(module, hostContext, runnerTime, NullLogger.Instance);
+
+        await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        var run = runner.RunAsync(cancellation.Token);
+        var firstReceipt = recordingIngress.WaitForCountAsync(1);
+        if (await Task.WhenAny(firstReceipt, run).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false) == run)
+        {
+            await run.ConfigureAwait(false);
+        }
+        await firstReceipt.ConfigureAwait(false);
+        if (gate is not null)
+        {
+            await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+        if (cadenceMode == CaptureCadenceMode.MinimumStartInterval)
+        {
+            for (var count = 1; count < captureCount; count++)
+            {
+                await runnerTime.WaitForTimerCountAsync(count).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                fixture.Time.Advance(interval - acquisitionDuration);
+                runnerTime.Advance(interval - acquisitionDuration);
+                var nextReceipt = recordingIngress.WaitForCountAsync(count + 1);
+                if (await Task.WhenAny(nextReceipt, run).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false) == run)
+                {
+                    await run.ConfigureAwait(false);
+                }
+                await nextReceipt.ConfigureAwait(false);
+            }
+        }
+        await recordingIngress.WaitForCountAsync(captureCount).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await run.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        Assert.HasCount(captureCount, module.Requests);
+        Assert.HasCount(captureCount, recordingIngress.Receipts);
+        Assert.IsTrue(gate is null || !gate.Released.Task.IsCompleted);
+        foreach (var receipt in recordingIngress.Receipts)
+        {
+            Assert.AreEqual(RawIngressOutcome.Committed, receipt.Outcome);
+            Assert.IsNotNull(receipt.Manifest.Descriptor.CycleEvidence);
+            Assert.IsTrue(File.Exists(receipt.StoredFrame.AbsolutePath));
+            Assert.AreEqual(16 * 16 * 2, new FileInfo(receipt.StoredFrame.AbsolutePath).Length);
+            Assert.IsTrue(File.Exists(Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")));
+        }
+
+        using (var connection = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            Assert.AreEqual(captureCount, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+            Assert.AreEqual(captureCount, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM capture_lane_contexts;").ConfigureAwait(false));
+            Assert.AreEqual(captureCount * 3L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM capture_lane_work;").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarLongAsync(
+                connection,
+                "SELECT COUNT(*) FROM raw_captures r WHERE (SELECT COUNT(*) FROM capture_lane_work w WHERE w.raw_capture_row_id = r.raw_capture_row_id AND w.required = 1) != 2;").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarLongAsync(
+                connection,
+                "SELECT COUNT(*) FROM raw_captures r WHERE (SELECT COUNT(*) FROM capture_lane_work w WHERE w.raw_capture_row_id = r.raw_capture_row_id AND w.required = 0) != 1;").ConfigureAwait(false));
+        }
+
+        if (gate is not null)
+        {
+            await WaitForCountAsync(
+                fixture.Root,
+                "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'completed';",
+                captureCount * 2L).ConfigureAwait(false);
+            var backlog = (await fixture.Store.ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false))
+                .Single(item => item.Lane == blockedLane);
+            Assert.AreEqual(captureCount, backlog.PendingCount);
+            Assert.AreEqual(1L, backlog.LeasedCount);
+            Assert.AreEqual(blockedLane == "upload", backlog.Required);
+            await WaitForCountAsync(
+                fixture.Root,
+                "SELECT COUNT(*) FROM raw_captures WHERE retention_hold = 1;",
+                blockedLane == "upload" ? captureCount : backlog.LeasedCount).ConfigureAwait(false);
+            gate.Release();
+        }
+
+        await WaitForCountAsync(
+            fixture.Root,
+            "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'completed';",
+            captureCount * 3L).ConfigureAwait(false);
+        Assert.IsTrue((await fixture.Store.ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false))
+            .All(static backlog => backlog.PendingCount == 0 && backlog.LeasedCount == 0));
+        using (var connection = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            Assert.AreEqual(0L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures WHERE retention_hold = 1;").ConfigureAwait(false));
+        }
+        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        return new CadenceScenario(
+            module.Requests.Select(static request => request.RequestedStartUtc).ToArray(),
+            module.ActualStarts.ToArray(),
+            recordingIngress.Receipts
+                .Select(static receipt => receipt.Manifest.Descriptor.CycleEvidence!.MonotonicStartJitter)
+                .ToArray(),
+            runnerTime.TimerCreationCount);
     }
 
     private static async Task<SqliteConnection> OpenAsync(string root)
@@ -752,6 +987,14 @@ public sealed class DurableCaptureDistributionTests
         return Convert.ToString(await command.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
     }
 
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only test-owned constant SQL is passed to this helper.")]
+    private static async Task<byte[]> ScalarBytesAsync(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return (byte[])(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+    }
+
     private static async Task WaitForCountAsync(string root, string sql, long expected)
     {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
@@ -769,6 +1012,8 @@ public sealed class DurableCaptureDistributionTests
 
     private sealed class Fixture : IDisposable
     {
+        private bool _ingressDisposed;
+
         internal Fixture(
             string root,
             MutableTimeProvider time,
@@ -777,7 +1022,8 @@ public sealed class DurableCaptureDistributionTests
             CaptureLanePolicy policy,
             IOptions<CameraAgentHostOptions> options,
             CaptureLaneState laneState,
-            CaptureLaneTelemetry laneTelemetry)
+            CaptureLaneTelemetry laneTelemetry,
+            CameraModuleConfig configuration)
         {
             Root = root;
             Time = time;
@@ -788,7 +1034,7 @@ public sealed class DurableCaptureDistributionTests
             Options = options;
             LaneState = laneState;
             LaneTelemetry = laneTelemetry;
-            Configuration = CreateConfiguration();
+            Configuration = configuration;
         }
 
         internal string Root { get; }
@@ -809,7 +1055,7 @@ public sealed class DurableCaptureDistributionTests
                 Configuration, CreateSubmission(index), CancellationToken.None).ConfigureAwait(false))!;
         }
 
-        internal CaptureLoopSubmission CreateSubmission(int index)
+        internal CaptureLoopSubmission CreateSubmission(int index, bool includeCycleEvidence = false)
         {
             var timestamp = Time.GetUtcNow().AddMinutes(-1).AddSeconds(index);
             var frame = new CameraFrame(
@@ -820,7 +1066,7 @@ public sealed class DurableCaptureDistributionTests
                 new byte[] { 1, 2, (byte)index, 4 },
                 new FrameMetadata(TimeSpan.FromSeconds(1), 1, double.NaN),
                 4);
-            return new CaptureLoopSubmission(
+            var submission = new CaptureLoopSubmission(
                 new CaptureRequest(timestamp, TimeSpan.FromSeconds(5), CaptureMode.Still, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null)),
                 new CaptureResult(frame, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null), TimeSpan.Zero, CaptureMode.Still, false)
                 {
@@ -829,6 +1075,32 @@ public sealed class DurableCaptureDistributionTests
                 timestamp,
                 TimeSpan.FromSeconds(5),
                 TimeSpan.Zero);
+            if (!includeCycleEvidence)
+            {
+                return submission;
+            }
+            var decisionStartedUtc = timestamp.AddMilliseconds(1100);
+            return submission with
+            {
+                CycleEvidence = new CaptureCycleEvidence(
+                    CaptureCadenceMode.MinimumStartInterval,
+                    CaptureStartReason.DeadlineReached,
+                    AutomaticControlOwnership.Disabled,
+                    AutomaticControlOwnership.Disabled,
+                    null,
+                    timestamp,
+                    TimeSpan.FromSeconds(5),
+                    null,
+                    new CaptureControlDecisionEvidence(
+                        decisionStartedUtc,
+                        decisionStartedUtc.AddMilliseconds(100),
+                        TimeSpan.FromSeconds(1),
+                        1,
+                        TimeSpan.FromSeconds(1),
+                        1,
+                        CaptureControlDecisionReason.Disabled),
+                    decisionStartedUtc.AddMilliseconds(200))
+            };
         }
 
         internal async Task<CaptureLaneLease?> ClaimAsync(string lane, string owner = "test-owner")
@@ -841,9 +1113,25 @@ public sealed class DurableCaptureDistributionTests
                 CancellationToken.None).ConfigureAwait(false);
         }
 
-        public void Dispose()
+        internal SqliteCaptureLaneStore RestartLaneStore()
         {
             Ingress.Dispose();
+            _ingressDisposed = true;
+            return new SqliteCaptureLaneStore(
+                Root,
+                1,
+                Options.Value.CaptureDistribution,
+                Policy,
+                Time,
+                new NullCaptureLaneFaultInjector());
+        }
+
+        public void Dispose()
+        {
+            if (!_ingressDisposed)
+            {
+                Ingress.Dispose();
+            }
             Telemetry.Dispose();
             LaneTelemetry.Dispose();
             SqliteConnection.ClearAllPools();
@@ -864,6 +1152,31 @@ public sealed class DurableCaptureDistributionTests
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
             AgentId: "agent-lanes");
+
+    private static CameraModuleConfig CreateCadenceConfiguration(
+        TimeSpan interval,
+        CaptureCadenceMode cadenceMode)
+        => new(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            new CameraModuleDescriptor("DurableCadenceTest"),
+            new CameraRigConfig(
+                new SensorProfile("DurableCadenceTest", 16, 16, 1, SensorColorMode.Mono, CameraPixelFormat.Mono16, StrideBytes: 32),
+                new OpticsProfile("EquidistantFisheye", 1, 180, 0),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(
+                    interval,
+                    TimeSpan.FromMilliseconds(100),
+                    TimeSpan.FromMilliseconds(100),
+                    1,
+                    1,
+                    CadenceMode: cadenceMode)),
+            AgentId: "agent-durable-cadence");
+
+    private sealed record CadenceScenario(
+        DateTimeOffset[] RequestedStarts,
+        DateTimeOffset[] ActualStarts,
+        TimeSpan[] MonotonicJitter,
+        int TimerCreationCount);
 
     private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
     {
@@ -902,6 +1215,288 @@ public sealed class DurableCaptureDistributionTests
             CaptureLaneHandlerContext context,
             CancellationToken cancellationToken)
             => ValueTask.FromResult(CaptureLaneHandlerResult.Success);
+    }
+
+    private sealed class RecordingRawCaptureIngress(
+        IRawCaptureIngress inner,
+        CancellationTokenSource cancellation,
+        int targetCount) : IRawCaptureIngress
+    {
+        private readonly List<RawCaptureReceipt> _receipts = [];
+        private readonly List<(int Count, TaskCompletionSource Completion)> _waiters = [];
+        private readonly object _sync = new();
+
+        public IReadOnlyList<RawCaptureReceipt> Receipts
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _receipts.ToArray();
+                }
+            }
+        }
+
+        public ValueTask InitializeAsync(CancellationToken cancellationToken)
+            => inner.InitializeAsync(cancellationToken);
+
+        public async ValueTask<RawCaptureReceipt?> AcceptAsync(
+            CameraModuleConfig configuration,
+            CaptureLoopSubmission submission,
+            CancellationToken cancellationToken)
+        {
+            var receipt = await inner.AcceptAsync(configuration, submission, cancellationToken).ConfigureAwait(false);
+            if (receipt is null)
+            {
+                return null;
+            }
+
+            List<TaskCompletionSource> completed;
+            var targetReached = false;
+            lock (_sync)
+            {
+                _receipts.Add(receipt);
+                targetReached = _receipts.Count == targetCount;
+                completed = _waiters
+                    .Where(waiter => waiter.Count <= _receipts.Count)
+                    .Select(static waiter => waiter.Completion)
+                    .ToList();
+                _waiters.RemoveAll(waiter => waiter.Count <= _receipts.Count);
+            }
+            foreach (var completion in completed)
+            {
+                completion.TrySetResult();
+            }
+            if (targetReached)
+            {
+                await cancellation.CancelAsync().ConfigureAwait(false);
+            }
+            return receipt;
+        }
+
+        public Task WaitForCountAsync(int count)
+        {
+            lock (_sync)
+            {
+                if (_receipts.Count >= count)
+                {
+                    return Task.CompletedTask;
+                }
+                var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _waiters.Add((count, completion));
+                return completion.Task;
+            }
+        }
+    }
+
+    private sealed class ScriptedFrameCameraModule(
+        DeterministicTimeProvider timeProvider,
+        MutableTimeProvider ingressTimeProvider,
+        TimeSpan acquisitionDuration) : ICameraModule
+    {
+        private readonly List<CaptureRequest> _requests = [];
+        private readonly List<DateTimeOffset> _actualStarts = [];
+
+        public IReadOnlyList<CaptureRequest> Requests => _requests;
+        public IReadOnlyList<DateTimeOffset> ActualStarts => _actualStarts;
+        public string Id => "durable-cadence-test";
+        public string DisplayName => "Durable cadence test";
+        public string ModuleType => "Test";
+        public CameraModuleCapabilities Capabilities => CameraModuleCapabilities.StillFrames;
+
+        public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+        {
+            var index = _requests.Count;
+            var startedUtc = timeProvider.GetUtcNow();
+            _requests.Add(request);
+            _actualStarts.Add(startedUtc);
+            var pixels = new byte[16 * 16 * 2];
+            for (var offset = 0; offset < pixels.Length; offset += 2)
+            {
+                var sample = (ushort)(1000 + index * 100 + offset / 2);
+                pixels[offset] = (byte)sample;
+                pixels[offset + 1] = (byte)(sample >> 8);
+            }
+            timeProvider.Advance(acquisitionDuration);
+            ingressTimeProvider.Advance(acquisitionDuration);
+            var completedUtc = timeProvider.GetUtcNow();
+            var frame = new CameraFrame(
+                startedUtc,
+                16,
+                16,
+                CameraPixelFormat.Mono16,
+                pixels,
+                new FrameMetadata(acquisitionDuration, 1, 0),
+                32);
+            return Task.FromResult(new CaptureResult(
+                frame,
+                request.RequestedSetpoint!,
+                TimeSpan.Zero,
+                CaptureMode.Still,
+                false)
+            {
+                AcquisitionTiming = new CaptureAcquisitionTiming(startedUtc, completedUtc, completedUtc)
+            });
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class DeterministicTimeProvider(DateTimeOffset startUtc) : TimeProvider
+    {
+        private readonly object _sync = new();
+        private readonly List<DeterministicTimer> _timers = [];
+        private readonly List<(int Count, TaskCompletionSource Completion)> _timerWaiters = [];
+        private long _timestamp;
+        private long _utcTicks = startUtc.UtcTicks;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public int TimerCreationCount { get; private set; }
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            lock (_sync)
+            {
+                return new DateTimeOffset(_utcTicks, TimeSpan.Zero);
+            }
+        }
+
+        public override long GetTimestamp()
+        {
+            lock (_sync)
+            {
+                return _timestamp;
+            }
+        }
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            ArgumentNullException.ThrowIfNull(callback);
+            DeterministicTimer timer;
+            List<TaskCompletionSource> completed;
+            lock (_sync)
+            {
+                TimerCreationCount++;
+                timer = new DeterministicTimer(this, callback, state, Deadline(dueTime), PeriodTicks(period));
+                _timers.Add(timer);
+                completed = _timerWaiters
+                    .Where(waiter => waiter.Count <= TimerCreationCount)
+                    .Select(static waiter => waiter.Completion)
+                    .ToList();
+                _timerWaiters.RemoveAll(waiter => waiter.Count <= TimerCreationCount);
+            }
+            foreach (var completion in completed)
+            {
+                completion.TrySetResult();
+            }
+            return timer;
+        }
+
+        public Task WaitForTimerCountAsync(int count)
+        {
+            lock (_sync)
+            {
+                if (TimerCreationCount >= count)
+                {
+                    return Task.CompletedTask;
+                }
+                var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _timerWaiters.Add((count, completion));
+                return completion.Task;
+            }
+        }
+
+        public void Advance(TimeSpan amount)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(amount, TimeSpan.Zero);
+            List<DeterministicTimer> due;
+            lock (_sync)
+            {
+                _utcTicks = checked(_utcTicks + amount.Ticks);
+                _timestamp = checked(_timestamp + amount.Ticks);
+                due = _timers.Where(timer => timer.PrepareToFire(_timestamp)).ToList();
+            }
+            foreach (var timer in due)
+            {
+                timer.Fire();
+            }
+        }
+
+        private long Deadline(TimeSpan dueTime)
+            => dueTime == Timeout.InfiniteTimeSpan ? long.MaxValue : checked(_timestamp + dueTime.Ticks);
+
+        private static long PeriodTicks(TimeSpan period)
+            => period == Timeout.InfiniteTimeSpan ? long.MaxValue : period.Ticks;
+
+        private void Change(DeterministicTimer timer, TimeSpan dueTime, TimeSpan period)
+        {
+            lock (_sync)
+            {
+                timer.ChangeCore(Deadline(dueTime), PeriodTicks(period));
+            }
+        }
+
+        private void Remove(DeterministicTimer timer)
+        {
+            lock (_sync)
+            {
+                timer.DisposeCore();
+                _timers.Remove(timer);
+            }
+        }
+
+        private sealed class DeterministicTimer(
+            DeterministicTimeProvider owner,
+            TimerCallback callback,
+            object? state,
+            long deadline,
+            long periodTicks) : ITimer
+        {
+            private bool _disposed;
+            private long _deadline = deadline;
+            private long _periodTicks = periodTicks;
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                owner.Change(this, dueTime, period);
+                return !_disposed;
+            }
+
+            public void Dispose() => owner.Remove(this);
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+
+            public bool PrepareToFire(long timestamp)
+            {
+                if (_disposed || timestamp < _deadline)
+                {
+                    return false;
+                }
+                _deadline = _periodTicks == long.MaxValue ? long.MaxValue : checked(timestamp + _periodTicks);
+                return true;
+            }
+
+            public void Fire() => callback(state);
+
+            public void ChangeCore(long deadline, long periodTicks)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+                _deadline = deadline;
+                _periodTicks = periodTicks;
+            }
+
+            public void DisposeCore() => _disposed = true;
+        }
     }
 
     private sealed class CancellationThenSuccessHandler : ICaptureLaneHandler
@@ -1015,13 +1610,16 @@ public sealed class DurableCaptureDistributionTests
         public string Lane => lane;
 
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Released { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Release() => Released.TrySetResult();
 
         public async ValueTask<CaptureLaneHandlerResult> HandleAsync(
             CaptureLaneHandlerContext context,
             CancellationToken cancellationToken)
         {
             Entered.TrySetResult();
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            await Released.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             return CaptureLaneHandlerResult.Success;
         }
     }

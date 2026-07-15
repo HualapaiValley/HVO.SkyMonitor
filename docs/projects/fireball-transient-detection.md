@@ -79,6 +79,9 @@ Auto-control ownership distinguishes disabled, camera-native, and host-metered
 operation. Host metering uses linear sky samples and excludes ground,
 obstructions, permanent lights, saturated outliers, and image-circle exterior.
 RGGB16 metering uses selected photosites or Bayer cells without full demosaicing.
+`CaptureMeteringPolicy` supplies a sparse ROI, calibrated image circle, and
+rectangular excluded mask regions; the meter honors configured 16-bit byte order
+and counts only bytes read after those filters.
 
 The controller adjusts from the active setpoint, applies hysteresis, stays within
 the configured exposure/gain envelope, and records every decision reason. Exact
@@ -86,6 +89,17 @@ exposure start/end, readout, metering, setpoint-application, ingress-handoff, an
 observed inter-exposure gap are retained. A `1-2 ms` metering objective must be
 measured on physical x64 and ARM64 targets rather than treated as a portable
 correctness threshold.
+
+`CaptureTimingDescriptor` retains the requested deadline and module acquisition
+boundaries. Optional `CaptureCycleEvidence` retains the host call, cadence start
+reason, ownership, solar regime, sparse-meter counts, active-to-decided control
+transition, handoff start, and observed gap. `MinimumStartInterval` deadlines are
+computed with monotonic elapsed time from the preceding actual host start;
+`Continuous` creates no cadence timer. Existing manifests without cycle evidence
+remain valid and are not backfilled.
+When automatic controls change, `ICameraSetpointController` applies the complete
+next setpoint before durable ingress begins. Modules that cannot provide that
+boundary cannot enable camera-native or host-metered ownership.
 
 Issue [#58](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58) owns this
 work.

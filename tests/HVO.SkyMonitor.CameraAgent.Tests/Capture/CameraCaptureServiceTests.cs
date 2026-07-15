@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -18,12 +19,15 @@ public sealed class CameraCaptureServiceTests
         var config = CreateConfig();
         var module = new GatedCameraModule();
         var distributor = new RecordingDistributor();
+        using var telemetry = new CaptureControlTelemetry();
         var service = new CameraCaptureService(
             new ConfigurationAccessor(config),
             new ModuleFactory(module),
             new PassthroughRawIngress(),
             distributor,
             TimeProvider.System,
+            new AstronomyEnginePlanetEphemeris(),
+            telemetry,
             NullLogger<CameraCaptureService>.Instance);
 
         await service.StartAsync(CancellationToken.None).ConfigureAwait(false);

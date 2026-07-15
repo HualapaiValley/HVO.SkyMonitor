@@ -6,11 +6,12 @@ Key types include:
 
 - `CameraFrame`/`FrameMetadata` – immutable representations of captured data.
 - `CameraModuleConfig`/`AgentRigConfig` – strongly typed configuration surface shared by agents and modules.
-- `CaptureRequest`/`CaptureResult`/`CaptureSetpoint` – capture-cadence contracts passed between the host loop and modules.
-- `ReconstructionDescriptor`/`ArtifactManifestV2` – versioned identity, timing, layout, profile, recipe, checksum, and ordered-lineage facts needed to reconstruct an immutable artifact.
+- `CaptureRequest`/`CaptureResult`/`CaptureSetpoint` - capture-cadence contracts passed between the host loop and modules.
+- `CaptureCycleEvidence` - optional cadence, control ownership, sparse-metering, active-to-decided setpoint, and ingress-handoff facts. Absence means legacy/unrecorded evidence.
+- `ReconstructionDescriptor`/`ArtifactManifestV2` - versioned identity, timing, layout, profile, recipe, checksum, and ordered-lineage facts needed to reconstruct an immutable artifact.
 - `CaptureContractJson`/`FrameReconstructor` – deterministic manifest serialization and zero-copy frame reconstruction with stable validation reason codes. Manifest v1 parses as `LegacyIncomplete`; missing legacy facts are never inferred.
-- `ExposureEnvelope` – optional min/max bands plus defaults that modules can honor when selecting exposure and gain.
-- `ICameraModule` and `ICameraModuleFactory` – base abstractions for camera implementations plus the factory interface consumed by the capture loop.
+- `ExposureEnvelope` - optional min/max bands plus day/twilight/night defaults, preference, hysteresis, and bounded adjustment settings.
+- `ICameraModule`/`ICameraSetpointController` and `ICameraModuleFactory` - capture plus pre-ingress setpoint application abstractions consumed by the host loop.
 
 Astronomy projection contracts belong in `HVO.SkyMonitor.Astronomy`; this project must not gain ASP.NET, EF Core, MinIO, SkiaSharp, or camera-SDK dependencies.
 

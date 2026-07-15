@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
@@ -38,7 +39,12 @@ public sealed class CameraModuleRunnerTests
         using var cancellation = new CancellationTokenSource();
         var module = new SequenceModule();
         var context = new RecordingHostContext(CreateConfig(TimeSpan.FromMilliseconds(1)), cancellation);
-        var runner = new CameraModuleRunner(module, context, TimeProvider.System, NullLogger.Instance);
+        var runner = new CameraModuleRunner(
+            module,
+            context,
+            TimeProvider.System,
+            NullLogger.Instance,
+            new AstronomyEnginePlanetEphemeris());
 
         await runner.RunAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
@@ -71,7 +77,12 @@ public sealed class CameraModuleRunnerTests
         using var cancellation = new CancellationTokenSource();
         var module = new FeedbackModule();
         var context = new FeedbackHostContext(CreateFeedbackConfig(), cancellation);
-        var runner = new CameraModuleRunner(module, context, TimeProvider.System, NullLogger.Instance);
+        var runner = new CameraModuleRunner(
+            module,
+            context,
+            TimeProvider.System,
+            NullLogger.Instance,
+            new AstronomyEnginePlanetEphemeris());
 
         await runner.RunAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
@@ -103,7 +114,18 @@ public sealed class CameraModuleRunnerTests
                     new ExposureEnvelope(
                         TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), 1, 200,
                         new ExposureDefaults(TimeSpan.FromSeconds(1), 1),
-                        new ExposureDefaults(TimeSpan.FromSeconds(4), 100), 0.65))));
+                        new ExposureDefaults(TimeSpan.FromSeconds(4), 100), 0.65)),
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.HostMetered,
+                    GainControl = AutomaticControlOwnership.Disabled,
+                    Metering = new CaptureMeteringPolicy
+                    {
+                        XStride = 1,
+                        YStride = 1,
+                        UseImageCircle = false
+                    }
+                }));
 
     private sealed class RecordingHostContext(
         CameraModuleConfig configuration,
@@ -176,7 +198,7 @@ public sealed class CameraModuleRunnerTests
         }
     }
 
-    private sealed class FeedbackModule : ICameraModule
+    private sealed class FeedbackModule : ICameraModule, ICameraSetpointController
     {
         public List<CaptureRequest> Requests { get; } = [];
         public string Id => "feedback";
@@ -201,6 +223,11 @@ public sealed class CameraModuleRunnerTests
                 CaptureMode.Still,
                 false));
         }
+
+        public ValueTask<DateTimeOffset> ApplySetpointAsync(
+            CaptureSetpoint setpoint,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult(DateTimeOffset.UtcNow);
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

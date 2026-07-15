@@ -200,4 +200,21 @@ internal static partial class CameraAgentLog
 
     [LoggerMessage(EventId = 2072, Level = LogLevel.Information, Message = "Capture processing graph completed with {Outcome}")]
     public static partial void CaptureProcessingGraphCompleted(this ILogger logger, string outcome);
+
+    [LoggerMessage(EventId = 2073, Level = LogLevel.Debug, Message = "Capture control decision completed (Cadence={Cadence}, ExposureControl={ExposureControl}, GainControl={GainControl}, Regime={Regime}, Reason={Reason}, Samples={Samples}, ScannedBytes={ScannedBytes})")]
+    public static partial void CaptureControlDecision(
+        this ILogger logger,
+        string cadence,
+        string exposureControl,
+        string gainControl,
+        string regime,
+        string reason,
+        long samples,
+        long scannedBytes);
+
+    [LoggerMessage(EventId = 2074, Level = LogLevel.Warning, Message = "Capture metering could not use pixel format {PixelFormat} because {Reason}")]
+    public static partial void CaptureMeteringUnavailable(this ILogger logger, string pixelFormat, string reason);
+
+    [LoggerMessage(EventId = 2075, Level = LogLevel.Debug, Message = "Capture minimum-start deadline overran by {OverrunMilliseconds} ms")]
+    public static partial void CaptureDeadlineOverrun(this ILogger logger, double overrunMilliseconds);
 }

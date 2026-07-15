@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -54,6 +55,250 @@ public sealed class RawCaptureIngressTests
             var listed = browser.List(root, DateOnly.FromDateTime(first.Manifest.Descriptor.Timing.ExposureStartedUtc.UtcDateTime), FrameArtifactRole.Raw, 10);
             Assert.HasCount(1, listed);
             Assert.AreEqual(first.Manifest.Descriptor.Artifact.ArtifactId, parsed.Document.Manifest.Descriptor.Artifact.ArtifactId);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_EnrichedCycleEvidenceIsDurableAndDuplicateIsIdempotent()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            var submission = CreateEnrichedSubmission(Timestamp(2).AddMinutes(10), [1, 2, 3, 4]);
+            var expected = submission.CycleEvidence;
+
+            var first = await ingress.AcceptAsync(
+                CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(first);
+            Assert.AreEqual(RawIngressOutcome.Committed, first.Outcome);
+            Assert.AreEqual(expected, first.Manifest.Descriptor.CycleEvidence);
+            Assert.IsNotNull(first.Manifest.Descriptor.Timing.SetpointAppliedUtc);
+            Assert.IsTrue(submission.Request.RequestedStartUtc < expected!.ModuleCallStartedUtc);
+            Assert.IsTrue(submission.Request.RequestedStartUtc < first.Manifest.Descriptor.Timing.ExposureStartedUtc);
+
+            var sidecarPath = Path.ChangeExtension(first.StoredFrame.AbsolutePath, ".json");
+            var sidecarBefore = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            var sidecar = CaptureContractJson.ParseManifest(sidecarBefore);
+            Assert.IsTrue(sidecar.IsValid, sidecar.Validation.ReasonCode);
+            Assert.AreEqual(expected, sidecar.Document!.Manifest!.Descriptor.CycleEvidence);
+
+            byte[] journalBefore;
+            byte[] contextBefore;
+            string contextShaBefore;
+            string descriptorShaBefore;
+            string manifestShaBefore;
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                journalBefore = await ScalarBytesAsync(
+                    connection, "SELECT manifest_json FROM raw_captures;").ConfigureAwait(false);
+                contextBefore = await ScalarBytesAsync(
+                    connection, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
+                contextShaBefore = await ScalarStringAsync(
+                    connection, "SELECT context_sha256 FROM capture_lane_contexts;").ConfigureAwait(false);
+                descriptorShaBefore = await ScalarStringAsync(
+                    connection, "SELECT descriptor_sha256 FROM raw_captures;").ConfigureAwait(false);
+                manifestShaBefore = await ScalarStringAsync(
+                    connection, "SELECT manifest_sha256 FROM raw_captures;").ConfigureAwait(false);
+            }
+            var journal = CaptureContractJson.ParseManifest(journalBefore);
+            Assert.IsTrue(journal.IsValid, journal.Validation.ReasonCode);
+            Assert.AreEqual(expected, journal.Document!.Manifest!.Descriptor.CycleEvidence);
+            var envelope = CaptureLaneEnvelopeSerializer.Deserialize(contextBefore, contextShaBefore);
+            Assert.IsNull(envelope.Submission.Result.Frame);
+            Assert.AreEqual(expected, envelope.Submission.CycleEvidence);
+
+            var duplicate = await ingress.AcceptAsync(
+                CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNotNull(duplicate);
+            Assert.AreEqual(RawIngressOutcome.Existing, duplicate.Outcome);
+            Assert.AreEqual(expected, duplicate.Manifest.Descriptor.CycleEvidence);
+            var finalValidation = duplicate.Manifest.Validate();
+            Assert.IsTrue(finalValidation.IsValid, finalValidation.ReasonCode);
+            CollectionAssert.AreEqual(sidecarBefore, await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false));
+            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
+            CollectionAssert.AreEqual(journalBefore, await ScalarBytesAsync(
+                verify, "SELECT manifest_json FROM raw_captures;").ConfigureAwait(false));
+            CollectionAssert.AreEqual(contextBefore, await ScalarBytesAsync(
+                verify, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false));
+            Assert.AreEqual(contextShaBefore, await ScalarStringAsync(
+                verify, "SELECT context_sha256 FROM capture_lane_contexts;").ConfigureAwait(false));
+            Assert.AreEqual(descriptorShaBefore, await ScalarStringAsync(
+                verify, "SELECT descriptor_sha256 FROM raw_captures;").ConfigureAwait(false));
+            Assert.AreEqual(manifestShaBefore, await ScalarStringAsync(
+                verify, "SELECT manifest_sha256 FROM raw_captures;").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarLongAsync(
+                verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_LegacyRetryWithEnrichedEvidenceKeepsImmutableLegacyEvidence()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            var enriched = CreateEnrichedSubmission(Timestamp(2).AddMinutes(20), [5, 6, 7, 8]);
+            Assert.IsNotNull(enriched.CycleEvidence);
+            Assert.IsNotNull(enriched.Result.AcquisitionTiming!.SetpointAppliedUtc);
+            var legacy = enriched with
+            {
+                CycleEvidence = null,
+                Result = enriched.Result with
+                {
+                    AcquisitionTiming = enriched.Result.AcquisitionTiming! with { SetpointAppliedUtc = null }
+                }
+            };
+            var first = await ingress.AcceptAsync(
+                CreateConfiguration(), legacy, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(first);
+            Assert.AreEqual(RawIngressOutcome.Committed, first.Outcome);
+            Assert.IsNull(first.Manifest.Descriptor.CycleEvidence);
+            Assert.IsNull(first.Manifest.Descriptor.Timing.SetpointAppliedUtc);
+            var sidecarPath = Path.ChangeExtension(first.StoredFrame.AbsolutePath, ".json");
+            var sidecarBefore = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            var legacySidecar = CaptureContractJson.ParseManifest(sidecarBefore);
+            Assert.IsTrue(legacySidecar.IsValid, legacySidecar.Validation.ReasonCode);
+            Assert.IsNull(legacySidecar.Document!.Manifest!.Descriptor.CycleEvidence);
+            Assert.IsNull(legacySidecar.Document.Manifest.Descriptor.Timing.SetpointAppliedUtc);
+            byte[] journalBefore;
+            byte[] contextBefore;
+            string contextShaBefore;
+            string descriptorShaBefore;
+            string manifestShaBefore;
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                journalBefore = await ScalarBytesAsync(
+                    connection, "SELECT manifest_json FROM raw_captures;").ConfigureAwait(false);
+                contextBefore = await ScalarBytesAsync(
+                    connection, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
+                contextShaBefore = await ScalarStringAsync(
+                    connection, "SELECT context_sha256 FROM capture_lane_contexts;").ConfigureAwait(false);
+                descriptorShaBefore = await ScalarStringAsync(
+                    connection, "SELECT descriptor_sha256 FROM raw_captures;").ConfigureAwait(false);
+                manifestShaBefore = await ScalarStringAsync(
+                    connection, "SELECT manifest_sha256 FROM raw_captures;").ConfigureAwait(false);
+            }
+
+            var retry = await ingress.AcceptAsync(
+                CreateConfiguration(), enriched, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNotNull(retry);
+            Assert.AreEqual(RawIngressOutcome.Existing, retry.Outcome);
+            Assert.IsNull(retry.Manifest.Descriptor.CycleEvidence);
+            Assert.IsNull(retry.Manifest.Descriptor.Timing.SetpointAppliedUtc);
+            var retryValidation = retry.Manifest.Validate();
+            Assert.IsTrue(retryValidation.IsValid, retryValidation.ReasonCode);
+            var sidecarAfter = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            CollectionAssert.AreEqual(sidecarBefore, sidecarAfter);
+            var finalSidecar = CaptureContractJson.ParseManifest(sidecarAfter);
+            Assert.IsTrue(finalSidecar.IsValid, finalSidecar.Validation.ReasonCode);
+            Assert.IsNull(finalSidecar.Document!.Manifest!.Descriptor.CycleEvidence);
+            Assert.IsNull(finalSidecar.Document.Manifest.Descriptor.Timing.SetpointAppliedUtc);
+            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
+            CollectionAssert.AreEqual(journalBefore, await ScalarBytesAsync(
+                verify, "SELECT manifest_json FROM raw_captures;").ConfigureAwait(false));
+            CollectionAssert.AreEqual(contextBefore, await ScalarBytesAsync(
+                verify, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false));
+            Assert.AreEqual(contextShaBefore, await ScalarStringAsync(
+                verify, "SELECT context_sha256 FROM capture_lane_contexts;").ConfigureAwait(false));
+            Assert.AreEqual(descriptorShaBefore, await ScalarStringAsync(
+                verify, "SELECT descriptor_sha256 FROM raw_captures;").ConfigureAwait(false));
+            Assert.AreEqual(manifestShaBefore, await ScalarStringAsync(
+                verify, "SELECT manifest_sha256 FROM raw_captures;").ConfigureAwait(false));
+            var envelope = CaptureLaneEnvelopeSerializer.Deserialize(contextBefore, contextShaBefore);
+            Assert.IsNull(envelope.Submission.CycleEvidence);
+            Assert.IsNull(envelope.Submission.Result.AcquisitionTiming!.SetpointAppliedUtc);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_FailedOrInvalidCycleEvidenceDoesNotPublishDurableSuccess()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            var enriched = CreateEnrichedSubmission(Timestamp(2).AddMinutes(30), [9, 10, 11, 12]);
+            var invalid = enriched with
+            {
+                CycleEvidence = enriched.CycleEvidence! with
+                {
+                    Decision = enriched.CycleEvidence.Decision with { ActiveGain = 2 }
+                }
+            };
+
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                await ingress.AcceptAsync(
+                    CreateConfiguration(), invalid, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            var failed = enriched with { Result = enriched.Result with { Frame = null } };
+            Assert.IsNull(await ingress.AcceptAsync(
+                CreateConfiguration(), failed, CancellationToken.None).ConfigureAwait(false));
+
+            Assert.IsFalse(Directory.Exists(Path.Combine(root, "frames")) &&
+                Directory.EnumerateFiles(Path.Combine(root, "frames"), "*.json", SearchOption.AllDirectories).Any());
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(0L, await ScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM capture_lane_contexts;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_CameraNativeSetpointFailureEvidenceIsCommitted()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            var submission = CreateCameraNativeSetpointFailureSubmission(
+                Timestamp(2).AddMinutes(40),
+                [13, 14, 15, 16]);
+
+            var receipt = await ingress.AcceptAsync(
+                CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNotNull(receipt);
+            Assert.AreEqual(RawIngressOutcome.Committed, receipt.Outcome);
+            var evidence = receipt.Manifest.Descriptor.CycleEvidence;
+            Assert.IsNotNull(evidence);
+            Assert.AreEqual(AutomaticControlOwnership.CameraNative, evidence.ExposureControl);
+            Assert.AreEqual(AutomaticControlOwnership.Disabled, evidence.GainControl);
+            Assert.AreNotEqual(evidence.Decision.ActiveExposure, evidence.Decision.DecidedExposure);
+            Assert.AreEqual(evidence.Decision.ActiveGain, evidence.Decision.DecidedGain);
+            Assert.AreEqual(CaptureControlDecisionReason.SetpointApplicationFailed, evidence.Decision.Reason);
+            Assert.IsNull(evidence.Decision.SetpointAppliedUtc);
+            Assert.IsNull(receipt.Manifest.Descriptor.Timing.SetpointAppliedUtc);
+            var validation = receipt.Manifest.Validate();
+            Assert.IsTrue(validation.IsValid, validation.ReasonCode);
+
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual("committed", await ScalarStringAsync(
+                connection, "SELECT state FROM raw_captures;").ConfigureAwait(false));
+            var persisted = CaptureContractJson.ParseManifest(await ScalarBytesAsync(
+                connection, "SELECT manifest_json FROM raw_captures;").ConfigureAwait(false));
+            Assert.IsTrue(persisted.IsValid, persisted.Validation.ReasonCode);
+            Assert.AreEqual(evidence, persisted.Document!.Manifest!.Descriptor.CycleEvidence);
+            Assert.IsNull(persisted.Document.Manifest.Descriptor.Timing.SetpointAppliedUtc);
         }
         finally
         {
@@ -150,8 +395,10 @@ public sealed class RawCaptureIngressTests
             }
             var indexPath = Path.Combine(root, "index", "frames_2026-07-14.jsonl");
             File.Delete(indexPath);
-            var state = new RawIngressState(TimeProvider.System);
-            using var recovered = CreateIngress(root, state);
+            var recoveryUtc = new DateTimeOffset(2030, 1, 2, 8, 9, 10, TimeSpan.FromHours(5));
+            var timeProvider = new FixedTimeProvider(recoveryUtc);
+            var state = new RawIngressState(timeProvider);
+            using var recovered = CreateIngress(root, state, timeProvider: timeProvider);
 
             await recovered.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -162,6 +409,9 @@ public sealed class RawCaptureIngressTests
                 accepted.Manifest.Descriptor.Artifact.ArtifactId.ToString(), StringComparison.OrdinalIgnoreCase);
             using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+            Assert.AreEqual(
+                recoveryUtc.ToUniversalTime().ToUnixTimeMilliseconds(),
+                await ScalarLongAsync(connection, "SELECT committed_unix_ms FROM raw_captures;").ConfigureAwait(false));
         }
         finally
         {
@@ -300,9 +550,10 @@ public sealed class RawCaptureIngressTests
             try
             {
                 var state = new RawIngressState(TimeProvider.System);
-                using var ingress = CreateIngress(root, state, new OneShotFaultInjector(point));
+                var faultInjector = new OneShotFaultInjector(point);
+                using var ingress = CreateIngress(root, state, faultInjector);
                 var configuration = CreateConfiguration();
-                var submission = CreateSubmission(Timestamp(7), [7, 7, 7, 7]);
+                var submission = CreateEnrichedSubmission(Timestamp(7), [7, 7, 7, 7]);
 
                 await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(async () =>
                     await ingress.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false),
@@ -318,6 +569,15 @@ public sealed class RawCaptureIngressTests
                 Assert.IsNotNull(recovered, point.ToString());
                 Assert.IsTrue(File.Exists(recovered.StoredFrame.AbsolutePath), point.ToString());
                 Assert.IsTrue(File.Exists(Path.ChangeExtension(recovered.StoredFrame.AbsolutePath, ".json")), point.ToString());
+                var validation = recovered.Manifest.Validate();
+                Assert.IsTrue(validation.IsValid, $"{point}: {validation.ReasonCode}");
+                Assert.IsNotNull(recovered.Manifest.Descriptor.CycleEvidence, point.ToString());
+                Assert.IsNotNull(recovered.Manifest.Descriptor.Timing.SetpointAppliedUtc, point.ToString());
+                var payloadPublishedUtc = faultInjector.PayloadPublishedUtc;
+                Assert.IsNotNull(payloadPublishedUtc, point.ToString());
+                Assert.IsTrue(
+                    payloadPublishedUtc.GetValueOrDefault() <= recovered.Manifest.Descriptor.Timing.DurableIngressUtc,
+                    $"{point}: payload publication must not follow durable ingress.");
                 using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
                 Assert.AreEqual(1L, await ScalarLongAsync(
                     connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false), point.ToString());
@@ -1036,7 +1296,8 @@ public sealed class RawCaptureIngressTests
     private static RawCaptureIngress CreateIngress(
         string root,
         RawIngressState state,
-        IRawIngressFaultInjector? faultInjector = null)
+        IRawIngressFaultInjector? faultInjector = null,
+        TimeProvider? timeProvider = null)
     {
         return new RawCaptureIngress(
             Options.Create(new CameraAgentHostOptions
@@ -1047,7 +1308,7 @@ public sealed class RawCaptureIngressTests
             }),
             new FixedCapacityProvider(long.MaxValue),
             state,
-            TimeProvider.System,
+            timeProvider ?? TimeProvider.System,
             new RawIngressTelemetry(state),
             NullLogger<RawCaptureIngress>.Instance,
             faultInjector ?? new NullRawIngressFaultInjector());
@@ -1081,6 +1342,128 @@ public sealed class RawCaptureIngressTests
             timestamp,
             TimeSpan.FromSeconds(1),
             TimeSpan.Zero);
+    }
+
+    private static CaptureLoopSubmission CreateEnrichedSubmission(DateTimeOffset exposureStartedUtc, byte[] payload)
+    {
+        var readoutCompletedUtc = exposureStartedUtc.AddSeconds(1);
+        var exposure = TimeSpan.FromSeconds(1);
+        var gain = 1d;
+        var frame = new CameraFrame(
+            readoutCompletedUtc,
+            2,
+            2,
+            CameraPixelFormat.Mono8,
+            payload,
+            new FrameMetadata(exposure, gain, double.NaN, "Test"),
+            2);
+        var request = new CaptureRequest(
+            exposureStartedUtc.AddSeconds(-2),
+            TimeSpan.FromSeconds(1),
+            CaptureMode.Still,
+            new CaptureSetpoint(exposure, gain, null, null));
+        var result = new CaptureResult(
+            frame,
+            new CaptureSetpoint(exposure, gain, null, null),
+            TimeSpan.Zero,
+            CaptureMode.Still,
+            false)
+        {
+            AcquisitionTiming = new CaptureAcquisitionTiming(
+                exposureStartedUtc,
+                exposureStartedUtc.AddMilliseconds(800),
+                readoutCompletedUtc)
+            {
+                SetpointAppliedUtc = exposureStartedUtc.AddMilliseconds(-500)
+            }
+        };
+        return new CaptureLoopSubmission(
+            request,
+            result,
+            exposureStartedUtc.AddSeconds(-1),
+            TimeSpan.FromSeconds(1),
+            TimeSpan.Zero)
+        {
+            CycleEvidence = new CaptureCycleEvidence(
+                CaptureCadenceMode.MinimumStartInterval,
+                CaptureStartReason.DeadlineReached,
+                AutomaticControlOwnership.Disabled,
+                AutomaticControlOwnership.Disabled,
+                null,
+                exposureStartedUtc.AddSeconds(-1),
+                TimeSpan.FromMilliseconds(500),
+                null,
+                new CaptureControlDecisionEvidence(
+                    readoutCompletedUtc.AddMilliseconds(100),
+                    readoutCompletedUtc.AddMilliseconds(200),
+                    exposure,
+                    gain,
+                    exposure,
+                    gain,
+                    CaptureControlDecisionReason.Disabled),
+                readoutCompletedUtc.AddMilliseconds(300))
+        };
+    }
+
+    private static CaptureLoopSubmission CreateCameraNativeSetpointFailureSubmission(
+        DateTimeOffset exposureStartedUtc,
+        byte[] payload)
+    {
+        var readoutCompletedUtc = exposureStartedUtc.AddSeconds(1);
+        var activeExposure = TimeSpan.FromSeconds(1);
+        var decidedExposure = TimeSpan.FromSeconds(2);
+        const double gain = 1;
+        var frame = new CameraFrame(
+            readoutCompletedUtc,
+            2,
+            2,
+            CameraPixelFormat.Mono8,
+            payload,
+            new FrameMetadata(activeExposure, gain, double.NaN, "Test"),
+            2);
+        var request = new CaptureRequest(
+            exposureStartedUtc.AddSeconds(-2),
+            TimeSpan.FromSeconds(1),
+            CaptureMode.Still,
+            new CaptureSetpoint(activeExposure, gain, null, null));
+        var result = new CaptureResult(
+            frame,
+            new CaptureSetpoint(decidedExposure, gain, null, null),
+            TimeSpan.Zero,
+            CaptureMode.Still,
+            false)
+        {
+            AcquisitionTiming = new CaptureAcquisitionTiming(
+                exposureStartedUtc,
+                exposureStartedUtc.AddMilliseconds(800),
+                readoutCompletedUtc)
+        };
+        return new CaptureLoopSubmission(
+            request,
+            result,
+            exposureStartedUtc.AddSeconds(-1),
+            TimeSpan.FromSeconds(1),
+            TimeSpan.Zero)
+        {
+            CycleEvidence = new CaptureCycleEvidence(
+                CaptureCadenceMode.Continuous,
+                CaptureStartReason.Initial,
+                AutomaticControlOwnership.CameraNative,
+                AutomaticControlOwnership.Disabled,
+                null,
+                exposureStartedUtc.AddSeconds(-1),
+                null,
+                null,
+                new CaptureControlDecisionEvidence(
+                    readoutCompletedUtc.AddMilliseconds(100),
+                    readoutCompletedUtc.AddMilliseconds(200),
+                    activeExposure,
+                    gain,
+                    decidedExposure,
+                    gain,
+                    CaptureControlDecisionReason.SetpointApplicationFailed),
+                readoutCompletedUtc.AddMilliseconds(300))
+        };
     }
 
     private static async Task<SqliteConnection> OpenJournalAsync(string root)
@@ -1131,6 +1514,14 @@ public sealed class RawCaptureIngressTests
         return Convert.ToString(await command.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture)!;
     }
 
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Tests pass only fixed SQL assertions.")]
+    private static async Task<byte[]> ScalarBytesAsync(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return (byte[])(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+    }
+
     private static DateTimeOffset Timestamp(int hour)
         => new(2026, 7, 14, hour, 0, 0, TimeSpan.Zero);
 
@@ -1165,12 +1556,23 @@ public sealed class RawCaptureIngressTests
         public StorageCapacity GetCapacity(string storageRoot) => throw new IOException("Injected capacity probe failure.");
     }
 
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
+
     private sealed class OneShotFaultInjector(RawIngressFaultPoint target) : IRawIngressFaultInjector
     {
         private int _injected;
 
+        public DateTimeOffset? PayloadPublishedUtc { get; private set; }
+
         public void Inject(RawIngressFaultPoint point)
         {
+            if (point == RawIngressFaultPoint.PayloadPublished && PayloadPublishedUtc is null)
+            {
+                PayloadPublishedUtc = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            }
             if (point == target && Interlocked.Exchange(ref _injected, 1) == 0)
             {
                 throw new InjectedRawIngressFaultException();

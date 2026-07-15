@@ -241,7 +241,7 @@ internal sealed class SqliteRawCaptureJournal(
         command.Transaction = transaction;
         command.CommandText = InsertCaptureSql;
         AddEntryParameters(command, entry);
-        command.Parameters.AddWithValue("$committed", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$committed", _utcNow().ToUniversalTime().ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         var rawRowId = await ReadLastInsertRowIdAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         await InsertContextAsync(
@@ -786,7 +786,7 @@ internal sealed class SqliteRawCaptureJournal(
             insert.Transaction = transaction;
             insert.CommandText = InsertCaptureSql;
             AddEntryParameters(insert, entry);
-            insert.Parameters.AddWithValue("$committed", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            insert.Parameters.AddWithValue("$committed", _utcNow().ToUniversalTime().ToUnixTimeMilliseconds());
             await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         var recoveredRowId = await ReadLastInsertRowIdAsync(connection, transaction, cancellationToken).ConfigureAwait(false);

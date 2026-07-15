@@ -71,9 +71,20 @@ public sealed class AcceleratedCameraAgentSoakTests
             Assert.AreEqual(channel.AcceptedCount, channel.DequeuedCount);
             Assert.AreEqual(0, channel.CurrentDepth);
             Assert.AreEqual(captures, hostContext.PublishedCount);
-            Assert.AreEqual(start, hostContext.FirstTimestamp);
-            Assert.AreEqual(start.AddHours(24), hostContext.LastTimestamp);
-            Assert.IsTrue(hostContext.CadenceConsistent);
+            Assert.HasCount(captures, hostContext.Submissions);
+            var actualStarts = hostContext.Submissions.Select(static submission => submission.CaptureStartedUtc).ToArray();
+            var cycleEvidence = hostContext.Submissions.Select(static submission => submission.CycleEvidence).ToArray();
+            Assert.IsTrue(cycleEvidence.All(static evidence => evidence is not null));
+            Assert.AreEqual(start, actualStarts[0]);
+            Assert.AreEqual(start.AddHours(24), actualStarts[^1]);
+            Assert.IsTrue(actualStarts.Zip(actualStarts.Skip(1), static (previous, current) => current - previous)
+                .All(static gap => gap == TimeSpan.FromMinutes(5)));
+            Assert.IsTrue(hostContext.Submissions.All(static submission =>
+                submission.CycleEvidence!.ModuleCallStartedUtc == submission.CaptureStartedUtc));
+            Assert.IsNull(cycleEvidence[0]!.ObservedInterExposureGap);
+            Assert.IsTrue(cycleEvidence.Skip(1).All(static evidence =>
+                evidence!.ObservedInterExposureGap == TimeSpan.FromMinutes(5)));
+            Assert.IsTrue(cycleEvidence.All(static evidence => evidence!.MonotonicStartJitter >= TimeSpan.Zero));
             Assert.IsLessThanOrEqualTo(32, sceneStore.Count);
             Assert.HasCount(120, provider.GetRequiredService<ICaptureTelemetryProvider>().GetSnapshot().Samples);
             Assert.AreEqual(4, steps.OfType<RollingCombinationCaptureProcessingStep>().Single().BufferedFrameCount);
@@ -126,19 +137,13 @@ public sealed class AcceleratedCameraAgentSoakTests
         int target) : ICaptureHostContext
     {
         private int _count;
+        private readonly List<CaptureLoopSubmission> _submissions = [];
         public CameraModuleConfig Configuration => configuration;
         public int PublishedCount => _count;
-        public DateTimeOffset? FirstTimestamp { get; private set; }
-        public DateTimeOffset? LastTimestamp { get; private set; }
-        public bool CadenceConsistent { get; private set; } = true;
+        public IReadOnlyList<CaptureLoopSubmission> Submissions => _submissions;
         public async ValueTask PublishAsync(CaptureLoopSubmission submission, CancellationToken cancellationToken)
         {
-            FirstTimestamp ??= submission.Request.RequestedStartUtc;
-            if (LastTimestamp is { } previous && submission.Request.RequestedStartUtc - previous != TimeSpan.FromMinutes(5))
-            {
-                CadenceConsistent = false;
-            }
-            LastTimestamp = submission.Request.RequestedStartUtc;
+            _submissions.Add(submission);
             await channel.WriteAsync(new FrameProcessingItem(configuration, submission), cancellationToken).ConfigureAwait(false);
             if (Interlocked.Increment(ref _count) == target)
             {
@@ -150,7 +155,9 @@ public sealed class AcceleratedCameraAgentSoakTests
     private sealed class AcceleratedTimeProvider(DateTimeOffset start) : TimeProvider
     {
         private long _utcTicks = start.UtcTicks;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
         public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
+        public override long GetTimestamp() => Interlocked.Read(ref _utcTicks);
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             Interlocked.Add(ref _utcTicks, dueTime.Ticks);

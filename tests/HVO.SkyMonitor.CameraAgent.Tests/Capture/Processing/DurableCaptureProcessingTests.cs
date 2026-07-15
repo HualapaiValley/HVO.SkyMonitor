@@ -26,7 +26,7 @@ public sealed class DurableCaptureProcessingTests
         Directory.CreateDirectory(root);
         try
         {
-            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var fixture = await CreateFixtureAsync(root, includeCycleEvidence: true).ConfigureAwait(false);
             CaptureLaneHandlerResult first;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
@@ -75,9 +75,16 @@ public sealed class DurableCaptureProcessingTests
             Assert.AreEqual(DurableProcessingNodeStatus.Completed, durable.Status);
             Assert.HasCount(1, durable.Outputs);
             var output = durable.Outputs[0];
+            Assert.AreEqual(fixture.Manifest.Descriptor.CycleEvidence, output.Descriptor.CycleEvidence);
             Assert.AreEqual(fixture.Manifest.Descriptor.Artifact.ArtifactId, output.Descriptor.Artifact.SourceArtifactIds.Single());
             Assert.IsTrue(File.Exists(Path.Combine(root, output.PayloadRelativePath)));
             Assert.IsTrue(File.Exists(Path.Combine(root, output.SidecarRelativePath)));
+            var sidecar = CaptureContractJson.ParseManifest(
+                await File.ReadAllBytesAsync(Path.Combine(root, output.SidecarRelativePath)).ConfigureAwait(false));
+            Assert.IsTrue(sidecar.IsValid, sidecar.Validation.ReasonCode);
+            Assert.AreEqual(
+                fixture.Manifest.Descriptor.CycleEvidence,
+                sidecar.Document!.Manifest!.Descriptor.CycleEvidence);
             Assert.AreEqual(1, Directory.EnumerateFiles(
                 Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories).Count());
         }
@@ -124,10 +131,17 @@ public sealed class DurableCaptureProcessingTests
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, replay.Outcome);
             Assert.HasCount(1, Directory.EnumerateFiles(
                 Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories));
-            Assert.IsNotNull(await store.ReadNodeAsync(
+            var durable = await store.ReadNodeAsync(
                 fixture.Manifest.Descriptor.Capture.CaptureId,
                 "normalize",
-                CancellationToken.None).ConfigureAwait(false));
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(durable);
+            Assert.HasCount(1, durable.Outputs);
+            Assert.IsNull(durable.Outputs[0].Descriptor.CycleEvidence);
+            var sidecar = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(
+                Path.Combine(root, durable.Outputs[0].SidecarRelativePath)).ConfigureAwait(false));
+            Assert.IsTrue(sidecar.IsValid, sidecar.Validation.ReasonCode);
+            Assert.IsNull(sidecar.Document!.Manifest!.Descriptor.CycleEvidence);
         }
         finally
         {
@@ -436,11 +450,21 @@ public sealed class DurableCaptureProcessingTests
         Assert.AreEqual("test.canonical-terminal", result.Reason);
     }
 
-    private static async Task<Fixture> CreateFixtureAsync(string root)
+    private static async Task<Fixture> CreateFixtureAsync(string root, bool includeCycleEvidence = false)
     {
         var payload = new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 };
         var manifest = ReconstructableCaptureContractTests.CreateManifest(
             CameraPixelFormat.Mono16, 2, 2, 4, payload);
+        if (includeCycleEvidence)
+        {
+            manifest = manifest with
+            {
+                Descriptor = manifest.Descriptor with
+                {
+                    CycleEvidence = CreateCycleEvidence(manifest.Descriptor)
+                }
+            };
+        }
         var payloadPath = Path.Combine(root, "raw.bin");
         await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
         await File.WriteAllBytesAsync(
@@ -451,7 +475,10 @@ public sealed class DurableCaptureProcessingTests
         var reconstruction = FrameReconstructor.TryReconstruct(manifest.Descriptor, payload, out var frame);
         Assert.IsTrue(reconstruction.IsValid);
         var config = CreateConfig();
-        var submission = CreateSubmission(frame!);
+        var submission = CreateSubmission(frame!) with
+        {
+            CycleEvidence = manifest.Descriptor.CycleEvidence
+        };
         var options = Options.Create(new CameraAgentHostOptions
         {
             RawIngressRoot = root,
@@ -569,6 +596,29 @@ public sealed class DurableCaptureProcessingTests
             frame.TimestampUtc,
             frame.Metadata.Exposure,
             TimeSpan.Zero);
+
+    private static CaptureCycleEvidence CreateCycleEvidence(ReconstructionDescriptor descriptor)
+    {
+        var decisionStartedUtc = descriptor.Timing.ReadoutCompletedUtc.AddMilliseconds(100);
+        return new CaptureCycleEvidence(
+            CaptureCadenceMode.MinimumStartInterval,
+            CaptureStartReason.DeadlineReached,
+            AutomaticControlOwnership.Disabled,
+            AutomaticControlOwnership.Disabled,
+            null,
+            descriptor.Timing.RequestedStartUtc.AddMilliseconds(500),
+            TimeSpan.FromSeconds(1),
+            null,
+            new CaptureControlDecisionEvidence(
+                decisionStartedUtc,
+                decisionStartedUtc.AddMilliseconds(100),
+                descriptor.Controls.EffectiveExposure,
+                descriptor.Controls.EffectiveGain,
+                descriptor.Controls.EffectiveExposure,
+                descriptor.Controls.EffectiveGain,
+                CaptureControlDecisionReason.Disabled),
+            decisionStartedUtc.AddMilliseconds(200));
+    }
 
     private sealed class ProducingStep : ICaptureProcessingStep, ICaptureProcessingGraphStep
     {

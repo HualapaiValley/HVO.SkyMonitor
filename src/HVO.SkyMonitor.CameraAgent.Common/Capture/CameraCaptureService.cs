@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -20,6 +21,8 @@ public sealed class CameraCaptureService(
     IRawCaptureIngress rawCaptureIngress,
     ICaptureDistributor captureDistributor,
     TimeProvider timeProvider,
+    IPlanetEphemeris planetEphemeris,
+    CaptureControlTelemetry captureControlTelemetry,
     ILogger<CameraCaptureService> logger) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
@@ -27,6 +30,9 @@ public sealed class CameraCaptureService(
     private readonly IRawCaptureIngress _rawCaptureIngress = rawCaptureIngress;
     private readonly ICaptureDistributor _captureDistributor = captureDistributor;
     private readonly TimeProvider _timeProvider = timeProvider;
+    private readonly IPlanetEphemeris _planetEphemeris = planetEphemeris;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton telemetry service.")]
+    private readonly CaptureControlTelemetry _captureControlTelemetry = captureControlTelemetry;
     private readonly ILogger<CameraCaptureService> _logger = logger;
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
 
@@ -46,7 +52,13 @@ public sealed class CameraCaptureService(
 
                 var hostContext = new CaptureHostContext(config, _rawCaptureIngress, _captureDistributor);
 
-                var runner = new CameraModuleRunner(module, hostContext, _timeProvider, _logger);
+                var runner = new CameraModuleRunner(
+                    module,
+                    hostContext,
+                    _timeProvider,
+                    _logger,
+                    _planetEphemeris,
+                    _captureControlTelemetry);
                 await runner.RunAsync(stoppingToken).ConfigureAwait(false);
                 break;
             }

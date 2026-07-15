@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,7 +15,12 @@ public sealed record CaptureLoopSubmission(
     CaptureResult Result,
     DateTimeOffset CaptureStartedUtc,
     TimeSpan EffectiveInterval,
-    TimeSpan LoopDuration);
+    TimeSpan LoopDuration)
+{
+    /// <summary>Gets the optional acquisition-critical evidence for this capture cycle.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CaptureCycleEvidence? CycleEvidence { get; init; }
+}
 
 /// <summary>
 /// Host-facing context that modules (or module runners) use to hand frames back
