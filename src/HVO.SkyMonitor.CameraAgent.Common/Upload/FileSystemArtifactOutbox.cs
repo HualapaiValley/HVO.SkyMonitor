@@ -4,10 +4,10 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
 
-/// <summary>Filesystem-backed durable outbox with atomic manifest commits.</summary>
+/// <summary>Legacy filesystem outbox retained for migration and compatibility tests.</summary>
 public sealed class FileSystemArtifactOutbox : IArtifactOutbox
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
+    internal static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false
     };
@@ -27,7 +27,7 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
             RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
         }
         var path = Path.Combine(directory, string.Concat(manifest.IdempotencyKey, ".json"));
-        var content = JsonSerializer.SerializeToUtf8Bytes(manifest, SerializerOptions);
+        var content = SerializeCanonical(manifest);
         if (File.Exists(path))
         {
             ValidateExisting(root, directory, path, content);
@@ -113,6 +113,7 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Retained as the legacy outbox instance API for shipped filesystem history tests.")]
     public ValueTask AcknowledgeAsync(string root, string idempotencyKey, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
@@ -127,7 +128,7 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
         return ValueTask.CompletedTask;
     }
 
-    private static List<string> EnumerateManifestPaths(string root, CancellationToken cancellationToken)
+    internal static List<string> EnumerateManifestPaths(string root, CancellationToken cancellationToken)
     {
         var directory = Path.Combine(Path.GetFullPath(root), "outbox");
         if (!Directory.Exists(directory))
@@ -158,6 +159,9 @@ public sealed class FileSystemArtifactOutbox : IArtifactOutbox
             throw new InvalidDataException($"Outbox manifest '{path}' is invalid.", exception);
         }
     }
+
+    internal static byte[] SerializeCanonical(ArtifactUploadManifest manifest)
+        => JsonSerializer.SerializeToUtf8Bytes(manifest, SerializerOptions);
 
     private static void ValidateExisting(
         string root,

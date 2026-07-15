@@ -136,7 +136,7 @@
         "storageRoot": __STORAGE_ROOT__,
         "retentionDays": 1,
         "updateLatestFrame": true,
-        "queueForUpload": true,
+        "queueForUpload": false,
         "policies": [
           {
             "role": "Preview",

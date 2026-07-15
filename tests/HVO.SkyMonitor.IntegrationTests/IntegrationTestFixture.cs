@@ -7,6 +7,7 @@ using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -78,6 +79,49 @@ public sealed class IntegrationTestFixture : IDisposable
     /// Gets the MinIO secret key.
     /// </summary>
     public const string MinioSecretKey = "minioadmin";
+
+    public async Task SeedActiveDeviceAsync(string deviceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        if (await db.DeviceRegistrations.AnyAsync(
+            registration => registration.DeviceId == deviceId).ConfigureAwait(false))
+        {
+            return;
+        }
+        var now = DateTimeOffset.UtcNow;
+        var observatory = new Observatory
+        {
+            Id = Guid.NewGuid(),
+            OwnerUserId = "integration-tests",
+            Name = "CameraAgent Integration Observatory",
+            TimeZoneId = "UTC",
+            CreatedAtUtc = now,
+            IsActive = true
+        };
+        db.Observatories.Add(observatory);
+        db.DeviceRegistrations.Add(new DeviceRegistration
+        {
+            Id = Guid.NewGuid(),
+            DeviceId = deviceId,
+            ObservatoryId = observatory.Id,
+            ObservatoryName = observatory.Name,
+            ObservatoryTimeZoneId = observatory.TimeZoneId,
+            FriendlyName = "CameraAgent Integration Device",
+            OwnerUserId = observatory.OwnerUserId,
+            OwnerDisplayName = "Integration Tests",
+            OwnerConfirmationMethod = "SelfAttested",
+            Status = DeviceRegistrationStatus.Active,
+            VerificationCodeHash = DeviceRegistrationService.ComputeSha256("ABCDE"),
+            IssuedAtUtc = now,
+            ExpiresAtUtc = now.AddHours(1),
+            ActivatedAtUtc = now,
+            DevicePublicId = Guid.NewGuid(),
+            DeviceKeyHash = DeviceRegistrationService.ComputeSha256("cameraagent-integration-key")
+        });
+        await db.SaveChangesAsync().ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Initializes Testcontainers and the application factory.

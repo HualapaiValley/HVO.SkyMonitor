@@ -46,6 +46,7 @@ internal sealed class NoOpFileStorageProcessingStep(
                 var product = context.GetProcessingProduct(artifact.ArtifactId);
                 var policy = ResolvePolicy(artifact, product);
                 StoredFrameReference stored;
+                ArtifactManifestV2? uploadManifest = null;
                 if (artifact.Role == FrameArtifactRole.Raw && context.RawCapture is { } ingress)
                 {
                     if (!IsStoredUnderRoot(ingress.StoredFrame, Options.StorageRoot))
@@ -53,34 +54,42 @@ internal sealed class NoOpFileStorageProcessingStep(
                         continue;
                     }
                     stored = ingress.StoredFrame;
+                    uploadManifest = ingress.Manifest;
                 }
                 else
                 {
-                    stored = product is not null && context.RawCapture is { } rawCapture
-                        ? await _frameStorageService.SaveAsync(
+                    if (product is not null && context.RawCapture is { } rawCapture)
+                    {
+                        var descriptor = DerivativeDescriptorFactory.Create(
+                            rawCapture.Manifest.Descriptor,
+                            artifact.ArtifactId,
+                            artifact.Frame.Metadata.SourceId ?? Name,
+                            product);
+                        stored = await _frameStorageService.SaveAsync(
                             Options.StorageRoot,
                             artifact,
-                            DerivativeDescriptorFactory.Create(
-                                rawCapture.Manifest.Descriptor,
-                                artifact.ArtifactId,
-                                artifact.Frame.Metadata.SourceId ?? Name,
-                                product),
-                            cancellationToken).ConfigureAwait(false)
-                        : await _frameStorageService.SaveAsync(
+                            descriptor,
+                            cancellationToken).ConfigureAwait(false);
+                        uploadManifest = new ArtifactManifestV2(
+                            ArtifactManifestV2.CurrentSchemaVersion,
+                            descriptor,
+                            stored.RelativePath,
+                            artifact.Frame.Metadata.Scene);
+                    }
+                    else
+                    {
+                        stored = await _frameStorageService.SaveAsync(
                             Options.StorageRoot, artifact, cancellationToken).ConfigureAwait(false);
+                    }
                 }
                 if (policy?.QueueForUpload ?? Options.QueueForUpload)
                 {
-                    var captureId = context.RawCapture?.Manifest.Descriptor.Capture.CaptureId ?? artifacts.Raw.ArtifactId;
-                    var uploadRecipeVersion = product is null
-                        ? artifact.RecipeVersion ?? "raw-v1"
-                        : product.OutputIdentitySha256;
-                    await _artifactOutbox.EnqueueAsync(Options.StorageRoot, new ArtifactUploadManifest(
-                        "v1", context.Config.AgentId, artifact.ArtifactId, captureId, artifact.Role,
-                        MediaTypeFor(artifact.Frame.PixelFormat), artifact.Frame.PixelData.Length,
-                        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(artifact.Frame.PixelData.Span)),
-                        artifact.Frame.TimestampUtc, uploadRecipeVersion, stored.RelativePath,
-                        artifact.Frame.Metadata.Scene), cancellationToken).ConfigureAwait(false);
+                    if (uploadManifest is null)
+                    {
+                        throw new InvalidDataException("Only reconstructable manifest-v2 artifacts can be queued for upload.");
+                    }
+                    await _artifactOutbox.EnqueueAsync(
+                        Options.StorageRoot, uploadManifest, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -124,14 +133,6 @@ internal sealed class NoOpFileStorageProcessingStep(
             Path.GetFullPath(storedFrame.AbsolutePath),
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
-    private static string MediaTypeFor(HVO.SkyMonitor.AgentCore.CameraPixelFormat pixelFormat) => pixelFormat switch
-    {
-        HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono8 => "application/x-skymonitor-mono8",
-        HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16 => "application/x-skymonitor-mono16",
-        HVO.SkyMonitor.AgentCore.CameraPixelFormat.Rgb24 => "application/x-skymonitor-rgb24",
-        HVO.SkyMonitor.AgentCore.CameraPixelFormat.BayerRggb16 => "application/x-skymonitor-bayer-rggb16",
-        _ => "application/octet-stream"
-    };
 }
 
 public sealed class NoOpFileStorageProcessingStepOptions : IValidatableObject
@@ -144,7 +145,7 @@ public sealed class NoOpFileStorageProcessingStepOptions : IValidatableObject
 
     public bool UpdateLatestFrame { get; init; } = true;
 
-    public bool QueueForUpload { get; init; } = true;
+    public bool QueueForUpload { get; init; }
 
     public IReadOnlyList<ArtifactStoragePolicyOptions> Policies { get; init; } = [];
 

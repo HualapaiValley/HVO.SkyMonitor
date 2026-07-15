@@ -1,30 +1,32 @@
 # CameraAgent Retention and Outbox Recovery
 
 CameraAgent stores capture payloads beneath each configured storage root and
-queues upload manifests in that root's `outbox/` directory. Retention treats a
-pending manifest as a durable hold on its payload, companion metadata, and
-daily index entry.
+tracks upload work in `<storage-root>/outbox/artifact-outbox.db`. The SQLite WAL
+journal is authoritative for attempts, leases, retry deadlines,
+acknowledgements, quarantine, and operator disposition. Retention treats
+pending, leased, retry, and quarantined work as a durable hold on its payload,
+companion metadata, and daily index entry.
 
 ## Safety Invariant
 
-After every successful retention sweep, every pending outbox manifest still
+After every successful retention sweep, every held outbox record still
 references an existing payload beneath the same storage root. Expiration does
 not override this hold. Once central ingestion acknowledges the manifest and
-the outbox removes it, the next eligible sweep may delete a derivative. Raw
+the outbox records a validated acknowledgement, the next eligible sweep may delete a derivative. Raw
 ingress evidence remains held by `raw-ingress.db` until durable
 required-consumer acknowledgements are added.
 
 Retention fails closed for a storage root before deleting anything when:
 
-- an outbox manifest is malformed;
+- legacy outbox evidence is malformed and its referenced payload cannot be identified safely;
 - a pending path is absolute or escapes the configured root;
 - a pending payload is missing;
 - cancellation is requested while pending manifests are scanned.
 
 The completion log records the storage root, deleted file count, and number of
 protected pending artifacts. A repeated `Retention sweep failed` event requires
-operator investigation; do not manually delete outbox manifests until central
-ingestion or an explicit abandonment procedure accounts for the artifact.
+operator investigation; do not edit the outbox database or delete evidence
+until central ingestion or an audited abandonment accounts for the artifact.
 
 ## Disk Pressure
 
@@ -42,15 +44,16 @@ capture or discard accepted frames.
 
 ## Outage Recovery
 
-1. Restore LogicHost or network connectivity.
-2. Confirm pending manifests remain under `<storage-root>/outbox/`.
-3. Confirm each manifest's `relativeArtifactPath` exists beneath the same root.
-4. Allow the normal outbox drain to upload and acknowledge artifacts.
-5. Confirm acknowledged manifest files disappear.
-6. Allow the next retention sweep to remove artifacts older than policy.
+1. Restore LogicHost, bearer-token issuance, or network connectivity.
+2. Confirm `<storage-root>/outbox/artifact-outbox.db` and its WAL/SHM files remain intact.
+3. Confirm `/health` reports `artifact-outbox` as healthy or degraded, not unavailable.
+4. Allow the normal outbox drain to claim due records and validate structured acknowledgements.
+5. Confirm pending/retry counts and oldest age decline while acknowledged count increases.
+6. Allow the next retention sweep to remove acknowledged derivatives older than policy.
 
-Outbox manifests and payloads survive CameraAgent restart. Retention scans the
-filesystem-backed outbox on every sweep and does not depend on in-memory state.
+Attempts and retry deadlines survive CameraAgent restart. Valid legacy v1 JSON
+files under `outbox/` are imported without fabricating v2 facts; malformed
+legacy files are preserved and quarantined without stopping other uploads.
 
 ## Restart Browsing
 
@@ -101,18 +104,36 @@ record the failure count/delay and the subsequent recovery transition.
 ## Upload Drain
 
 The upload drain runs outside the acquisition pipeline and processes at most
-`CameraAgent:UploadBatchSize` manifests per poll. Failed uploads remain in the
-filesystem outbox and retry with exponential delays between
-`UploadRetryInitialDelaySeconds` and `UploadRetryMaximumDelaySeconds`. Restarting
-the agent preserves every manifest and may retry it immediately; LogicHost
+`CameraAgent:UploadBatchSize` leased records per poll. Transport failures, 408,
+425, 429, and 5xx responses retry with persisted exponential delays between
+`UploadRetryInitialDelaySeconds` and `UploadRetryMaximumDelaySeconds`. Valid
+bounded `Retry-After` values are honored. Permanent 4xx, invalid protocol
+responses, and missing or conflicting local evidence quarantine immediately.
+Lease expiry safely returns interrupted work to discovery; LogicHost
 idempotency prevents a duplicate central record.
 
 Set `CameraAgent:UploadBandwidthLimitBytesPerSecond` to a positive value to
 limit streamed payload reads, or leave it at `0` for no application-level
 limit. LogicHost acknowledges only after payload checksum verification, MinIO
-storage, and SQL metadata persistence. That response removes the outbox manifest
-and a derivative's local artifact. It does not remove an ingress-owned raw
+storage, and SQL metadata persistence. CameraAgent validates the returned
+idempotency key, artifact ID, checksum, length, and accepted schema before
+recording acknowledgement and releasing a derivative's local artifact. It does not remove an ingress-owned raw
 payload or manifest-v2 sidecar while the SQLite retention hold remains active.
+
+New work is persisted as canonical manifest v2. The current LogicHost endpoint
+is a v1 compatibility delivery adapter: its acknowledgement says
+`acceptedManifestSchemaVersion: v1` and does not claim central reconstructability.
+OAuth client-credentials bearer authentication is the supported upload mode.
+An API key, rejected bearer identity, or inactive registration results in an
+`authentication-rejected` quarantine rather than an infinite retry.
+
+To resolve quarantined work, authenticate to the local CameraAgent and POST a
+non-empty reason and configured `storageRoot` to either
+`/api/v1.0/artifact-outbox/{idempotencyKey}/replay` or
+`/api/v1.0/artifact-outbox/{idempotencyKey}/abandon`. Replay is allowed only for
+valid deliverable evidence. Abandonment releases the delivery hold only after
+the actor, UTC time, and reason commit to the audit table. Preserve or export
+the payload, sidecar, journal, and conflict evidence before abandonment.
 
 ## Raw Ingress Recovery
 

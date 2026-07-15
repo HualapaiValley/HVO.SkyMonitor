@@ -3,6 +3,9 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using Microsoft.Extensions.Hosting;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -14,11 +17,42 @@ public sealed class ArtifactOutboxDrainService(
     IFrameStorageService frameStorageService,
     ArtifactUploadClient uploadClient,
     IOptions<CameraAgentHostOptions> hostOptions,
-    TimeProvider timeProvider) : BackgroundService
+    TimeProvider timeProvider,
+    ILogger<ArtifactOutboxDrainService> logger,
+    ArtifactOutboxState state,
+    ArtifactOutboxTelemetry telemetry) : BackgroundService
 {
-    private static readonly System.Text.Json.JsonSerializerOptions SerializerOptions = new(System.Text.Json.JsonSerializerDefaults.Web);
-    private readonly Dictionary<string, RetryState> _retries = new(StringComparer.Ordinal);
+    private static readonly System.Text.Json.JsonSerializerOptions SerializerOptions = new(System.Text.Json.JsonSerializerDefaults.Web)
+    {
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+    };
+    private static readonly Action<ILogger, Exception?> PayloadQuarantined = LoggerMessage.Define(
+        LogLevel.Warning, new EventId(2081, nameof(PayloadQuarantined)),
+        "Artifact outbox quarantined unreadable payload evidence");
+    private static readonly Action<ILogger, Exception?> LeaseLost = LoggerMessage.Define(
+        LogLevel.Warning, new EventId(2082, nameof(LeaseLost)),
+        "Artifact outbox lease was lost before local settlement");
+    private static readonly Action<ILogger, Exception?> RootDrainFailed = LoggerMessage.Define(
+        LogLevel.Error, new EventId(2083, nameof(RootDrainFailed)),
+        "Artifact outbox root could not be drained");
+    private static readonly Action<ILogger, Exception?> LeaseRenewalFailed = LoggerMessage.Define(
+        LogLevel.Warning, new EventId(2084, nameof(LeaseRenewalFailed)),
+        "Artifact outbox lease renewal failed");
+    private static readonly Action<ILogger, int, Exception?> WorkClaimed = LoggerMessage.Define<int>(
+        LogLevel.Debug, new EventId(2076, nameof(WorkClaimed)),
+        "Artifact outbox claimed durable work at attempt {Attempt}");
+    private static readonly Action<ILogger, int, string, long, Exception?> RetryScheduled = LoggerMessage.Define<int, string, long>(
+        LogLevel.Warning, new EventId(2077, nameof(RetryScheduled)),
+        "Artifact outbox scheduled retry attempt {Attempt} because {Reason} after {DelayMilliseconds} ms");
+    private static readonly Action<ILogger, string, Exception?> WorkAcknowledged = LoggerMessage.Define<string>(
+        LogLevel.Debug, new EventId(2078, nameof(WorkAcknowledged)),
+        "Artifact outbox accepted structured acknowledgement for manifest schema {ManifestSchemaVersion}");
+    private static readonly Action<ILogger, int, string, Exception?> WorkQuarantined = LoggerMessage.Define<int, string>(
+        LogLevel.Warning, new EventId(2079, nameof(WorkQuarantined)),
+        "Artifact outbox quarantined durable work at attempt {Attempt} because {Reason}");
+    private readonly string _leaseOwner = string.Concat(Environment.MachineName, ":", Environment.ProcessId, ":", Guid.NewGuid().ToString("N"));
 
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The linked upload cancellation source is disposed unconditionally in the immediately enclosing finally block.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
@@ -27,6 +61,7 @@ public sealed class ArtifactOutboxDrainService(
             var storageRoots = ResolveStorageRoots(config, hostOptions.Value);
             if (storageRoots.Count == 0)
             {
+                state.MarkInitialized();
                 await Task.Delay(
                     TimeSpan.FromSeconds(hostOptions.Value.UploadPollIntervalSeconds),
                     timeProvider,
@@ -35,53 +70,187 @@ public sealed class ArtifactOutboxDrainService(
             }
             foreach (var storageRoot in storageRoots)
             {
-                var now = timeProvider.GetUtcNow();
-                var deferred = _retries
-                    .Where(retry => retry.Value.NextAttemptUtc > now && PathsEqual(retry.Value.StorageRoot, storageRoot))
-                    .Select(retry => retry.Value.IdempotencyKey)
-                    .ToHashSet(StringComparer.Ordinal);
-                var ready = outbox.List(storageRoot, hostOptions.Value.UploadBatchSize, deferred);
-                foreach (var manifest in ready)
+                try
                 {
-                    var retryKey = RetryKey(storageRoot, manifest.IdempotencyKey);
-                    if (await uploadClient.UploadAsync(storageRoot, manifest, stoppingToken).ConfigureAwait(false))
+                    await outbox.InitializeAsync(storageRoot, stoppingToken).ConfigureAwait(false);
+                    for (var index = 0; index < hostOptions.Value.UploadBatchSize; index++)
                     {
-                        _retries.Remove(retryKey);
-                        var lifecycleGate = StorageLifecycleLock.ForRoot(storageRoot);
-                        await lifecycleGate.WaitAsync(stoppingToken).ConfigureAwait(false);
+                        var leaseDuration = TimeSpan.FromSeconds(hostOptions.Value.CaptureDistribution.LeaseSeconds);
+                        ArtifactOutboxLease? lease;
+                        var claimStarted = timeProvider.GetTimestamp();
+                        using (ArtifactOutboxTelemetry.ActivitySource.StartActivity("outbox.claim"))
+                        {
+                            lease = await outbox.ClaimAsync(
+                                storageRoot, _leaseOwner, leaseDuration, stoppingToken).ConfigureAwait(false);
+                        }
+                        telemetry.RecordClaim(timeProvider.GetElapsedTime(claimStarted));
+                        if (lease is null)
+                        {
+                            var snapshot = await outbox.GetSnapshotAsync(storageRoot, stoppingToken).ConfigureAwait(false);
+                            if (snapshot.PendingCount > 0)
+                            {
+                                continue;
+                            }
+                            break;
+                        }
+                        WorkClaimed(logger, lease.Record.AttemptCount, null);
+
                         try
                         {
-                            await outbox.AcknowledgeAsync(storageRoot, manifest.IdempotencyKey, stoppingToken).ConfigureAwait(false);
-                            if (ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot, manifest))
+                            CancellationTokenSource? uploadCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                            try
                             {
-                                var path = Path.Combine(Path.GetFullPath(storageRoot), manifest.RelativeArtifactPath);
-                                await frameStorageService.RemoveAsync(
-                                    storageRoot,
-                                    new StoredFrameReference(
-                                        manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role),
-                                    manifest.ArtifactId,
-                                    stoppingToken).ConfigureAwait(false);
+                                var renewal = RenewLeaseAsync(
+                                    storageRoot, lease, leaseDuration, uploadCancellation, stoppingToken);
+                                ArtifactUploadResult result;
+                                try
+                                {
+                                    var started = timeProvider.GetTimestamp();
+                                    using var uploadActivity = ArtifactOutboxTelemetry.ActivitySource.StartActivity("artifact.upload");
+                                    result = await uploadClient.UploadAsync(
+                                        storageRoot, lease.Record, uploadCancellation.Token).ConfigureAwait(false);
+                                    telemetry.RecordUpload(
+                                        result,
+                                        lease.Record.PayloadLength ?? 0,
+                                        timeProvider.GetElapsedTime(started));
+                                }
+                                finally
+                                {
+                                    await uploadCancellation.CancelAsync().ConfigureAwait(false);
+                                    await renewal.ConfigureAwait(false);
+                                }
+
+                                if (result.Disposition == ArtifactUploadDisposition.Acknowledged)
+                                {
+                                    var settlementStarted = timeProvider.GetTimestamp();
+                                    using var acknowledgementActivity = ArtifactOutboxTelemetry.ActivitySource.StartActivity("outbox.ack");
+                                    await AcknowledgeAsync(storageRoot, lease, result, stoppingToken).ConfigureAwait(false);
+                                    telemetry.RecordSettlement(result.Disposition, timeProvider.GetElapsedTime(settlementStarted));
+                                    WorkAcknowledged(logger, lease.Record.ManifestKind.ToString(), null);
+                                }
+                                else if (result.Disposition == ArtifactUploadDisposition.Retry)
+                                {
+                                    var configuredMaximum = TimeSpan.FromSeconds(hostOptions.Value.UploadRetryMaximumDelaySeconds);
+                                    var delay = result.RetryAfter is { } retryAfter
+                                        ? TimeSpan.FromTicks(Math.Min(retryAfter.Ticks, configuredMaximum.Ticks))
+                                        : CalculateRetryDelay(
+                                            lease.Record.AttemptCount,
+                                            TimeSpan.FromSeconds(hostOptions.Value.UploadRetryInitialDelaySeconds),
+                                            configuredMaximum);
+                                    var settlementStarted = timeProvider.GetTimestamp();
+                                    using (ArtifactOutboxTelemetry.ActivitySource.StartActivity("outbox.retry"))
+                                    {
+                                        await outbox.RetryAsync(
+                                            storageRoot,
+                                            lease,
+                                            timeProvider.GetUtcNow() + delay,
+                                            result.Reason,
+                                            stoppingToken).ConfigureAwait(false);
+                                    }
+                                    telemetry.RecordSettlement(result.Disposition, timeProvider.GetElapsedTime(settlementStarted));
+                                    RetryScheduled(logger, lease.Record.AttemptCount, result.Reason, (long)delay.TotalMilliseconds, null);
+                                }
+                                else
+                                {
+                                    var settlementStarted = timeProvider.GetTimestamp();
+                                    using (ArtifactOutboxTelemetry.ActivitySource.StartActivity("outbox.quarantine"))
+                                    {
+                                        await outbox.QuarantineAsync(
+                                            storageRoot, lease, result.Reason, stoppingToken).ConfigureAwait(false);
+                                    }
+                                    telemetry.RecordSettlement(result.Disposition, timeProvider.GetElapsedTime(settlementStarted));
+                                    WorkQuarantined(logger, lease.Record.AttemptCount, result.Reason, null);
+                                }
+                            }
+                            finally
+                            {
+                                uploadCancellation.Dispose();
+                                uploadCancellation = null;
                             }
                         }
-                        finally
+                        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
                         {
-                            lifecycleGate.Release();
+                            await outbox.QuarantineAsync(
+                                storageRoot, lease, "payload-unreadable", stoppingToken).ConfigureAwait(false);
+                            PayloadQuarantined(logger, exception);
                         }
                     }
-                    else
-                    {
-                        var attempt = _retries.TryGetValue(retryKey, out var retry) ? retry.Attempt + 1 : 1;
-                        var delay = CalculateRetryDelay(
-                            attempt,
-                            TimeSpan.FromSeconds(hostOptions.Value.UploadRetryInitialDelaySeconds),
-                            TimeSpan.FromSeconds(hostOptions.Value.UploadRetryMaximumDelaySeconds));
-                        _retries[retryKey] = new RetryState(
-                            Path.GetFullPath(storageRoot), manifest.IdempotencyKey, attempt, timeProvider.GetUtcNow() + delay);
-                    }
+                    state.Update(
+                        storageRoot,
+                        await outbox.GetSnapshotAsync(storageRoot, stoppingToken).ConfigureAwait(false));
+                }
+                catch (ArtifactOutboxLeaseLostException exception)
+                {
+                    LeaseLost(logger, exception);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException
+                    or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException)
+                {
+                    state.ReportUnavailable(storageRoot, exception.GetType().Name);
+                    RootDrainFailed(logger, exception);
                 }
             }
 
             await Task.Delay(TimeSpan.FromSeconds(hostOptions.Value.UploadPollIntervalSeconds), timeProvider, stoppingToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task RenewLeaseAsync(
+        string storageRoot,
+        ArtifactOutboxLease lease,
+        TimeSpan leaseDuration,
+        CancellationTokenSource uploadCancellation,
+        CancellationToken stoppingToken)
+    {
+        try
+        {
+            var interval = TimeSpan.FromSeconds(hostOptions.Value.CaptureDistribution.LeaseRenewalSeconds);
+            while (!uploadCancellation.IsCancellationRequested)
+            {
+                await Task.Delay(interval, timeProvider, uploadCancellation.Token).ConfigureAwait(false);
+                await outbox.RenewAsync(storageRoot, lease, leaseDuration, uploadCancellation.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (uploadCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception) when (exception is ArtifactOutboxLeaseLostException or IOException)
+        {
+            LeaseRenewalFailed(logger, exception);
+            await uploadCancellation.CancelAsync().ConfigureAwait(false);
+            stoppingToken.ThrowIfCancellationRequested();
+            throw;
+        }
+    }
+
+    private async Task AcknowledgeAsync(
+        string storageRoot,
+        ArtifactOutboxLease lease,
+        ArtifactUploadResult result,
+        CancellationToken cancellationToken)
+    {
+        var acknowledgement = result.Acknowledgement
+            ?? throw new InvalidDataException("Successful upload result omitted acknowledgement evidence.");
+        var manifest = ArtifactUploadClient.CreateCompatibilityManifest(lease.Record);
+        var lifecycleGate = StorageLifecycleLock.ForRoot(storageRoot);
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await outbox.AcknowledgeAsync(storageRoot, lease, acknowledgement, cancellationToken).ConfigureAwait(false);
+            if (ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot, manifest))
+            {
+                var path = Path.Combine(Path.GetFullPath(storageRoot), manifest.RelativeArtifactPath);
+                await frameStorageService.RemoveAsync(
+                    storageRoot,
+                    new StoredFrameReference(
+                        manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role),
+                    manifest.ArtifactId,
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            lifecycleGate.Release();
         }
     }
 
@@ -111,7 +280,16 @@ public sealed class ArtifactOutboxDrainService(
         {
             if (step.Type.Contains(nameof(NoOpFileStorageProcessingStep), StringComparison.OrdinalIgnoreCase) && step.Options is { } options)
             {
-                var parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(options.GetRawText(), SerializerOptions);
+                NoOpFileStorageProcessingStepOptions? parsed;
+                try
+                {
+                    parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(
+                        options.GetRawText(), SerializerOptions);
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    continue;
+                }
                 if (parsed is not null && IsUploadEnabled(parsed) && !string.IsNullOrWhiteSpace(parsed.StorageRoot))
                 {
                     return parsed.StorageRoot;
@@ -122,10 +300,12 @@ public sealed class ArtifactOutboxDrainService(
         return null;
     }
 
-    internal static IReadOnlyList<string> ResolveStorageRoots(
+    public static IReadOnlyList<string> ResolveStorageRoots(
         HVO.SkyMonitor.AgentCore.CameraModuleConfig config,
         CameraAgentHostOptions options)
     {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(options);
         var roots = new List<string>();
         if (options.CaptureDistribution.UploadEnabled)
         {
@@ -137,7 +317,16 @@ public sealed class ArtifactOutboxDrainService(
             {
                 continue;
             }
-            var parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(stepOptions.GetRawText(), SerializerOptions);
+            NoOpFileStorageProcessingStepOptions? parsed;
+            try
+            {
+                parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(
+                    stepOptions.GetRawText(), SerializerOptions);
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                continue;
+            }
             if (parsed is not null && IsUploadEnabled(parsed) && !string.IsNullOrWhiteSpace(parsed.StorageRoot))
             {
                 var root = Path.GetFullPath(parsed.StorageRoot);
@@ -153,18 +342,10 @@ public sealed class ArtifactOutboxDrainService(
     private static bool IsUploadEnabled(NoOpFileStorageProcessingStepOptions options)
         => options.QueueForUpload || (options.Policies ?? []).Any(static policy => policy.QueueForUpload == true);
 
-    private static string RetryKey(string storageRoot, string idempotencyKey)
-        => string.Concat(Path.GetFullPath(storageRoot), "\n", idempotencyKey);
-
     private static bool PathsEqual(string left, string right)
         => string.Equals(
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
-    private sealed record RetryState(
-        string StorageRoot,
-        string IdempotencyKey,
-        int Attempt,
-        DateTimeOffset NextAttemptUtc);
 }

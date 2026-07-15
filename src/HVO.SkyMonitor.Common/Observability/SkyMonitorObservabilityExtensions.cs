@@ -44,6 +44,10 @@ public static class SkyMonitorObservabilityExtensions
     {
         "Availability", "PendingCount", "RetryCount", "TerminalCount", "OldestPendingAgeSeconds", "Reason"
     };
+    private static readonly HashSet<string> ArtifactOutboxHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Availability", "PendingCount", "PendingBytes", "LeasedCount", "RetryCount", "QuarantineCount", "OldestAgeSeconds"
+    };
 
     /// <summary>
     /// Configures the shared HVO telemetry stack and OTLP export.
@@ -66,10 +70,12 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Outbox");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureControl");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Outbox");
             options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
         });
 
@@ -84,6 +90,7 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.CameraAgent.RawIngress")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.CaptureLanes")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.ProcessingGraph")
+                    .AddMeter("HVO.SkyMonitor.CameraAgent.Outbox")
                     .AddOtlpExporter());
         }
 
@@ -154,6 +161,7 @@ public static class SkyMonitorObservabilityExtensions
             "raw-ingress" => RawIngressHealthDataKeys,
             "capture-lanes" => CaptureLaneHealthDataKeys,
             "capture-processing" => CaptureProcessingHealthDataKeys,
+            "artifact-outbox" => ArtifactOutboxHealthDataKeys,
             _ => null
         };
         return allowedKeys is null

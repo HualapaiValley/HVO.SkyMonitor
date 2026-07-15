@@ -168,7 +168,7 @@
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
                 "retentionDays": 7,
                 "updateLatestFrame": true,
-                "queueForUpload": true
+                "queueForUpload": false
             }
         },
         {

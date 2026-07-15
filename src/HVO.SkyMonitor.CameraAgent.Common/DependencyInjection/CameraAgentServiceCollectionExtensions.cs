@@ -74,7 +74,9 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<CaptureProcessingPersistence>());
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         services.AddSingleton<CameraAgentRecipeExecutionAdapter>();
-        services.AddSingleton<IArtifactOutbox, FileSystemArtifactOutbox>();
+        services.AddSingleton<ArtifactOutboxState>();
+        services.AddSingleton<ArtifactOutboxTelemetry>();
+        services.AddSingleton<IArtifactOutbox, SqliteArtifactOutbox>();
         services.AddSingleton<StandardCaptureLaneHandler>();
         services.AddSingleton<UploadCaptureLaneHandler>();
         services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<StandardCaptureLaneHandler>());

@@ -8,6 +8,9 @@ using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using HVO.SkyMonitor.LogicHost.Data;
+using Microsoft.Extensions.Hosting;
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 
@@ -72,13 +75,27 @@ public sealed class VirtualSkyPipelineTests
             .ToHashSet(StringComparer.Ordinal);
         CollectionAssert.IsSubsetOf(ExpectedPreviewVariants, previewVariants.ToArray());
 
-        var pending = new FileSystemArtifactOutbox().List(Fixture.StorageRoot, 1000);
-        CollectionAssert.IsSubsetOf(
-            ExpectedArtifactRoles, pending.Select(item => item.Role).Distinct().ToArray());
+        var pending = services.GetRequiredService<IArtifactOutbox>().List(Fixture.StorageRoot, 1000);
+        Assert.IsNotEmpty(pending);
+        Assert.IsTrue(pending.All(item => item.Role == FrameArtifactRole.Raw));
         Assert.IsTrue(pending.All(item => item.AgentId == "cameraagent-integration-test"));
         Assert.IsTrue(pending.All(item => File.Exists(Path.Combine(Fixture.StorageRoot, item.RelativeArtifactPath))));
         Assert.IsTrue(pending.Any(item => item.Scene is not null));
         Assert.IsTrue(pending.Where(item => item.Role == FrameArtifactRole.Raw).All(item => item.FrameId != item.ArtifactId));
+        using (var outbox = new SqliteConnection(
+            $"Data Source={Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db")}"))
+        {
+            await outbox.OpenAsync().ConfigureAwait(false);
+            using var outboxCommand = outbox.CreateCommand();
+            outboxCommand.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE manifest_kind = 'v2' AND status = 'pending';";
+            Assert.IsGreaterThanOrEqualTo(pending.Count, Convert.ToInt32(
+                await outboxCommand.ExecuteScalarAsync().ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture));
+            outboxCommand.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE status = 'pending' AND manifest_kind != 'v2';";
+            Assert.AreEqual(0, Convert.ToInt32(
+                await outboxCommand.ExecuteScalarAsync().ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture));
+        }
 
         await WaitUntilAsync(HasNoUnfinishedLaneWork, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         using var journal = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
@@ -114,6 +131,37 @@ public sealed class VirtualSkyPipelineTests
             "N");
         Assert.IsFalse(pending.Any(item => item.ArtifactId == localOnlyPreviewId));
 
+        var drain = ActivatorUtilities.CreateInstance<ArtifactOutboxDrainService>(services);
+        await drain.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            try
+            {
+                await WaitUntilAsync(HasAcknowledgedOutboxRecord, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+            }
+            catch (AssertFailedException)
+            {
+                var backgroundFailure = drain.ExecuteTask?.Exception?.GetBaseException().ToString() ?? "none";
+                Assert.Fail($"Two-host outbox drain did not acknowledge: {ReadOutboxState()}; background failure: {backgroundFailure}");
+            }
+        }
+        finally
+        {
+            await drain.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            drain.Dispose();
+        }
+        using (var hostScope = Fixture.CreateHostScope())
+        {
+            var centralDb = hostScope.ServiceProvider.GetRequiredService<HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext>();
+            var connection = centralDb.Database.GetDbConnection();
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM CentralArtifacts;";
+            Assert.IsGreaterThan(0, Convert.ToInt32(
+                await command.ExecuteScalarAsync().ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture));
+        }
+
         using var client = Fixture.CreateCameraAgentClient();
         using var response = await client.GetAsync(new Uri("/api/v1.0/frames/latest", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
@@ -145,5 +193,29 @@ public sealed class VirtualSkyPipelineTests
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM capture_lane_work WHERE state <> 'completed';";
         return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 0;
+    }
+
+    private static bool HasAcknowledgedOutboxRecord()
+    {
+        var path = Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db");
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM artifact_outbox_records WHERE status = 'acknowledged');";
+        return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 1;
+    }
+
+    private static string ReadOutboxState()
+    {
+        var path = Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db");
+        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT status || ':' || COALESCE(last_reason, '') FROM artifact_outbox_records ORDER BY record_id LIMIT 1;";
+        return Convert.ToString(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) ?? "no-record";
     }
 }

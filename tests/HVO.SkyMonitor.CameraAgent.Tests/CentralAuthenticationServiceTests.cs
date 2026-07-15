@@ -158,6 +158,43 @@ public class CentralAuthenticationServiceTests
         // Assert
         Assert.AreEqual("test-api-key-12345", apiKey);
     }
+
+    [TestMethod]
+    public async Task GetAccessTokenAsync_PreservesPermanentTokenEndpointStatus()
+    {
+        var identityOptions = new CentralIdentityOptions
+        {
+            ServiceUrl = new Uri("https://localhost:5001", UriKind.Absolute),
+            Mode = AuthenticationMode.ClientCredentials,
+            ClientCredentials = new ClientCredentialsOptions
+            {
+                ClientId = "invalid-client",
+                ClientSecret = "invalid-secret"
+            }
+        };
+        using var httpClient = new HttpClient(new StatusHandler(HttpStatusCode.BadRequest));
+        var factory = new Mock<IHttpClientFactory>();
+        factory.Setup(item => item.CreateClient(It.IsAny<string>())).Returns(httpClient);
+        var service = new CentralAuthenticationService(
+            Options.Create(identityOptions),
+            factory.Object,
+            Mock.Of<ILogger<CentralAuthenticationService>>(),
+            TimeProvider.System);
+
+        var exception = await Assert.ThrowsExactlyAsync<HttpRequestException>(
+            () => service.GetAccessTokenAsync()).ConfigureAwait(false);
+
+        Assert.AreEqual(HttpStatusCode.BadRequest, exception.StatusCode);
+    }
+
+    private sealed class StatusHandler(HttpStatusCode statusCode) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(statusCode));
+    }
+
     private static HttpResponseMessage CreateJsonResponse(object payload)
     {
         return new HttpResponseMessage

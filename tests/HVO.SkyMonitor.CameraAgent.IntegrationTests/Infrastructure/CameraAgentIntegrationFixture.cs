@@ -42,6 +42,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     public async Task InitializeAsync()
     {
         await _hostFixture.InitializeAsync().ConfigureAwait(false);
+        await _hostFixture.SeedActiveDeviceAsync("cameraagent-integration-test").ConfigureAwait(false);
 
         _storageRoot = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-integration-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_storageRoot);
@@ -145,6 +146,12 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     {
         EnsureInitialized();
         return _agentFactory!.Services.CreateScope();
+    }
+
+    public IServiceScope CreateHostScope()
+    {
+        EnsureInitialized();
+        return _hostFixture.Factory.Services.CreateScope();
     }
 
     /// <summary>
