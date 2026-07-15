@@ -133,6 +133,21 @@ public sealed class DeviceRigProfileServiceTests
         profile.ProfileSha256.Should().Be(CameraRigProfileIdentity.ComputeSha256(rig));
     }
 
+    [TestMethod]
+    public void CameraRigProfileIdentity_UsesCaptureContractEnumSerialization()
+    {
+        var rig = new CameraRigConfig(
+            new SensorProfile("sensor", 2, 2, 4.8, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+            new OpticsProfile("EquidistantFisheye", 1.5, 180, 0),
+            new RigOrientation(90, 0, 0),
+            new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 2),
+            ProfileVersion: "rig-v7");
+        var contractJson = JsonSerializer.SerializeToElement(rig, RigSerializerOptions);
+
+        CameraRigProfileIdentity.ComputeSha256(rig).Should().Be(
+            CaptureContractJson.ComputeCanonicalJsonSha256(contractJson));
+    }
+
     private static async Task<DeviceRegistration> SeedRegistrationAsync(ApplicationDbContext context, bool bootstrapped)
     {
         var registration = new DeviceRegistration

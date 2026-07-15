@@ -160,5 +160,6 @@ internal sealed class CentralDerivativeJobScheduler(
 
     private static bool IsUsable(CentralArtifact artifact)
         => artifact.ObjectState == CentralArtifactObjectState.Available
-            && artifact.ReconstructionState == CentralReconstructionState.Complete;
+            && artifact.ReconstructionState is CentralReconstructionState.Complete
+                or CentralReconstructionState.LegacyIncomplete;
 }

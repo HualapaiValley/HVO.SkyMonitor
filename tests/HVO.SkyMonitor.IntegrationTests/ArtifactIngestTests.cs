@@ -80,7 +80,7 @@ public sealed class ArtifactIngestTests
         jobs.Should().HaveCount(2);
         jobs.Should().OnlyHaveUniqueItems(job => new { job.TargetRole, job.TargetRecipeVersion });
         jobs.Should().OnlyContain(job => job.Status == CentralDerivativeJobStatus.Pending
-            && job.AvailableAtUtc == null);
+            && job.AvailableAtUtc != null);
     }
 
     [TestMethod]
@@ -1466,11 +1466,12 @@ public sealed class ArtifactIngestTests
             .ToListAsync().ConfigureAwait(false);
         jobs.Should().HaveCount(2);
         var previewJob = jobs.Single(job => job.TargetRole == FrameArtifactRole.Preview);
-        previewJob.Status.Should().Be(CentralDerivativeJobStatus.Pending);
+        previewJob.Status.Should().Be(CentralDerivativeJobStatus.Completed);
         previewJob.AvailableAtUtc.Should().BeNull();
-        previewJob.ResultArtifact.Should().BeNull();
-        jobs.Single(job => job.TargetRole == FrameArtifactRole.AnnotatedPreview).Status
-            .Should().Be(CentralDerivativeJobStatus.Pending);
+        previewJob.ResultArtifact!.ArtifactId.Should().Be(preview.ArtifactId);
+        var annotatedJob = jobs.Single(job => job.TargetRole == FrameArtifactRole.AnnotatedPreview);
+        annotatedJob.Status.Should().Be(CentralDerivativeJobStatus.Pending);
+        annotatedJob.AvailableAtUtc.Should().NotBeNull();
     }
 
     [TestMethod]
@@ -1502,9 +1503,9 @@ public sealed class ArtifactIngestTests
         var job = await db.CentralDerivativeJobs.Include(item => item.ResultArtifact).SingleAsync(item =>
             item.SourceArtifact!.Frame!.RegistrationId == registrationId
             && item.TargetRole == FrameArtifactRole.Preview).ConfigureAwait(false);
-        job.Status.Should().Be(CentralDerivativeJobStatus.Pending);
+        job.Status.Should().Be(CentralDerivativeJobStatus.Completed);
         job.AvailableAtUtc.Should().BeNull();
-        job.ResultArtifact.Should().BeNull();
+        job.ResultArtifact!.ArtifactId.Should().Be(preview.ArtifactId);
     }
 
     private static async Task<HttpResponseMessage> PostAsync(

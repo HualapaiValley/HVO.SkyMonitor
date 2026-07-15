@@ -141,7 +141,7 @@ internal sealed class CentralArtifactReconciliationService(
             catch (Exception exception) when (exception is MinioException or HttpRequestException or IOException)
             {
                 failed++;
-                logger.LogWarning("Failed to remove a stale MinIO staging object");
+                logger.LogWarning(exception, "Failed to remove a stale MinIO staging object");
             }
         }
         telemetry.RecordStagingCleanup("scanned", scanned);
