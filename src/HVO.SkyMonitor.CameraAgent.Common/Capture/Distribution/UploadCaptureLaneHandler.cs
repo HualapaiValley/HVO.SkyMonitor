@@ -20,22 +20,9 @@ internal sealed class UploadCaptureLaneHandler(
     {
         try
         {
-            var descriptor = context.RawCapture.Manifest.Descriptor;
             await _outbox.EnqueueAsync(
                 _root,
-                new ArtifactUploadManifest(
-                    ArtifactUploadManifest.CurrentSchemaVersion,
-                    descriptor.Capture.AgentId,
-                    descriptor.Artifact.ArtifactId,
-                    descriptor.Capture.CaptureId,
-                    FrameArtifactRole.Raw,
-                    descriptor.Artifact.MediaType,
-                    descriptor.Layout.ByteLength,
-                    descriptor.Artifact.ChecksumSha256,
-                    descriptor.Timing.ExposureStartedUtc,
-                    "raw-v1",
-                    context.RawCapture.StoredFrame.RelativePath,
-                    context.RawCapture.Manifest.Scene),
+                context.RawCapture.Manifest,
                 cancellationToken).ConfigureAwait(false);
             return CaptureLaneHandlerResult.Success;
         }
@@ -50,6 +37,10 @@ internal sealed class UploadCaptureLaneHandler(
         catch (Exception exception) when (exception is ArgumentException or InvalidDataException)
         {
             return CaptureLaneHandlerResult.Terminal("outbox-invalid");
+        }
+        catch (ArtifactOutboxConflictException)
+        {
+            return CaptureLaneHandlerResult.Terminal("outbox-conflict");
         }
     }
 }

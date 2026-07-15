@@ -546,6 +546,16 @@ public sealed partial class Program
                     .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
                     .Contains("api.admin", StringComparer.Ordinal));
             });
+            options.AddPolicy("ArtifactIngest", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                    string.Equals(context.User.FindFirst("account_type")?.Value, "System", StringComparison.Ordinal)
+                    && context.User.Claims
+                        .Where(claim => claim.Type == "scope")
+                        .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                        .Contains("api.frames", StringComparer.Ordinal));
+            });
         });
 
         // Application services

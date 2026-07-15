@@ -8,14 +8,14 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 
 [ApiController]
 [Route("api/v1.0/artifacts")]
-[Authorize(AuthenticationSchemes = "Bearer")]
+[Authorize(AuthenticationSchemes = "Bearer", Policy = "ArtifactIngest")]
 internal sealed class ArtifactIngestController(IArtifactIngestService ingestService) : ControllerBase
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
     [HttpPost]
     [RequestSizeLimit(100 * 1024 * 1024)]
-    public async Task<ActionResult<DeviceUploadController.DeviceUploadResponse>> IngestAsync(IFormFile payload, [FromForm] string manifest, CancellationToken cancellationToken)
+    public async Task<ActionResult<ArtifactUploadAcknowledgement>> IngestAsync(IFormFile payload, [FromForm] string manifest, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(payload);
         ArtifactUploadManifest? parsedManifest;
@@ -51,7 +51,14 @@ internal sealed class ArtifactIngestController(IArtifactIngestService ingestServ
         try
         {
             var result = await ingestService.IngestAsync(parsedManifest, stream, cancellationToken).ConfigureAwait(false);
-            return Accepted(new DeviceUploadController.DeviceUploadResponse(result.RegistrationId, result.ObservatoryId, result.StorageReference, result.AcceptedAtUtc));
+            return Accepted(new ArtifactUploadAcknowledgement(
+                ArtifactUploadAcknowledgement.CurrentSchemaVersion,
+                parsedManifest.IdempotencyKey,
+                parsedManifest.ArtifactId,
+                parsedManifest.ChecksumSha256.ToUpperInvariant(),
+                parsedManifest.ByteLength,
+                result.AcceptedAtUtc,
+                parsedManifest.SchemaVersion));
         }
         catch (ArtifactIntegrityException exception)
         {
@@ -60,6 +67,14 @@ internal sealed class ArtifactIngestController(IArtifactIngestService ingestServ
         catch (ArtifactIngestConflictException exception)
         {
             return Conflict(new ProblemDetails { Title = "Artifact idempotency conflict", Detail = exception.Message });
+        }
+        catch (DeviceRegistrationException exception)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
+            {
+                Title = "Agent is not registered for artifact ingestion",
+                Detail = exception.Message
+            });
         }
     }
 }

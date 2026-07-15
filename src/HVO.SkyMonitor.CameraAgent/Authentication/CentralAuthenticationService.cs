@@ -141,7 +141,9 @@ public sealed class CentralAuthenticationService(
         {
             logger.LogError("Token acquisition failed with status {StatusCode}", response.StatusCode);
             throw new HttpRequestException(
-                $"Failed to acquire access token. Status: {response.StatusCode}");
+                $"Failed to acquire access token. Status: {response.StatusCode}",
+                inner: null,
+                response.StatusCode);
         }
 
         var tokenResponse = await response.Content.ReadFromJsonAsync<TokenResponse>(cancellationToken)

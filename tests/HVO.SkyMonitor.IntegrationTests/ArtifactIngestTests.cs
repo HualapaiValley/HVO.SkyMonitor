@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
@@ -18,6 +19,22 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class ArtifactIngestTests
 {
     [TestMethod]
+    public async Task MultipartIngest_WithoutBearerToken_IsUnauthorized()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, _) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        using var client = fixture.Factory.CreateClient();
+        var manifest = new ArtifactUploadManifest(
+            "v1", deviceId, Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw,
+            "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch,
+            "raw-v1", "frames/raw.bin");
+
+        using var response = await PostAsync(client, manifest).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [TestMethod]
     public async Task MultipartIngest_IsIdempotentForManifestKey()
     {
         var fixture = AssemblyHooks.Fixture;
@@ -35,6 +52,16 @@ public sealed class ArtifactIngestTests
 
         first.StatusCode.Should().Be(HttpStatusCode.Accepted);
         second.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var firstAcknowledgement = await first.Content.ReadFromJsonAsync<ArtifactUploadAcknowledgement>().ConfigureAwait(false);
+        var duplicateAcknowledgement = await second.Content.ReadFromJsonAsync<ArtifactUploadAcknowledgement>().ConfigureAwait(false);
+        firstAcknowledgement.Should().NotBeNull();
+        duplicateAcknowledgement.Should().BeEquivalentTo(firstAcknowledgement);
+        firstAcknowledgement!.SchemaVersion.Should().Be(ArtifactUploadAcknowledgement.CurrentSchemaVersion);
+        firstAcknowledgement.IdempotencyKey.Should().Be(manifest.IdempotencyKey);
+        firstAcknowledgement.ArtifactId.Should().Be(manifest.ArtifactId);
+        firstAcknowledgement.ChecksumSha256.Should().Be(manifest.ChecksumSha256);
+        firstAcknowledgement.ByteLength.Should().Be(manifest.ByteLength);
+        firstAcknowledgement.AcceptedManifestSchemaVersion.Should().Be(ArtifactUploadManifest.CurrentSchemaVersion);
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var frame = await db.CentralFrames.Include(item => item.Artifacts).SingleAsync(

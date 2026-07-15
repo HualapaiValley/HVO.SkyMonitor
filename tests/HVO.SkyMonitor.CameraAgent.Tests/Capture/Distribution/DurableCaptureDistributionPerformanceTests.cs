@@ -641,7 +641,8 @@ public sealed class DurableCaptureDistributionPerformanceTests
             new EmptyPipelineFactory(),
             new EvidenceLogger<StandardCaptureLaneHandler>(runtimeSignals),
             fixture.Ingress);
-        var upload = new UploadCaptureLaneHandler(new FileSystemArtifactOutbox(), fixture.Options);
+        using var outbox = new SqliteArtifactOutbox();
+        var upload = new UploadCaptureLaneHandler(outbox, fixture.Options);
         var secondary = new GatedSecondaryLaneHandler(blocked);
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(configuration),
@@ -783,7 +784,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
             var payloadBytesOnDisk = payloadFiles.Sum(static path => new FileInfo(path).Length);
             Assert.HasCount(W3PayloadCount, payloadFiles);
             Assert.AreEqual(W3PayloadBytes, payloadBytesOnDisk);
-            Assert.AreEqual(W3PayloadCount, new FileSystemArtifactOutbox().List(root, W3PayloadCount).Count);
+            Assert.AreEqual(W3PayloadCount, outbox.List(root, W3PayloadCount).Count);
             var firstHalfRssMedian = Median(rssSamples.Take(rssSamples.Count / 2));
             var finalHalfRssMedian = Median(rssSamples.Skip(rssSamples.Count / 2));
             Assert.IsLessThanOrEqualTo(firstHalfRssMedian + 64L * 1024 * 1024, finalHalfRssMedian);
