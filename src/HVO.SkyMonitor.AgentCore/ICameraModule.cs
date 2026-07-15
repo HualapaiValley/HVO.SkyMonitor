@@ -17,3 +17,12 @@ public interface ICameraModule : IAsyncDisposable
 
     Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken);
 }
+
+/// <summary>Applies host-selected controls before the next acquisition begins.</summary>
+public interface ICameraSetpointController
+{
+    /// <summary>Applies a complete setpoint and returns the module-observed UTC application time.</summary>
+    ValueTask<DateTimeOffset> ApplySetpointAsync(
+        CaptureSetpoint setpoint,
+        CancellationToken cancellationToken);
+}

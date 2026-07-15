@@ -29,13 +29,21 @@ public sealed record CaptureIdentityDescriptor(
     [property: JsonRequired] long CaptureSequence,
     [property: JsonRequired] Guid CaptureId);
 
-/// <summary>UTC capture boundaries. Durable ingress is the time bytes became locally recoverable.</summary>
+/// <summary>
+/// UTC capture boundaries. Durable ingress is raw-payload atomic publication; the CameraAgent journal separately
+/// records completion of the full sidecar and SQLite handoff.
+/// </summary>
 public sealed record CaptureTimingDescriptor(
     [property: JsonRequired] DateTimeOffset RequestedStartUtc,
     [property: JsonRequired] DateTimeOffset ExposureStartedUtc,
     [property: JsonRequired] DateTimeOffset ExposureEndedUtc,
     [property: JsonRequired] DateTimeOffset ReadoutCompletedUtc,
-    [property: JsonRequired] DateTimeOffset DurableIngressUtc);
+    [property: JsonRequired] DateTimeOffset DurableIngressUtc)
+{
+    /// <summary>Gets when the module applied the active setpoint, when reported.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? SetpointAppliedUtc { get; init; }
+}
 
 /// <summary>Requested and effective camera controls at capture time.</summary>
 public sealed record CaptureControlDescriptor(
@@ -119,6 +127,10 @@ public sealed record ReconstructionDescriptor(
     [property: JsonRequired] FrameLayoutDescriptor Layout,
     [property: JsonRequired] ArtifactDescriptor Artifact)
 {
+    /// <summary>Gets optional acquisition-critical evidence retained for this capture cycle.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CaptureCycleEvidence? CycleEvidence { get; init; }
+
     public CaptureContractValidationResult Validate()
         => ReconstructionDescriptorValidator.Validate(this);
 }
@@ -147,7 +159,9 @@ internal static class ReconstructionDescriptorValidator
         if (descriptor.Timing is null || !IsUtc(descriptor.Timing.RequestedStartUtc) || !IsUtc(descriptor.Timing.ExposureStartedUtc) ||
             !IsUtc(descriptor.Timing.ExposureEndedUtc) || !IsUtc(descriptor.Timing.ReadoutCompletedUtc) ||
             !IsUtc(descriptor.Timing.DurableIngressUtc) ||
-            descriptor.Timing.RequestedStartUtc > descriptor.Timing.ExposureStartedUtc ||
+            descriptor.Timing.SetpointAppliedUtc.HasValue &&
+            (!IsUtc(descriptor.Timing.SetpointAppliedUtc.Value) ||
+             descriptor.Timing.SetpointAppliedUtc.Value > descriptor.Timing.ExposureStartedUtc) ||
             descriptor.Timing.ExposureStartedUtc > descriptor.Timing.ExposureEndedUtc ||
             descriptor.Timing.ExposureEndedUtc > descriptor.Timing.ReadoutCompletedUtc ||
             descriptor.Timing.ReadoutCompletedUtc > descriptor.Timing.DurableIngressUtc)
@@ -162,6 +176,12 @@ internal static class ReconstructionDescriptorValidator
             return Failure(CaptureContractReasonCodes.InvalidControls, "descriptor.controls");
         }
 
+        var cycleEvidenceResult = ValidateCycleEvidence(descriptor.CycleEvidence, descriptor.Timing, descriptor.Controls);
+        if (!cycleEvidenceResult.IsValid)
+        {
+            return cycleEvidenceResult;
+        }
+
         var profileResult = ValidateProfiles(descriptor.Profiles);
         if (!profileResult.IsValid)
         {
@@ -174,6 +194,224 @@ internal static class ReconstructionDescriptorValidator
         }
         return ValidateArtifact(descriptor.Artifact);
     }
+
+    private static CaptureContractValidationResult ValidateCycleEvidence(
+        CaptureCycleEvidence? evidence,
+        CaptureTimingDescriptor timing,
+        CaptureControlDescriptor controls)
+    {
+        if (evidence is null)
+        {
+            return CaptureContractValidationResult.Success;
+        }
+        if (!Enum.IsDefined(evidence.CadenceMode) || !Enum.IsDefined(evidence.StartReason) ||
+            !IsCompatibleStartReason(evidence.CadenceMode, evidence.StartReason))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidCadence, "descriptor.cycleEvidence.startReason");
+        }
+        if (!Enum.IsDefined(evidence.ExposureControl) || !Enum.IsDefined(evidence.GainControl) ||
+            evidence.ExposureControl == AutomaticControlOwnership.Unspecified ||
+            evidence.GainControl == AutomaticControlOwnership.Unspecified)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidControls, "descriptor.cycleEvidence");
+        }
+        if (evidence.SolarRegime.HasValue && !Enum.IsDefined(evidence.SolarRegime.Value))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidMetering, "descriptor.cycleEvidence.solarRegime");
+        }
+        if (evidence.MonotonicStartJitter < TimeSpan.Zero ||
+            evidence.ObservedInterExposureGap.HasValue &&
+            evidence.ObservedInterExposureGap.Value < TimeSpan.Zero)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.cycleEvidence.observedInterExposureGap");
+        }
+
+        var decision = evidence.Decision;
+        if (decision is null || !Enum.IsDefined(decision.Reason))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidControls, "descriptor.cycleEvidence.decision");
+        }
+        if (!IsUtc(evidence.ModuleCallStartedUtc) || !IsUtc(evidence.IngressHandoffStartedUtc) ||
+            !IsUtc(decision.StartedUtc) || !IsUtc(decision.CompletedUtc) ||
+            decision.SetpointAppliedUtc.HasValue && !IsUtc(decision.SetpointAppliedUtc.Value) ||
+            evidence.ModuleCallStartedUtc > decision.StartedUtc ||
+            timing.ReadoutCompletedUtc > decision.StartedUtc ||
+            decision.StartedUtc > decision.CompletedUtc ||
+            decision.CompletedUtc > evidence.IngressHandoffStartedUtc ||
+            evidence.IngressHandoffStartedUtc > timing.DurableIngressUtc ||
+            decision.SetpointAppliedUtc.HasValue &&
+            (decision.SetpointAppliedUtc.Value < decision.CompletedUtc ||
+             decision.SetpointAppliedUtc.Value > evidence.IngressHandoffStartedUtc))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.cycleEvidence");
+        }
+        if (decision.ActiveExposure < TimeSpan.Zero || decision.DecidedExposure < TimeSpan.Zero ||
+            !double.IsFinite(decision.ActiveGain) || decision.ActiveGain < 0 ||
+            !double.IsFinite(decision.DecidedGain) || decision.DecidedGain < 0 ||
+            !IsFinitePositive(decision.ActiveTargetFps) ||
+            !IsFinitePositive(decision.DecidedTargetFps) ||
+            decision.ActiveExposure != controls.EffectiveExposure ||
+            decision.ActiveGain != controls.EffectiveGain)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidControls, "descriptor.cycleEvidence.decision");
+        }
+
+        var meteringResult = ValidateMeteringEvidence(evidence.Metering, timing.ReadoutCompletedUtc, decision.StartedUtc);
+        if (!meteringResult.IsValid)
+        {
+            return meteringResult;
+        }
+        return ValidateControlOwnership(evidence, decision);
+    }
+
+    private static CaptureContractValidationResult ValidateMeteringEvidence(
+        CaptureMeteringEvidence? metering,
+        DateTimeOffset readoutCompletedUtc,
+        DateTimeOffset decisionStartedUtc)
+    {
+        if (metering is null)
+        {
+            return CaptureContractValidationResult.Success;
+        }
+        if (!Enum.IsDefined(metering.Outcome) || !IsUtc(metering.StartedUtc) || !IsUtc(metering.CompletedUtc) ||
+            readoutCompletedUtc > metering.StartedUtc || metering.StartedUtc > metering.CompletedUtc ||
+            metering.CompletedUtc > decisionStartedUtc)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidMetering, "descriptor.cycleEvidence.metering");
+        }
+        if (metering.ConsideredSampleCount < 0 || metering.AcceptedSampleCount < 0 ||
+            metering.SaturatedSampleCount < 0 || metering.ScannedBytes < 0 ||
+            metering.AcceptedSampleCount > metering.ConsideredSampleCount ||
+            metering.SaturatedSampleCount != metering.ConsideredSampleCount - metering.AcceptedSampleCount)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidMetering, "descriptor.cycleEvidence.metering");
+        }
+
+        var normalizedLevel = metering.NormalizedLevel;
+        var hasNormalizedLevel = normalizedLevel.HasValue && normalizedLevel.Value is >= 0 and <= 1 &&
+            double.IsFinite(normalizedLevel.Value);
+        var isConsistent = metering.Outcome switch
+        {
+            CaptureMeteringOutcome.Measured => hasNormalizedLevel &&
+                metering.ConsideredSampleCount > 0 && metering.AcceptedSampleCount > 0 &&
+                metering.ScannedBytes > 0,
+            CaptureMeteringOutcome.NoFrame or CaptureMeteringOutcome.UnsupportedFormat =>
+                metering.NormalizedLevel is null && metering.ConsideredSampleCount == 0 &&
+                metering.AcceptedSampleCount == 0 && metering.SaturatedSampleCount == 0 &&
+                metering.ScannedBytes == 0,
+            CaptureMeteringOutcome.NoEligibleSamples => metering.NormalizedLevel is null &&
+                metering.ConsideredSampleCount == 0 && metering.AcceptedSampleCount == 0 &&
+                metering.SaturatedSampleCount == 0 && metering.ScannedBytes == 0,
+            CaptureMeteringOutcome.SaturationRejected => metering.NormalizedLevel is null &&
+                metering.AcceptedSampleCount == 0 && metering.ConsideredSampleCount > 0 &&
+                metering.ConsideredSampleCount == metering.SaturatedSampleCount && metering.ScannedBytes > 0,
+            _ => false
+        };
+        return isConsistent
+            ? CaptureContractValidationResult.Success
+            : Failure(CaptureContractReasonCodes.InvalidMetering, "descriptor.cycleEvidence.metering");
+    }
+
+    private static CaptureContractValidationResult ValidateControlOwnership(
+        CaptureCycleEvidence evidence,
+        CaptureControlDecisionEvidence decision)
+    {
+        var exposureIsHostMetered = evidence.ExposureControl == AutomaticControlOwnership.HostMetered;
+        var gainIsHostMetered = evidence.GainControl == AutomaticControlOwnership.HostMetered;
+        var hasHostMeteredControl = exposureIsHostMetered || gainIsHostMetered;
+        if (hasHostMeteredControl != (evidence.Metering is not null) ||
+            hasHostMeteredControl != evidence.SolarRegime.HasValue)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidMetering, "descriptor.cycleEvidence");
+        }
+
+        var exposureChanged = decision.ActiveExposure != decision.DecidedExposure;
+        var gainChanged = decision.ActiveGain != decision.DecidedGain;
+        var targetFpsChanged = decision.ActiveTargetFps != decision.DecidedTargetFps;
+        if (!hasHostMeteredControl)
+        {
+            if (evidence.ExposureControl == AutomaticControlOwnership.Disabled &&
+                evidence.GainControl == AutomaticControlOwnership.Disabled)
+            {
+                var validDisabledDecision = decision.Reason == CaptureControlDecisionReason.Disabled &&
+                    !exposureChanged && !gainChanged;
+                var validTargetFpsFailure = decision.Reason == CaptureControlDecisionReason.SetpointApplicationFailed &&
+                    !exposureChanged && !gainChanged && targetFpsChanged && decision.SetpointAppliedUtc is null;
+                return validDisabledDecision || validTargetFpsFailure
+                    ? CaptureContractValidationResult.Success
+                    : Failure(CaptureContractReasonCodes.InvalidControls, "descriptor.cycleEvidence.decision");
+            }
+
+            var disabledExposureChanged = evidence.ExposureControl == AutomaticControlOwnership.Disabled && exposureChanged;
+            var disabledGainChanged = evidence.GainControl == AutomaticControlOwnership.Disabled && gainChanged;
+            if (decision.Reason == CaptureControlDecisionReason.SetpointApplicationFailed)
+            {
+                var cameraNativeControlChanged =
+                    evidence.ExposureControl == AutomaticControlOwnership.CameraNative && exposureChanged ||
+                    evidence.GainControl == AutomaticControlOwnership.CameraNative && gainChanged;
+                return (cameraNativeControlChanged || targetFpsChanged) &&
+                    !disabledExposureChanged && !disabledGainChanged &&
+                    decision.SetpointAppliedUtc is null
+                    ? CaptureContractValidationResult.Success
+                    : Failure(CaptureContractReasonCodes.InvalidControls, "descriptor.cycleEvidence.decision");
+            }
+            return decision.Reason == CaptureControlDecisionReason.CameraNative &&
+                !disabledExposureChanged && !disabledGainChanged
+                ? CaptureContractValidationResult.Success
+                : Failure(CaptureContractReasonCodes.InvalidControls, "descriptor.cycleEvidence.decision");
+        }
+        if (decision.Reason is CaptureControlDecisionReason.Disabled or CaptureControlDecisionReason.CameraNative)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidControls, "descriptor.cycleEvidence.decision.reason");
+        }
+
+        var decisionMatchesMetering = decision.Reason switch
+        {
+            CaptureControlDecisionReason.NoSample => evidence.Metering!.Outcome is CaptureMeteringOutcome.NoFrame or
+                CaptureMeteringOutcome.UnsupportedFormat or CaptureMeteringOutcome.NoEligibleSamples,
+            CaptureControlDecisionReason.SaturationRejected =>
+                evidence.Metering!.Outcome == CaptureMeteringOutcome.SaturationRejected,
+            CaptureControlDecisionReason.EnvelopeClamped or CaptureControlDecisionReason.SolarRegimeChanged or
+                CaptureControlDecisionReason.SetpointApplicationFailed => true,
+            _ => evidence.Metering!.Outcome == CaptureMeteringOutcome.Measured
+        };
+        var controlsMatchReason = decision.Reason switch
+        {
+            CaptureControlDecisionReason.ExposureAdjusted => exposureIsHostMetered && exposureChanged && !gainChanged,
+            CaptureControlDecisionReason.GainAdjusted => gainIsHostMetered && !exposureChanged && gainChanged,
+            CaptureControlDecisionReason.ExposureAndGainAdjusted =>
+                exposureIsHostMetered && gainIsHostMetered && exposureChanged && gainChanged,
+            CaptureControlDecisionReason.SaturationRejected =>
+                (!exposureChanged || exposureIsHostMetered && decision.DecidedExposure < decision.ActiveExposure) &&
+                (!gainChanged || gainIsHostMetered && decision.DecidedGain < decision.ActiveGain),
+            CaptureControlDecisionReason.EnvelopeClamped =>
+                (exposureChanged || gainChanged) &&
+                (!exposureChanged || exposureIsHostMetered) &&
+                (!gainChanged || gainIsHostMetered),
+            CaptureControlDecisionReason.SolarRegimeChanged =>
+                (!exposureChanged || exposureIsHostMetered) &&
+                (!gainChanged || gainIsHostMetered),
+            CaptureControlDecisionReason.SetpointApplicationFailed =>
+                (exposureChanged || gainChanged || targetFpsChanged) &&
+                (!exposureChanged || exposureIsHostMetered) &&
+                (!gainChanged || gainIsHostMetered) &&
+                decision.SetpointAppliedUtc is null,
+            _ => !exposureChanged && !gainChanged
+        };
+        return decisionMatchesMetering && controlsMatchReason
+            ? CaptureContractValidationResult.Success
+            : Failure(CaptureContractReasonCodes.InvalidControls, "descriptor.cycleEvidence.decision");
+    }
+
+    private static bool IsCompatibleStartReason(CaptureCadenceMode cadenceMode, CaptureStartReason startReason)
+        => cadenceMode switch
+        {
+            CaptureCadenceMode.MinimumStartInterval => startReason is CaptureStartReason.Initial or
+                CaptureStartReason.DeadlineReached or CaptureStartReason.DeadlineOverrun or CaptureStartReason.FailureRecovery,
+            CaptureCadenceMode.Continuous => startReason is CaptureStartReason.Initial or
+                CaptureStartReason.ContinuousReady or CaptureStartReason.FailureRecovery,
+            _ => false
+        };
 
     private static CaptureContractValidationResult ValidateProfiles(CaptureProfileSet? profiles)
     {
@@ -307,6 +545,9 @@ internal static class ReconstructionDescriptorValidator
     private static bool IsUtc(DateTimeOffset value) => value.Offset == TimeSpan.Zero;
 
     private static bool IsFinite(double? value) => !value.HasValue || double.IsFinite(value.Value);
+
+    private static bool IsFinitePositive(double? value)
+        => !value.HasValue || double.IsFinite(value.Value) && value.Value > 0;
 
     private static CaptureContractValidationResult Failure(string reasonCode, string path)
         => CaptureContractValidationResult.Failure(reasonCode, path);

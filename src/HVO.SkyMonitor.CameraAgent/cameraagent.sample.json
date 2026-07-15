@@ -49,6 +49,7 @@
         },
         "pipeline": {
             "captureInterval": "00:00:25",
+            "cadenceMode": "MinimumStartInterval",
             "dayExposure": "00:00:00.2500000",
             "nightExposure": "00:00:20",
             "dayGain": 0.0,

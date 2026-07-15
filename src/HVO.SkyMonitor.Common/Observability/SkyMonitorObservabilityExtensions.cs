@@ -62,10 +62,12 @@ public static class SkyMonitorObservabilityExtensions
             options.EnableStandardMeters = true;
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.Authentication");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Capture");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.CaptureControl");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureControl");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
             options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
@@ -78,6 +80,7 @@ public static class SkyMonitorObservabilityExtensions
                 .WithMetrics(metrics => metrics
                     .AddMeter("HVO.SkyMonitor.Authentication")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Capture")
+                    .AddMeter("HVO.SkyMonitor.CameraAgent.CaptureControl")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.RawIngress")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.CaptureLanes")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.ProcessingGraph")

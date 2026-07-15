@@ -9,6 +9,8 @@ public static class CaptureContractReasonCodes
     public const string InvalidCaptureSequence = "capture-sequence.invalid";
     public const string InvalidTimingOrder = "timing.invalid-order";
     public const string InvalidControls = "controls.invalid";
+    public const string InvalidCadence = "cadence.invalid";
+    public const string InvalidMetering = "metering.invalid";
     public const string InvalidDimensions = "layout.invalid-dimensions";
     public const string InvalidStride = "layout.invalid-stride";
     public const string UnsupportedFormat = "layout.unsupported-format";

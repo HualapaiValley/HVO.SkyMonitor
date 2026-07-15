@@ -31,6 +31,9 @@ internal static class DerivativeDescriptorFactory
                 product.SourceArtifactIds,
                 product.Recipe.Descriptor,
                 product.MediaType,
-                product.ChecksumSha256));
+                product.ChecksumSha256))
+        {
+            CycleEvidence = raw.CycleEvidence
+        };
     }
 }

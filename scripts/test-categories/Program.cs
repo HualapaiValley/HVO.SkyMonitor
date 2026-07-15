@@ -1,16 +1,17 @@
 using System.Diagnostics;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 var root = FindRepositoryRoot();
 var categories = new[] { "Unit", "Integration", "Manual", "Soak", "External", "Hardware" };
 var expected = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal)
 {
-    ["tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj"] = Counts(unit: 115),
-    ["tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj"] = Counts(unit: 81, manual: 1),
+    ["tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj"] = Counts(unit: 122),
+    ["tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj"] = Counts(unit: 87, manual: 1),
     ["tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"] = Counts(unit: 10, manual: 2),
-    ["tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"] = Counts(unit: 56),
+    ["tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"] = Counts(unit: 58),
     ["tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj"] = Counts(manual: 3),
-    ["tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"] = Counts(unit: 246, integration: 68, manual: 4, soak: 1),
+    ["tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"] = Counts(unit: 360, integration: 71, manual: 5, soak: 1),
     ["tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj"] = Counts(unit: 52, integration: 6, manual: 1),
     ["tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"] = Counts(integration: 43),
     ["tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj"] = Counts(integration: 4)
@@ -54,7 +55,7 @@ foreach (var (relativeProject, expectedCounts) in expected)
 {
     var project = Path.Combine(root, relativeProject);
     var all = await DiscoverAsync(root, project, filter: null).ConfigureAwait(false);
-    var selected = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+    var selected = new Dictionary<string, IReadOnlyDictionary<Guid, string>>(StringComparer.Ordinal);
     foreach (var category in categories)
     {
         selected[category] = await DiscoverAsync(root, project, $"TestCategory={category}").ConfigureAwait(false);
@@ -65,24 +66,27 @@ foreach (var (relativeProject, expectedCounts) in expected)
         }
     }
 
-    var union = selected.Values.SelectMany(static tests => tests).ToHashSet(StringComparer.Ordinal);
-    foreach (var missing in all.Except(union, StringComparer.Ordinal))
+    var union = selected.Values.SelectMany(static tests => tests.Keys).ToHashSet();
+    foreach (var missing in all.Keys.Except(union))
     {
-        failures.Add($"uncategorized test in {relativeProject}: {missing}");
+        failures.Add($"uncategorized test in {relativeProject}: {all[missing]} ({missing})");
     }
 
-    foreach (var unexpected in union.Except(all, StringComparer.Ordinal))
+    foreach (var unexpected in union.Except(all.Keys))
     {
-        failures.Add($"category discovery returned an unknown test in {relativeProject}: {unexpected}");
+        var fullyQualifiedName = selected.Values
+            .Select(tests => tests.GetValueOrDefault(unexpected))
+            .First(static name => name is not null);
+        failures.Add($"category discovery returned an unknown test in {relativeProject}: {fullyQualifiedName} ({unexpected})");
     }
 
     for (var left = 0; left < categories.Length; left++)
     {
         for (var right = left + 1; right < categories.Length; right++)
         {
-            foreach (var overlap in selected[categories[left]].Intersect(selected[categories[right]], StringComparer.Ordinal))
+            foreach (var overlap in selected[categories[left]].Keys.Intersect(selected[categories[right]].Keys))
             {
-                failures.Add($"multiply categorized test in {relativeProject}: {overlap} ({categories[left]}, {categories[right]})");
+                failures.Add($"multiply categorized test in {relativeProject}: {selected[categories[left]][overlap]} ({overlap}; {categories[left]}, {categories[right]})");
             }
         }
     }
@@ -119,11 +123,12 @@ static IReadOnlyDictionary<string, int> Counts(
         ["Hardware"] = hardware
     };
 
-static async Task<HashSet<string>> DiscoverAsync(string root, string project, string? filter)
+static async Task<IReadOnlyDictionary<Guid, string>> DiscoverAsync(string root, string project, string? filter)
 {
+    var diagnosticPath = Path.Combine(Path.GetTempPath(), $"hvo-test-discovery-{Guid.NewGuid():N}.diag");
     var arguments = new List<string>
     {
-        "test", project, "--no-build", "--no-restore", "--configuration", "Release", "--list-tests"
+        "test", project, "--no-build", "--no-restore", "--configuration", "Release", "--list-tests", "--diag", diagnosticPath
     };
     if (filter is not null)
     {
@@ -142,34 +147,132 @@ static async Task<HashSet<string>> DiscoverAsync(string root, string project, st
         startInfo.ArgumentList.Add(argument);
     }
 
-    using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start dotnet test discovery.");
-    var outputTask = process.StandardOutput.ReadToEndAsync();
-    var errorTask = process.StandardError.ReadToEndAsync();
-    await process.WaitForExitAsync().ConfigureAwait(false);
-    var output = await outputTask.ConfigureAwait(false);
-    var error = await errorTask.ConfigureAwait(false);
-    if (process.ExitCode != 0)
+    try
     {
-        throw new InvalidOperationException($"Test discovery failed for '{project}'.{Environment.NewLine}{output}{Environment.NewLine}{error}");
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start dotnet test discovery.");
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync().ConfigureAwait(false);
+        var output = await outputTask.ConfigureAwait(false);
+        var error = await errorTask.ConfigureAwait(false);
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Test discovery failed for '{project}'.{Environment.NewLine}{output}{Environment.NewLine}{error}");
+        }
+
+        return ParseDiscoveredTests(diagnosticPath, project);
+    }
+    finally
+    {
+        DeleteDiagnosticFiles(diagnosticPath);
+    }
+}
+
+static void DeleteDiagnosticFiles(string diagnosticPath)
+{
+    var directory = Path.GetDirectoryName(diagnosticPath)!;
+    var stem = Path.GetFileNameWithoutExtension(diagnosticPath);
+    var diagnosticFiles = Directory.EnumerateFiles(directory, $"{stem}.*.diag", SearchOption.TopDirectoryOnly)
+        .Append(diagnosticPath)
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
+    Exception? deleteFailure = null;
+    foreach (var file in diagnosticFiles)
+    {
+        try
+        {
+            File.Delete(file);
+        }
+        catch (IOException exception)
+        {
+            deleteFailure ??= exception;
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            deleteFailure ??= exception;
+        }
     }
 
-    var tests = new HashSet<string>(StringComparer.Ordinal);
-    var collecting = false;
-    foreach (var line in output.Split(Environment.NewLine))
+    if (deleteFailure is not null)
     {
-        if (line.Contains("The following Tests are available:", StringComparison.Ordinal))
+        throw new IOException($"Unable to delete test discovery diagnostics for '{diagnosticPath}'.", deleteFailure);
+    }
+}
+
+static IReadOnlyDictionary<Guid, string> ParseDiscoveredTests(string diagnosticPath, string project)
+{
+    if (!File.Exists(diagnosticPath))
+    {
+        throw new InvalidOperationException($"Test diagnostics did not yield discovery completion for '{project}': the diagnostic file was not created.");
+    }
+
+    const string receivedMessageMarker = "Received message: ";
+    var tests = new Dictionary<Guid, string>();
+    var discoveryCompleted = false;
+    foreach (var line in File.ReadLines(diagnosticPath))
+    {
+        var markerIndex = line.IndexOf(receivedMessageMarker, StringComparison.Ordinal);
+        if (markerIndex < 0)
         {
-            collecting = true;
             continue;
         }
 
-        if (collecting && line.StartsWith("    ", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(line))
+        using var message = JsonDocument.Parse(line[(markerIndex + receivedMessageMarker.Length)..]);
+        var root = message.RootElement;
+        if (!root.TryGetProperty("MessageType", out var messageType))
         {
-            tests.Add(line.Trim());
+            continue;
+        }
+
+        if (messageType.ValueEquals("TestCasesFound"))
+        {
+            AddTests(root.GetProperty("Payload"), tests, project);
+        }
+        else if (messageType.ValueEquals("TestDiscovery.Completed"))
+        {
+            discoveryCompleted = true;
+            var payload = root.GetProperty("Payload");
+            if (payload.TryGetProperty("LastDiscoveredTests", out var lastDiscoveredTests) &&
+                lastDiscoveredTests.ValueKind is not JsonValueKind.Null)
+            {
+                AddTests(lastDiscoveredTests, tests, project);
+            }
         }
     }
 
+    if (!discoveryCompleted)
+    {
+        throw new InvalidOperationException($"Test diagnostics did not yield a TestDiscovery.Completed message for '{project}'.");
+    }
+
     return tests;
+}
+
+static void AddTests(JsonElement payload, IDictionary<Guid, string> tests, string project)
+{
+    if (payload.ValueKind is not JsonValueKind.Array)
+    {
+        throw new InvalidOperationException($"Test diagnostics contained a non-array discovery payload for '{project}'.");
+    }
+
+    foreach (var test in payload.EnumerateArray())
+    {
+        if (!test.TryGetProperty("Id", out var idElement) ||
+            !Guid.TryParse(idElement.GetString(), out var id) ||
+            !test.TryGetProperty("FullyQualifiedName", out var nameElement) ||
+            string.IsNullOrWhiteSpace(nameElement.GetString()))
+        {
+            throw new InvalidOperationException($"Test diagnostics contained a discovered case without a stable Id and FullyQualifiedName for '{project}'.");
+        }
+
+        var fullyQualifiedName = nameElement.GetString()!;
+        if (tests.TryGetValue(id, out var existingName) && !string.Equals(existingName, fullyQualifiedName, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Test diagnostics reused stable Id '{id}' for '{existingName}' and '{fullyQualifiedName}' in '{project}'.");
+        }
+
+        tests[id] = fullyQualifiedName;
+    }
 }
 
 static string FindRepositoryRoot()

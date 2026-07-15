@@ -15,7 +15,7 @@ public sealed class VirtualSkyCameraModule(
     ICelestialCatalog catalog,
     IProjectedSceneStore sceneStore,
     IConstellationTopology? constellationTopology = null,
-    IPlanetEphemeris? planetEphemeris = null) : ICameraModule
+    IPlanetEphemeris? planetEphemeris = null) : ICameraModule, ICameraSetpointController
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private CameraModuleConfig? _config;
@@ -47,6 +47,20 @@ public sealed class VirtualSkyCameraModule(
         }
         _captureSequence = 0;
         return Task.CompletedTask;
+    }
+
+    public ValueTask<DateTimeOffset> ApplySetpointAsync(
+        CaptureSetpoint setpoint,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(setpoint);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (setpoint.Exposure < TimeSpan.Zero || !double.IsFinite(setpoint.Gain) || setpoint.Gain < 0 ||
+            setpoint.TargetFps is { } fps && (!double.IsFinite(fps) || fps <= 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(setpoint));
+        }
+        return ValueTask.FromResult(timeProvider.GetUtcNow().ToUniversalTime());
     }
 
     public async Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
@@ -155,6 +169,7 @@ public sealed class VirtualSkyCameraModule(
             extra["fullWellElectrons"] = response.FullWellElectrons.ToString("R", CultureInfo.InvariantCulture);
             extra["adcBitDepth"] = response.AdcBitDepth.ToString(CultureInfo.InvariantCulture);
             extra["blackLevelAdu"] = response.BlackLevelAdu.ToString("R", CultureInfo.InvariantCulture);
+            extra["whiteLevelAdu"] = "4095";
             extra["captureSequence"] = captureSequence.ToString(CultureInfo.InvariantCulture);
         }
         else if (_options.Asi178Sensor.Enabled)
@@ -169,6 +184,7 @@ public sealed class VirtualSkyCameraModule(
             extra["containerBitDepth"] = "16";
             extra["cfaPattern"] = "RGGB";
             extra["blackLevelAdu"] = response.BlackLevelAdu.ToString("R", CultureInfo.InvariantCulture);
+            extra["whiteLevelAdu"] = ushort.MaxValue.ToString(CultureInfo.InvariantCulture);
             extra["captureSequence"] = captureSequence.ToString(CultureInfo.InvariantCulture);
         }
         var frame = new CameraFrame(

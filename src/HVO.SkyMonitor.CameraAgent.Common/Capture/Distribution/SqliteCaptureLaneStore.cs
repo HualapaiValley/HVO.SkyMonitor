@@ -623,13 +623,19 @@ internal sealed class SqliteCaptureLaneStore(
                 descriptor.Timing.ExposureStartedUtc,
                 descriptor.Timing.ExposureEndedUtc,
                 descriptor.Timing.ReadoutCompletedUtc)
+            {
+                SetpointAppliedUtc = descriptor.Timing.SetpointAppliedUtc
+            }
         };
         var submission = new CaptureLoopSubmission(
             request,
             result,
-            descriptor.Timing.RequestedStartUtc,
+            descriptor.CycleEvidence?.ModuleCallStartedUtc ?? descriptor.Timing.RequestedStartUtc,
             configuration.Rig.Pipeline.CaptureInterval,
-            TimeSpan.Zero);
+            TimeSpan.Zero)
+        {
+            CycleEvidence = descriptor.CycleEvidence
+        };
         return new CaptureLaneEnvelope(
             configuration with { AgentId = descriptor.Capture.AgentId },
             submission);

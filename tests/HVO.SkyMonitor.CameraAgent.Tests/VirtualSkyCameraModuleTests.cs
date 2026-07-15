@@ -258,6 +258,7 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual("RGGB", result.Frame.Metadata.Extra!["cfaPattern"]);
         Assert.AreEqual(Asi178McSensorModel.Version, result.Frame.Metadata.Extra["sensorModel"]);
         Assert.AreEqual("14", result.Frame.Metadata.Extra["sensorAdcBitDepth"]);
+        Assert.AreEqual("65535", result.Frame.Metadata.Extra["whiteLevelAdu"]);
     }
 
     [TestMethod]
@@ -430,6 +431,7 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(Asi174MmSensorModel.Version, first.Frame.Metadata.Extra!["sensorModel"]);
         Assert.AreEqual("12", first.Frame.Metadata.Extra["adcBitDepth"]);
         Assert.AreEqual("ZWO 0.1 dB", first.Frame.Metadata.Extra["gainUnits"]);
+        Assert.AreEqual("4095", first.Frame.Metadata.Extra["whiteLevelAdu"]);
         Assert.IsTrue(MaximumSample(first.Frame.PixelData.Span) <= 4095);
     }
 

@@ -100,7 +100,10 @@ internal static class RawCaptureDescriptorFactory
                 [],
                 RawRecipe,
                 MediaTypeFor(frame.PixelFormat),
-                payloadSha256));
+                payloadSha256))
+        {
+            CycleEvidence = NormalizeEvidence(submission.CycleEvidence)
+        };
     }
 
     private static CaptureTimingDescriptor ResolveTiming(
@@ -114,11 +117,43 @@ internal static class RawCaptureDescriptorFactory
         var readoutCompleted = ToMilliseconds(reported?.ReadoutCompletedUtc ?? frame.TimestampUtc);
         var requested = ToMilliseconds(submission.Request.RequestedStartUtc);
         durableIngressUtc = ToMilliseconds(durableIngressUtc);
-        if (requested > exposureStarted || exposureStarted > exposureEnded || exposureEnded > readoutCompleted || readoutCompleted > durableIngressUtc)
+        if (exposureStarted > exposureEnded || exposureEnded > readoutCompleted || readoutCompleted > durableIngressUtc)
         {
             throw new InvalidOperationException("Camera module acquisition timing is not ordered before durable ingress.");
         }
-        return new CaptureTimingDescriptor(requested, exposureStarted, exposureEnded, readoutCompleted, durableIngressUtc);
+        return new CaptureTimingDescriptor(requested, exposureStarted, exposureEnded, readoutCompleted, durableIngressUtc)
+        {
+            SetpointAppliedUtc = reported?.SetpointAppliedUtc is { } applied ? ToMilliseconds(applied) : null
+        };
+    }
+
+    private static CaptureCycleEvidence? NormalizeEvidence(CaptureCycleEvidence? evidence)
+    {
+        if (evidence is null)
+        {
+            return null;
+        }
+        var metering = evidence.Metering is null
+            ? null
+            : evidence.Metering with
+            {
+                StartedUtc = ToMilliseconds(evidence.Metering.StartedUtc),
+                CompletedUtc = ToMilliseconds(evidence.Metering.CompletedUtc)
+            };
+        return evidence with
+        {
+            ModuleCallStartedUtc = ToMilliseconds(evidence.ModuleCallStartedUtc),
+            Metering = metering,
+            Decision = evidence.Decision with
+            {
+                StartedUtc = ToMilliseconds(evidence.Decision.StartedUtc),
+                CompletedUtc = ToMilliseconds(evidence.Decision.CompletedUtc),
+                SetpointAppliedUtc = evidence.Decision.SetpointAppliedUtc is { } applied
+                    ? ToMilliseconds(applied)
+                    : null
+            },
+            IngressHandoffStartedUtc = ToMilliseconds(evidence.IngressHandoffStartedUtc)
+        };
     }
 
     private static DateTimeOffset ToMilliseconds(DateTimeOffset value)

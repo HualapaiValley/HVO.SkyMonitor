@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Logging;
@@ -18,7 +20,12 @@ public sealed class FileCameraAgentConfigurationLoader(
         PropertyNameCaseInsensitive = true,
         Converters =
         {
-            new System.Text.Json.Serialization.JsonStringEnumConverter()
+            new JsonStringEnumConverter<CaptureCadenceMode>(allowIntegerValues: false),
+            new JsonStringEnumConverter<AutomaticControlOwnership>(allowIntegerValues: false),
+            new JsonStringEnumConverter<CaptureMeteringCfaSelection>(allowIntegerValues: false),
+            new JsonStringEnumConverter<ExposureGainPreference>(allowIntegerValues: false),
+            new JsonStringEnumConverter<SampleByteOrder>(allowIntegerValues: false),
+            new JsonStringEnumConverter()
         }
     };
 
@@ -85,7 +92,98 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new InvalidOperationException(
                 "Capture failure backoff delays must be positive and the maximum must not be less than the initial delay.");
         }
+
+        if (!Enum.IsDefined(config.Rig.Pipeline.CadenceMode))
+        {
+            throw new InvalidOperationException("Capture cadence mode is invalid.");
+        }
+
+        ValidateControlPolicy(config.Rig);
     }
+
+    private static void ValidateControlPolicy(CameraRigConfig rig)
+    {
+        var policy = rig.ControlPolicy;
+        if (policy is null)
+        {
+            return;
+        }
+
+        var exposure = CameraModuleRunner.ResolveOwnership(policy.ExposureControl, policy.AutoExposure);
+        var gain = CameraModuleRunner.ResolveOwnership(policy.GainControl, policy.AutoGain);
+        if (!Enum.IsDefined(policy.ExposureControl) || !Enum.IsDefined(policy.GainControl) ||
+            exposure == AutomaticControlOwnership.CameraNative && gain == AutomaticControlOwnership.HostMetered ||
+            exposure == AutomaticControlOwnership.HostMetered && gain == AutomaticControlOwnership.CameraNative)
+        {
+            throw new InvalidOperationException(
+                "Camera-native and host-metered ownership cannot be mixed in one control policy.");
+        }
+
+        var hostMetered = exposure == AutomaticControlOwnership.HostMetered ||
+            gain == AutomaticControlOwnership.HostMetered;
+        if (!hostMetered)
+        {
+            return;
+        }
+
+        var meter = policy.Metering ?? new CaptureMeteringPolicy();
+        var solar = policy.SolarRegimes ?? new CaptureSolarRegimePolicy();
+        var envelope = rig.Pipeline.Envelope;
+        if (envelope is null ||
+            rig.Sensor.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
+            meter.XStride <= 0 || meter.YStride <= 0 ||
+            !double.IsFinite(meter.SaturationFraction) ||
+            meter.SaturationFraction is <= 0 or > 1 ||
+            meter.CfaSelection == CaptureMeteringCfaSelection.None ||
+            (meter.CfaSelection & ~CaptureMeteringCfaSelection.All) != 0 ||
+            !double.IsFinite(solar.DayAltitudeThresholdDegrees) ||
+            !double.IsFinite(solar.NightAltitudeThresholdDegrees) ||
+            solar.DayAltitudeThresholdDegrees is < -90 or > 90 ||
+            solar.NightAltitudeThresholdDegrees is < -90 or > 90 ||
+            solar.DayAltitudeThresholdDegrees <= solar.NightAltitudeThresholdDegrees)
+        {
+            throw new InvalidOperationException(
+                "Host-metered control requires a valid envelope, sparse meter, and solar regime policy.");
+        }
+        if (rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16 &&
+            ((meter.XStride & 1) != 0 || (meter.YStride & 1) != 0) ||
+            !Enum.IsDefined(rig.Sensor.ByteOrder) ||
+            !FitsSensor(meter.Region, rig.Sensor) ||
+            meter.ExcludedRegions?.Any(region => region is null || !FitsSensor(region, rig.Sensor)) == true ||
+            meter.UseImageCircle &&
+            (rig.Optics.ImageCircleRadiusPixels is not { } radius || !double.IsFinite(radius) || radius <= 0))
+        {
+            throw new InvalidOperationException(
+                "Host metering regions, byte order, Bayer strides, and image-circle policy must match the sensor.");
+        }
+        if (envelope.MinExposure <= TimeSpan.Zero || envelope.MaxExposure < envelope.MinExposure ||
+            !double.IsFinite(envelope.MinGain) || envelope.MinGain < 0 ||
+            !double.IsFinite(envelope.MaxGain) ||
+            envelope.MaxGain < envelope.MinGain || envelope.TargetAduLevel is <= 0 or >= 1 ||
+            !double.IsFinite(envelope.TargetAduLevel) ||
+            !double.IsFinite(envelope.Hysteresis ?? 0.05) ||
+            (envelope.Hysteresis ?? 0.05) is < 0 or >= 1 ||
+            !double.IsFinite(envelope.AdjustmentFactor ?? 1.25) ||
+            (envelope.AdjustmentFactor ?? 1.25) <= 1 ||
+            !double.IsFinite(envelope.GainStep ?? 10) || (envelope.GainStep ?? 10) <= 0 ||
+            !Enum.IsDefined(envelope.Preference) ||
+            !ValidDefaults(envelope.DayDefaults, envelope) ||
+            !ValidDefaults(envelope.NightDefaults, envelope) ||
+            envelope.TwilightDefaults is { } twilight && !ValidDefaults(twilight, envelope))
+        {
+            throw new InvalidOperationException("Host-metered exposure envelope is invalid.");
+        }
+    }
+
+    private static bool FitsSensor(SensorCrop? region, SensorProfile sensor)
+        => region is null || region is { X: >= 0, Y: >= 0, Width: > 0, Height: > 0 } value &&
+            value.X <= sensor.WidthPixels - value.Width &&
+            value.Y <= sensor.HeightPixels - value.Height;
+
+    private static bool ValidDefaults(ExposureDefaults? value, ExposureEnvelope envelope)
+        => value is not null &&
+            value.Exposure >= envelope.MinExposure && value.Exposure <= envelope.MaxExposure &&
+            double.IsFinite(value.Gain) && value.Gain >= envelope.MinGain && value.Gain <= envelope.MaxGain;
 }
 
 internal sealed record CameraModuleDocument(

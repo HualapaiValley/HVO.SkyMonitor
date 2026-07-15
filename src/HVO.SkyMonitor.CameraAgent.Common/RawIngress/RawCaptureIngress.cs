@@ -246,6 +246,17 @@ internal sealed class RawCaptureIngress :
                     identity,
                     payloadSha256,
                     manifest.Descriptor.Timing.DurableIngressUtc);
+                if (manifest.Descriptor.CycleEvidence is null)
+                {
+                    expectedDescriptor = expectedDescriptor with { CycleEvidence = null };
+                }
+                if (manifest.Descriptor.Timing.SetpointAppliedUtc is null)
+                {
+                    expectedDescriptor = expectedDescriptor with
+                    {
+                        Timing = expectedDescriptor.Timing with { SetpointAppliedUtc = null }
+                    };
+                }
                 if (!string.Equals(
                         CaptureContractJson.ComputeDescriptorSha256(expectedDescriptor),
                         CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor),
@@ -257,6 +268,28 @@ internal sealed class RawCaptureIngress :
             }
             else
             {
+                var previewDescriptor = RawCaptureDescriptorFactory.Create(
+                    configuration,
+                    submission,
+                    identity,
+                    payloadSha256,
+                    _timeProvider.GetUtcNow());
+                var previewManifest = new ArtifactManifestV2(
+                    ArtifactManifestV2.CurrentSchemaVersion,
+                    previewDescriptor,
+                    paths.PayloadRelativePath,
+                    frame.Metadata.Scene);
+                var validation = previewManifest.Validate();
+                if (!validation.IsValid)
+                {
+                    throw new InvalidOperationException($"Raw ingress descriptor is invalid ({validation.ReasonCode}).");
+                }
+                _faultInjector.Inject(RawIngressFaultPoint.ValidationCompleted);
+                using (var payloadActivity = RawIngressTelemetry.ActivitySource.StartActivity("payload.publish"))
+                {
+                    await _files.PublishPayloadAsync(paths, frame.PixelData, cancellationToken).ConfigureAwait(false);
+                    payloadActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+                }
                 var descriptor = RawCaptureDescriptorFactory.Create(
                     configuration,
                     submission,
@@ -268,18 +301,12 @@ internal sealed class RawCaptureIngress :
                     descriptor,
                     paths.PayloadRelativePath,
                     frame.Metadata.Scene);
-                var validation = manifest.Validate();
+                validation = manifest.Validate();
                 if (!validation.IsValid)
                 {
                     throw new InvalidOperationException($"Raw ingress descriptor is invalid ({validation.ReasonCode}).");
                 }
-                _faultInjector.Inject(RawIngressFaultPoint.ValidationCompleted);
                 manifestJson = CaptureContractJson.Serialize(manifest);
-                using (var payloadActivity = RawIngressTelemetry.ActivitySource.StartActivity("payload.publish"))
-                {
-                    await _files.PublishPayloadAsync(paths, frame.PixelData, cancellationToken).ConfigureAwait(false);
-                    payloadActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
-                }
                 using (var sidecarActivity = RawIngressTelemetry.ActivitySource.StartActivity("sidecar.publish"))
                 {
                     await _files.PublishSidecarAsync(paths, manifestJson, cancellationToken).ConfigureAwait(false);
@@ -302,7 +329,19 @@ internal sealed class RawCaptureIngress :
                 manifestJson,
                 committedDescriptor.Timing.ExposureStartedUtc,
                 committedDescriptor.Timing.DurableIngressUtc);
-            var context = CaptureLaneEnvelopeSerializer.Serialize(configuration, submission);
+            var committedTiming = submission.Result.AcquisitionTiming is null
+                ? null
+                : submission.Result.AcquisitionTiming with
+                {
+                    SetpointAppliedUtc = committedDescriptor.Timing.SetpointAppliedUtc
+                };
+            var context = CaptureLaneEnvelopeSerializer.Serialize(
+                configuration,
+                submission with
+                {
+                    CycleEvidence = committedDescriptor.CycleEvidence,
+                    Result = submission.Result with { AcquisitionTiming = committedTiming }
+                });
             RawIngressOutcome outcome;
             using (var commitActivity = RawIngressTelemetry.ActivitySource.StartActivity("sqlite.commit"))
             {
