@@ -259,6 +259,8 @@ public sealed class ArtifactRetrievalTests
         current.StatusCode.Should().Be(HttpStatusCode.PartialContent);
         (await current.Content.ReadAsByteArrayAsync().ConfigureAwait(false)).Should().Equal(payload[..4]);
         cached.StatusCode.Should().Be(HttpStatusCode.NotModified);
+        cached.Headers.CacheControl!.NoStore.Should().BeTrue();
+        string.Join(", ", cached.Headers.Vary).Should().Be("Authorization, X-API-Key");
         wildcard.StatusCode.Should().Be(HttpStatusCode.NotModified);
         head.StatusCode.Should().Be(HttpStatusCode.OK);
         head.Content.Headers.ContentLength.Should().Be(payload.LongLength);
@@ -442,6 +444,8 @@ public sealed class ArtifactRetrievalTests
         using (var before = await beforeClient.GetAsync(seeded.ContentUri).ConfigureAwait(false))
         {
             before.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+            before.Headers.CacheControl!.NoStore.Should().BeTrue();
+            string.Join(", ", before.Headers.Vary).Should().Be("Authorization, X-API-Key");
         }
 
         using (var midstreamFactory = CreateReaderFactory(new FailureObjectReader(failDuringCopy: true)))

@@ -76,12 +76,10 @@ public sealed class ArtifactIngestTests
         frame.Artifacts.Should().ContainSingle();
         frame.Artifacts.Single().RecipeVersion.Should().Be(manifest.RecipeVersion);
         frame.Artifacts.Single().ManifestSchemaVersion.Should().Be(manifest.SchemaVersion);
+        frame.Artifacts.Single().ReconstructionState.Should().Be(CentralReconstructionState.LegacyIncomplete);
         var jobs = await db.CentralDerivativeJobs.Where(job => job.SourceArtifact!.CentralFrameId == frame.Id)
             .ToListAsync().ConfigureAwait(false);
-        jobs.Should().HaveCount(2);
-        jobs.Should().OnlyHaveUniqueItems(job => new { job.TargetRole, job.TargetRecipeVersion });
-        jobs.Should().OnlyContain(job => job.Status == CentralDerivativeJobStatus.Pending
-            && job.AvailableAtUtc != null);
+        jobs.Should().BeEmpty();
     }
 
     [TestMethod]
@@ -1446,7 +1444,7 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
-    public async Task MultipartIngest_TargetBeforeRawCompletesMatchingDerivativeJob()
+    public async Task MultipartIngest_LegacyTargetBeforeRawDoesNotScheduleDerivativeJobs()
     {
         var fixture = AssemblyHooks.Fixture;
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
@@ -1466,21 +1464,12 @@ public sealed class ArtifactIngestTests
         rawResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var jobs = await db.CentralDerivativeJobs.Include(job => job.ResultArtifact)
-            .Where(job => job.SourceArtifact!.Frame!.RegistrationId == registrationId)
-            .ToListAsync().ConfigureAwait(false);
-        jobs.Should().HaveCount(2);
-        var previewJob = jobs.Single(job => job.TargetRole == FrameArtifactRole.Preview);
-        previewJob.Status.Should().Be(CentralDerivativeJobStatus.Completed);
-        previewJob.AvailableAtUtc.Should().BeNull();
-        previewJob.ResultArtifact!.ArtifactId.Should().Be(preview.ArtifactId);
-        var annotatedJob = jobs.Single(job => job.TargetRole == FrameArtifactRole.AnnotatedPreview);
-        annotatedJob.Status.Should().Be(CentralDerivativeJobStatus.Pending);
-        annotatedJob.AvailableAtUtc.Should().NotBeNull();
+        (await db.CentralDerivativeJobs.CountAsync(job => job.SourceArtifact!.Frame!.RegistrationId == registrationId)
+            .ConfigureAwait(false)).Should().Be(0);
     }
 
     [TestMethod]
-    public async Task MultipartIngest_ConcurrentRawAndCanonicalTargetConvergeOnCompletedJob()
+    public async Task MultipartIngest_ConcurrentLegacyRawAndTargetDoNotScheduleDerivativeJobs()
     {
         var fixture = AssemblyHooks.Fixture;
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
@@ -1505,12 +1494,8 @@ public sealed class ArtifactIngestTests
         previewResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var job = await db.CentralDerivativeJobs.Include(item => item.ResultArtifact).SingleAsync(item =>
-            item.SourceArtifact!.Frame!.RegistrationId == registrationId
-            && item.TargetRole == FrameArtifactRole.Preview).ConfigureAwait(false);
-        job.Status.Should().Be(CentralDerivativeJobStatus.Completed);
-        job.AvailableAtUtc.Should().BeNull();
-        job.ResultArtifact!.ArtifactId.Should().Be(preview.ArtifactId);
+        (await db.CentralDerivativeJobs.CountAsync(job => job.SourceArtifact!.Frame!.RegistrationId == registrationId)
+            .ConfigureAwait(false)).Should().Be(0);
     }
 
     private static async Task<HttpResponseMessage> PostAsync(

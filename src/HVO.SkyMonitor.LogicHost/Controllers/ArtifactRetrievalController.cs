@@ -25,12 +25,12 @@ internal sealed partial class ArtifactRetrievalController(
         Guid artifactId,
         CancellationToken cancellationToken)
     {
+        SetPrivateCacheHeaders();
         var lookup = await FindAsync(devicePublicId, artifactId, cancellationToken).ConfigureAwait(false);
         if (lookup.Status != CentralArtifactLookupStatus.Found)
         {
             return LookupError(lookup.Status);
         }
-        SetPrivateCacheHeaders();
         return Ok(Project(lookup.Artifact!));
     }
 
@@ -48,6 +48,7 @@ internal sealed partial class ArtifactRetrievalController(
         bool headOnly,
         CancellationToken cancellationToken)
     {
+        SetPrivateCacheHeaders();
         var lookup = await FindAsync(devicePublicId, artifactId, cancellationToken).ConfigureAwait(false);
         if (lookup.Status != CentralArtifactLookupStatus.Found)
         {
@@ -274,6 +275,7 @@ internal sealed partial class ArtifactRetrievalController(
     private Task WriteProblemAsync(int status, string title, CancellationToken cancellationToken)
     {
         Response.StatusCode = status;
+        SetPrivateCacheHeaders();
         return Response.WriteAsJsonAsync(new ProblemDetails { Status = status, Title = title }, cancellationToken);
     }
 

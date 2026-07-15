@@ -304,8 +304,22 @@ public sealed class DerivativeJobIntegrationTests
             .Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
 
         source.ObjectState = CentralArtifactObjectState.Available;
-        source.ReconstructionState = CentralReconstructionState.Complete;
+        source.ReconstructionState = CentralReconstructionState.LegacyIncomplete;
+        await db.SaveChangesAsync().ConfigureAwait(false);
         var scheduler = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>();
+        await scheduler.EnsureRequiredJobsAsync(source, now, CancellationToken.None).ConfigureAwait(false);
+        var resultId = result.Id;
+        db.ChangeTracker.Clear();
+        source = await db.CentralArtifacts.Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
+            .SingleAsync(artifact => artifact.CentralFrameId == frameId && artifact.Role == FrameArtifactRole.Raw)
+            .ConfigureAwait(false);
+        result = source.Frame!.Artifacts.Single(artifact => artifact.Id == resultId);
+        job = await db.CentralDerivativeJobs.SingleAsync(candidate => candidate.Id == jobId).ConfigureAwait(false);
+        job.Status.Should().Be(CentralDerivativeJobStatus.RetryableFailure);
+        job.AvailableAtUtc.Should().BeNull();
+
+        source.ReconstructionState = CentralReconstructionState.Complete;
+        await db.SaveChangesAsync().ConfigureAwait(false);
         await scheduler.EnsureRequiredJobsAsync(source, now, CancellationToken.None).ConfigureAwait(false);
         await db.SaveChangesAsync().ConfigureAwait(false);
         job.Status.Should().Be(CentralDerivativeJobStatus.Pending);

@@ -40,8 +40,7 @@ internal sealed class CentralDerivativeJobScheduler(
                 if (!await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(candidate =>
                     candidate.Id == artifact.Id
                     && candidate.ObjectState == CentralArtifactObjectState.Available
-                    && (candidate.ReconstructionState == CentralReconstructionState.Complete
-                        || candidate.ReconstructionState == CentralReconstructionState.LegacyIncomplete), cancellationToken)
+                    && candidate.ReconstructionState == CentralReconstructionState.Complete, cancellationToken)
                     .ConfigureAwait(false))
                 {
                     await ownedTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -79,7 +78,7 @@ internal sealed class CentralDerivativeJobScheduler(
     {
         var frame = artifact.Frame ?? throw new InvalidOperationException("The artifact frame must be loaded before scheduling derivatives.");
         if (artifact.ObjectState != CentralArtifactObjectState.Available
-            || artifact.ReconstructionState is not (CentralReconstructionState.Complete or CentralReconstructionState.LegacyIncomplete))
+            || artifact.ReconstructionState != CentralReconstructionState.Complete)
         {
             return;
         }
@@ -215,6 +214,5 @@ internal sealed class CentralDerivativeJobScheduler(
 
     private static bool IsUsable(CentralArtifact artifact)
         => artifact.ObjectState == CentralArtifactObjectState.Available
-            && artifact.ReconstructionState is CentralReconstructionState.Complete
-                or CentralReconstructionState.LegacyIncomplete;
+            && artifact.ReconstructionState == CentralReconstructionState.Complete;
 }
