@@ -145,13 +145,14 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new InvalidOperationException(
                 "Host-metered control requires a valid envelope, sparse meter, and solar regime policy.");
         }
-        if (rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16 &&
-            ((meter.XStride & 1) != 0 || (meter.YStride & 1) != 0) ||
-            !Enum.IsDefined(rig.Sensor.ByteOrder) ||
-            !FitsSensor(meter.Region, rig.Sensor) ||
-            meter.ExcludedRegions?.Any(region => region is null || !FitsSensor(region, rig.Sensor)) == true ||
-            meter.UseImageCircle &&
-            (rig.Optics.ImageCircleRadiusPixels is not { } radius || !double.IsFinite(radius) || radius <= 0))
+        var hasInvalidBayerStride = rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16 &&
+            ((meter.XStride & 1) != 0 || (meter.YStride & 1) != 0);
+        var hasInvalidExcludedRegion = meter.ExcludedRegions?.Any(
+            region => region is null || !FitsSensor(region, rig.Sensor)) == true;
+        var hasInvalidImageCircle = meter.UseImageCircle &&
+            (rig.Optics.ImageCircleRadiusPixels is not { } radius || !double.IsFinite(radius) || radius <= 0);
+        if (hasInvalidBayerStride || !Enum.IsDefined(rig.Sensor.ByteOrder) ||
+            !FitsSensor(meter.Region, rig.Sensor) || hasInvalidExcludedRegion || hasInvalidImageCircle)
         {
             throw new InvalidOperationException(
                 "Host metering regions, byte order, Bayer strides, and image-circle policy must match the sensor.");
