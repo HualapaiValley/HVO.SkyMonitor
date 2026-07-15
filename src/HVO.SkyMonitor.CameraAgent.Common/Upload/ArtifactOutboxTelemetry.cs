@@ -76,8 +76,5 @@ public sealed class ArtifactOutboxTelemetry : IDisposable
             }));
 
     public void Dispose()
-    {
-        _meter.Dispose();
-        ActivitySource.Dispose();
-    }
+        => _meter.Dispose();
 }

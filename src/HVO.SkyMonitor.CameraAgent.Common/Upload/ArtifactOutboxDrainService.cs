@@ -122,11 +122,13 @@ public sealed class ArtifactOutboxDrainService(
 
                                 if (result.Disposition == ArtifactUploadDisposition.Acknowledged)
                                 {
+                                    var acceptedManifestSchemaVersion = result.Acknowledgement?.AcceptedManifestSchemaVersion
+                                        ?? throw new InvalidDataException("Successful upload result omitted acknowledgement evidence.");
                                     var settlementStarted = timeProvider.GetTimestamp();
                                     using var acknowledgementActivity = ArtifactOutboxTelemetry.ActivitySource.StartActivity("outbox.ack");
                                     await AcknowledgeAsync(storageRoot, lease, result, stoppingToken).ConfigureAwait(false);
                                     telemetry.RecordSettlement(result.Disposition, timeProvider.GetElapsedTime(settlementStarted));
-                                    WorkAcknowledged(logger, lease.Record.ManifestKind.ToString(), null);
+                                    WorkAcknowledged(logger, acceptedManifestSchemaVersion, null);
                                 }
                                 else if (result.Disposition == ArtifactUploadDisposition.Retry)
                                 {
