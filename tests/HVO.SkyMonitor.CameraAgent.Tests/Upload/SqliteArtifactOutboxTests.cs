@@ -105,7 +105,9 @@ public sealed class SqliteArtifactOutboxTests
             await restarted.QuarantineAsync(
                 root.Path, firstLease, "stale-worker", CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
-        var delivered = ArtifactUploadClient.CreateCompatibilityManifest(secondLease.Record);
+        var delivered = ArtifactUploadClient.ResolveDelivery(secondLease.Record);
+        Assert.AreEqual(ArtifactManifestV2.CurrentSchemaVersion, delivered.SchemaVersion);
+        Assert.IsTrue(secondLease.Record.ManifestBytes.Span.SequenceEqual(CaptureContractJson.Serialize(manifest)));
         var acknowledgement = new ArtifactUploadAcknowledgement(
             ArtifactUploadAcknowledgement.CurrentSchemaVersion,
             delivered.IdempotencyKey,

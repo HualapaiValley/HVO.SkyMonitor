@@ -11,6 +11,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class CentralDerivativeJobMigrationTests
 {
     [TestMethod]
@@ -43,9 +44,16 @@ public sealed class CentralDerivativeJobMigrationTests
             var raw = CreateArtifact(frame, FrameArtifactRole.Raw, "raw-v1", now);
             var preview = CreateArtifact(frame, FrameArtifactRole.Preview,
                 CentralDerivativeRecipeCatalog.PreviewRecipeVersion, now.AddSeconds(-1));
-            db.CentralFrames.Add(frame);
-            db.CentralArtifacts.AddRange(raw, preview);
-            await db.SaveChangesAsync().ConfigureAwait(false);
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO [CentralFrames]
+                    ([Id], [RegistrationId], [DevicePublicId], [ObservatoryId], [AgentId], [FrameId],
+                     [CapturedAtUtc], [FirstReceivedAtUtc], [RigProfileVersion], [SceneProvenanceJson])
+                VALUES
+                    ({frame.Id}, {frame.RegistrationId}, {frame.DevicePublicId}, {frame.ObservatoryId}, {frame.AgentId},
+                     {frame.FrameId}, {frame.CapturedAtUtc}, {frame.FirstReceivedAtUtc}, NULL, NULL);
+                """).ConfigureAwait(false);
+            await InsertArtifactAsync(db, raw).ConfigureAwait(false);
+            await InsertArtifactAsync(db, preview).ConfigureAwait(false);
 
             await migrator.MigrateAsync().ConfigureAwait(false);
             db.ChangeTracker.Clear();
@@ -87,4 +95,15 @@ public sealed class CentralDerivativeJobMigrationTests
             ReceivedAtUtc = receivedAtUtc,
             IdempotencyKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray()))
         };
+
+    private static Task<int> InsertArtifactAsync(ApplicationDbContext db, CentralArtifact artifact)
+        => db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO [CentralArtifacts]
+                ([Id], [CentralFrameId], [ArtifactId], [Role], [RecipeVersion], [ManifestSchemaVersion],
+                 [MediaType], [ByteLength], [ChecksumSha256], [StorageReference], [ReceivedAtUtc], [IdempotencyKey])
+            VALUES
+                ({artifact.Id}, {artifact.CentralFrameId}, {artifact.ArtifactId}, {artifact.Role.ToString()},
+                 {artifact.RecipeVersion}, {artifact.ManifestSchemaVersion}, {artifact.MediaType}, {artifact.ByteLength},
+                 {artifact.ChecksumSha256}, {artifact.StorageReference}, {artifact.ReceivedAtUtc}, {artifact.IdempotencyKey});
+            """);
 }

@@ -1,3 +1,4 @@
+using System.Data;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -52,8 +53,31 @@ internal sealed class DeviceRegistrationEnvelopeService : IDeviceRegistrationEnv
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var registration = await dbContext.DeviceRegistrations
-            .Where(reg => reg.Id == request.RegistrationId)
+        var isRelational = dbContext.Database.IsRelational();
+        await using var transaction = isRelational
+            ? await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false)
+            : null;
+        IQueryable<Observatory> observatoryQuery = isRelational
+            ? dbContext.Observatories.FromSqlInterpolated($"""
+                SELECT * FROM [Observatories] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [Id] = {request.ObservatoryId}
+                """)
+            : dbContext.Observatories.Where(observatory => observatory.Id == request.ObservatoryId);
+        var observatoryIsActive = await observatoryQuery
+            .AnyAsync(observatory => observatory.IsActive, cancellationToken)
+            .ConfigureAwait(false);
+        if (!observatoryIsActive)
+        {
+            throw new InvalidOperationException("Observatory must be active to issue device envelopes.");
+        }
+        IQueryable<DeviceRegistration> registrationQuery = isRelational
+            ? dbContext.DeviceRegistrations.FromSqlInterpolated($"""
+                SELECT * FROM [DeviceRegistrations] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [Id] = {request.RegistrationId}
+                """)
+            : dbContext.DeviceRegistrations.Where(registration => registration.Id == request.RegistrationId);
+        var registration = await registrationQuery
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -111,6 +135,10 @@ internal sealed class DeviceRegistrationEnvelopeService : IDeviceRegistrationEnv
         registration.ExpiresAtUtc = expiresAt;
 
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         if (logger.IsEnabled(LogLevel.Information))
         {

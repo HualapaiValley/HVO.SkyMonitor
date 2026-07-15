@@ -23,6 +23,12 @@ internal sealed class DeviceRigProfile
 
     public string ConfigJson { get; set; } = string.Empty;
 
+    public string? ProfileName { get; set; }
+
+    public string? ProfileVersion { get; set; }
+
+    public string? ProfileSha256 { get; set; }
+
     public string? SoftwareVersion { get; set; }
 
     public DateTimeOffset CreatedAtUtc { get; set; }

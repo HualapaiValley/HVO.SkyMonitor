@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.IntegrationTests;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -112,6 +113,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         var jwtOptions = scopedProvider
             .GetRequiredService<IOptionsMonitor<JwtBearerOptions>>()
             .Get(JwtBearerDefaults.AuthenticationScheme);
+        var cameraConfiguration = await scopedProvider.GetRequiredService<ICameraAgentConfigurationLoader>()
+            .LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        await _hostFixture.SeedRigProfileAsync("cameraagent-integration-test", cameraConfiguration.Rig).ConfigureAwait(false);
     }
 
     /// <summary>

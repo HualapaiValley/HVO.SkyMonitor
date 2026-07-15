@@ -1,8 +1,6 @@
 using System.Threading.Tasks;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-[assembly: TestCategory("Integration")]
-
 namespace HVO.SkyMonitor.IntegrationTests;
 
 /// <summary>

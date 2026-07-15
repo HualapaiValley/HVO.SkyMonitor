@@ -10,6 +10,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class CentralFrameMigrationTests
 {
     [TestMethod]
@@ -57,9 +58,18 @@ public sealed class CentralFrameMigrationTests
             var frameId = Guid.NewGuid();
             db.Observatories.Add(observatory);
             db.DeviceRegistrations.Add(registration);
+            var duplicateArtifactId = Guid.NewGuid();
+            var duplicateA = CreateCompleteUpload(
+                registration, Guid.NewGuid(), "Raw", "raw-v1", "minio://artifacts/duplicate-a.bin");
+            var duplicateB = CreateCompleteUpload(
+                registration, Guid.NewGuid(), "Raw", "raw-v1", "minio://artifacts/duplicate-b.bin");
+            duplicateA.ArtifactId = duplicateArtifactId;
+            duplicateB.ArtifactId = duplicateArtifactId;
             db.DeviceImageUploads.AddRange(
                 CreateCompleteUpload(registration, frameId, "Raw", "raw-v1", "minio://artifacts/raw.bin"),
                 CreateCompleteUpload(registration, frameId, "Preview", "preview-v1", "minio://artifacts/preview.bin"),
+                duplicateA,
+                duplicateB,
                 CreateCompleteUpload(new DeviceRegistration
                 {
                     Id = Guid.NewGuid(),
@@ -87,16 +97,32 @@ public sealed class CentralFrameMigrationTests
                 .SingleAsync(item => item.FrameId == frameId).ConfigureAwait(false);
             frame.FrameId.Should().Be(frameId);
             frame.Artifacts.Should().HaveCount(2);
+            frame.Artifacts.Should().OnlyContain(artifact =>
+                artifact.ReconstructionState == CentralReconstructionState.LegacyIncomplete
+                && artifact.ObjectState == CentralArtifactObjectState.Available
+                && artifact.StateReasonCode == "manifest.legacy-incomplete"
+                && artifact.SourceId == null && artifact.Variant == null);
+            (await db.CentralArtifactIngestIdentities.CountAsync().ConfigureAwait(false)).Should().Be(5);
+            (await db.CentralArtifactLayouts.CountAsync().ConfigureAwait(false)).Should().Be(0);
+            (await db.CentralArtifactRecipes.CountAsync().ConfigureAwait(false)).Should().Be(0);
+            (await db.CentralCaptureProfiles.CountAsync().ConfigureAwait(false)).Should().Be(0);
             frame.Artifacts.Select(artifact => artifact.StorageReference).Should().BeEquivalentTo(
                 "minio://artifacts/raw.bin", "minio://artifacts/preview.bin");
-            (await db.CentralFrames.CountAsync().ConfigureAwait(false)).Should().Be(2);
-            (await db.DeviceImageUploads.CountAsync().ConfigureAwait(false)).Should().Be(4);
+            (await db.CentralArtifacts.CountAsync(artifact => artifact.ArtifactId == duplicateArtifactId)
+                .ConfigureAwait(false)).Should().Be(2);
+            (await db.CentralArtifacts.Where(artifact => artifact.ArtifactId == duplicateArtifactId)
+                .AllAsync(artifact => artifact.DevicePublicId == null).ConfigureAwait(false)).Should().BeTrue();
+            (await db.CentralArtifacts.CountAsync(artifact => artifact.DevicePublicId != null)
+                .ConfigureAwait(false)).Should().Be(3);
+            (await db.CentralFrames.CountAsync().ConfigureAwait(false)).Should().Be(4);
+            (await db.DeviceImageUploads.CountAsync().ConfigureAwait(false)).Should().Be(6);
         }
         finally
         {
             await db.Database.EnsureDeletedAsync().ConfigureAwait(false);
         }
     }
+
 
     [TestMethod]
     public async Task NormalizeCentralFrames_RejectsConflictingRigVersions()

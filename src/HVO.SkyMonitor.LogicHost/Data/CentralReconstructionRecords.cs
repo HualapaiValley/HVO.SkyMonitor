@@ -1,0 +1,113 @@
+namespace HVO.SkyMonitor.LogicHost.Data;
+
+internal enum CentralArtifactObjectState
+{
+    Pending,
+    Available,
+    Quarantined
+}
+
+internal enum CentralReconstructionState
+{
+    LegacyIncomplete,
+    PendingReference,
+    Complete,
+    Quarantined
+}
+
+internal enum CentralProfileKind
+{
+    Rig,
+    Calibration,
+    Mask,
+    Sensor,
+    Processing
+}
+
+internal sealed class CentralCaptureTiming
+{
+    public Guid CentralFrameId { get; set; }
+    public CentralFrame? Frame { get; set; }
+    public DateTimeOffset RequestedStartUtc { get; set; }
+    public DateTimeOffset ExposureStartedUtc { get; set; }
+    public DateTimeOffset ExposureEndedUtc { get; set; }
+    public DateTimeOffset ReadoutCompletedUtc { get; set; }
+    public DateTimeOffset DurableIngressUtc { get; set; }
+    public DateTimeOffset? SetpointAppliedUtc { get; set; }
+}
+
+internal sealed class CentralCaptureControl
+{
+    public Guid CentralFrameId { get; set; }
+    public CentralFrame? Frame { get; set; }
+    public long RequestedExposureTicks { get; set; }
+    public long EffectiveExposureTicks { get; set; }
+    public double RequestedGain { get; set; }
+    public double EffectiveGain { get; set; }
+    public double? RequestedOffset { get; set; }
+    public double? EffectiveOffset { get; set; }
+    public double? TemperatureSetpointC { get; set; }
+    public double? EffectiveTemperatureC { get; set; }
+}
+
+internal sealed class CentralCaptureProfile
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid CentralFrameId { get; set; }
+    public CentralFrame? Frame { get; set; }
+    public CentralProfileKind Kind { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public string Sha256 { get; set; } = string.Empty;
+    public Guid? DeviceRigProfileId { get; set; }
+    public DeviceRigProfile? DeviceRigProfile { get; set; }
+}
+
+internal sealed class CentralArtifactLayout
+{
+    public Guid CentralArtifactId { get; set; }
+    public CentralArtifact? Artifact { get; set; }
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public int StrideBytes { get; set; }
+    public string PixelFormat { get; set; } = string.Empty;
+    public string ByteOrder { get; set; } = string.Empty;
+    public int SampleDepthBits { get; set; }
+    public int ContainerDepthBits { get; set; }
+    public string Packing { get; set; } = string.Empty;
+    public string CfaPattern { get; set; } = string.Empty;
+    public double? BlackLevel { get; set; }
+    public double? WhiteLevel { get; set; }
+    public long ByteLength { get; set; }
+}
+
+internal sealed class CentralArtifactRecipe
+{
+    public Guid CentralArtifactId { get; set; }
+    public CentralArtifact? Artifact { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string SemanticVersion { get; set; } = string.Empty;
+    public string ImplementationVersion { get; set; } = string.Empty;
+    public string OptionsJson { get; set; } = string.Empty;
+    public string OptionsSha256 { get; set; } = string.Empty;
+}
+
+internal sealed class CentralArtifactSource
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid CentralArtifactId { get; set; }
+    public CentralArtifact? Artifact { get; set; }
+    public int Ordinal { get; set; }
+    public Guid SourceArtifactId { get; set; }
+    public Guid? ResolvedCentralArtifactId { get; set; }
+    public CentralArtifact? ResolvedArtifact { get; set; }
+}
+
+internal sealed class CentralArtifactIngestIdentity
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid CentralArtifactId { get; set; }
+    public CentralArtifact? Artifact { get; set; }
+    public string ManifestSchemaVersion { get; set; } = string.Empty;
+    public string IdempotencyKey { get; set; } = string.Empty;
+}

@@ -51,7 +51,7 @@ internal static class RawCaptureDescriptorFactory
         var calibrationElement = calibrationSteps.Length == 0
             ? NoneOptions
             : JsonSerializer.SerializeToElement(calibrationSteps);
-        var rigHash = CaptureContractJson.ComputeCanonicalJsonSha256(rigElement);
+        var rigHash = CameraRigProfileIdentity.ComputeSha256(configuration.Rig);
         var stride = frame.StrideBytes ?? GetPackedStride(frame.Width, frame.PixelFormat);
         var (byteOrder, sampleDepth, containerDepth, cfa) = LayoutFacts(
             frame.PixelFormat,

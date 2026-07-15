@@ -233,20 +233,20 @@ public sealed class ArtifactOutboxDrainService(
     {
         var acknowledgement = result.Acknowledgement
             ?? throw new InvalidDataException("Successful upload result omitted acknowledgement evidence.");
-        var manifest = ArtifactUploadClient.CreateCompatibilityManifest(lease.Record);
+        var delivery = ArtifactUploadClient.ResolveDelivery(lease.Record);
         var lifecycleGate = StorageLifecycleLock.ForRoot(storageRoot);
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             await outbox.AcknowledgeAsync(storageRoot, lease, acknowledgement, cancellationToken).ConfigureAwait(false);
-            if (ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot, manifest))
+            if (ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot))
             {
-                var path = Path.Combine(Path.GetFullPath(storageRoot), manifest.RelativeArtifactPath);
+                var path = Path.Combine(Path.GetFullPath(storageRoot), delivery.RelativeArtifactPath);
                 await frameStorageService.RemoveAsync(
                     storageRoot,
                     new StoredFrameReference(
-                        manifest.RelativeArtifactPath, path, manifest.CapturedAtUtc, manifest.Role),
-                    manifest.ArtifactId,
+                        delivery.RelativeArtifactPath, path, delivery.CapturedAtUtc, delivery.Role),
+                    delivery.ArtifactId,
                     cancellationToken).ConfigureAwait(false);
             }
         }
@@ -268,8 +268,7 @@ public sealed class ArtifactOutboxDrainService(
 
     internal static bool ShouldRemoveUploadedArtifact(
         string storageRoot,
-        string rawIngressRoot,
-        HVO.SkyMonitor.AgentCore.ArtifactUploadManifest manifest)
+        string rawIngressRoot)
         => string.IsNullOrWhiteSpace(rawIngressRoot)
             || !string.Equals(
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(storageRoot)),

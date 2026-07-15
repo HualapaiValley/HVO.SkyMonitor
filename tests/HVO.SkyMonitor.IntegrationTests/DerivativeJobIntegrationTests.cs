@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class DerivativeJobIntegrationTests
 {
     [TestMethod]
@@ -90,6 +91,19 @@ public sealed class DerivativeJobIntegrationTests
             .Should().BeNull();
         clock.Advance(CentralDerivativeJobService.InitialRetryDelay);
         db.ChangeTracker.Clear();
+        var sourceId = await db.CentralDerivativeJobs.Where(job => job.Id == jobId)
+            .Select(job => job.SourceCentralArtifactId).SingleAsync().ConfigureAwait(false);
+        await db.CentralArtifacts.Where(artifact => artifact.Id == sourceId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(artifact => artifact.ObjectState, CentralArtifactObjectState.Pending))
+            .ConfigureAwait(false);
+        (await service.ClaimNextAsync("worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false))
+            .Should().BeNull();
+        await db.CentralArtifacts.Where(artifact => artifact.Id == sourceId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(artifact => artifact.ObjectState, CentralArtifactObjectState.Available)
+                .SetProperty(artifact => artifact.ReconstructionState, CentralReconstructionState.Complete))
+            .ConfigureAwait(false);
         var retry = await service.ClaimNextAsync("worker", TimeSpan.FromMinutes(1), CancellationToken.None)
             .ConfigureAwait(false);
         retry!.AttemptCount.Should().Be(2);
@@ -141,7 +155,9 @@ public sealed class DerivativeJobIntegrationTests
             ChecksumSha256 = new string('A', 64),
             StorageReference = "minio://result",
             ReceivedAtUtc = now,
-            IdempotencyKey = Convert.ToHexString(Guid.NewGuid().ToByteArray()).PadRight(64, '0')
+            IdempotencyKey = Convert.ToHexString(Guid.NewGuid().ToByteArray()).PadRight(64, '0'),
+            ObjectState = CentralArtifactObjectState.Available,
+            ReconstructionState = CentralReconstructionState.Complete
         };
         db.CentralArtifacts.Add(result);
         await db.SaveChangesAsync().ConfigureAwait(false);
@@ -150,6 +166,21 @@ public sealed class DerivativeJobIntegrationTests
         var lease = (await service.ClaimNextAsync("worker", TimeSpan.FromMinutes(1), CancellationToken.None)
             .ConfigureAwait(false))!;
 
+        var source = await db.CentralDerivativeJobs.Where(job => job.Id == jobId)
+            .Select(job => job.SourceArtifact!).SingleAsync().ConfigureAwait(false);
+        source.ObjectState = CentralArtifactObjectState.Pending;
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        await FluentActions.Awaiting(() => service.CompleteAsync(
+                jobId, lease.LeaseToken, resultArtifactId, CancellationToken.None))
+            .Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
+        source.ObjectState = CentralArtifactObjectState.Available;
+        result.ObjectState = CentralArtifactObjectState.Pending;
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        await FluentActions.Awaiting(() => service.CompleteAsync(
+                jobId, lease.LeaseToken, resultArtifactId, CancellationToken.None))
+            .Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
+        result.ObjectState = CentralArtifactObjectState.Available;
+        await db.SaveChangesAsync().ConfigureAwait(false);
         await service.CompleteAsync(jobId, lease.LeaseToken, resultArtifactId, CancellationToken.None).ConfigureAwait(false);
         await service.CompleteAsync(jobId, lease.LeaseToken, resultArtifactId, CancellationToken.None).ConfigureAwait(false);
 
@@ -180,7 +211,9 @@ public sealed class DerivativeJobIntegrationTests
                 ChecksumSha256 = new string('B', 64),
                 StorageReference = $"minio://result/{Guid.NewGuid():N}",
                 ReceivedAtUtc = DateTimeOffset.UtcNow,
-                IdempotencyKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray()))
+                IdempotencyKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                ObjectState = CentralArtifactObjectState.Available,
+                ReconstructionState = CentralReconstructionState.Complete
             };
             db.CentralArtifacts.Add(result);
             await db.SaveChangesAsync().ConfigureAwait(false);
@@ -206,6 +239,160 @@ public sealed class DerivativeJobIntegrationTests
         var verificationDb = verificationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         (await verificationDb.CentralDerivativeJobs.SingleAsync(job => job.Id == jobId).ConfigureAwait(false))
             .Status.Should().Be(CentralDerivativeJobStatus.Completed);
+    }
+
+    [TestMethod]
+    public async Task CompletedJob_SourceInvalidationSuspendsAndRecoveryRequeuesSafely()
+    {
+        await DisableClaimableJobsAsync().ConfigureAwait(false);
+        var now = new DateTimeOffset(2026, 7, 15, 12, 0, 0, TimeSpan.Zero);
+        var clock = new MutableTimeProvider(now);
+        var (jobId, frameId, _) = await SeedJobAsync(availableAtUtc: now).ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var source = await db.CentralArtifacts.Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
+            .SingleAsync(artifact => artifact.CentralFrameId == frameId && artifact.Role == FrameArtifactRole.Raw)
+            .ConfigureAwait(false);
+        var result = new CentralArtifact
+        {
+            CentralFrameId = frameId,
+            Frame = source.Frame,
+            ArtifactId = Guid.NewGuid(),
+            Role = FrameArtifactRole.Preview,
+            RecipeVersion = CentralDerivativeRecipeCatalog.PreviewRecipeVersion,
+            ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+            MediaType = "image/png",
+            ByteLength = 4,
+            ChecksumSha256 = new string('C', 64),
+            StorageReference = $"minio://result/{Guid.NewGuid():N}",
+            ReceivedAtUtc = now,
+            IdempotencyKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray())),
+            ObjectState = CentralArtifactObjectState.Available,
+            ReconstructionState = CentralReconstructionState.Complete
+        };
+        db.CentralArtifacts.Add(result);
+        var completedAtUtc = now.AddMinutes(-1);
+        var job = await db.CentralDerivativeJobs.SingleAsync(candidate => candidate.Id == jobId).ConfigureAwait(false);
+        job.Status = CentralDerivativeJobStatus.Completed;
+        job.AttemptCount = 1;
+        job.AvailableAtUtc = null;
+        job.ResultCentralArtifactId = result.Id;
+        job.ResultArtifact = result;
+        job.CompletedAtUtc = completedAtUtc;
+        source.ObjectState = CentralArtifactObjectState.Pending;
+        result.ReconstructionState = CentralReconstructionState.PendingReference;
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        await ArtifactIngestService.InvalidateDependentsAsync(db, source, CancellationToken.None).ConfigureAwait(false);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        job.Status.Should().Be(CentralDerivativeJobStatus.RetryableFailure);
+        job.AvailableAtUtc.Should().BeNull();
+        job.LastError.Should().Be(CentralDerivativeJobScheduler.SourceInvalidatedReason);
+        job.CompletedAtUtc.Should().Be(completedAtUtc);
+        job.ResultCentralArtifactId.Should().Be(result.Id);
+        var service = new CentralDerivativeJobService(db, clock);
+        (await service.ClaimNextAsync("worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false))
+            .Should().BeNull();
+        await FluentActions.Awaiting(() => service.CompleteAsync(
+                jobId, Guid.NewGuid(), result.ArtifactId, CancellationToken.None))
+            .Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
+
+        source.ObjectState = CentralArtifactObjectState.Available;
+        source.ReconstructionState = CentralReconstructionState.Complete;
+        var scheduler = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>();
+        await scheduler.EnsureRequiredJobsAsync(source, now, CancellationToken.None).ConfigureAwait(false);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        job.Status.Should().Be(CentralDerivativeJobStatus.Pending);
+        job.AvailableAtUtc.Should().Be(now);
+        job.CompletedAtUtc.Should().Be(completedAtUtc);
+        await db.CentralDerivativeJobs.Where(candidate => candidate.Id != jobId
+                && candidate.Status != CentralDerivativeJobStatus.Completed)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(candidate => candidate.Status, CentralDerivativeJobStatus.TerminalFailure)
+                .SetProperty(candidate => candidate.AvailableAtUtc, (DateTimeOffset?)null))
+            .ConfigureAwait(false);
+        var lease = await service.ClaimNextAsync("worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        lease!.JobId.Should().Be(jobId);
+
+        result.ReconstructionState = CentralReconstructionState.Complete;
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        await service.CompleteAsync(jobId, lease.LeaseToken, result.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        db.ChangeTracker.Clear();
+        var recovered = await db.CentralDerivativeJobs.SingleAsync(candidate => candidate.Id == jobId).ConfigureAwait(false);
+        recovered.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+        recovered.CompletedAtUtc.Should().Be(now);
+    }
+
+    [TestMethod]
+    public async Task CompletedJob_ResultInvalidationSuspendsAndRecoveryRequeuesForRegeneration()
+    {
+        await DisableClaimableJobsAsync().ConfigureAwait(false);
+        var now = new DateTimeOffset(2026, 7, 15, 12, 30, 0, TimeSpan.Zero);
+        var clock = new MutableTimeProvider(now);
+        var (jobId, frameId, _) = await SeedJobAsync(availableAtUtc: now).ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var source = await db.CentralArtifacts.Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
+            .SingleAsync(artifact => artifact.CentralFrameId == frameId && artifact.Role == FrameArtifactRole.Raw)
+            .ConfigureAwait(false);
+        var result = new CentralArtifact
+        {
+            CentralFrameId = frameId,
+            Frame = source.Frame,
+            ArtifactId = Guid.NewGuid(),
+            Role = FrameArtifactRole.Preview,
+            RecipeVersion = CentralDerivativeRecipeCatalog.PreviewRecipeVersion,
+            ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+            MediaType = "image/png",
+            ByteLength = 4,
+            ChecksumSha256 = new string('D', 64),
+            StorageReference = $"minio://result/{Guid.NewGuid():N}",
+            ReceivedAtUtc = now,
+            IdempotencyKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray())),
+            ObjectState = CentralArtifactObjectState.Available,
+            ReconstructionState = CentralReconstructionState.Complete
+        };
+        db.CentralArtifacts.Add(result);
+        var completedAtUtc = now.AddMinutes(-1);
+        var job = await db.CentralDerivativeJobs.SingleAsync(candidate => candidate.Id == jobId).ConfigureAwait(false);
+        job.Status = CentralDerivativeJobStatus.Completed;
+        job.AttemptCount = 1;
+        job.AvailableAtUtc = null;
+        job.ResultCentralArtifactId = result.Id;
+        job.ResultArtifact = result;
+        job.CompletedAtUtc = completedAtUtc;
+        result.ObjectState = CentralArtifactObjectState.Quarantined;
+        result.ReconstructionState = CentralReconstructionState.Quarantined;
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        await ArtifactIngestService.InvalidateDependentsAsync(db, result, CancellationToken.None).ConfigureAwait(false);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        job.Status.Should().Be(CentralDerivativeJobStatus.RetryableFailure);
+        job.AvailableAtUtc.Should().BeNull();
+        job.LastError.Should().Be(CentralDerivativeJobScheduler.ResultInvalidatedReason);
+        job.ResultCentralArtifactId.Should().Be(result.Id);
+        var service = new CentralDerivativeJobService(db, clock);
+        (await service.ClaimNextAsync("worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false))
+            .Should().BeNull();
+
+        result.ObjectState = CentralArtifactObjectState.Available;
+        result.ReconstructionState = CentralReconstructionState.Complete;
+        var scheduler = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>();
+        await scheduler.EnsureRequiredJobsAsync(result, now, CancellationToken.None).ConfigureAwait(false);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        job.Status.Should().Be(CentralDerivativeJobStatus.Pending);
+        job.AvailableAtUtc.Should().Be(now);
+        job.CompletedAtUtc.Should().Be(completedAtUtc);
+        var lease = await service.ClaimNextAsync("worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        lease!.JobId.Should().Be(jobId);
+        await service.CompleteAsync(jobId, lease.LeaseToken, result.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        db.ChangeTracker.Clear();
+        var recovered = await db.CentralDerivativeJobs.SingleAsync(candidate => candidate.Id == jobId).ConfigureAwait(false);
+        recovered.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+        recovered.CompletedAtUtc.Should().Be(now);
     }
 
     [TestMethod]
@@ -279,7 +466,9 @@ public sealed class DerivativeJobIntegrationTests
             ChecksumSha256 = new string('A', 64),
             StorageReference = $"minio://source/{Guid.NewGuid():N}",
             ReceivedAtUtc = now,
-            IdempotencyKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray()))
+            IdempotencyKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray())),
+            ObjectState = CentralArtifactObjectState.Available,
+            ReconstructionState = CentralReconstructionState.Complete
         };
         var job = new CentralDerivativeJob
         {

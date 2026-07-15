@@ -1,3 +1,4 @@
+using System.Data;
 using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -46,9 +47,24 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
         var now = timeProvider.GetUtcNow();
         var expiresAt = now + (request.PendingLifetime ?? DefaultPendingLifetime);
         var verificationHash = ComputeSha256(request.VerificationCode);
+        var trimmedFriendlyName = request.FriendlyName.Trim();
+        if (string.IsNullOrEmpty(trimmedFriendlyName))
+        {
+            throw new InvalidOperationException("Friendly name is required.");
+        }
 
-        var observatory = await dbContext.Observatories
-            .Where(o => o.Id == request.ObservatoryId)
+        var isRelational = dbContext.Database.IsRelational();
+        await using var transaction = isRelational
+            ? await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false)
+            : null;
+        IQueryable<Observatory> observatoryQuery = isRelational
+            ? dbContext.Observatories.FromSqlInterpolated($"""
+                SELECT * FROM [Observatories] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [Id] = {request.ObservatoryId}
+                """)
+            : dbContext.Observatories.Where(observatory => observatory.Id == request.ObservatoryId);
+        var observatory = await observatoryQuery
             .Select(o => new ObservatorySnapshot(
                 o.Id,
                 o.OwnerUserId,
@@ -72,14 +88,14 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
             throw new InvalidOperationException("Observatory must be active to register devices.");
         }
 
-        var trimmedFriendlyName = request.FriendlyName.Trim();
-        if (string.IsNullOrEmpty(trimmedFriendlyName))
-        {
-            throw new InvalidOperationException("Friendly name is required.");
-        }
-
-        var existing = await dbContext.DeviceRegistrations
-            .Where(registration => registration.DeviceId == request.DeviceId && registration.Status == DeviceRegistrationStatus.Pending)
+        IQueryable<DeviceRegistration> registrationQuery = isRelational
+            ? dbContext.DeviceRegistrations.FromSqlInterpolated($"""
+                SELECT * FROM [DeviceRegistrations] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [DeviceId] = {request.DeviceId} AND [Status] = {nameof(DeviceRegistrationStatus.Pending)}
+                """)
+            : dbContext.DeviceRegistrations.Where(registration =>
+                registration.DeviceId == request.DeviceId && registration.Status == DeviceRegistrationStatus.Pending);
+        var existing = await registrationQuery
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -94,6 +110,10 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
             existing.IssuedAtUtc = now;
             existing.ExpiresAtUtc = expiresAt;
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
             return existing;
         }
 
@@ -110,6 +130,10 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
 
         await dbContext.DeviceRegistrations.AddAsync(registration, cancellationToken).ConfigureAwait(false);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
         return registration;
     }
 

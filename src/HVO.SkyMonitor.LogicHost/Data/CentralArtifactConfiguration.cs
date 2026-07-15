@@ -18,9 +18,24 @@ internal sealed class CentralArtifactConfiguration : IEntityTypeConfiguration<Ce
         builder.Property(artifact => artifact.StorageReference).HasMaxLength(512).IsRequired();
         builder.Property(artifact => artifact.IdempotencyKey).HasMaxLength(64).IsRequired();
         builder.Property(artifact => artifact.ReceivedAtUtc).IsRequired();
+        builder.Property(artifact => artifact.SourceId).HasMaxLength(256);
+        builder.Property(artifact => artifact.Variant).HasMaxLength(128);
+        builder.Property(artifact => artifact.ObjectState).HasConversion<string>().HasMaxLength(32).IsRequired();
+        builder.Property(artifact => artifact.ReconstructionState).HasConversion<string>().HasMaxLength(32).IsRequired();
+        builder.Property(artifact => artifact.StateReasonCode).HasMaxLength(128);
+        builder.Property(artifact => artifact.RowVersion).IsRowVersion();
         builder.HasIndex(artifact => artifact.IdempotencyKey).IsUnique();
-        builder.HasIndex(artifact => new { artifact.CentralFrameId, artifact.Role, artifact.RecipeVersion }).IsUnique();
+        builder.HasIndex(artifact => new { artifact.DevicePublicId, artifact.ArtifactId })
+            .IsUnique()
+            .HasFilter("[DevicePublicId] IS NOT NULL");
+        builder.HasIndex(artifact => new { artifact.CentralFrameId, artifact.Role, artifact.RecipeVersion });
         builder.HasIndex(artifact => new { artifact.CentralFrameId, artifact.ArtifactId }).IsUnique();
+        builder.HasIndex(artifact => new
+        {
+            artifact.ObjectState,
+            artifact.ReconstructionState,
+            artifact.ReceivedAtUtc
+        });
         builder.HasOne(artifact => artifact.Frame)
             .WithMany(frame => frame.Artifacts)
             .HasForeignKey(artifact => artifact.CentralFrameId)

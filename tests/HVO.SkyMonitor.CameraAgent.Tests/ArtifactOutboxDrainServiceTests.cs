@@ -15,10 +15,10 @@ public sealed class ArtifactOutboxDrainServiceTests
     {
         var root = Path.Combine(Path.GetTempPath(), "raw-ingress");
 
-        Assert.IsFalse(ArtifactOutboxDrainService.ShouldRemoveUploadedArtifact(root, root, TestManifest(FrameArtifactRole.Raw)));
-        Assert.IsFalse(ArtifactOutboxDrainService.ShouldRemoveUploadedArtifact(root, root, TestManifest(FrameArtifactRole.Preview)));
+        Assert.IsFalse(ArtifactOutboxDrainService.ShouldRemoveUploadedArtifact(root, root));
+        Assert.IsFalse(ArtifactOutboxDrainService.ShouldRemoveUploadedArtifact(root, root));
         Assert.IsTrue(ArtifactOutboxDrainService.ShouldRemoveUploadedArtifact(
-            Path.Combine(root, "archive"), root, TestManifest(FrameArtifactRole.Preview)));
+            Path.Combine(root, "archive"), root));
     }
 
     [TestMethod]

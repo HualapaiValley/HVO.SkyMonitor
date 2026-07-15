@@ -80,6 +80,7 @@ public class Program
         builder.Services.AddSingleton<IDeviceIdentityStore, DeviceIdentityStore>();
         builder.Services.AddSingleton<IDeviceSecretStore, DeviceSecretStore>();
         builder.Services.AddSingleton<IDeviceRigProfileSeeder, DeviceRigProfileSeeder>();
+        builder.Services.AddHostedService<DeviceRigProfileSynchronizationService>();
         builder.Services.AddScoped<DeviceBootstrapWorkflow>();
 
         var localIdentitySection = builder.Configuration.GetSection("LocalIdentity");

@@ -1,3 +1,4 @@
+using System.Data;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -89,18 +90,64 @@ internal sealed class ObservatoryService(ApplicationDbContext dbContext, TimePro
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerUserId);
 
-        var entity = await dbContext.Observatories
-            .Where(o => o.Id == id && o.OwnerUserId == ownerUserId)
+        var isRelational = dbContext.Database.IsRelational();
+        await using var transaction = isRelational
+            ? await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false)
+            : null;
+        IQueryable<Observatory> observatoryQuery = isRelational
+            ? dbContext.Observatories.FromSqlInterpolated($"""
+                SELECT * FROM [Observatories] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [Id] = {id} AND [OwnerUserId] = {ownerUserId}
+                """)
+            : dbContext.Observatories.Where(observatory =>
+                observatory.Id == id && observatory.OwnerUserId == ownerUserId);
+        var entity = await observatoryQuery
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (entity is null)
         {
+            if (transaction is not null)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            }
             return false;
         }
 
-        dbContext.Observatories.Remove(entity);
+        var now = timeProvider.GetUtcNow();
+        IQueryable<DeviceRegistration> registrationQuery = isRelational
+            ? dbContext.DeviceRegistrations.FromSqlInterpolated($"""
+                SELECT * FROM [DeviceRegistrations] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [ObservatoryId] = {id}
+                """)
+            : dbContext.DeviceRegistrations.Where(registration => registration.ObservatoryId == id);
+        var registrations = await registrationQuery
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (registrations.Count == 0)
+        {
+            dbContext.Observatories.Remove(entity);
+        }
+        else
+        {
+            // Device registrations and exact historical rig profiles are retained as ingest evidence.
+            entity.IsActive = false;
+            entity.UpdatedAtUtc = now;
+            foreach (var registration in registrations)
+            {
+                registration.Status = DeviceRegistrationStatus.Revoked;
+                registration.ExpiresAtUtc = now;
+                registration.RevokedReason ??= "Observatory deactivated by its owner.";
+                registration.DeviceKeyHash = null;
+                registration.RegistrationTokenHash = null;
+            }
+        }
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
         return true;
     }
 }

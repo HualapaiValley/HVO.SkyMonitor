@@ -48,6 +48,10 @@ public static class SkyMonitorObservabilityExtensions
     {
         "Availability", "PendingCount", "PendingBytes", "LeasedCount", "RetryCount", "QuarantineCount", "OldestAgeSeconds"
     };
+    private static readonly HashSet<string> ArtifactConsistencyHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Condition", "ReconciliationWindowSeconds"
+    };
 
     /// <summary>
     /// Configures the shared HVO telemetry stack and OTLP export.
@@ -71,11 +75,13 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Outbox");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Ingest");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureControl");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Outbox");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost");
             options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
         });
 
@@ -91,6 +97,7 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.CameraAgent.CaptureLanes")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.ProcessingGraph")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Outbox")
+                    .AddMeter("HVO.SkyMonitor.LogicHost.Ingest")
                     .AddOtlpExporter());
         }
 
@@ -162,6 +169,7 @@ public static class SkyMonitorObservabilityExtensions
             "capture-lanes" => CaptureLaneHealthDataKeys,
             "capture-processing" => CaptureProcessingHealthDataKeys,
             "artifact-outbox" => ArtifactOutboxHealthDataKeys,
+            "artifact-consistency" => ArtifactConsistencyHealthDataKeys,
             _ => null
         };
         return allowedKeys is null

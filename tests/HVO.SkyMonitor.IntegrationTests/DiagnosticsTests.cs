@@ -11,6 +11,7 @@ using HVO.SkyMonitor.TestSupport;
 namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
+[TestCategory("Integration")]
 public sealed class DiagnosticsTests
 {
     private HttpClient? _client;
