@@ -38,7 +38,6 @@ internal sealed class DeviceUploadController(
             return Accepted(new DeviceUploadResponse(
                 result.RegistrationId,
                 result.ObservatoryId,
-                result.StorageReference,
                 result.AcceptedAtUtc));
         }
         catch (DeviceRegistrationException ex)
@@ -65,6 +64,5 @@ internal sealed class DeviceUploadController(
     internal sealed record DeviceUploadResponse(
         Guid RegistrationId,
         Guid ObservatoryId,
-        string StorageReference,
         DateTimeOffset AcceptedAtUtc);
 }

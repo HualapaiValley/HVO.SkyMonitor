@@ -24,7 +24,7 @@ public static class TestClients
         public const string ClientId = "system-internal";
         public const string ClientSecret = "test-internal-secret-do-not-use-in-production";
         public const string DisplayName = "Internal System Client";
-        public static readonly string[] Scopes = ["api.admin", "api.camera", "api.frames", "api.images"];
+        public static readonly string[] Scopes = ["api.admin", "api.artifacts.read", "api.camera", "api.frames", "api.images"];
     }
 
     /// <summary>

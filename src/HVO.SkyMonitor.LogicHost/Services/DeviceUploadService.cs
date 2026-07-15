@@ -68,10 +68,9 @@ internal sealed class DeviceUploadService(
         if (logger.IsEnabled(LogLevel.Information))
         {
             logger.LogInformation(
-                "Received stub upload from {DeviceId} ({FriendlyName}) stored at {StorageRef} ({ContentType}, bytes={Length})",
+                "Received stub upload from {DeviceId} ({FriendlyName}) ({ContentType}, bytes={Length})",
                 registration.DeviceId,
                 registration.FriendlyName,
-                storageReference,
                 request.ContentType,
                 request.PayloadBase64.Length);
         }

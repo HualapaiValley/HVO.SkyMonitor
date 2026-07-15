@@ -168,6 +168,7 @@ public sealed partial class Program
                 metrics.AddPrometheusExporter();
                 metrics.AddMeter("HVO.SkyMonitor.Authentication");
                 metrics.AddMeter(CentralIngestTelemetry.MeterName);
+                metrics.AddMeter(CentralArtifactRetrievalTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             });
 
@@ -390,6 +391,7 @@ public sealed partial class Program
                     Scopes.OpenId,
                     Scopes.OfflineAccess,
                     "api.admin",
+                    "api.artifacts.read",
                     "api.camera",
                     "api.frames",
                     "api.images",
@@ -558,6 +560,14 @@ public sealed partial class Program
                         .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
                         .Contains("api.frames", StringComparer.Ordinal));
             });
+            options.AddPolicy("ArtifactRetrieval", policy =>
+            {
+                policy.AddAuthenticationSchemes(
+                    IdentityConstants.ApplicationScheme,
+                    ApiKeyAuthenticationOptions.AuthenticationScheme,
+                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                policy.RequireAuthenticatedUser();
+            });
         });
 
         // Application services
@@ -575,6 +585,11 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceUploadService, DeviceUploadService>();
         builder.Services.AddScoped<IArtifactIngestService, ArtifactIngestService>();
         builder.Services.AddSingleton<CentralIngestTelemetry>();
+        builder.Services.AddScoped<ICentralArtifactRetrievalService, CentralArtifactRetrievalService>();
+        builder.Services.AddScoped<ICentralArtifactObjectReader, CentralArtifactObjectReader>();
+        builder.Services.AddScoped<ICentralArtifactRetentionReferences, CentralArtifactRetentionReferences>();
+        builder.Services.AddScoped<ICentralArtifactRetentionService, CentralArtifactRetentionService>();
+        builder.Services.AddSingleton<CentralArtifactRetrievalTelemetry>();
         builder.Services.AddHostedService<CentralArtifactReconciliationService>();
         builder.Services.AddSingleton<ICentralDerivativeRecipeCatalog, CentralDerivativeRecipeCatalog>();
         builder.Services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();

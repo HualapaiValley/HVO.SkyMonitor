@@ -29,7 +29,12 @@ public sealed class DerivativeJobIntegrationTests
             second.ClaimNextAsync("worker-2", TimeSpan.FromMinutes(1), CancellationToken.None)).ConfigureAwait(false);
 
         leases.Count(lease => lease is not null).Should().Be(1);
-        leases.Single(lease => lease is not null)!.JobId.Should().Be(jobId);
+        var lease = leases.Single(item => item is not null)!;
+        lease.JobId.Should().Be(jobId);
+        lease.SourceDevicePublicId.Should().NotBeEmpty();
+        lease.SourceContentUri.Should().Be(
+            $"/api/v1.0/devices/{lease.SourceDevicePublicId:D}/artifacts/{lease.SourceArtifactId:D}/content");
+        lease.SourceContentUri.Should().NotContain("minio://");
         await using var verificationScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = verificationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var job = await db.CentralDerivativeJobs.SingleAsync(item => item.Id == jobId).ConfigureAwait(false);

@@ -8,6 +8,7 @@ using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -543,6 +544,7 @@ public sealed class ArtifactIngestTests
             "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch, "preview-v1", "frames/preview.bin");
         using var ingest = await PostAsync(client, manifest).ConfigureAwait(false);
         ingest.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetUserTokenAsync(client).ConfigureAwait(false));
 
         using var history = await client.GetAsync(new Uri($"/api/v1.0/artifacts?agentId={deviceId}&role=preview", UriKind.Relative)).ConfigureAwait(false);
 
@@ -1236,6 +1238,7 @@ public sealed class ArtifactIngestTests
             frame.SceneProvenanceJson.Should().Contain("late-scene");
         }
 
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetUserTokenAsync(client).ConfigureAwait(false));
         using var latest = await client.GetAsync(
             new Uri($"/api/v1.0/frames/latest?agentId={deviceId}&role=raw", UriKind.Relative)).ConfigureAwait(false);
         latest.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -1335,6 +1338,7 @@ public sealed class ArtifactIngestTests
     {
         var fixture = AssemblyHooks.Fixture;
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var lateArtifactId = Guid.NewGuid();
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -1351,7 +1355,6 @@ public sealed class ArtifactIngestTests
                 StorageReference = "stubs://legacy/visible",
                 AgentId = deviceId
             });
-            var lateArtifactId = Guid.NewGuid();
             db.DeviceImageUploads.Add(new DeviceImageUpload
             {
                 RegistrationId = registration.Id,
@@ -1375,15 +1378,17 @@ public sealed class ArtifactIngestTests
             await db.SaveChangesAsync().ConfigureAwait(false);
         }
         using var client = fixture.Factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetUserTokenAsync(client).ConfigureAwait(false));
 
         using var history = await client.GetAsync(
             new Uri($"/api/v1.0/artifacts?agentId={deviceId}", UriKind.Relative)).ConfigureAwait(false);
 
         history.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await history.Content.ReadAsStringAsync().ConfigureAwait(false);
-        body.Should().Contain("stubs://legacy/visible");
-        body.Should().Contain("minio://legacy/late-complete");
+        body.Should().Contain(lateArtifactId.ToString());
+        body.Should().NotContain("stubs://");
+        body.Should().NotContain("minio://");
+        body.Should().NotContain("StorageReference");
     }
 
     [TestMethod]
@@ -1391,7 +1396,7 @@ public sealed class ArtifactIngestTests
     {
         var fixture = AssemblyHooks.Fixture;
         using var client = fixture.Factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetUserTokenAsync(client).ConfigureAwait(false));
 
         using var artifacts = await client.GetAsync(new Uri("/api/v1.0/artifacts?role=999", UriKind.Relative)).ConfigureAwait(false);
         using var frames = await client.GetAsync(new Uri("/api/v1.0/frames?role=999", UriKind.Relative)).ConfigureAwait(false);
@@ -1743,15 +1748,28 @@ public sealed class ArtifactIngestTests
         return document.RootElement.GetProperty("access_token").GetString()!;
     }
 
+    private static async Task<string> GetUserTokenAsync(HttpClient client)
+    {
+        var token = await HttpHelpers.GetPasswordTokenAsync(
+            client,
+            "/connect/token",
+            TestUsers.Operator.Username,
+            TestUsers.Operator.Password,
+            TestClients.WebUI.ClientId,
+            string.Join(' ', TestClients.WebUI.Scopes)).ConfigureAwait(false);
+        return token.AccessToken;
+    }
+
     private static async Task<(string DeviceId, Guid RegistrationId)> SeedActiveDeviceAsync(string? requestedDeviceId = null)
     {
         var deviceId = requestedDeviceId ?? $"artifact-device-{Guid.NewGuid():N}";
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var owner = await db.Users.SingleAsync(user => user.Email == TestUsers.Operator.Email).ConfigureAwait(false);
         var observatory = new Observatory
         {
             Id = Guid.NewGuid(),
-            OwnerUserId = "integration-tests",
+            OwnerUserId = owner.Id,
             Name = "Artifact Observatory",
             TimeZoneId = "UTC",
             CreatedAtUtc = DateTimeOffset.UtcNow,
@@ -1765,8 +1783,8 @@ public sealed class ArtifactIngestTests
             ObservatoryName = observatory.Name,
             ObservatoryTimeZoneId = "UTC",
             FriendlyName = "Artifact Device",
-            OwnerUserId = "integration-tests",
-            OwnerDisplayName = "Integration Tests",
+            OwnerUserId = owner.Id,
+            OwnerDisplayName = TestUsers.Operator.FullName,
             OwnerConfirmationMethod = "SelfAttested",
             Status = DeviceRegistrationStatus.Active,
             VerificationCodeHash = DeviceRegistrationService.ComputeSha256("ABCDE"),

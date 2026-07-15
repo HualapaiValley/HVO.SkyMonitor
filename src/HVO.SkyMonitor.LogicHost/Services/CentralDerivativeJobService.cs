@@ -262,7 +262,8 @@ internal sealed class CentralDerivativeJobService(
         var frame = source.Frame ?? throw new InvalidOperationException("The derivative source frame was not loaded.");
         return new CentralDerivativeJobLease(
             job.Id, job.LeaseToken!.Value, job.LeaseExpiresAtUtc!.Value,
-            source.ArtifactId, source.Role, source.RecipeVersion, source.StorageReference,
+            frame.DevicePublicId, source.ArtifactId, source.Role, source.RecipeVersion,
+            $"/api/v1.0/devices/{frame.DevicePublicId:D}/artifacts/{source.ArtifactId:D}/content",
             source.ChecksumSha256, source.MediaType, frame.FrameId, frame.AgentId,
             frame.CapturedAtUtc, frame.RigProfileVersion, frame.SceneProvenanceJson,
             job.TargetRole, job.TargetRecipeVersion, job.AttemptCount, job.MaxAttempts);
@@ -270,18 +271,18 @@ internal sealed class CentralDerivativeJobService(
 
     private static bool IsUsable(CentralArtifact? artifact)
         => artifact?.ObjectState == CentralArtifactObjectState.Available
-            && artifact.ReconstructionState is CentralReconstructionState.Complete
-                or CentralReconstructionState.LegacyIncomplete;
+            && artifact.ReconstructionState == CentralReconstructionState.Complete;
 }
 
 internal sealed record CentralDerivativeJobLease(
     Guid JobId,
     Guid LeaseToken,
     DateTimeOffset LeaseExpiresAtUtc,
+    Guid SourceDevicePublicId,
     Guid SourceArtifactId,
     FrameArtifactRole SourceRole,
     string SourceRecipeVersion,
-    string SourceStorageReference,
+    string SourceContentUri,
     string SourceChecksumSha256,
     string SourceMediaType,
     Guid FrameId,
