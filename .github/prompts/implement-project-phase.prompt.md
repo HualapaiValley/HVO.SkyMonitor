@@ -54,10 +54,10 @@ check is green and no actionable thread remains.
 After merge, confirm issue closure, synchronize local `main`, preserve unrelated
 worktree changes, and update epic #89 with completed evidence and the next
 candidate-ready issue. Automatically post its synopsis and begin that issue
-unless the operator explicitly paused,
-there is no candidate-ready issue, or a real decision/resource blocker prevents
-safe work. Only the roadmap coordinator selects or claims it; other implementing
-agents return completion state to the coordinator.
+unless the operator explicitly paused, there is no candidate-ready issue, or a
+real decision/resource blocker prevents safe work. Only the roadmap coordinator
+selects or claims it; other implementing agents return completion state to the
+coordinator.
 
 If execution must stop or blocks, complete every unaffected action and leave the
 exact resumable handoff required by `docs/planning/agent-execution.md`. A failing

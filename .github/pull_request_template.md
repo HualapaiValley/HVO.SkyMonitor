@@ -59,6 +59,6 @@
       missing, or stale pre-correction checks are not accepted.
 - [ ] Review conversations are resolved only after correction evidence exists.
 - [ ] Epic #89 will be updated after merge with validation, performance, and the
-       exact next action.
+      exact next action.
 - [ ] The next ready issue will start automatically unless execution is explicitly
       paused or blocked.

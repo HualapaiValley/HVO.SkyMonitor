@@ -23,6 +23,8 @@ readonly OPENCODE_SERVER_PASSWORD_FILE="$HOME/.local/share/opencode/server-passw
 readonly OPENCODE_PROCESS_METADATA_VERSION="1"
 
 is_opencode_healthy() {
+    # Basic Auth protects this endpoint, so 401 proves the server is responsive
+    # without sending the password through the process list or command history.
     [[ "$(curl --connect-timeout 2 --max-time 5 -sS -o /dev/null -w '%{http_code}' \
         "http://${OPENCODE_HOST}:${OPENCODE_PORT}/global/health" 2>/dev/null || true)" == 401 ]]
 }
