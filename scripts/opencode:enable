@@ -22,6 +22,11 @@ readonly OPENCODE_LOG_FILE="/tmp/skymonitor-opencode.log"
 readonly OPENCODE_SERVER_PASSWORD_FILE="$HOME/.local/share/opencode/server-password"
 readonly OPENCODE_PROCESS_METADATA_VERSION="1"
 
+is_opencode_healthy() {
+    [[ "$(curl --connect-timeout 2 --max-time 5 -sS -o /dev/null -w '%{http_code}' \
+        "http://${OPENCODE_HOST}:${OPENCODE_PORT}/global/health" 2>/dev/null || true)" == 401 ]]
+}
+
 case "$TAILSCALE_ACCEPT_ROUTES" in
     true|false) ;;
     *)
@@ -138,8 +143,7 @@ if [[ "$is_managed_opencode" == false ]]; then
     rm -f "$OPENCODE_PID_FILE" "$OPENCODE_PID_METADATA_FILE"
 fi
 
-if [[ "$is_managed_opencode" == true ]] \
-    && [[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://${OPENCODE_HOST}:${OPENCODE_PORT}/global/health")" == 401 ]]; then
+if [[ "$is_managed_opencode" == true ]] && is_opencode_healthy; then
     echo "OpenCode is already running securely on ${OPENCODE_HOST}:${OPENCODE_PORT}."
 elif [[ "$is_managed_opencode" == true ]]; then
     echo "Restarting OpenCode to apply secure server settings..."
@@ -172,14 +176,14 @@ if [[ ! -f "$OPENCODE_PID_FILE" ]]; then
         > "$OPENCODE_PID_METADATA_FILE"
 
     for _ in {1..40}; do
-        if [[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://${OPENCODE_HOST}:${OPENCODE_PORT}/global/health" 2>/dev/null || true)" == 401 ]]; then
+        if is_opencode_healthy; then
             break
         fi
         sleep 0.25
     done
 
     if ! kill -0 "$(<"$OPENCODE_PID_FILE")" 2>/dev/null \
-        || [[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://${OPENCODE_HOST}:${OPENCODE_PORT}/global/health" 2>/dev/null || true)" != 401 ]]; then
+        || ! is_opencode_healthy; then
         rm -f "$OPENCODE_PID_FILE" "$OPENCODE_PID_METADATA_FILE"
         echo "OpenCode failed to start with Basic Auth. See $OPENCODE_LOG_FILE for details." >&2
         exit 1
