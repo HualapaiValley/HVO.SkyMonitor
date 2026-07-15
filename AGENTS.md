@@ -19,6 +19,10 @@
 - Unit selection is positive and passes with an invalid Docker endpoint. Integration selection is a separate required gate and requires Docker for the Testcontainers assemblies.
 - Run a focused MSTest with `dotnet test <project> --filter "FullyQualifiedName~Namespace.Class.Method"`.
 - `tests/coverage.runsettings` excludes test assemblies, `TestSupport`, migrations, and build output; keep coverage configuration aligned when adding projects.
+- Use the validation ladder in `docs/planning/agent-execution.md`: focused tests
+  in the inner loop, one complete local candidate gate before the first push,
+  affected gates for corrections, and complete replacement CI on the final head.
+  Do not repeatedly run unchanged long suites or performance harnesses.
 
 ## Architecture Boundaries
 
@@ -51,7 +55,22 @@
 - Before implementing a roadmap issue, follow `docs/planning/agent-execution.md` and the relevant section of `docs/planning/agent-prompts.md`.
 - Use `docs/planning/requirements-crosswalk.md` for the owning detailed specification and `docs/planning/performance-validation.md` for canonical workloads and evidence.
 - Keep one implementation issue per branch/PR unless dependencies explicitly coordinate stacked PRs.
+- Before implementation, post the protocol's plain-language synopsis explaining
+  why the issue is next, its practical outcome and benefit, what it unlocks, and
+  the main exclusion.
+- Use concurrent subagents for non-overlapping exploration, review, failure
+  analysis, and evidence. By default, up to two independent ready issues may
+  proceed in isolated worktrees when dependencies are merged and machine/Docker
+  capacity permits; raise that limit only after explicitly verifying capacity.
+  The roadmap coordinator records claims in epic #89 and never lets agents edit
+  the same worktree.
 - Every PR must build and test locally, push, receive review, correct every actionable finding, rerun replacement CI on the corrected head, resolve threads, and merge only when current-head required checks are green.
 - Performance-sensitive work requires reproducible baseline/after evidence for relevant I/O, CPU, allocations/working set, throughput, latency, and backlog. Unexplained regression blocks merge.
 - Validate produced outputs through checksums, numerical invariants, provenance, lineage, and durable state where applicable. Inspect logs, metrics, traces, and health behavior for host/worker changes.
 - If work stops or blocks, leave the resumable handoff required by the execution protocol and update epic #89 with the exact next action.
+- After merging a roadmap issue, the roadmap coordinator automatically claims
+  and starts the highest-priority candidate-ready issue after posting its
+  synopsis and `READY` signal. Other implementing agents return completion state
+  to the coordinator. Pause only on explicit operator request, a decision
+  blocker, no candidate-ready work, or exhausted safe capacity; do not require a
+  routine `continue` prompt.

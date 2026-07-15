@@ -850,8 +850,11 @@ all required backend/UI/readiness children --> #108 E2E --> close #109 and #89
 ```
 
 Parallel work is allowed only when contracts and migration order are stable.
-Agents must not implement a downstream issue against an unmerged speculative
-contract unless the issues explicitly coordinate one PR series.
+Independent issues use separate branches and isolated worktrees, with a default
+limit of two active implementation issues plus non-editing research/review
+agents. One roadmap coordinator records claims in epic #89 and owns global slot
+accounting. Agents must not implement a downstream issue against an unmerged
+speculative contract unless the issues explicitly coordinate one PR series.
 
 ## 23. PR and Validation Gate
 
@@ -863,8 +866,10 @@ Every issue follows this sequence:
 4. Implement the smallest coherent issue slice.
 5. Add focused, integration, migration, fault, and UI tests as applicable.
 6. Validate outputs numerically or by checksum where behavior produces data.
-7. Run local restore, build, tests, formatting, architecture, migration, and
-   performance checks required by the issue.
+7. Use the execution protocol's validation ladder: focused inner-loop tests, one
+   complete stable-candidate local gate, affected correction gates, and complete
+   current-head replacement CI. Rerun performance when its measured code path,
+   configuration, fixture, workload, or measurement logic changes.
 8. Inspect logs, metrics, traces, health, and durable state.
 9. Commit only issue files and preserve unrelated worktree changes.
 10. Push and open a PR linked to the issue and epic.
@@ -875,6 +880,9 @@ Every issue follows this sequence:
 15. Merge only when the current head has green required checks and no unresolved
     actionable review.
 16. Synchronize local `main`, confirm issue closure, and update epic/handoff state.
+17. Unless explicitly paused or blocked, select the highest-priority
+    candidate-ready issue, post its plain-language synopsis and `READY` claim,
+    and begin automatically.
 
 Any red, canceled, timed-out, flaky, or missing required check blocks merge until
 it is understood and corrected. A stale green run from before a correction does
