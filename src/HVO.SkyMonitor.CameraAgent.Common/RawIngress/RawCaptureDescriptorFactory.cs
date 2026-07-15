@@ -41,7 +41,7 @@ internal static class RawCaptureDescriptorFactory
         var frame = submission.Result.Frame ?? throw new ArgumentException("A raw frame is required.", nameof(submission));
         var timing = ResolveTiming(submission, frame, durableIngressUtc);
         var requestedSetpoint = submission.Request.RequestedSetpoint;
-        var rigElement = JsonSerializer.SerializeToElement(configuration.Rig);
+        var rigElement = CaptureContractJson.SerializeToElement(configuration.Rig);
         var sensorElement = JsonSerializer.SerializeToElement(configuration.Rig.Sensor);
         var processingSteps = configuration.ResolveProcessingSteps();
         var processingElement = JsonSerializer.SerializeToElement(processingSteps);

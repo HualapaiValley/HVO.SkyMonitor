@@ -61,7 +61,13 @@ public static class CaptureContractJson
     public static string ComputeCanonicalJsonSha256<T>(T value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(value, SerializerOptions));
+        return ComputeCanonicalJsonSha256(SerializeToElement(value));
+    }
+
+    public static JsonElement SerializeToElement<T>(T value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return JsonSerializer.SerializeToElement(value, SerializerOptions);
     }
 
     public static string ComputeManifestSha256(ArtifactManifestV2 manifest)
