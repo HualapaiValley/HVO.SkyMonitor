@@ -19,6 +19,10 @@ while preserving the required independent review focus.
 
 One model may implement an issue, but performance-sensitive, migration-heavy, or
 cross-host issues should use independent review perspectives before merge.
+The coordinator should launch non-overlapping research, review, failure-analysis,
+and evidence roles concurrently. Independent implementation issues may run in
+parallel only in isolated worktrees with stable merged dependencies; default to
+at most two active implementation issues.
 
 ## 2. Universal Implementation Prompt
 
@@ -31,6 +35,11 @@ Use docs/planning/requirements-crosswalk.md to find retained requirements and
 docs/planning/performance-validation.md for canonical workloads and evidence.
 Inspect the current branch, worktree, recent commits, current tests, durable
 formats, and open PR state. Preserve unrelated changes.
+
+Before implementation, post a plain-language synopsis under 120 words covering
+why this issue is next, the outcome, the practical benefit, what it unlocks, and
+what is explicitly not included. Avoid architecture jargon where ordinary
+language is sufficient.
 
 Implement the smallest coherent issue slice. Keep CameraAgent and LogicHost
 independent. Put transport-neutral contracts in AgentCore, astronomy in
@@ -48,9 +57,16 @@ Add focused, integration, migration, fault, output, and UI tests as applicable.
 Validate produced bytes, checksums, numerical results, provenance, lineage, and
 durable state. Inspect logs, metrics, traces, and health behavior.
 
-Follow the complete build/test/push/review/correct/replacement-CI/resolve/merge
-workflow. Never merge a non-green or stale pre-correction head. If blocked,
-leave the required handoff in the issue and epic #89.
+Use the execution protocol's validation ladder: focused inner-loop tests, one
+stable-candidate local gate, affected correction gates, and complete current-head
+replacement CI. Do not repeat long suites when the validated boundary did not
+change. Follow the complete push/review/correct/resolve/merge workflow. After a
+merge, the roadmap coordinator automatically selects, claims, and begins the
+next candidate-ready issue after posting its synopsis and `READY` signal, unless
+the operator asked to pause or a real decision/blocker prevents continuation.
+Non-coordinator implementing agents return completion state to the coordinator
+instead of selecting from the queue. If blocked, leave the required handoff in
+the issue and epic #89.
 ```
 
 ## 3. Foundation and Contracts Prompt
@@ -201,7 +217,10 @@ Inject failures at every commit boundary. Verify checksums, numerical outputs,
 lineage, journal/database/object state, logs, metrics, traces, and health. Keep
 external, soak, Stellarium, and future hardware workflows separately labeled.
 Strengthen CI without hiding failures or weakening coverage. Produce a handoff
-that names the exact next issue and command.
+that names the exact next issue and command. If acting as the roadmap coordinator
+and the current issue merges, execute the next claimed handoff automatically
+rather than waiting for an operator `continue` message. Other agents return the
+handoff to the coordinator.
 ```
 
 ## 12. Research and Review Subagent Prompt

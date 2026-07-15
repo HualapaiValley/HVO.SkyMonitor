@@ -59,13 +59,25 @@ Do not introduce guidance here that conflicts with those sources.
 
 ## Delivery
 
-Every roadmap PR follows the complete local build/test, push, review, correction,
-replacement-CI, thread-resolution, and current-head-green merge process in
-`docs/planning/agent-execution.md`. Performance-sensitive changes use canonical
-workloads and report relevant I/O, CPU, allocations/working set, throughput,
-latency, and backlog. Data-producing changes validate checksums, numerical
-invariants, provenance, lineage, and durable state. Host/worker changes inspect
-logs, metrics, traces, health, and cardinality.
+Before implementation, post the execution protocol's plain-language synopsis:
+why the issue is next, its practical outcome and benefit, what it unlocks, and
+the main exclusion. Every roadmap PR follows the validation ladder and complete
+push, review, correction, replacement-CI, thread-resolution, and
+current-head-green merge process in `docs/planning/agent-execution.md`. Use
+focused inner-loop tests, one stable-candidate local gate, affected correction
+gates, and complete final CI rather than repeating unchanged long suites.
+Performance-sensitive changes use canonical workloads and report relevant I/O,
+CPU, allocations/working set, throughput, latency, and backlog. Data-producing
+changes validate checksums, numerical invariants, provenance, lineage, and
+durable state. Host/worker changes inspect logs, metrics, traces, health, and
+cardinality.
 
 If work stops or blocks, leave the required resumable issue/epic handoff with
 the exact next action.
+After a merge, the roadmap coordinator automatically claims and begins the
+highest-priority candidate-ready issue after posting its synopsis and `READY`
+signal, unless the operator explicitly paused execution or a real
+blocker/no-candidate-ready-work condition exists. Other agents return completion
+state to the coordinator. Independent issues may run concurrently only in
+isolated worktrees with stable dependencies, epic #89 claims, and safe
+machine/Docker capacity.

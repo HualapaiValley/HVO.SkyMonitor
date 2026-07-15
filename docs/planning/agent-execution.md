@@ -3,8 +3,10 @@
 This protocol applies to every issue in the
 [Virtual-First Platform Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/1)
 and [epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89).
-It is designed so work can stop, hand off, and resume without losing decisions,
-validation state, or the exact next action.
+It is designed for continuous roadmap execution: work may stop, hand off, and
+resume without losing decisions, validation state, or the exact next action,
+but a completed issue does not require an operator prompt before the next ready
+issue starts.
 
 ## 1. Authority Order
 
@@ -32,10 +34,23 @@ Before changing files:
 4. Preserve unrelated worktree changes.
 5. Create one issue-focused branch from current `main`.
 6. Map existing implementation, tests, migrations, configuration, and docs.
-7. Record unresolved product or architecture decisions in the issue.
-8. Capture a behavior and performance baseline where the issue is
+7. Post the plain-language synopsis defined below before implementation.
+8. Record unresolved product or architecture decisions in the issue.
+9. Capture a behavior and performance baseline where the issue is
    performance-sensitive.
-9. Define acceptance tests before selecting an implementation.
+10. Define acceptance tests before selecting an implementation.
+
+The synopsis is a short issue comment or issue-body section that a reader can
+understand without knowing the codebase. Keep it under 120 words and include:
+
+```markdown
+## Plain-Language Synopsis
+- Why now: dependency or problem that makes this the next useful step.
+- Outcome: what will work when the issue is complete.
+- Benefit: who or what becomes safer, faster, or easier to operate.
+- Unlocks: the next roadmap capability enabled by this issue.
+- Not included: the most likely scope misconception.
+```
 
 Do not begin a downstream schema, worker, UI, or detector issue against an
 unmerged speculative contract unless the parent issues explicitly coordinate a
@@ -63,7 +78,71 @@ stacked PR series.
   requires it.
 - Add comments only where the code would otherwise hide a non-obvious invariant.
 
-## 4. Performance Protocol
+## 4. Throughput and Validation Economy
+
+Quality gates are unchanged, but expensive work must not be repeated without a
+reason.
+
+### Coordination
+
+- Epic #89 names one roadmap coordinator for the active execution session. Only
+  that coordinator selects or claims the next issue; implementing agents return
+  completion/blocker state to it rather than independently consuming the queue.
+- Keep one implementing agent per issue branch. Use research, review, failure
+  analysis, and evidence agents concurrently when their work does not overlap.
+- The roadmap coordinator may maintain at most two active implementation issues
+  globally by default, including issues waiting on CI or review. Raise that limit
+  only when machine and Docker capacity are known to support it.
+- Before creating a worktree, claim the issue in epic #89 with its branch,
+  worktree owner, and dependency base. Exclude every claimed or active issue from
+  subsequent selection and clear the claim after merge or explicit release.
+- Concurrent issues require stable merged dependencies and separate branches
+  and isolated git worktrees. Agents must never edit the same worktree.
+- Do not start a downstream issue from an unmerged contract or migration unless
+  the issues explicitly define a stacked PR sequence.
+- Assign each expensive test, benchmark, or evidence run one owner. Other agents
+  consume its recorded result instead of launching the same run.
+- Avoid running multiple Testcontainers or full-resolution performance suites
+  concurrently against shared Docker resources unless their isolation and
+  capacity have been verified.
+- While CI runs, use available agents for independent review, next-ready-issue
+  discovery, synopsis preparation, or non-overlapping work rather than polling
+  as the only activity.
+
+### Validation ladder
+
+Record commands and the source commit or worktree fingerprint they validate.
+Invalidate evidence only when a later change can affect that boundary.
+
+1. **Inner loop:** build the changed project when needed and run the smallest
+   faithful focused test without coverage. Do not run the solution-wide matrix
+   after every edit.
+2. **Boundary checkpoint:** after a coherent contract, persistence, host, or UI
+   slice, run the affected project tests and affected integration boundary.
+   Independent affected gates may run concurrently when resources permit.
+3. **Candidate gate:** once the implementation is stable, run the complete local
+   issue gate, canonical coverage collection, output/observability review, and
+   applicable performance harness once per unchanged candidate before the first
+   push. Correct a failed gate and rerun every failed or invalidated portion;
+   preserve unaffected evidence only when its recorded boundary did not change.
+4. **Review correction:** run the reproducer, focused regression, and full
+   affected gate. Let replacement CI provide the complete matrix unless the
+   correction changes shared contracts, migrations, test infrastructure,
+   category/coverage logic, or another cross-cutting boundary with uncertain
+   blast radius. For those exceptions, rerun the complete local candidate gate
+   or explicitly enumerate and run every affected local gate before push.
+5. **Performance correction:** rerun a long performance harness only when code,
+   configuration, fixtures, workload parameters, or measurement logic on the
+   measured path changed. Documentation-only and unrelated test changes do not
+   invalidate it.
+6. **Current-head CI:** always require the complete protected CI matrix after the
+   final pushed correction. A stale green run never satisfies the merge gate.
+
+If a supposedly focused correction exposes a cross-boundary failure, expand to
+the affected integration gate immediately. Optimization means avoiding duplicate
+evidence, not weakening failure investigation or the final merge bar.
+
+## 5. Performance Protocol
 
 Performance is a first-class design objective. More complexity is acceptable
 when measured benefit is meaningful, bounded, and maintainable.
@@ -102,7 +181,7 @@ Rules:
 Use the canonical workloads, measurement boundaries, phase-specific evidence,
 and complexity decision rule in `docs/planning/performance-validation.md`.
 
-## 5. Test and Output Validation
+## 6. Test and Output Validation
 
 Select tests according to the changed boundary:
 
@@ -131,7 +210,7 @@ Data-producing behavior must validate outputs, not only status codes:
 - Verify database state, object state, journal state, and retention holds.
 - Verify duplicate, retry, restart, and partial-failure convergence.
 
-## 6. Runtime Observability Review
+## 7. Runtime Observability Review
 
 When a change runs a host, worker, queue, or service, inspect:
 
@@ -154,7 +233,7 @@ event IDs/log fields, metric names/units/allowed bounded labels, span boundaries
 health transitions, collection/assertion commands, and retained artifact path.
 Use `N/A` with a reason for boundaries the issue does not operate.
 
-## 7. Standard Local Validation
+## 8. Standard Local Validation
 
 Use the SDK pinned by `global.json` and the solution
 `HVO.SkyMonitor.v9.slnx`.
@@ -179,8 +258,10 @@ dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
 
 The positive Unit filter must pass with an invalid Docker endpoint. Integration
 is a separate required gate and requires Docker for the Testcontainers
-assemblies. Run focused tests during development, then run the issue's full
-required gate before push.
+assemblies. This complete block is the candidate gate, not the default inner
+loop. Run focused tests during development, run the candidate gate once when the
+implementation is stable, and follow the correction rules in section 4 after
+review feedback.
 
 Additional issue-specific gates may include:
 
@@ -194,13 +275,13 @@ Additional issue-specific gates may include:
 - Browser automation.
 - Accelerated soak or external Stellarium workflow.
 
-## 8. Required PR Lifecycle
+## 9. Required PR Lifecycle
 
 Every PR follows this sequence:
 
 1. Inspect worktree, diff, recent log, issue, and dependencies.
-2. Run local build, focused tests, full required tests, output validation, and
-   performance checks.
+2. Use the validation ladder: focused tests while developing, then one complete
+   candidate gate with output and applicable performance evidence before push.
 3. Commit only intended files.
 4. Push the issue branch.
 5. Open a PR linked to the issue and epic #89.
@@ -211,7 +292,8 @@ Every PR follows this sequence:
 9. Correct every actionable review finding.
 10. Push correction commits; do not hide corrections through an unrequested
     amend or force push.
-11. Wait for replacement CI on the corrected head.
+11. Run focused and affected local correction gates, then wait for the complete
+    replacement CI matrix on the corrected head.
 12. Reply to review threads with the correction commit and evidence.
 13. Resolve threads only after the correction exists.
 14. Merge only when the current head is mergeable, every required current-head
@@ -221,7 +303,7 @@ Every PR follows this sequence:
 
 A pre-correction green run is stale and does not satisfy the gate.
 
-## 9. Non-Green Recovery
+## 10. Non-Green Recovery
 
 If any build, test, runtime, review, or deployment check is not green:
 
@@ -232,14 +314,15 @@ If any build, test, runtime, review, or deployment check is not green:
 4. Correct product code, tests, configuration, migration, or CI rather than
    suppressing the symptom.
 5. Add regression coverage when the failure represents a product defect.
-6. Rerun the focused failure and the full affected gate.
+6. Rerun the focused failure and the full affected gate; do not rerun unrelated
+   long suites locally when replacement CI will cover them.
 7. Push a new correction and require replacement CI.
 8. Keep the PR open and the issue active until green.
 
 Do not merge around a failure, weaken a test without evidence, skip hooks, hide
 warnings, or treat a canceled/timed-out check as success.
 
-## 10. Handoff and Continuation
+## 11. Handoff and Continuous Execution
 
 An agent that stops, reaches a blocker, or exhausts context must leave this
 handoff in the issue or epic:
@@ -276,9 +359,27 @@ handoff in the issue or epic:
 The overall epic tracks current phase, completed PRs, active branch/PR, blockers,
 validation state, performance observations, and next exact action.
 
-## 11. Ready Signal
+After a successful merge, the roadmap coordinator must:
 
-An issue is ready for an implementation agent only when:
+1. Confirm issue closure, update epic #89, and synchronize `main`.
+2. Recompute the unclaimed candidate-ready queue defined in section 12.
+3. Fill only available implementation slots, up to the global maximum. Select by
+   explicit epic priority first, then dependency critical-path unlocks, roadmap
+   phase order, and finally oldest issue number.
+4. For each selected issue, post its plain-language synopsis and `READY` signal,
+   record its claim in epic #89, create its issue branch/worktree, and begin the
+   lifecycle without asking the operator to say `continue`.
+5. Start a second independent issue only when a slot is available and doing so
+   will not compete for the same contracts, migrations, or Docker-heavy gates.
+
+Pause automatic continuation only when the operator explicitly asks, no issue is
+candidate-ready, a product/architecture decision requires operator input, or
+safe execution capacity is exhausted. Context exhaustion requires a handoff to a
+successor, not an operator prompt merely to continue.
+
+## 12. Ready Signal
+
+An issue is candidate-ready for coordinator selection when:
 
 - Its dependencies are merged or explicitly coordinated.
 - Its scope and exclusions are unambiguous.
@@ -288,9 +389,16 @@ An issue is ready for an implementation agent only when:
   requirements crosswalk.
 - No unresolved decision would invalidate implementation.
 - The issue links this protocol and the relevant prompt section.
+- It is not already claimed or active in epic #89.
 
-When those conditions hold, update the issue or epic with:
+After the coordinator selects a candidate-ready issue, post its plain-language
+synopsis and update the issue or epic with:
 
 ```text
 READY: <issue number> - dependencies green, acceptance defined, no unresolved blocker.
 ```
+
+The issue becomes ready for an implementation agent only after that update. The
+ready update must include or link the synopsis. Detailed acceptance criteria
+remain authoritative; the synopsis explains why the work is worth doing and
+what it unlocks.

@@ -3,7 +3,7 @@ FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
 ARG TARGETARCH
 ARG TAILSCALE_VERSION=1.98.8
-ARG OPENCODE_VERSION=1.17.19
+ARG OPENCODE_VERSION=1.18.2
 
 ENV NUGET_XMLDOC_MODE=
 ENV PATH="/home/vscode/.dotnet/tools:/home/vscode/.opencode/bin:${PATH}"
@@ -39,11 +39,11 @@ RUN apt-get update \
     && case "$architecture" in \
     amd64) \
     opencode_archive="opencode-linux-x64-baseline.tar.gz"; \
-    opencode_sha256="e130b556a7df65284f44856ac145ddc4b46c72c9e3a6e660d68cc9700b5352c7" \
+    opencode_sha256="88f9b79f44b02e8e7c33e528832047c177b0cb20939484afaff22425a47f3d81" \
     ;; \
     arm64) \
     opencode_archive="opencode-linux-arm64.tar.gz"; \
-    opencode_sha256="28503633a2268c7177c6ef26cc9014821d758a706ff82b96028611ba740473c3" \
+    opencode_sha256="93352b30d37d8da2e5c226085f1afbf37cf57cfcecedc813520ff2d0f8581540" \
     ;; \
     *) \
     echo "Unsupported OpenCode architecture: $architecture" >&2; \
