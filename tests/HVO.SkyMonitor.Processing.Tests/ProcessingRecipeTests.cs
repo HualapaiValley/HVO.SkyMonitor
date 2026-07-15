@@ -216,8 +216,9 @@ public sealed class ProcessingRecipeTests
         var invalidRole = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.EncodedPreview,
             EmptyOptions(),
-            ProcessingInputSelector.Combined(),
-            [mono with { ArtifactId = Guid.NewGuid(), Role = FrameArtifactRole.Combined }],
+            ProcessingInputSelector.RecipeResult(
+                FrameArtifactRole.Metadata, "invalid", mono.RecipeIdentitySha256),
+            [mono with { ArtifactId = Guid.NewGuid(), Role = FrameArtifactRole.Metadata, Variant = "invalid" }],
             "invalid")).ConfigureAwait(false);
         var missing = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.EncodedPreview,

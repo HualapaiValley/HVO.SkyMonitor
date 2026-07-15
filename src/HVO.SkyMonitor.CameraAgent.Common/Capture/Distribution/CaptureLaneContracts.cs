@@ -36,7 +36,9 @@ public sealed record CaptureLaneHandlerContext(
     int Attempt,
     CameraModuleConfig Configuration,
     CaptureLoopSubmission Submission,
-    RawCaptureReceipt RawCapture);
+    RawCaptureReceipt RawCapture,
+    long WorkId = 0,
+    string? LeaseToken = null);
 
 public readonly record struct CaptureLaneHandlerResult(
     CaptureLaneHandlerOutcome Outcome,

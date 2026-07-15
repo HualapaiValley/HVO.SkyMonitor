@@ -6,6 +6,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using Microsoft.Extensions.Logging;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Storage;
 
@@ -87,29 +88,79 @@ public sealed class FileSystemFrameStorageService(
             ValidateVersionedDescriptorAgreement(descriptor, artifact, frame);
         }
 
+        var directoryExisted = Directory.Exists(directory);
         Directory.CreateDirectory(directory);
-        var payloadPublished = false;
-        var sidecarPublished = false;
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, directory);
+        if (!directoryExisted)
+        {
+            RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
+        }
+        var payloadExists = File.Exists(payloadPath);
+        var sidecarExists = File.Exists(metadataPath);
+        var unversionedSidecar = descriptor is null
+            ? JsonSerializer.SerializeToUtf8Bytes(metadata, SerializerOptions)
+            : null;
+        if (descriptor is not null)
+        {
+            await ValidateExistingVersionedEvidenceAsync(
+                storageRoot,
+                descriptor,
+                payloadPath,
+                metadataPath,
+                relativePayloadPath,
+                payloadExists,
+                sidecarExists,
+                cancellationToken).ConfigureAwait(false);
+            if (payloadExists && sidecarExists)
+            {
+                RawIngressFileStore.SyncFile(storageRoot, payloadPath);
+                RawIngressFileStore.SyncFile(storageRoot, metadataPath);
+                RawIngressFileStore.SyncDirectory(directory);
+            }
+        }
+        else
+        {
+            await ValidateExistingUnversionedEvidenceAsync(
+                storageRoot,
+                frame.PixelData,
+                unversionedSidecar!,
+                payloadPath,
+                metadataPath,
+                payloadExists,
+                sidecarExists,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         try
         {
-            await WriteAtomicallyAsync(payloadPath, frame.PixelData, cancellationToken).ConfigureAwait(false);
-            payloadPublished = true;
+            if (!payloadExists)
+            {
+                await WriteAtomicallyAsync(storageRoot, payloadPath, frame.PixelData, cancellationToken).ConfigureAwait(false);
+            }
 
             var sidecar = descriptor is null
-                ? JsonSerializer.SerializeToUtf8Bytes(metadata, SerializerOptions)
+                ? unversionedSidecar!
                 : await CreateVersionedSidecarAsync(
                     descriptor, payloadPath, relativePayloadPath, frame.Metadata.Scene, cancellationToken).ConfigureAwait(false);
-            await WriteAtomicallyAsync(metadataPath, sidecar, cancellationToken).ConfigureAwait(false);
-            sidecarPublished = true;
+            if (!sidecarExists)
+            {
+                await WriteAtomicallyAsync(storageRoot, metadataPath, sidecar, cancellationToken).ConfigureAwait(false);
+            }
 
             var indexDirectory = Path.Combine(storageRoot, "index");
+            var indexDirectoryExisted = Directory.Exists(indexDirectory);
             Directory.CreateDirectory(indexDirectory);
+            if (!indexDirectoryExisted)
+            {
+                RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, indexDirectory);
+            }
             var indexPath = Path.Combine(indexDirectory, $"frames_{timestamp:yyyy-MM-dd}.jsonl");
             var indexGate = FrameIndexLock.ForRoot(storageRoot);
             await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await AppendIndexEntryAsync(indexPath, metadata with { Metadata = null }, cancellationToken).ConfigureAwait(false);
+                await EnsureIndexEntryAsync(indexPath, metadata with { Metadata = null }, cancellationToken).ConfigureAwait(false);
+                RawIngressFileStore.SyncDirectory(indexDirectory);
             }
             finally
             {
@@ -118,17 +169,7 @@ public sealed class FileSystemFrameStorageService(
         }
         catch
         {
-            if (descriptor is not null)
-            {
-                if (sidecarPublished)
-                {
-                    TryDelete(metadataPath);
-                }
-                if (payloadPublished)
-                {
-                    TryDelete(payloadPath);
-                }
-            }
+            // Published immutable evidence is left for idempotent replay and reconciliation.
             throw;
         }
 
@@ -152,9 +193,6 @@ public sealed class FileSystemFrameStorageService(
             descriptor.Artifact.ArtifactId != artifact.ArtifactId ||
             descriptor.Artifact.Role != artifact.Role ||
             !descriptor.Artifact.SourceArtifactIds.SequenceEqual(sources) ||
-            (artifact.RecipeVersion is null
-                ? artifact.Role != FrameArtifactRole.Raw
-                : !string.Equals(descriptor.Artifact.Recipe.ImplementationVersion, artifact.RecipeVersion, StringComparison.Ordinal)) ||
             descriptor.Layout.Width != frame.Width ||
             descriptor.Layout.Height != frame.Height ||
             descriptor.Layout.PixelFormat != frame.PixelFormat ||
@@ -170,6 +208,40 @@ public sealed class FileSystemFrameStorageService(
             throw new ArgumentException(
                 $"Reconstruction descriptor does not match the stored artifact ({validation.ReasonCode ?? "descriptor.mismatch"}).",
                 nameof(descriptor));
+        }
+    }
+
+    private static async ValueTask ValidateExistingUnversionedEvidenceAsync(
+        string storageRoot,
+        ReadOnlyMemory<byte> expectedPayload,
+        ReadOnlyMemory<byte> expectedSidecar,
+        string payloadPath,
+        string sidecarPath,
+        bool payloadExists,
+        bool sidecarExists,
+        CancellationToken cancellationToken)
+    {
+        if (payloadExists)
+        {
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, payloadPath);
+            using var payload = new FileStream(
+                payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                bufferSize: 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var checksum = await PayloadChecksum.ComputeSha256Async(payload, cancellationToken).ConfigureAwait(false);
+            var expectedChecksum = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(expectedPayload.Span));
+            if (!string.Equals(checksum, expectedChecksum, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("Existing frame payload conflicts with the requested artifact identity.");
+            }
+        }
+        if (sidecarExists)
+        {
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, sidecarPath);
+            var existing = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+            if (!existing.AsSpan().SequenceEqual(expectedSidecar.Span))
+            {
+                throw new InvalidDataException("Existing frame sidecar conflicts with the requested artifact identity.");
+            }
         }
     }
 
@@ -196,17 +268,40 @@ public sealed class FileSystemFrameStorageService(
             scene));
     }
 
-    private static void TryDelete(string path)
+    private static async ValueTask ValidateExistingVersionedEvidenceAsync(
+        string storageRoot,
+        ReconstructionDescriptor descriptor,
+        string payloadPath,
+        string sidecarPath,
+        string relativePayloadPath,
+        bool payloadExists,
+        bool sidecarExists,
+        CancellationToken cancellationToken)
     {
-        try
+        if (payloadExists)
         {
-            File.Delete(path);
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, payloadPath);
+            using var payload = new FileStream(
+                payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                bufferSize: 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var checksum = await PayloadChecksum.ComputeSha256Async(payload, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(checksum, descriptor.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("Existing derivative payload conflicts with the requested output identity.");
+            }
         }
-        catch (IOException)
+        if (sidecarExists)
         {
-        }
-        catch (UnauthorizedAccessException)
-        {
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, sidecarPath);
+            var parsed = CaptureContractJson.ParseManifest(
+                await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false));
+            var existing = parsed.Document?.Manifest;
+            if (!parsed.IsValid || existing is null ||
+                !string.Equals(existing.IdempotencyKey, CaptureContractJson.ComputeDescriptorSha256(descriptor), StringComparison.Ordinal) ||
+                !string.Equals(existing.RelativeArtifactPath, relativePayloadPath, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Existing derivative sidecar conflicts with the requested output identity.");
+            }
         }
     }
 
@@ -295,18 +390,51 @@ public sealed class FileSystemFrameStorageService(
             }
             finally
             {
+                FrameIndexIdentityCache.Invalidate(indexPath);
                 indexGate.Release();
             }
         }
     }
 
-    private static async Task WriteAtomicallyAsync(string destinationPath, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
+    private static async Task WriteAtomicallyAsync(
+        string storageRoot,
+        string destinationPath,
+        ReadOnlyMemory<byte> content,
+        CancellationToken cancellationToken)
     {
         var temporaryPath = string.Concat(destinationPath, ".", Guid.NewGuid().ToString("N"), ".tmp");
         try
         {
-            await File.WriteAllBytesAsync(temporaryPath, content, cancellationToken).ConfigureAwait(false);
-            File.Move(temporaryPath, destinationPath, overwrite: false);
+            using (var stream = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                64 * 1024,
+                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
+                stream.Flush(flushToDisk: true);
+#pragma warning restore CA1849
+            }
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, Path.GetDirectoryName(destinationPath)!);
+            try
+            {
+                File.Move(temporaryPath, destinationPath, overwrite: false);
+            }
+            catch (IOException) when (File.Exists(destinationPath))
+            {
+                var existing = await File.ReadAllBytesAsync(destinationPath, cancellationToken).ConfigureAwait(false);
+                if (!existing.AsSpan().SequenceEqual(content.Span))
+                {
+                    throw new InvalidDataException("Existing frame evidence conflicts with the requested immutable content.");
+                }
+                return;
+            }
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
+            RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationPath)!);
         }
         finally
         {
@@ -582,6 +710,34 @@ public sealed class FileSystemFrameStorageService(
         await stream.WriteAsync(line, cancellationToken).ConfigureAwait(false);
         await stream.WriteAsync(NewLineBytes, cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
+        stream.Flush(flushToDisk: true);
+#pragma warning restore CA1849
+    }
+
+    private static async Task EnsureIndexEntryAsync(
+        string indexPath,
+        StoredFrameMetadata metadata,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(indexPath))
+        {
+            FrameIndexIdentityCache.Invalidate(indexPath);
+        }
+        var artifactIds = FrameIndexIdentityCache.GetOrCreate(indexPath, static path =>
+            File.Exists(path)
+                ? File.ReadLines(path)
+                    .Select(line => TryGetArtifactId(line, out var artifactId) ? artifactId : Guid.Empty)
+                    .Where(static artifactId => artifactId != Guid.Empty)
+                    .ToHashSet()
+                : []);
+        if (artifactIds.Contains(metadata.ArtifactId))
+        {
+            RawIngressFileStore.SyncFile(Path.GetDirectoryName(Path.GetDirectoryName(indexPath)!)!, indexPath);
+            return;
+        }
+        await AppendIndexEntryAsync(indexPath, metadata, cancellationToken).ConfigureAwait(false);
+        artifactIds.Add(metadata.ArtifactId);
     }
 
     private static IEnumerable<string> GetCandidateIndexPaths(string storageRoot, DateOnly utcDate)
@@ -663,4 +819,34 @@ internal static class FrameIndexLock
 
     internal static SemaphoreSlim ForRoot(string storageRoot)
         => Gates.GetOrAdd(Path.GetFullPath(storageRoot), static _ => new SemaphoreSlim(1, 1));
+}
+
+internal static class FrameIndexIdentityCache
+{
+    private const int MaximumCachedIndexes = 32;
+    private static readonly ConcurrentDictionary<string, HashSet<Guid>> Entries = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+    internal static HashSet<Guid> GetOrCreate(string indexPath, Func<string, HashSet<Guid>> factory)
+    {
+        indexPath = Path.GetFullPath(indexPath);
+        var result = Entries.GetOrAdd(indexPath, factory);
+        if (Entries.Count > MaximumCachedIndexes)
+        {
+            foreach (var key in Entries.Keys.Where(key => !string.Equals(
+                key,
+                indexPath,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)))
+            {
+                if (Entries.Count <= MaximumCachedIndexes)
+                {
+                    break;
+                }
+                Entries.TryRemove(key, out _);
+            }
+        }
+        return result;
+    }
+
+    internal static void Invalidate(string indexPath) => Entries.TryRemove(Path.GetFullPath(indexPath), out _);
 }

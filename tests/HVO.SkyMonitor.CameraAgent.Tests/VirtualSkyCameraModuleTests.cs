@@ -9,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -89,6 +90,27 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
+    public async Task FullAsi174McTelescopeProfileBuildsRgbCompatibleGraph()
+    {
+        var config = await LoadProfileAsync("virtual-asi174mc-telescope.full.json").ConfigureAwait(false);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+        using var provider = services.BuildServiceProvider();
+
+        var graph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config);
+
+        CollectionAssert.AreEqual(ExpectedRgbGraph, graph.Nodes.Select(static node => node.Id).ToArray());
+        graph.DisposeSteps();
+
+        var legacyGraph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(
+            config with { ProcessingSteps = [] });
+        Assert.IsFalse(legacyGraph.Nodes.Any(static node => node.RecipeName == BuiltInProcessingRecipes.RollingMean));
+        Assert.IsFalse(legacyGraph.Nodes.Any(static node => node.RecipeName == BuiltInProcessingRecipes.LinearNormalization));
+        legacyGraph.DisposeSteps();
+    }
+
+    [TestMethod]
     public async Task FullAsi174McRgbProfileHasFixedFrameEvidenceAndConfiguredPipeline()
     {
         var config = await LoadProfileAsync("virtual-asi174mc.full.json").ConfigureAwait(false);
@@ -143,6 +165,7 @@ public sealed class VirtualSkyCameraModuleTests
     }
     private static readonly DateTimeOffset FixtureUtc = DateTimeOffset.Parse(
         "2025-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+    private static readonly string[] ExpectedRgbGraph = ["Preview", "Annotation"];
     private static readonly string[] ExpectedTestConstellationIds = ["TST"];
     private static readonly CanonicalAsi174Expectation[] CanonicalAsi174Expectations =
         LoadCanonicalAsi174Expectations();

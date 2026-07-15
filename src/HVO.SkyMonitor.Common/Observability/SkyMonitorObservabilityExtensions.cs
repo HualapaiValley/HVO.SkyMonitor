@@ -40,6 +40,10 @@ public static class SkyMonitorObservabilityExtensions
     {
         "Availability", "LaneCount", "PendingCount", "PendingBytes", "LeasedCount", "QuarantineCount"
     };
+    private static readonly HashSet<string> CaptureProcessingHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Availability", "PendingCount", "RetryCount", "TerminalCount", "OldestPendingAgeSeconds", "Reason"
+    };
 
     /// <summary>
     /// Configures the shared HVO telemetry stack and OTLP export.
@@ -60,8 +64,10 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Capture");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
             options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
         });
 
@@ -74,6 +80,7 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Capture")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.RawIngress")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.CaptureLanes")
+                    .AddMeter("HVO.SkyMonitor.CameraAgent.ProcessingGraph")
                     .AddOtlpExporter());
         }
 
@@ -143,6 +150,7 @@ public static class SkyMonitorObservabilityExtensions
             "catalog" => CatalogHealthDataKeys,
             "raw-ingress" => RawIngressHealthDataKeys,
             "capture-lanes" => CaptureLaneHealthDataKeys,
+            "capture-processing" => CaptureProcessingHealthDataKeys,
             _ => null
         };
         return allowedKeys is null

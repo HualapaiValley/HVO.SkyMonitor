@@ -18,16 +18,6 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
         CancellationToken cancellationToken) =>
         _executor.ExecuteAsync(request, cancellationToken);
 
-    internal static void ThrowIfFailure(ProcessingOutcome outcome)
-    {
-        ArgumentNullException.ThrowIfNull(outcome);
-        if (outcome.Status is ProcessingOutcomeStatus.RetryableFailure or ProcessingOutcomeStatus.TerminalFailure)
-        {
-            throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture,
-                $"Canonical processing returned {outcome.Status}: {outcome.ReasonCode} ({outcome.Field})."));
-        }
-    }
-
     public static ProcessingArtifact CreateArtifact(
         CameraModuleConfig config,
         FrameArtifact artifact,
@@ -66,6 +56,21 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             product.Payload,
             source.Metadata with { SourceId = sourceId });
     }
+
+    internal static ProcessingInputSelector CreateSelector(
+        FrameArtifact artifact,
+        ProcessingProduct? product,
+        string fallbackVariant)
+        => artifact.Role switch
+        {
+            FrameArtifactRole.Raw => ProcessingInputSelector.Raw(fallbackVariant),
+            FrameArtifactRole.Calibrated => ProcessingInputSelector.Calibrated(product?.Variant ?? fallbackVariant),
+            FrameArtifactRole.Combined => ProcessingInputSelector.Combined(product?.Variant ?? fallbackVariant),
+            _ when product is not null => ProcessingInputSelector.RecipeResult(
+                artifact.Role, product.Variant, product.Recipe.IdentitySha256),
+            _ => throw new InvalidOperationException(
+                $"Artifact role '{artifact.Role}' requires an exact canonical recipe identity.")
+        };
 
     private static FrameLayoutDescriptor CreateLayout(CameraModuleConfig config, CameraFrame frame)
     {

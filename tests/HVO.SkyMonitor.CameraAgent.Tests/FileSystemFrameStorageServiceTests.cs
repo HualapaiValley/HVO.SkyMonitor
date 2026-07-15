@@ -11,6 +11,112 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed class FileSystemFrameStorageServiceTests
 {
     [TestMethod]
+    public async Task SaveAsync_EquivalentVersionedOutput_IsIdempotent()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var (artifact, descriptor) = CreateVersionedArtifact();
+            using var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+
+            var first = await service.SaveAsync(root, artifact, descriptor, CancellationToken.None).ConfigureAwait(false);
+            var second = await service.SaveAsync(root, artifact, descriptor, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(first.AbsolutePath, second.AbsolutePath);
+            Assert.AreEqual(1, Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Count());
+            Assert.AreEqual(1, Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories).Count());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_ExistingCorruptUnversionedPayload_FailsClosed()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var frame = new CameraFrame(
+                DateTimeOffset.UnixEpoch, 2, 2, CameraPixelFormat.Mono8,
+                new byte[] { 1, 2, 3, 4 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+            var artifact = new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Raw, frame);
+            using var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var stored = await service.SaveAsync(root, artifact, CancellationToken.None).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(stored.AbsolutePath, new byte[] { 4, 3, 2, 1 }).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await service.SaveAsync(root, artifact, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task RemoveThenResave_RestoresIndexEntry()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var frame = new CameraFrame(
+                DateTimeOffset.UnixEpoch, 2, 2, CameraPixelFormat.Mono8,
+                new byte[] { 1, 2, 3, 4 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+            var artifact = new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Raw, frame);
+            using var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var stored = await service.SaveAsync(root, artifact, CancellationToken.None).ConfigureAwait(false);
+            await service.RemoveAsync(root, stored, artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+
+            await service.SaveAsync(root, artifact, CancellationToken.None).ConfigureAwait(false);
+            var listed = service.List(root, DateOnly.FromDateTime(frame.TimestampUtc.UtcDateTime), FrameArtifactRole.Raw, 10);
+
+            Assert.HasCount(1, listed);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_MatchingPayloadWithoutSidecar_CompletesPublication()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var (artifact, descriptor) = CreateVersionedArtifact();
+            using var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var first = await service.SaveAsync(root, artifact, descriptor, CancellationToken.None).ConfigureAwait(false);
+            File.Delete(Path.ChangeExtension(first.AbsolutePath, ".json"));
+
+            var recovered = await service.SaveAsync(root, artifact, descriptor, CancellationToken.None).ConfigureAwait(false);
+            var parsed = CaptureContractJson.ParseManifest(
+                await File.ReadAllBytesAsync(Path.ChangeExtension(recovered.AbsolutePath, ".json")).ConfigureAwait(false));
+
+            Assert.IsTrue(parsed.IsValid);
+            Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(descriptor), parsed.Document!.Manifest!.IdempotencyKey);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task SaveAsync_WithReconstructionDescriptor_WritesReadableV2Sidecar()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
@@ -65,6 +171,31 @@ public sealed class FileSystemFrameStorageServiceTests
                 Directory.Delete(root, recursive: true);
             }
         }
+    }
+
+    private static (FrameArtifact Artifact, ReconstructionDescriptor Descriptor) CreateVersionedArtifact()
+    {
+        var payload = new byte[8];
+        var descriptor = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono16, 2, 2, 4, payload).Descriptor;
+        var frame = new CameraFrame(
+            descriptor.Timing.ExposureStartedUtc,
+            descriptor.Layout.Width,
+            descriptor.Layout.Height,
+            descriptor.Layout.PixelFormat,
+            payload,
+            new FrameMetadata(
+                descriptor.Controls.EffectiveExposure,
+                descriptor.Controls.EffectiveGain,
+                descriptor.Controls.EffectiveTemperatureC!.Value,
+                descriptor.Artifact.SourceId,
+                Offset: descriptor.Controls.EffectiveOffset),
+            descriptor.Layout.StrideBytes);
+        return (new FrameArtifact(
+            descriptor.Artifact.ArtifactId,
+            descriptor.Artifact.Role,
+            frame,
+            descriptor.Artifact.SourceArtifactIds), descriptor);
     }
 
     [TestMethod]

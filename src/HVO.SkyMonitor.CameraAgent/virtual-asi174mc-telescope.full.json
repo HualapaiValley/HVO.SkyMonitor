@@ -33,5 +33,30 @@
       "dayGain": 1.0,
       "nightGain": 1.0
     }
-  }
+  },
+  "processingSteps": [
+    {
+      "id": "Preview",
+      "type": "Preview",
+      "order": 50,
+      "options": {
+        "enabled": true,
+        "recipeVersion": "rgb24-copy-v1"
+      }
+    },
+    {
+      "id": "Annotation",
+      "type": "Annotation",
+      "order": 75,
+      "dependsOn": ["Preview"],
+      "options": {
+        "enabled": true,
+        "drawLabels": true,
+        "drawConstellationLines": false,
+        "drawImageCircle": false,
+        "drawCardinalDirections": false,
+        "recipeVersion": "rgb24-telescope-annotation-v2"
+      }
+    }
+  ]
 }

@@ -41,8 +41,10 @@ internal sealed class NoOpFileStorageProcessingStep(
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            foreach (var artifact in artifacts.Artifacts.Values)
+            foreach (var artifact in context.AllArtifacts)
             {
+                var product = context.GetProcessingProduct(artifact.ArtifactId);
+                var policy = ResolvePolicy(artifact, product);
                 StoredFrameReference stored;
                 if (artifact.Role == FrameArtifactRole.Raw && context.RawCapture is { } ingress)
                 {
@@ -54,16 +56,30 @@ internal sealed class NoOpFileStorageProcessingStep(
                 }
                 else
                 {
-                    stored = await _frameStorageService.SaveAsync(Options.StorageRoot, artifact, cancellationToken).ConfigureAwait(false);
+                    stored = product is not null && context.RawCapture is { } rawCapture
+                        ? await _frameStorageService.SaveAsync(
+                            Options.StorageRoot,
+                            artifact,
+                            DerivativeDescriptorFactory.Create(
+                                rawCapture.Manifest.Descriptor,
+                                artifact.ArtifactId,
+                                artifact.Frame.Metadata.SourceId ?? Name,
+                                product),
+                            cancellationToken).ConfigureAwait(false)
+                        : await _frameStorageService.SaveAsync(
+                            Options.StorageRoot, artifact, cancellationToken).ConfigureAwait(false);
                 }
-                if (Options.QueueForUpload)
+                if (policy?.QueueForUpload ?? Options.QueueForUpload)
                 {
                     var captureId = context.RawCapture?.Manifest.Descriptor.Capture.CaptureId ?? artifacts.Raw.ArtifactId;
+                    var uploadRecipeVersion = product is null
+                        ? artifact.RecipeVersion ?? "raw-v1"
+                        : product.OutputIdentitySha256;
                     await _artifactOutbox.EnqueueAsync(Options.StorageRoot, new ArtifactUploadManifest(
                         "v1", context.Config.AgentId, artifact.ArtifactId, captureId, artifact.Role,
                         MediaTypeFor(artifact.Frame.PixelFormat), artifact.Frame.PixelData.Length,
                         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(artifact.Frame.PixelData.Span)),
-                        artifact.Frame.TimestampUtc, artifact.RecipeVersion ?? "raw-v1", stored.RelativePath,
+                        artifact.Frame.TimestampUtc, uploadRecipeVersion, stored.RelativePath,
                         artifact.Frame.Metadata.Scene), cancellationToken).ConfigureAwait(false);
                 }
             }
@@ -92,6 +108,16 @@ internal sealed class NoOpFileStorageProcessingStep(
 
     }
 
+    private ArtifactStoragePolicyOptions? ResolvePolicy(FrameArtifact artifact, HVO.SkyMonitor.Processing.ProcessingProduct? product)
+        => (Options.Policies ?? [])
+            .Where(policy => policy.Role is null || policy.Role == artifact.Role)
+            .Where(policy => policy.Variant is null || string.Equals(policy.Variant, product?.Variant, StringComparison.Ordinal))
+            .Where(policy => policy.RecipeName is null || string.Equals(
+                policy.RecipeName, product?.Recipe.Descriptor.Name, StringComparison.Ordinal))
+            .OrderByDescending(static policy =>
+                (policy.Role is null ? 0 : 1) + (policy.Variant is null ? 0 : 1) + (policy.RecipeName is null ? 0 : 1))
+            .FirstOrDefault();
+
     private static bool IsStoredUnderRoot(StoredFrameReference storedFrame, string storageRoot)
         => string.Equals(
             Path.GetFullPath(Path.Combine(storageRoot, storedFrame.RelativePath)),
@@ -108,7 +134,7 @@ internal sealed class NoOpFileStorageProcessingStep(
     };
 }
 
-public sealed class NoOpFileStorageProcessingStepOptions
+public sealed class NoOpFileStorageProcessingStepOptions : IValidatableObject
 {
     [Required(AllowEmptyStrings = false)]
     public string StorageRoot { get; init; } = "/tmp/camera";
@@ -119,4 +145,45 @@ public sealed class NoOpFileStorageProcessingStepOptions
     public bool UpdateLatestFrame { get; init; } = true;
 
     public bool QueueForUpload { get; init; } = true;
+
+    public IReadOnlyList<ArtifactStoragePolicyOptions> Policies { get; init; } = [];
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        var selectors = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var policy in Policies ?? [])
+        {
+            if (policy.Role is null && policy.Variant is null && policy.RecipeName is null)
+            {
+                yield return new ValidationResult(
+                    "Artifact storage policies require at least one role, variant, or recipe selector.",
+                    [nameof(Policies)]);
+            }
+            if (policy.RetentionDays is { } retentionDays && retentionDays < RetentionDays)
+            {
+                yield return new ValidationResult(
+                    "Artifact-specific retention may extend, but not shorten, the storage-root retention period.",
+                    [nameof(Policies)]);
+            }
+            var key = $"{policy.Role}\0{policy.Variant}\0{policy.RecipeName}";
+            if (!selectors.Add(key))
+            {
+                yield return new ValidationResult("Artifact storage policy selectors must be unique.", [nameof(Policies)]);
+            }
+        }
+    }
+}
+
+public sealed class ArtifactStoragePolicyOptions
+{
+    public FrameArtifactRole? Role { get; init; }
+
+    public string? Variant { get; init; }
+
+    public string? RecipeName { get; init; }
+
+    public bool? QueueForUpload { get; init; }
+
+    [Range(1, 3650)]
+    public int? RetentionDays { get; init; }
 }

@@ -34,4 +34,6 @@ public sealed record CaptureProcessingStepConfig(
     string Type,
     string? Id = null,
     int? Order = null,
-    JsonElement? Options = null);
+    JsonElement? Options = null,
+    IReadOnlyList<string>? DependsOn = null,
+    bool Required = true);

@@ -3,21 +3,42 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Logging;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Diagnostics.CodeAnalysis;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 
 internal sealed class StandardCaptureLaneHandler(
     ICaptureProcessingPipelineFactory pipelineFactory,
+    CaptureProcessingPersistence? processingPersistence,
+    CaptureProcessingTelemetry processingTelemetry,
     ILogger<StandardCaptureLaneHandler> logger,
-    IRawCaptureIngress rawCaptureIngress) : ICaptureLaneHandler, IDisposable
+    IRawCaptureIngress rawCaptureIngress,
+    IOptions<CameraAgentHostOptions>? hostOptions = null) : ICaptureLaneHandler, IDisposable
 {
     private readonly ICaptureProcessingPipelineFactory _pipelineFactory = pipelineFactory;
+    private readonly CaptureProcessingPersistence? _processingPersistence = processingPersistence;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The telemetry singleton is owned and disposed by the dependency injection container.")]
+    private readonly CaptureProcessingTelemetry _processingTelemetry = processingTelemetry;
     private readonly ILogger<StandardCaptureLaneHandler> _logger = logger;
     private readonly IRawIngressRecoveryControl? _rawIngressControl = rawCaptureIngress as IRawIngressRecoveryControl;
+    private readonly int _maximumAttempts = hostOptions?.Value.CaptureDistribution.MaximumAttempts ?? 5;
     private readonly object _pipelineGate = new();
     private readonly SemaphoreSlim _executionGate = new(1, 1);
-    private IReadOnlyList<ICaptureProcessingStep>? _steps;
+    private CaptureProcessingGraph? _graph;
     private string? _pipelineKey;
+    private bool _ownsProcessingTelemetry;
+
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The compatibility constructor transfers telemetry ownership to this disposable handler.")]
+    internal StandardCaptureLaneHandler(
+        ICaptureProcessingPipelineFactory pipelineFactory,
+        ILogger<StandardCaptureLaneHandler> logger,
+        IRawCaptureIngress rawCaptureIngress)
+        : this(pipelineFactory, null, new CaptureProcessingTelemetry(), logger, rawCaptureIngress, null)
+    {
+        _ownsProcessingTelemetry = true;
+    }
 
     public string Lane => "standard";
 
@@ -25,17 +46,24 @@ internal sealed class StandardCaptureLaneHandler(
         CaptureLaneHandlerContext context,
         CancellationToken cancellationToken)
         => ProcessAsync(
-            new FrameProcessingItem(context.Configuration, context.Submission, context.RawCapture),
+            new FrameProcessingItem(
+                context.Configuration,
+                context.Submission,
+                context.RawCapture,
+                context.WorkId,
+                context.LeaseToken),
+            context.Attempt,
             cancellationToken);
 
     internal ValueTask<CaptureLaneHandlerResult> ProcessEphemeralAsync(
         HVO.SkyMonitor.AgentCore.CameraModuleConfig configuration,
         HVO.SkyMonitor.AgentCore.CaptureLoopSubmission submission,
         CancellationToken cancellationToken)
-        => ProcessAsync(new FrameProcessingItem(configuration, submission), cancellationToken);
+        => ProcessAsync(new FrameProcessingItem(configuration, submission), 1, cancellationToken);
 
     private async ValueTask<CaptureLaneHandlerResult> ProcessAsync(
         FrameProcessingItem item,
+        int attempt,
         CancellationToken cancellationToken)
     {
         await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -43,30 +71,28 @@ internal sealed class StandardCaptureLaneHandler(
         {
             var pipelineKey = Convert.ToHexString(SHA256.HashData(
                 JsonSerializer.SerializeToUtf8Bytes(item.Config.ResolveProcessingSteps())));
-            IReadOnlyList<ICaptureProcessingStep> steps;
+            CaptureProcessingGraph graph;
             lock (_pipelineGate)
             {
-                if (_steps is null || !string.Equals(_pipelineKey, pipelineKey, StringComparison.Ordinal))
+                if (_graph is null || !string.Equals(_pipelineKey, pipelineKey, StringComparison.Ordinal))
                 {
-                    foreach (var disposable in _steps?.OfType<IDisposable>() ?? [])
-                    {
-                        disposable.Dispose();
-                    }
-                    _steps = _pipelineFactory.CreatePipeline(item.Config)
-                        .OrderBy(static step => step.Order)
-                        .ThenBy(static step => step.Name, StringComparer.Ordinal)
-                        .ToArray();
+                    _graph?.DisposeSteps();
+                    _graph = _pipelineFactory.CreateGraph(item.Config);
                     _pipelineKey = pipelineKey;
                 }
-                steps = _steps;
+                graph = _graph;
             }
             try
             {
-                return await FrameProcessingWorker.ProcessItemAsync(
+                return await FrameProcessingWorker.ProcessGraphItemAsync(
                     item,
-                    steps,
+                    graph,
+                    item.RawCapture is null ? null : _processingPersistence,
+                    _processingTelemetry,
+                    attempt,
                     _logger,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    _maximumAttempts).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
             {
@@ -82,9 +108,10 @@ internal sealed class StandardCaptureLaneHandler(
 
     public void Dispose()
     {
-        foreach (var disposable in _steps?.OfType<IDisposable>() ?? [])
+        _graph?.DisposeSteps();
+        if (_ownsProcessingTelemetry)
         {
-            disposable.Dispose();
+            _processingTelemetry.Dispose();
         }
         _executionGate.Dispose();
     }

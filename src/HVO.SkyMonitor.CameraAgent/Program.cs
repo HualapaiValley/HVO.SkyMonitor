@@ -205,6 +205,7 @@ public class Program
         healthChecks.AddCheck<DiskPressureHealthCheck>("disk-pressure", tags: ["dependency"]);
         healthChecks.AddCheck<RawIngressHealthCheck>("raw-ingress", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureLanesHealthCheck>("capture-lanes", tags: ["dependency"]);
+        healthChecks.AddCheck<CaptureProcessingHealthCheck>("capture-processing", tags: ["dependency"]);
         builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
         builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
 
