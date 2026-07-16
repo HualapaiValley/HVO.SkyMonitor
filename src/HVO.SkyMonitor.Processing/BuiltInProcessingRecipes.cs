@@ -749,9 +749,18 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
                 ProcessingReasonCodes.InvalidLineage,
                 nameof(request.Inputs)));
         }
+        var sequenced = candidates.Count(source => source.CaptureSequence.HasValue);
+        if (sequenced is not 0 && sequenced != candidates.Count)
+        {
+            return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidLineage,
+                nameof(request.Inputs)));
+        }
         for (var index = 1; index < candidates.Count; index++)
         {
-            if (candidates[index].CreatedUtc < candidates[index - 1].CreatedUtc)
+            if (sequenced == candidates.Count
+                    ? candidates[index].CaptureSequence <= candidates[index - 1].CaptureSequence
+                    : candidates[index].CreatedUtc < candidates[index - 1].CreatedUtc)
             {
                 return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
                     ProcessingReasonCodes.InvalidLineage,
@@ -837,13 +846,15 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
 
         var firstLayout = values[0];
         var firstCompatibility = selected[0].Compatibility;
+        var firstRecipeIdentity = selected[0].RecipeIdentitySha256;
         if (values.Any(layout => layout.Width != firstLayout.Width || layout.Height != firstLayout.Height ||
                 layout.StrideBytes != firstLayout.StrideBytes || layout.PixelFormat != firstLayout.PixelFormat ||
                 layout.ByteOrder != firstLayout.ByteOrder ||
                 layout.SampleDepthBits != firstLayout.SampleDepthBits || layout.ContainerDepthBits != firstLayout.ContainerDepthBits ||
                 layout.Packing != firstLayout.Packing || layout.CfaPattern != firstLayout.CfaPattern ||
                 layout.BlackLevel != firstLayout.BlackLevel || layout.WhiteLevel != firstLayout.WhiteLevel) ||
-            selected.Any(source => source.Compatibility != firstCompatibility))
+            selected.Any(source => source.Compatibility != firstCompatibility
+                || !string.Equals(source.RecipeIdentitySha256, firstRecipeIdentity, StringComparison.OrdinalIgnoreCase)))
         {
             layouts = [];
             return false;

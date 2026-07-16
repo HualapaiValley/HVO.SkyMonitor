@@ -74,6 +74,9 @@ public sealed class CentralDerivativeJobMigrationTests
             db.ChangeTracker.Clear();
 
             var jobs = await db.CentralDerivativeJobs.Include(job => job.ResultArtifact)
+                .Include(job => job.InputRequirements)
+                .Include(job => job.Inputs)
+                .AsSplitQuery()
                 .OrderBy(job => job.TargetRole).ToListAsync().ConfigureAwait(false);
             jobs.Should().HaveCount(3);
             var previewJob = jobs.Single(job => job.TargetRole == FrameArtifactRole.Preview);
@@ -109,6 +112,12 @@ public sealed class CentralDerivativeJobMigrationTests
                 new CentralDerivativeRecipeCatalog().GetRequiredRecipes(FrameArtifactRole.Raw)
                     .Single(recipe => recipe.TargetRole == FrameArtifactRole.Metadata)));
             jobs.Should().OnlyHaveUniqueItems(job => job.RequestIdentitySha256);
+            jobs.Should().OnlyContain(job => job.InputRequirements.Count == 1
+                && job.Inputs.Count == 1
+                && job.Inputs.Single().CentralArtifactId == job.SourceCentralArtifactId
+                && job.Inputs.Single().Ordinal == 0
+                && job.InputSetIdentitySha256 != null
+                && job.ResolutionCompletedAtUtc != null);
             (await db.CentralDerivativeJobAttempts.CountAsync().ConfigureAwait(false)).Should().Be(0);
             (await db.CentralArtifactProcessingEvidence.CountAsync().ConfigureAwait(false)).Should().Be(0);
 

@@ -137,6 +137,7 @@ public sealed class CentralDerivativeWorkerTests
         services.AddDbContext<ApplicationDbContext>(builder =>
             builder.UseInMemoryDatabase(Guid.NewGuid().ToString()));
         services.AddScoped<ICentralDerivativeJobService>(_ => jobs);
+        services.AddScoped<ICentralDerivativeWindowResolver>(_ => new NoopWindowResolver());
         services.AddScoped(executor);
         var provider = services.BuildServiceProvider();
         var telemetry = new CentralDerivativeWorkerTelemetry();
@@ -330,10 +331,23 @@ public sealed class CentralDerivativeWorkerTests
         public Task MarkInputUnavailableAsync(
             Guid jobId,
             Guid leaseToken,
+            Guid centralArtifactId,
             byte[] expectedSourceRowVersion,
             string reasonCode,
             bool quarantine,
             CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class NoopWindowResolver : ICentralDerivativeWindowResolver
+    {
+        public Task ResolveAffectedAsync(
+            CentralArtifact artifact,
+            DateTimeOffset now,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task ResolveWaitingAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task ResolveAsync(Guid jobId, DateTimeOffset now, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage(

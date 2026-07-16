@@ -42,13 +42,19 @@ internal sealed partial class CentralDerivativeOutputWriter(
     {
         ArgumentNullException.ThrowIfNull(lease);
         var evidence = await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()
-            .Include(item => item.Artifact)
+            .Include(item => item.Artifact)!.ThenInclude(artifact => artifact!.Sources)
             .SingleOrDefaultAsync(item => item.CentralDerivativeJobId == lease.JobId, cancellationToken)
             .ConfigureAwait(false);
         if (evidence?.Artifact is not { } artifact
-            || artifact.ObjectState is CentralArtifactObjectState.Quarantined or CentralArtifactObjectState.Expired)
+            || artifact.ObjectState is CentralArtifactObjectState.Quarantined or CentralArtifactObjectState.Expired
+            || artifact.ReconstructionState != CentralReconstructionState.Complete)
         {
             return null;
+        }
+        if (!HasExpectedSources(artifact, lease))
+        {
+            throw new CentralDerivativeJobStateException(
+                "The pending derivative output does not match the frozen input set.");
         }
         try
         {
@@ -66,7 +72,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         }
         var inputBytes = await dbContext.CentralDerivativeJobs.AsNoTracking()
             .Where(job => job.Id == lease.JobId)
-            .Select(job => job.SourceArtifact!.ByteLength)
+            .Select(job => job.Inputs.Sum(input => input.ByteLength))
             .SingleAsync(cancellationToken).ConfigureAwait(false);
         await CompleteAsync(
             lease, artifact.Id, inputBytes, artifact.ByteLength, TimeSpan.Zero, cancellationToken).ConfigureAwait(false);
@@ -121,7 +127,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
     {
         dbContext.ChangeTracker.Clear();
         var existing = await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()
-            .Include(item => item.Artifact)
+            .Include(item => item.Artifact)!.ThenInclude(artifact => artifact!.Sources)
             .SingleOrDefaultAsync(item => item.DevicePublicId == lease.SourceDevicePublicId
                 && item.OutputIdentitySha256 == product.OutputIdentitySha256, cancellationToken)
             .ConfigureAwait(false);
@@ -137,6 +143,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         var now = timeProvider.GetUtcNow();
         var job = await dbContext.CentralDerivativeJobs
             .Include(candidate => candidate.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)
+            .Include(candidate => candidate.Inputs).ThenInclude(input => input.Artifact)
             .SingleOrDefaultAsync(candidate => candidate.Id == lease.JobId
                 && candidate.Status == CentralDerivativeJobStatus.Leased
                 && candidate.LeaseToken == lease.LeaseToken
@@ -145,6 +152,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
                 cancellationToken).ConfigureAwait(false)
             ?? throw new CentralDerivativeJobStateException("The derivative job lease is stale or invalid.");
         var source = job.SourceArtifact!;
+        var resolvedInputs = job.Inputs.ToDictionary(input => input.Artifact!.ArtifactId);
         var artifact = new CentralArtifact
         {
             CentralFrameId = source.CentralFrameId,
@@ -183,13 +191,9 @@ internal sealed partial class CentralDerivativeOutputWriter(
         for (var ordinal = 0; ordinal < product.SourceArtifactIds.Count; ordinal++)
         {
             var sourceArtifactId = product.SourceArtifactIds[ordinal];
-            var resolvedId = sourceArtifactId == source.ArtifactId
-                ? source.Id
-                : await dbContext.CentralArtifacts.Where(candidate => candidate.CentralFrameId == source.CentralFrameId
-                        && candidate.ArtifactId == sourceArtifactId)
-                    .Select(candidate => (Guid?)candidate.Id)
-                    .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
-                    ?? throw new CentralDerivativeJobStateException("A derivative output source is not present on the central frame.");
+            var resolvedId = resolvedInputs.TryGetValue(sourceArtifactId, out var resolvedInput)
+                ? resolvedInput.CentralArtifactId
+                : throw new CentralDerivativeJobStateException("A derivative output source is not part of the frozen input set.");
             artifact.Sources.Add(new CentralArtifactSource
             {
                 Ordinal = ordinal,
@@ -215,6 +219,8 @@ internal sealed partial class CentralDerivativeOutputWriter(
             AttemptNumber = job.AttemptCount,
             CreatedAtUtc = now
         });
+        // Fences invalidation that loaded this job before output publication began.
+        job.UpdatedAtUtc = now;
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         dbContext.ChangeTracker.Clear();
@@ -289,6 +295,9 @@ internal sealed partial class CentralDerivativeOutputWriter(
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         var now = timeProvider.GetUtcNow();
+        var pinStartedAtUtc = await dbContext.CentralDerivativeJobInputs.AsNoTracking()
+            .Where(input => input.CentralDerivativeJobId == lease.JobId)
+            .MinAsync(input => (DateTimeOffset?)input.SelectedAtUtc, cancellationToken).ConfigureAwait(false);
         var artifact = await dbContext.CentralArtifacts.SingleAsync(
             candidate => candidate.Id == centralArtifactId, cancellationToken).ConfigureAwait(false);
         if (artifact.ObjectState is CentralArtifactObjectState.Expired or CentralArtifactObjectState.Quarantined)
@@ -332,10 +341,35 @@ internal sealed partial class CentralDerivativeOutputWriter(
         artifact.ObjectState = CentralArtifactObjectState.Available;
         artifact.StateReasonCode = null;
         artifact.ReconciledAtUtc = now;
+        var predecessorId = await dbContext.CentralDerivativeJobs.AsNoTracking()
+            .Where(job => job.Id == lease.JobId)
+            .Select(job => job.PredecessorJobId)
+            .SingleAsync(cancellationToken).ConfigureAwait(false);
+        if (predecessorId.HasValue)
+        {
+            var predecessorAffected = await dbContext.CentralDerivativeJobs.Where(job =>
+                    job.Id == predecessorId.Value
+                    && job.Status != CentralDerivativeJobStatus.Superseded)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(job => job.Status, CentralDerivativeJobStatus.Superseded)
+                    .SetProperty(job => job.SupersededByJobId, lease.JobId)
+                    .SetProperty(job => job.UpdatedAtUtc, now), cancellationToken)
+                .ConfigureAwait(false);
+            if (predecessorAffected != 1)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                throw new CentralDerivativeJobStateException(
+                    "The derivative predecessor could not be superseded after replacement completion.");
+            }
+        }
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         telemetry.RecordStage(
             "complete", lease.RecipeName, "completed", timeProvider.GetElapsedTime(started));
+        if (lease.Inputs is { Count: > 1 } && pinStartedAtUtc.HasValue)
+        {
+            telemetry.RecordWindowPinDuration(lease.RecipeName, now - pinStartedAtUtc.Value);
+        }
         dbContext.ChangeTracker.Clear();
     }
 
@@ -349,6 +383,9 @@ internal sealed partial class CentralDerivativeOutputWriter(
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         var now = timeProvider.GetUtcNow();
+        var pinStartedAtUtc = lease.Inputs is { Count: > 1 }
+            ? lease.Inputs.Min(input => input.SelectedAtUtc)
+            : default;
         var artifact = await dbContext.CentralArtifacts.SingleAsync(
             candidate => candidate.Id == centralArtifactId, cancellationToken).ConfigureAwait(false);
         var jobAffected = await dbContext.CentralDerivativeJobs.Where(job => job.Id == lease.JobId
@@ -387,6 +424,10 @@ internal sealed partial class CentralDerivativeOutputWriter(
         artifact.ReconciledAtUtc = now;
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (pinStartedAtUtc != default)
+        {
+            telemetry.RecordWindowPinDuration(lease.RecipeName, now - pinStartedAtUtc, "quarantined");
+        }
         dbContext.ChangeTracker.Clear();
     }
 
@@ -420,8 +461,10 @@ internal sealed partial class CentralDerivativeOutputWriter(
     {
         if (product.Role != lease.TargetRole
             || product.Variant != lease.TargetVariant
-            || product.SourceArtifactIds.Count != 1
-            || product.SourceArtifactIds[0] != lease.SourceArtifactId
+            || !product.SourceArtifactIds.SequenceEqual(
+                lease.Inputs is { Count: > 0 }
+                    ? lease.Inputs.OrderBy(input => input.Ordinal).Select(input => input.ArtifactId)
+                    : [lease.SourceArtifactId])
             || product.Payload.Length != product.Layout?.ByteLength && product.Layout is not null
             || !string.Equals(ProcessingIdentity.ComputePayloadSha256(product.Payload), product.ChecksumSha256,
                 StringComparison.OrdinalIgnoreCase))
@@ -444,12 +487,27 @@ internal sealed partial class CentralDerivativeOutputWriter(
             || artifact.Role != product.Role
             || artifact.Variant != product.Variant
             || artifact.RecipeVersion != lease.TargetRecipeVersion
+            || !HasExpectedSources(artifact, lease)
             || artifact.ByteLength != product.Payload.Length
             || !string.Equals(artifact.ChecksumSha256, product.ChecksumSha256, StringComparison.OrdinalIgnoreCase)
             || artifact.StorageReference != $"minio://{Bucket}/{objectKey}")
         {
             throw new CentralDerivativeJobStateException("The derivative output identity conflicts with existing evidence.");
         }
+    }
+
+    private static bool HasExpectedSources(CentralArtifact artifact, CentralDerivativeJobLease lease)
+    {
+        if (lease.Inputs is not { Count: > 0 })
+        {
+            return artifact.Sources.Count == 1
+                && artifact.Sources.Single().SourceArtifactId == lease.SourceArtifactId;
+        }
+        var expected = lease.Inputs.OrderBy(input => input.Ordinal)
+            .Select(input => (input.ArtifactId, CentralArtifactId: (Guid?)input.CentralArtifactId));
+        return artifact.Sources.OrderBy(source => source.Ordinal)
+            .Select(source => (source.SourceArtifactId, source.ResolvedCentralArtifactId))
+            .SequenceEqual(expected);
     }
 
     private static partial class Log

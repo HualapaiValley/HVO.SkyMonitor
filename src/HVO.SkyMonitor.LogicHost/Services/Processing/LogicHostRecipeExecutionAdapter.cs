@@ -65,7 +65,8 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
                 input.Payload,
                 descriptor.Timing.ExposureStartedUtc,
                 descriptor.Controls.EffectiveExposure,
-                CreateCompatibility(descriptor)));
+                CreateCompatibility(descriptor),
+                descriptor.Capture.CaptureSequence));
         }
         return _executor.ExecuteAsync(new ProcessingExecutionRequest(
             recipeName,
@@ -91,7 +92,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
         _ => ProcessingReasonCodes.InvalidInput
     };
 
-    private static ProcessingCompatibilityIdentity CreateCompatibility(ReconstructionDescriptor descriptor)
+    internal static ProcessingCompatibilityIdentity CreateCompatibility(ReconstructionDescriptor descriptor)
     {
         // Manifest v2 identifies orientation within the aggregate rig profile rather than as a separate profile.
         return new(

@@ -102,7 +102,8 @@ internal sealed class DerivativeJobsController(
             || request.RecipeName.Length > 128
             || request.RecipeName is not (BuiltInProcessingRecipes.EncodedPreview
                 or BuiltInProcessingRecipes.Annotation
-                or BuiltInProcessingRecipes.ImageQuality)
+                or BuiltInProcessingRecipes.ImageQuality
+                or BuiltInProcessingRecipes.RollingMean)
             || string.IsNullOrWhiteSpace(request.OutputVariant)
             || request.OutputVariant.Length > 128
             || request.Options.ValueKind != JsonValueKind.Object)

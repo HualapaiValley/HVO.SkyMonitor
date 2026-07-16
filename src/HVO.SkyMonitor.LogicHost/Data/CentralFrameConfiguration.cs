@@ -21,6 +21,8 @@ internal sealed class CentralFrameConfiguration : IEntityTypeConfiguration<Centr
             .IsUnique().HasFilter("[CaptureSequence] IS NOT NULL");
         builder.HasIndex(frame => new { frame.DevicePublicId, frame.CapturedAtUtc, frame.FrameId });
         builder.HasIndex(frame => new { frame.AgentId, frame.CapturedAtUtc });
+        builder.HasIndex(frame => new { frame.AgentId, frame.CaptureSequence })
+            .HasFilter("[CaptureSequence] IS NOT NULL");
         builder.HasOne(frame => frame.DeviceRigProfile).WithMany()
             .HasForeignKey(frame => frame.DeviceRigProfileId).OnDelete(DeleteBehavior.Restrict);
         // Registration and observatory IDs are historical snapshots. Their source rows may be retired.

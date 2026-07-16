@@ -15,13 +15,17 @@ public sealed class CentralDerivativeJobServiceTests
 
         var recipes = catalog.GetRequiredRecipes(FrameArtifactRole.Raw);
 
-        recipes.Should().HaveCount(3);
+        recipes.Should().HaveCount(4);
         recipes.Should().Contain(recipe => recipe.TargetRole == FrameArtifactRole.Preview
             && recipe.RecipeVersion == CentralDerivativeRecipeCatalog.PreviewRecipeVersion);
         recipes.Should().Contain(recipe => recipe.TargetRole == FrameArtifactRole.AnnotatedPreview
             && recipe.RecipeVersion == CentralDerivativeRecipeCatalog.AnnotatedPreviewRecipeVersion);
         recipes.Should().Contain(recipe => recipe.TargetRole == FrameArtifactRole.Metadata
             && recipe.RecipeVersion == CentralDerivativeRecipeCatalog.ImageQualityRecipeVersion);
+        var rolling = recipes.Single(recipe => recipe.TargetRole == FrameArtifactRole.Combined);
+        rolling.RecipeVersion.Should().Be(CentralDerivativeRecipeCatalog.RollingMeanRecipeVersion);
+        rolling.Window!.Positions.Select(position => position.SequenceOffset).Should().Equal(-2, -1, 0, 1, 2);
+        rolling.Window.Positions.Should().OnlyContain(position => position.IsRequired);
         recipes.Should().OnlyContain(recipe => recipe.RequestedRecipeIdentitySha256.Length == 64);
         recipes.Should().OnlyHaveUniqueItems(recipe => recipe.TargetVariant);
         recipes.Should().OnlyHaveUniqueItems(recipe =>
@@ -36,6 +40,22 @@ public sealed class CentralDerivativeJobServiceTests
         var preview = recipes.Single(recipe => recipe.TargetRole == FrameArtifactRole.Preview);
         CentralDerivativeJobIdentity.CreateRequestIdentity(Guid.NewGuid(), Guid.Empty, preview)
             .Should().NotBe(CentralDerivativeJobIdentity.CreateRequestIdentity(Guid.NewGuid(), Guid.Empty, preview));
+
+        var changedWindow = rolling with
+        {
+            Window = rolling.Window with
+            {
+                Positions = rolling.Window.Positions.Skip(1).ToArray()
+            }
+        };
+        CentralDerivativeJobIdentity.CreateRequestIdentity(Guid.Empty, Guid.Empty, changedWindow)
+            .Should().NotBe(CentralDerivativeJobIdentity.CreateRequestIdentity(Guid.Empty, Guid.Empty, rolling));
+        CentralDerivativeJobIdentity.CreateRequestIdentity(Guid.Empty, Guid.Empty,
+                rolling with { Window = rolling.Window with { Positions = rolling.Window.Positions.Reverse().ToArray() } })
+            .Should().Be(CentralDerivativeJobIdentity.CreateRequestIdentity(Guid.Empty, Guid.Empty, rolling));
+        CentralDerivativeJobIdentity.CreateRequestIdentity(Guid.Empty, Guid.Empty,
+                rolling with { RecipeVersion = "central-rolling-mean-v2" })
+            .Should().NotBe(CentralDerivativeJobIdentity.CreateRequestIdentity(Guid.Empty, Guid.Empty, rolling));
     }
 
     [TestMethod]

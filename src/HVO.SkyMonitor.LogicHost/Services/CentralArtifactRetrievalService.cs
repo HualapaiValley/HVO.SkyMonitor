@@ -184,7 +184,8 @@ internal sealed partial class CentralArtifactRetrievalService(
         var now = timeProvider.GetUtcNow();
         return await dbContext.CentralDerivativeJobs.AnyAsync(job =>
             job.Id == access.JobId
-            && job.SourceCentralArtifactId == artifact.Id
+            && (job.SourceCentralArtifactId == artifact.Id
+                || job.Inputs.Any(input => input.CentralArtifactId == artifact.Id))
             && job.Status == CentralDerivativeJobStatus.Leased
             && job.LeaseOwner == access.WorkerId
             && job.LeaseToken == access.LeaseToken

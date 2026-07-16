@@ -510,9 +510,12 @@ public sealed class ArtifactIngestTests
             var jobs = await unavailableDb.CentralDerivativeJobs
                 .Where(job => job.SourceCentralArtifactId == sourceId)
                 .ToListAsync().ConfigureAwait(false);
-            jobs.Should().HaveCount(3);
-            jobs.Should().OnlyContain(job => job.Status == CentralDerivativeJobStatus.RetryableFailure
-                && job.AvailableAtUtc == null);
+            jobs.Should().HaveCount(4);
+            jobs.Where(job => job.RecipeName != BuiltInProcessingRecipes.RollingMean)
+                .Should().OnlyContain(job => job.Status == CentralDerivativeJobStatus.RetryableFailure
+                    && job.AvailableAtUtc == null);
+            jobs.Single(job => job.RecipeName == BuiltInProcessingRecipes.RollingMean).Status
+                .Should().Be(CentralDerivativeJobStatus.Waiting);
             var attempt = await unavailableDb.CentralDerivativeJobAttempts.SingleAsync(item =>
                 item.CentralDerivativeJobId == claimedJobId).ConfigureAwait(false);
             attempt.Outcome.Should().Be(CentralDerivativeAttemptOutcome.RetryableFailure);
@@ -531,6 +534,9 @@ public sealed class ArtifactIngestTests
         (await restoredDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == sourceId)
             .CountAsync(job => job.Status == CentralDerivativeJobStatus.Pending
                 && job.AvailableAtUtc != null).ConfigureAwait(false)).Should().Be(3);
+        (await restoredDb.CentralDerivativeJobs.SingleAsync(job => job.SourceCentralArtifactId == sourceId
+            && job.RecipeName == BuiltInProcessingRecipes.RollingMean).ConfigureAwait(false)).Status
+            .Should().Be(CentralDerivativeJobStatus.Waiting);
         await restoredDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == sourceId
                 && job.Id != claimedJobId)
             .ExecuteUpdateAsync(setters => setters
@@ -1382,11 +1388,14 @@ public sealed class ArtifactIngestTests
             var suspendedJobs = await db.CentralDerivativeJobs
                 .Where(job => job.SourceCentralArtifactId == sourceArtifact.Id)
                 .ToListAsync().ConfigureAwait(false);
-            suspendedJobs.Should().HaveCount(3);
-            suspendedJobs.Should().OnlyContain(job => job.Status == CentralDerivativeJobStatus.RetryableFailure
-                && job.AvailableAtUtc == null
-                && job.LeaseToken == null
-                && job.LastError == CentralDerivativeJobScheduler.SourceInvalidatedReason);
+            suspendedJobs.Should().HaveCount(4);
+            suspendedJobs.Where(job => job.RecipeName != BuiltInProcessingRecipes.RollingMean)
+                .Should().OnlyContain(job => job.Status == CentralDerivativeJobStatus.RetryableFailure
+                    && job.AvailableAtUtc == null
+                    && job.LeaseToken == null
+                    && job.LastError == CentralDerivativeJobScheduler.SourceInvalidatedReason);
+            suspendedJobs.Single(job => job.RecipeName == BuiltInProcessingRecipes.RollingMean).Status
+                .Should().Be(CentralDerivativeJobStatus.Waiting);
         }
 
         using var recovery = await PostAsync(client, source, payload).ConfigureAwait(false);
@@ -1403,9 +1412,12 @@ public sealed class ArtifactIngestTests
         var recoveredSource = await recoveryDb.CentralArtifacts.SingleAsync(item =>
             item.ArtifactId == source.Descriptor.Artifact.ArtifactId
             && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
-        (await recoveryDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == recoveredSource.Id)
-            .ToListAsync().ConfigureAwait(false)).Should().OnlyContain(job =>
-                job.Status == CentralDerivativeJobStatus.Pending && job.AvailableAtUtc != null);
+        var recoveredJobs = await recoveryDb.CentralDerivativeJobs.Where(job =>
+            job.SourceCentralArtifactId == recoveredSource.Id).ToListAsync().ConfigureAwait(false);
+        recoveredJobs.Where(job => job.RecipeName != BuiltInProcessingRecipes.RollingMean)
+            .Should().OnlyContain(job => job.Status == CentralDerivativeJobStatus.Pending && job.AvailableAtUtc != null);
+        recoveredJobs.Single(job => job.RecipeName == BuiltInProcessingRecipes.RollingMean).Status
+            .Should().Be(CentralDerivativeJobStatus.Waiting);
     }
 
     [TestMethod]

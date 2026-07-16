@@ -479,6 +479,7 @@ public sealed class DerivativeJobIntegrationTests
         await FluentActions.Awaiting(() => service.MarkInputUnavailableAsync(
                 lease.JobId,
                 lease.LeaseToken,
+                source.Id,
                 staleRowVersion,
                 "object.checksum-mismatch",
                 quarantine: true,
@@ -707,11 +708,12 @@ public sealed class DerivativeJobIntegrationTests
             var operationDb = operationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var original = await operationDb.CentralDerivativeJobs.SingleAsync(job => job.Id == jobId)
                 .ConfigureAwait(false);
-            original.Status.Should().Be(CentralDerivativeJobStatus.Superseded);
-            original.SupersededByJobId.Should().Be(reprocessedJobId);
+            original.Status.Should().Be(CentralDerivativeJobStatus.Canceled);
+            original.SupersededByJobId.Should().BeNull();
             var reprocessed = await operationDb.CentralDerivativeJobs.SingleAsync(job => job.Id == reprocessedJobId)
                 .ConfigureAwait(false);
             reprocessed.Status.Should().Be(CentralDerivativeJobStatus.Pending);
+            reprocessed.PredecessorJobId.Should().Be(jobId);
             reprocessed.TargetRole.Should().Be(FrameArtifactRole.Metadata);
             reprocessed.TargetVariant.Should().Be("operator-quality-v2");
             reprocessed.RequestIdentitySha256.Should().HaveLength(64);
@@ -754,7 +756,9 @@ public sealed class DerivativeJobIntegrationTests
         CentralArtifact source,
         string variant,
         int maxAttempts)
-        => new()
+    {
+        var createdAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3);
+        var job = new CentralDerivativeJob
         {
             SourceCentralArtifactId = source.Id,
             TargetRole = template.TargetRole,
@@ -768,10 +772,14 @@ public sealed class DerivativeJobIntegrationTests
                 System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray())),
             Status = CentralDerivativeJobStatus.Pending,
             MaxAttempts = maxAttempts,
-            AvailableAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3),
-            CreatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3),
-            UpdatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3)
+            AvailableAtUtc = createdAtUtc,
+            ResolutionCompletedAtUtc = createdAtUtc,
+            CreatedAtUtc = createdAtUtc,
+            UpdatedAtUtc = createdAtUtc
         };
+        AttachSingleInput(job, source, createdAtUtc);
+        return job;
+    }
 
     private static async Task<(Guid JobId, Guid FrameId, string AgentId)> SeedJobAsync(
         DateTimeOffset? availableAtUtc = null,
@@ -825,17 +833,59 @@ public sealed class DerivativeJobIntegrationTests
             RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateRequestIdentity(
                 source.DevicePublicId!.Value, source.ArtifactId, recipe),
             Status = CentralDerivativeJobStatus.Pending,
+            ResolutionCompletedAtUtc = now,
             AttemptCount = 0,
             MaxAttempts = maxAttempts,
             AvailableAtUtc = now,
             CreatedAtUtc = now,
             UpdatedAtUtc = now
         };
+        AttachSingleInput(job, source, now);
         db.CentralFrames.Add(frame);
         db.CentralArtifacts.Add(source);
         db.CentralDerivativeJobs.Add(job);
         await db.SaveChangesAsync().ConfigureAwait(false);
         return (job.Id, frame.Id, frame.AgentId);
+    }
+
+    private static void AttachSingleInput(
+        CentralDerivativeJob job,
+        CentralArtifact source,
+        DateTimeOffset selectedAtUtc)
+    {
+        var requirement = new CentralDerivativeJobInputRequirement
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Ordinal = 0,
+            BindingName = "input",
+            SourceKind = CentralDerivativeInputSourceKind.Artifact,
+            SequenceOffset = 0,
+            IsRequired = true,
+            SelectorJson = job.InputSelectorJson,
+            CompatibilityMode = CentralDerivativeCompatibilityMode.None,
+            ExpectedAgentId = source.Frame?.AgentId ?? string.Empty,
+            ExpectedRigId = source.Frame?.RigId,
+            ExpectedCaptureSequence = source.Frame?.CaptureSequence,
+            ResolutionState = CentralDerivativeInputResolutionState.Resolved,
+            ResolvedAtUtc = selectedAtUtc
+        };
+        job.InputRequirements.Add(requirement);
+        job.Inputs.Add(new CentralDerivativeJobInput
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Requirement = requirement,
+            CentralDerivativeJobInputRequirementId = requirement.Id,
+            Ordinal = 0,
+            CentralArtifactId = source.Id,
+            CaptureSequence = source.Frame?.CaptureSequence,
+            CompatibilityJson = "{}",
+            CompatibilitySha256 = new string('0', 64),
+            ByteLength = source.ByteLength,
+            SelectedAtUtc = selectedAtUtc
+        });
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
     }
 
     private static async Task<string> GetSystemTokenAsync(HttpClient client, bool administrative)

@@ -1212,7 +1212,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         CentralArtifact source,
         CentralDerivativeRecipe recipe,
         DateTimeOffset createdAtUtc)
-        => new()
+    {
+        var job = new CentralDerivativeJob
         {
             SourceCentralArtifactId = source.Id,
             SourceArtifact = source,
@@ -1227,12 +1228,49 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateRequestIdentity(
                 source.DevicePublicId!.Value, source.ArtifactId, recipe),
             Status = CentralDerivativeJobStatus.Pending,
+            ResolutionCompletedAtUtc = createdAtUtc,
             AttemptCount = 0,
             MaxAttempts = recipe.MaxAttempts,
             AvailableAtUtc = createdAtUtc,
             CreatedAtUtc = createdAtUtc,
             UpdatedAtUtc = createdAtUtc
         };
+        var requirement = new CentralDerivativeJobInputRequirement
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Ordinal = 0,
+            BindingName = "input",
+            SourceKind = CentralDerivativeInputSourceKind.Artifact,
+            SequenceOffset = 0,
+            IsRequired = true,
+            SelectorJson = job.InputSelectorJson,
+            CompatibilityMode = CentralDerivativeCompatibilityMode.None,
+            ExpectedAgentId = source.Frame?.AgentId ?? string.Empty,
+            ExpectedRigId = source.Frame?.RigId,
+            ExpectedCaptureSequence = source.Frame?.CaptureSequence,
+            ResolutionState = CentralDerivativeInputResolutionState.Resolved,
+            ResolvedAtUtc = createdAtUtc
+        };
+        job.InputRequirements.Add(requirement);
+        job.Inputs.Add(new CentralDerivativeJobInput
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Requirement = requirement,
+            CentralDerivativeJobInputRequirementId = requirement.Id,
+            Ordinal = 0,
+            CentralArtifactId = source.Id,
+            Artifact = source,
+            CaptureSequence = source.Frame?.CaptureSequence,
+            CompatibilityJson = "{}",
+            CompatibilitySha256 = new string('0', 64),
+            ByteLength = source.ByteLength,
+            SelectedAtUtc = createdAtUtc
+        });
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        return job;
+    }
 
     private static async Task<DerivativeCorrectness> ValidateDerivativeResultsAsync(
         IntegrationTestFixture fixture,

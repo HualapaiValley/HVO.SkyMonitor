@@ -32,6 +32,18 @@ internal sealed class CentralDerivativeJob
 
     public CentralDerivativeJobStatus Status { get; set; }
 
+    public DateTimeOffset? ResolutionDeadlineUtc { get; set; }
+
+    public DateTimeOffset? ResolutionStartedAtUtc { get; set; }
+
+    public DateTimeOffset? ResolutionCompletedAtUtc { get; set; }
+
+    public CentralDerivativeWindowOutcome? MissingInputOutcome { get; set; }
+
+    public string? StateReasonCode { get; set; }
+
+    public string? InputSetIdentitySha256 { get; set; }
+
     public int AttemptCount { get; set; }
 
     public int MaxAttempts { get; set; }
@@ -68,13 +80,24 @@ internal sealed class CentralDerivativeJob
 
     public CentralDerivativeJob? SupersededByJob { get; set; }
 
+    public Guid? PredecessorJobId { get; set; }
+
+    public CentralDerivativeJob? PredecessorJob { get; set; }
+
+    public Guid? RetainedResultCentralArtifactId { get; set; }
+
     public ICollection<CentralDerivativeJobAttempt> Attempts { get; } = [];
+
+    public ICollection<CentralDerivativeJobInputRequirement> InputRequirements { get; } = [];
+
+    public ICollection<CentralDerivativeJobInput> Inputs { get; } = [];
 
     public byte[] RowVersion { get; set; } = [];
 }
 
 internal enum CentralDerivativeJobStatus
 {
+    Waiting,
     Pending,
     Leased,
     Completed,
@@ -85,4 +108,12 @@ internal enum CentralDerivativeJobStatus
     Skipped,
     Quarantined,
     Superseded
+}
+
+internal enum CentralDerivativeWindowOutcome
+{
+    Run,
+    Skip,
+    Fail,
+    Quarantine
 }

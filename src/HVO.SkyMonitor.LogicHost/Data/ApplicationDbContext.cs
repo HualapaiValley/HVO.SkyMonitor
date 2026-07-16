@@ -19,6 +19,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralArtifact> CentralArtifacts => Set<CentralArtifact>();
     internal DbSet<CentralDerivativeJob> CentralDerivativeJobs => Set<CentralDerivativeJob>();
     internal DbSet<CentralDerivativeJobAttempt> CentralDerivativeJobAttempts => Set<CentralDerivativeJobAttempt>();
+    internal DbSet<CentralDerivativeJobInputRequirement> CentralDerivativeJobInputRequirements => Set<CentralDerivativeJobInputRequirement>();
+    internal DbSet<CentralDerivativeJobInput> CentralDerivativeJobInputs => Set<CentralDerivativeJobInput>();
     internal DbSet<CentralArtifactProcessingEvidence> CentralArtifactProcessingEvidence => Set<CentralArtifactProcessingEvidence>();
     internal DbSet<CentralCaptureTiming> CentralCaptureTimings => Set<CentralCaptureTiming>();
     internal DbSet<CentralCaptureControl> CentralCaptureControls => Set<CentralCaptureControl>();
@@ -42,6 +44,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.ApplyConfiguration(new CentralArtifactConfiguration());
         builder.ApplyConfiguration(new CentralDerivativeJobConfiguration());
         CentralDerivativeExecutionConfiguration.Configure(builder);
+        CentralDerivativeWindowConfiguration.Configure(builder);
         CentralReconstructionConfiguration.Configure(builder);
         builder.ApplyConfiguration(new ObservatoryConfiguration());
 

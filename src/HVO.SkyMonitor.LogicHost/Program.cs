@@ -617,6 +617,7 @@ public sealed partial class Program
         builder.Services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         builder.Services.AddSingleton<LogicHostRecipeExecutionAdapter>();
         builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();
+        builder.Services.AddScoped<ICentralDerivativeWindowResolver, CentralDerivativeWindowResolver>();
         builder.Services.AddScoped<ICentralDerivativeJobService, CentralDerivativeJobService>();
         builder.Services.AddScoped<ICentralDerivativeJobInputReader, CentralDerivativeJobInputReader>();
         builder.Services.AddScoped<ICentralDerivativeOutputWriter, CentralDerivativeOutputWriter>();
