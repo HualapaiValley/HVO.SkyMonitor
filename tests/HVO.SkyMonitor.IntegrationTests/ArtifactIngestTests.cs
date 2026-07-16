@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Diagnostics.Metrics;
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
@@ -16,6 +17,7 @@ using HVO.SkyMonitor.TestSupport;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.AspNetCore.TestHost;
 using Minio;
@@ -1471,6 +1473,309 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
+    [DoNotParallelize]
+    public async Task Reconciliation_ConcurrentIngestScheduling_ConvergesWithoutErrorDuplicateOrStrandedWork()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("reconciliation-concurrency-rig");
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, 43);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var pending = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        ((int)pending.StatusCode).Should().Be(425);
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var injection = new SchedulerConcurrencyInjection(manifest.Descriptor.Artifact.ArtifactId, 1);
+        using var concurrencyFactory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<ICentralDerivativeJobScheduler>();
+            services.AddScoped<CentralDerivativeJobScheduler>();
+            services.AddScoped<ICentralDerivativeJobScheduler>(provider => new ConcurrencyInjectingScheduler(
+                provider.GetRequiredService<CentralDerivativeJobScheduler>(),
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<ApplicationDbContext>(),
+                injection));
+        }));
+        using var metrics = new ReconciliationConcurrencyMetricCollector();
+        using var telemetry = new CentralIngestTelemetry();
+        var logger = new RecordingLogger<CentralArtifactReconciliationService>();
+        var reconciler = new CentralArtifactReconciliationService(
+            concurrencyFactory.Services.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System,
+            telemetry,
+            logger);
+
+        await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+
+        injection.InjectionCount.Should().Be(1);
+        injection.ScopeContextIds.Should().HaveCount(2);
+        metrics.Outcomes.Should().BeEquivalentTo(["retry", "converged"]);
+        logger.Entries.Should().NotContain(entry => entry.Level >= LogLevel.Error);
+        logger.Entries.Should().Contain(entry => entry.Level == LogLevel.Information
+            && entry.Message.Contains("will retry once", StringComparison.Ordinal));
+        logger.Entries.Should().Contain(entry => entry.Level == LogLevel.Information
+            && entry.Message.Contains("converged", StringComparison.Ordinal));
+        await using var assertionScope = concurrencyFactory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var artifact = await assertionDb.CentralArtifacts
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Timing)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Control)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
+            .Include(item => item.Sources)
+            .Include(item => item.Layout)
+            .Include(item => item.Recipe)
+            .AsSplitQuery()
+            .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId
+                && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
+        artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        artifact.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+        artifact.StateReasonCode.Should().BeNull();
+        artifact.Sources.Should().BeEmpty();
+        var jobs = await assertionDb.CentralDerivativeJobs
+            .Include(job => job.InputRequirements)
+            .Include(job => job.Inputs)
+            .Where(job => job.SourceCentralArtifactId == artifact.Id)
+            .ToListAsync().ConfigureAwait(false);
+        var recipes = assertionScope.ServiceProvider.GetRequiredService<ICentralDerivativeRecipeCatalog>()
+            .GetRequiredRecipes(FrameArtifactRole.Raw);
+        jobs.Should().HaveCount(recipes.Count);
+        jobs.Select(job => job.RequestIdentitySha256).Should().OnlyHaveUniqueItems();
+        foreach (var recipe in recipes)
+        {
+            var expectedRequestIdentity = CentralDerivativeJobIdentity.CreateRequestIdentity(
+                artifact.Frame!.DevicePublicId, artifact.ArtifactId, recipe);
+            var job = jobs.Single(candidate => candidate.RequestIdentitySha256 == expectedRequestIdentity);
+            job.SourceCentralArtifactId.Should().Be(artifact.Id);
+            job.TargetRole.Should().Be(recipe.TargetRole);
+            job.TargetRecipeVersion.Should().Be(recipe.RecipeVersion);
+            job.TargetVariant.Should().Be(recipe.TargetVariant);
+            job.RecipeName.Should().Be(recipe.RecipeName);
+            job.RecipeOptionsJson.Should().Be(CaptureContractJson.Canonicalize(recipe.Options).GetRawText());
+            job.InputSelectorJson.Should().Be(CaptureContractJson.Canonicalize(
+                CaptureContractJson.SerializeToElement(recipe.InputSelector)).GetRawText());
+            job.RequestedRecipeIdentitySha256.Should().Be(recipe.RequestedRecipeIdentitySha256);
+            var expectedPositions = recipe.Window?.Positions
+                ?? [new CentralDerivativeWindowPosition(0, IsRequired: true, recipe.InputSelector)];
+            var requirements = job.InputRequirements.OrderBy(requirement => requirement.Ordinal).ToArray();
+            requirements.Should().HaveCount(expectedPositions.Count);
+            for (var index = 0; index < expectedPositions.Count; index++)
+            {
+                var position = expectedPositions[index];
+                var requirement = requirements[index];
+                requirement.Ordinal.Should().Be(index);
+                requirement.BindingName.Should().Be("input");
+                requirement.SourceKind.Should().Be(CentralDerivativeInputSourceKind.Artifact);
+                requirement.SequenceOffset.Should().Be(position.SequenceOffset);
+                requirement.IsRequired.Should().Be(position.IsRequired);
+                requirement.CompatibilityMode.Should().Be(position.CompatibilityMode);
+                requirement.SelectorJson.Should().Be(CaptureContractJson.Canonicalize(
+                    CaptureContractJson.SerializeToElement(position.Selector)).GetRawText());
+                requirement.ExpectedAgentId.Should().Be(artifact.Frame.AgentId);
+                requirement.ExpectedRigId.Should().Be(artifact.Frame.RigId);
+                requirement.ExpectedCaptureSequence.Should().Be(artifact.Frame.CaptureSequence + position.SequenceOffset);
+                requirement.ResolutionState.Should().Be(recipe.Window is null || position.SequenceOffset == 0
+                    ? CentralDerivativeInputResolutionState.Resolved
+                    : CentralDerivativeInputResolutionState.Waiting);
+            }
+            var expectedInputOrdinals = expectedPositions
+                .Select((position, index) => (position, index))
+                .Where(item => recipe.Window is null || item.position.SequenceOffset == 0)
+                .Select(item => item.index);
+            job.Inputs.Select(input => input.Ordinal).Should().Equal(expectedInputOrdinals);
+            var expectedCompatibility = recipe.Window is null
+                ? CentralDerivativeWindowCompatibility.EmptySnapshot
+                : CentralDerivativeWindowCompatibility.CreateSnapshot(artifact);
+            foreach (var input in job.Inputs)
+            {
+                input.CentralArtifactId.Should().Be(artifact.Id);
+                input.CaptureSequence.Should().Be(artifact.Frame.CaptureSequence);
+                input.ByteLength.Should().Be(artifact.ByteLength);
+                input.CentralDerivativeJobInputRequirementId.Should().Be(requirements[input.Ordinal].Id);
+                input.CompatibilityJson.Should().Be(expectedCompatibility.Json);
+                input.CompatibilitySha256.Should().Be(expectedCompatibility.Sha256);
+            }
+            job.InputSetIdentitySha256.Should().Be(recipe.Window is null
+                ? CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs)
+                : null);
+            if (job.Status == CentralDerivativeJobStatus.Pending)
+            {
+                job.AvailableAtUtc.Should().NotBeNull();
+            }
+            else if (job.Status == CentralDerivativeJobStatus.Waiting)
+            {
+                job.ResolutionDeadlineUtc.Should().NotBeNull();
+            }
+            else
+            {
+                job.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+                job.ResultCentralArtifactId.Should().NotBeNull();
+            }
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task Reconciliation_RepeatedConcurrency_RemainsAnActionableFailure()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("reconciliation-concurrency-exhausted-rig");
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, 44);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var pending = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        ((int)pending.StatusCode).Should().Be(425);
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var injection = new SchedulerConcurrencyInjection(manifest.Descriptor.Artifact.ArtifactId, 2);
+        using var concurrencyFactory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<ICentralDerivativeJobScheduler>();
+            services.AddScoped<CentralDerivativeJobScheduler>();
+            services.AddScoped<ICentralDerivativeJobScheduler>(provider => new ConcurrencyInjectingScheduler(
+                provider.GetRequiredService<CentralDerivativeJobScheduler>(),
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<ApplicationDbContext>(),
+                injection));
+        }));
+        using var metrics = new ReconciliationConcurrencyMetricCollector();
+        using var telemetry = new CentralIngestTelemetry();
+        var logger = new RecordingLogger<CentralArtifactReconciliationService>();
+        var reconciler = new CentralArtifactReconciliationService(
+            concurrencyFactory.Services.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System,
+            telemetry,
+            logger);
+
+        await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+
+        injection.InjectionCount.Should().Be(2);
+        injection.ScopeContextIds.Should().HaveCount(2);
+        metrics.Outcomes.Should().BeEquivalentTo(["retry", "exhausted"]);
+        logger.Entries.Should().ContainSingle(entry => entry.Level == LogLevel.Error
+            && entry.Message == "Central artifact reconciliation failed for one durable record"
+            && entry.Exception != null
+            && entry.Exception.GetType() == typeof(DbUpdateConcurrencyException));
+        await using var assertionScope = concurrencyFactory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var artifact = await assertionDb.CentralArtifacts.SingleAsync(item =>
+            item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId
+            && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
+        artifact.ReconstructionState.Should().Be(CentralReconstructionState.PendingReference);
+        (await assertionDb.CentralDerivativeJobs.AnyAsync(job => job.SourceCentralArtifactId == artifact.Id)
+            .ConfigureAwait(false)).Should().BeFalse();
+        artifact.ReconstructionState = CentralReconstructionState.Quarantined;
+        artifact.StateReasonCode = "test.concurrency-exhausted";
+        await assertionDb.SaveChangesAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task Reconciliation_CancellationPropagatesWithoutConcurrencyRetry()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("reconciliation-cancellation-rig");
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, 45);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var pending = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        ((int)pending.StatusCode).Should().Be(425);
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        using var cancellation = new CancellationTokenSource();
+        var injection = new SchedulerFaultInjection(
+            manifest.Descriptor.Artifact.ArtifactId,
+            token =>
+            {
+                cancellation.Cancel();
+                token.ThrowIfCancellationRequested();
+                return new InvalidOperationException("The cancellation token was not forwarded.");
+            });
+        using var faultFactory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<ICentralDerivativeJobScheduler>();
+            services.AddScoped<CentralDerivativeJobScheduler>();
+            services.AddScoped<ICentralDerivativeJobScheduler>(provider => new FaultInjectingScheduler(
+                provider.GetRequiredService<CentralDerivativeJobScheduler>(), injection));
+        }));
+        using var metrics = new ReconciliationConcurrencyMetricCollector();
+        using var telemetry = new CentralIngestTelemetry();
+        var logger = new RecordingLogger<CentralArtifactReconciliationService>();
+        var reconciler = new CentralArtifactReconciliationService(
+            faultFactory.Services.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System,
+            telemetry,
+            logger);
+
+        Func<Task> reconcile = () => reconciler.ReconcileAsync(cancellation.Token);
+        var thrown = await reconcile.Should().ThrowAsync<OperationCanceledException>().ConfigureAwait(false);
+
+        injection.InjectionCount.Should().Be(1);
+        thrown.Which.CancellationToken.Should().Be(cancellation.Token);
+        metrics.Outcomes.Should().BeEmpty();
+        logger.Entries.Should().NotContain(entry => entry.Level >= LogLevel.Error);
+        await QuarantineTestArtifactAsync(registrationId, manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    [DoNotParallelize]
+    public async Task Reconciliation_NonConcurrencyFailureUsesExistingErrorPathWithoutRetry(bool unmarkedConcurrency)
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig(unmarkedConcurrency
+            ? "reconciliation-unmarked-concurrency-rig"
+            : "reconciliation-failure-rig");
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, unmarkedConcurrency ? 47 : 46);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var pending = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        ((int)pending.StatusCode).Should().Be(425);
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var injection = new SchedulerFaultInjection(
+            manifest.Descriptor.Artifact.ArtifactId,
+            unmarkedConcurrency
+                ? static _ => new DbUpdateConcurrencyException("Injected unmarked scheduler concurrency failure.")
+                : static _ => new InvalidOperationException("Injected scheduler failure."));
+        using var faultFactory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<ICentralDerivativeJobScheduler>();
+            services.AddScoped<CentralDerivativeJobScheduler>();
+            services.AddScoped<ICentralDerivativeJobScheduler>(provider => new FaultInjectingScheduler(
+                provider.GetRequiredService<CentralDerivativeJobScheduler>(), injection));
+        }));
+        using var metrics = new ReconciliationConcurrencyMetricCollector();
+        using var telemetry = new CentralIngestTelemetry();
+        var logger = new RecordingLogger<CentralArtifactReconciliationService>();
+        var reconciler = new CentralArtifactReconciliationService(
+            faultFactory.Services.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System,
+            telemetry,
+            logger);
+
+        await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+
+        injection.InjectionCount.Should().Be(1);
+        metrics.Outcomes.Should().BeEmpty();
+        logger.Entries.Should().ContainSingle(entry => entry.Level == LogLevel.Error
+            && entry.Message == "Central artifact reconciliation failed for one durable record"
+            && entry.Exception != null
+            && entry.Exception.GetType() == (unmarkedConcurrency
+                ? typeof(DbUpdateConcurrencyException)
+                : typeof(InvalidOperationException)));
+        await QuarantineTestArtifactAsync(registrationId, manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task MultipartIngestV2_CrossDeviceLineageSource_DoesNotBind()
     {
         var fixture = AssemblyHooks.Fixture;
@@ -2233,6 +2538,17 @@ public sealed class ArtifactIngestTests
         await db.SaveChangesAsync().ConfigureAwait(false);
     }
 
+    private static async Task QuarantineTestArtifactAsync(Guid registrationId, Guid artifactId)
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var artifact = await db.CentralArtifacts.SingleAsync(item =>
+            item.ArtifactId == artifactId && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
+        artifact.ReconstructionState = CentralReconstructionState.Quarantined;
+        artifact.StateReasonCode = "test.reconciliation-fault";
+        await db.SaveChangesAsync().ConfigureAwait(false);
+    }
+
     private static CentralFrame CreateLegacyFrame(DeviceRegistration registration, Guid frameId)
         => new()
         {
@@ -2393,6 +2709,155 @@ public sealed class ArtifactIngestTests
             return base.SendAsync(request, cancellationToken);
         }
     }
+
+    private sealed class SchedulerConcurrencyInjection(Guid targetArtifactId, int remainingInjections)
+    {
+        private int remaining = remainingInjections;
+        private int injectionCount;
+        private readonly HashSet<Guid> scopeContextIds = [];
+
+        public int InjectionCount => Volatile.Read(ref injectionCount);
+
+        public IReadOnlyCollection<Guid> ScopeContextIds
+        {
+            get
+            {
+                lock (scopeContextIds)
+                {
+                    return scopeContextIds.ToArray();
+                }
+            }
+        }
+
+        public bool TryInject(Guid artifactId, Guid scopeContextId)
+        {
+            if (artifactId != targetArtifactId)
+            {
+                return false;
+            }
+            lock (scopeContextIds)
+            {
+                scopeContextIds.Add(scopeContextId);
+            }
+            if (Interlocked.Decrement(ref remaining) < 0)
+            {
+                return false;
+            }
+            Interlocked.Increment(ref injectionCount);
+            return true;
+        }
+    }
+
+    private sealed class ConcurrencyInjectingScheduler(
+        CentralDerivativeJobScheduler inner,
+        IServiceScopeFactory scopeFactory,
+        ApplicationDbContext currentDbContext,
+        SchedulerConcurrencyInjection injection) : ICentralDerivativeJobScheduler
+    {
+        public async Task EnsureRequiredJobsAsync(
+            CentralArtifact artifact,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+        {
+            if (injection.TryInject(artifact.ArtifactId, currentDbContext.ContextId.InstanceId))
+            {
+                await using var scope = scopeFactory.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var concurrentArtifact = await db.CentralArtifacts.SingleAsync(
+                    candidate => candidate.Id == artifact.Id,
+                    cancellationToken).ConfigureAwait(false);
+                concurrentArtifact.ReconciledAtUtc = (concurrentArtifact.ReconciledAtUtc ?? DateTimeOffset.UnixEpoch).AddTicks(1);
+                await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            }
+            await inner.EnsureRequiredJobsAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class SchedulerFaultInjection(Guid targetArtifactId, Func<CancellationToken, Exception> createException)
+    {
+        private int injectionCount;
+
+        public int InjectionCount => Volatile.Read(ref injectionCount);
+
+        public Exception? Create(Guid artifactId, CancellationToken cancellationToken)
+        {
+            if (artifactId != targetArtifactId || Interlocked.Increment(ref injectionCount) != 1)
+            {
+                return null;
+            }
+            return createException(cancellationToken);
+        }
+    }
+
+    private sealed class FaultInjectingScheduler(
+        CentralDerivativeJobScheduler inner,
+        SchedulerFaultInjection injection) : ICentralDerivativeJobScheduler
+    {
+        public async Task EnsureRequiredJobsAsync(
+            CentralArtifact artifact,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+        {
+            var exception = injection.Create(artifact.ArtifactId, cancellationToken);
+            if (exception is not null)
+            {
+                throw exception;
+            }
+            await inner.EnsureRequiredJobsAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class ReconciliationConcurrencyMetricCollector : IDisposable
+    {
+        private readonly MeterListener listener = new();
+        private readonly List<string> outcomes = [];
+
+        public ReconciliationConcurrencyMetricCollector()
+        {
+            listener.InstrumentPublished = (instrument, currentListener) =>
+            {
+                if (instrument.Meter.Name == CentralIngestTelemetry.MeterName
+                    && instrument.Name == "skymonitor.central.ingest.reconciliation_concurrency")
+                {
+                    currentListener.EnableMeasurementEvents(instrument);
+                }
+            };
+            listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+            {
+                foreach (var tag in tags)
+                {
+                    if (tag.Key == "outcome" && tag.Value is string outcome)
+                    {
+                        outcomes.Add(outcome);
+                    }
+                }
+            });
+            listener.Start();
+        }
+
+        public IReadOnlyList<string> Outcomes => outcomes;
+
+        public void Dispose() => listener.Dispose();
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<LogEntry> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Entries.Add(new(logLevel, formatter(state, exception), exception));
+    }
+
+    private sealed record LogEntry(LogLevel Level, string Message, Exception? Exception);
 
     private static string ToLowerHex(string value)
         => string.Create(value.Length, value, static (destination, source) =>

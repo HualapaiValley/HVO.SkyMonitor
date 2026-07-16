@@ -12,7 +12,7 @@ public sealed class CentralIngestTelemetryTests
     [TestMethod]
     public void PublishesReadinessManifestWithBoundedLabels()
     {
-        var measurements = new List<(string Name, double Value, string[] Tags)>();
+        var measurements = new List<(string Name, double Value, string? Unit, KeyValuePair<string, object?>[] Tags)>();
         using var listener = new MeterListener
         {
             InstrumentPublished = (instrument, currentListener) =>
@@ -24,9 +24,9 @@ public sealed class CentralIngestTelemetryTests
             }
         };
         listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
-            measurements.Add((instrument.Name, value, GetTagNames(tags))));
+            measurements.Add((instrument.Name, value, instrument.Unit, tags.ToArray())));
         listener.SetMeasurementEventCallback<double>((instrument, value, tags, _) =>
-            measurements.Add((instrument.Name, value, GetTagNames(tags))));
+            measurements.Add((instrument.Name, value, instrument.Unit, tags.ToArray())));
         listener.Start();
         using var telemetry = new CentralIngestTelemetry();
 
@@ -37,6 +37,9 @@ public sealed class CentralIngestTelemetryTests
         telemetry.RecordObjectWrite("staging", "completed", TimeSpan.FromMilliseconds(1));
         telemetry.RecordSqlCommit("completed", TimeSpan.FromMilliseconds(2));
         telemetry.RecordReconciliationDuration("completed", TimeSpan.FromMilliseconds(3));
+        telemetry.RecordReconciliationConcurrency("retry");
+        telemetry.RecordReconciliationConcurrency("converged");
+        telemetry.RecordReconciliationConcurrency("exhausted");
         telemetry.RecordBacklog(1, 10, 100, 2, 20, 200, 3, 30, 300);
         listener.RecordObservableInstruments();
 
@@ -49,6 +52,7 @@ public sealed class CentralIngestTelemetryTests
             "skymonitor.central.ingest.object_write.duration",
             "skymonitor.central.ingest.sql_commit.duration",
             "skymonitor.central.ingest.reconciliation.duration",
+            "skymonitor.central.ingest.reconciliation_concurrency",
             "skymonitor.central.ingest.pending_objects",
             "skymonitor.central.ingest.pending_object_bytes",
             "skymonitor.central.ingest.pending_object_oldest_age",
@@ -61,19 +65,18 @@ public sealed class CentralIngestTelemetryTests
         };
         expected.Should().BeSubsetOf(measurements.Select(static measurement => measurement.Name).ToHashSet(StringComparer.Ordinal));
         var allowedTags = new HashSet<string>(["schema", "outcome", "operation", "reason"], StringComparer.Ordinal);
-        measurements.SelectMany(static measurement => measurement.Tags).Should().OnlyContain(tag => allowedTags.Contains(tag));
+        measurements.SelectMany(static measurement => measurement.Tags.Select(tag => tag.Key))
+            .Should().OnlyContain(tag => allowedTags.Contains(tag));
+        var concurrency = measurements.Where(measurement =>
+            measurement.Name == "skymonitor.central.ingest.reconciliation_concurrency").ToArray();
+        concurrency.Should().HaveCount(3);
+        concurrency.Should().OnlyContain(measurement => measurement.Unit == "{conflict}" && measurement.Value == 1);
+        concurrency.SelectMany(measurement => measurement.Tags)
+            .Where(tag => tag.Key == "outcome")
+            .Select(tag => tag.Value)
+            .Should().BeEquivalentTo(["retry", "converged", "exhausted"]);
         measurements.Single(measurement => measurement.Name == "skymonitor.central.ingest.pending_object_bytes").Value.Should().Be(10);
         measurements.Single(measurement => measurement.Name == "skymonitor.central.ingest.pending_reference_oldest_age").Value.Should().Be(200);
         measurements.Single(measurement => measurement.Name == "skymonitor.central.ingest.quarantined").Value.Should().Be(3);
-    }
-
-    private static string[] GetTagNames(ReadOnlySpan<KeyValuePair<string, object?>> tags)
-    {
-        var names = new string[tags.Length];
-        for (var index = 0; index < tags.Length; index++)
-        {
-            names[index] = tags[index].Key;
-        }
-        return names;
     }
 }

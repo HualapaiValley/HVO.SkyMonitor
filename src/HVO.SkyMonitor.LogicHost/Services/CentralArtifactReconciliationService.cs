@@ -15,6 +15,7 @@ internal sealed class CentralArtifactReconciliationService(
     CentralIngestTelemetry telemetry,
     ILogger<CentralArtifactReconciliationService> logger) : BackgroundService
 {
+    private const string SchedulingConcurrencyMarker = "HVO.SkyMonitor.ReconciliationSchedulingConcurrency";
     internal static readonly TimeSpan StagingObjectGracePeriod = TimeSpan.FromMinutes(15);
     internal const int MaximumStagingObjectsPerCycle = 1000;
     private const string Bucket = "skymonitor-artifacts";
@@ -60,7 +61,7 @@ internal sealed class CentralArtifactReconciliationService(
         {
             try
             {
-                await ReconcileOneAsync(artifactId, cancellationToken).ConfigureAwait(false);
+                await ReconcileOneWithConcurrencyRetryAsync(artifactId, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is DbException or DbUpdateConcurrencyException or MinioException
                 or HttpRequestException or IOException or InvalidOperationException)
@@ -98,6 +99,32 @@ internal sealed class CentralArtifactReconciliationService(
             quarantined?.Bytes ?? 0,
             GetAgeSeconds(quarantined?.OldestAtUtc));
         telemetry.RecordReconciliationDuration("completed", timeProvider.GetElapsedTime(started));
+    }
+
+    private async Task ReconcileOneWithConcurrencyRetryAsync(Guid artifactId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ReconcileOneAsync(artifactId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (DbUpdateConcurrencyException firstException) when (IsSchedulingConcurrency(firstException))
+        {
+            telemetry.RecordReconciliationConcurrency("retry");
+            logger.LogInformation(
+                "Central artifact reconciliation observed a concurrent durable update and will retry once");
+            try
+            {
+                await ReconcileOneAsync(artifactId, cancellationToken).ConfigureAwait(false);
+                telemetry.RecordReconciliationConcurrency("converged");
+                logger.LogInformation(
+                    "Central artifact reconciliation converged after a concurrent durable update");
+            }
+            catch (DbUpdateConcurrencyException exception) when (IsSchedulingConcurrency(exception))
+            {
+                telemetry.RecordReconciliationConcurrency("exhausted");
+                throw;
+            }
+        }
     }
 
     private async Task CleanupStagingObjectsAsync(IMinioClient minio, CancellationToken cancellationToken)
@@ -223,7 +250,15 @@ internal sealed class CentralArtifactReconciliationService(
             if (artifact.ManifestSchemaVersion == HVO.SkyMonitor.AgentCore.ArtifactUploadManifest.CurrentSchemaVersion
                 || artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw)
             {
-                await scheduler.EnsureRequiredJobsAsync(artifact, reconciledAtUtc, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await scheduler.EnsureRequiredJobsAsync(artifact, reconciledAtUtc, cancellationToken).ConfigureAwait(false);
+                }
+                catch (DbUpdateConcurrencyException exception) when (IsSchedulingArtifactConflict(exception, artifact.Id))
+                {
+                    exception.Data[SchedulingConcurrencyMarker] = true;
+                    throw;
+                }
             }
             telemetry.RecordReconciled("completed");
         }
@@ -236,6 +271,13 @@ internal sealed class CentralArtifactReconciliationService(
             : 0;
 
     private sealed record BacklogSnapshot(long Count, long Bytes, DateTimeOffset OldestAtUtc);
+
+    private static bool IsSchedulingArtifactConflict(DbUpdateConcurrencyException exception, Guid artifactId)
+        => exception.Entries.Count > 0
+            && exception.Entries.All(entry => entry.Entity is CentralArtifact artifact && artifact.Id == artifactId);
+
+    private static bool IsSchedulingConcurrency(DbUpdateConcurrencyException exception)
+        => exception.Data[SchedulingConcurrencyMarker] is true;
 
     private static async Task ResolveReferencesAsync(
         ApplicationDbContext db,
