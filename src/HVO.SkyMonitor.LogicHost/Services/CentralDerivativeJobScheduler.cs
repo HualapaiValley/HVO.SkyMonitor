@@ -58,7 +58,10 @@ internal sealed class CentralDerivativeJobScheduler(
                 await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 await ownedTransaction.DisposeAsync().ConfigureAwait(false);
                 ownedTransaction = null;
-                await windowResolver.ResolveAffectedAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+                if (artifact.Role == FrameArtifactRole.Raw && artifact.Frame?.CaptureSequence is not null)
+                {
+                    await windowResolver.ResolveAffectedAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
         catch
