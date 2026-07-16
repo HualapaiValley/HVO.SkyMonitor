@@ -132,3 +132,76 @@ behavior still requires a cooled and unthrottled `allskycamera01` with the
 physical ASI178MC. That runtime acceptance is separate from the standalone SDK
 and profile characterization and does not block use of an explicitly
 provisional virtual profile.
+
+### 2026-07-16 Split-Host Post-Merge Run
+
+The durable fleet telemetry work from issue #102 was validated after PR #145
+merged as `d85600b`. LogicHost ran natively on the amd64 `hvo-docker` context,
+and CameraAgent ran natively on the ARM64 `devpi5` context. The run used an
+isolated `SkyMonitorSmoke145` database, run-specific Docker volumes, a Redis
+namespace, MinIO bucket and credentials, device identity, and the nine-row
+fixture catalog. Existing SQL Server, Redis, MinIO, Mailpit, and observability
+containers remained shared dependencies and were not reset.
+
+The from-scratch path found two deployment defects before the successful run:
+
+- Linux `O_DIRECTORY` differs by ABI: it is `0x10000` on x86_64 and `0x4000`
+  on ARM64. The fixed x86-only value prevented raw-ingress directory durability
+  on ARM64. Issue #146 and PR #147 added architecture-specific mapping and
+  merged as `44d5573`.
+- An unprovisioned CameraAgent attempted OAuth token acquisition before its
+  bootstrap envelope had supplied credentials. Issue #148 and PR #149 bypassed
+  central authorization only for the bootstrap request, retained normal auth
+  for every other central call, and merged as `f627711`.
+
+The corrected run exercised the real local-owner and central registration
+workflow rather than editing identity stores. It verified registration and
+activation, envelope import, encrypted local secret persistence, rig-profile
+v1 seed, restart with the generated device identity as the configured agent
+identity, and upload enablement only after provisioning. The authenticated
+CameraAgent latest-frame route returned HTTP 200. OpenTelemetry trace and metric
+exports returned HTTP 200 throughout the observed interval.
+
+At bounded evidence checkpoints the run recorded:
+
+- 24 locally committed captures with all standard and upload lanes completed,
+  and 24 artifact-outbox batches acknowledged;
+- 26 central frames and 126 central artifacts totaling 14,577,817 bytes;
+- 26 accepted uploads with matching upload, object-store, and retrieved object
+  checksums, with no pending or quarantined artifact-consistency work;
+- 100 completed derivative jobs, two reason-coded skipped derivative jobs, and
+  two waiting derivative jobs;
+  subsequent derivative health reported zero pending jobs and a recent success;
+- one current fleet agent at sequence 11, with 11 retained history rows and all
+  reports advancing the central current state; and
+- healthy database, artifact consistency, derivative worker, fleet persistence,
+  Redis, MinIO, and SMTP checks. Overall LogicHost health was degraded only
+  because the deliberately installed fixture catalog is not production data.
+
+One central reconciliation attempt logged a recoverable EF Core concurrency
+exception while another durable path scheduled the same derivative work. The
+system converged without duplicate or stranded work, but the error-level event
+is noisy and could hide actionable failures. Issue #150 tracks idempotent
+concurrency handling and focused integration coverage.
+
+The final CameraAgent health state was intentionally not presented as a clean
+product result. During harness iteration, the fleet SQLite state was deleted
+after the same device identity had already submitted sequences 1 and 2. The
+reset edge generated two expected HTTP 409 ordering conflicts before sequence 3
+advanced and later reports reached sequence 11. Those conflicts were correctly
+quarantined and therefore latched fleet-heartbeat health as unhealthy. This was
+a test-harness violation of installation-global sequence durability, not lost
+central telemetry. Future automation must either preserve edge sequence state
+or allocate a new isolated identity; it must never reset an edge sequence while
+retaining central history.
+
+The manual split-host setup also confirmed that the current application Compose
+and `scripts/infra:start` assumptions do not support a from-scratch deployment
+across remote Docker contexts. Issue #151 owns resumable multi-architecture
+image distribution, remote path and catalog staging, optional shared-service
+deployment, automated bootstrap, isolated and persistent modes, sanitized
+evidence, performance workloads, and run-scoped teardown.
+
+This was a VirtualSky functional validation with a fixture catalog. It is not
+production-catalog acceptance, sustained performance evidence, or physical
+camera and thermal acceptance on `allskycamera01`.
