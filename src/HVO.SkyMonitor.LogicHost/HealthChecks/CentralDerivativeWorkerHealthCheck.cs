@@ -31,12 +31,14 @@ internal sealed class CentralDerivativeWorkerHealthCheck(
             CentralDerivativeJobStatus.RetryableFailure
         };
         var snapshot = await dbContext.CentralDerivativeJobs.AsNoTracking()
-            .Where(job => pendingStatuses.Contains(job.Status))
+            .Where(job => pendingStatuses.Contains(job.Status)
+                && job.AvailableAtUtc != null
+                && job.AvailableAtUtc <= now)
             .GroupBy(_ => 1)
             .Select(group => new
             {
                 Count = group.LongCount(),
-                Oldest = group.Min(job => job.AvailableAtUtc ?? job.LeaseAcquiredAtUtc ?? job.CreatedAtUtc)
+                Oldest = group.Min(job => job.AvailableAtUtc!.Value)
             })
             .SingleOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);

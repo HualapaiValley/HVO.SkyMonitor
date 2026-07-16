@@ -100,6 +100,8 @@ public sealed class ProcessingRecipeTests
                 FrameArtifactRole.Preview, "case", new string('a', 64), sourceIds));
         Assert.ThrowsExactly<ArgumentException>(() => ProcessingIdentity.CreateOutputIdentity(
             FrameArtifactRole.Preview, "case", "invalid", sourceIds));
+        Assert.ThrowsExactly<ArgumentException>(() => ProcessingIdentity.CreateArtifactId("invalid"));
+        Assert.ThrowsExactly<ArgumentException>(() => ProcessingIdentity.CreateArtifactId(new string('G', 64)));
 
         var requestedWithUndefinedOptions = BuiltInProcessingRecipes.CreateRequestedIdentity(
             BuiltInProcessingRecipes.NoOpAnalyzer,

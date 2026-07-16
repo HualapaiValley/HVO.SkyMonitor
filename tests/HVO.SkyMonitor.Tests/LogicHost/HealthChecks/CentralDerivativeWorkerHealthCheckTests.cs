@@ -52,7 +52,7 @@ public sealed class CentralDerivativeWorkerHealthCheckTests
     {
         var now = new DateTimeOffset(2026, 7, 15, 20, 0, 0, TimeSpan.Zero);
         await using var context = CreateContext();
-        context.CentralDerivativeJobs.Add(new CentralDerivativeJob
+        context.CentralDerivativeJobs.AddRange(new CentralDerivativeJob
         {
             SourceCentralArtifactId = Guid.NewGuid(),
             TargetRole = FrameArtifactRole.Preview,
@@ -66,6 +66,36 @@ public sealed class CentralDerivativeWorkerHealthCheckTests
             AvailableAtUtc = now - TimeSpan.FromMinutes(11),
             CreatedAtUtc = now - TimeSpan.FromMinutes(11),
             UpdatedAtUtc = now - TimeSpan.FromMinutes(11)
+        },
+        new CentralDerivativeJob
+        {
+            SourceCentralArtifactId = Guid.NewGuid(),
+            TargetRole = FrameArtifactRole.Preview,
+            TargetRecipeVersion = "health-v1",
+            TargetVariant = "suspended",
+            RecipeName = "encoded-preview",
+            RequestedRecipeIdentitySha256 = new string('C', 64),
+            RequestIdentitySha256 = new string('D', 64),
+            Status = CentralDerivativeJobStatus.RetryableFailure,
+            MaxAttempts = 3,
+            AvailableAtUtc = null,
+            CreatedAtUtc = now - TimeSpan.FromHours(1),
+            UpdatedAtUtc = now
+        },
+        new CentralDerivativeJob
+        {
+            SourceCentralArtifactId = Guid.NewGuid(),
+            TargetRole = FrameArtifactRole.Preview,
+            TargetRecipeVersion = "health-v1",
+            TargetVariant = "future",
+            RecipeName = "encoded-preview",
+            RequestedRecipeIdentitySha256 = new string('E', 64),
+            RequestIdentitySha256 = new string('F', 64),
+            Status = CentralDerivativeJobStatus.RetryableFailure,
+            MaxAttempts = 3,
+            AvailableAtUtc = now + TimeSpan.FromMinutes(1),
+            CreatedAtUtc = now - TimeSpan.FromHours(1),
+            UpdatedAtUtc = now
         });
         await context.SaveChangesAsync().ConfigureAwait(false);
         using var telemetry = new CentralDerivativeWorkerTelemetry();

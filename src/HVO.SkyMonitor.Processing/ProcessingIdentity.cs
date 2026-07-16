@@ -67,11 +67,12 @@ public static class ProcessingIdentity
     public static Guid CreateArtifactId(string outputIdentitySha256)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputIdentitySha256);
-        var bytes = Convert.FromHexString(outputIdentitySha256);
-        if (bytes.Length != SHA256.HashSizeInBytes)
+        if (outputIdentitySha256.Length != SHA256.HashSizeInBytes * 2
+            || outputIdentitySha256.Any(static character => !Uri.IsHexDigit(character)))
         {
             throw new ArgumentException("Output identity must be a SHA-256 value.", nameof(outputIdentitySha256));
         }
+        var bytes = Convert.FromHexString(outputIdentitySha256);
         bytes[7] = (byte)((bytes[7] & 0x0f) | 0x80);
         bytes[8] = (byte)((bytes[8] & 0x3f) | 0x80);
         return new Guid(bytes.AsSpan(0, 16));
