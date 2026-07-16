@@ -59,7 +59,7 @@ internal sealed class DeviceCredentialValidator(ApplicationDbContext dbContext, 
 
     private static bool FixedTimeEquals(string computedHash, string? storedHash)
     {
-        if (storedHash is null || computedHash.Length != storedHash.Length)
+        if (storedHash is null || computedHash.Length != storedHash.Length || !storedHash.All(Uri.IsHexDigit))
         {
             return false;
         }

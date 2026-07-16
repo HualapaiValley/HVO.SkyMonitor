@@ -83,4 +83,59 @@ public sealed class FleetContractTests
         validation.IsValid.Should().BeFalse();
         validation.ReasonCode.Should().Be("invalid-configuration");
     }
+
+    [TestMethod]
+    public void Validate_RejectsEnvelopeWhoseSerializedPayloadExceedsBound()
+    {
+        const char escapedCharacter = '\u0080';
+        var maximumName = new string(escapedCharacter, 64);
+        var maximumReason = new string(escapedCharacter, 128);
+        var report = FleetStatusTestData.CreateReport(Guid.NewGuid());
+        report = report with
+        {
+            SoftwareVersion = maximumName,
+            Configuration = report.Configuration with
+            {
+                DeclaredVersion = maximumName,
+                ModuleType = maximumName,
+                RigProfileVersion = maximumName
+            },
+            Capture = report.Capture with { Reason = maximumReason },
+            Ingress = report.Ingress with { Reason = maximumReason },
+            Processing = report.Processing with { Reason = maximumReason },
+            ArtifactOutbox = report.ArtifactOutbox with { Reason = maximumReason },
+            HeartbeatOutbox = report.HeartbeatOutbox with { Reason = maximumReason },
+            Lanes = Enumerable.Range(0, FleetContractJson.MaximumLanes)
+                .Select(_ => new FleetLaneSummary(maximumName, false, 0, 0, 0, 0, 0, null))
+                .ToArray(),
+            Storage = Enumerable.Range(0, FleetContractJson.MaximumStorageTargets)
+                .Select(_ => new FleetStorageSummary(maximumName, 1, 1, false, 1, report.ObservedAtUtc, maximumReason))
+                .ToArray()
+        };
+
+        for (var reasonLength = 128; reasonLength > 0; reasonLength--)
+        {
+            var healthReason = new string(escapedCharacter, reasonLength);
+            var candidate = report with
+            {
+                HealthChecks = Enumerable.Range(0, FleetContractJson.MaximumHealthChecks)
+                    .Select(_ => new FleetHealthCheckSummary(maximumName, FleetHealth.Healthy, healthReason))
+                    .ToArray()
+            };
+            if (FleetContractJson.Serialize(candidate).Length <= FleetContractJson.MaximumPayloadBytes)
+            {
+                report = candidate;
+                break;
+            }
+        }
+
+        FleetContractJson.Validate(report).IsValid.Should().BeTrue();
+        var envelope = new FleetHeartbeatEnvelope(new string('d', 128), new string('k', 256), report);
+        FleetContractJson.Serialize(envelope).Length.Should().BeGreaterThan(FleetContractJson.MaximumPayloadBytes);
+
+        var validation = FleetContractJson.Validate(envelope);
+
+        validation.IsValid.Should().BeFalse();
+        validation.ReasonCode.Should().Be("payload-too-large");
+    }
 }

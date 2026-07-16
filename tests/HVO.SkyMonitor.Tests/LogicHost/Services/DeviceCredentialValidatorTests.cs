@@ -41,6 +41,26 @@ public sealed class DeviceCredentialValidatorTests
     }
 
     [TestMethod]
+    public async Task ValidateAsync_WhenStoredHashIsMalformed_RejectsCredentialsWithoutThrowingFormatException()
+    {
+        await using var context = CreateContext();
+        var registration = await SeedRegistrationAsync(
+            context,
+            DeviceRegistrationStatus.Active,
+            DateTimeOffset.UtcNow.AddHours(1)).ConfigureAwait(false);
+        registration.DeviceKeyHash = new string('Z', 64);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var validator = new DeviceCredentialValidator(
+            context,
+            new DeviceCredentialValidatorTestsTimeProvider(DateTimeOffset.UtcNow));
+
+        Func<Task> act = () => validator.ValidateAsync(registration.DeviceId, "secret-key", CancellationToken.None);
+
+        var exception = (await act.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false)).Which;
+        exception.ReasonCode.Should().Be("invalid-credential");
+    }
+
+    [TestMethod]
     public async Task ValidateAsync_WhenKeyBelongsToAnotherAgent_ReportsBoundedAuditIdentity()
     {
         await using var context = CreateContext();

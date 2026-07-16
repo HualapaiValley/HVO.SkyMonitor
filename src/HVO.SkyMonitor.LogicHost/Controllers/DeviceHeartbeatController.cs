@@ -27,7 +27,7 @@ internal sealed class DeviceHeartbeatController(
     [HttpPost]
     [RequestSizeLimit(FleetContractJson.MaximumPayloadBytes)]
     public async Task<IActionResult> RecordHeartbeatAsync(
-        JsonElement body,
+        [FromBody] JsonElement body,
         CancellationToken cancellationToken)
     {
         FleetHeartbeatEnvelope? request = null;

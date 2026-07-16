@@ -249,7 +249,14 @@ public static class FleetContractJson
         {
             return Failure("invalid-envelope", "$");
         }
-        return Validate(envelope.Report);
+        var reportValidation = Validate(envelope.Report);
+        if (!reportValidation.IsValid)
+        {
+            return reportValidation;
+        }
+        return Serialize(envelope).Length > MaximumPayloadBytes
+            ? Failure("payload-too-large", "$")
+            : FleetContractValidationResult.Success;
     }
 
     private static bool ValidConfiguration(FleetConfigurationIdentity value)
