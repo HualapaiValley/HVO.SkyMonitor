@@ -403,9 +403,8 @@ internal sealed class RawIngressFileStore(
             return;
         }
         const int readOnly = 0;
-        const int directoryOnly = 0x10000;
         const int closeOnExec = 0x80000;
-        var descriptor = Open(directory, readOnly | directoryOnly | closeOnExec);
+        var descriptor = Open(directory, readOnly | GetLinuxDirectoryOnlyFlag(RuntimeInformation.ProcessArchitecture) | closeOnExec);
         if (descriptor < 0)
         {
             throw new IOException("Failed to open the raw ingress directory for durable synchronization.", new Win32Exception(Marshal.GetLastPInvokeError()));
@@ -413,6 +412,14 @@ internal sealed class RawIngressFileStore(
         using var handle = new SafeFileHandle((nint)descriptor, ownsHandle: true);
         RandomAccess.FlushToDisk(handle);
     }
+
+    internal static int GetLinuxDirectoryOnlyFlag(Architecture architecture)
+        => architecture switch
+        {
+            Architecture.Arm or Architecture.Arm64 or Architecture.Armv6 or Architecture.Ppc64le => 0x4000,
+            Architecture.X86 or Architecture.X64 or Architecture.LoongArch64 or Architecture.RiscV64 or Architecture.S390x => 0x10000,
+            _ => throw new PlatformNotSupportedException($"Linux directory synchronization is not configured for {architecture}.")
+        };
 
     private void FlushDirectoryTracked(string directory)
     {
