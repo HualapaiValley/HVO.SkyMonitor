@@ -22,7 +22,10 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
 {
     public Task<bool> IsHeldAsync(Guid centralArtifactId, CancellationToken cancellationToken)
         => dbContext.CentralDerivativeJobs.AnyAsync(job =>
-            job.SourceCentralArtifactId == centralArtifactId
+            (job.SourceCentralArtifactId == centralArtifactId
+                || dbContext.CentralArtifactProcessingEvidence.Any(evidence =>
+                    evidence.CentralArtifactId == centralArtifactId
+                    && evidence.CentralDerivativeJobId == job.Id))
             && (job.Status == CentralDerivativeJobStatus.Pending
                 || job.Status == CentralDerivativeJobStatus.Leased
                 || job.Status == CentralDerivativeJobStatus.RetryableFailure), cancellationToken);

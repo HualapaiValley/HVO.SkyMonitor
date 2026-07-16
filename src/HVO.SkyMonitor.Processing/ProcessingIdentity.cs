@@ -64,6 +64,19 @@ public static class ProcessingIdentity
     public static string ComputePayloadSha256(ReadOnlyMemory<byte> payload) =>
         Convert.ToHexString(SHA256.HashData(payload.Span));
 
+    public static Guid CreateArtifactId(string outputIdentitySha256)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputIdentitySha256);
+        var bytes = Convert.FromHexString(outputIdentitySha256);
+        if (bytes.Length != SHA256.HashSizeInBytes)
+        {
+            throw new ArgumentException("Output identity must be a SHA-256 value.", nameof(outputIdentitySha256));
+        }
+        bytes[7] = (byte)((bytes[7] & 0x0f) | 0x80);
+        bytes[8] = (byte)((bytes[8] & 0x3f) | 0x80);
+        return new Guid(bytes.AsSpan(0, 16));
+    }
+
     internal static JsonElement BindExecutionInputs(
         JsonElement normalizedOptions,
         ProcessingInputSelector selector,

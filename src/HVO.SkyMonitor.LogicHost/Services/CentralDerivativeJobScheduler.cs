@@ -1,8 +1,10 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
+using System.Diagnostics;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -17,6 +19,7 @@ internal sealed class CentralDerivativeJobScheduler(
 {
     internal const string SourceInvalidatedReason = "The derivative source artifact is not usable.";
     internal const string ResultInvalidatedReason = "The derivative result artifact is not usable.";
+    internal const string LegacySourceSkippedReason = "The legacy derivative source is not reconstructable.";
 
     public async Task EnsureRequiredJobsAsync(
         CentralArtifact artifact,
@@ -86,25 +89,29 @@ internal sealed class CentralDerivativeJobScheduler(
         {
             foreach (var recipe in recipeCatalog.GetRequiredRecipes(artifact.Role))
             {
+                var requestIdentity = CentralDerivativeJobIdentity.CreateRequestIdentity(
+                    frame.DevicePublicId, artifact.ArtifactId, recipe);
                 var existing = dbContext.CentralDerivativeJobs.Local.FirstOrDefault(job =>
-                    job.SourceCentralArtifactId == artifact.Id
-                    && job.TargetRole == recipe.TargetRole
-                    && job.TargetRecipeVersion == recipe.RecipeVersion)
+                    job.RequestIdentitySha256 == requestIdentity)
                     ?? await dbContext.CentralDerivativeJobs.SingleOrDefaultAsync(job =>
-                        job.SourceCentralArtifactId == artifact.Id
-                        && job.TargetRole == recipe.TargetRole
-                        && job.TargetRecipeVersion == recipe.RecipeVersion,
+                        job.RequestIdentitySha256 == requestIdentity,
                         cancellationToken).ConfigureAwait(false);
                 var target = frame.Artifacts.FirstOrDefault(candidate =>
                     candidate.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion
                     && candidate.Role == recipe.TargetRole
                     && candidate.RecipeVersion == recipe.RecipeVersion
+                    && (candidate.Variant ?? string.Empty) == recipe.TargetVariant
                     && IsUsable(candidate));
+                if (target is not null
+                    && !await IsCanonicalTargetAsync(artifact, target, recipe, cancellationToken).ConfigureAwait(false))
+                {
+                    target = null;
+                }
                 if (existing is null)
                 {
                     dbContext.CentralDerivativeJobs.Add(CreateJob(artifact, recipe, target, now));
                 }
-                else if (target is not null && !IsInvalidationFailure(existing))
+                else if (target is not null && CanComplete(existing) && !IsInvalidationFailure(existing))
                 {
                     Complete(existing, target, now);
                 }
@@ -124,30 +131,32 @@ internal sealed class CentralDerivativeJobScheduler(
         foreach (var source in sources)
         {
             var recipe = recipeCatalog.GetRequiredRecipes(source.Role).FirstOrDefault(candidate =>
-                candidate.TargetRole == artifact.Role && candidate.RecipeVersion == artifact.RecipeVersion);
+                candidate.TargetRole == artifact.Role
+                && candidate.RecipeVersion == artifact.RecipeVersion
+                && candidate.TargetVariant == (artifact.Variant ?? string.Empty));
             if (recipe is null)
             {
                 continue;
             }
+            var canonicalTarget = await IsCanonicalTargetAsync(source, artifact, recipe, cancellationToken)
+                .ConfigureAwait(false);
+            var requestIdentity = CentralDerivativeJobIdentity.CreateRequestIdentity(
+                frame.DevicePublicId, source.ArtifactId, recipe);
             var job = dbContext.CentralDerivativeJobs.Local.FirstOrDefault(candidate =>
-                candidate.SourceCentralArtifactId == source.Id
-                && candidate.TargetRole == recipe.TargetRole
-                && candidate.TargetRecipeVersion == recipe.RecipeVersion)
+                candidate.RequestIdentitySha256 == requestIdentity)
                 ?? await dbContext.CentralDerivativeJobs.SingleOrDefaultAsync(candidate =>
-                    candidate.SourceCentralArtifactId == source.Id
-                    && candidate.TargetRole == recipe.TargetRole
-                    && candidate.TargetRecipeVersion == recipe.RecipeVersion,
+                    candidate.RequestIdentitySha256 == requestIdentity,
                     cancellationToken).ConfigureAwait(false);
             if (job is null)
             {
-                job = CreateJob(source, recipe, artifact, now);
+                job = CreateJob(source, recipe, canonicalTarget ? artifact : null, now);
                 dbContext.CentralDerivativeJobs.Add(job);
             }
             else if (IsInvalidationFailure(job))
             {
                 Restore(job, source, now);
             }
-            else
+            else if (canonicalTarget && CanComplete(job))
             {
                 Complete(job, artifact, now);
             }
@@ -165,6 +174,16 @@ internal sealed class CentralDerivativeJobScheduler(
             SourceArtifact = source,
             TargetRole = recipe.TargetRole,
             TargetRecipeVersion = recipe.RecipeVersion,
+            TargetVariant = recipe.TargetVariant,
+            RecipeName = recipe.RecipeName,
+            RecipeOptionsJson = CaptureContractJson.Canonicalize(recipe.Options).GetRawText(),
+            InputSelectorJson = CaptureContractJson.Canonicalize(
+                CaptureContractJson.SerializeToElement(recipe.InputSelector)).GetRawText(),
+            RequestedRecipeIdentitySha256 = recipe.RequestedRecipeIdentitySha256,
+            RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateRequestIdentity(
+                source.Frame!.DevicePublicId, source.ArtifactId, recipe),
+            TraceParent = Activity.Current?.Id,
+            TraceState = Activity.Current?.TraceStateString,
             Status = result is null ? CentralDerivativeJobStatus.Pending : CentralDerivativeJobStatus.Completed,
             AttemptCount = 0,
             MaxAttempts = recipe.MaxAttempts,
@@ -196,13 +215,19 @@ internal sealed class CentralDerivativeJobScheduler(
         if (!IsUsable(source)
             || job.AvailableAtUtc.HasValue
             || job.Status != CentralDerivativeJobStatus.Pending
-                && (job.Status != CentralDerivativeJobStatus.RetryableFailure
-                    || !IsInvalidationFailure(job)))
+                && job.Status != CentralDerivativeJobStatus.RetryableFailure
+                && job.Status != CentralDerivativeJobStatus.Skipped
+            || job.Status == CentralDerivativeJobStatus.RetryableFailure && !IsInvalidationFailure(job)
+            || job.Status == CentralDerivativeJobStatus.Skipped
+                && !string.Equals(job.LastError, LegacySourceSkippedReason, StringComparison.Ordinal))
         {
             return;
         }
         job.Status = CentralDerivativeJobStatus.Pending;
-        job.AttemptCount = 0;
+        if (job.AttemptCount >= job.MaxAttempts)
+        {
+            job.MaxAttempts = checked(job.AttemptCount + CentralDerivativeRecipeCatalog.DefaultMaxAttempts);
+        }
         job.AvailableAtUtc = now;
         job.LastError = null;
         job.UpdatedAtUtc = now;
@@ -211,6 +236,33 @@ internal sealed class CentralDerivativeJobScheduler(
     private static bool IsInvalidationFailure(CentralDerivativeJob job)
         => string.Equals(job.LastError, SourceInvalidatedReason, StringComparison.Ordinal)
             || string.Equals(job.LastError, ResultInvalidatedReason, StringComparison.Ordinal);
+
+    private async Task<bool> IsCanonicalTargetAsync(
+        CentralArtifact source,
+        CentralArtifact target,
+        CentralDerivativeRecipe recipe,
+        CancellationToken cancellationToken)
+    {
+        var evidence = await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.CentralArtifactId == target.Id
+                && item.RequestedRecipeIdentitySha256 == recipe.RequestedRecipeIdentitySha256,
+                cancellationToken).ConfigureAwait(false);
+        if (evidence is null || ProcessingIdentity.CreateArtifactId(evidence.OutputIdentitySha256) != target.ArtifactId)
+        {
+            return false;
+        }
+        return await dbContext.CentralArtifactSources.AsNoTracking().AnyAsync(item =>
+            item.CentralArtifactId == target.Id
+            && item.SourceArtifactId == source.ArtifactId
+            && item.ResolvedCentralArtifactId == source.Id,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool CanComplete(CentralDerivativeJob job)
+        => job.Status is CentralDerivativeJobStatus.Pending
+            or CentralDerivativeJobStatus.RetryableFailure
+            or CentralDerivativeJobStatus.Skipped
+            or CentralDerivativeJobStatus.Completed;
 
     private static bool IsUsable(CentralArtifact artifact)
         => artifact.ObjectState == CentralArtifactObjectState.Available

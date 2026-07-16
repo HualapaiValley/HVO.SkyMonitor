@@ -1,10 +1,13 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.LogicHost.Controllers;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -40,6 +43,18 @@ public sealed class DerivativeJobIntegrationTests
         var job = await db.CentralDerivativeJobs.SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
         job.Status.Should().Be(CentralDerivativeJobStatus.Leased);
         job.AttemptCount.Should().Be(1);
+        var attempt = await db.CentralDerivativeJobAttempts.SingleAsync(item => item.CentralDerivativeJobId == jobId)
+            .ConfigureAwait(false);
+        attempt.AttemptNumber.Should().Be(1);
+        attempt.WorkerId.Should().Be(lease.WorkerId);
+        attempt.Outcome.Should().Be(CentralDerivativeAttemptOutcome.Leased);
+        var operations = verificationScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobOperationsService>();
+        await operations.CancelAsync(jobId, "test-operator", CancellationToken.None).ConfigureAwait(false);
+        db.ChangeTracker.Clear();
+        (await db.CentralDerivativeJobs.SingleAsync(item => item.Id == jobId).ConfigureAwait(false))
+            .Status.Should().Be(CentralDerivativeJobStatus.Canceled);
+        (await db.CentralDerivativeJobAttempts.SingleAsync(item => item.CentralDerivativeJobId == jobId)
+            .ConfigureAwait(false)).Outcome.Should().Be(CentralDerivativeAttemptOutcome.Canceled);
     }
 
     [TestMethod]
@@ -74,6 +89,16 @@ public sealed class DerivativeJobIntegrationTests
         secondLease.JobId.Should().Be(jobId);
         secondLease.LeaseToken.Should().NotBe(firstLease.LeaseToken);
         secondLease.AttemptCount.Should().Be(2);
+        await using var verificationScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var verificationDb = verificationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var attempts = await verificationDb.CentralDerivativeJobAttempts
+            .Where(item => item.CentralDerivativeJobId == jobId)
+            .OrderBy(item => item.AttemptNumber)
+            .ToListAsync().ConfigureAwait(false);
+        attempts.Select(item => item.Outcome).Should().Equal(
+            CentralDerivativeAttemptOutcome.LeaseExpired,
+            CentralDerivativeAttemptOutcome.Leased);
+        attempts[0].ReasonCode.Should().Be("lease.expired");
     }
 
     [TestMethod]
@@ -112,6 +137,11 @@ public sealed class DerivativeJobIntegrationTests
         var retry = await service.ClaimNextAsync("worker", TimeSpan.FromMinutes(1), CancellationToken.None)
             .ConfigureAwait(false);
         retry!.AttemptCount.Should().Be(2);
+        var attempts = await db.CentralDerivativeJobAttempts.Where(item => item.CentralDerivativeJobId == jobId)
+            .OrderBy(item => item.AttemptNumber).ToListAsync().ConfigureAwait(false);
+        attempts.Select(item => item.Outcome).Should().Equal(
+            CentralDerivativeAttemptOutcome.RetryableFailure,
+            CentralDerivativeAttemptOutcome.Leased);
     }
 
     [TestMethod]
@@ -134,6 +164,10 @@ public sealed class DerivativeJobIntegrationTests
         var job = await db.CentralDerivativeJobs.SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
         job.Status.Should().Be(CentralDerivativeJobStatus.TerminalFailure);
         job.AvailableAtUtc.Should().BeNull();
+        var attempt = await db.CentralDerivativeJobAttempts.SingleAsync(item => item.CentralDerivativeJobId == jobId)
+            .ConfigureAwait(false);
+        attempt.Outcome.Should().Be(CentralDerivativeAttemptOutcome.TerminalFailure);
+        attempt.EndedAtUtc.Should().Be(now);
         (await service.ClaimNextAsync("worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false))
             .Should().BeNull();
     }
@@ -153,6 +187,7 @@ public sealed class DerivativeJobIntegrationTests
             CentralFrameId = frameId,
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.Preview,
+            Variant = CentralDerivativeRecipeCatalog.PreviewVariant,
             RecipeVersion = CentralDerivativeRecipeCatalog.PreviewRecipeVersion,
             ManifestSchemaVersion = "v1",
             MediaType = "image/png",
@@ -193,6 +228,10 @@ public sealed class DerivativeJobIntegrationTests
         var job = await db.CentralDerivativeJobs.SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
         job.Status.Should().Be(CentralDerivativeJobStatus.Completed);
         job.ResultCentralArtifactId.Should().Be(result.Id);
+        var attempt = await db.CentralDerivativeJobAttempts.SingleAsync(item => item.CentralDerivativeJobId == jobId)
+            .ConfigureAwait(false);
+        attempt.Outcome.Should().Be(CentralDerivativeAttemptOutcome.Completed);
+        attempt.EndedAtUtc.Should().Be(now);
     }
 
     [TestMethod]
@@ -209,6 +248,7 @@ public sealed class DerivativeJobIntegrationTests
                 CentralFrameId = frameId,
                 ArtifactId = Guid.NewGuid(),
                 Role = FrameArtifactRole.Preview,
+                Variant = CentralDerivativeRecipeCatalog.PreviewVariant,
                 RecipeVersion = CentralDerivativeRecipeCatalog.PreviewRecipeVersion,
                 ManifestSchemaVersion = "v1",
                 MediaType = "image/png",
@@ -244,6 +284,8 @@ public sealed class DerivativeJobIntegrationTests
         var verificationDb = verificationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         (await verificationDb.CentralDerivativeJobs.SingleAsync(job => job.Id == jobId).ConfigureAwait(false))
             .Status.Should().Be(CentralDerivativeJobStatus.Completed);
+        (await verificationDb.CentralDerivativeJobAttempts.SingleAsync(item => item.CentralDerivativeJobId == jobId)
+            .ConfigureAwait(false)).Outcome.Should().Be(CentralDerivativeAttemptOutcome.Completed);
     }
 
     [TestMethod]
@@ -264,6 +306,7 @@ public sealed class DerivativeJobIntegrationTests
             Frame = source.Frame,
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.Preview,
+            Variant = CentralDerivativeRecipeCatalog.PreviewVariant,
             RecipeVersion = CentralDerivativeRecipeCatalog.PreviewRecipeVersion,
             ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
             MediaType = "image/png",
@@ -361,6 +404,7 @@ public sealed class DerivativeJobIntegrationTests
             Frame = source.Frame,
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.Preview,
+            Variant = CentralDerivativeRecipeCatalog.PreviewVariant,
             RecipeVersion = CentralDerivativeRecipeCatalog.PreviewRecipeVersion,
             ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
             MediaType = "image/png",
@@ -415,9 +459,168 @@ public sealed class DerivativeJobIntegrationTests
     }
 
     [TestMethod]
+    public async Task InputInvalidationWithStaleSourceGenerationIsRejected()
+    {
+        await DisableClaimableJobsAsync().ConfigureAwait(false);
+        var (jobId, _, _) = await SeedJobAsync().ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var service = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+        var lease = await service.ClaimNextAsync(
+            "generation-worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        lease!.JobId.Should().Be(jobId);
+        var source = await db.CentralArtifacts.AsNoTracking().SingleAsync(item =>
+            item.ArtifactId == lease.SourceArtifactId).ConfigureAwait(false);
+        var staleRowVersion = source.RowVersion.ToArray();
+        await db.CentralArtifacts.Where(item => item.Id == source.Id)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(
+                item => item.StateReasonCode, "object.repaired")).ConfigureAwait(false);
+
+        await FluentActions.Awaiting(() => service.MarkInputUnavailableAsync(
+                lease.JobId,
+                lease.LeaseToken,
+                staleRowVersion,
+                "object.checksum-mismatch",
+                quarantine: true,
+                CancellationToken.None))
+            .Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
+        db.ChangeTracker.Clear();
+        var current = await db.CentralArtifacts.SingleAsync(item => item.Id == source.Id).ConfigureAwait(false);
+        current.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        current.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+    }
+
+    [TestMethod]
+    public async Task ExpiredTerminalAndMalformedLeasesDoNotBlockPendingWork()
+    {
+        await DisableClaimableJobsAsync().ConfigureAwait(false);
+        var (_, _, _) = await SeedJobAsync(maxAttempts: 1).ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var original = await db.CentralDerivativeJobs.Include(job => job.SourceArtifact)
+            .SingleAsync(job => job.MaxAttempts == 1 && job.Status == CentralDerivativeJobStatus.Pending)
+            .ConfigureAwait(false);
+        var source = original.SourceArtifact!;
+        for (var index = 0; index < 100; index++)
+        {
+            db.CentralDerivativeJobs.Add(CloneJob(original, source, $"expiry-{index:D3}", maxAttempts: 1));
+        }
+        var malformed = CloneJob(original, source, "expiry-malformed", maxAttempts: 2);
+        malformed.Status = CentralDerivativeJobStatus.Leased;
+        malformed.AttemptCount = 1;
+        malformed.AvailableAtUtc = null;
+        malformed.LeaseOwner = "missing-attempt-worker";
+        malformed.LeaseToken = Guid.NewGuid();
+        malformed.LeaseAcquiredAtUtc = DateTimeOffset.UtcNow.AddMinutes(-2);
+        malformed.LeaseExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+        db.CentralDerivativeJobs.Add(malformed);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        var service = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+        for (var index = 0; index < 101; index++)
+        {
+            var lease = await service.ClaimNextAsync(
+                "expiry-seed-worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            var expiredAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            await db.CentralDerivativeJobs.Where(job => job.Id == lease!.JobId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    job => job.LeaseExpiresAtUtc, expiredAt)).ConfigureAwait(false);
+            await db.CentralDerivativeJobAttempts.Where(attempt =>
+                    attempt.CentralDerivativeJobId == lease.JobId
+                    && attempt.AttemptNumber == lease.AttemptCount)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    attempt => attempt.LeaseExpiresAtUtc, expiredAt)).ConfigureAwait(false);
+            db.ChangeTracker.Clear();
+        }
+        var pending = CloneJob(original, source, "after-expired", maxAttempts: 5);
+        db.CentralDerivativeJobs.Add(pending);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        var claimed = await service.ClaimNextAsync(
+            "after-expiry-worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+
+        claimed.Should().NotBeNull();
+        claimed!.JobId.Should().Be(pending.Id);
+        db.ChangeTracker.Clear();
+        (await db.CentralDerivativeJobs.CountAsync(job =>
+            job.TargetVariant.StartsWith("expiry-")
+            && job.Status == CentralDerivativeJobStatus.TerminalFailure).ConfigureAwait(false)).Should().Be(101);
+    }
+
+    [TestMethod]
+    public async Task RecipeIdentityMismatchTerminatesBeforeLoadingInput()
+    {
+        await DisableClaimableJobsAsync().ConfigureAwait(false);
+        var (jobId, _, _) = await SeedJobAsync().ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await db.CentralDerivativeJobs.Where(job => job.Id == jobId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(
+                job => job.RequestedRecipeIdentitySha256, new string('F', 64))).ConfigureAwait(false);
+        var service = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+        var lease = await service.ClaimNextAsync(
+            "identity-worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+
+        var result = await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+            .ExecuteAsync(lease!, CancellationToken.None).ConfigureAwait(false);
+
+        result.Status.Should().Be(ProcessingOutcomeStatus.TerminalFailure);
+        result.ReasonCode.Should().Be("processing.recipe-identity-mismatch");
+        db.ChangeTracker.Clear();
+        var job = await db.CentralDerivativeJobs.SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
+        job.Status.Should().Be(CentralDerivativeJobStatus.TerminalFailure);
+    }
+
+    [TestMethod]
+    public async Task ReconciliationDoesNotCompleteCanceledJob()
+    {
+        await DisableClaimableJobsAsync().ConfigureAwait(false);
+        var (jobId, _, _) = await SeedJobAsync().ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var operations = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobOperationsService>();
+        await operations.CancelAsync(jobId, "integration-test", CancellationToken.None).ConfigureAwait(false);
+        var job = await db.CentralDerivativeJobs.Include(item => item.SourceArtifact)!
+            .ThenInclude(source => source!.Frame)!.ThenInclude(frame => frame!.Artifacts)
+            .SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
+        var source = job.SourceArtifact!;
+        var target = new CentralArtifact
+        {
+            CentralFrameId = source.CentralFrameId,
+            Frame = source.Frame,
+            DevicePublicId = source.DevicePublicId,
+            ArtifactId = Guid.NewGuid(),
+            Role = FrameArtifactRole.Preview,
+            RecipeVersion = CentralDerivativeRecipeCatalog.PreviewRecipeVersion,
+            Variant = CentralDerivativeRecipeCatalog.PreviewVariant,
+            ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+            MediaType = "image/jpeg",
+            ByteLength = 4,
+            ChecksumSha256 = new string('B', 64),
+            StorageReference = $"minio://target/{Guid.NewGuid():N}",
+            ReceivedAtUtc = DateTimeOffset.UtcNow,
+            IdempotencyKey = Guid.NewGuid().ToString("N"),
+            ObjectState = CentralArtifactObjectState.Available,
+            ReconstructionState = CentralReconstructionState.Complete
+        };
+        db.CentralArtifacts.Add(target);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>()
+            .EnsureRequiredJobsAsync(target, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        db.ChangeTracker.Clear();
+        var canceled = await db.CentralDerivativeJobs.SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
+        canceled.Status.Should().Be(CentralDerivativeJobStatus.Canceled);
+        canceled.ResultCentralArtifactId.Should().BeNull();
+    }
+
+    [TestMethod]
     public async Task OperationalQuery_FiltersJobsAndDoesNotExposeLeaseToken()
     {
-        var (_, _, agentId) = await SeedJobAsync().ConfigureAwait(false);
+        var (jobId, _, agentId) = await SeedJobAsync().ConfigureAwait(false);
         using var client = AssemblyHooks.Fixture.Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer", await GetSystemTokenAsync(client, administrative: true).ConfigureAwait(false));
@@ -431,15 +634,106 @@ public sealed class DerivativeJobIntegrationTests
         body.Should().Contain(agentId);
         body.Should().NotContain("LeaseToken");
         body.Should().NotContain("RowVersion");
+        using var cancel = await client.PostAsync(
+            new Uri($"/api/v1.0/derivative-jobs/{jobId:D}/cancel", UriKind.Relative), content: null)
+            .ConfigureAwait(false);
+        cancel.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        using var requeue = await client.PostAsync(
+            new Uri($"/api/v1.0/derivative-jobs/{jobId:D}/requeue", UriKind.Relative), content: null)
+            .ConfigureAwait(false);
+        requeue.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        using var secondCancel = await client.PostAsync(
+            new Uri($"/api/v1.0/derivative-jobs/{jobId:D}/cancel", UriKind.Relative), content: null)
+            .ConfigureAwait(false);
+        secondCancel.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        var reprocessRequest = new
+        {
+            recipeName = BuiltInProcessingRecipes.ImageQuality,
+            options = new { },
+            outputVariant = "operator-quality-v2",
+            supersede = false
+        };
+        Guid siblingJobId;
+        await using (var siblingScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var siblingDb = siblingScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var original = await siblingDb.CentralDerivativeJobs.Include(job => job.SourceArtifact)
+                .SingleAsync(job => job.Id == jobId).ConfigureAwait(false);
+            var sibling = CloneJob(original, original.SourceArtifact!, "sibling-preview", maxAttempts: 5);
+            sibling.Status = CentralDerivativeJobStatus.TerminalFailure;
+            sibling.AvailableAtUtc = null;
+            siblingDb.CentralDerivativeJobs.Add(sibling);
+            await siblingDb.SaveChangesAsync().ConfigureAwait(false);
+            siblingJobId = sibling.Id;
+        }
+        var reprocessUri = new Uri($"/api/v1.0/derivative-jobs/{jobId:D}/reprocess", UriKind.Relative);
+        var reprocessTasks = new[]
+        {
+            client.PostAsJsonAsync(reprocessUri, reprocessRequest),
+            client.PostAsJsonAsync(
+                new Uri($"/api/v1.0/derivative-jobs/{siblingJobId:D}/reprocess", UriKind.Relative),
+                reprocessRequest)
+        };
+        var reprocessResponses = await Task.WhenAll(reprocessTasks).ConfigureAwait(false);
+        reprocessResponses.Should().OnlyContain(item => item.StatusCode == HttpStatusCode.OK);
+        var reprocessedIds = await Task.WhenAll(reprocessResponses.Select(async item =>
+            (await item.Content.ReadFromJsonAsync<DerivativeJobsController.ReprocessResponse>()
+                .ConfigureAwait(false))!.JobId)).ConfigureAwait(false);
+        reprocessedIds.Distinct().Should().ContainSingle();
+        var reprocessedJobId = reprocessedIds[0];
+        foreach (var item in reprocessResponses)
+        {
+            item.Dispose();
+        }
+        var supersedeRequest = new
+        {
+            recipeName = BuiltInProcessingRecipes.ImageQuality,
+            options = new { },
+            outputVariant = "operator-quality-v2",
+            supersede = true
+        };
+        using var supersede = await client.PostAsJsonAsync(
+            new Uri($"/api/v1.0/derivative-jobs/{jobId:D}/reprocess", UriKind.Relative), supersedeRequest)
+            .ConfigureAwait(false);
+        (await supersede.Content.ReadFromJsonAsync<DerivativeJobsController.ReprocessResponse>()
+            .ConfigureAwait(false))!.JobId.Should().Be(reprocessedJobId);
+        using var duplicateSupersede = await client.PostAsJsonAsync(
+            new Uri($"/api/v1.0/derivative-jobs/{jobId:D}/reprocess", UriKind.Relative), supersedeRequest)
+            .ConfigureAwait(false);
+        (await duplicateSupersede.Content.ReadFromJsonAsync<DerivativeJobsController.ReprocessResponse>()
+            .ConfigureAwait(false))!.JobId.Should().Be(reprocessedJobId);
+        await using (var operationScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var operationDb = operationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var original = await operationDb.CentralDerivativeJobs.SingleAsync(job => job.Id == jobId)
+                .ConfigureAwait(false);
+            original.Status.Should().Be(CentralDerivativeJobStatus.Superseded);
+            original.SupersededByJobId.Should().Be(reprocessedJobId);
+            var reprocessed = await operationDb.CentralDerivativeJobs.SingleAsync(job => job.Id == reprocessedJobId)
+                .ConfigureAwait(false);
+            reprocessed.Status.Should().Be(CentralDerivativeJobStatus.Pending);
+            reprocessed.TargetRole.Should().Be(FrameArtifactRole.Metadata);
+            reprocessed.TargetVariant.Should().Be("operator-quality-v2");
+            reprocessed.RequestIdentitySha256.Should().HaveLength(64);
+        }
         using var invalid = await client.GetAsync(new Uri(
             "/api/v1.0/derivative-jobs?status=999", UriKind.Relative)).ConfigureAwait(false);
         invalid.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        using var invalidReprocess = await client.PostAsJsonAsync(
+            new Uri($"/api/v1.0/derivative-jobs/{jobId:D}/reprocess", UriKind.Relative),
+            new { recipeName = "unknown", options = new { }, outputVariant = "invalid", supersede = false })
+            .ConfigureAwait(false);
+        invalidReprocess.StatusCode.Should().Be(HttpStatusCode.BadRequest);
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer", await GetSystemTokenAsync(client, administrative: false).ConfigureAwait(false));
         using var forbidden = await client.GetAsync(new Uri(
             "/api/v1.0/derivative-jobs", UriKind.Relative)).ConfigureAwait(false);
         forbidden.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        using var forbiddenCancel = await client.PostAsync(
+            new Uri($"/api/v1.0/derivative-jobs/{reprocessedJobId:D}/cancel", UriKind.Relative), content: null)
+            .ConfigureAwait(false);
+        forbiddenCancel.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     private static async Task DisableClaimableJobsAsync()
@@ -454,6 +748,30 @@ public sealed class DerivativeJobIntegrationTests
                 .SetProperty(job => job.LeaseExpiresAtUtc, (DateTimeOffset?)null))
             .ConfigureAwait(false);
     }
+
+    private static CentralDerivativeJob CloneJob(
+        CentralDerivativeJob template,
+        CentralArtifact source,
+        string variant,
+        int maxAttempts)
+        => new()
+        {
+            SourceCentralArtifactId = source.Id,
+            TargetRole = template.TargetRole,
+            TargetRecipeVersion = template.TargetRecipeVersion,
+            TargetVariant = variant,
+            RecipeName = template.RecipeName,
+            RecipeOptionsJson = template.RecipeOptionsJson,
+            InputSelectorJson = template.InputSelectorJson,
+            RequestedRecipeIdentitySha256 = template.RequestedRecipeIdentitySha256,
+            RequestIdentitySha256 = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray())),
+            Status = CentralDerivativeJobStatus.Pending,
+            MaxAttempts = maxAttempts,
+            AvailableAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3),
+            CreatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3),
+            UpdatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3)
+        };
 
     private static async Task<(Guid JobId, Guid FrameId, string AgentId)> SeedJobAsync(
         DateTimeOffset? availableAtUtc = null,
@@ -477,6 +795,7 @@ public sealed class DerivativeJobIntegrationTests
             CentralFrameId = frame.Id,
             Frame = frame,
             ArtifactId = Guid.NewGuid(),
+            DevicePublicId = frame.DevicePublicId,
             Role = FrameArtifactRole.Raw,
             RecipeVersion = "raw-v1",
             ManifestSchemaVersion = "v1",
@@ -489,12 +808,22 @@ public sealed class DerivativeJobIntegrationTests
             ObjectState = CentralArtifactObjectState.Available,
             ReconstructionState = CentralReconstructionState.Complete
         };
+        var recipe = new CentralDerivativeRecipeCatalog().GetRequiredRecipes(FrameArtifactRole.Raw)
+            .Single(item => item.TargetRole == FrameArtifactRole.Preview);
         var job = new CentralDerivativeJob
         {
             SourceCentralArtifactId = source.Id,
             SourceArtifact = source,
             TargetRole = FrameArtifactRole.Preview,
             TargetRecipeVersion = CentralDerivativeRecipeCatalog.PreviewRecipeVersion,
+            TargetVariant = recipe.TargetVariant,
+            RecipeName = recipe.RecipeName,
+            RecipeOptionsJson = CaptureContractJson.Canonicalize(recipe.Options).GetRawText(),
+            InputSelectorJson = CaptureContractJson.Canonicalize(
+                CaptureContractJson.SerializeToElement(recipe.InputSelector)).GetRawText(),
+            RequestedRecipeIdentitySha256 = recipe.RequestedRecipeIdentitySha256,
+            RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateRequestIdentity(
+                source.DevicePublicId!.Value, source.ArtifactId, recipe),
             Status = CentralDerivativeJobStatus.Pending,
             AttemptCount = 0,
             MaxAttempts = maxAttempts,

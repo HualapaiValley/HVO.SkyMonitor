@@ -86,6 +86,26 @@ public sealed partial class Program
             .Validate(HasUsableDeviceBootstrapCredentials,
                 "DeviceBootstrap:CentralIdentity must contain a service URL and scoped client credentials.")
             .ValidateOnStart();
+        builder.Services.AddOptions<CentralDerivativeWorkerOptions>()
+            .Bind(builder.Configuration.GetSection(CentralDerivativeWorkerOptions.SectionName))
+            .Validate(options => !string.IsNullOrWhiteSpace(options.WorkerId) && options.WorkerId.Length <= 256,
+                "CentralDerivativeWorker:WorkerId is required and must not exceed 256 characters.")
+            .Validate(options => options.Concurrency is >= 1 and <= 32,
+                "CentralDerivativeWorker:Concurrency must be between 1 and 32.")
+            .Validate(options => options.PollInterval > TimeSpan.Zero
+                    && options.QueueSampleInterval > TimeSpan.Zero
+                    && options.LeaseDuration >= TimeSpan.FromSeconds(1)
+                    && options.LeaseDuration <= TimeSpan.FromHours(1)
+                    && options.RenewalInterval > TimeSpan.Zero
+                    && options.RenewalInterval < options.LeaseDuration
+                    && options.ShutdownTimeout > TimeSpan.Zero
+                    && options.BacklogDegradedAfter > TimeSpan.Zero,
+                "CentralDerivativeWorker timing values are invalid.")
+            .ValidateOnStart();
+        builder.Services.Configure<HostOptions>(options =>
+            options.ShutdownTimeout = builder.Configuration.GetValue(
+                $"{CentralDerivativeWorkerOptions.SectionName}:ShutdownTimeout",
+                TimeSpan.FromSeconds(30)));
 
         builder.Services.Configure<DatabaseSeedOptions>(
             builder.Configuration.GetSection(DatabaseSeedOptions.SectionName));
@@ -121,7 +141,8 @@ public sealed partial class Program
         // Health checks
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks()
             .AddDbContextCheck<ApplicationDbContext>("database", tags: ["dependency"])
-            .AddCheck<CentralArtifactConsistencyHealthCheck>("artifact-consistency", tags: ["consistency"]);
+            .AddCheck<CentralArtifactConsistencyHealthCheck>("artifact-consistency", tags: ["consistency"])
+            .AddCheck<CentralDerivativeWorkerHealthCheck>("central-derivative-worker", tags: ["worker"]);
         healthChecks.AddInstalledCelestialCatalogHealthCheck();
 
         if (!string.IsNullOrWhiteSpace(redisConfiguration))
@@ -169,6 +190,7 @@ public sealed partial class Program
                 metrics.AddMeter("HVO.SkyMonitor.Authentication");
                 metrics.AddMeter(CentralIngestTelemetry.MeterName);
                 metrics.AddMeter(CentralArtifactRetrievalTelemetry.MeterName);
+                metrics.AddMeter(CentralDerivativeWorkerTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             });
 
@@ -596,6 +618,12 @@ public sealed partial class Program
         builder.Services.AddSingleton<LogicHostRecipeExecutionAdapter>();
         builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();
         builder.Services.AddScoped<ICentralDerivativeJobService, CentralDerivativeJobService>();
+        builder.Services.AddScoped<ICentralDerivativeJobInputReader, CentralDerivativeJobInputReader>();
+        builder.Services.AddScoped<ICentralDerivativeOutputWriter, CentralDerivativeOutputWriter>();
+        builder.Services.AddScoped<ICentralDerivativeJobExecutor, CentralDerivativeJobExecutor>();
+        builder.Services.AddScoped<ICentralDerivativeJobOperationsService, CentralDerivativeJobOperationsService>();
+        builder.Services.AddSingleton<CentralDerivativeWorkerTelemetry>();
+        builder.Services.AddHostedService<CentralDerivativeWorker>();
         builder.Services.AddScoped<IDeviceRigProfileService, DeviceRigProfileService>();
         builder.Services.AddInstalledCelestialCatalog();
 

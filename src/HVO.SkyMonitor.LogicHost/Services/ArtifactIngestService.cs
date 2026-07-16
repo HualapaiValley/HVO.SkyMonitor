@@ -1286,6 +1286,7 @@ internal sealed class ArtifactIngestService(
                 pending.Enqueue(dependent.Id);
             }
             var jobs = await dbContext.CentralDerivativeJobs
+                .Include(job => job.Attempts)
                 .Where(job => (job.SourceCentralArtifactId == sourceId
                         || job.ResultCentralArtifactId == sourceId)
                     && (job.Status == CentralDerivativeJobStatus.Pending
@@ -1295,6 +1296,21 @@ internal sealed class ArtifactIngestService(
                 .ToListAsync(cancellationToken).ConfigureAwait(false);
             foreach (var job in jobs)
             {
+                var activeAttempt = job.Attempts.SingleOrDefault(attempt =>
+                    attempt.Outcome == CentralDerivativeAttemptOutcome.Leased);
+                if (activeAttempt is not null)
+                {
+                    activeAttempt.Outcome = sourceId == sourceArtifact.Id
+                        && sourceArtifact.ObjectState == CentralArtifactObjectState.Quarantined
+                            ? CentralDerivativeAttemptOutcome.Quarantined
+                            : CentralDerivativeAttemptOutcome.RetryableFailure;
+                    activeAttempt.ReasonCode = job.SourceCentralArtifactId == sourceId
+                        ? sourceId == sourceArtifact.Id
+                            ? sourceArtifact.StateReasonCode ?? CentralDerivativeJobScheduler.SourceInvalidatedReason
+                            : CentralDerivativeJobScheduler.SourceInvalidatedReason
+                        : CentralDerivativeJobScheduler.ResultInvalidatedReason;
+                    activeAttempt.EndedAtUtc = invalidatedAtUtc;
+                }
                 job.Status = CentralDerivativeJobStatus.RetryableFailure;
                 job.AvailableAtUtc = null;
                 job.LeaseOwner = null;

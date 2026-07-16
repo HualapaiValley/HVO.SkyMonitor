@@ -250,7 +250,8 @@ public sealed class IntegrationTestFixture : IDisposable
                         ["DeviceBootstrap:CentralIdentity:ServiceUrl"] = "https://logichost.integration",
                         ["DeviceBootstrap:CentralIdentity:Mode"] = "ClientCredentials",
                         ["DeviceBootstrap:CentralIdentity:ClientCredentials:ClientId"] = TestClients.SystemCameraAgent.ClientId,
-                        ["DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret"] = TestClients.SystemCameraAgent.ClientSecret
+                        ["DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret"] = TestClients.SystemCameraAgent.ClientSecret,
+                        ["CentralDerivativeWorker:Enabled"] = "false"
                     };
 
                     AddValues(
@@ -266,8 +267,9 @@ public sealed class IntegrationTestFixture : IDisposable
                 builder.ConfigureTestServices(services =>
                 {
                     foreach (var descriptor in services.Where(static descriptor =>
-                                 descriptor.ServiceType == typeof(IHostedService)
-                                 && descriptor.ImplementationType == typeof(CentralArtifactReconciliationService)).ToArray())
+                             descriptor.ServiceType == typeof(IHostedService)
+                             && (descriptor.ImplementationType == typeof(CentralArtifactReconciliationService)
+                                 || descriptor.ImplementationType == typeof(CentralDerivativeWorker))).ToArray())
                     {
                         services.Remove(descriptor);
                     }

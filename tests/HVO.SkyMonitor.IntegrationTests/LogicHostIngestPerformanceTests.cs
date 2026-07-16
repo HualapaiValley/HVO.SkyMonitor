@@ -39,7 +39,7 @@ public sealed class LogicHostIngestPerformanceTests
     private const int ConcurrentWarmups = 20;
     private const int ConcurrentMeasurements = 200;
     private const int ProfilesPerFrame = 5;
-    private const int DerivativeJobsPerRawArtifact = 2;
+    private const int DerivativeJobsPerRawArtifact = 3;
     private const string ArtifactBucket = "skymonitor-artifacts";
     private static readonly int[] ConcurrencyLevels = [1, 4, 8];
     private static readonly DateTimeOffset CaptureStartUtc = new(2026, 7, 15, 12, 0, 0, TimeSpan.Zero);

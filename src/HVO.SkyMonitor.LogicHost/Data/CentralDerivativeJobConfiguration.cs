@@ -16,11 +16,21 @@ internal sealed class CentralDerivativeJobConfiguration : IEntityTypeConfigurati
         builder.HasKey(job => job.Id);
         builder.Property(job => job.TargetRole).HasConversion<string>().HasMaxLength(32).IsRequired();
         builder.Property(job => job.TargetRecipeVersion).HasMaxLength(128).IsRequired();
+        builder.Property(job => job.TargetVariant).HasMaxLength(128).IsRequired();
+        builder.Property(job => job.RecipeName).HasMaxLength(128).IsRequired();
+        builder.Property(job => job.RecipeOptionsJson).IsRequired();
+        builder.Property(job => job.InputSelectorJson).HasMaxLength(2048).IsRequired();
+        builder.Property(job => job.RequestedRecipeIdentitySha256).HasMaxLength(64).IsUnicode(false).IsRequired();
+        builder.Property(job => job.RequestIdentitySha256).HasMaxLength(64).IsUnicode(false).IsRequired();
+        builder.Property(job => job.TraceParent).HasMaxLength(128).IsUnicode(false);
+        builder.Property(job => job.TraceState).HasMaxLength(512).IsUnicode(false);
         builder.Property(job => job.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
         builder.Property(job => job.LeaseOwner).HasMaxLength(256);
         builder.Property(job => job.LastError).HasMaxLength(2048);
+        builder.Property(job => job.CancellationRequestedBy).HasMaxLength(256);
         builder.Property(job => job.RowVersion).IsRowVersion();
-        builder.HasIndex(job => new { job.SourceCentralArtifactId, job.TargetRole, job.TargetRecipeVersion }).IsUnique();
+        builder.HasIndex(job => job.RequestIdentitySha256).IsUnique();
+        builder.HasIndex(job => new { job.SourceCentralArtifactId, job.TargetRole, job.TargetRecipeVersion });
         builder.HasIndex(job => new { job.Status, job.AvailableAtUtc, job.CreatedAtUtc, job.Id });
         builder.HasIndex(job => new { job.Status, job.LeaseExpiresAtUtc, job.CreatedAtUtc, job.Id });
         builder.HasIndex(job => new { job.CreatedAtUtc, job.Id });
@@ -33,6 +43,10 @@ internal sealed class CentralDerivativeJobConfiguration : IEntityTypeConfigurati
         builder.HasOne(job => job.ResultArtifact)
             .WithMany()
             .HasForeignKey(job => job.ResultCentralArtifactId)
+            .OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne(job => job.SupersededByJob)
+            .WithMany()
+            .HasForeignKey(job => job.SupersededByJobId)
             .OnDelete(DeleteBehavior.NoAction);
     }
 }

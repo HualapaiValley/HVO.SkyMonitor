@@ -52,6 +52,10 @@ public static class SkyMonitorObservabilityExtensions
     {
         "Condition", "ReconciliationWindowSeconds"
     };
+    private static readonly HashSet<string> CentralDerivativeWorkerHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds"
+    };
 
     /// <summary>
     /// Configures the shared HVO telemetry stack and OTLP export.
@@ -77,12 +81,14 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Outbox");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Ingest");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Retrieval");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.DerivativeWorker");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureControl");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Outbox");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.DerivativeWorker");
             options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
         });
 
@@ -100,6 +106,7 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Outbox")
                     .AddMeter("HVO.SkyMonitor.LogicHost.Ingest")
                     .AddMeter("HVO.SkyMonitor.LogicHost.Retrieval")
+                    .AddMeter("HVO.SkyMonitor.LogicHost.DerivativeWorker")
                     .AddOtlpExporter());
         }
 
@@ -172,6 +179,7 @@ public static class SkyMonitorObservabilityExtensions
             "capture-processing" => CaptureProcessingHealthDataKeys,
             "artifact-outbox" => ArtifactOutboxHealthDataKeys,
             "artifact-consistency" => ArtifactConsistencyHealthDataKeys,
+            "central-derivative-worker" => CentralDerivativeWorkerHealthDataKeys,
             _ => null
         };
         return allowedKeys is null
