@@ -3,13 +3,19 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.Processing;
+using System.Security.Claims;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.LogicHost.Controllers;
 
 [ApiController]
 [Route("api/v1.0/derivative-jobs")]
 [Authorize(AuthenticationSchemes = "Bearer", Policy = "DerivativeJobsRead")]
-internal sealed class DerivativeJobsController(ApplicationDbContext dbContext) : ControllerBase
+internal sealed class DerivativeJobsController(
+    ApplicationDbContext dbContext,
+    ICentralDerivativeJobOperationsService operations) : ControllerBase
 {
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<DerivativeJobItem>>> ListAsync(
@@ -58,6 +64,67 @@ internal sealed class DerivativeJobsController(ApplicationDbContext dbContext) :
         return Ok(jobs.Select(Project).ToList());
     }
 
+    [HttpPost("{jobId:guid}/cancel")]
+    public async Task<IActionResult> CancelAsync(Guid jobId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await operations.CancelAsync(jobId, GetActor(), cancellationToken).ConfigureAwait(false);
+            return NoContent();
+        }
+        catch (CentralDerivativeJobStateException exception)
+        {
+            return Conflict(new ProblemDetails { Title = exception.Message });
+        }
+    }
+
+    [HttpPost("{jobId:guid}/requeue")]
+    public async Task<IActionResult> RequeueAsync(Guid jobId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await operations.RequeueAsync(jobId, GetActor(), cancellationToken).ConfigureAwait(false);
+            return NoContent();
+        }
+        catch (CentralDerivativeJobStateException exception)
+        {
+            return Conflict(new ProblemDetails { Title = exception.Message });
+        }
+    }
+
+    [HttpPost("{jobId:guid}/reprocess")]
+    public async Task<ActionResult<ReprocessResponse>> ReprocessAsync(
+        Guid jobId,
+        [FromBody] CentralDerivativeReprocessRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.RecipeName)
+            || request.RecipeName.Length > 128
+            || request.RecipeName is not (BuiltInProcessingRecipes.EncodedPreview
+                or BuiltInProcessingRecipes.Annotation
+                or BuiltInProcessingRecipes.ImageQuality)
+            || string.IsNullOrWhiteSpace(request.OutputVariant)
+            || request.OutputVariant.Length > 128
+            || request.Options.ValueKind != JsonValueKind.Object)
+        {
+            return BadRequest(new ProblemDetails { Title = "The reprocess request is invalid." });
+        }
+        try
+        {
+            var newJobId = await operations.ReprocessAsync(jobId, request, GetActor(), cancellationToken)
+                .ConfigureAwait(false);
+            return Ok(new ReprocessResponse(newJobId));
+        }
+        catch (CentralDerivativeJobStateException exception)
+        {
+            return Conflict(new ProblemDetails { Title = exception.Message });
+        }
+        catch (Exception exception) when (exception is ArgumentException or JsonException)
+        {
+            return BadRequest(new ProblemDetails { Title = "The recipe options are invalid." });
+        }
+    }
+
     private static DerivativeJobItem Project(CentralDerivativeJob job)
     {
         var source = job.SourceArtifact!;
@@ -87,6 +154,12 @@ internal sealed class DerivativeJobsController(ApplicationDbContext dbContext) :
         return true;
     }
 
+    private string GetActor()
+        => User.FindFirstValue("sub")
+            ?? User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? User.Identity?.Name
+            ?? "unknown";
+
     internal sealed record DerivativeJobItem(
         Guid JobId,
         string Status,
@@ -111,4 +184,6 @@ internal sealed class DerivativeJobsController(ApplicationDbContext dbContext) :
         DateTimeOffset? CompletedAtUtc,
         Guid? ResultArtifactId,
         int? RigProfileVersion);
+
+    internal sealed record ReprocessResponse(Guid JobId);
 }

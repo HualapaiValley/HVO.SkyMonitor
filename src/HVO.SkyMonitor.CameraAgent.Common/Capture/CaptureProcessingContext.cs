@@ -6,7 +6,6 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using System.Security.Cryptography;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 
@@ -172,17 +171,7 @@ public sealed class CaptureProcessingContext
     }
 
     internal static Guid CreateArtifactId(string outputIdentitySha256)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(outputIdentitySha256);
-        var bytes = Convert.FromHexString(outputIdentitySha256);
-        if (bytes.Length != SHA256.HashSizeInBytes)
-        {
-            throw new ArgumentException("Output identity must be a SHA-256 value.", nameof(outputIdentitySha256));
-        }
-        bytes[7] = (byte)((bytes[7] & 0x0f) | 0x80);
-        bytes[8] = (byte)((bytes[8] & 0x3f) | 0x80);
-        return new Guid(bytes.AsSpan(0, 16));
-    }
+        => ProcessingIdentity.CreateArtifactId(outputIdentitySha256);
 }
 
 public interface ICaptureProcessingStep

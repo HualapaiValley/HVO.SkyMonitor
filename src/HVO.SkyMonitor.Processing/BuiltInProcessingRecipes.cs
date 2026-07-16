@@ -28,6 +28,14 @@ public static class BuiltInProcessingRecipes
         return ProcessingIdentity.CreateRecipeIdentity(recipe.Definition, effective);
     }
 
+    public static JsonElement NormalizeOptions(string recipeName, JsonElement options)
+    {
+        var recipe = CreateAll().SingleOrDefault(candidate =>
+            string.Equals(candidate.Definition.Name, recipeName, StringComparison.Ordinal))
+            ?? throw new ArgumentException("The requested built-in recipe is unknown.", nameof(recipeName));
+        return recipe.NormalizeOptions(options);
+    }
+
     internal static IProcessingRecipe[] CreateAll() =>
     [
         new LinearNormalizationRecipe(),

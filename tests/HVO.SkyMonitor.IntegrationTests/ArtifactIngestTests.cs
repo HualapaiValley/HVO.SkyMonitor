@@ -6,8 +6,12 @@ using System.Text.Json;
 using System.Security.Cryptography;
 using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.LogicHost.Services.Processing;
+using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,6 +20,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.AspNetCore.TestHost;
 using Minio;
 using Minio.DataModel.Args;
+using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -172,6 +177,501 @@ public sealed class ArtifactIngestTests
         assertionDb.ChangeTracker.Clear();
         (await assertionDb.CentralArtifactIngestIdentities.CountAsync(
             item => item.CentralArtifactId == artifact.Id).ConfigureAwait(false)).Should().Be(2);
+
+        await assertionDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == artifact.Id
+                && job.TargetRole != FrameArtifactRole.Metadata)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
+            .ConfigureAwait(false);
+        Guid resultArtifactId;
+        await using (var workerScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var jobService = workerScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+            var lease = await jobService.ClaimNextAsync(
+                "integration-worker", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            lease!.RecipeName.Should().Be(BuiltInProcessingRecipes.ImageQuality);
+            var executor = workerScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>();
+            var execution = await executor.ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+            execution.Status.Should().Be(ProcessingOutcomeStatus.Produced);
+            resultArtifactId = execution.ArtifactId!.Value;
+        }
+        using var ownerClient = await ArtifactRetrievalTests.CreateUserClientAsync(
+            TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
+        using var derivativeResponse = await ownerClient.GetAsync(new Uri(
+            $"/api/v1.0/devices/{artifact.Frame!.DevicePublicId:D}/artifacts/{resultArtifactId:D}/content",
+            UriKind.Relative)).ConfigureAwait(false);
+        derivativeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var quality = JsonDocument.Parse(
+            await derivativeResponse.Content.ReadAsStringAsync().ConfigureAwait(false));
+        quality.RootElement.GetProperty("minimum").GetInt32().Should().Be(1);
+        quality.RootElement.GetProperty("maximum").GetInt32().Should().Be(4);
+
+        await using var evidenceScope = fixture.Factory.Services.CreateAsyncScope();
+        var evidenceDb = evidenceScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var result = await evidenceDb.CentralArtifacts.Include(item => item.Sources).Include(item => item.Recipe)
+            .SingleAsync(item => item.ArtifactId == resultArtifactId).ConfigureAwait(false);
+        result.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        result.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+        result.RecipeVersion.Should().Be("central-image-quality-v1");
+        result.Recipe!.ImplementationVersion.Should().Be("integer-image-statistics-v1");
+        result.Sources.Should().ContainSingle(item => item.ResolvedCentralArtifactId == artifact.Id);
+        var evidence = await evidenceDb.CentralArtifactProcessingEvidence
+            .SingleAsync(item => item.CentralArtifactId == result.Id).ConfigureAwait(false);
+        result.IdempotencyKey.Should().Be(CentralDerivativeOutputWriter.CreateArtifactIdempotencyKey(
+            result.DevicePublicId!.Value, evidence.OutputIdentitySha256));
+        evidence.AlgorithmsJson.Should().Contain("image-statistics");
+        var attempt = await evidenceDb.CentralDerivativeJobAttempts
+            .SingleAsync(item => item.CentralDerivativeJobId == evidence.CentralDerivativeJobId).ConfigureAwait(false);
+        attempt.Outcome.Should().Be(CentralDerivativeAttemptOutcome.Completed);
+        attempt.InputBytes.Should().Be(payload.LongLength);
+        attempt.OutputBytes.Should().Be(result.ByteLength);
+
+        var completedJob = await evidenceDb.CentralDerivativeJobs
+            .SingleAsync(item => item.Id == evidence.CentralDerivativeJobId).ConfigureAwait(false);
+        completedJob.Status = CentralDerivativeJobStatus.RetryableFailure;
+        completedJob.AvailableAtUtc = DateTimeOffset.UtcNow;
+        completedJob.CompletedAtUtc = null;
+        completedJob.ResultCentralArtifactId = null;
+        result.ObjectState = CentralArtifactObjectState.Pending;
+        result.StateReasonCode = "derivative.output-pending";
+        attempt.Outcome = CentralDerivativeAttemptOutcome.LeaseExpired;
+        attempt.ReasonCode = "lease.expired";
+        await evidenceDb.SaveChangesAsync().ConfigureAwait(false);
+
+        await using (var recoveryScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var recoveryJobs = recoveryScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+            var recoveryLease = await recoveryJobs.ClaimNextAsync(
+                "recovery-worker", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+            recoveryLease.Should().NotBeNull();
+            var recoveryExecutor = recoveryScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>();
+            var recovered = await recoveryExecutor.ExecuteAsync(recoveryLease!, CancellationToken.None).ConfigureAwait(false);
+            recovered.ArtifactId.Should().Be(resultArtifactId);
+            recovered.ReasonCode.Should().Be("derivative.output-recovered");
+        }
+        evidenceDb.ChangeTracker.Clear();
+        (await evidenceDb.CentralArtifacts.CountAsync(item => item.ArtifactId == resultArtifactId).ConfigureAwait(false))
+            .Should().Be(1);
+        var recoveredAttempts = await evidenceDb.CentralDerivativeJobAttempts
+            .Where(item => item.CentralDerivativeJobId == evidence.CentralDerivativeJobId)
+            .OrderBy(item => item.AttemptNumber)
+            .ToListAsync().ConfigureAwait(false);
+        recoveredAttempts.Select(item => item.Outcome).Should().Equal(
+            CentralDerivativeAttemptOutcome.LeaseExpired,
+            CentralDerivativeAttemptOutcome.Completed);
+        recoveredAttempts[1].RecipeDurationTicks.Should().Be(0);
+
+        var corruptSource = await evidenceDb.CentralArtifacts.SingleAsync(item => item.Id == artifact.Id)
+            .ConfigureAwait(false);
+        var originalChecksum = corruptSource.ChecksumSha256;
+        var sourceObjectKey = corruptSource.StorageReference["minio://skymonitor-artifacts/".Length..];
+        var minio = evidenceScope.ServiceProvider.GetRequiredService<IMinioClient>();
+        var corruptPayload = payload.Reverse().ToArray();
+        await using (var corruptStream = new MemoryStream(corruptPayload))
+        {
+            await minio.PutObjectAsync(new PutObjectArgs()
+                .WithBucket("skymonitor-artifacts")
+                .WithObject(sourceObjectKey)
+                .WithStreamData(corruptStream)
+                .WithObjectSize(corruptStream.Length)
+                .WithContentType(corruptSource.MediaType)).ConfigureAwait(false);
+        }
+        var corruptJob = await evidenceDb.CentralDerivativeJobs.SingleAsync(item =>
+            item.SourceCentralArtifactId == artifact.Id && item.TargetRole == FrameArtifactRole.Preview)
+            .ConfigureAwait(false);
+        corruptJob.Status = CentralDerivativeJobStatus.Pending;
+        corruptJob.AvailableAtUtc = DateTimeOffset.UtcNow;
+        corruptJob.LastError = null;
+        await evidenceDb.SaveChangesAsync().ConfigureAwait(false);
+        Guid corruptJobId = corruptJob.Id;
+        await using (var corruptScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var corruptJobs = corruptScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+            var corruptLease = await corruptJobs.ClaimNextAsync(
+                "integrity-worker", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+            corruptLease!.JobId.Should().Be(corruptJobId);
+            var corruptExecutor = corruptScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>();
+            await FluentActions.Awaiting(() => corruptExecutor.ExecuteAsync(corruptLease, CancellationToken.None))
+                .Should().ThrowAsync<CentralArtifactIntegrityException>().ConfigureAwait(false);
+        }
+        evidenceDb.ChangeTracker.Clear();
+        var quarantinedSource = await evidenceDb.CentralArtifacts.SingleAsync(item => item.Id == artifact.Id)
+            .ConfigureAwait(false);
+        quarantinedSource.ObjectState.Should().Be(CentralArtifactObjectState.Quarantined);
+        quarantinedSource.ReconstructionState.Should().Be(CentralReconstructionState.Quarantined);
+        quarantinedSource.ChecksumSha256.Should().Be(originalChecksum);
+        var invalidatedResult = await evidenceDb.CentralArtifacts.Include(item => item.Sources)
+            .SingleAsync(item => item.ArtifactId == resultArtifactId).ConfigureAwait(false);
+        invalidatedResult.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        invalidatedResult.ReconstructionState.Should().Be(CentralReconstructionState.PendingReference);
+        invalidatedResult.StateReasonCode.Should().Be("lineage.source-unavailable");
+        invalidatedResult.Sources.Should().ContainSingle(item => item.ResolvedCentralArtifactId == null);
+        using var invalidatedResponse = await ownerClient.GetAsync(new Uri(
+            $"/api/v1.0/devices/{artifact.Frame!.DevicePublicId:D}/artifacts/{resultArtifactId:D}/content",
+            UriKind.Relative)).ConfigureAwait(false);
+        invalidatedResponse.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        var sourceJobs = await evidenceDb.CentralDerivativeJobs.Where(item => item.SourceCentralArtifactId == artifact.Id)
+            .ToListAsync().ConfigureAwait(false);
+        sourceJobs.Single(item => item.TargetRole == FrameArtifactRole.Preview).Status
+            .Should().Be(CentralDerivativeJobStatus.Quarantined);
+        sourceJobs.Single(item => item.TargetRole == FrameArtifactRole.Metadata).Status
+            .Should().Be(CentralDerivativeJobStatus.Quarantined);
+        sourceJobs.Single(item => item.TargetRole == FrameArtifactRole.AnnotatedPreview).Status
+            .Should().Be(CentralDerivativeJobStatus.TerminalFailure);
+        var corruptAttempt = await evidenceDb.CentralDerivativeJobAttempts
+            .SingleAsync(item => item.CentralDerivativeJobId == corruptJobId).ConfigureAwait(false);
+        corruptAttempt.Outcome.Should().Be(CentralDerivativeAttemptOutcome.Quarantined);
+        corruptAttempt.ReasonCode.Should().Be("object.checksum-mismatch");
+    }
+
+    [TestMethod]
+    public async Task MultipartIngestV2_AllCentralRecipesConformToSharedExecution()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("central-conformance-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 1, 32, 128, 255 };
+        var scene = CreateSceneProvenance();
+        var manifest = CreateManifestV2(deviceId, rig, payload, captureSequence: 44) with { Scene = scene };
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        await using (var schedulingScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var schedulingDb = schedulingScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var sourceId = await schedulingDb.CentralArtifacts.Where(item =>
+                    item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+                .Select(item => item.Id)
+                .SingleAsync().ConfigureAwait(false);
+            await schedulingDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId != sourceId
+                    && (job.Status == CentralDerivativeJobStatus.Pending
+                        || job.Status == CentralDerivativeJobStatus.RetryableFailure))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+        }
+
+        var executions = new Dictionary<string, CentralDerivativeExecutionResult>(StringComparer.Ordinal);
+        for (var index = 0; index < 3; index++)
+        {
+            await using var workerScope = fixture.Factory.Services.CreateAsyncScope();
+            var jobs = workerScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+            var lease = await jobs.ClaimNextAsync(
+                "conformance-worker", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            lease!.SourceArtifactId.Should().Be(manifest.Descriptor.Artifact.ArtifactId);
+            executions[lease.RecipeName] = await workerScope.ServiceProvider
+                .GetRequiredService<ICentralDerivativeJobExecutor>()
+                .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+        }
+        executions.Keys.Should().BeEquivalentTo(
+            BuiltInProcessingRecipes.EncodedPreview,
+            BuiltInProcessingRecipes.Annotation,
+            BuiltInProcessingRecipes.ImageQuality);
+        executions.Values.Should().OnlyContain(result => result.Status == ProcessingOutcomeStatus.Produced);
+
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var db = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var source = await db.CentralArtifacts.SingleAsync(item =>
+            item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
+        var jobsByRecipe = await db.CentralDerivativeJobs.AsNoTracking()
+            .Where(job => job.SourceCentralArtifactId == source.Id)
+            .ToDictionaryAsync(job => job.RecipeName, StringComparer.Ordinal).ConfigureAwait(false);
+        jobsByRecipe.Values.Should().OnlyContain(job => job.TraceParent != null
+            && job.TraceParent.StartsWith("00-", StringComparison.Ordinal));
+        var resultIds = executions.Values.Select(result => result.ArtifactId!.Value).ToArray();
+        var outputs = await db.CentralArtifacts.AsNoTracking()
+            .Include(item => item.Recipe)
+            .Include(item => item.Sources)
+            .Where(item => resultIds.Contains(item.ArtifactId))
+            .ToDictionaryAsync(item => item.ArtifactId).ConfigureAwait(false);
+        outputs.Should().HaveCount(3);
+        foreach (var pair in executions)
+        {
+            var job = jobsByRecipe[pair.Key];
+            var output = outputs[pair.Value.ArtifactId!.Value];
+            output.RecipeVersion.Should().Be(job.TargetRecipeVersion);
+            output.Sources.Should().ContainSingle(item => item.ResolvedCentralArtifactId == source.Id);
+            output.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+            output.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+        }
+
+        using var ownerClient = await ArtifactRetrievalTests.CreateUserClientAsync(
+            TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
+        var centralPreview = await ReadDerivativeAsync(
+            ownerClient, source.DevicePublicId!.Value, executions[BuiltInProcessingRecipes.EncodedPreview].ArtifactId!.Value)
+            .ConfigureAwait(false);
+        var centralAnnotation = await ReadDerivativeAsync(
+            ownerClient, source.DevicePublicId!.Value, executions[BuiltInProcessingRecipes.Annotation].ArtifactId!.Value)
+            .ConfigureAwait(false);
+        var decodedPreview = JpegImageCodec.DecodeJpeg(centralPreview);
+        var decodedAnnotation = JpegImageCodec.DecodeJpeg(centralAnnotation);
+        decodedPreview.Width.Should().Be(2);
+        decodedPreview.Height.Should().Be(2);
+        decodedAnnotation.Width.Should().Be(2);
+        decodedAnnotation.Height.Should().Be(2);
+
+        var adapter = assertionScope.ServiceProvider.GetRequiredService<LogicHostRecipeExecutionAdapter>();
+        var previewJob = jobsByRecipe[BuiltInProcessingRecipes.EncodedPreview];
+        using var previewOptions = JsonDocument.Parse(previewJob.RecipeOptionsJson);
+        var expectedPreview = await adapter.ExecuteAsync(
+            manifest.Descriptor,
+            payload,
+            previewJob.RecipeName,
+            previewOptions.RootElement.Clone(),
+            ProcessingInputSelector.Raw(),
+            previewJob.TargetVariant).ConfigureAwait(false);
+        centralPreview.Should().Equal(expectedPreview.Products.Single().Payload.ToArray());
+
+        var annotationJob = jobsByRecipe[BuiltInProcessingRecipes.Annotation];
+        using var annotationOptions = JsonDocument.Parse(annotationJob.RecipeOptionsJson);
+        var annotationInput = CreateExpectedAnnotation(scene);
+        var expectedAnnotation = await adapter.ExecuteAsync(
+            manifest.Descriptor,
+            payload,
+            annotationJob.RecipeName,
+            annotationOptions.RootElement.Clone(),
+            ProcessingInputSelector.Raw(),
+            annotationJob.TargetVariant,
+            annotationInput).ConfigureAwait(false);
+        centralAnnotation.Should().Equal(expectedAnnotation.Products.Single().Payload.ToArray());
+        outputs[executions[BuiltInProcessingRecipes.EncodedPreview].ArtifactId!.Value].Recipe!.ImplementationVersion
+            .Should().Be("encoded-preview-v1");
+        outputs[executions[BuiltInProcessingRecipes.Annotation].ArtifactId!.Value].Recipe!.ImplementationVersion
+            .Should().Be("projected-annotation-v2");
+    }
+
+    [TestMethod]
+    public async Task CentralDerivativeMissingInputSuspendsWorkUntilObjectIsRestored()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("central-missing-input-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 3, 6, 9, 12 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, captureSequence: 45);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        Guid sourceId;
+        await using (var setupScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var setupDb = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            sourceId = await setupDb.CentralArtifacts.Where(item =>
+                    item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+                .Select(item => item.Id)
+                .SingleAsync().ConfigureAwait(false);
+            await setupDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId != sourceId
+                    && (job.Status == CentralDerivativeJobStatus.Pending
+                        || job.Status == CentralDerivativeJobStatus.RetryableFailure))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+            await setupDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == sourceId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.MaxAttempts, 1))
+                .ConfigureAwait(false);
+        }
+        await RemoveArtifactObjectAsync(registrationId, manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
+
+        Guid claimedJobId;
+        await using (var workerScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var jobs = workerScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+            var lease = await jobs.ClaimNextAsync(
+                "missing-input-worker", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            lease!.SourceArtifactId.Should().Be(manifest.Descriptor.Artifact.ArtifactId);
+            claimedJobId = lease.JobId;
+            var executor = workerScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>();
+            await FluentActions.Awaiting(() => executor.ExecuteAsync(lease, CancellationToken.None))
+                .Should().ThrowAsync<CentralArtifactMissingException>().ConfigureAwait(false);
+        }
+
+        await using (var unavailableScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var unavailableDb = unavailableScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var source = await unavailableDb.CentralArtifacts.SingleAsync(item => item.Id == sourceId)
+                .ConfigureAwait(false);
+            source.ObjectState.Should().Be(CentralArtifactObjectState.Pending);
+            source.ReconstructionState.Should().Be(CentralReconstructionState.PendingReference);
+            source.StateReasonCode.Should().Be("object.missing");
+            var jobs = await unavailableDb.CentralDerivativeJobs
+                .Where(job => job.SourceCentralArtifactId == sourceId)
+                .ToListAsync().ConfigureAwait(false);
+            jobs.Should().HaveCount(3);
+            jobs.Should().OnlyContain(job => job.Status == CentralDerivativeJobStatus.RetryableFailure
+                && job.AvailableAtUtc == null);
+            var attempt = await unavailableDb.CentralDerivativeJobAttempts.SingleAsync(item =>
+                item.CentralDerivativeJobId == claimedJobId).ConfigureAwait(false);
+            attempt.Outcome.Should().Be(CentralDerivativeAttemptOutcome.RetryableFailure);
+            attempt.ReasonCode.Should().Be("object.missing");
+            (await unavailableDb.CentralArtifactProcessingEvidence.CountAsync(item =>
+                jobs.Select(job => job.Id).Contains(item.CentralDerivativeJobId)).ConfigureAwait(false)).Should().Be(0);
+        }
+
+        using var retry = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        retry.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var restoredScope = fixture.Factory.Services.CreateAsyncScope();
+        var restoredDb = restoredScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var restored = await restoredDb.CentralArtifacts.SingleAsync(item => item.Id == sourceId).ConfigureAwait(false);
+        restored.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        restored.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+        (await restoredDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == sourceId)
+            .CountAsync(job => job.Status == CentralDerivativeJobStatus.Pending
+                && job.AvailableAtUtc != null).ConfigureAwait(false)).Should().Be(3);
+        await restoredDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == sourceId
+                && job.Id != claimedJobId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
+            .ConfigureAwait(false);
+        await using var recoveryScope = fixture.Factory.Services.CreateAsyncScope();
+        var recoveryJobs = recoveryScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+        var recoveryLease = await recoveryJobs.ClaimNextAsync(
+            "restored-input-worker", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+        recoveryLease.Should().NotBeNull();
+        recoveryLease!.JobId.Should().Be(claimedJobId);
+        recoveryLease.AttemptCount.Should().Be(2);
+        recoveryLease.MaxAttempts.Should().Be(6);
+        var recovered = await recoveryScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+            .ExecuteAsync(recoveryLease, CancellationToken.None).ConfigureAwait(false);
+        recovered.Status.Should().BeOneOf(ProcessingOutcomeStatus.Produced, ProcessingOutcomeStatus.Skipped);
+        restoredDb.ChangeTracker.Clear();
+        var attempts = await restoredDb.CentralDerivativeJobAttempts.Where(attempt =>
+                attempt.CentralDerivativeJobId == claimedJobId)
+            .OrderBy(attempt => attempt.AttemptNumber)
+            .ToListAsync().ConfigureAwait(false);
+        attempts.Select(attempt => attempt.Outcome).Should().Equal(
+            CentralDerivativeAttemptOutcome.RetryableFailure,
+            recovered.Status == ProcessingOutcomeStatus.Produced
+                ? CentralDerivativeAttemptOutcome.Completed
+                : CentralDerivativeAttemptOutcome.Skipped);
+    }
+
+    [TestMethod]
+    public async Task CentralDerivativeCopyFailureRecoversOnePendingOutputAfterLeaseExpiry()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("central-copy-fault-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 2, 4, 6, 8 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, captureSequence: 46);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        Guid sourceId;
+        await using (var setupScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var setupDb = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            sourceId = await setupDb.CentralArtifacts.Where(item =>
+                    item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+                .Select(item => item.Id)
+                .SingleAsync().ConfigureAwait(false);
+            await setupDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId != sourceId
+                    || job.TargetRole != FrameArtifactRole.Metadata)
+                .Where(job => job.Status == CentralDerivativeJobStatus.Pending
+                    || job.Status == CentralDerivativeJobStatus.RetryableFailure)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+        }
+
+        var copyFault = new CopyObjectFaultHandler { InnerHandler = new SocketsHttpHandler() };
+        using var faultFactory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<IMinioClient>();
+            services.AddSingleton<IMinioClient>(_ => new MinioClient()
+                .WithEndpoint(fixture.MinioEndpoint)
+                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                .WithHttpClient(new HttpClient(copyFault, disposeHandler: false), disposeHttpClient: true)
+                .Build());
+        }));
+        Guid jobId;
+        await using (var faultScope = faultFactory.Services.CreateAsyncScope())
+        {
+            var jobs = faultScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+            var lease = await jobs.ClaimNextAsync(
+                "copy-fault-worker", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            lease!.RecipeName.Should().Be(BuiltInProcessingRecipes.ImageQuality);
+            jobId = lease.JobId;
+            var executor = faultScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>();
+            await FluentActions.Awaiting(() => executor.ExecuteAsync(lease, CancellationToken.None))
+                .Should().ThrowAsync<MinioException>().ConfigureAwait(false);
+        }
+
+        Guid outputArtifactId;
+        await using (var pendingScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var pendingDb = pendingScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var evidence = await pendingDb.CentralArtifactProcessingEvidence
+                .SingleAsync(item => item.CentralDerivativeJobId == jobId).ConfigureAwait(false);
+            outputArtifactId = evidence.CentralArtifactId;
+            var pending = await pendingDb.CentralArtifacts.SingleAsync(item => item.Id == outputArtifactId)
+                .ConfigureAwait(false);
+            pending.ObjectState.Should().Be(CentralArtifactObjectState.Pending);
+            (await pendingDb.CentralArtifacts.CountAsync(item => item.Id == outputArtifactId).ConfigureAwait(false))
+                .Should().Be(1);
+            var retention = pendingScope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionService>();
+            (await retention.ReleaseAsync(outputArtifactId, CancellationToken.None).ConfigureAwait(false))
+                .Should().Be(CentralArtifactRetentionResult.Held);
+            var operations = pendingScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobOperationsService>();
+            await FluentActions.Awaiting(() => operations.CancelAsync(
+                    jobId, "integration-test", CancellationToken.None))
+                .Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
+            pendingDb.ChangeTracker.Clear();
+            var job = await pendingDb.CentralDerivativeJobs.SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
+            job.LeaseExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(-1);
+            var attempt = await pendingDb.CentralDerivativeJobAttempts.SingleAsync(item =>
+                item.CentralDerivativeJobId == jobId).ConfigureAwait(false);
+            attempt.LeaseExpiresAtUtc = job.LeaseExpiresAtUtc.Value;
+            await pendingDb.SaveChangesAsync().ConfigureAwait(false);
+        }
+
+        await using (var recoveryScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var jobs = recoveryScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+            var lease = await jobs.ClaimNextAsync(
+                "copy-recovery-worker", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            lease!.JobId.Should().Be(jobId);
+            var execution = await recoveryScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+            execution.Status.Should().Be(ProcessingOutcomeStatus.Produced);
+        }
+
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var completed = await assertionDb.CentralArtifacts.SingleAsync(item => item.Id == outputArtifactId)
+            .ConfigureAwait(false);
+        completed.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        completed.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+        (await assertionDb.CentralArtifactProcessingEvidence.CountAsync(item =>
+            item.CentralDerivativeJobId == jobId).ConfigureAwait(false)).Should().Be(1);
+        var attempts = await assertionDb.CentralDerivativeJobAttempts.Where(item =>
+                item.CentralDerivativeJobId == jobId)
+            .OrderBy(item => item.AttemptNumber)
+            .ToListAsync().ConfigureAwait(false);
+        attempts.Select(item => item.Outcome).Should().Equal(
+            CentralDerivativeAttemptOutcome.LeaseExpired,
+            CentralDerivativeAttemptOutcome.Completed);
     }
 
     [TestMethod]
@@ -882,7 +1382,7 @@ public sealed class ArtifactIngestTests
             var suspendedJobs = await db.CentralDerivativeJobs
                 .Where(job => job.SourceCentralArtifactId == sourceArtifact.Id)
                 .ToListAsync().ConfigureAwait(false);
-            suspendedJobs.Should().HaveCount(2);
+            suspendedJobs.Should().HaveCount(3);
             suspendedJobs.Should().OnlyContain(job => job.Status == CentralDerivativeJobStatus.RetryableFailure
                 && job.AvailableAtUtc == null
                 && job.LeaseToken == null
@@ -1548,6 +2048,55 @@ public sealed class ArtifactIngestTests
             new RigOrientation(90, 0, 0),
             new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(10), TimeSpan.FromSeconds(1), 1, 2),
             ProfileVersion: profileVersion);
+
+    private static SceneProvenance CreateSceneProvenance() => new(
+        "central-conformance-scene",
+        "central-conformance-rig",
+        "test-catalog",
+        "1.0.0",
+        new string('D', 64),
+        "EquidistantFisheye",
+        "projection-v1",
+        "astronomy-v1",
+        "sensor-v1",
+        Objects:
+        [
+            new("star:bright", "Bright Star", 0.5, 0.5, 1),
+            new("star:faint", "Faint Star", 1.5, 0.5, 4),
+            new("star:unnamed", "star:unnamed", 0.5, 1.5, 0),
+            new("solar-system:mars", "Mars", 1.5, 1.5, 10)
+        ],
+        Segments:
+        [
+            new("ORI", "star:bright", "star:faint", 0.5, 0.5, 1.5, 0.5)
+        ]);
+
+    private static ProcessingAnnotationInput CreateExpectedAnnotation(SceneProvenance scene)
+    {
+        var objects = scene.Objects!.Select(item =>
+        {
+            var annotate = !string.IsNullOrWhiteSpace(item.DisplayName)
+                && !string.Equals(item.Id, item.DisplayName, StringComparison.Ordinal)
+                && (item.Id.StartsWith("solar-system:", StringComparison.Ordinal) || item.Magnitude <= 2.5);
+            return new ProjectedAnnotationObject(
+                item.Id, item.DisplayName, new PixelPoint(item.PixelX, item.PixelY), annotate, annotate);
+        }).ToArray();
+        var segments = scene.Segments!.Select(item => new ProjectedAnnotationSegment(
+            item.ConstellationId,
+            new PixelPoint(item.FromPixelX, item.FromPixelY),
+            new PixelPoint(item.ToPixelX, item.ToPixelY))).ToArray();
+        var identity = CaptureContractJson.ComputeCanonicalJsonSha256(
+            CaptureContractJson.SerializeToElement(new { scene.SceneId, objects, segments }));
+        return new ProcessingAnnotationInput(objects, segments, new PreviewTransform(1, 1), null, identity);
+    }
+
+    private static async Task<byte[]> ReadDerivativeAsync(HttpClient client, Guid deviceId, Guid artifactId)
+    {
+        using var response = await client.GetAsync(new Uri(
+            $"/api/v1.0/devices/{deviceId:D}/artifacts/{artifactId:D}/content", UriKind.Relative)).ConfigureAwait(false);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        return await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+    }
 
     private static ArtifactManifestV2 CreateManifestV2(
         string deviceId,

@@ -92,6 +92,7 @@ public sealed class ArtifactRetrievalTests
             {
                 Id = jobId,
                 SourceCentralArtifactId = artifact.Id,
+                RequestIdentitySha256 = Convert.ToHexString(SHA256.HashData(jobId.ToByteArray())),
                 TargetRole = FrameArtifactRole.Preview,
                 TargetRecipeVersion = "preview-v1",
                 Status = CentralDerivativeJobStatus.Leased,
@@ -283,6 +284,7 @@ public sealed class ArtifactRetrievalTests
             var job = new CentralDerivativeJob
             {
                 SourceCentralArtifactId = artifact.Id,
+                RequestIdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 TargetRole = FrameArtifactRole.Preview,
                 TargetRecipeVersion = "preview-v1",
                 Status = CentralDerivativeJobStatus.Pending,
@@ -381,7 +383,7 @@ public sealed class ArtifactRetrievalTests
             if (releaseResult == CentralArtifactRetentionResult.Held)
             {
                 artifactState.Should().Be(CentralArtifactObjectState.Available);
-                activeJobs.Should().Be(2);
+                activeJobs.Should().Be(3);
             }
             else
             {

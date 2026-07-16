@@ -14,6 +14,22 @@ internal sealed class CentralDerivativeJob
 
     public string TargetRecipeVersion { get; set; } = string.Empty;
 
+    public string TargetVariant { get; set; } = string.Empty;
+
+    public string RecipeName { get; set; } = string.Empty;
+
+    public string RecipeOptionsJson { get; set; } = "{}";
+
+    public string InputSelectorJson { get; set; } = "{}";
+
+    public string RequestedRecipeIdentitySha256 { get; set; } = string.Empty;
+
+    public string RequestIdentitySha256 { get; set; } = string.Empty;
+
+    public string? TraceParent { get; set; }
+
+    public string? TraceState { get; set; }
+
     public CentralDerivativeJobStatus Status { get; set; }
 
     public int AttemptCount { get; set; }
@@ -44,6 +60,16 @@ internal sealed class CentralDerivativeJob
 
     public CentralArtifact? ResultArtifact { get; set; }
 
+    public DateTimeOffset? CancellationRequestedAtUtc { get; set; }
+
+    public string? CancellationRequestedBy { get; set; }
+
+    public Guid? SupersededByJobId { get; set; }
+
+    public CentralDerivativeJob? SupersededByJob { get; set; }
+
+    public ICollection<CentralDerivativeJobAttempt> Attempts { get; } = [];
+
     public byte[] RowVersion { get; set; } = [];
 }
 
@@ -53,5 +79,10 @@ internal enum CentralDerivativeJobStatus
     Leased,
     Completed,
     RetryableFailure,
-    TerminalFailure
+    TerminalFailure,
+    CancelRequested,
+    Canceled,
+    Skipped,
+    Quarantined,
+    Superseded
 }

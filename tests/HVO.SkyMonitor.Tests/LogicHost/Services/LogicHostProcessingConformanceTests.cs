@@ -1,3 +1,6 @@
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
@@ -78,6 +81,51 @@ public sealed class LogicHostProcessingConformanceTests
         CollectionAssert.AreEqual(
             new[] { first.Artifact.ArtifactId, second.Artifact.ArtifactId },
             outcome.Products.Single().SourceArtifactIds.ToArray());
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task EquivalentAnnotationRequestMatchesCameraAgentAdapter()
+    {
+        var artifact = ProcessingConformanceFixture.CreateProcessingArtifact();
+        var options = System.Text.Json.JsonSerializer.SerializeToElement(
+            new AnnotationRecipeOptions(OutputEncoding: "Packed"));
+        var selector = ProcessingInputSelector.Raw("source");
+        var annotation = new ProcessingAnnotationInput(
+            [new ProjectedAnnotationObject("fixture", "Fixture", new PixelPoint(1, 1), true, true)],
+            [],
+            new PreviewTransform(1, 1),
+            null,
+            new string('A', 64));
+        var cameraAgent = new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor());
+        var logicHost = new LogicHostRecipeExecutionAdapter(new ProcessingRecipeExecutor());
+
+        var cameraOutcome = await cameraAgent.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.Annotation,
+            options,
+            selector,
+            [artifact],
+            "annotated-conformance",
+            annotation), CancellationToken.None).ConfigureAwait(false);
+        var logicOutcome = await logicHost.ExecuteAsync(
+            ProcessingConformanceFixture.CreateDescriptor(),
+            ProcessingConformanceFixture.Payload,
+            BuiltInProcessingRecipes.Annotation,
+            options,
+            selector,
+            "annotated-conformance",
+            annotation).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, cameraOutcome.Status);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, logicOutcome.Status);
+        var expected = cameraOutcome.Products.Single();
+        var actual = logicOutcome.Products.Single();
+        CollectionAssert.AreEqual(expected.Payload.ToArray(), actual.Payload.ToArray());
+        Assert.AreEqual(expected.ChecksumSha256, actual.ChecksumSha256);
+        Assert.AreEqual(expected.OutputIdentitySha256, actual.OutputIdentitySha256);
+        Assert.AreEqual(expected.Recipe.IdentitySha256, actual.Recipe.IdentitySha256);
+        CollectionAssert.AreEqual(expected.Algorithms.ToArray(), actual.Algorithms.ToArray());
+        CollectionAssert.AreEqual(expected.SourceArtifactIds.ToArray(), actual.SourceArtifactIds.ToArray());
     }
 
     private static HVO.SkyMonitor.AgentCore.ReconstructionDescriptor CreateSource(

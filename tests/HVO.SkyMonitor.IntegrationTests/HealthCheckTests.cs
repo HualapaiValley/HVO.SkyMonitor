@@ -16,6 +16,8 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestCategory("Integration")]
 public sealed class HealthCheckTests
 {
+    private static readonly string[] WorkerHealthDataKeys =
+        ["Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds"];
     private HttpClient? _client;
 
     [TestInitialize]
@@ -55,6 +57,14 @@ public sealed class HealthCheckTests
         Assert.AreEqual("Fixture", identity.GetProperty("Kind").GetString());
         Assert.AreEqual("4.2-fixture.1", identity.GetProperty("CatalogVersion").GetString());
         Assert.AreEqual(9, identity.GetProperty("RowCount").GetInt64());
+        var worker = payload.RootElement.GetProperty("checks").EnumerateArray()
+            .Single(check => check.GetProperty("name").GetString() == "central-derivative-worker");
+        Assert.AreEqual("Healthy", worker.GetProperty("status").GetString());
+        var workerData = worker.GetProperty("data");
+        Assert.AreEqual("disabled", workerData.GetProperty("Status").GetString());
+        CollectionAssert.AreEquivalent(
+            WorkerHealthDataKeys,
+            workerData.EnumerateObject().Select(property => property.Name).ToArray());
     }
 
     [TestMethod]
