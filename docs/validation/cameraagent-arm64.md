@@ -169,7 +169,8 @@ At bounded evidence checkpoints the run recorded:
 - 26 central frames and 126 central artifacts totaling 14,577,817 bytes;
 - 26 accepted uploads with matching upload, object-store, and retrieved object
   checksums, with no pending or quarantined artifact-consistency work;
-- 100 completed, two reason-coded skipped, and two waiting derivative jobs;
+- 100 completed derivative jobs, two reason-coded skipped derivative jobs, and
+  two waiting derivative jobs;
   subsequent derivative health reported zero pending jobs and a recent success;
 - one current fleet agent at sequence 11, with 11 retained history rows and all
   reports advancing the central current state; and
