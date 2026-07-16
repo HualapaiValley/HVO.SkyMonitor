@@ -16,6 +16,7 @@ internal sealed class CentralIngestTelemetry : IDisposable
     private readonly Counter<long> _duplicates;
     private readonly Counter<long> _quarantines;
     private readonly Counter<long> _reconciled;
+    private readonly Counter<long> _reconciliationConcurrency;
     private readonly Counter<long> _stagingCleanup;
     private readonly Counter<long> _stagingCleanupBytes;
     private readonly Histogram<double> _duration;
@@ -41,6 +42,8 @@ internal sealed class CentralIngestTelemetry : IDisposable
         _duplicates = _meter.CreateCounter<long>("skymonitor.central.ingest.duplicates", "{artifact}");
         _quarantines = _meter.CreateCounter<long>("skymonitor.central.ingest.quarantines", "{artifact}");
         _reconciled = _meter.CreateCounter<long>("skymonitor.central.ingest.reconciled", "{artifact}");
+        _reconciliationConcurrency = _meter.CreateCounter<long>(
+            "skymonitor.central.ingest.reconciliation_concurrency", "{conflict}");
         _stagingCleanup = _meter.CreateCounter<long>("skymonitor.central.ingest.staging_cleanup", "{object}");
         _stagingCleanupBytes = _meter.CreateCounter<long>("skymonitor.central.ingest.staging_cleanup_bytes", "By");
         _duration = _meter.CreateHistogram<double>("skymonitor.central.ingest.duration", "ms");
@@ -82,6 +85,9 @@ internal sealed class CentralIngestTelemetry : IDisposable
 
     public void RecordReconciled(string outcome)
         => _reconciled.Add(1, new TagList { { "outcome", outcome } });
+
+    public void RecordReconciliationConcurrency(string outcome)
+        => _reconciliationConcurrency.Add(1, new TagList { { "outcome", outcome } });
 
     public void RecordObjectWrite(string operation, string outcome, TimeSpan elapsed)
         => _objectWriteDuration.Record(
