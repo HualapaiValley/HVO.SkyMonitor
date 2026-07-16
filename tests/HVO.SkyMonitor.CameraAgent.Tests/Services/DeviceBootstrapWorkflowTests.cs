@@ -4,7 +4,9 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.CameraAgent.Http;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Services.Models;
 using HVO.SkyMonitor.Common.Identity;
@@ -60,7 +62,14 @@ public sealed class DeviceBootstrapWorkflowTests
                 Content = JsonContent.Create(responseDto)
             });
 
-        using var httpClient = new HttpClient(mockHttpMessageHandler.Object, disposeHandler: false)
+        var authenticationService = new Mock<ICentralAuthenticationService>(MockBehavior.Strict);
+        var authenticationHandler = new CentralIdentityDelegatingHandler(
+            authenticationService.Object,
+            NullLogger<CentralIdentityDelegatingHandler>.Instance)
+        {
+            InnerHandler = mockHttpMessageHandler.Object
+        };
+        using var httpClient = new HttpClient(authenticationHandler, disposeHandler: false)
         {
             BaseAddress = new Uri("https://logichost.example/")
         };
@@ -98,6 +107,8 @@ public sealed class DeviceBootstrapWorkflowTests
 
         Assert.IsNotNull(capturedRequest);
         Assert.AreEqual(new Uri("https://logichost.example/api/device/bootstrap"), capturedRequest!.RequestUri);
+        Assert.IsFalse(capturedRequest.Headers.Contains(CentralIdentityDelegatingHandler.SkipAuthHeader));
+        Assert.IsNull(capturedRequest.Headers.Authorization);
         Assert.IsNotNull(savedSecrets);
 
         Assert.AreEqual(secretsPayload.DevicePublicId, result.DevicePublicId);

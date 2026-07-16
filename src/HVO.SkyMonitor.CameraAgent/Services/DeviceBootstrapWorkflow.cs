@@ -2,6 +2,7 @@ using System;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.CameraAgent.Http;
 using HVO.SkyMonitor.CameraAgent.Services.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -28,7 +29,12 @@ internal sealed class DeviceBootstrapWorkflow(
         var client = httpClientFactory.CreateClient(SkyMonitorClientOptions.HttpClientName);
         var request = new DeviceBootstrapRequestDto(identity.DeviceId, envelope.Trim(), nonce);
 
-        using var response = await client.PostAsJsonAsync("api/device/bootstrap", request, cancellationToken).ConfigureAwait(false);
+        using var message = new HttpRequestMessage(HttpMethod.Post, "api/device/bootstrap")
+        {
+            Content = JsonContent.Create(request)
+        };
+        message.Headers.TryAddWithoutValidation(CentralIdentityDelegatingHandler.SkipAuthHeader, "1");
+        using var response = await client.SendAsync(message, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             logger.LogWarning("Device bootstrap failed with status {StatusCode}", response.StatusCode);
