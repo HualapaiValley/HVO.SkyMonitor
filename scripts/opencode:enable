@@ -7,41 +7,6 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-source "$REPO_ROOT/.devcontainer/load-repo-env.sh"
-
-readonly TAILSCALE_AUTHKEY_VALUE="${TAILSCALE_AUTHKEY:-}"
-unset TAILSCALE_AUTHKEY
-
-readonly OPENCODE_HOST="127.0.0.1"
-readonly OPENCODE_PORT="${OPENCODE_PORT:-4096}"
-readonly TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-dev-host-skymonitor}"
-readonly TAILSCALE_ACCEPT_ROUTES="${TAILSCALE_ACCEPT_ROUTES:-true}"
-readonly OPENCODE_PID_FILE="/tmp/skymonitor-opencode.pid"
-readonly OPENCODE_PID_METADATA_FILE="/tmp/skymonitor-opencode.pid.meta"
-readonly OPENCODE_LOG_FILE="/tmp/skymonitor-opencode.log"
-readonly OPENCODE_SERVER_PASSWORD_FILE="$HOME/.local/share/opencode/server-password"
-readonly OPENCODE_PROCESS_METADATA_VERSION="1"
-
-is_opencode_healthy() {
-    # Basic Auth protects this endpoint, so 401 proves the server is responsive
-    # without sending the password through the process list or command history.
-    [[ "$(curl --connect-timeout 2 --max-time 5 -sS -o /dev/null -w '%{http_code}' \
-        "http://${OPENCODE_HOST}:${OPENCODE_PORT}/global/health" 2>/dev/null || true)" == 401 ]]
-}
-
-case "$TAILSCALE_ACCEPT_ROUTES" in
-    true|false) ;;
-    *)
-        echo "TAILSCALE_ACCEPT_ROUTES must be 'true' or 'false'." >&2
-        exit 1
-        ;;
-esac
-
-if ! command -v opencode >/dev/null 2>&1; then
-    echo "OpenCode is not installed. Rebuild the dev container to run its post-create setup." >&2
-    exit 1
-fi
-
 if ! command -v tailscale >/dev/null 2>&1 || ! command -v tailscaled >/dev/null 2>&1; then
     echo "Tailscale is not installed. Rebuild the dev container to run its post-create setup." >&2
     exit 1
@@ -70,13 +35,64 @@ if ! pgrep -x tailscaled >/dev/null 2>&1 || ! tailscale status --json >/dev/null
     exit 1
 fi
 
+# A Serve configuration outlives the local process. This dedicated devcontainer
+# node reserves its complete Serve config for OpenCode. The pinned CLI rejects
+# the legacy per-handler `off` invocation used here, so clear the node-owned
+# config before any OpenCode validation or re-exposure.
+reset_serve() {
+    sudo tailscale serve reset >/dev/null
+}
+
 tailscale_state="$(tailscale status --json | jq -r '.BackendState')"
+case "$tailscale_state" in
+    Running)
+        reset_serve
+        ;;
+    Stopped|NeedsLogin|NoState)
+        ;;
+    *)
+        echo "Tailscale did not become ready (backend state: $tailscale_state)." >&2
+        exit 1
+        ;;
+esac
+
+source "$REPO_ROOT/.devcontainer/load-repo-env.sh"
+
+readonly TAILSCALE_AUTHKEY_VALUE="${TAILSCALE_AUTHKEY:-}"
+unset TAILSCALE_AUTHKEY
+
+readonly OPENCODE_HOST="127.0.0.1"
+readonly OPENCODE_PORT="${OPENCODE_PORT:-4096}"
+readonly TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-dev-host-skymonitor}"
+readonly TAILSCALE_ACCEPT_ROUTES="${TAILSCALE_ACCEPT_ROUTES:-true}"
+readonly OPENCODE_PID_FILE="${HVO_OPENCODE_PID_FILE:-/tmp/skymonitor-opencode.pid}"
+readonly OPENCODE_PID_METADATA_FILE="${HVO_OPENCODE_PID_METADATA_FILE:-/tmp/skymonitor-opencode.pid.meta}"
+readonly OPENCODE_LOG_FILE="/tmp/skymonitor-opencode.log"
+readonly OPENCODE_SERVER_PASSWORD_FILE="$HOME/.local/share/opencode/server-password"
+readonly OPENCODE_PROCESS_METADATA_VERSION="1"
+
+is_opencode_healthy() {
+    # Basic Auth protects this endpoint, so 401 proves the server is responsive
+    # without sending the password through the process list or command history.
+    [[ "$(curl --connect-timeout 2 --max-time 5 -sS -o /dev/null -w '%{http_code}' \
+        "http://${OPENCODE_HOST}:${OPENCODE_PORT}/global/health" 2>/dev/null || true)" == 401 ]]
+}
+
+case "$TAILSCALE_ACCEPT_ROUTES" in
+    true|false) ;;
+    *)
+        echo "TAILSCALE_ACCEPT_ROUTES must be 'true' or 'false'." >&2
+        exit 1
+        ;;
+esac
+
 case "$tailscale_state" in
     Running)
         ;;
     Stopped)
         echo "Restarting the authenticated Tailscale node..."
         sudo tailscale up
+        reset_serve
         ;;
     NeedsLogin|NoState)
         if [[ -z "$TAILSCALE_AUTHKEY_VALUE" ]]; then
@@ -97,24 +113,19 @@ case "$tailscale_state" in
             --operator="$(id -un)"
         rm -f "$auth_key_file"
         trap - EXIT
-        ;;
-    *)
-        echo "Tailscale did not become ready (backend state: $tailscale_state)." >&2
-        exit 1
+        reset_serve
         ;;
 esac
+
+if ! command -v opencode >/dev/null 2>&1; then
+    echo "OpenCode is not installed. Rebuild the dev container to run its post-create setup." >&2
+    exit 1
+fi
 
 sudo tailscale set \
     --accept-routes="$TAILSCALE_ACCEPT_ROUTES" \
     --hostname="$TAILSCALE_HOSTNAME" \
     --operator="$(id -un)"
-
-# A Serve configuration outlives the local process. Keep it disabled until the
-# intended authenticated OpenCode listener has passed all checks below.
-tailscale_serve_status="$(tailscale serve status --json)"
-if jq -e '.TCP["443"].HTTPS == true' <<< "$tailscale_serve_status" >/dev/null; then
-    tailscale serve --https=443 off >/dev/null
-fi
 
 if [[ ! -s "$OPENCODE_SERVER_PASSWORD_FILE" ]]; then
     echo "OpenCode server password is missing. Rerun the devcontainer post-create setup." >&2

@@ -4,14 +4,25 @@
 
 set -euo pipefail
 
-readonly OPENCODE_PID_FILE="/tmp/skymonitor-opencode.pid"
-readonly OPENCODE_PID_METADATA_FILE="/tmp/skymonitor-opencode.pid.meta"
+readonly OPENCODE_PID_FILE="${HVO_OPENCODE_PID_FILE:-/tmp/skymonitor-opencode.pid}"
+readonly OPENCODE_PID_METADATA_FILE="${HVO_OPENCODE_PID_METADATA_FILE:-/tmp/skymonitor-opencode.pid.meta}"
 readonly OPENCODE_PROCESS_METADATA_VERSION="1"
 
-if command -v tailscale >/dev/null 2>&1 && pgrep -x tailscaled >/dev/null 2>&1; then
-    tailscale serve --https=443 off
-    echo "Disabled the Tailscale OpenCode proxy."
+if ! command -v tailscale >/dev/null 2>&1; then
+    echo "Could not disable the Tailscale proxy because the CLI is unavailable; leaving authenticated OpenCode running." >&2
+    exit 1
 fi
+if ! pgrep -x tailscaled >/dev/null 2>&1; then
+    echo "Could not disable the Tailscale proxy because the daemon is stopped; leaving authenticated OpenCode running." >&2
+    exit 1
+fi
+
+# This dedicated devcontainer node reserves its Serve config for OpenCode.
+if ! sudo tailscale serve reset; then
+    echo "Could not disable the Tailscale proxy; leaving authenticated OpenCode running." >&2
+    exit 1
+fi
+echo "Disabled the Tailscale OpenCode proxy."
 
 if [[ -f "$OPENCODE_PID_FILE" ]]; then
     opencode_pid="$(<"$OPENCODE_PID_FILE")"
