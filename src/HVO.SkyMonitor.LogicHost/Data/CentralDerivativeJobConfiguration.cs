@@ -25,6 +25,9 @@ internal sealed class CentralDerivativeJobConfiguration : IEntityTypeConfigurati
         builder.Property(job => job.TraceParent).HasMaxLength(128).IsUnicode(false);
         builder.Property(job => job.TraceState).HasMaxLength(512).IsUnicode(false);
         builder.Property(job => job.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
+        builder.Property(job => job.MissingInputOutcome).HasConversion<string>().HasMaxLength(32);
+        builder.Property(job => job.StateReasonCode).HasMaxLength(256);
+        builder.Property(job => job.InputSetIdentitySha256).HasMaxLength(64).IsUnicode(false);
         builder.Property(job => job.LeaseOwner).HasMaxLength(256);
         builder.Property(job => job.LastError).HasMaxLength(2048);
         builder.Property(job => job.CancellationRequestedBy).HasMaxLength(256);
@@ -33,8 +36,18 @@ internal sealed class CentralDerivativeJobConfiguration : IEntityTypeConfigurati
         builder.HasIndex(job => new { job.SourceCentralArtifactId, job.TargetRole, job.TargetRecipeVersion });
         builder.HasIndex(job => new { job.Status, job.AvailableAtUtc, job.CreatedAtUtc, job.Id });
         builder.HasIndex(job => new { job.Status, job.LeaseExpiresAtUtc, job.CreatedAtUtc, job.Id });
+        builder.HasIndex(job => new
+        {
+            job.Status,
+            job.UpdatedAtUtc,
+            job.ResolutionDeadlineUtc,
+            job.CreatedAtUtc,
+            job.Id
+        });
         builder.HasIndex(job => new { job.CreatedAtUtc, job.Id });
         builder.HasIndex(job => job.ResultCentralArtifactId);
+        builder.HasIndex(job => job.RetainedResultCentralArtifactId);
+        builder.HasIndex(job => job.PredecessorJobId).IsUnique().HasFilter("[PredecessorJobId] IS NOT NULL");
         builder.HasOne(job => job.SourceArtifact)
             .WithMany()
             .HasForeignKey(job => job.SourceCentralArtifactId)
@@ -47,6 +60,14 @@ internal sealed class CentralDerivativeJobConfiguration : IEntityTypeConfigurati
         builder.HasOne(job => job.SupersededByJob)
             .WithMany()
             .HasForeignKey(job => job.SupersededByJobId)
+            .OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne(job => job.PredecessorJob)
+            .WithMany()
+            .HasForeignKey(job => job.PredecessorJobId)
+            .OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne<CentralArtifact>()
+            .WithMany()
+            .HasForeignKey(job => job.RetainedResultCentralArtifactId)
             .OnDelete(DeleteBehavior.NoAction);
     }
 }

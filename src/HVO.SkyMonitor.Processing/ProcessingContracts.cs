@@ -72,7 +72,8 @@ public sealed record ProcessingArtifact(
     ReadOnlyMemory<byte> Payload,
     DateTimeOffset CreatedUtc,
     TimeSpan Integration,
-    ProcessingCompatibilityIdentity Compatibility);
+    ProcessingCompatibilityIdentity Compatibility,
+    long? CaptureSequence = null);
 
 public sealed record ProcessingAlgorithmIdentity(string Name, string Version);
 

@@ -1264,6 +1264,7 @@ internal sealed class ArtifactIngestService(
         var invalidatedAtUtc = DateTimeOffset.UtcNow;
         var pending = new Queue<Guid>();
         var visited = new HashSet<Guid>();
+        var invalidatedJobs = new HashSet<Guid>();
         pending.Enqueue(sourceArtifact.Id);
         while (pending.TryDequeue(out var sourceId))
         {
@@ -1287,15 +1288,39 @@ internal sealed class ArtifactIngestService(
             }
             var jobs = await dbContext.CentralDerivativeJobs
                 .Include(job => job.Attempts)
+                .Include(job => job.InputRequirements)
+                .Include(job => job.Inputs)
                 .Where(job => (job.SourceCentralArtifactId == sourceId
+                        || job.Inputs.Any(input => input.CentralArtifactId == sourceId)
                         || job.ResultCentralArtifactId == sourceId)
-                    && (job.Status == CentralDerivativeJobStatus.Pending
+                    && (job.Status == CentralDerivativeJobStatus.Waiting
+                        || job.Status == CentralDerivativeJobStatus.Pending
                         || job.Status == CentralDerivativeJobStatus.RetryableFailure
                         || job.Status == CentralDerivativeJobStatus.Leased
                         || job.Status == CentralDerivativeJobStatus.Completed))
                 .ToListAsync(cancellationToken).ConfigureAwait(false);
+            var publishedJobIds = (await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()
+                .Where(evidence => jobs.Select(job => job.Id).Contains(evidence.CentralDerivativeJobId))
+                .Select(evidence => evidence.CentralDerivativeJobId)
+                .Distinct()
+                .ToListAsync(cancellationToken).ConfigureAwait(false)).ToHashSet();
             foreach (var job in jobs)
             {
+                if (!invalidatedJobs.Add(job.Id))
+                {
+                    continue;
+                }
+                var invalidatedInput = job.Inputs.SingleOrDefault(input => input.CentralArtifactId == sourceId);
+                var reResolveWindow = invalidatedInput is not null && job.InputRequirements.Count > 1
+                    && job.ResultCentralArtifactId != sourceId
+                    && !publishedJobIds.Contains(job.Id);
+                var wakeFrozenWindowAfterRepair = invalidatedInput is not null
+                    && job.InputRequirements.Count > 1
+                    && publishedJobIds.Contains(job.Id)
+                    && job.SourceCentralArtifactId != sourceId;
+                var preserveWindowResolution = job.Status == CentralDerivativeJobStatus.Waiting
+                    && job.InputRequirements.Count > 1
+                    && job.InputSetIdentitySha256 is null;
                 var activeAttempt = job.Attempts.SingleOrDefault(attempt =>
                     attempt.Outcome == CentralDerivativeAttemptOutcome.Leased);
                 if (activeAttempt is not null)
@@ -1311,8 +1336,10 @@ internal sealed class ArtifactIngestService(
                         : CentralDerivativeJobScheduler.ResultInvalidatedReason;
                     activeAttempt.EndedAtUtc = invalidatedAtUtc;
                 }
-                job.Status = CentralDerivativeJobStatus.RetryableFailure;
-                job.AvailableAtUtc = null;
+                job.Status = reResolveWindow || preserveWindowResolution
+                    ? CentralDerivativeJobStatus.Waiting
+                    : CentralDerivativeJobStatus.RetryableFailure;
+                job.AvailableAtUtc = wakeFrozenWindowAfterRepair ? invalidatedAtUtc : null;
                 job.LeaseOwner = null;
                 job.LeaseToken = null;
                 job.LeaseAcquiredAtUtc = null;
@@ -1321,6 +1348,28 @@ internal sealed class ArtifactIngestService(
                 job.LastError = job.SourceCentralArtifactId == sourceId
                     ? CentralDerivativeJobScheduler.SourceInvalidatedReason
                     : CentralDerivativeJobScheduler.ResultInvalidatedReason;
+                if (reResolveWindow)
+                {
+                    var requirement = job.InputRequirements.Single(item => item.Id
+                        == invalidatedInput!.CentralDerivativeJobInputRequirementId);
+                    dbContext.CentralDerivativeJobInputs.Remove(invalidatedInput!);
+                    requirement.ResolutionState = CentralDerivativeInputResolutionState.Waiting;
+                    requirement.ResolutionReasonCode = CentralDerivativeJobScheduler.SourceInvalidatedReason;
+                    requirement.ResolvedAtUtc = null;
+                    job.InputSetIdentitySha256 = null;
+                    var timeout = job.ResolutionDeadlineUtc.HasValue && job.ResolutionStartedAtUtc.HasValue
+                        ? job.ResolutionDeadlineUtc.Value - job.ResolutionStartedAtUtc.Value
+                        : TimeSpan.FromMinutes(5);
+                    job.ResolutionStartedAtUtc = invalidatedAtUtc;
+                    job.ResolutionCompletedAtUtc = null;
+                    job.ResolutionDeadlineUtc = invalidatedAtUtc
+                        + (timeout > TimeSpan.Zero ? timeout : TimeSpan.FromMinutes(5));
+                    job.StateReasonCode = CentralDerivativeWindowReasonCodes.WaitingRequiredInput;
+                }
+                else if (preserveWindowResolution)
+                {
+                    job.StateReasonCode = CentralDerivativeWindowReasonCodes.WaitingRequiredInput;
+                }
                 job.UpdatedAtUtc = invalidatedAtUtc;
             }
         }

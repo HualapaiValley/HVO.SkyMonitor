@@ -20,6 +20,7 @@ internal interface ICentralDerivativeJobService
     Task MarkInputUnavailableAsync(
         Guid jobId,
         Guid leaseToken,
+        Guid centralArtifactId,
         byte[] expectedSourceRowVersion,
         string reasonCode,
         bool quarantine,
@@ -28,7 +29,8 @@ internal interface ICentralDerivativeJobService
 
 internal sealed class CentralDerivativeJobService(
     ApplicationDbContext dbContext,
-    TimeProvider timeProvider) : ICentralDerivativeJobService
+    TimeProvider timeProvider,
+    CentralDerivativeWorkerTelemetry? telemetry = null) : ICentralDerivativeJobService
 {
     internal static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(10);
     internal static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(5);
@@ -91,16 +93,32 @@ internal sealed class CentralDerivativeJobService(
                     WHERE
                         ((job.[Status] IN (N'Pending', N'RetryableFailure')
                                 AND job.[AttemptCount] < job.[MaxAttempts]
+                                AND job.[InputSetIdentitySha256] IS NOT NULL
                                 AND job.[AvailableAtUtc] <= {now})
                             OR (job.[Status] = N'Leased'
                                 AND job.[LeaseExpiresAtUtc] <= {now}
                                 AND job.[AttemptCount] < job.[MaxAttempts]))
-                            AND EXISTS (
+                            AND EXISTS (SELECT 1 FROM [CentralDerivativeJobInputs] AS input WHERE input.[CentralDerivativeJobId] = job.[Id])
+                            AND NOT EXISTS (
                                 SELECT 1
-                                FROM [CentralArtifacts] AS source
-                                WHERE source.[Id] = job.[SourceCentralArtifactId]
-                                    AND source.[ObjectState] = N'Available'
-                                    AND source.[ReconstructionState] = N'Complete')
+                                FROM [CentralDerivativeJobInputRequirements] AS requirement
+                                WHERE requirement.[CentralDerivativeJobId] = job.[Id]
+                                    AND requirement.[IsRequired] = CAST(1 AS bit)
+                                    AND ((requirement.[ResolutionState] = N'Resolved'
+                                            AND NOT EXISTS (
+                                                SELECT 1 FROM [CentralDerivativeJobInputs] AS resolved
+                                                WHERE resolved.[CentralDerivativeJobId] = job.[Id]
+                                                    AND resolved.[CentralDerivativeJobInputRequirementId] = requirement.[Id]))
+                                        OR (requirement.[ResolutionState] <> N'Resolved'
+                                            AND NOT (requirement.[ResolutionState] = N'Missing'
+                                                AND job.[MissingInputOutcome] = N'Run'))))
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM [CentralDerivativeJobInputs] AS input
+                                INNER JOIN [CentralArtifacts] AS source ON source.[Id] = input.[CentralArtifactId]
+                                WHERE input.[CentralDerivativeJobId] = job.[Id]
+                                    AND (source.[ObjectState] <> N'Available'
+                                        OR source.[ReconstructionState] <> N'Complete'))
                         OR (job.[Status] = N'Leased'
                             AND job.[LeaseExpiresAtUtc] <= {now}
                             AND job.[AttemptCount] >= job.[MaxAttempts])
@@ -165,6 +183,10 @@ internal sealed class CentralDerivativeJobService(
                 }
                 if (candidate.AttemptCount >= candidate.MaxAttempts)
                 {
+                    var selectedAtUtc = await dbContext.CentralDerivativeJobInputs.AsNoTracking()
+                        .Where(input => input.CentralDerivativeJobId == candidate.Id)
+                        .MinAsync(input => (DateTimeOffset?)input.SelectedAtUtc, cancellationToken)
+                        .ConfigureAwait(false);
                     var terminal = await dbContext.CentralDerivativeJobs.Where(job =>
                             job.Id == candidate.Id
                             && job.Status == CentralDerivativeJobStatus.Leased
@@ -191,6 +213,11 @@ internal sealed class CentralDerivativeJobService(
                     }
                     await QuarantineAbandonedOutputAsync(candidate.Id, now, cancellationToken).ConfigureAwait(false);
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    if (selectedAtUtc.HasValue)
+                    {
+                        telemetry?.RecordWindowPinDuration(
+                            candidate.RecipeName, now - selectedAtUtc.Value, "terminal");
+                    }
                     dbContext.ChangeTracker.Clear();
                     collision--;
                     continue;
@@ -200,8 +227,15 @@ internal sealed class CentralDerivativeJobService(
                     job.Id == candidate.Id
                     && job.AttemptCount == candidate.AttemptCount
                     && job.AttemptCount < job.MaxAttempts
-                    && job.SourceArtifact!.ObjectState == CentralArtifactObjectState.Available
-                    && job.SourceArtifact.ReconstructionState == CentralReconstructionState.Complete
+                    && job.InputSetIdentitySha256 != null
+                    && job.Inputs.Any()
+                    && !job.InputRequirements.Any(requirement => requirement.IsRequired
+                        && (requirement.ResolutionState == CentralDerivativeInputResolutionState.Resolved
+                            ? !job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id)
+                            : requirement.ResolutionState != CentralDerivativeInputResolutionState.Missing
+                                || job.MissingInputOutcome != CentralDerivativeWindowOutcome.Run))
+                    && !job.Inputs.Any(input => input.Artifact!.ObjectState != CentralArtifactObjectState.Available
+                        || input.Artifact.ReconstructionState != CentralReconstructionState.Complete)
                     && ((job.Status == CentralDerivativeJobStatus.Pending
                             || job.Status == CentralDerivativeJobStatus.RetryableFailure)
                         && job.AvailableAtUtc <= now
@@ -265,8 +299,15 @@ internal sealed class CentralDerivativeJobService(
                 && job.Status == CentralDerivativeJobStatus.Leased
                 && job.LeaseToken == leaseToken
                 && job.LeaseExpiresAtUtc > now
-                && job.SourceArtifact!.ObjectState == CentralArtifactObjectState.Available
-                && job.SourceArtifact.ReconstructionState == CentralReconstructionState.Complete)
+                && job.InputSetIdentitySha256 != null
+                && job.Inputs.Any()
+                && !job.InputRequirements.Any(requirement => requirement.IsRequired
+                    && (requirement.ResolutionState == CentralDerivativeInputResolutionState.Resolved
+                        ? !job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id)
+                        : requirement.ResolutionState != CentralDerivativeInputResolutionState.Missing
+                            || job.MissingInputOutcome != CentralDerivativeWindowOutcome.Run))
+                && !job.Inputs.Any(input => input.Artifact!.ObjectState != CentralArtifactObjectState.Available
+                    || input.Artifact.ReconstructionState != CentralReconstructionState.Complete))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(job => job.LeaseExpiresAtUtc, now + leaseDuration)
                 .SetProperty(job => job.UpdatedAtUtc, now), cancellationToken).ConfigureAwait(false);
@@ -465,6 +506,7 @@ internal sealed class CentralDerivativeJobService(
     public async Task MarkInputUnavailableAsync(
         Guid jobId,
         Guid leaseToken,
+        Guid centralArtifactId,
         byte[] expectedSourceRowVersion,
         string reasonCode,
         bool quarantine,
@@ -475,14 +517,15 @@ internal sealed class CentralDerivativeJobService(
         var now = timeProvider.GetUtcNow();
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var job = await dbContext.CentralDerivativeJobs
-            .Include(candidate => candidate.SourceArtifact)
+            .Include(candidate => candidate.Inputs).ThenInclude(input => input.Artifact)
             .SingleOrDefaultAsync(candidate => candidate.Id == jobId
                 && candidate.Status == CentralDerivativeJobStatus.Leased
                 && candidate.LeaseToken == leaseToken
                 && candidate.LeaseExpiresAtUtc > now,
                 cancellationToken).ConfigureAwait(false)
             ?? throw new CentralDerivativeJobStateException("The derivative job lease is stale or invalid.");
-        var source = job.SourceArtifact!;
+        var source = job.Inputs.SingleOrDefault(input => input.CentralArtifactId == centralArtifactId)?.Artifact
+            ?? throw new CentralDerivativeJobStateException("The derivative input is not part of the leased source set.");
         if (!source.RowVersion.AsSpan().SequenceEqual(expectedSourceRowVersion))
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -508,7 +551,8 @@ internal sealed class CentralDerivativeJobService(
             CentralDerivativeJobStatus.Completed
         };
         var affectedJobIds = await dbContext.CentralDerivativeJobs
-            .Where(candidate => candidate.SourceCentralArtifactId == source.Id
+            .Where(candidate => (candidate.SourceCentralArtifactId == source.Id
+                    || candidate.Inputs.Any(input => input.CentralArtifactId == source.Id))
                 && activeStatuses.Contains(candidate.Status))
             .Select(candidate => candidate.Id)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
@@ -517,7 +561,6 @@ internal sealed class CentralDerivativeJobService(
                 .SetProperty(candidate => candidate.Status, quarantine
                     ? CentralDerivativeJobStatus.Quarantined
                     : CentralDerivativeJobStatus.RetryableFailure)
-                .SetProperty(candidate => candidate.AvailableAtUtc, (DateTimeOffset?)null)
                 .SetProperty(candidate => candidate.LastFailedAtUtc, now)
                 .SetProperty(candidate => candidate.LastError, quarantine
                     ? reasonCode
@@ -539,6 +582,11 @@ internal sealed class CentralDerivativeJobService(
                 .SetProperty(attempt => attempt.EndedAtUtc, now), cancellationToken)
             .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (quarantine && job.Inputs.Count > 1)
+        {
+            telemetry?.RecordWindowPinDuration(
+                job.RecipeName, now - job.Inputs.Min(input => input.SelectedAtUtc), "quarantined");
+        }
         dbContext.ChangeTracker.Clear();
     }
 
@@ -557,7 +605,9 @@ internal sealed class CentralDerivativeJobService(
     private async Task<CentralDerivativeJob> LoadJobAsync(Guid jobId, CancellationToken cancellationToken)
         => await dbContext.CentralDerivativeJobs.AsNoTracking()
             .Include(job => job.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)
+            .Include(job => job.Inputs).ThenInclude(input => input.Artifact)!.ThenInclude(artifact => artifact!.Frame)
             .Include(job => job.ResultArtifact)
+            .AsSplitQuery()
             .SingleOrDefaultAsync(job => job.Id == jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new CentralDerivativeJobStateException("The derivative job does not exist.");
 
@@ -612,6 +662,27 @@ internal sealed class CentralDerivativeJobService(
     {
         var source = job.SourceArtifact ?? throw new InvalidOperationException("The derivative source artifact was not loaded.");
         var frame = source.Frame ?? throw new InvalidOperationException("The derivative source frame was not loaded.");
+        var inputs = job.Inputs.OrderBy(input => input.Ordinal).Select(input =>
+        {
+            var artifact = input.Artifact ?? throw new InvalidOperationException("A derivative input artifact was not loaded.");
+            var inputFrame = artifact.Frame ?? throw new InvalidOperationException("A derivative input frame was not loaded.");
+            return new CentralDerivativeJobLeaseInput(
+                input.Ordinal,
+                artifact.Id,
+                inputFrame.DevicePublicId,
+                artifact.ArtifactId,
+                artifact.Role,
+                artifact.RecipeVersion,
+                artifact.ChecksumSha256,
+                artifact.MediaType,
+                artifact.ByteLength,
+                inputFrame.FrameId,
+                inputFrame.AgentId,
+                inputFrame.CaptureSequence,
+                inputFrame.CapturedAtUtc,
+                input.CompatibilitySha256,
+                input.SelectedAtUtc);
+        }).ToArray();
         return new CentralDerivativeJobLease(
             job.Id, job.LeaseToken!.Value, job.LeaseOwner!, job.LeaseExpiresAtUtc!.Value,
             frame.DevicePublicId, source.ArtifactId, source.Role, source.RecipeVersion,
@@ -622,7 +693,8 @@ internal sealed class CentralDerivativeJobService(
             job.RecipeName, job.RecipeOptionsJson, job.InputSelectorJson,
             job.RequestedRecipeIdentitySha256, job.RequestIdentitySha256,
             job.TraceParent, job.TraceState,
-            job.AttemptCount, job.MaxAttempts);
+            job.AttemptCount, job.MaxAttempts,
+            inputs);
     }
 
     private static bool IsUsable(CentralArtifact? artifact)
@@ -658,7 +730,25 @@ internal sealed record CentralDerivativeJobLease(
     string? TraceParent,
     string? TraceState,
     int AttemptCount,
-    int MaxAttempts);
+    int MaxAttempts,
+    IReadOnlyList<CentralDerivativeJobLeaseInput>? Inputs = null);
+
+internal sealed record CentralDerivativeJobLeaseInput(
+    int Ordinal,
+    Guid CentralArtifactId,
+    Guid DevicePublicId,
+    Guid ArtifactId,
+    FrameArtifactRole Role,
+    string RecipeVersion,
+    string ChecksumSha256,
+    string MediaType,
+    long ByteLength,
+    Guid FrameId,
+    string AgentId,
+    long? CaptureSequence,
+    DateTimeOffset CapturedAtUtc,
+    string CompatibilitySha256,
+    DateTimeOffset SelectedAtUtc = default);
 
 internal sealed class CentralDerivativeJobStateException : Exception
 {

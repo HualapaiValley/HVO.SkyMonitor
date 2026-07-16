@@ -51,6 +51,7 @@ internal sealed class CentralDerivativeJobExecutor(
             const string reason = "processing.recipe-identity-mismatch";
             await jobService.FailAsync(
                 lease.JobId, lease.LeaseToken, reason, retryable: false, cancellationToken).ConfigureAwait(false);
+            RecordPinRelease(lease, "terminal");
             return new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason);
         }
         Guid? recoveredArtifactId;
@@ -80,6 +81,7 @@ internal sealed class CentralDerivativeJobExecutor(
             await jobService.SkipAsync(
                 lease.JobId, lease.LeaseToken, ProcessingReasonCodes.MissingAnnotation, cancellationToken)
                 .ConfigureAwait(false);
+            RecordPinRelease(lease, "skipped");
             return new CentralDerivativeExecutionResult(
                 ProcessingOutcomeStatus.Skipped, null, ProcessingReasonCodes.MissingAnnotation);
         }
@@ -89,8 +91,7 @@ internal sealed class CentralDerivativeJobExecutor(
         using (telemetry.StartStage("execute", lease.RecipeName))
         {
             outcome = await recipeAdapter.ExecuteAsync(
-                input.ProcessingInput.Descriptor,
-                input.ProcessingInput.Payload,
+                input.ProcessingInputs,
                 lease.RecipeName,
                 optionsDocument.RootElement.Clone(),
                 selector,
@@ -105,7 +106,7 @@ internal sealed class CentralDerivativeJobExecutor(
             case ProcessingOutcomeStatus.Produced:
                 if (outcome.Products.Count != 1)
                 {
-                    throw new CentralDerivativeJobStateException("A single-source derivative job must produce exactly one product.");
+                    throw new CentralDerivativeJobStateException("A derivative job must produce exactly one product.");
                 }
                 var publishStarted = timeProvider.GetTimestamp();
                 Guid artifactId;
@@ -124,6 +125,7 @@ internal sealed class CentralDerivativeJobExecutor(
             case ProcessingOutcomeStatus.Skipped:
                 await jobService.SkipAsync(
                     lease.JobId, lease.LeaseToken, outcome.ReasonCode!, cancellationToken).ConfigureAwait(false);
+                RecordPinRelease(lease, "skipped");
                 return new CentralDerivativeExecutionResult(outcome.Status, null, outcome.ReasonCode);
             case ProcessingOutcomeStatus.RetryableFailure:
                 await jobService.FailAsync(
@@ -134,6 +136,7 @@ internal sealed class CentralDerivativeJobExecutor(
                 await jobService.FailAsync(
                     lease.JobId, lease.LeaseToken, outcome.ReasonCode!, retryable: false, cancellationToken)
                     .ConfigureAwait(false);
+                RecordPinRelease(lease, "terminal");
                 return new CentralDerivativeExecutionResult(outcome.Status, null, outcome.ReasonCode);
             default:
                 throw new InvalidOperationException("The processing outcome status is unsupported.");
@@ -173,6 +176,19 @@ internal sealed class CentralDerivativeJobExecutor(
             new PreviewTransform(1, 1),
             ProjectionOverlay: null,
             identity);
+    }
+
+    private void RecordPinRelease(CentralDerivativeJobLease lease, string outcome)
+    {
+        if (lease.Inputs is not { Count: > 1 })
+        {
+            return;
+        }
+        var selectedAtUtc = lease.Inputs.Min(input => input.SelectedAtUtc);
+        if (selectedAtUtc != default)
+        {
+            telemetry.RecordWindowPinDuration(lease.RecipeName, timeProvider.GetUtcNow() - selectedAtUtc, outcome);
+        }
     }
 
     private static bool ShouldAnnotate(ProjectedObjectProvenance item)

@@ -115,7 +115,8 @@ public sealed class CentralDerivativeWorkerHealthCheckTests
         result.Data.Should().Contain("Status", "backlog");
         result.Data.Should().Contain("PendingCount", 1L);
         result.Data.Keys.Should().BeEquivalentTo(
-            "Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds");
+            "Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds",
+            "WaitingCount", "OldestWaitAgeSeconds", "OverdueWaitingCount", "OldestPinAgeSeconds");
     }
 
     [TestMethod]
@@ -157,6 +158,50 @@ public sealed class CentralDerivativeWorkerHealthCheckTests
         result.Status.Should().Be(HealthStatus.Degraded);
         result.Data.Should().Contain("Status", "dependency-failure");
     }
+
+    [TestMethod]
+    public async Task ReportsOverdueWindowAsDegradedWithoutTreatingNormalWaitAsFailureAsync()
+    {
+        var now = new DateTimeOffset(2026, 7, 16, 2, 0, 0, TimeSpan.Zero);
+        await using var context = CreateContext();
+        context.CentralDerivativeJobs.AddRange(
+            CreateWaitingJob(now - TimeSpan.FromMinutes(2), now + TimeSpan.FromMinutes(3), 'A'),
+            CreateWaitingJob(now - TimeSpan.FromMinutes(10), now - TimeSpan.FromMinutes(1), 'C'));
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        telemetry.RecordPoll(now);
+        var check = new CentralDerivativeWorkerHealthCheck(
+            context,
+            Options.Create(new CentralDerivativeWorkerOptions()),
+            telemetry,
+            new FixedTimeProvider(now));
+
+        var result = await check.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+
+        result.Status.Should().Be(HealthStatus.Degraded);
+        result.Data.Should().Contain("Status", "window-overdue");
+        result.Data.Should().Contain("WaitingCount", 2L);
+        result.Data.Should().Contain("OverdueWaitingCount", 1L);
+    }
+
+    private static CentralDerivativeJob CreateWaitingJob(
+        DateTimeOffset createdAtUtc,
+        DateTimeOffset deadlineUtc,
+        char identitySeed) => new()
+        {
+            SourceCentralArtifactId = Guid.NewGuid(),
+            TargetRole = FrameArtifactRole.Combined,
+            TargetRecipeVersion = "window-v1",
+            TargetVariant = "window",
+            RecipeName = "rolling-mean",
+            RequestedRecipeIdentitySha256 = new string(identitySeed, 64),
+            RequestIdentitySha256 = new string((char)(identitySeed + 1), 64),
+            Status = CentralDerivativeJobStatus.Waiting,
+            MaxAttempts = 3,
+            ResolutionDeadlineUtc = deadlineUtc,
+            CreatedAtUtc = createdAtUtc,
+            UpdatedAtUtc = createdAtUtc
+        };
 
     private static ApplicationDbContext CreateContext()
     {

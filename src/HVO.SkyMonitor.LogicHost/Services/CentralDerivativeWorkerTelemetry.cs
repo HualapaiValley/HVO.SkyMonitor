@@ -18,7 +18,18 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
     private readonly Counter<long> _operations;
     private readonly Counter<long> _dependencyFailures;
     private readonly Counter<long> _bytes;
+    private readonly Counter<long> _windowResolutions;
+    private readonly Counter<long> _windowNotifications;
+    private readonly Counter<long> _windowRejections;
+    private readonly Counter<long> _windowDeadlines;
     private readonly Histogram<double> _duration;
+    private readonly Histogram<long> _windowSelectedInputs;
+    private readonly Histogram<long> _windowExpectedInputs;
+    private readonly Histogram<long> _windowMissingInputs;
+    private readonly Histogram<double> _windowCompleteness;
+    private readonly Histogram<double> _windowProcessingLag;
+    private readonly Histogram<double> _windowPinDuration;
+    private readonly Histogram<long> _windowSelectedBytes;
     private readonly ConcurrentDictionary<(string Status, string Recipe), long> _queue = new();
     private long _active;
     private long _lastPollUtcTicks;
@@ -26,6 +37,11 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
     private long _lastRenewalFailureUtcTicks;
     private long _lastDependencyFailureUtcTicks;
     private long _oldestQueueAgeSeconds;
+    private long _windowWaiting;
+    private long _windowOldestWaitAgeSeconds;
+    private long _windowActivePins;
+    private long _windowOldestPinAgeSeconds;
+    private long _windowPinnedBytes;
 
     public CentralDerivativeWorkerTelemetry()
     {
@@ -37,7 +53,29 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
         _dependencyFailures = _meter.CreateCounter<long>(
             "skymonitor.central.derivative.dependency.failures", "{failure}");
         _bytes = _meter.CreateCounter<long>("skymonitor.central.derivative.bytes", "By");
+        _windowResolutions = _meter.CreateCounter<long>(
+            "skymonitor.central.derivative.window.resolutions", "{resolution}");
+        _windowNotifications = _meter.CreateCounter<long>(
+            "skymonitor.central.derivative.window.notifications", "{notification}");
+        _windowRejections = _meter.CreateCounter<long>(
+            "skymonitor.central.derivative.window.compatibility_rejections", "{rejection}");
+        _windowDeadlines = _meter.CreateCounter<long>(
+            "skymonitor.central.derivative.window.deadlines", "{deadline}");
         _duration = _meter.CreateHistogram<double>("skymonitor.central.derivative.duration", "ms");
+        _windowSelectedInputs = _meter.CreateHistogram<long>(
+            "skymonitor.central.derivative.window.selected_inputs", "{artifact}");
+        _windowExpectedInputs = _meter.CreateHistogram<long>(
+            "skymonitor.central.derivative.window.expected_inputs", "{requirement}");
+        _windowMissingInputs = _meter.CreateHistogram<long>(
+            "skymonitor.central.derivative.window.missing_inputs", "{requirement}");
+        _windowCompleteness = _meter.CreateHistogram<double>(
+            "skymonitor.central.derivative.window.completeness", "1");
+        _windowProcessingLag = _meter.CreateHistogram<double>(
+            "skymonitor.central.derivative.window.processing_lag", "ms");
+        _windowPinDuration = _meter.CreateHistogram<double>(
+            "skymonitor.central.derivative.window.pin_duration", "ms");
+        _windowSelectedBytes = _meter.CreateHistogram<long>(
+            "skymonitor.central.derivative.window.selected_bytes", "By");
         _meter.CreateObservableGauge(
             "skymonitor.central.derivative.active",
             () => Interlocked.Read(ref _active),
@@ -49,6 +87,26 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
         _meter.CreateObservableGauge(
             "skymonitor.central.derivative.queue.oldest_age",
             () => Interlocked.Read(ref _oldestQueueAgeSeconds),
+            "s");
+        _meter.CreateObservableGauge(
+            "skymonitor.central.derivative.window.waiting",
+            () => Interlocked.Read(ref _windowWaiting),
+            "{job}");
+        _meter.CreateObservableGauge(
+            "skymonitor.central.derivative.window.waiting.oldest_age",
+            () => Interlocked.Read(ref _windowOldestWaitAgeSeconds),
+            "s");
+        _meter.CreateObservableGauge(
+            "skymonitor.central.derivative.window.pins.active",
+            () => Interlocked.Read(ref _windowActivePins),
+            "{artifact}");
+        _meter.CreateObservableGauge(
+            "skymonitor.central.derivative.window.pins.bytes",
+            () => Interlocked.Read(ref _windowPinnedBytes),
+            "By");
+        _meter.CreateObservableGauge(
+            "skymonitor.central.derivative.window.pins.oldest_age",
+            () => Interlocked.Read(ref _windowOldestPinAgeSeconds),
             "s");
     }
 
@@ -82,6 +140,14 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
         return activity;
     }
 
+    public Activity? StartWindowResolution(string recipe, Guid jobId)
+    {
+        var activity = _activitySource.StartActivity("central-derivative.window.resolve");
+        activity?.SetTag("recipe", NormalizeRecipe(recipe));
+        activity?.SetTag("job.id", jobId);
+        return activity;
+    }
+
     public void RecordPoll(DateTimeOffset now)
         => Interlocked.Exchange(ref _lastPollUtcTicks, now.UtcDateTime.Ticks);
 
@@ -97,6 +163,78 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
         }
         Interlocked.Exchange(ref _oldestQueueAgeSeconds, Math.Max(0, oldestAgeSeconds));
     }
+
+    public void UpdateWindowSnapshot(
+        long waiting,
+        long oldestWaitAgeSeconds,
+        long activePins,
+        long oldestPinAgeSeconds,
+        long pinnedBytes)
+    {
+        Interlocked.Exchange(ref _windowWaiting, Math.Max(0, waiting));
+        Interlocked.Exchange(ref _windowOldestWaitAgeSeconds, Math.Max(0, oldestWaitAgeSeconds));
+        Interlocked.Exchange(ref _windowActivePins, Math.Max(0, activePins));
+        Interlocked.Exchange(ref _windowOldestPinAgeSeconds, Math.Max(0, oldestPinAgeSeconds));
+        Interlocked.Exchange(ref _windowPinnedBytes, Math.Max(0, pinnedBytes));
+    }
+
+    public void RecordWindowResolution(
+        string recipe,
+        string outcome,
+        TimeSpan duration,
+        long selectedInputs,
+        long expectedInputs,
+        long missingInputs,
+        long selectedBytes,
+        TimeSpan processingLag)
+    {
+        var normalizedRecipe = NormalizeRecipe(recipe);
+        var tags = new TagList { { "recipe", normalizedRecipe }, { "outcome", outcome } };
+        _windowResolutions.Add(1, tags);
+        _duration.Record(duration.TotalMilliseconds, new TagList
+        {
+            { "stage", "window-resolution" },
+            { "recipe", normalizedRecipe },
+            { "outcome", outcome }
+        });
+        _windowSelectedInputs.Record(Math.Max(0, selectedInputs), tags);
+        _windowExpectedInputs.Record(Math.Max(0, expectedInputs), tags);
+        _windowMissingInputs.Record(Math.Max(0, missingInputs), tags);
+        _windowCompleteness.Record(expectedInputs <= 0
+            ? 1
+            : Math.Clamp((double)selectedInputs / expectedInputs, 0, 1), tags);
+        _windowSelectedBytes.Record(Math.Max(0, selectedBytes), tags);
+        _windowProcessingLag.Record(Math.Max(0, processingLag.TotalMilliseconds), tags);
+    }
+
+    public void RecordWindowNotification(string recipe, string disposition)
+        => _windowNotifications.Add(1, new TagList
+        {
+            { "recipe", NormalizeRecipe(recipe) },
+            { "disposition", disposition is "affected" or "ignored" ? disposition : "other" }
+        });
+
+    public void RecordWindowPinDuration(string recipe, TimeSpan duration, string outcome = "released")
+        => _windowPinDuration.Record(Math.Max(0, duration.TotalMilliseconds), new TagList
+        {
+            { "recipe", NormalizeRecipe(recipe) },
+            { "outcome", NormalizeStatus(outcome) }
+        });
+
+    public void RecordWindowRejection(string recipe, string axis, string outcome)
+        => _windowRejections.Add(1, new TagList
+        {
+            { "recipe", NormalizeRecipe(recipe) },
+            { "axis", axis is "layout" or "profile" ? axis : "other" },
+            { "outcome", outcome }
+        });
+
+    public void RecordWindowDeadline(string recipe, string outcome)
+        => _windowDeadlines.Add(1, new TagList
+        {
+            { "recipe", NormalizeRecipe(recipe) },
+            { "outcome", outcome }
+        });
 
     public void RecordClaim(string outcome, TimeSpan duration)
     {
@@ -190,6 +328,7 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
         BuiltInProcessingRecipes.EncodedPreview => BuiltInProcessingRecipes.EncodedPreview,
         BuiltInProcessingRecipes.Annotation => BuiltInProcessingRecipes.Annotation,
         BuiltInProcessingRecipes.ImageQuality => BuiltInProcessingRecipes.ImageQuality,
+        BuiltInProcessingRecipes.RollingMean => BuiltInProcessingRecipes.RollingMean,
         _ => "other"
     };
 
@@ -205,6 +344,7 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
         "pending" => "pending",
         "leased" => "leased",
         "retryable" => "retryable",
+        "waiting" => "waiting",
         _ => "other"
     };
 

@@ -4,8 +4,8 @@ using Microsoft.EntityFrameworkCore;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
-internal sealed record CentralDerivativeJobInput(
-    LogicHostProcessingInput ProcessingInput,
+internal sealed record CentralDerivativeJobInputs(
+    IReadOnlyList<LogicHostProcessingInput> ProcessingInputs,
     long ByteLength);
 
 internal sealed class CentralDerivativeInputRejectedException : Exception
@@ -26,7 +26,7 @@ internal sealed class CentralDerivativeInputRejectedException : Exception
 
 internal interface ICentralDerivativeJobInputReader
 {
-    Task<CentralDerivativeJobInput> ReadAsync(
+    Task<CentralDerivativeJobInputs> ReadAsync(
         CentralDerivativeJobLease lease,
         CancellationToken cancellationToken);
 }
@@ -38,12 +38,34 @@ internal sealed class CentralDerivativeJobInputReader(
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider) : ICentralDerivativeJobInputReader
 {
-    public async Task<CentralDerivativeJobInput> ReadAsync(
+    public async Task<CentralDerivativeJobInputs> ReadAsync(
         CentralDerivativeJobLease lease,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
-        var artifact = await LoadAuthorizedSourceAsync(lease, cancellationToken).ConfigureAwait(false);
+        var leaseInputs = lease.Inputs is { Count: > 0 }
+            ? lease.Inputs
+            : [new CentralDerivativeJobLeaseInput(
+                0, Guid.Empty, lease.SourceDevicePublicId, lease.SourceArtifactId, lease.SourceRole,
+                lease.SourceRecipeVersion, lease.SourceChecksumSha256, lease.SourceMediaType, 0,
+                lease.FrameId, lease.AgentId, null, lease.CapturedAtUtc, string.Empty)];
+        var processingInputs = new List<LogicHostProcessingInput>(leaseInputs.Count);
+        long totalBytes = 0;
+        foreach (var leaseInput in leaseInputs.OrderBy(input => input.Ordinal))
+        {
+            var artifact = await LoadAuthorizedSourceAsync(lease, leaseInput, cancellationToken).ConfigureAwait(false);
+            processingInputs.Add(await ReadArtifactAsync(lease, leaseInput, artifact, cancellationToken).ConfigureAwait(false));
+            totalBytes = checked(totalBytes + artifact.ByteLength);
+        }
+        return new CentralDerivativeJobInputs(processingInputs, totalBytes);
+    }
+
+    private async Task<LogicHostProcessingInput> ReadArtifactAsync(
+        CentralDerivativeJobLease lease,
+        CentralDerivativeJobLeaseInput leaseInput,
+        CentralArtifact artifact,
+        CancellationToken cancellationToken)
+    {
         if (artifact.ByteLength is < 0 or > int.MaxValue)
         {
             throw new CentralDerivativeInputRejectedException(
@@ -66,7 +88,8 @@ internal sealed class CentralDerivativeJobInputReader(
             telemetry.RecordStage(
                 "verify", lease.RecipeName, "missing", timeProvider.GetElapsedTime(verifyStarted));
             await jobService.MarkInputUnavailableAsync(
-                lease.JobId, lease.LeaseToken, artifact.RowVersion,
+                lease.JobId, lease.LeaseToken, artifact.Id,
+                artifact.RowVersion,
                 "object.missing", quarantine: false, CancellationToken.None)
                 .ConfigureAwait(false);
             throw;
@@ -76,7 +99,8 @@ internal sealed class CentralDerivativeJobInputReader(
             telemetry.RecordStage(
                 "verify", lease.RecipeName, "integrity", timeProvider.GetElapsedTime(verifyStarted));
             await jobService.MarkInputUnavailableAsync(
-                lease.JobId, lease.LeaseToken, artifact.RowVersion,
+                lease.JobId, lease.LeaseToken, artifact.Id,
+                artifact.RowVersion,
                 exception.ReasonCode, quarantine: true, CancellationToken.None)
                 .ConfigureAwait(false);
             throw;
@@ -107,7 +131,8 @@ internal sealed class CentralDerivativeJobInputReader(
             telemetry.RecordStage(
                 "load", lease.RecipeName, "missing", timeProvider.GetElapsedTime(loadStarted));
             await jobService.MarkInputUnavailableAsync(
-                lease.JobId, lease.LeaseToken, artifact.RowVersion,
+                lease.JobId, lease.LeaseToken, artifact.Id,
+                artifact.RowVersion,
                 "object.missing", quarantine: false, CancellationToken.None)
                 .ConfigureAwait(false);
             throw;
@@ -117,7 +142,8 @@ internal sealed class CentralDerivativeJobInputReader(
             telemetry.RecordStage(
                 "load", lease.RecipeName, "integrity", timeProvider.GetElapsedTime(loadStarted));
             await jobService.MarkInputUnavailableAsync(
-                lease.JobId, lease.LeaseToken, artifact.RowVersion,
+                lease.JobId, lease.LeaseToken, artifact.Id,
+                artifact.RowVersion,
                 exception.ReasonCode, quarantine: true, CancellationToken.None)
                 .ConfigureAwait(false);
             throw;
@@ -127,37 +153,61 @@ internal sealed class CentralDerivativeJobInputReader(
         {
             throw new CentralDerivativeJobStateException("The derivative job lease became stale while loading input.");
         }
-        return new CentralDerivativeJobInput(
-            new LogicHostProcessingInput(
-                CentralReconstructionDescriptorFactory.Create(artifact.Frame!, artifact),
-                payload),
-            artifact.ByteLength);
+        return new LogicHostProcessingInput(
+            CentralReconstructionDescriptorFactory.Create(artifact.Frame!, artifact),
+            payload);
     }
 
     private async Task<CentralArtifact> LoadAuthorizedSourceAsync(
         CentralDerivativeJobLease lease,
+        CentralDerivativeJobLeaseInput leaseInput,
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var job = await dbContext.CentralDerivativeJobs.AsNoTracking()
-            .Where(candidate => candidate.Id == lease.JobId
-                && candidate.Status == CentralDerivativeJobStatus.Leased
-                && candidate.LeaseToken == lease.LeaseToken
-                && candidate.LeaseOwner == lease.WorkerId
-                && candidate.LeaseExpiresAtUtc > now
-                && candidate.SourceArtifact!.ArtifactId == lease.SourceArtifactId
-                && candidate.SourceArtifact.ObjectState == CentralArtifactObjectState.Available
-                && candidate.SourceArtifact.ReconstructionState == CentralReconstructionState.Complete)
-            .Include(candidate => candidate.SourceArtifact)!.ThenInclude(artifact => artifact!.Layout)
-            .Include(candidate => candidate.SourceArtifact)!.ThenInclude(artifact => artifact!.Recipe)
-            .Include(candidate => candidate.SourceArtifact)!.ThenInclude(artifact => artifact!.Sources)
-            .Include(candidate => candidate.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)!.ThenInclude(frame => frame!.Timing)
-            .Include(candidate => candidate.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)!.ThenInclude(frame => frame!.Control)
-            .Include(candidate => candidate.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)!.ThenInclude(frame => frame!.Profiles)
+        if (leaseInput.CentralArtifactId == Guid.Empty)
+        {
+            return await dbContext.CentralDerivativeJobs.AsNoTracking()
+                .Where(candidate => candidate.Id == lease.JobId
+                    && candidate.Status == CentralDerivativeJobStatus.Leased
+                    && candidate.LeaseToken == lease.LeaseToken
+                    && candidate.LeaseOwner == lease.WorkerId
+                    && candidate.LeaseExpiresAtUtc > now
+                    && candidate.SourceArtifact!.ArtifactId == lease.SourceArtifactId
+                    && candidate.SourceArtifact.ObjectState == CentralArtifactObjectState.Available
+                    && candidate.SourceArtifact.ReconstructionState == CentralReconstructionState.Complete)
+                .Select(candidate => candidate.SourceArtifact!)
+                .Include(artifact => artifact.Layout)
+                .Include(artifact => artifact.Recipe)
+                .Include(artifact => artifact.Sources)
+                .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
+                .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
+                .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
+                .AsSplitQuery()
+                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+                ?? throw new CentralDerivativeJobStateException("The derivative source or lease is stale or invalid.");
+        }
+        var job = await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.Id == leaseInput.CentralArtifactId
+                && artifact.ArtifactId == leaseInput.ArtifactId
+                && artifact.ObjectState == CentralArtifactObjectState.Available
+                && artifact.ReconstructionState == CentralReconstructionState.Complete
+                && dbContext.CentralDerivativeJobs.Any(candidate => candidate.Id == lease.JobId
+                    && candidate.Status == CentralDerivativeJobStatus.Leased
+                    && candidate.LeaseToken == lease.LeaseToken
+                    && candidate.LeaseOwner == lease.WorkerId
+                    && candidate.LeaseExpiresAtUtc > now
+                    && candidate.Inputs.Any(input => input.CentralArtifactId == artifact.Id
+                        && input.Ordinal == leaseInput.Ordinal)))
+            .Include(artifact => artifact.Layout)
+            .Include(artifact => artifact.Recipe)
+            .Include(artifact => artifact.Sources)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
             .AsSplitQuery()
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
             ?? throw new CentralDerivativeJobStateException("The derivative source or lease is stale or invalid.");
-        return job.SourceArtifact!;
+        return job;
     }
 
     private Task<bool> IsLeaseCurrentAsync(CentralDerivativeJobLease lease, CancellationToken cancellationToken)
@@ -169,9 +219,9 @@ internal sealed class CentralDerivativeJobInputReader(
             && candidate.LeaseToken == lease.LeaseToken
             && candidate.LeaseOwner == lease.WorkerId
             && candidate.LeaseExpiresAtUtc > now
-            && candidate.SourceArtifact!.ArtifactId == lease.SourceArtifactId
-            && candidate.SourceArtifact.ObjectState == CentralArtifactObjectState.Available
-            && candidate.SourceArtifact.ReconstructionState == CentralReconstructionState.Complete,
+            && candidate.Inputs.Any()
+            && !candidate.Inputs.Any(input => input.Artifact!.ObjectState != CentralArtifactObjectState.Available
+                || input.Artifact.ReconstructionState != CentralReconstructionState.Complete),
             cancellationToken);
     }
 }

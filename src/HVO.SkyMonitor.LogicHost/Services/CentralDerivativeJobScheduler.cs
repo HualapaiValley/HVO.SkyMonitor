@@ -15,7 +15,8 @@ internal interface ICentralDerivativeJobScheduler
 
 internal sealed class CentralDerivativeJobScheduler(
     ApplicationDbContext dbContext,
-    ICentralDerivativeRecipeCatalog recipeCatalog) : ICentralDerivativeJobScheduler
+    ICentralDerivativeRecipeCatalog recipeCatalog,
+    ICentralDerivativeWindowResolver windowResolver) : ICentralDerivativeJobScheduler
 {
     internal const string SourceInvalidatedReason = "The derivative source artifact is not usable.";
     internal const string ResultInvalidatedReason = "The derivative result artifact is not usable.";
@@ -51,10 +52,13 @@ internal sealed class CentralDerivativeJobScheduler(
                 }
             }
             await EnsureRequiredJobsCoreAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             if (ownedTransaction is not null)
             {
-                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                 await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await ownedTransaction.DisposeAsync().ConfigureAwait(false);
+                ownedTransaction = null;
+                await windowResolver.ResolveAffectedAsync(artifact, now, cancellationToken).ConfigureAwait(false);
             }
         }
         catch
@@ -89,6 +93,10 @@ internal sealed class CentralDerivativeJobScheduler(
         {
             foreach (var recipe in recipeCatalog.GetRequiredRecipes(artifact.Role))
             {
+                if (recipe.Window is not null && frame.CaptureSequence is null)
+                {
+                    continue;
+                }
                 var requestIdentity = CentralDerivativeJobIdentity.CreateRequestIdentity(
                     frame.DevicePublicId, artifact.ArtifactId, recipe);
                 var existing = dbContext.CentralDerivativeJobs.Local.FirstOrDefault(job =>
@@ -96,12 +104,12 @@ internal sealed class CentralDerivativeJobScheduler(
                     ?? await dbContext.CentralDerivativeJobs.SingleOrDefaultAsync(job =>
                         job.RequestIdentitySha256 == requestIdentity,
                         cancellationToken).ConfigureAwait(false);
-                var target = frame.Artifacts.FirstOrDefault(candidate =>
+                var target = recipe.Window is null ? frame.Artifacts.FirstOrDefault(candidate =>
                     candidate.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion
                     && candidate.Role == recipe.TargetRole
                     && candidate.RecipeVersion == recipe.RecipeVersion
                     && (candidate.Variant ?? string.Empty) == recipe.TargetVariant
-                    && IsUsable(candidate));
+                    && IsUsable(candidate)) : null;
                 if (target is not null
                     && !await IsCanonicalTargetAsync(artifact, target, recipe, cancellationToken).ConfigureAwait(false))
                 {
@@ -168,7 +176,10 @@ internal sealed class CentralDerivativeJobScheduler(
         CentralDerivativeRecipe recipe,
         CentralArtifact? result,
         DateTimeOffset now)
-        => new()
+    {
+        var frame = source.Frame!;
+        var isWaiting = result is null && recipe.Window is not null;
+        var job = new CentralDerivativeJob
         {
             SourceCentralArtifactId = source.Id,
             SourceArtifact = source,
@@ -184,16 +195,90 @@ internal sealed class CentralDerivativeJobScheduler(
                 source.Frame!.DevicePublicId, source.ArtifactId, recipe),
             TraceParent = Activity.Current?.Id,
             TraceState = Activity.Current?.TraceStateString,
-            Status = result is null ? CentralDerivativeJobStatus.Pending : CentralDerivativeJobStatus.Completed,
+            Status = result is null
+                ? isWaiting ? CentralDerivativeJobStatus.Waiting : CentralDerivativeJobStatus.Pending
+                : CentralDerivativeJobStatus.Completed,
             AttemptCount = 0,
             MaxAttempts = recipe.MaxAttempts,
-            AvailableAtUtc = result is null && IsUsable(source) ? now : null,
+            AvailableAtUtc = result is null && !isWaiting && IsUsable(source) ? now : null,
+            ResolutionDeadlineUtc = isWaiting ? now + recipe.Window!.Timeout : null,
+            ResolutionStartedAtUtc = isWaiting ? now : null,
+            ResolutionCompletedAtUtc = isWaiting ? null : now,
+            MissingInputOutcome = recipe.Window?.MissingInputOutcome,
+            StateReasonCode = isWaiting ? CentralDerivativeWindowReasonCodes.WaitingRequiredInput : null,
             CreatedAtUtc = now,
             UpdatedAtUtc = now,
             CompletedAtUtc = result is null ? null : now,
             ResultCentralArtifactId = result?.Id,
             ResultArtifact = result
         };
+        var positions = recipe.Window?.Positions
+            ?? [new CentralDerivativeWindowPosition(0, IsRequired: true, recipe.InputSelector)];
+        foreach (var position in CentralDerivativeJobIdentity.OrderWindowPositions(positions))
+        {
+            var requirement = new CentralDerivativeJobInputRequirement
+            {
+                Job = job,
+                CentralDerivativeJobId = job.Id,
+                Ordinal = job.InputRequirements.Count,
+                BindingName = "input",
+                SourceKind = CentralDerivativeInputSourceKind.Artifact,
+                SequenceOffset = position.SequenceOffset,
+                IsRequired = position.IsRequired,
+                SelectorJson = CaptureContractJson.Canonicalize(
+                    CaptureContractJson.SerializeToElement(position.Selector)).GetRawText(),
+                CompatibilityMode = position.CompatibilityMode,
+                ExpectedAgentId = frame.AgentId,
+                ExpectedRigId = frame.RigId,
+                ExpectedCaptureSequence = AddSequenceOffset(frame.CaptureSequence, position.SequenceOffset),
+                ResolutionState = recipe.Window is null
+                    ? CentralDerivativeInputResolutionState.Resolved
+                    : CentralDerivativeInputResolutionState.Waiting,
+                ResolvedAtUtc = recipe.Window is null ? now : null
+            };
+            job.InputRequirements.Add(requirement);
+            if (recipe.Window is null)
+            {
+                var snapshot = CentralDerivativeWindowCompatibility.EmptySnapshot;
+                job.Inputs.Add(new CentralDerivativeJobInput
+                {
+                    Job = job,
+                    CentralDerivativeJobId = job.Id,
+                    Requirement = requirement,
+                    CentralDerivativeJobInputRequirementId = requirement.Id,
+                    Ordinal = requirement.Ordinal,
+                    CentralArtifactId = source.Id,
+                    Artifact = source,
+                    CaptureSequence = frame.CaptureSequence,
+                    CompatibilityJson = snapshot.Json,
+                    CompatibilitySha256 = snapshot.Sha256,
+                    ByteLength = source.ByteLength,
+                    SelectedAtUtc = now
+                });
+            }
+        }
+        if (recipe.Window is null)
+        {
+            job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        }
+        return job;
+    }
+
+    private static long? AddSequenceOffset(long? captureSequence, int sequenceOffset)
+    {
+        if (!captureSequence.HasValue)
+        {
+            return null;
+        }
+        try
+        {
+            return checked(captureSequence.Value + sequenceOffset);
+        }
+        catch (OverflowException)
+        {
+            return null;
+        }
+    }
 
     private static void Complete(CentralDerivativeJob job, CentralArtifact result, DateTimeOffset now)
     {

@@ -454,6 +454,23 @@ public sealed class ProcessingRecipeTests
         Assert.AreEqual(TimeSpan.FromSeconds(2), outcome.Products[0].TotalIntegration);
         Assert.AreEqual("linear16-arithmetic-mean-v1", outcome.Products[0].Recipe.Descriptor.ImplementationVersion);
 
+        var sequenceOrdered = await new ProcessingRecipeExecutor().ExecuteAsync(Request(
+            BuiltInProcessingRecipes.RollingMean,
+            EmptyOptions(),
+            ProcessingInputSelector.Raw("source"),
+            [inputs[0] with { CaptureSequence = 10, CreatedUtc = start.AddSeconds(5) },
+             inputs[1] with { CaptureSequence = 11, CreatedUtc = start }],
+            "sequence-ordered")).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, sequenceOrdered.Status);
+        CollectionAssert.AreEqual(ids[..2], sequenceOrdered.Products[0].SourceArtifactIds.ToArray());
+        var mixedSequence = await new ProcessingRecipeExecutor().ExecuteAsync(Request(
+            BuiltInProcessingRecipes.RollingMean,
+            EmptyOptions(),
+            ProcessingInputSelector.Raw("source"),
+            [inputs[0] with { CaptureSequence = 10 }, inputs[1]],
+            "mixed-sequence")).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidLineage, mixedSequence.ReasonCode);
+
         var integrationBounded = await new ProcessingRecipeExecutor().ExecuteAsync(Request(
             BuiltInProcessingRecipes.RollingMean,
             Json("""{"maximumFrameCount":3,"maximumIntegrationMilliseconds":1500}"""),

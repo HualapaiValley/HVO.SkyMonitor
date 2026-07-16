@@ -66,6 +66,12 @@ internal sealed partial class CentralDerivativeWorker(
             try
             {
                 await using var claimScope = scopeFactory.CreateAsyncScope();
+                if (slot == 0)
+                {
+                    await claimScope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
+                        .ResolveWaitingAsync(timeProvider.GetUtcNow(), stoppingToken)
+                        .ConfigureAwait(false);
+                }
                 using (telemetry.StartStage("claim", "other"))
                 {
                     lease = await claimScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
@@ -324,7 +330,8 @@ internal sealed partial class CentralDerivativeWorker(
             {
                 CentralDerivativeJobStatus.Pending,
                 CentralDerivativeJobStatus.RetryableFailure,
-                CentralDerivativeJobStatus.Leased
+                CentralDerivativeJobStatus.Leased,
+                CentralDerivativeJobStatus.Waiting
             };
             var snapshot = await dbContext.CentralDerivativeJobs.AsNoTracking()
                 .Where(job => statuses.Contains(job.Status))
@@ -346,11 +353,45 @@ internal sealed partial class CentralDerivativeWorker(
                         CentralDerivativeJobStatus.Pending => "pending",
                         CentralDerivativeJobStatus.Leased => "leased",
                         CentralDerivativeJobStatus.RetryableFailure => "retryable",
+                        CentralDerivativeJobStatus.Waiting => "waiting",
                         _ => "other"
                     },
                     item.RecipeName,
                     item.Count)).ToArray(),
                 oldest);
+            var activeStatuses = new[]
+            {
+                CentralDerivativeJobStatus.Waiting,
+                CentralDerivativeJobStatus.Pending,
+                CentralDerivativeJobStatus.Leased,
+                CentralDerivativeJobStatus.RetryableFailure,
+                CentralDerivativeJobStatus.CancelRequested
+            };
+            var window = await dbContext.CentralDerivativeJobs.AsNoTracking()
+                .Where(job => job.Status == CentralDerivativeJobStatus.Waiting)
+                .GroupBy(_ => 1)
+                .Select(group => new
+                {
+                    Count = group.LongCount(),
+                    Oldest = group.Min(job => job.ResolutionStartedAtUtc ?? job.CreatedAtUtc)
+                })
+                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            var pins = await dbContext.CentralDerivativeJobInputs.AsNoTracking()
+                .Where(input => activeStatuses.Contains(input.Job!.Status))
+                .GroupBy(_ => 1)
+                .Select(group => new
+                {
+                    Count = group.LongCount(),
+                    Bytes = group.Sum(input => input.ByteLength),
+                    Oldest = group.Min(input => input.SelectedAtUtc)
+                })
+                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            telemetry.UpdateWindowSnapshot(
+                window?.Count ?? 0,
+                window is null ? 0 : (long)Math.Max(0, (now - window.Oldest).TotalSeconds),
+                pins?.Count ?? 0,
+                pins is null ? 0 : (long)Math.Max(0, (now - pins.Oldest).TotalSeconds),
+                pins?.Bytes ?? 0);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
