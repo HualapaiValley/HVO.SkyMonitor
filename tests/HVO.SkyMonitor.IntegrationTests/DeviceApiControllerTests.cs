@@ -7,6 +7,8 @@ using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using HVO.SkyMonitor.Fleet.Contracts;
+using HVO.SkyMonitor.TestSupport;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -29,33 +31,151 @@ public sealed class DeviceApiControllerTests
     }
 
     [TestMethod]
-    public async Task HeartbeatWithValidDeviceCredentialsReturnsOkAndUpdatesLastSeen()
+    public async Task HeartbeatWithValidDeviceCredentialsReturnsAcceptedAndPersistsFleetState()
     {
-        var (deviceId, deviceKey, registrationId, devicePublicId, observatoryId) = await SeedBootstrappedActiveDeviceAsync().ConfigureAwait(false);
+        var (deviceId, deviceKey, registrationId, devicePublicId, _) = await SeedBootstrappedActiveDeviceAsync().ConfigureAwait(false);
+        var report = FleetStatusTestData.CreateReport(devicePublicId, observedAtUtc: DateTimeOffset.UtcNow);
 
-        using var response = await _client!.PostAsJsonAsync(new Uri("/api/device/heartbeat", UriKind.Relative), new
-        {
-            deviceId,
-            deviceKey,
-            softwareVersion = "0.0.1",
-            agentState = "Idle",
-            temperatureCelsius = 12.3,
-            cpuPercent = 4.2
-        }).ConfigureAwait(false);
+        using var response = await PostHeartbeatAsync(deviceId, deviceKey, report).ConfigureAwait(false);
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
-        var payload = await response.Content.ReadFromJsonAsync<DeviceHeartbeatResponse>().ConfigureAwait(false);
+        var payload = await ReadAcknowledgementAsync(response).ConfigureAwait(false);
         payload.Should().NotBeNull();
-        payload!.RegistrationId.Should().Be(registrationId);
-        payload.DevicePublicId.Should().Be(devicePublicId);
-        payload.ObservatoryId.Should().Be(observatoryId);
+        payload!.AgentInstanceId.Should().Be(devicePublicId);
+        payload.Sequence.Should().Be(1);
+        payload.Disposition.Should().Be(FleetHeartbeatDisposition.Advanced);
         payload.RecommendedHeartbeatSeconds.Should().BeGreaterThan(0);
 
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var registration = await db.DeviceRegistrations.SingleAsync(r => r.Id == registrationId).ConfigureAwait(false);
         registration.LastSeenUtc.Should().NotBeNull();
+        (await db.DeviceFleetStates.SingleAsync(state => state.RegistrationId == registrationId).ConfigureAwait(false))
+            .Sequence.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task HeartbeatDuplicateAndOutOfOrderReportsCannotRegressCurrent()
+    {
+        var (deviceId, deviceKey, registrationId, devicePublicId, _) = await SeedBootstrappedActiveDeviceAsync().ConfigureAwait(false);
+        var observed = DateTimeOffset.UtcNow;
+        var sequence3 = FleetStatusTestData.CreateReport(devicePublicId, 3, observedAtUtc: observed);
+
+        using var advanced = await PostHeartbeatAsync(deviceId, deviceKey, sequence3).ConfigureAwait(false);
+        using var historical = await PostHeartbeatAsync(
+            deviceId,
+            deviceKey,
+            FleetStatusTestData.CreateReport(devicePublicId, 1, observedAtUtc: observed.AddHours(1))).ConfigureAwait(false);
+        using var duplicate = await PostHeartbeatAsync(deviceId, deviceKey, sequence3).ConfigureAwait(false);
+
+        advanced.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        historical.StatusCode.Should().Be(HttpStatusCode.OK);
+        duplicate.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await ReadAcknowledgementAsync(duplicate).ConfigureAwait(false))!
+            .Disposition.Should().Be(FleetHeartbeatDisposition.Duplicate);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await db.DeviceFleetStates.SingleAsync(state => state.RegistrationId == registrationId).ConfigureAwait(false))
+            .Sequence.Should().Be(3);
+        (await db.DeviceHeartbeatRecords.CountAsync(record => record.RegistrationId == registrationId).ConfigureAwait(false))
+            .Should().Be(2);
+    }
+
+    [TestMethod]
+    public async Task HeartbeatCrossAgentCredentialSpoofIsRejectedWithoutStateChange()
+    {
+        var first = await SeedBootstrappedActiveDeviceAsync().ConfigureAwait(false);
+        var second = await SeedBootstrappedActiveDeviceAsync().ConfigureAwait(false);
+        var report = FleetStatusTestData.CreateReport(second.DevicePublicId, observedAtUtc: DateTimeOffset.UtcNow);
+
+        using var response = await PostHeartbeatAsync(second.DeviceId, first.DeviceKey, report).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await db.DeviceFleetStates.AnyAsync(state =>
+            state.RegistrationId == first.RegistrationId || state.RegistrationId == second.RegistrationId).ConfigureAwait(false))
+            .Should().BeFalse();
+        (await db.DeviceHeartbeatRecords.AnyAsync(record =>
+            record.RegistrationId == first.RegistrationId || record.RegistrationId == second.RegistrationId).ConfigureAwait(false))
+            .Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task HeartbeatConcurrentAgentsPersistIndependentCurrentState()
+    {
+        var first = await SeedBootstrappedActiveDeviceAsync().ConfigureAwait(false);
+        var second = await SeedBootstrappedActiveDeviceAsync().ConfigureAwait(false);
+
+        var firstRequest = PostHeartbeatAsync(
+            first.DeviceId, first.DeviceKey, FleetStatusTestData.CreateReport(first.DevicePublicId, 1, observedAtUtc: DateTimeOffset.UtcNow));
+        var secondRequest = PostHeartbeatAsync(
+            second.DeviceId, second.DeviceKey, FleetStatusTestData.CreateReport(second.DevicePublicId, 1, observedAtUtc: DateTimeOffset.UtcNow));
+        using var firstResponse = await firstRequest.ConfigureAwait(false);
+        using var secondResponse = await secondRequest.ConfigureAwait(false);
+
+        firstResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        secondResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var states = await db.DeviceFleetStates
+            .Where(state => state.RegistrationId == first.RegistrationId || state.RegistrationId == second.RegistrationId)
+            .ToArrayAsync()
+            .ConfigureAwait(false);
+        states.Should().HaveCount(2).And.OnlyContain(state => state.Sequence == 1);
+    }
+
+    [TestMethod]
+    public async Task HeartbeatConcurrentDuplicateAndConflictConvergeToOnePayloadPerSequence()
+    {
+        var agent = await SeedBootstrappedActiveDeviceAsync().ConfigureAwait(false);
+        var first = FleetStatusTestData.CreateReport(agent.DevicePublicId, 1, observedAtUtc: DateTimeOffset.UtcNow);
+        var duplicateTasks = Enumerable.Range(0, 8)
+            .Select(_ => PostHeartbeatAsync(agent.DeviceId, agent.DeviceKey, first))
+            .ToArray();
+        var duplicateResponses = await Task.WhenAll(duplicateTasks).ConfigureAwait(false);
+        try
+        {
+            duplicateResponses.Count(response => response.StatusCode == HttpStatusCode.Accepted).Should().Be(1);
+            duplicateResponses.Count(response => response.StatusCode == HttpStatusCode.OK).Should().Be(7);
+        }
+        finally
+        {
+            foreach (var response in duplicateResponses)
+            {
+                response.Dispose();
+            }
+        }
+
+        var sequence2 = FleetStatusTestData.CreateReport(agent.DevicePublicId, 2, observedAtUtc: DateTimeOffset.UtcNow);
+        var conflictingSequence2 = sequence2 with
+        {
+            OverallHealth = FleetHealth.Degraded,
+            HealthChecks = [new FleetHealthCheckSummary("capture", FleetHealth.Degraded, "failure")]
+        };
+        var conflicts = await Task.WhenAll(
+            PostHeartbeatAsync(agent.DeviceId, agent.DeviceKey, sequence2),
+            PostHeartbeatAsync(agent.DeviceId, agent.DeviceKey, conflictingSequence2)).ConfigureAwait(false);
+        try
+        {
+            conflicts.Count(response => response.StatusCode == HttpStatusCode.Accepted).Should().Be(1);
+            conflicts.Count(response => response.StatusCode == HttpStatusCode.Conflict).Should().Be(1);
+        }
+        finally
+        {
+            foreach (var response in conflicts)
+            {
+                response.Dispose();
+            }
+        }
+
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await db.DeviceHeartbeatRecords.CountAsync(record => record.RegistrationId == agent.RegistrationId).ConfigureAwait(false))
+            .Should().Be(2);
+        (await db.DeviceFleetStates.SingleAsync(state => state.RegistrationId == agent.RegistrationId).ConfigureAwait(false))
+            .Sequence.Should().Be(2);
     }
 
     [TestMethod]
@@ -237,14 +357,19 @@ public sealed class DeviceApiControllerTests
         return (deviceId, deviceKey, registrationId, devicePublicId, observatoryId);
     }
 
-    private sealed record DeviceHeartbeatResponse(
-        Guid RegistrationId,
-        Guid DevicePublicId,
-        Guid ObservatoryId,
-        string ObservatoryName,
-        string FriendlyName,
-        DateTimeOffset ServerTimeUtc,
-        int RecommendedHeartbeatSeconds);
+    private Task<HttpResponseMessage> PostHeartbeatAsync(
+        string deviceId,
+        string deviceKey,
+        FleetStatusReportV1 report)
+    {
+        var content = new ByteArrayContent(FleetContractJson.Serialize(new FleetHeartbeatEnvelope(deviceId, deviceKey, report)));
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        return _client!.PostAsync(new Uri("/api/device/heartbeat", UriKind.Relative), content);
+    }
+
+    private static async Task<FleetHeartbeatAcknowledgement?> ReadAcknowledgementAsync(HttpResponseMessage response)
+        => FleetContractJson.DeserializeAcknowledgement(
+            await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
 
     private sealed record DeviceRigProfileUpsertResponse(
         Guid RegistrationId,

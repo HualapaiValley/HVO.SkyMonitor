@@ -134,9 +134,9 @@ path.
    resulting pending registration and envelope are short-lived.
 5. Return to CameraAgent `/devices/bootstrap`, import the envelope, and wait for
    successful secret persistence and rig-profile seeding.
-6. Confirm the registration is Active at LogicHost `/devices`. CameraAgent does
-   not currently schedule heartbeat submission, so do not use heartbeat arrival
-   as onboarding evidence.
+6. Confirm the registration is Active at LogicHost `/devices`, then confirm the
+   `fleet-heartbeat` CameraAgent health check reaches Healthy after the first
+   acknowledged status report.
 
 The verification code is not checked against an independent device channel;
 current registration is operator self-attestation, not proof of device
@@ -160,6 +160,31 @@ Compose persists these CameraAgent files together:
 
 The encrypted secrets file and its Data Protection key ring are one recovery
 unit. Restoring only one of them makes the secrets unreadable.
+
+### Fleet heartbeat operation
+
+- CameraAgent stores status reports in `<RawIngressRoot>/.fleet/fleet-status.db`
+  using SQLite WAL before delivery. Preserve that database with the raw-ingress
+  state when recovering an agent. It contains operational status but no device
+  key, registration token, storage path, or frame payload.
+- Reports use a durable installation-wide sequence and a new boot-session ID on
+  each process start. Significant health, pressure, configuration, quarantine,
+  and availability transitions are immutable. Only the newest never-attempted
+  routine report is coalesced during an outage.
+- LogicHost uses the last advancing server receipt time for liveness: under 150
+  seconds is current, 150 to under 300 seconds is degraded, and 300 seconds or
+  more is offline. Agent time is retained only as an apparent clock-skew or
+  delayed-delivery diagnostic and never controls ordering.
+- LogicHost retains compact routine receipts for 24 hours and significant
+  snapshots for 30 days. The hourly retention worker deletes indexed batches of
+  at most 5,000 records and never age-deletes the current fleet-state row.
+- A cross-agent credential attempt returns the same generic `401` as another
+  invalid key and emits audit event `2404` with bounded registration identifiers
+  and reason `cross-agent-credential`; it never logs the key or payload.
+- `fleet-heartbeat` is Degraded while retrying and Unhealthy for durable queue
+  corruption, overflow, quarantine, or blocked credentials. `fleet-status` on
+  LogicHost reports identifier-free online/degraded/offline counts and becomes
+  Unhealthy only when central fleet persistence or retention fails.
 
 ## API-Key Lifecycle
 

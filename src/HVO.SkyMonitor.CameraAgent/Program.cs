@@ -32,6 +32,7 @@ using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Metrics;
 using Scalar.AspNetCore;
 using Microsoft.Extensions.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 
 namespace HVO.SkyMonitor.CameraAgent;
 
@@ -156,6 +157,7 @@ public class Program
             .WithMetrics(metrics =>
             {
                 metrics.AddPrometheusExporter();
+                metrics.AddMeter(FleetHeartbeatTelemetry.MeterName);
             });
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
@@ -166,6 +168,7 @@ public class Program
         builder.Services.AddCentralIdentityAuthentication(builder.Configuration);
         builder.Services.AddSingleton<IConfigureOptions<CentralIdentityOptions>, DeviceSecretsCentralIdentityConfigurator>();
         builder.Services.AddSkyMonitorApiClient(builder.Configuration);
+        builder.Services.AddSingleton<IFleetHeartbeatTransport, CameraAgentFleetHeartbeatTransport>();
 
         var authenticationBuilder = builder.Services.AddAuthentication(options =>
         {
@@ -208,6 +211,7 @@ public class Program
         healthChecks.AddCheck<CaptureLanesHealthCheck>("capture-lanes", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureProcessingHealthCheck>("capture-processing", tags: ["dependency"]);
         healthChecks.AddCheck<ArtifactOutboxHealthCheck>("artifact-outbox", tags: ["dependency"]);
+        healthChecks.AddCheck<FleetHeartbeatHealthCheck>("fleet-heartbeat", tags: ["dependency"]);
         builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
         builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
 

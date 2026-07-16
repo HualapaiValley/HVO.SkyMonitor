@@ -12,6 +12,7 @@ public sealed class ArchitectureBoundaryTests
     private const string AgentCore = "HVO.SkyMonitor.AgentCore";
     private const string Astronomy = "HVO.SkyMonitor.Astronomy";
     private const string Imaging = "HVO.SkyMonitor.Imaging";
+    private const string FleetContracts = "HVO.SkyMonitor.Fleet.Contracts";
     private const string Processing = "HVO.SkyMonitor.Processing";
     private const string Catalog = "HVO.SkyMonitor.Catalog.Sqlite";
     private const string Common = "HVO.SkyMonitor.Common";
@@ -45,12 +46,13 @@ public sealed class ArchitectureBoundaryTests
             [AgentCore] = Set(),
             [Astronomy] = Set(AgentCore),
             [Imaging] = Set(AgentCore, Astronomy),
+            [FleetContracts] = Set(),
             [Processing] = Set(AgentCore, Astronomy, Imaging),
             [Catalog] = Set(Astronomy),
             [Common] = Set(),
-            [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing),
+            [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts),
             [CameraAgent] = Set(CameraAgentCommon, Catalog, Common),
-            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, Catalog, Common)
+            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts, Catalog, Common)
         };
 
     [TestMethod]

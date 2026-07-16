@@ -15,6 +15,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<DeviceRegistration> DeviceRegistrations => Set<DeviceRegistration>();
     internal DbSet<DeviceRigProfile> DeviceRigProfiles => Set<DeviceRigProfile>();
     internal DbSet<DeviceImageUpload> DeviceImageUploads => Set<DeviceImageUpload>();
+    internal DbSet<DeviceFleetState> DeviceFleetStates => Set<DeviceFleetState>();
+    internal DbSet<DeviceHeartbeatRecord> DeviceHeartbeatRecords => Set<DeviceHeartbeatRecord>();
     internal DbSet<CentralFrame> CentralFrames => Set<CentralFrame>();
     internal DbSet<CentralArtifact> CentralArtifacts => Set<CentralArtifact>();
     internal DbSet<CentralDerivativeJob> CentralDerivativeJobs => Set<CentralDerivativeJob>();
@@ -40,6 +42,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.ApplyConfiguration(new DeviceRegistrationConfiguration());
         builder.ApplyConfiguration(new DeviceRigProfileConfiguration());
         builder.ApplyConfiguration(new DeviceImageUploadConfiguration());
+        DeviceFleetConfiguration.Configure(builder);
         builder.ApplyConfiguration(new CentralFrameConfiguration());
         builder.ApplyConfiguration(new CentralArtifactConfiguration());
         builder.ApplyConfiguration(new CentralDerivativeJobConfiguration());

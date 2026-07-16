@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using Microsoft.Extensions.Logging.Abstractions;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
@@ -28,6 +29,7 @@ public sealed class CameraCaptureServiceTests
             TimeProvider.System,
             new AstronomyEnginePlanetEphemeris(),
             telemetry,
+            new FleetRuntimeState(TimeProvider.System),
             NullLogger<CameraCaptureService>.Instance);
 
         await service.StartAsync(CancellationToken.None).ConfigureAwait(false);

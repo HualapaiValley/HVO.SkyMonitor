@@ -2,5 +2,6 @@
   <ItemGroup>
     <ProjectReference Include="..\HVO.SkyMonitor.Astronomy\HVO.SkyMonitor.Astronomy.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.Fleet.Contracts\HVO.SkyMonitor.Fleet.Contracts.csproj" />
   </ItemGroup>
 </Project>

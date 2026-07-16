@@ -7,6 +7,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
 
@@ -20,7 +21,8 @@ public sealed class ArtifactOutboxDrainService(
     TimeProvider timeProvider,
     ILogger<ArtifactOutboxDrainService> logger,
     ArtifactOutboxState state,
-    ArtifactOutboxTelemetry telemetry) : BackgroundService
+    ArtifactOutboxTelemetry telemetry,
+    FleetRuntimeState fleetRuntimeState) : BackgroundService
 {
     private static readonly System.Text.Json.JsonSerializerOptions SerializerOptions = new(System.Text.Json.JsonSerializerDefaults.Web)
     {
@@ -109,6 +111,7 @@ public sealed class ArtifactOutboxDrainService(
                                     using var uploadActivity = ArtifactOutboxTelemetry.ActivitySource.StartActivity("artifact.upload");
                                     result = await uploadClient.UploadAsync(
                                         storageRoot, lease.Record, uploadCancellation.Token).ConfigureAwait(false);
+                                    fleetRuntimeState.UploadCompleted(timeProvider.GetElapsedTime(started));
                                     telemetry.RecordUpload(
                                         result,
                                         lease.Record.PayloadLength ?? 0,

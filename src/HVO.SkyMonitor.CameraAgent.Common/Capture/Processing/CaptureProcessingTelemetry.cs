@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -24,10 +25,12 @@ public sealed class CaptureProcessingTelemetry : IDisposable
     private readonly Histogram<double> _persistenceDuration;
     private readonly Histogram<double> _graphDuration;
     private readonly CaptureProcessingState _state;
+    private readonly FleetRuntimeState? _fleetRuntimeState;
 
-    public CaptureProcessingTelemetry(CaptureProcessingState? state = null)
+    public CaptureProcessingTelemetry(CaptureProcessingState? state = null, FleetRuntimeState? fleetRuntimeState = null)
     {
         _state = state ?? new CaptureProcessingState();
+        _fleetRuntimeState = fleetRuntimeState;
         _graphs = _meter.CreateCounter<long>("camera_agent.processing.graphs", "{graph}");
         _nodes = _meter.CreateCounter<long>("camera_agent.processing.nodes", "{node}");
         _outcomes = _meter.CreateCounter<long>("camera_agent.processing.outcomes", "{outcome}");
@@ -59,6 +62,7 @@ public sealed class CaptureProcessingTelemetry : IDisposable
     internal void RecordGraph(string outcome, TimeSpan duration)
     {
         _state.GraphCompleted(outcome);
+        _fleetRuntimeState?.ProcessingCompleted(duration);
         _graphs.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
         _graphDuration.Record(duration.TotalSeconds, new KeyValuePair<string, object?>("outcome", outcome));
     }

@@ -97,9 +97,15 @@ internal sealed class DeviceRegistrationConfiguration : IEntityTypeConfiguration
             .IsRequired();
 
         builder.HasIndex(registration => registration.DeviceId);
-        builder.HasIndex(registration => new { registration.DeviceId, registration.Status });
+        builder.HasIndex(registration => new { registration.DeviceId, registration.Status })
+            .IsUnique()
+            .HasFilter("[Status] = N'Active'");
         builder.HasIndex(registration => new { registration.ObservatoryId, registration.Status });
-        builder.HasIndex(registration => registration.DevicePublicId);
+        builder.HasIndex(registration => registration.DevicePublicId)
+            .IsUnique()
+            .HasFilter("[DevicePublicId] IS NOT NULL");
+        builder.HasIndex(registration => registration.DeviceKeyHash)
+            .HasFilter("[DeviceKeyHash] IS NOT NULL");
 
         builder.HasOne(registration => registration.Observatory)
             .WithMany(observatory => observatory.DeviceRegistrations)
