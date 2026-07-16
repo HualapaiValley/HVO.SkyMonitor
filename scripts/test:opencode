@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Verify the fail-closed Tailscale Serve command contract without changing live state.
+
+set -euo pipefail
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly ENABLE_SCRIPT="$REPO_ROOT/scripts/opencode:enable"
+readonly DISABLE_SCRIPT="$REPO_ROOT/scripts/opencode:disable"
+readonly TEMP_DIR="$(mktemp -d -t hvo-opencode-test.XXXXXX)"
+
+cleanup() {
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
+if grep -Fq 'tailscale serve --https=443 off' "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"; then
+    echo "OpenCode scripts still use the incompatible per-handler Serve command." >&2
+    exit 1
+fi
+
+first_reset_call_line="$(grep -nF '        reset_serve' "$ENABLE_SCRIPT" | cut -d: -f1 | head -n 1)"
+last_reset_call_line="$(grep -nF '        reset_serve' "$ENABLE_SCRIPT" | cut -d: -f1 | tail -n 1)"
+environment_load_line="$(grep -nF 'source "$REPO_ROOT/.devcontainer/load-repo-env.sh"' "$ENABLE_SCRIPT" | cut -d: -f1)"
+opencode_check_line="$(grep -nF 'if ! command -v opencode' "$ENABLE_SCRIPT" | cut -d: -f1)"
+password_check_line="$(grep -nF 'if [[ ! -s "$OPENCODE_SERVER_PASSWORD_FILE" ]]' "$ENABLE_SCRIPT" | cut -d: -f1)"
+expose_line="$(grep -nF 'tailscale serve --bg --yes "$OPENCODE_PORT"' "$ENABLE_SCRIPT" | cut -d: -f1)"
+
+if (( first_reset_call_line >= environment_load_line || last_reset_call_line >= opencode_check_line || last_reset_call_line >= password_check_line || last_reset_call_line >= expose_line )); then
+    echo "OpenCode must reset persisted Serve state before any fallible server setup or re-exposure." >&2
+    exit 1
+fi
+
+cat > "$TEMP_DIR/tailscale" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == "status --json" ]]; then
+    printf '{"BackendState":"%s"}\n' "${TAILSCALE_TEST_STATE:-Running}"
+elif [[ "$*" == "serve reset" ]]; then
+    printf '%s\n' "$*" >> "${TAILSCALE_TEST_LOG:?}"
+    [[ "${TAILSCALE_RESET_FAIL:-false}" != true ]]
+elif [[ "$1" == "up" ]]; then
+    printf '%s\n' "$*" >> "${TAILSCALE_TEST_LOG:?}"
+else
+    printf 'Unexpected Tailscale command: %s\n' "$*" >&2
+    exit 1
+fi
+EOF
+cat > "$TEMP_DIR/tailscaled" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$TEMP_DIR/pgrep" <<'EOF'
+#!/usr/bin/env bash
+[[ "$*" == "-x tailscaled" && "${TAILSCALED_RUNNING:-true}" == true ]]
+EOF
+cat > "$TEMP_DIR/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf 'sudo %s\n' "$*" >> "${TAILSCALE_TEST_LOG:?}"
+exec "$@"
+EOF
+chmod +x "$TEMP_DIR/tailscale" "$TEMP_DIR/tailscaled" "$TEMP_DIR/pgrep" "$TEMP_DIR/sudo"
+mkdir "$TEMP_DIR/home"
+
+if env -i \
+    HOME="$TEMP_DIR/home" \
+    PATH="$TEMP_DIR:/usr/bin:/bin" \
+    TAILSCALE_TEST_LOG="$TEMP_DIR/tailscale.log" \
+    bash "$ENABLE_SCRIPT" >/dev/null 2>&1; then
+    echo "OpenCode enable unexpectedly succeeded without an OpenCode executable." >&2
+    exit 1
+fi
+grep -Fqx 'sudo tailscale serve reset' "$TEMP_DIR/tailscale.log"
+grep -Fqx 'serve reset' "$TEMP_DIR/tailscale.log"
+
+: > "$TEMP_DIR/tailscale.log"
+if env -i \
+    HOME="$TEMP_DIR/home" \
+    PATH="$TEMP_DIR:/usr/bin:/bin" \
+    TAILSCALE_AUTHKEY=test-enrollment-key \
+    TAILSCALE_TEST_LOG="$TEMP_DIR/tailscale.log" \
+    TAILSCALE_TEST_STATE=NeedsLogin \
+    bash "$ENABLE_SCRIPT" >/dev/null 2>&1; then
+    echo "OpenCode enable unexpectedly succeeded without an OpenCode executable." >&2
+    exit 1
+fi
+enrollment_line="$(grep -nF 'sudo tailscale up' "$TEMP_DIR/tailscale.log" | cut -d: -f1)"
+enrollment_reset_line="$(grep -nF 'sudo tailscale serve reset' "$TEMP_DIR/tailscale.log" | cut -d: -f1)"
+if (( enrollment_line >= enrollment_reset_line )); then
+    echo "Fresh Tailscale enrollment must complete before Serve reset." >&2
+    exit 1
+fi
+
+printf 'invalid-test-pid\n' > "$TEMP_DIR/opencode.pid"
+printf 'test-metadata\n' > "$TEMP_DIR/opencode.pid.meta"
+if env -i \
+    HOME="$TEMP_DIR/home" \
+    PATH="$TEMP_DIR:/usr/bin:/bin" \
+    HVO_OPENCODE_PID_FILE="$TEMP_DIR/opencode.pid" \
+    HVO_OPENCODE_PID_METADATA_FILE="$TEMP_DIR/opencode.pid.meta" \
+    TAILSCALE_RESET_FAIL=true \
+    TAILSCALE_TEST_LOG="$TEMP_DIR/tailscale.log" \
+    bash "$DISABLE_SCRIPT" >"$TEMP_DIR/disable.out" 2>&1; then
+    echo "OpenCode disable unexpectedly succeeded after a Serve reset failure." >&2
+    exit 1
+fi
+grep -Fq "leaving authenticated OpenCode running" "$TEMP_DIR/disable.out"
+test -f "$TEMP_DIR/opencode.pid"
+test -f "$TEMP_DIR/opencode.pid.meta"
+
+if env -i \
+    HOME="$TEMP_DIR/home" \
+    PATH="$TEMP_DIR:/usr/bin:/bin" \
+    HVO_OPENCODE_PID_FILE="$TEMP_DIR/opencode.pid" \
+    HVO_OPENCODE_PID_METADATA_FILE="$TEMP_DIR/opencode.pid.meta" \
+    TAILSCALED_RUNNING=false \
+    TAILSCALE_TEST_LOG="$TEMP_DIR/tailscale.log" \
+    bash "$DISABLE_SCRIPT" >"$TEMP_DIR/daemon-stopped.out" 2>&1; then
+    echo "OpenCode disable unexpectedly succeeded while the Tailscale daemon was stopped." >&2
+    exit 1
+fi
+grep -Fq "daemon is stopped" "$TEMP_DIR/daemon-stopped.out"
+test -f "$TEMP_DIR/opencode.pid"
+test -f "$TEMP_DIR/opencode.pid.meta"
+
+mkdir "$TEMP_DIR/cli-missing"
+ln -s /usr/bin/bash "$TEMP_DIR/cli-missing/bash"
+ln -s /usr/bin/dirname "$TEMP_DIR/cli-missing/dirname"
+if env -i \
+    HOME="$TEMP_DIR/home" \
+    PATH="$TEMP_DIR/cli-missing" \
+    HVO_OPENCODE_PID_FILE="$TEMP_DIR/opencode.pid" \
+    HVO_OPENCODE_PID_METADATA_FILE="$TEMP_DIR/opencode.pid.meta" \
+    bash "$DISABLE_SCRIPT" >"$TEMP_DIR/cli-missing.out" 2>&1; then
+    echo "OpenCode disable unexpectedly succeeded without the Tailscale CLI." >&2
+    exit 1
+fi
+grep -Fq "CLI is unavailable" "$TEMP_DIR/cli-missing.out"
+test -f "$TEMP_DIR/opencode.pid"
+test -f "$TEMP_DIR/opencode.pid.meta"
+
+test "$(grep -Fc 'sudo tailscale serve reset' "$DISABLE_SCRIPT")" -eq 1
+grep -Fq "reserves its Serve config for OpenCode" "$DISABLE_SCRIPT"
+grep -Fq "leaving authenticated OpenCode running" "$DISABLE_SCRIPT"
+grep -Fq "complete Tailscale Serve configuration" "$REPO_ROOT/README.md"
+
+echo "OpenCode Tailscale command contract passed."
