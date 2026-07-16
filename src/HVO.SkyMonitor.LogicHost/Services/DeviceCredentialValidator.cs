@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -15,16 +16,28 @@ internal sealed class DeviceCredentialValidator(ApplicationDbContext dbContext, 
         ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(deviceKey);
 
+        var computedHash = DeviceRegistrationService.ComputeSha256(deviceKey);
         var registration = await dbContext.DeviceRegistrations
             .Where(reg => reg.DeviceId == deviceId && reg.Status == DeviceRegistrationStatus.Active)
             .FirstOrDefaultAsync(cancellationToken)
-            .ConfigureAwait(false)
-            ?? throw new DeviceRegistrationException("Device is not registered or not active.");
-
-        var computedHash = DeviceRegistrationService.ComputeSha256(deviceKey);
-        if (!string.Equals(computedHash, registration.DeviceKeyHash, StringComparison.Ordinal))
+            .ConfigureAwait(false);
+        if (registration is null)
         {
-            throw new DeviceRegistrationException("Device credentials are invalid.");
+            var credentialOwner = await FindCredentialOwnerAsync(computedHash, cancellationToken).ConfigureAwait(false);
+            throw new DeviceRegistrationException(
+                "Device is not registered or not active.",
+                credentialOwner is null ? "registration-invalid" : "cross-agent-credential",
+                credentialOwnerRegistrationId: credentialOwner);
+        }
+
+        if (!FixedTimeEquals(computedHash, registration.DeviceKeyHash))
+        {
+            var credentialOwner = await FindCredentialOwnerAsync(computedHash, cancellationToken).ConfigureAwait(false);
+            throw new DeviceRegistrationException(
+                "Device credentials are invalid.",
+                credentialOwner is null ? "invalid-credential" : "cross-agent-credential",
+                registration.Id,
+                credentialOwner);
         }
 
         var now = timeProvider.GetUtcNow();
@@ -34,5 +47,24 @@ internal sealed class DeviceCredentialValidator(ApplicationDbContext dbContext, 
         }
 
         return registration;
+    }
+
+    private Task<Guid?> FindCredentialOwnerAsync(string computedHash, CancellationToken cancellationToken)
+        => dbContext.DeviceRegistrations
+            .AsNoTracking()
+            .Where(candidate => candidate.Status == DeviceRegistrationStatus.Active && candidate.DeviceKeyHash == computedHash)
+            .OrderBy(candidate => candidate.Id)
+            .Select(static candidate => (Guid?)candidate.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+    private static bool FixedTimeEquals(string computedHash, string? storedHash)
+    {
+        if (storedHash is null || computedHash.Length != storedHash.Length)
+        {
+            return false;
+        }
+        return CryptographicOperations.FixedTimeEquals(
+            Convert.FromHexString(computedHash),
+            Convert.FromHexString(storedHash));
     }
 }

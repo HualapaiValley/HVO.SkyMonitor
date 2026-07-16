@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Hosting;
@@ -23,6 +24,7 @@ public sealed class CameraCaptureService(
     TimeProvider timeProvider,
     IPlanetEphemeris planetEphemeris,
     CaptureControlTelemetry captureControlTelemetry,
+    FleetRuntimeState fleetRuntimeState,
     ILogger<CameraCaptureService> logger) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
@@ -33,6 +35,7 @@ public sealed class CameraCaptureService(
     private readonly IPlanetEphemeris _planetEphemeris = planetEphemeris;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton telemetry service.")]
     private readonly CaptureControlTelemetry _captureControlTelemetry = captureControlTelemetry;
+    private readonly FleetRuntimeState _fleetRuntimeState = fleetRuntimeState;
     private readonly ILogger<CameraCaptureService> _logger = logger;
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
 
@@ -48,6 +51,7 @@ public sealed class CameraCaptureService(
             {
                 await _rawCaptureIngress.InitializeAsync(stoppingToken).ConfigureAwait(false);
                 await module.InitializeAsync(config, stoppingToken).ConfigureAwait(false);
+                _fleetRuntimeState.ModuleAvailable();
                 _logger.CameraModuleInitialized(module.DisplayName);
 
                 var hostContext = new CaptureHostContext(config, _rawCaptureIngress, _captureDistributor);
@@ -58,7 +62,8 @@ public sealed class CameraCaptureService(
                     _timeProvider,
                     _logger,
                     _planetEphemeris,
-                    _captureControlTelemetry);
+                    _captureControlTelemetry,
+                    _fleetRuntimeState);
                 await runner.RunAsync(stoppingToken).ConfigureAwait(false);
                 break;
             }
@@ -68,6 +73,7 @@ public sealed class CameraCaptureService(
             }
             catch (Exception ex)
             {
+                _fleetRuntimeState.CaptureFailed(ex.GetType().Name);
                 if (ex is RawIngressConflictException or IOException or InvalidDataException or
                     UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
                 {

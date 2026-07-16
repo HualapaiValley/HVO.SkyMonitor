@@ -142,7 +142,8 @@ public sealed partial class Program
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks()
             .AddDbContextCheck<ApplicationDbContext>("database", tags: ["dependency"])
             .AddCheck<CentralArtifactConsistencyHealthCheck>("artifact-consistency", tags: ["consistency"])
-            .AddCheck<CentralDerivativeWorkerHealthCheck>("central-derivative-worker", tags: ["worker"]);
+            .AddCheck<CentralDerivativeWorkerHealthCheck>("central-derivative-worker", tags: ["worker"])
+            .AddCheck<FleetStatusHealthCheck>("fleet-status", tags: ["worker"]);
         healthChecks.AddInstalledCelestialCatalogHealthCheck();
 
         if (!string.IsNullOrWhiteSpace(redisConfiguration))
@@ -191,6 +192,7 @@ public sealed partial class Program
                 metrics.AddMeter(CentralIngestTelemetry.MeterName);
                 metrics.AddMeter(CentralArtifactRetrievalTelemetry.MeterName);
                 metrics.AddMeter(CentralDerivativeWorkerTelemetry.MeterName);
+                metrics.AddMeter(FleetStatusTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             });
 
@@ -297,6 +299,10 @@ public sealed partial class Program
 
         builder.Services.AddOptions<RedisOptions>()
             .Bind(builder.Configuration.GetSection("Redis"))
+            .ValidateOnStart();
+        builder.Services.AddOptions<FleetStatusOptions>()
+            .Bind(builder.Configuration.GetSection("FleetStatus"))
+            .ValidateDataAnnotations()
             .ValidateOnStart();
 
         if (string.IsNullOrWhiteSpace(redisConfiguration))
@@ -604,6 +610,10 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceRegistrationReadService, DeviceRegistrationReadService>();
         builder.Services.AddScoped<IDeviceCredentialValidator, DeviceCredentialValidator>();
         builder.Services.AddScoped<IDeviceHeartbeatService, DeviceHeartbeatService>();
+        builder.Services.AddSingleton<FleetStatusClassifier>();
+        builder.Services.AddSingleton<FleetStatusTelemetry>();
+        builder.Services.AddSingleton<FleetRetentionState>();
+        builder.Services.AddHostedService<FleetStatusRetentionWorker>();
         builder.Services.AddScoped<IDeviceUploadService, DeviceUploadService>();
         builder.Services.AddScoped<IArtifactIngestService, ArtifactIngestService>();
         builder.Services.AddSingleton<CentralIngestTelemetry>();

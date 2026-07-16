@@ -5,6 +5,7 @@
     <Project Path="src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj" />
     <Project Path="src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj" />
     <Project Path="src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj" />
+    <Project Path="src/HVO.SkyMonitor.Fleet.Contracts/HVO.SkyMonitor.Fleet.Contracts.csproj" />
     <Project Path="src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj" />
     <Project Path="src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj" />
     <Project Path="src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj" />

@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Data.Common;
 using System.Security.Cryptography;
+using HVO.SkyMonitor.TestSupport;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -87,13 +88,11 @@ public sealed class ObservatoryDeletionTests
         revokedRegistration.ExpiresAtUtc.Should().NotBeNull();
         (await assertionDb.DeviceRigProfiles.AnyAsync(item => item.Id == profile.Id).ConfigureAwait(false)).Should().BeTrue();
 
-        var heartbeat = new DeviceHeartbeatService(
-            new DeviceCredentialValidator(assertionDb, TimeProvider.System),
-            assertionDb,
-            TimeProvider.System,
-            NullLogger<DeviceHeartbeatService>.Instance);
-        Func<Task> heartbeatAttempt = async () => await heartbeat.RecordHeartbeatAsync(new DeviceHeartbeatRequest(
-            registration.DeviceId, deviceKey, null, null, null, null)).ConfigureAwait(false);
+        var heartbeat = assertionScope.ServiceProvider.GetRequiredService<IDeviceHeartbeatService>();
+        Func<Task> heartbeatAttempt = async () => await heartbeat.RecordHeartbeatAsync(
+            registration.DeviceId,
+            deviceKey,
+            FleetStatusTestData.CreateReport(registration.DevicePublicId.Value)).ConfigureAwait(false);
         await heartbeatAttempt.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false);
 
         var rigProfiles = new DeviceRigProfileService(

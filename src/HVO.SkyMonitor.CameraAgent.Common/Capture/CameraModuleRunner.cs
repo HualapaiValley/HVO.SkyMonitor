@@ -5,6 +5,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Exposure;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Logging;
 
@@ -21,6 +22,7 @@ internal sealed class CameraModuleRunner
     private readonly ILogger _logger;
     private readonly IPlanetEphemeris? _planetEphemeris;
     private readonly CaptureControlTelemetry? _telemetry;
+    private readonly FleetRuntimeState? _fleetRuntimeState;
 
     public CameraModuleRunner(
         ICameraModule module,
@@ -28,7 +30,8 @@ internal sealed class CameraModuleRunner
         TimeProvider timeProvider,
         ILogger logger,
         IPlanetEphemeris? planetEphemeris = null,
-        CaptureControlTelemetry? telemetry = null)
+        CaptureControlTelemetry? telemetry = null,
+        FleetRuntimeState? fleetRuntimeState = null)
     {
         _module = module;
         _hostContext = hostContext;
@@ -36,6 +39,7 @@ internal sealed class CameraModuleRunner
         _logger = logger;
         _planetEphemeris = planetEphemeris;
         _telemetry = telemetry;
+        _fleetRuntimeState = fleetRuntimeState;
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
@@ -113,6 +117,7 @@ internal sealed class CameraModuleRunner
             }
             catch (Exception ex)
             {
+                _fleetRuntimeState?.CaptureFailed(ex.GetType().Name);
                 cycleActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "module-failure");
                 consecutiveFailures++;
                 recovering = true;
@@ -130,6 +135,7 @@ internal sealed class CameraModuleRunner
 
             if (result is null)
             {
+                _fleetRuntimeState?.CaptureFailed("null-result");
                 cycleActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "null-result");
                 consecutiveFailures++;
                 recovering = true;
@@ -298,6 +304,7 @@ internal sealed class CameraModuleRunner
             }
             var ingressDuration = _timeProvider.GetElapsedTime(ingressStartedTimestamp, _timeProvider.GetTimestamp());
             var cycleDuration = _timeProvider.GetElapsedTime(moduleCallStartedTimestamp, _timeProvider.GetTimestamp());
+            _fleetRuntimeState?.CaptureSucceeded(result, moduleDuration, ingressDuration);
             _telemetry?.RecordCycle(
                 evidence,
                 result.AcquisitionTiming,

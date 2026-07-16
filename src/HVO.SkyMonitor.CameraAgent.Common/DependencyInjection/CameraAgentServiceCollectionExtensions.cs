@@ -15,8 +15,10 @@ using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 
@@ -29,6 +31,7 @@ public static class CameraAgentServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
+        services.TryAddSingleton(TimeProvider.System);
         services.AddOptions<CameraAgentHostOptions>()
             .Bind(configuration.GetSection("CameraAgent"))
             .ValidateDataAnnotations()
@@ -60,6 +63,11 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
         services.AddSingleton<CaptureTelemetryMetricsRecorder>();
+        services.AddSingleton<FleetRuntimeState>();
+        services.AddSingleton<FleetHeartbeatState>();
+        services.AddSingleton<FleetHeartbeatTelemetry>();
+        services.AddSingleton<FleetStatusCollector>();
+        services.AddSingleton<IFleetStatusOutbox, SqliteFleetStatusOutbox>();
         services.AddSingleton<CaptureControlTelemetry>();
         services.AddSingleton<CaptureTelemetrySink>();
         services.AddSingleton<ICaptureTelemetrySink>(sp => sp.GetRequiredService<CaptureTelemetrySink>());
@@ -95,6 +103,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService<CameraCaptureService>();
         services.AddHostedService<RetentionBackgroundService>();
         services.AddHostedService<ArtifactOutboxDrainService>();
+        services.AddHostedService<FleetHeartbeatService>();
 
         return services;
     }

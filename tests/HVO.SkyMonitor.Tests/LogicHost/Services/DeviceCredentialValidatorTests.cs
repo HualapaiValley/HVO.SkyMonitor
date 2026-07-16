@@ -41,6 +41,27 @@ public sealed class DeviceCredentialValidatorTests
     }
 
     [TestMethod]
+    public async Task ValidateAsync_WhenKeyBelongsToAnotherAgent_ReportsBoundedAuditIdentity()
+    {
+        await using var context = CreateContext();
+        var now = new DateTimeOffset(2026, 7, 16, 6, 0, 0, TimeSpan.Zero);
+        var claimed = await SeedRegistrationAsync(context, DeviceRegistrationStatus.Active, now.AddHours(1)).ConfigureAwait(false);
+        var owner = await SeedRegistrationAsync(context, DeviceRegistrationStatus.Active, now.AddHours(1)).ConfigureAwait(false);
+        claimed.DeviceKeyHash = DeviceRegistrationService.ComputeSha256("claimed-key");
+        owner.DeviceKeyHash = DeviceRegistrationService.ComputeSha256("owner-key");
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var validator = new DeviceCredentialValidator(context, new DeviceCredentialValidatorTestsTimeProvider(now));
+
+        Func<Task> act = () => validator.ValidateAsync(claimed.DeviceId, "owner-key", CancellationToken.None);
+
+        var exception = (await act.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false)).Which;
+        exception.ReasonCode.Should().Be("cross-agent-credential");
+        exception.ClaimedRegistrationId.Should().Be(claimed.Id);
+        exception.CredentialOwnerRegistrationId.Should().Be(owner.Id);
+        exception.Message.Should().NotContain("owner-key");
+    }
+
+    [TestMethod]
     public async Task ValidateAsync_WhenRegistrationExpired_Throws()
     {
         await using var context = CreateContext();

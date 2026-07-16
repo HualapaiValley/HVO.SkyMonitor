@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
 [TestClass]
 [TestCategory("Unit")]
+[DoNotParallelize]
 public sealed class CentralDerivativeWorkerTelemetryTests
 {
     [TestMethod]
