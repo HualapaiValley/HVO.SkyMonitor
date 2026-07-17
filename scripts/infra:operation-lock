@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Shared application-state operation lock. Source this file; do not execute it.
+
+hvo_validate_existing_private_directory() {
+    local directory="$1"
+    local label="$2"
+    local current_uid="$3"
+    local mode
+
+    [[ -d "$directory" && ! -L "$directory" && "$(realpath -m "$directory")" == "$directory" ]] || {
+        printf '%s must be a nonsymlink real directory.\n' "$label" >&2
+        return 1
+    }
+    [[ "$(stat -c '%u' "$directory")" == "$current_uid" ]] || {
+        printf '%s must be owned by the current user.\n' "$label" >&2
+        return 1
+    }
+    mode="$(stat -c '%a' "$directory")"
+    (( (8#$mode & 0022) == 0 )) || {
+        printf '%s must not be group- or world-writable.\n' "$label" >&2
+        return 1
+    }
+}
+
+hvo_prepare_runtime_parent() {
+    local runtime_root="$1"
+    local parent
+    local current_uid
+
+    [[ -n "$runtime_root" && "$runtime_root" == /* && "$runtime_root" != / ]] || {
+        printf 'Refusing unsafe runtime data root.\n' >&2
+        return 1
+    }
+    parent="$(dirname "$runtime_root")"
+    if [[ ! -e "$parent" && ! -L "$parent" ]]; then
+        install -d -m 700 -- "$parent"
+    fi
+    [[ -d "$parent" && ! -L "$parent" && "$(realpath -m "$parent")" == "$parent" ]] || {
+        printf 'Refusing unsafe runtime parent.\n' >&2
+        return 1
+    }
+    current_uid="$(id -u)"
+    [[ "$(stat -c '%u' "$parent")" == "$current_uid" ]] || {
+        printf 'Runtime parent must be owned by the current user.\n' >&2
+        return 1
+    }
+    local parent_mode
+    parent_mode="$(stat -c '%a' "$parent")"
+    (( (8#$parent_mode & 0022) == 0 )) || {
+        printf 'Runtime parent must not be group- or world-writable.\n' >&2
+        return 1
+    }
+    if [[ -e "$runtime_root" || -L "$runtime_root" ]]; then
+        hvo_validate_existing_private_directory "$runtime_root" 'Runtime data root' "$current_uid"
+        local host_parent
+        for host_parent in "$runtime_root/logichost" "$runtime_root/cameraagent"; do
+            if [[ -e "$host_parent" || -L "$host_parent" ]]; then
+                hvo_validate_existing_private_directory "$host_parent" 'Application-state host parent' "$current_uid"
+            fi
+        done
+    fi
+    HVO_RUNTIME_PARENT="$parent"
+    HVO_APPLICATION_LOCK_PATH="$parent/.hvo-application-state.lock"
+    HVO_RESTORE_MARKER_PATH="$parent/.hvo-application-state-restore.transaction"
+}
+
+hvo_validate_regular_control_file() {
+    local path="$1"
+    local label="$2"
+    local current_uid
+
+    current_uid="$(id -u)"
+    [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%h' "$path")" == "$current_uid:1" ]] || {
+        printf '%s is not a safe owned regular file.\n' "$label" >&2
+        return 1
+    }
+}
+
+hvo_acquire_application_state_lock() {
+    local runtime_root="$1"
+    local inherited_fd="${HVO_APPLICATION_STATE_LOCK_FD:-}"
+    local expected_identity="${HVO_APPLICATION_STATE_LOCK_IDENTITY:-}"
+    local actual_identity
+
+    hvo_prepare_runtime_parent "$runtime_root"
+    HVO_APPLICATION_LOCK_WAS_INHERITED=false
+    if [[ -n "$inherited_fd" || -n "$expected_identity" ]]; then
+        [[ "$inherited_fd" == 200 && -n "$expected_identity" && -e /proc/$$/fd/200 ]] || {
+            printf 'Inherited application-state lock metadata is invalid.\n' >&2
+            return 1
+        }
+        hvo_validate_regular_control_file "$HVO_APPLICATION_LOCK_PATH" 'Application-state lock'
+        actual_identity="$(stat -Lc '%d:%i' /proc/$$/fd/200)"
+        [[ "$actual_identity" == "$expected_identity" &&
+           "$actual_identity" == "$(stat -Lc '%d:%i' "$HVO_APPLICATION_LOCK_PATH")" ]] || {
+            printf 'Inherited application-state lock does not match the runtime boundary.\n' >&2
+            return 1
+        }
+        if (
+            exec 199<>"$HVO_APPLICATION_LOCK_PATH"
+            flock -n 199
+        ) 2>/dev/null; then
+            printf 'Inherited application-state lock was not already held.\n' >&2
+            return 1
+        fi
+        HVO_APPLICATION_LOCK_WAS_INHERITED=true
+        return 0
+    fi
+
+    if [[ -L "$HVO_APPLICATION_LOCK_PATH" ]]; then
+        printf 'Application-state lock must not be a symbolic link.\n' >&2
+        return 1
+    fi
+    if [[ ! -e "$HVO_APPLICATION_LOCK_PATH" ]]; then
+        if ! (set -o noclobber; umask 077; : > "$HVO_APPLICATION_LOCK_PATH") 2>/dev/null; then
+            [[ -e "$HVO_APPLICATION_LOCK_PATH" && ! -L "$HVO_APPLICATION_LOCK_PATH" ]] || {
+                printf 'Application-state lock could not be created safely.\n' >&2
+                return 1
+            }
+        fi
+    fi
+    hvo_validate_regular_control_file "$HVO_APPLICATION_LOCK_PATH" 'Application-state lock'
+    exec 200<>"$HVO_APPLICATION_LOCK_PATH"
+    [[ ! -L "$HVO_APPLICATION_LOCK_PATH" &&
+       "$(stat -Lc '%d:%i' /proc/$$/fd/200)" == "$(stat -Lc '%d:%i' "$HVO_APPLICATION_LOCK_PATH")" ]] || {
+        printf 'Application-state lock changed while it was opened.\n' >&2
+        return 1
+    }
+    if ! flock -n 200; then
+        printf 'Another application-state operation is in progress.\n' >&2
+        return 1
+    fi
+    chmod 0600 "$HVO_APPLICATION_LOCK_PATH"
+    HVO_APPLICATION_STATE_LOCK_FD=200
+    HVO_APPLICATION_STATE_LOCK_IDENTITY="$(stat -Lc '%d:%i' /proc/$$/fd/200)"
+    export HVO_APPLICATION_STATE_LOCK_FD HVO_APPLICATION_STATE_LOCK_IDENTITY
+}
+
+hvo_require_restore_marker_access() {
+    local operation="$1"
+    local marker_transaction=""
+    local expected_transaction="${HVO_RESTORE_TRANSACTION_ID:-}"
+
+    if [[ ! -e "$HVO_RESTORE_MARKER_PATH" && ! -L "$HVO_RESTORE_MARKER_PATH" ]]; then
+        return 0
+    fi
+    if [[ "$operation" == restore ]]; then
+        hvo_validate_regular_control_file "$HVO_RESTORE_MARKER_PATH" 'Restore transaction marker'
+        return 0
+    fi
+    if [[ "$HVO_APPLICATION_LOCK_WAS_INHERITED" == true && "$expected_transaction" =~ ^[[:xdigit:]]{32}$ ]]; then
+        hvo_validate_regular_control_file "$HVO_RESTORE_MARKER_PATH" 'Restore transaction marker'
+        marker_transaction="$(perl -ne 'if ($. == 2 && /^transaction\t([0-9a-fA-F]{32})\n?$/) { print lc $1 }' "$HVO_RESTORE_MARKER_PATH")"
+        if [[ -n "$marker_transaction" && "$marker_transaction" == "${expected_transaction,,}" ]]; then
+            return 0
+        fi
+    fi
+    printf 'An application-state restore transaction is pending; run infra:restore-app-state with the selected archive to recover it.\n' >&2
+    return 1
+}

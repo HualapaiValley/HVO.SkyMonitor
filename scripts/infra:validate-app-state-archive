@@ -1,0 +1,321 @@
+#!/usr/bin/env bash
+# Validate and safely extract an application-state archive without exposing member names.
+
+set -euo pipefail
+export LC_ALL=C
+
+[[ $# -eq 2 || $# -eq 3 ]] || {
+    printf 'Usage: %s ARCHIVE EXTRACT_DIRECTORY [EXPECTED_INVENTORY]\n' "$0" >&2
+    exit 2
+}
+
+exec perl - "$1" "$2" "${3:-}" <<'PERL'
+use strict;
+use warnings;
+use bytes;
+use Digest::SHA qw(sha256_hex);
+use Fcntl qw(:DEFAULT :mode);
+use File::Basename qw(dirname);
+use File::Find;
+use IO::Uncompress::Gunzip qw($GunzipError);
+
+my ($archive, $extract_root, $expected_inventory) = @ARGV;
+my @supported = qw(
+    logichost/dataprotection
+    logichost/home
+    cameraagent/identity
+    cameraagent/dataprotection
+    cameraagent/provisioning
+    agent
+    archive
+);
+
+sub reject {
+    my ($reason, $count) = @_;
+    $count //= 1;
+    print STDERR "Application-state archive rejected: $reason (count: $count).\n";
+    exit 1;
+}
+
+sub read_exact {
+    my ($stream, $length) = @_;
+    my $value = '';
+    while (length($value) < $length) {
+        my $read = $stream->read(my $chunk, $length - length($value));
+        reject('truncated archive', 1) if !defined($read) || $read == 0;
+        $value .= $chunk;
+    }
+    return $value;
+}
+
+sub octal_field {
+    my ($value, $label) = @_;
+    $value =~ s/\0.*//s;
+    $value =~ s/^\s+|\s+$//g;
+    reject("invalid $label", 1) unless $value =~ /^[0-7]+$/;
+    return oct($value);
+}
+
+sub canonical_name {
+    my ($raw, $type) = @_;
+    $raw =~ s/\0.*//s;
+    reject('control characters in paths', 1) if $raw =~ /[\x00-\x1f\x7f]/;
+    $raw =~ s{^\./}{}; # Historical archives used one leading ./ prefix.
+    return '' if $raw eq '' && $type eq '5';
+    if ($type eq '5') {
+        reject('path aliases', 1) if $raw =~ m{//+$};
+        $raw =~ s{/$}{};
+    } else {
+        reject('path aliases', 1) if $raw =~ m{/$};
+    }
+    reject('path aliases', 1) if $raw eq '' || $raw eq '.' || $raw =~ m{//} || $raw =~ m{(?:^|/)\.(?:/|$)};
+    reject('unsafe paths', 1) if $raw =~ m{^/} || $raw =~ m{(?:^|/)\.\.(?:/|$)};
+    return $raw;
+}
+
+sub supported_path {
+    my ($path) = @_;
+    for my $root (@supported) {
+        return 1 if $path eq $root || index($path, "$root/") == 0;
+    }
+    return 0;
+}
+
+sub parse_inventory {
+    my ($content) = @_;
+    reject('oversized internal inventory', 1) if length($content) > 16 * 1024 * 1024;
+    my @lines = split(/\n/, $content, -1);
+    pop @lines if @lines && $lines[-1] eq '';
+    reject('missing inventory header', 1) unless @lines;
+    my $header = shift @lines;
+    reject('unsupported inventory version', 1) unless $header eq "HVO-APPLICATION-STATE-INVENTORY\t1";
+    my %inventory;
+    my $previous = '';
+    my $invalid = 0;
+    for my $line (@lines) {
+        my @field = split(/\t/, $line, -1);
+        if (@field != 5 || $field[0] !~ /^[DF]$/ || $field[1] !~ /^[0-7]{4}$/ ||
+            $field[4] !~ /^(?:[0-9a-f]{2})+$/) {
+            $invalid++;
+            next;
+        }
+        my $path = pack('H*', $field[4]);
+        my $canonical = eval { canonical_name($path, $field[0] eq 'D' ? '5' : '0') };
+        if (!$canonical || !supported_path($canonical) || exists $inventory{$canonical} ||
+            ($previous ne '' && $canonical le $previous)) {
+            $invalid++;
+            next;
+        }
+        if ($field[0] eq 'D') {
+            $invalid++ unless $field[2] eq '-' && $field[3] eq '-';
+        } else {
+            $invalid++ unless $field[2] =~ /^(?:0|[1-9][0-9]*)$/ && $field[3] =~ /^[0-9a-f]{64}$/;
+        }
+        $inventory{$canonical} = {
+            type => $field[0], mode => oct($field[1]), size => $field[2], digest => $field[3]
+        };
+        $previous = $canonical;
+    }
+    reject('invalid inventory entries', $invalid) if $invalid;
+    reject('empty internal inventory', 1) unless keys %inventory;
+    for my $required (@supported) {
+        reject('missing required inventory entries', 1) unless exists $inventory{$required} && $inventory{$required}{type} eq 'D';
+    }
+    return \%inventory;
+}
+
+sub safe_parent_dirs {
+    my ($path) = @_;
+    my $parent = dirname($path);
+    return if $parent eq '.';
+    my $current = $extract_root;
+    for my $component (split m{/}, $parent) {
+        $current .= "/$component";
+        if (!lstat($current)) {
+            mkdir($current, 0700) or reject('safe extraction failure', 1);
+        } else {
+            reject('extraction path collision', 1) unless S_ISDIR((lstat(_))[2]) && !S_ISLNK((lstat(_))[2]);
+        }
+    }
+}
+
+reject('unsafe extraction directory', 1) unless -d $extract_root && !-l $extract_root;
+opendir(my $root_handle, $extract_root) or reject('unsafe extraction directory', 1);
+reject('nonempty extraction directory', 1) if grep { $_ ne '.' && $_ ne '..' } readdir($root_handle);
+closedir($root_handle);
+
+my $gzip = IO::Uncompress::Gunzip->new($archive, Transparent => 0) or reject('unreadable archive', 1);
+my %entries;
+my %directory_modes;
+my $manifest_content;
+my $zero_blocks = 0;
+my $pending_long_name;
+while (1) {
+    my $header = read_exact($gzip, 512);
+    if ($header eq "\0" x 512) {
+        $zero_blocks++;
+        if ($zero_blocks == 2) {
+            reject('orphan GNU long-name record', 1) if defined $pending_long_name;
+            last;
+        }
+        next;
+    }
+    reject('malformed archive terminator', 1) if $zero_blocks;
+    my $stored_checksum = octal_field(substr($header, 148, 8), 'header checksum');
+    my $checksum_header = $header;
+    substr($checksum_header, 148, 8) = ' ' x 8;
+    my $computed_checksum = 0;
+    $computed_checksum += $_ for unpack('C*', $checksum_header);
+    reject('header checksum mismatch', 1) unless $stored_checksum == $computed_checksum;
+
+    my $type = substr($header, 156, 1);
+    $type = '0' if $type eq "\0";
+    my $size = octal_field(substr($header, 124, 12), 'entry size');
+    my $mode = octal_field(substr($header, 100, 8), 'entry mode') & 07777;
+    if ($type eq 'L') {
+        reject('nested GNU long-name records', 1) if defined $pending_long_name;
+        reject('invalid GNU long-name length', 1) if $size < 2 || $size > 4096;
+        my $long_name = read_exact($gzip, $size);
+        my $padding = (512 - ($size % 512)) % 512;
+        read_exact($gzip, $padding) if $padding;
+        reject('invalid GNU long-name record', 1) unless substr($long_name, -1, 1) eq "\0";
+        chop($long_name);
+        reject('invalid GNU long-name record', 1) if $long_name eq '' || $long_name =~ /\0/;
+        $pending_long_name = $long_name;
+        next;
+    }
+    reject('link, extension, or special entries', 1) unless $type eq '0' || $type eq '5';
+    my $name = substr($header, 0, 100);
+    my $prefix = substr($header, 345, 155);
+    $name =~ s/\0.*//s;
+    $prefix =~ s/\0.*//s;
+    my $raw_name = defined($pending_long_name) ? $pending_long_name : ($prefix ne '' ? "$prefix/$name" : $name);
+    undef $pending_long_name;
+    my $canonical = canonical_name($raw_name, $type);
+    reject('directory with payload', 1) if $type eq '5' && $size != 0;
+
+    if ($canonical eq '') {
+        reject('root entry with payload', 1) unless $type eq '5' && $size == 0;
+        next;
+    }
+    reject('duplicate canonical paths', 1) if exists $entries{$canonical};
+    safe_parent_dirs($canonical);
+    my $target = "$extract_root/$canonical";
+    my $digest = '-';
+    if ($type eq '5') {
+        if (lstat($target)) {
+            reject('extraction path collision', 1) unless S_ISDIR((lstat(_))[2]) && !S_ISLNK((lstat(_))[2]);
+        } else {
+            mkdir($target, 0700) or reject('safe extraction failure', 1);
+        }
+        $directory_modes{$target} = $mode;
+    } else {
+        sysopen(my $file, $target, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600) or reject('extraction path collision', 1);
+        binmode($file);
+        my $sha = Digest::SHA->new(256);
+        my $remaining = $size;
+        my $capture_manifest = $canonical eq '.hvo-application-state-inventory';
+        $manifest_content = '' if $capture_manifest;
+        while ($remaining > 0) {
+            my $length = $remaining > 1024 * 1024 ? 1024 * 1024 : $remaining;
+            my $chunk = read_exact($gzip, $length);
+            $sha->add($chunk);
+            print {$file} $chunk or reject('safe extraction failure', 1);
+            if ($capture_manifest) {
+                reject('oversized internal inventory', 1) if length($manifest_content) + length($chunk) > 16 * 1024 * 1024;
+                $manifest_content .= $chunk;
+            }
+            $remaining -= $length;
+        }
+        close($file) or reject('safe extraction failure', 1);
+        chmod($mode, $target) == 1 or reject('safe extraction failure', 1);
+        $digest = $sha->hexdigest;
+    }
+    my $padding = (512 - ($size % 512)) % 512;
+    read_exact($gzip, $padding) if $padding;
+    $entries{$canonical} = {
+        type => $type eq '5' ? 'D' : 'F', mode => $mode, size => $size, digest => $digest
+    };
+}
+$gzip->close() or reject('unreadable archive', 1);
+
+my $inventory;
+if (defined $manifest_content) {
+    $inventory = parse_inventory($manifest_content);
+    if ($expected_inventory ne '') {
+        open(my $expected, '<:raw', $expected_inventory) or reject('unreadable expected inventory', 1);
+        local $/;
+        my $content = <$expected>;
+        close($expected);
+        reject('internal inventory content mismatch', 1) unless $content eq $manifest_content;
+    }
+    my $expected_count = scalar(keys %$inventory) + 1;
+    reject('archive/inventory entry-count mismatch', abs(scalar(keys %entries) - $expected_count) || 1)
+        unless scalar(keys %entries) == $expected_count;
+    for my $path (keys %entries) {
+        next if $path eq '.hvo-application-state-inventory';
+        reject('extra archived entries', 1) unless exists $inventory->{$path};
+        my $actual = $entries{$path};
+        my $wanted = $inventory->{$path};
+        reject('inventory type mismatch', 1) unless $actual->{type} eq $wanted->{type};
+        reject('inventory mode mismatch', 1) unless $actual->{mode} == $wanted->{mode};
+        if ($actual->{type} eq 'F') {
+            reject('inventory size mismatch', 1) unless $actual->{size} eq $wanted->{size};
+            reject('inventory digest mismatch', 1) unless $actual->{digest} eq $wanted->{digest};
+        }
+    }
+} else {
+    reject('expected internal inventory is missing', 1) if $expected_inventory ne '';
+    for my $required (@supported) {
+        reject('missing required application-state directories', 1)
+            unless exists $entries{$required} && $entries{$required}{type} eq 'D';
+    }
+}
+
+for my $path (sort { length($b) <=> length($a) } keys %directory_modes) {
+    chmod($directory_modes{$path}, $path) == 1 or reject('safe extraction failure', 1);
+}
+
+my %walked;
+find({
+    no_chdir => 1,
+    wanted => sub {
+        return if $File::Find::name eq $extract_root;
+        my $relative = substr($File::Find::name, length($extract_root) + 1);
+        my @stat = lstat($File::Find::name);
+        reject('post-extraction filesystem entry', 1) unless @stat && (S_ISREG($stat[2]) || S_ISDIR($stat[2]));
+        reject('post-extraction duplicate path', 1) if $walked{$relative}++;
+        if (defined($inventory) && supported_path($relative)) {
+            reject('post-extraction unlisted inventory item', 1) unless exists $inventory->{$relative};
+            my $wanted = $inventory->{$relative};
+            reject('post-extraction inventory type mismatch', 1)
+                unless ($wanted->{type} eq 'D' && S_ISDIR($stat[2])) || ($wanted->{type} eq 'F' && S_ISREG($stat[2]));
+            reject('post-extraction inventory mode mismatch', 1) unless ($stat[2] & 07777) == $wanted->{mode};
+        }
+        if (exists $entries{$relative}) {
+            my $entry = $entries{$relative};
+            reject('post-extraction type mismatch', 1)
+                unless ($entry->{type} eq 'D' && S_ISDIR($stat[2])) || ($entry->{type} eq 'F' && S_ISREG($stat[2]));
+            reject('post-extraction mode mismatch', 1) unless ($stat[2] & 07777) == $entry->{mode};
+            if ($entry->{type} eq 'F') {
+                reject('post-extraction size mismatch', 1) unless $stat[7] == $entry->{size};
+                open(my $verify, '<:raw', $File::Find::name) or reject('post-extraction read failure', 1);
+                my $sha = Digest::SHA->new(256);
+                $sha->addfile($verify);
+                close($verify);
+                reject('post-extraction digest mismatch', 1) unless $sha->hexdigest eq $entry->{digest};
+            }
+        }
+    }
+}, $extract_root);
+for my $path (keys %entries) {
+    reject('post-extraction missing entry', 1) unless $walked{$path};
+}
+if (defined $inventory) {
+    for my $path (keys %$inventory) {
+        reject('post-extraction missing inventory item', 1) unless $walked{$path};
+    }
+}
+
+print defined($manifest_content) ? "inventory-v1\n" : "legacy\n";
+PERL

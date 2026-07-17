@@ -1,138 +1,810 @@
 #!/usr/bin/env bash
-# Exercise infrastructure script selection without invoking Docker.
+# Exercise application infrastructure boundaries without invoking Docker.
 
 set -euo pipefail
+export LC_ALL=C
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly TEMP_DIR="$(mktemp -d -t hvo-infra-test.XXXXXX)"
+readonly RUNTIME_ROOT="$TEMP_DIR/runtime-data"
+readonly LONG_COMPONENT="$(printf 'l%.0s' {1..180})"
+readonly SUPPORTED_PATHS=(
+    logichost/dataprotection
+    logichost/home
+    cameraagent/identity
+    cameraagent/dataprotection
+    cameraagent/provisioning
+    agent
+    archive
+)
 
 cleanup() {
     rm -rf "$TEMP_DIR"
 }
 trap cleanup EXIT
 
-bash -n "$REPO_ROOT/scripts/run:cameraagent-soak"
+fail() {
+    printf '%s\n' "$1" >&2
+    exit 1
+}
+
+write_checksum() {
+    local archive="$1"
+    local digest
+    digest="$(sha256sum "$archive")"
+    printf '%s  %s\n' "${digest%% *}" "$(basename "$archive")" > "$archive.sha256"
+}
+
+write_restore_marker() {
+    local transaction="$1"
+    local phase="$2"
+    local rollback_name="$3"
+    local old_state="$4"
+    printf 'HVO-APPLICATION-STATE-RESTORE\t1\ntransaction\t%s\nphase\t%s\nrollback\t%s\nold-state\t%s\n' \
+        "$transaction" "$phase" "$rollback_name" "$old_state" > "$TEMP_DIR/.hvo-application-state-restore.transaction"
+}
+
+snapshot_tree() {
+    local root="$1"
+    local output="$2"
+    shift 2
+    local path type mode size digest
+    local roots=("$@")
+    : > "$output"
+    while IFS= read -r -d '' path; do
+        type="$(stat -c '%F' "$root/$path")"
+        mode="$(stat -c '%a' "$root/$path")"
+        size="-"
+        digest="-"
+        if [[ -f "$root/$path" ]]; then
+            size="$(stat -c '%s' "$root/$path")"
+            digest="$(sha256sum "$root/$path")"
+            digest="${digest%% *}"
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$type" "$mode" "$size" "$digest" "$(readlink "$root/$path" 2>/dev/null || true)" >> "$output"
+    done < <(
+        cd "$root"
+        if (( ${#roots[@]} > 0 )); then
+            find "${roots[@]}" -print0 | sort -z
+        else
+            find . -mindepth 1 -printf '%P\0' | sort -z
+        fi
+    )
+}
+
+run_start() {
+    : > "$TEMP_DIR/docker.log"
+    PATH="$TEMP_DIR:$PATH" \
+        DOCKER_LOG="$TEMP_DIR/docker.log" \
+        HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+        "$REPO_ROOT/scripts/infra:start" "$@" >/dev/null
+}
+
+restore_archive() {
+    local archive="$1"
+    shift
+    PATH="$TEMP_DIR:$PATH" \
+        DOCKER_LOG="$TEMP_DIR/docker.log" \
+        CURL_LOG="$TEMP_DIR/curl.log" \
+        LIFECYCLE_LOG="$TEMP_DIR/lifecycle.log" \
+        HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+        "$@" \
+        "$REPO_ROOT/scripts/infra:restore-app-state" "$archive"
+}
+
+expect_restore_rejected() {
+    local archive="$1"
+    local label="$2"
+    if restore_archive "$archive" env HVO_SKIP_RUNTIME_HEALTHCHECK=true >"$TEMP_DIR/rejection.log" 2>&1; then
+        fail "$label archive unexpectedly restored."
+    fi
+}
+
+repack_inventory_archive() {
+    local source_root="$1"
+    local destination="$2"
+    tar --create --gzip --file "$destination" --directory "$source_root" \
+        "${SUPPORTED_PATHS[@]}" .hvo-application-state-inventory
+    write_checksum "$destination"
+}
+
+append_transformed_entry() {
+    local destination="$1"
+    local transformed_name="$2"
+    cp "$VALID_ARCHIVE" "$destination.source.tgz"
+    gunzip "$destination.source.tgz"
+    printf 'attack\n' > "$TEMP_DIR/mutations/alias-entry"
+    tar --append --file "$destination.source.tar" --directory "$TEMP_DIR/mutations" \
+        --transform="s|^alias-entry$|$transformed_name|" alias-entry
+    gzip "$destination.source.tar"
+    mv "$destination.source.tar.gz" "$destination"
+    write_checksum "$destination"
+}
+
+bash -n \
+    "$REPO_ROOT/scripts/run:cameraagent-soak" \
+    "$REPO_ROOT/scripts/infra:operation-lock" \
+    "$REPO_ROOT/scripts/infra:validate-app-state-archive" \
+    "$REPO_ROOT/scripts/infra:start" \
+    "$REPO_ROOT/scripts/infra:reset" \
+    "$REPO_ROOT/scripts/infra:backup-app-state" \
+    "$REPO_ROOT/scripts/infra:restore-app-state"
 
 cat > "$TEMP_DIR/docker" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+if [[ -n "${LIFECYCLE_LOG:-}" ]]; then printf 'docker %s\n' "$*" >> "$LIFECYCLE_LOG"; fi
+if [[ "${HVO_TEST_STOP_FAIL_AFTER_START:-false}" == true && "$*" == *'up -d logichost'* ]]; then
+    : > "${HVO_TEST_STOP_FAIL_STATE:?}"
+fi
+if [[ "${HVO_TEST_STOP_FAIL_AFTER_START:-false}" == true && "$*" == *'stop logichost cameraagent'* &&
+    -e "${HVO_TEST_STOP_FAIL_STATE:?}" ]]; then exit 1; fi
+if [[ -n "${HVO_TEST_DOCKER_FAIL_PATTERN:-}" && "$*" == *"$HVO_TEST_DOCKER_FAIL_PATTERN"* ]]; then exit 1; fi
 EOF
-chmod +x "$TEMP_DIR/docker"
+cat > "$TEMP_DIR/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CURL_LOG:?}"
+if [[ -n "${LIFECYCLE_LOG:-}" ]]; then printf 'curl %s\n' "$*" >> "$LIFECYCLE_LOG"; fi
+if [[ "${HVO_TEST_CURL_FAIL:-false}" == true ]]; then exit 1; fi
+EOF
+cat > "$TEMP_DIR/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$TEMP_DIR/date" <<'EOF'
+#!/usr/bin/env bash
+printf '20260717T120000Z\n'
+EOF
+cat > "$TEMP_DIR/cp" <<'EOF'
+#!/usr/bin/env bash
+/usr/bin/cp "$@"
+status=$?
+if (( status == 0 )) && [[ -n "${HVO_TEST_REPLACE_ARCHIVE_SOURCE:-}" && "${*: -1}" == */verified-archive.tgz &&
+    ! -e "${HVO_TEST_REPLACE_ARCHIVE_ONCE:?}" ]]; then
+    : > "$HVO_TEST_REPLACE_ARCHIVE_ONCE"
+    printf 'replaced-after-private-copy\n' > "$HVO_TEST_REPLACE_ARCHIVE_SOURCE"
+fi
+exit "$status"
+EOF
+cat > "$TEMP_DIR/tar" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${HVO_TEST_RACE_SYMLINK_ROOT:-}" && "$*" == *'--create'* && ! -e "$HVO_TEST_RACE_SYMLINK_ROOT/agent/raced-link" ]]; then
+    ln -s frame.bin "$HVO_TEST_RACE_SYMLINK_ROOT/agent/raced-link"
+fi
+/usr/bin/tar "$@"
+EOF
+cat > "$TEMP_DIR/stat" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${HVO_TEST_NONOWNED_HOST_PARENT:-}" && "$*" == *'-c %u'* &&
+    "${*: -1}" == */"$HVO_TEST_NONOWNED_HOST_PARENT" ]]; then
+    printf '99999\n'
+    exit 0
+fi
+/usr/bin/stat "$@"
+EOF
+chmod +x "$TEMP_DIR/docker" "$TEMP_DIR/curl" "$TEMP_DIR/sleep" "$TEMP_DIR/date" "$TEMP_DIR/cp" "$TEMP_DIR/tar" "$TEMP_DIR/stat"
 
-run_case() {
-    : > "$TEMP_DIR/docker.log"
-    PATH="$TEMP_DIR:$PATH" \
-        DOCKER_LOG="$TEMP_DIR/docker.log" \
-        HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
-        "$REPO_ROOT/scripts/infra:start" "$@" >/dev/null
-}
+# Existing runtime parents are validated but never chmodded by lock acquisition.
+mkdir -p "$TEMP_DIR/parent-mode/runtime"
+chmod 0751 "$TEMP_DIR/parent-mode"
+PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/parent-mode/runtime" \
+    "$REPO_ROOT/scripts/infra:start" logichost >/dev/null
+test "$(stat -c '%a' "$TEMP_DIR/parent-mode")" = 751
+
+mkdir -p "$TEMP_DIR/parent-world-writable/runtime"
+chmod 0777 "$TEMP_DIR/parent-world-writable"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/parent-world-writable/runtime" \
+    "$REPO_ROOT/scripts/infra:start" logichost >/dev/null 2>&1; then
+    fail 'Start accepted a group/world-writable runtime parent.'
+fi
+test "$(stat -c '%a' "$TEMP_DIR/parent-world-writable")" = 777
+
+mkdir -p "$TEMP_DIR/runtime-root-writable/runtime"
+chmod 0700 "$TEMP_DIR/runtime-root-writable"
+chmod 0777 "$TEMP_DIR/runtime-root-writable/runtime"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-root-writable/runtime" \
+    "$REPO_ROOT/scripts/infra:start" logichost >/dev/null 2>&1; then
+    fail 'Start accepted a group/world-writable runtime data root.'
+fi
+test "$(stat -c '%a' "$TEMP_DIR/runtime-root-writable/runtime")" = 777
+
+for writable_host in logichost cameraagent; do
+    writable_host_root="$TEMP_DIR/$writable_host-parent-writable/runtime"
+    mkdir -p "$writable_host_root/$writable_host"
+    chmod 0700 "$TEMP_DIR/$writable_host-parent-writable" "$writable_host_root"
+    chmod 0777 "$writable_host_root/$writable_host"
+    if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$writable_host_root" \
+        "$REPO_ROOT/scripts/infra:start" logichost >/dev/null 2>&1; then
+        fail "Start accepted a group/world-writable $writable_host parent."
+    fi
+    test "$(stat -c '%a' "$writable_host_root/$writable_host")" = 777
+done
 
 mkdir -p \
-    "$TEMP_DIR/runtime-data/logichost/dataprotection" \
-    "$TEMP_DIR/runtime-data/logichost/home" \
-    "$TEMP_DIR/runtime-data/catalog/versions/installed" \
-    "$TEMP_DIR/runtime-data/cameraagent/identity" \
-    "$TEMP_DIR/runtime-data/cameraagent/dataprotection" \
-    "$TEMP_DIR/runtime-data/cameraagent/provisioning/nested" \
-    "$TEMP_DIR/runtime-data/agent" \
-    "$TEMP_DIR/runtime-data/archive"
-touch \
-    "$TEMP_DIR/runtime-data/logichost/dataprotection/key.xml" \
-    "$TEMP_DIR/runtime-data/logichost/home/certificate.pfx" \
-    "$TEMP_DIR/runtime-data/catalog/versions/installed/manifest.json" \
-    "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db" \
-    "$TEMP_DIR/runtime-data/cameraagent/dataprotection/key.xml" \
-    "$TEMP_DIR/runtime-data/cameraagent/provisioning/.device-identity.json" \
-    "$TEMP_DIR/runtime-data/cameraagent/provisioning/nested/device-secrets.dat" \
-    "$TEMP_DIR/runtime-data/agent/frame.bin" \
-    "$TEMP_DIR/runtime-data/archive/frame.bin"
+    "$RUNTIME_ROOT/logichost/dataprotection" \
+    "$RUNTIME_ROOT/logichost/home" \
+    "$RUNTIME_ROOT/catalog/versions/installed" \
+    "$RUNTIME_ROOT/cameraagent/identity" \
+    "$RUNTIME_ROOT/cameraagent/dataprotection" \
+    "$RUNTIME_ROOT/cameraagent/provisioning/nested" \
+    "$RUNTIME_ROOT/agent" \
+    "$RUNTIME_ROOT/archive" \
+    "$TEMP_DIR/shared-volume"
+printf 'logic-key\n' > "$RUNTIME_ROOT/logichost/dataprotection/key.xml"
+printf 'certificate\n' > "$RUNTIME_ROOT/logichost/home/certificate.pfx"
+printf 'catalog-target\n' > "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
+printf 'shared-service\n' > "$TEMP_DIR/shared-volume/database.sentinel"
+printf 'identity-db\n' > "$RUNTIME_ROOT/cameraagent/identity/identity.db"
+printf 'identity-wal\n' > "$RUNTIME_ROOT/cameraagent/identity/identity.db-wal"
+printf 'identity-shm\n' > "$RUNTIME_ROOT/cameraagent/identity/identity.db-shm"
+printf 'agent-key\n' > "$RUNTIME_ROOT/cameraagent/dataprotection/key.xml"
+printf 'device\n' > "$RUNTIME_ROOT/cameraagent/provisioning/.device-identity.json"
+printf 'secret\n' > "$RUNTIME_ROOT/cameraagent/provisioning/nested/device-secrets.dat"
+printf 'payload\n' > "$RUNTIME_ROOT/agent/frame.bin"
+printf 'sidecar\n' > "$RUNTIME_ROOT/agent/frame.json"
+printf 'index\n' > "$RUNTIME_ROOT/agent/index.json"
+mkdir -p "$RUNTIME_ROOT/agent/outbox" "$RUNTIME_ROOT/agent/quarantine"
+printf 'pending\n' > "$RUNTIME_ROOT/agent/outbox/pending.json"
+printf 'quarantined\n' > "$RUNTIME_ROOT/agent/quarantine/bad.json"
+printf 'archived\n' > "$RUNTIME_ROOT/archive/frame.bin"
+printf 'unsupported\n' > "$RUNTIME_ROOT/unmanaged.sentinel"
+chmod 600 "$RUNTIME_ROOT/cameraagent/identity/identity.db" "$RUNTIME_ROOT/agent/outbox/pending.json"
 
-run_case --reset cameraagent
+run_start --reset cameraagent
 grep -Fqx 'compose -f docker-compose.apps.yml rm -sf cameraagent' "$TEMP_DIR/docker.log"
 grep -Fqx 'compose -f docker-compose.apps.yml build cameraagent' "$TEMP_DIR/docker.log"
 grep -Fqx 'compose -f docker-compose.apps.yml up -d cameraagent' "$TEMP_DIR/docker.log"
-if grep -q logichost "$TEMP_DIR/docker.log"; then
-    echo "A CameraAgent-only reset unexpectedly selected LogicHost." >&2
-    exit 1
-fi
-test -f "$TEMP_DIR/runtime-data/logichost/dataprotection/key.xml"
-test -f "$TEMP_DIR/runtime-data/logichost/home/certificate.pfx"
-test -f "$TEMP_DIR/runtime-data/catalog/versions/installed/manifest.json"
-test ! -e "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
-test ! -e "$TEMP_DIR/runtime-data/cameraagent/dataprotection/key.xml"
-test ! -e "$TEMP_DIR/runtime-data/cameraagent/provisioning/.device-identity.json"
-test ! -e "$TEMP_DIR/runtime-data/cameraagent/provisioning/nested"
-test ! -e "$TEMP_DIR/runtime-data/agent/frame.bin"
-test ! -e "$TEMP_DIR/runtime-data/archive/frame.bin"
-test "$(stat -c '%a' "$TEMP_DIR/runtime-data/cameraagent/provisioning")" = "700"
+grep -q logichost "$TEMP_DIR/docker.log" && fail 'A CameraAgent-only reset selected LogicHost.'
+test -f "$RUNTIME_ROOT/logichost/dataprotection/key.xml"
+test -f "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
+test -f "$RUNTIME_ROOT/unmanaged.sentinel"
+test ! -e "$RUNTIME_ROOT/cameraagent/identity/identity.db"
+test ! -e "$RUNTIME_ROOT/agent/outbox"
+test -f "$TEMP_DIR/shared-volume/database.sentinel"
+test "$(stat -c '%a' "$RUNTIME_ROOT/cameraagent/provisioning")" = 700
 
-run_case --rebuild logichost
+run_start --rebuild logichost
 grep -Fqx 'compose -f docker-compose.apps.yml build logichost' "$TEMP_DIR/docker.log"
 grep -Fqx 'compose -f docker-compose.apps.yml up -d logichost' "$TEMP_DIR/docker.log"
-if grep -q cameraagent "$TEMP_DIR/docker.log"; then
-    echo "A LogicHost-only rebuild unexpectedly selected CameraAgent." >&2
-    exit 1
-fi
-test -f "$TEMP_DIR/runtime-data/logichost/dataprotection/key.xml"
+grep -q cameraagent "$TEMP_DIR/docker.log" && fail 'A LogicHost-only rebuild selected CameraAgent.'
+test -f "$RUNTIME_ROOT/logichost/dataprotection/key.xml"
 
-run_case --reset
+run_start --reset
 grep -Fqx 'compose -f docker-compose.apps.yml build logichost cameraagent' "$TEMP_DIR/docker.log"
 grep -Fqx 'compose -f docker-compose.apps.yml up -d logichost cameraagent' "$TEMP_DIR/docker.log"
-test ! -e "$TEMP_DIR/runtime-data/logichost/dataprotection/key.xml"
-test ! -e "$TEMP_DIR/runtime-data/logichost/home/certificate.pfx"
-test -f "$TEMP_DIR/runtime-data/catalog/versions/installed/manifest.json"
+test ! -e "$RUNTIME_ROOT/logichost/dataprotection/key.xml"
+test -f "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
+test -f "$RUNTIME_ROOT/unmanaged.sentinel"
+test -f "$TEMP_DIR/shared-volume/database.sentinel"
 
-touch "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
-PATH="$TEMP_DIR:$PATH" \
-    DOCKER_LOG="$TEMP_DIR/docker.log" \
-    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
+printf 'identity-db\n' > "$RUNTIME_ROOT/cameraagent/identity/identity.db"
+PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
     "$REPO_ROOT/scripts/infra:reset" cameraagent >/dev/null
-test ! -e "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
+test ! -e "$RUNTIME_ROOT/cameraagent/identity/identity.db"
+test -f "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
+test -f "$TEMP_DIR/shared-volume/database.sentinel"
 
 mkdir -p "$TEMP_DIR/outside-runtime"
-touch "$TEMP_DIR/outside-runtime/key.xml"
-rm -rf "$TEMP_DIR/runtime-data/logichost/dataprotection"
-ln -s "$TEMP_DIR/outside-runtime" "$TEMP_DIR/runtime-data/logichost/dataprotection"
-if PATH="$TEMP_DIR:$PATH" \
-    DOCKER_LOG="$TEMP_DIR/docker.log" \
-    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
+printf 'outside\n' > "$TEMP_DIR/outside-runtime/key.xml"
+rm -rf "$RUNTIME_ROOT/logichost/dataprotection"
+ln -s "$TEMP_DIR/outside-runtime" "$RUNTIME_ROOT/logichost/dataprotection"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
     "$REPO_ROOT/scripts/infra:reset" logichost >/dev/null 2>&1; then
-    echo "A reset through a symbolic link unexpectedly succeeded." >&2
-    exit 1
+    fail 'A reset through a symbolic link succeeded.'
 fi
 test -f "$TEMP_DIR/outside-runtime/key.xml"
-rm "$TEMP_DIR/runtime-data/logichost/dataprotection"
-mkdir -p "$TEMP_DIR/runtime-data/logichost/dataprotection"
+rm "$RUNTIME_ROOT/logichost/dataprotection"
+mkdir -p "$RUNTIME_ROOT/logichost/dataprotection"
 
-touch "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
-PATH="$TEMP_DIR:$PATH" \
-    DOCKER_LOG="$TEMP_DIR/docker.log" \
-    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
+# Existing sensitive state roots are owner-validated and normalized without changing the runtime parent.
+chmod 0755 "$RUNTIME_ROOT/logichost/dataprotection"
+chmod 0777 "$RUNTIME_ROOT/logichost/home"
+runtime_parent_mode="$(stat -c '%a' "$TEMP_DIR")"
+run_start logichost
+test "$(stat -c '%a' "$RUNTIME_ROOT/logichost/dataprotection")" = 700
+test "$(stat -c '%a' "$RUNTIME_ROOT/logichost/home")" = 700
+test "$(stat -c '%a' "$TEMP_DIR")" = "$runtime_parent_mode"
+
+# Populate every supported application-state class for archive round-trip coverage.
+printf 'logic-key-v1\n' > "$RUNTIME_ROOT/logichost/dataprotection/key.xml"
+printf 'certificate-v1\n' > "$RUNTIME_ROOT/logichost/home/certificate.pfx"
+printf 'identity-v1\n' > "$RUNTIME_ROOT/cameraagent/identity/identity.db"
+printf 'wal-v1\n' > "$RUNTIME_ROOT/cameraagent/identity/identity.db-wal"
+printf 'shm-v1\n' > "$RUNTIME_ROOT/cameraagent/identity/identity.db-shm"
+printf 'agent-key-v1\n' > "$RUNTIME_ROOT/cameraagent/dataprotection/key.xml"
+printf 'device-v1\n' > "$RUNTIME_ROOT/cameraagent/provisioning/.device-identity.json"
+printf 'secret-v1\n' > "$RUNTIME_ROOT/cameraagent/provisioning/device-secrets.dat"
+mkdir -p "$RUNTIME_ROOT/agent/outbox" "$RUNTIME_ROOT/agent/quarantine"
+printf 'payload-v1\n' > "$RUNTIME_ROOT/agent/frame.bin"
+printf 'sidecar-v1\n' > "$RUNTIME_ROOT/agent/frame.json"
+printf 'index-v1\n' > "$RUNTIME_ROOT/agent/index.json"
+printf 'pending-v1\n' > "$RUNTIME_ROOT/agent/outbox/pending.json"
+printf 'quarantine-v1\n' > "$RUNTIME_ROOT/agent/quarantine/bad.json"
+printf 'archive-v1\n' > "$RUNTIME_ROOT/archive/frame.bin"
+mkdir -p "$RUNTIME_ROOT/agent/$LONG_COMPONENT"
+printf 'long-path-v1\n' > "$RUNTIME_ROOT/agent/$LONG_COMPONENT/payload.bin"
+mkdir -p "$RUNTIME_ROOT/agent/valid-nested/deeper"
+printf 'nested-roundtrip-v1\n' > "$RUNTIME_ROOT/agent/valid-nested/deeper/payload.bin"
+chmod 0711 "$RUNTIME_ROOT/agent/valid-nested" "$RUNTIME_ROOT/agent/valid-nested/deeper"
+chmod 600 "$RUNTIME_ROOT/cameraagent/identity/identity.db" "$RUNTIME_ROOT/agent/frame.bin"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/before-backup.snapshot" "${SUPPORTED_PATHS[@]}"
+
+mkdir "$TEMP_DIR/writable-backup-destination"
+chmod 0777 "$TEMP_DIR/writable-backup-destination"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/infra:backup-app-state" "$TEMP_DIR/writable-backup-destination" >/dev/null 2>&1; then
+    fail 'Backup accepted a group/world-writable existing destination.'
+fi
+test "$(stat -c '%a' "$TEMP_DIR/writable-backup-destination")" = 777
+test -z "$(find "$TEMP_DIR/writable-backup-destination" -mindepth 1 -print -quit)"
+
+PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
     "$REPO_ROOT/scripts/infra:backup-app-state" "$TEMP_DIR/backups" >/dev/null
 archive=("$TEMP_DIR"/backups/hvo-application-state-*.tgz)
-test -f "${archive[0]}"
-test -f "${archive[0]}.sha256"
-cp "${archive[0]}" "$TEMP_DIR/backups/mispaired.tgz"
-cp "${archive[0]}.sha256" "$TEMP_DIR/backups/mispaired.tgz.sha256"
-if PATH="$TEMP_DIR:$PATH" \
-    DOCKER_LOG="$TEMP_DIR/docker.log" \
-    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
-    HVO_SKIP_RUNTIME_HEALTHCHECK=true \
-    "$REPO_ROOT/scripts/infra:restore-app-state" "$TEMP_DIR/backups/mispaired.tgz" >/dev/null 2>&1; then
-    echo "A mispaired checksum manifest unexpectedly passed." >&2
-    exit 1
+test "${#archive[@]}" -eq 1
+readonly VALID_ARCHIVE="${archive[0]}"
+test -f "$VALID_ARCHIVE.sha256"
+tar -tzf "$VALID_ARCHIVE" > "$TEMP_DIR/archive.list"
+grep -Fqx '.hvo-application-state-inventory' "$TEMP_DIR/archive.list"
+if grep -Eq '(^|/)(catalog|unmanaged\.sentinel)(/|$)' "$TEMP_DIR/archive.list"; then
+    fail 'A new backup included unsupported runtime-root state.'
 fi
-mkdir -p "$TEMP_DIR/transported"
-cp "${archive[0]}" "${archive[0]}.sha256" "$TEMP_DIR/transported/"
-rm "${archive[0]}" "${archive[0]}.sha256"
-archive=("$TEMP_DIR"/transported/hvo-application-state-*.tgz)
-rm -f "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
-PATH="$TEMP_DIR:$PATH" \
-    DOCKER_LOG="$TEMP_DIR/docker.log" \
-    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/runtime-data" \
-    HVO_SKIP_RUNTIME_HEALTHCHECK=true \
-    "$REPO_ROOT/scripts/infra:restore-app-state" "${archive[0]}" >/dev/null
-test -f "$TEMP_DIR/runtime-data/cameraagent/identity/identity.db"
 
-echo "Infrastructure command contract passed."
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/infra:backup-app-state" "$TEMP_DIR/backups" >/dev/null 2>&1; then
+    fail 'A same-name backup publication collision succeeded.'
+fi
+test "$(printf '%s\n' "$TEMP_DIR"/backups/hvo-application-state-*.tgz | wc -l)" -eq 1
+
+# Publication commits checksum first and removes it when archive publication is injected to fail.
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    HVO_BACKUP_FAILPOINT=after-checksum-publish \
+    "$REPO_ROOT/scripts/infra:backup-app-state" "$TEMP_DIR/publication-failure" >/dev/null 2>&1; then
+    fail 'Injected backup publication failure unexpectedly succeeded.'
+fi
+test -z "$(find "$TEMP_DIR/publication-failure" -mindepth 1 -print -quit)"
+
+# A filesystem entry introduced after inventory generation is caught by completed-archive validation.
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    HVO_TEST_RACE_SYMLINK_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/infra:backup-app-state" "$TEMP_DIR/raced-backup" >/dev/null 2>&1; then
+    fail 'Backup published an archive containing a raced-in symbolic link.'
+fi
+rm -f "$RUNTIME_ROOT/agent/raced-link"
+test -z "$(find "$TEMP_DIR/raced-backup" -mindepth 1 -print -quit)"
+
+cp "$VALID_ARCHIVE" "$TEMP_DIR/mispaired.tgz"
+cp "$VALID_ARCHIVE.sha256" "$TEMP_DIR/mispaired.tgz.sha256"
+expect_restore_rejected "$TEMP_DIR/mispaired.tgz" 'Mispaired checksum'
+
+cp "$VALID_ARCHIVE" "$TEMP_DIR/outer-corrupt.tgz"
+write_checksum "$TEMP_DIR/outer-corrupt.tgz"
+printf 'corruption\n' >> "$TEMP_DIR/outer-corrupt.tgz"
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Outer-checksum corruption'
+
+mkdir -p "$TEMP_DIR/mutations/corrupt" "$TEMP_DIR/mutations/missing" "$TEMP_DIR/mutations/version"
+tar -xzf "$VALID_ARCHIVE" -C "$TEMP_DIR/mutations/corrupt"
+printf 'changed-payload\n' > "$TEMP_DIR/mutations/corrupt/cameraagent/identity/identity.db"
+repack_inventory_archive "$TEMP_DIR/mutations/corrupt" "$TEMP_DIR/internal-corrupt.tgz"
+expect_restore_rejected "$TEMP_DIR/internal-corrupt.tgz" 'Internal payload corruption'
+
+tar -xzf "$VALID_ARCHIVE" -C "$TEMP_DIR/mutations/missing"
+rm "$TEMP_DIR/mutations/missing/agent/frame.bin"
+repack_inventory_archive "$TEMP_DIR/mutations/missing" "$TEMP_DIR/missing-entry.tgz"
+expect_restore_rejected "$TEMP_DIR/missing-entry.tgz" 'Missing inventory entry'
+
+# Omit a nested directory from both headers and inventory while retaining its inventoried child file.
+mkdir -p "$TEMP_DIR/mutations/implicit-parent"
+tar -xzf "$VALID_ARCHIVE" -C "$TEMP_DIR/mutations/implicit-parent"
+implicit_parent='agent/valid-nested/deeper'
+implicit_parent_hex="$(printf '%s' "$implicit_parent" | od -An -v -tx1 | tr -d ' \n')"
+INVENTORY_PATH_HEX="$implicit_parent_hex" perl -ni -e \
+    'print unless /\t\Q$ENV{INVENTORY_PATH_HEX}\E$/' \
+    "$TEMP_DIR/mutations/implicit-parent/.hvo-application-state-inventory"
+implicit_child="$implicit_parent/payload.bin"
+implicit_child_hex="$(printf '%s' "$implicit_child" | od -An -v -tx1 | tr -d ' \n')"
+if grep -Eq $'\t'"$implicit_parent_hex"'$' "$TEMP_DIR/mutations/implicit-parent/.hvo-application-state-inventory"; then
+    fail 'Implicit-parent attack inventory still contains the omitted directory.'
+fi
+grep -Eq $'\t'"$implicit_child_hex"'$' "$TEMP_DIR/mutations/implicit-parent/.hvo-application-state-inventory"
+: > "$TEMP_DIR/mutations/implicit-parent.members"
+while IFS= read -r -d '' member; do
+    [[ "$member" == "$implicit_parent" ]] || printf '%s\0' "$member" >> "$TEMP_DIR/mutations/implicit-parent.members"
+done < <(cd "$TEMP_DIR/mutations/implicit-parent" && find "${SUPPORTED_PATHS[@]}" -print0 | sort -z)
+printf '%s\0' .hvo-application-state-inventory >> "$TEMP_DIR/mutations/implicit-parent.members"
+tar --create --gzip --format=gnu --no-recursion \
+    --file "$TEMP_DIR/implicit-parent.tgz" \
+    --directory "$TEMP_DIR/mutations/implicit-parent" \
+    --null --files-from "$TEMP_DIR/mutations/implicit-parent.members"
+write_checksum "$TEMP_DIR/implicit-parent.tgz"
+tar -tzf "$TEMP_DIR/implicit-parent.tgz" > "$TEMP_DIR/implicit-parent.list"
+if grep -Fqx "$implicit_parent/" "$TEMP_DIR/implicit-parent.list"; then
+    fail 'Implicit-parent attack archive still contains the omitted directory header.'
+fi
+grep -Fqx "$implicit_child" "$TEMP_DIR/implicit-parent.list"
+expect_restore_rejected "$TEMP_DIR/implicit-parent.tgz" 'Implicit unlisted parent directory'
+grep -Fq 'post-extraction unlisted inventory item' "$TEMP_DIR/rejection.log"
+
+tar -xzf "$VALID_ARCHIVE" -C "$TEMP_DIR/mutations/version"
+perl -pi -e 's/INVENTORY\t1/INVENTORY\t2/' "$TEMP_DIR/mutations/version/.hvo-application-state-inventory"
+repack_inventory_archive "$TEMP_DIR/mutations/version" "$TEMP_DIR/unsupported-version.tgz"
+expect_restore_rejected "$TEMP_DIR/unsupported-version.tgz" 'Unsupported inventory version'
+
+cp "$VALID_ARCHIVE" "$TEMP_DIR/duplicate-source.tgz"
+gunzip "$TEMP_DIR/duplicate-source.tgz"
+tar --append --file "$TEMP_DIR/duplicate-source.tar" --directory "$TEMP_DIR/mutations/corrupt" cameraagent/identity/identity.db
+gzip "$TEMP_DIR/duplicate-source.tar"
+mv "$TEMP_DIR/duplicate-source.tar.gz" "$TEMP_DIR/duplicate.tgz"
+write_checksum "$TEMP_DIR/duplicate.tgz"
+expect_restore_rejected "$TEMP_DIR/duplicate.tgz" 'Duplicate path'
+
+cp "$VALID_ARCHIVE" "$TEMP_DIR/unsafe-source.tgz"
+gunzip "$TEMP_DIR/unsafe-source.tgz"
+printf 'unsafe\n' > "$TEMP_DIR/mutations/unsafe-entry"
+tar --append --file "$TEMP_DIR/unsafe-source.tar" --directory "$TEMP_DIR/mutations" \
+    --transform='s|^unsafe-entry$|../private-payload|' unsafe-entry
+gzip "$TEMP_DIR/unsafe-source.tar"
+mv "$TEMP_DIR/unsafe-source.tar.gz" "$TEMP_DIR/unsafe.tgz"
+write_checksum "$TEMP_DIR/unsafe.tgz"
+expect_restore_rejected "$TEMP_DIR/unsafe.tgz" 'Unsafe path'
+if grep -Fq 'private-payload' "$TEMP_DIR/rejection.log"; then
+    fail 'Archive rejection diagnostics exposed a payload path.'
+fi
+
+append_transformed_entry "$TEMP_DIR/repeated-slash.tgz" 'agent//alias-entry'
+expect_restore_rejected "$TEMP_DIR/repeated-slash.tgz" 'Repeated-slash alias'
+append_transformed_entry "$TEMP_DIR/dot-alias.tgz" 'agent/./alias-entry'
+expect_restore_rejected "$TEMP_DIR/dot-alias.tgz" 'Dot-component alias'
+append_transformed_entry "$TEMP_DIR/absolute.tgz" '/absolute-private-payload'
+expect_restore_rejected "$TEMP_DIR/absolute.tgz" 'Absolute path'
+
+tar --format=pax --create --gzip --file "$TEMP_DIR/pax.tgz" \
+    --directory "$TEMP_DIR/mutations/corrupt" "${SUPPORTED_PATHS[@]}" .hvo-application-state-inventory
+write_checksum "$TEMP_DIR/pax.tgz"
+expect_restore_rejected "$TEMP_DIR/pax.tgz" 'PAX extension'
+
+mkdir -p "$TEMP_DIR/special"
+for path in "${SUPPORTED_PATHS[@]}"; do mkdir -p "$TEMP_DIR/special/$path"; done
+mkfifo "$TEMP_DIR/special/agent/unsafe-fifo"
+tar -czf "$TEMP_DIR/special.tgz" -C "$TEMP_DIR/special" "${SUPPORTED_PATHS[@]}"
+write_checksum "$TEMP_DIR/special.tgz"
+expect_restore_rejected "$TEMP_DIR/special.tgz" 'Special entry'
+rm "$TEMP_DIR/special/agent/unsafe-fifo"
+printf 'link-target\n' > "$TEMP_DIR/special/agent/link-target"
+ln -s link-target "$TEMP_DIR/special/agent/unsafe-symlink"
+tar -czf "$TEMP_DIR/symlink.tgz" -C "$TEMP_DIR/special" "${SUPPORTED_PATHS[@]}"
+write_checksum "$TEMP_DIR/symlink.tgz"
+expect_restore_rejected "$TEMP_DIR/symlink.tgz" 'Symbolic-link entry'
+rm "$TEMP_DIR/special/agent/unsafe-symlink"
+ln "$TEMP_DIR/special/agent/link-target" "$TEMP_DIR/special/agent/unsafe-hardlink"
+tar -czf "$TEMP_DIR/hardlink.tgz" -C "$TEMP_DIR/special" "${SUPPORTED_PATHS[@]}"
+write_checksum "$TEMP_DIR/hardlink.tgz"
+expect_restore_rejected "$TEMP_DIR/hardlink.tgz" 'Hard-link entry'
+rm "$TEMP_DIR/special/agent/unsafe-hardlink"
+control_name=$'control\nprivate-name'
+printf 'control\n' > "$TEMP_DIR/special/agent/$control_name"
+tar -czf "$TEMP_DIR/control-path.tgz" -C "$TEMP_DIR/special" "${SUPPORTED_PATHS[@]}"
+write_checksum "$TEMP_DIR/control-path.tgz"
+expect_restore_rejected "$TEMP_DIR/control-path.tgz" 'Control-character path'
+if grep -Fq 'private-name' "$TEMP_DIR/rejection.log"; then
+    fail 'Control-path rejection diagnostics exposed a payload path.'
+fi
+
+# Replacing the selected archive after its private copy cannot change validated restore input.
+cp "$VALID_ARCHIVE" "$TEMP_DIR/replaced-source.tgz"
+write_checksum "$TEMP_DIR/replaced-source.tgz"
+restore_archive "$TEMP_DIR/replaced-source.tgz" env HVO_SKIP_RUNTIME_HEALTHCHECK=true \
+    HVO_TEST_REPLACE_ARCHIVE_SOURCE="$TEMP_DIR/replaced-source.tgz" \
+    HVO_TEST_REPLACE_ARCHIVE_ONCE="$TEMP_DIR/replaced-source.once" >/dev/null
+test -f "$TEMP_DIR/replaced-source.once"
+test "$(<"$RUNTIME_ROOT/agent/frame.bin")" = payload-v1
+
+# Restore the valid inventory archive and verify exact supported state plus target-only state.
+printf 'catalog-target-preserved\n' > "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
+printf 'target-only-preserved\n' > "$RUNTIME_ROOT/unmanaged.sentinel"
+rm -rf "$RUNTIME_ROOT/agent" "$RUNTIME_ROOT/archive"
+mkdir -p "$RUNTIME_ROOT/agent" "$RUNTIME_ROOT/archive"
+printf 'replacement\n' > "$RUNTIME_ROOT/agent/frame.bin"
+: > "$TEMP_DIR/docker.log"
+: > "$TEMP_DIR/curl.log"
+: > "$TEMP_DIR/lifecycle.log"
+restore_archive "$VALID_ARCHIVE" env >/dev/null
+grep -Fq 'http://localhost:5174/health' "$TEMP_DIR/curl.log"
+grep -Fq 'http://localhost:5130/health' "$TEMP_DIR/curl.log"
+if grep -Fq '/alive' "$TEMP_DIR/curl.log"; then fail 'Restore probed /alive instead of readiness.'; fi
+logic_start_line="$(grep -nF 'compose -f docker-compose.apps.yml up -d logichost' "$TEMP_DIR/docker.log" | cut -d: -f1)"
+camera_start_line="$(grep -nF 'compose -f docker-compose.apps.yml up -d cameraagent' "$TEMP_DIR/docker.log" | cut -d: -f1)"
+(( logic_start_line < camera_start_line )) || fail 'CameraAgent started before LogicHost readiness.'
+logic_start_line="$(grep -nF 'docker compose -f docker-compose.apps.yml up -d logichost' "$TEMP_DIR/lifecycle.log" | cut -d: -f1)"
+logic_health_line="$(grep -nF 'curl --silent --show-error --fail --output /dev/null http://localhost:5174/health' "$TEMP_DIR/lifecycle.log" | cut -d: -f1)"
+camera_start_line="$(grep -nF 'docker compose -f docker-compose.apps.yml up -d cameraagent' "$TEMP_DIR/lifecycle.log" | cut -d: -f1)"
+camera_health_line="$(grep -nF 'curl --silent --show-error --fail --output /dev/null http://localhost:5130/health' "$TEMP_DIR/lifecycle.log" | cut -d: -f1)"
+(( logic_start_line < logic_health_line && logic_health_line < camera_start_line && camera_start_line < camera_health_line )) || \
+    fail 'Restore startup did not enforce LogicHost then CameraAgent readiness ordering.'
+test "$(<"$RUNTIME_ROOT/catalog/versions/installed/manifest.json")" = catalog-target-preserved
+test "$(<"$RUNTIME_ROOT/unmanaged.sentinel")" = target-only-preserved
+test "$(stat -c '%a' "$RUNTIME_ROOT/cameraagent/identity/identity.db")" = 600
+test "$(<"$RUNTIME_ROOT/agent/outbox/pending.json")" = pending-v1
+test "$(<"$RUNTIME_ROOT/agent/quarantine/bad.json")" = quarantine-v1
+test "$(<"$RUNTIME_ROOT/agent/valid-nested/deeper/payload.bin")" = nested-roundtrip-v1
+test "$(stat -c '%a' "$RUNTIME_ROOT/agent/valid-nested")" = 711
+test "$(stat -c '%a' "$RUNTIME_ROOT/agent/valid-nested/deeper")" = 711
+test -f "$TEMP_DIR/shared-volume/database.sentinel"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/after-roundtrip.snapshot" "${SUPPORTED_PATHS[@]}"
+if ! cmp -s "$TEMP_DIR/before-backup.snapshot" "$TEMP_DIR/after-roundtrip.snapshot"; then
+    diff -u "$TEMP_DIR/before-backup.snapshot" "$TEMP_DIR/after-roundtrip.snapshot" >&2 || true
+    fail 'Supported application state did not round-trip exactly.'
+fi
+
+# Fail after install and require byte/mode/path-exact old-state rollback without application restart.
+printf 'pre-failpoint\n' > "$RUNTIME_ROOT/agent/frame.bin"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-failpoint.snapshot"
+: > "$TEMP_DIR/docker.log"
+if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true HVO_RESTORE_FAILPOINT=after-new-install >/dev/null 2>&1; then
+    fail 'Restore failpoint unexpectedly succeeded.'
+fi
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-failpoint.snapshot"
+cmp -s "$TEMP_DIR/pre-failpoint.snapshot" "$TEMP_DIR/post-failpoint.snapshot" || fail 'Failpoint rollback did not restore exact old state.'
+if grep -Fq 'compose -f docker-compose.apps.yml up -d' "$TEMP_DIR/docker.log"; then
+    fail 'Failed restore restarted applications.'
+fi
+test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+
+# LogicHost readiness and container-start failures both restore exact old state and leave apps stopped.
+printf 'before-health-failure\n' > "$RUNTIME_ROOT/agent/frame.bin"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-health-failure.snapshot"
+: > "$TEMP_DIR/docker.log"
+if restore_archive "$VALID_ARCHIVE" env HVO_TEST_CURL_FAIL=true >/dev/null 2>&1; then
+    fail 'Restore unexpectedly succeeded while LogicHost readiness failed.'
+fi
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-health-failure.snapshot"
+cmp -s "$TEMP_DIR/pre-health-failure.snapshot" "$TEMP_DIR/post-health-failure.snapshot" || fail 'Health failure did not roll back exact old state.'
+test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+grep -Fq 'compose -f docker-compose.apps.yml stop logichost cameraagent' "$TEMP_DIR/docker.log"
+
+printf 'before-start-failure\n' > "$RUNTIME_ROOT/agent/frame.bin"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-start-failure.snapshot"
+: > "$TEMP_DIR/docker.log"
+if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true \
+    HVO_TEST_DOCKER_FAIL_PATTERN='up -d logichost' >/dev/null 2>&1; then
+    fail 'Restore unexpectedly succeeded while LogicHost start failed.'
+fi
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-start-failure.snapshot"
+cmp -s "$TEMP_DIR/pre-start-failure.snapshot" "$TEMP_DIR/post-start-failure.snapshot" || fail 'Start failure did not roll back exact old state.'
+test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+
+# Preserved host parents are never traversed through symlinks or simulated foreign ownership.
+mv "$RUNTIME_ROOT/logichost" "$TEMP_DIR/saved-logichost"
+ln -s "$TEMP_DIR/outside-runtime" "$RUNTIME_ROOT/logichost"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-host-symlink.snapshot"
+if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true >/dev/null 2>&1; then
+    fail 'Restore traversed a symbolic-link LogicHost target parent.'
+fi
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-host-symlink.snapshot"
+cmp -s "$TEMP_DIR/pre-host-symlink.snapshot" "$TEMP_DIR/post-host-symlink.snapshot" || fail 'Host-parent symlink rejection changed old state.'
+test "$(<"$TEMP_DIR/outside-runtime/key.xml")" = outside
+rm "$RUNTIME_ROOT/logichost"
+mv "$TEMP_DIR/saved-logichost" "$RUNTIME_ROOT/logichost"
+
+mv "$RUNTIME_ROOT/cameraagent" "$TEMP_DIR/saved-cameraagent"
+ln -s "$TEMP_DIR/outside-runtime" "$RUNTIME_ROOT/cameraagent"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-cameraagent-symlink.snapshot"
+if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true >/dev/null 2>&1; then
+    fail 'Restore traversed a symbolic-link CameraAgent target parent.'
+fi
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-cameraagent-symlink.snapshot"
+cmp -s "$TEMP_DIR/pre-cameraagent-symlink.snapshot" "$TEMP_DIR/post-cameraagent-symlink.snapshot" || fail 'CameraAgent-parent symlink rejection changed old state.'
+rm "$RUNTIME_ROOT/cameraagent"
+mv "$TEMP_DIR/saved-cameraagent" "$RUNTIME_ROOT/cameraagent"
+
+for nonowned_host in logichost cameraagent; do
+    snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-$nonowned_host-owner.snapshot"
+    if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true \
+        HVO_TEST_NONOWNED_HOST_PARENT="$nonowned_host" >/dev/null 2>&1; then
+        fail "Restore accepted a non-owned $nonowned_host target parent."
+    fi
+    snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-$nonowned_host-owner.snapshot"
+    cmp -s "$TEMP_DIR/pre-$nonowned_host-owner.snapshot" "$TEMP_DIR/post-$nonowned_host-owner.snapshot" || \
+        fail "$nonowned_host-parent ownership rejection changed old state."
+    test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+done
+
+# If stop fails after LogicHost has started, runtime, rollback, and marker remain untouched for recovery.
+printf 'before-stop-failure\n' > "$RUNTIME_ROOT/agent/frame.bin"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-stop-failure.snapshot"
+rm -f "$TEMP_DIR/stop-fail.state"
+if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true \
+    HVO_RESTORE_FAILPOINT=after-logichost-start HVO_TEST_STOP_FAIL_AFTER_START=true \
+    HVO_TEST_STOP_FAIL_STATE="$TEMP_DIR/stop-fail.state" >"$TEMP_DIR/stop-failure.log" 2>&1; then
+    fail 'Restore stop-failure injection unexpectedly succeeded.'
+fi
+grep -Fq 'Stop both applications and rerun restore recovery' "$TEMP_DIR/stop-failure.log"
+test -f "$TEMP_DIR/.hvo-application-state-restore.transaction"
+stop_failure_rollback="$(perl -ne 'print $1 if /^rollback\t([^\n]+)$/' "$TEMP_DIR/.hvo-application-state-restore.transaction")"
+test -n "$stop_failure_rollback"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/stop-failure-runtime.snapshot"
+snapshot_tree "$TEMP_DIR/$stop_failure_rollback" "$TEMP_DIR/stop-failure-rollback.snapshot"
+cmp -s "$TEMP_DIR/pre-stop-failure.snapshot" "$TEMP_DIR/stop-failure-rollback.snapshot" || fail 'Stop failure changed retained rollback state.'
+
+if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true \
+    HVO_TEST_STOP_FAIL_AFTER_START=true HVO_TEST_STOP_FAIL_STATE="$TEMP_DIR/stop-fail.state" >/dev/null 2>&1; then
+    fail 'Recovery proceeded while application stop still failed.'
+fi
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/stop-failure-runtime-after-recovery-attempt.snapshot"
+snapshot_tree "$TEMP_DIR/$stop_failure_rollback" "$TEMP_DIR/stop-failure-rollback-after-recovery-attempt.snapshot"
+cmp -s "$TEMP_DIR/stop-failure-runtime.snapshot" "$TEMP_DIR/stop-failure-runtime-after-recovery-attempt.snapshot"
+cmp -s "$TEMP_DIR/stop-failure-rollback.snapshot" "$TEMP_DIR/stop-failure-rollback-after-recovery-attempt.snapshot"
+test -f "$TEMP_DIR/.hvo-application-state-restore.transaction"
+
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Post-stop-failure recovery'
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-stop-failure-recovery.snapshot"
+cmp -s "$TEMP_DIR/pre-stop-failure.snapshot" "$TEMP_DIR/post-stop-failure-recovery.snapshot" || fail 'Successful recovery did not restore pre-failure state.'
+test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test ! -e "$TEMP_DIR/$stop_failure_rollback"
+
+# Legacy archives remain supported, but their catalog is never installed over the target catalog.
+mkdir -p "$TEMP_DIR/legacy-with-catalog/catalog" "$TEMP_DIR/legacy-without-catalog"
+for path in "${SUPPORTED_PATHS[@]}"; do
+    mkdir -p "$TEMP_DIR/legacy-with-catalog/$path" "$TEMP_DIR/legacy-without-catalog/$path"
+done
+printf 'legacy-identity\n' > "$TEMP_DIR/legacy-with-catalog/cameraagent/identity/identity.db"
+printf 'legacy-identity\n' > "$TEMP_DIR/legacy-without-catalog/cameraagent/identity/identity.db"
+mkdir -p "$TEMP_DIR/legacy-with-catalog/agent/$LONG_COMPONENT" "$TEMP_DIR/legacy-without-catalog/agent/$LONG_COMPONENT"
+printf 'legacy-long-path\n' > "$TEMP_DIR/legacy-with-catalog/agent/$LONG_COMPONENT/payload.bin"
+printf 'legacy-long-path\n' > "$TEMP_DIR/legacy-without-catalog/agent/$LONG_COMPONENT/payload.bin"
+chmod 0777 "$TEMP_DIR/legacy-with-catalog/cameraagent/identity" "$TEMP_DIR/legacy-without-catalog/cameraagent/identity"
+chmod 0755 "$TEMP_DIR/legacy-with-catalog/agent" "$TEMP_DIR/legacy-without-catalog/agent"
+printf 'archive-catalog-must-not-win\n' > "$TEMP_DIR/legacy-with-catalog/catalog/manifest.json"
+tar -czf "$TEMP_DIR/legacy-with-catalog.tgz" -C "$TEMP_DIR/legacy-with-catalog" .
+write_checksum "$TEMP_DIR/legacy-with-catalog.tgz"
+printf 'target-catalog-v2\n' > "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
+restore_archive "$TEMP_DIR/legacy-with-catalog.tgz" env HVO_SKIP_RUNTIME_HEALTHCHECK=true >/dev/null
+test "$(<"$RUNTIME_ROOT/catalog/versions/installed/manifest.json")" = target-catalog-v2
+test ! -e "$RUNTIME_ROOT/catalog/manifest.json"
+test "$(<"$RUNTIME_ROOT/cameraagent/identity/identity.db")" = legacy-identity
+test "$(<"$RUNTIME_ROOT/agent/$LONG_COMPONENT/payload.bin")" = legacy-long-path
+test "$(stat -c '%a' "$RUNTIME_ROOT/cameraagent/identity")" = 700
+test "$(stat -c '%a' "$RUNTIME_ROOT/agent")" = 700
+
+tar -czf "$TEMP_DIR/legacy-without-catalog.tgz" -C "$TEMP_DIR/legacy-without-catalog" .
+write_checksum "$TEMP_DIR/legacy-without-catalog.tgz"
+printf 'target-catalog-v3\n' > "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
+restore_archive "$TEMP_DIR/legacy-without-catalog.tgz" env HVO_SKIP_RUNTIME_HEALTHCHECK=true >/dev/null
+test "$(<"$RUNTIME_ROOT/catalog/versions/installed/manifest.json")" = target-catalog-v3
+test "$(<"$RUNTIME_ROOT/agent/$LONG_COMPONENT/payload.bin")" = legacy-long-path
+
+# The common lock rejects ordinary start/rebuild/reset/catalog mutation without touching state.
+exec 8<>"$TEMP_DIR/.hvo-application-state.lock"
+flock -n 8
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/infra:reset" cameraagent >/dev/null 2>&1; then
+    fail 'Reset ignored the common application-state operation lock.'
+fi
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/infra:start" logichost >/dev/null 2>&1; then
+    fail 'Ordinary start ignored the common application-state operation lock.'
+fi
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/infra:start" --rebuild logichost >/dev/null 2>&1; then
+    fail 'Rebuild ignored the common application-state operation lock.'
+fi
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/infra:backup-app-state" "$TEMP_DIR/locked-backup" >/dev/null 2>&1; then
+    fail 'Backup ignored the common application-state operation lock.'
+fi
+if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true >/dev/null 2>&1; then
+    fail 'Restore ignored the common application-state operation lock.'
+fi
+if HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/catalog/install-hyg-v42.sh" install "$TEMP_DIR/not-a-bundle" "$RUNTIME_ROOT/catalog" >"$TEMP_DIR/catalog-lock.log" 2>&1; then
+    fail 'Catalog mutation ignored the common application-state operation lock.'
+fi
+grep -Fq 'Another application-state operation is in progress.' "$TEMP_DIR/catalog-lock.log"
+flock -u 8
+exec 8>&-
+test -f "$TEMP_DIR/shared-volume/database.sentinel"
+
+# Environment metadata alone cannot spoof inherited ownership of the operation lock.
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    HVO_APPLICATION_STATE_LOCK_FD=200 HVO_APPLICATION_STATE_LOCK_IDENTITY=1:1 \
+    "$REPO_ROOT/scripts/infra:start" logichost >/dev/null 2>&1; then
+    fail 'Start accepted spoofed inherited lock metadata.'
+fi
+
+# An exact-inode inherited descriptor that was never locked cannot acquire the lock during validation.
+if (
+    exec 200<>"$TEMP_DIR/.hvo-application-state.lock"
+    unlocked_identity="$(stat -Lc '%d:%i' "/proc/$BASHPID/fd/200")"
+    PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+        HVO_APPLICATION_STATE_LOCK_FD=200 HVO_APPLICATION_STATE_LOCK_IDENTITY="$unlocked_identity" \
+        "$REPO_ROOT/scripts/infra:start" logichost >/dev/null 2>&1
+); then
+    fail 'Start accepted an exact-inode descriptor that was not already locked.'
+fi
+
+# Explicit runtime/catalog configuration cannot redirect catalog mutation outside the locked runtime.
+if HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/catalog/install-hyg-v42.sh" install "$TEMP_DIR/not-a-bundle" "$TEMP_DIR/other-catalog" \
+    >"$TEMP_DIR/catalog-mismatch.log" 2>&1; then
+    fail 'Catalog install accepted an install root outside HVO_RUNTIME_DATA_ROOT/catalog.'
+fi
+grep -Fq 'must equal HVO_RUNTIME_DATA_ROOT/catalog' "$TEMP_DIR/catalog-mismatch.log"
+
+# Direct start/reset refuse any durable restore marker and direct the operator to recovery.
+printf 'pending\n' > "$TEMP_DIR/.hvo-application-state-restore.transaction"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/infra:start" logichost >"$TEMP_DIR/marker-refusal.log" 2>&1; then
+    fail 'Start ignored a durable restore marker.'
+fi
+grep -Fq 'infra:restore-app-state' "$TEMP_DIR/marker-refusal.log"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/infra:reset" cameraagent >/dev/null 2>&1; then
+    fail 'Reset ignored a durable restore marker.'
+fi
+expect_restore_rejected "$VALID_ARCHIVE" 'Malformed-marker recovery'
+test -f "$TEMP_DIR/.hvo-application-state-restore.transaction"
+rm "$TEMP_DIR/.hvo-application-state-restore.transaction"
+
+mismatch_transaction=44444444444444444444444444444444
+write_restore_marker "$mismatch_transaction" old-moved \
+    "$(basename "$RUNTIME_ROOT").rollback.55555555555555555555555555555555" true
+expect_restore_rejected "$VALID_ARCHIVE" 'Marker transaction/rollback mismatch'
+test -f "$TEMP_DIR/.hvo-application-state-restore.transaction"
+rm "$TEMP_DIR/.hvo-application-state-restore.transaction"
+
+# Recover an old-moved phase before archive validation; recovery leaves applications stopped.
+recovery_transaction=11111111111111111111111111111111
+recovery_rollback="$(basename "$RUNTIME_ROOT").rollback.$recovery_transaction"
+printf 'marker-recovery-old-state\n' > "$RUNTIME_ROOT/unmanaged.sentinel"
+mv -T "$RUNTIME_ROOT" "$TEMP_DIR/$recovery_rollback"
+write_restore_marker "$recovery_transaction" old-moved "$recovery_rollback" true
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Post-recovery corrupt'
+test "$(<"$RUNTIME_ROOT/unmanaged.sentinel")" = marker-recovery-old-state
+test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test ! -e "$TEMP_DIR/$recovery_rollback"
+
+# A rollback destination collision is refused before the transaction marker is created.
+collision_transaction=22222222222222222222222222222222
+collision_rollback="$RUNTIME_ROOT.rollback.$collision_transaction"
+mkdir "$collision_rollback"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-rollback-collision.snapshot"
+if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true HVO_ENABLE_TEST_FAILPOINTS=true \
+    HVO_RESTORE_TEST_TRANSACTION_ID="$collision_transaction" >/dev/null 2>&1; then
+    fail 'Restore accepted a rollback destination collision.'
+fi
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-rollback-collision.snapshot"
+cmp -s "$TEMP_DIR/pre-rollback-collision.snapshot" "$TEMP_DIR/post-rollback-collision.snapshot"
+test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+rmdir "$collision_rollback"
+
+# Unsafe rollback state preserves the marker for explicit operator recovery.
+blocked_transaction=33333333333333333333333333333333
+blocked_rollback="$(basename "$RUNTIME_ROOT").rollback.$blocked_transaction"
+ln -s "$TEMP_DIR/outside-runtime" "$TEMP_DIR/$blocked_rollback"
+write_restore_marker "$blocked_transaction" old-moved "$blocked_rollback" true
+expect_restore_rejected "$VALID_ARCHIVE" 'Unsafe rollback marker recovery'
+test -f "$TEMP_DIR/.hvo-application-state-restore.transaction"
+rm "$TEMP_DIR/.hvo-application-state-restore.transaction" "$TEMP_DIR/$blocked_rollback"
+
+# Lock and marker symlinks are rejected without following or truncating their targets.
+printf 'control-target\n' > "$TEMP_DIR/control-target"
+rm "$TEMP_DIR/.hvo-application-state.lock"
+ln -s "$TEMP_DIR/control-target" "$TEMP_DIR/.hvo-application-state.lock"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/infra:start" logichost >/dev/null 2>&1; then
+    fail 'Start followed a symbolic-link operation lock.'
+fi
+test "$(<"$TEMP_DIR/control-target")" = control-target
+rm "$TEMP_DIR/.hvo-application-state.lock"
+PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    "$REPO_ROOT/scripts/infra:start" logichost >/dev/null
+ln -s "$TEMP_DIR/control-target" "$TEMP_DIR/.hvo-application-state-restore.transaction"
+if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true >/dev/null 2>&1; then
+    fail 'Restore followed a symbolic-link transaction marker.'
+fi
+test "$(<"$TEMP_DIR/control-target")" = control-target
+rm "$TEMP_DIR/.hvo-application-state-restore.transaction"
+
+grep -Fq 'stop_grace_period: 45s' "$REPO_ROOT/docker-compose.apps.yml"
+printf 'Infrastructure command contract passed.\n'

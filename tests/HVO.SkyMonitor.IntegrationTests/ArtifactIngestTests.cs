@@ -90,6 +90,43 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
+    public async Task LegacyDuplicatePublisher_WaitsForCanonicalObjectApplicationLock()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, _) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        var manifest = new ArtifactUploadManifest(
+            "v1", deviceId, Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw,
+            "application/octet-stream", 4, PayloadChecksum, DateTimeOffset.UnixEpoch,
+            "raw-v1", "frames/raw.bin");
+        using var first = await PostAsync(client, manifest).ConfigureAwait(false);
+        first.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        await using var lockScope = fixture.Factory.Services.CreateAsyncScope();
+        var db = lockScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var storageReference = await db.CentralArtifacts.Where(item => item.IdempotencyKey == manifest.IdempotencyKey)
+            .Select(item => item.StorageReference).SingleAsync().ConfigureAwait(false);
+        var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+            db, storageReference, CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            var duplicate = PostAsync(client, manifest);
+            await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+            duplicate.IsCompleted.Should().BeFalse("legacy duplicate reconciliation publishes ownership under the shared lock");
+
+            await objectLock.DisposeAsync().ConfigureAwait(false);
+            using var response = await duplicate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        }
+        finally
+        {
+            await objectLock.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
     public async Task MultipartIngestV2_PersistsReconstructableFactsAndBindsHistoricalRig()
     {
         var fixture = AssemblyHooks.Fixture;
@@ -1977,7 +2014,8 @@ public sealed class ArtifactIngestTests
         var services = fixture.Factory.Services;
         var minio = services.GetRequiredService<IMinioClient>();
         const string bucket = "skymonitor-artifacts";
-        var objectKey = $"staging/reconciliation-{Guid.NewGuid():N}";
+        const int stagingPartition = 10;
+        var objectKey = $"staging/a{Guid.NewGuid():N}";
         if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket)).ConfigureAwait(false))
         {
             await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket)).ConfigureAwait(false);
@@ -1988,6 +2026,18 @@ public sealed class ArtifactIngestTests
             .WithStreamData(new MemoryStream([1, 2, 3, 4]))
             .WithObjectSize(4)).ConfigureAwait(false);
         var clock = new MutableTimeProvider(DateTimeOffset.UtcNow.AddMinutes(5));
+        await using (var checkpointScope = services.CreateAsyncScope())
+        {
+            await checkpointScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .CentralRecoveryCheckpoints.ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Phase, CentralRecoveryPhases.Idle)
+                    .SetProperty(item => item.StagingPartition, stagingPartition)
+                    .SetProperty(item => item.StagingCursor, (string?)null)
+                    .SetProperty(item => item.NextInventoryAtUtc, clock.UtcNow.AddDays(1))
+                    .SetProperty(item => item.LeaseToken, (Guid?)null)
+                    .SetProperty(item => item.LeaseExpiresAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+        }
         using var telemetry = new CentralIngestTelemetry();
         var reconciler = new CentralArtifactReconciliationService(
             services.GetRequiredService<IServiceScopeFactory>(),
@@ -2000,11 +2050,40 @@ public sealed class ArtifactIngestTests
             .Size.Should().Be(4);
 
         clock.UtcNow = clock.UtcNow.Add(CentralArtifactReconciliationService.StagingObjectGracePeriod);
-        await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+        await using (var checkpointScope = services.CreateAsyncScope())
+        {
+            await checkpointScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .CentralRecoveryCheckpoints.ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Phase, CentralRecoveryPhases.Idle)
+                    .SetProperty(item => item.StagingPartition, 0)
+                    .SetProperty(item => item.StagingCursor, (string?)null)
+                    .SetProperty(item => item.NextInventoryAtUtc, clock.UtcNow.AddDays(1))
+                    .SetProperty(item => item.LeaseToken, (Guid?)null)
+                    .SetProperty(item => item.LeaseExpiresAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+        }
+        var convergenceCycles = 0;
+        var removed = false;
+        while (convergenceCycles < CentralArtifactReconciliationService.MaximumStagingConvergenceCycles)
+        {
+            convergenceCycles++;
+            await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                _ = await minio.StatObjectAsync(new StatObjectArgs().WithBucket(bucket).WithObject(objectKey))
+                    .ConfigureAwait(false);
+            }
+            catch (Minio.Exceptions.MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+            {
+                removed = true;
+                break;
+            }
+        }
 
-        var stat = async () => await minio.StatObjectAsync(
-            new StatObjectArgs().WithBucket(bucket).WithObject(objectKey)).ConfigureAwait(false);
-        await stat.Should().ThrowAsync<Minio.Exceptions.MinioException>().ConfigureAwait(false);
+        removed.Should().BeTrue();
+        convergenceCycles.Should().BeLessThanOrEqualTo(
+            CentralArtifactReconciliationService.MaximumStagingConvergenceCycles);
+        CentralArtifactReconciliationService.MaximumStagingConvergenceCycles.Should().BeLessThanOrEqualTo(47);
     }
 
     [TestMethod]

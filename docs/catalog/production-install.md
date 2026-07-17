@@ -45,7 +45,7 @@ One command can build, bundle, and install:
 ```bash
 ./scripts/catalog/build-hyg-v42.sh \
   --source /secure-cache/hyg_v42.csv.gz \
-  --install-root /var/lib/hvo/catalog \
+  --install-root /var/lib/hvo/data/catalog \
   ./artifacts/hyg-v42
 ```
 
@@ -120,17 +120,25 @@ Normal installation consumes a local bundle and has no network code path:
 ```bash
 ./scripts/catalog:install install \
   /mnt/catalog-bundles/hyg-v4.2-p3-s2-r1.bundle \
-  /var/lib/hvo/catalog
+  /var/lib/hvo/data/catalog
 ```
 
-Configure each host with `Catalog:Root=/var/lib/hvo/catalog` and
+Configure each host with `HVO_RUNTIME_DATA_ROOT=/var/lib/hvo/data` and
+`Catalog:Root=/var/lib/hvo/data/catalog`; `/var/lib/hvo` must be a nonsymlink
+directory owned by the application operator so the shared operation lock can be
+created without changing parent permissions, and it must not be group- or
+world-writable. When `HVO_RUNTIME_DATA_ROOT` is supplied, the requested install
+root must be exactly its canonical `catalog` child. Configure
 `Catalog:RequiredPackageKind=Production`. The resolver reads the active pointer
 and all identity, checksum, length, and provenance requirements from the strict
 manifest; there is no independently configurable database path or checksum.
 Activation applies to the next host start; a running process retains its already
 loaded immutable catalog.
 
-The installer takes an exclusive `.install.lock`, removes abandoned
+The installer first takes the application-state operation lock shared with
+start, rebuild, reset, backup, and restore, then takes its catalog-exclusive
+`.install.lock`. This prevents catalog pointer mutation while restore preserves
+the target catalog. It removes abandoned
 `.staging.*` directories, and validates the local bundle before staging. It
 checks every retained payload length and hash, the pinned production identity,
 SQLite integrity/user version/schema/index/metadata, exactly 119,625 rows, Sol
@@ -147,11 +155,11 @@ before the transaction never changes `current`.
 Rollback validates the complete previous bundle before changing either pointer:
 
 ```bash
-./scripts/catalog:install rollback /var/lib/hvo/catalog
+./scripts/catalog:install rollback /var/lib/hvo/data/catalog
 ```
 
 The equivalent catalog-scoped command is
-`./scripts/catalog/rollback-hyg-v42.sh /var/lib/hvo/catalog`.
+`./scripts/catalog/rollback-hyg-v42.sh /var/lib/hvo/data/catalog`.
 
 On a normal rollback, `previous` becomes the displaced current version, allowing
 the operator to reverse the selection again. Do not modify a published version

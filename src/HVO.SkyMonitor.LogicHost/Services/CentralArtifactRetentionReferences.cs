@@ -50,50 +50,70 @@ internal sealed class CentralArtifactRetentionService(
         Guid centralArtifactId,
         CancellationToken cancellationToken)
     {
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
-        await CentralArtifactRetentionLock.AcquireAsync(dbContext, centralArtifactId, cancellationToken)
-            .ConfigureAwait(false);
-        var artifact = await dbContext.CentralArtifacts.SingleOrDefaultAsync(
-            candidate => candidate.Id == centralArtifactId, cancellationToken).ConfigureAwait(false);
-        if (artifact is null)
+        while (true)
         {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-            telemetry.RecordRetention("not-found");
-            return CentralArtifactRetentionResult.NotFound;
-        }
-        if (await references.IsHeldAsync(centralArtifactId, cancellationToken).ConfigureAwait(false))
-        {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-            telemetry.RecordRetention("held");
-            return CentralArtifactRetentionResult.Held;
-        }
-        if (!artifact.StorageReference.StartsWith(BucketPrefix, StringComparison.Ordinal))
-        {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-            telemetry.RecordRetention("invalid-reference");
-            return CentralArtifactRetentionResult.InvalidReference;
-        }
+            var storageReference = await dbContext.CentralArtifacts.AsNoTracking()
+                .Where(candidate => candidate.Id == centralArtifactId)
+                .Select(candidate => candidate.StorageReference)
+                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (storageReference is null)
+            {
+                telemetry.RecordRetention("not-found");
+                return CentralArtifactRetentionResult.NotFound;
+            }
+            if (!storageReference.StartsWith(BucketPrefix, StringComparison.Ordinal))
+            {
+                telemetry.RecordRetention("invalid-reference");
+                return CentralArtifactRetentionResult.InvalidReference;
+            }
 
-        if (artifact.ObjectState != CentralArtifactObjectState.Expired)
-        {
-            artifact.ObjectState = CentralArtifactObjectState.Expired;
-            artifact.StateReasonCode = "retention.expired";
-            artifact.ReconciledAtUtc = timeProvider.GetUtcNow();
-            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+                dbContext, storageReference, cancellationToken).ConfigureAwait(false);
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+            await CentralArtifactRetentionLock.AcquireAsync(dbContext, centralArtifactId, cancellationToken)
+                .ConfigureAwait(false);
+            var artifact = await dbContext.CentralArtifacts.SingleOrDefaultAsync(
+                candidate => candidate.Id == centralArtifactId, cancellationToken).ConfigureAwait(false);
+            if (artifact is null)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                telemetry.RecordRetention("not-found");
+                return CentralArtifactRetentionResult.NotFound;
+            }
+            if (!string.Equals(artifact.StorageReference, storageReference, StringComparison.Ordinal))
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                dbContext.ChangeTracker.Clear();
+                continue;
+            }
+            if (await references.IsHeldAsync(centralArtifactId, cancellationToken).ConfigureAwait(false))
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                telemetry.RecordRetention("held");
+                return CentralArtifactRetentionResult.Held;
+            }
+
+            if (artifact.ObjectState != CentralArtifactObjectState.Expired)
+            {
+                artifact.ObjectState = CentralArtifactObjectState.Expired;
+                artifact.StateReasonCode = "retention.expired";
+                artifact.ReconciledAtUtc = timeProvider.GetUtcNow();
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            }
+            try
+            {
+                await minio.RemoveObjectAsync(new RemoveObjectArgs()
+                    .WithBucket(Bucket)
+                    .WithObject(artifact.StorageReference[BucketPrefix.Length..]), cancellationToken).ConfigureAwait(false);
+            }
+            catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+            {
+            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            telemetry.RecordRetention("released");
+            return CentralArtifactRetentionResult.Released;
         }
-        try
-        {
-            await minio.RemoveObjectAsync(new RemoveObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(artifact.StorageReference[BucketPrefix.Length..]), cancellationToken).ConfigureAwait(false);
-        }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
-        {
-        }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        telemetry.RecordRetention("released");
-        return CentralArtifactRetentionResult.Released;
     }
 }
 

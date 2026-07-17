@@ -5,6 +5,8 @@ umask 022
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/catalog/catalog-common.sh
 source "$SCRIPT_DIR/catalog-common.sh"
+# shellcheck source=scripts/infra:operation-lock
+source "$SCRIPT_DIR/../infra:operation-lock"
 
 usage() {
     cat >&2 <<USAGE
@@ -18,6 +20,25 @@ hyg_require_commands flock id mv readlink realpath sha256sum sqlite3 stat sync w
 hyg_check_sqlite_version
 
 INSTALL_STAGING=""
+
+acquire_application_state_lock() {
+    local requested_root="$1"
+    local canonical_root
+    local operation_runtime_root
+
+    canonical_root="$(realpath -ms "$requested_root")"
+    if [[ -n "${HVO_RUNTIME_DATA_ROOT:-}" ]]; then
+        operation_runtime_root="$(realpath -ms "$HVO_RUNTIME_DATA_ROOT")"
+        [[ "$canonical_root" == "$operation_runtime_root/catalog" ]] || \
+            hyg_fail "catalog install root must equal HVO_RUNTIME_DATA_ROOT/catalog"
+    elif [[ "$(basename "$canonical_root")" == catalog ]]; then
+        operation_runtime_root="$(dirname "$canonical_root")"
+    else
+        operation_runtime_root="$canonical_root/.catalog-operation-boundary"
+    fi
+    hvo_acquire_application_state_lock "$operation_runtime_root" || return 1
+    hvo_require_restore_marker_access catalog || return 1
+}
 
 test_fail_at() {
     if [[ "${HVO_CATALOG_TEST_FAIL_AT:-}" == "$1" ]]; then
@@ -168,6 +189,7 @@ install_bundle() {
     local old_target=""
     local file
 
+    acquire_application_state_lock "$2"
     bundle="$(realpath "$1")"
     prepare_root "$2"
 
@@ -248,6 +270,7 @@ rollback_catalog() {
     local previous_target
     local current_target=""
 
+    acquire_application_state_lock "$1"
     prepare_root "$1"
     previous_target="$(read_pointer previous)"
     validate_installed_target "$previous_target"

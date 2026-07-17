@@ -19,10 +19,14 @@ internal sealed class CentralIngestTelemetry : IDisposable
     private readonly Counter<long> _reconciliationConcurrency;
     private readonly Counter<long> _stagingCleanup;
     private readonly Counter<long> _stagingCleanupBytes;
+    private readonly Counter<long> _recoveryInventory;
+    private readonly Counter<long> _recoveryInventoryBytes;
+    private readonly Counter<long> _recoveryCycles;
     private readonly Histogram<double> _duration;
     private readonly Histogram<double> _objectWriteDuration;
     private readonly Histogram<double> _sqlCommitDuration;
     private readonly Histogram<double> _reconciliationDuration;
+    private readonly Histogram<double> _recoveryCycleDuration;
     private long _pendingObjects;
     private long _pendingObjectBytes;
     private long _pendingObjectOldestAgeSeconds;
@@ -46,10 +50,14 @@ internal sealed class CentralIngestTelemetry : IDisposable
             "skymonitor.central.ingest.reconciliation_concurrency", "{conflict}");
         _stagingCleanup = _meter.CreateCounter<long>("skymonitor.central.ingest.staging_cleanup", "{object}");
         _stagingCleanupBytes = _meter.CreateCounter<long>("skymonitor.central.ingest.staging_cleanup_bytes", "By");
+        _recoveryInventory = _meter.CreateCounter<long>("skymonitor.central.recovery.inventory", "{object}");
+        _recoveryInventoryBytes = _meter.CreateCounter<long>("skymonitor.central.recovery.inventory_bytes", "By");
+        _recoveryCycles = _meter.CreateCounter<long>("skymonitor.central.recovery.cycles", "{cycle}");
         _duration = _meter.CreateHistogram<double>("skymonitor.central.ingest.duration", "ms");
         _objectWriteDuration = _meter.CreateHistogram<double>("skymonitor.central.ingest.object_write.duration", "ms");
         _sqlCommitDuration = _meter.CreateHistogram<double>("skymonitor.central.ingest.sql_commit.duration", "ms");
         _reconciliationDuration = _meter.CreateHistogram<double>("skymonitor.central.ingest.reconciliation.duration", "ms");
+        _recoveryCycleDuration = _meter.CreateHistogram<double>("skymonitor.central.recovery.cycle.duration", "ms");
         _meter.CreateObservableGauge("skymonitor.central.ingest.pending_objects", () => Interlocked.Read(ref _pendingObjects), "{artifact}");
         _meter.CreateObservableGauge("skymonitor.central.ingest.pending_object_bytes", () => Interlocked.Read(ref _pendingObjectBytes), "By");
         _meter.CreateObservableGauge("skymonitor.central.ingest.pending_object_oldest_age", () => Interlocked.Read(ref _pendingObjectOldestAgeSeconds), "s");
@@ -108,6 +116,23 @@ internal sealed class CentralIngestTelemetry : IDisposable
         {
             _stagingCleanupBytes.Add(bytes, tags);
         }
+    }
+
+    public void RecordRecoveryInventory(string outcome, long objects, long bytes)
+    {
+        var tags = new TagList { { "outcome", outcome } };
+        _recoveryInventory.Add(objects, tags);
+        if (bytes > 0)
+        {
+            _recoveryInventoryBytes.Add(bytes, tags);
+        }
+    }
+
+    public void RecordRecoveryCycle(string outcome, TimeSpan elapsed)
+    {
+        var tags = new TagList { { "outcome", outcome } };
+        _recoveryCycles.Add(1, tags);
+        _recoveryCycleDuration.Record(elapsed.TotalMilliseconds, tags);
     }
 
     public void RecordBacklog(

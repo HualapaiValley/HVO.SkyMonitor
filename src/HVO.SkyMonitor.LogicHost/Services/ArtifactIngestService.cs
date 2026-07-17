@@ -292,6 +292,8 @@ internal sealed class ArtifactIngestService(
                 EnsureCompatibleArtifactMatches(compatibilityArtifact, manifest);
                 if (compatibilityArtifact.ObjectState == CentralArtifactObjectState.Available)
                 {
+                    await using var compatibilityLock = await CentralObjectApplicationLock.AcquireAsync(
+                        dbContext, compatibilityArtifact.StorageReference, cancellationToken).ConfigureAwait(false);
                     var enriched = await EnrichCompatibilityArtifactAsync(
                         registration, manifest, timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
                     telemetry.RecordDuplicate(manifest.SchemaVersion);
@@ -315,6 +317,8 @@ internal sealed class ArtifactIngestService(
                 .ConfigureAwait(false);
             dbContext.ChangeTracker.Clear();
         }
+        await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+            dbContext, storageReference, cancellationToken).ConfigureAwait(false);
         var source = new CopySourceObjectArgs().WithBucket(Bucket).WithObject(stagingKey);
         var copyStarted = timeProvider.GetTimestamp();
         try
@@ -439,7 +443,7 @@ internal sealed class ArtifactIngestService(
         catch (Exception exception) when (IsPersistenceRace(exception))
         {
             dbContext.ChangeTracker.Clear();
-            return await ReconcileExistingAsync(
+            return await ReconcileExistingUnderObjectLockAsync(
                 manifest, receivedAtUtc, ExistingArtifactReconciliationMode.MultipartDuplicate, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -578,6 +582,24 @@ internal sealed class ArtifactIngestService(
         => new("The capture sequence is already associated with a different frame for this device.", innerException);
 
     private async Task<ArtifactIngestResult> ReconcileExistingAsync(
+        ArtifactIngestManifest manifest,
+        DateTimeOffset receivedAtUtc,
+        ExistingArtifactReconciliationMode mode,
+        CancellationToken cancellationToken)
+    {
+        var storageReference = await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.IdempotencyKey == manifest.IdempotencyKey
+                || artifact.IngestIdentities.Any(identity => identity.IdempotencyKey == manifest.IdempotencyKey))
+            .Select(artifact => artifact.StorageReference)
+            .SingleAsync(cancellationToken).ConfigureAwait(false);
+        await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+            dbContext, storageReference, cancellationToken).ConfigureAwait(false);
+        dbContext.ChangeTracker.Clear();
+        return await ReconcileExistingUnderObjectLockAsync(manifest, receivedAtUtc, mode, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<ArtifactIngestResult> ReconcileExistingUnderObjectLockAsync(
         ArtifactIngestManifest manifest,
         DateTimeOffset receivedAtUtc,
         ExistingArtifactReconciliationMode mode,
@@ -1236,12 +1258,14 @@ internal sealed class ArtifactIngestService(
     {
         if (!hasRigProfile)
         {
+            ResetReferenceRetryIfNewlyPending(artifact);
             artifact.ReconstructionState = CentralReconstructionState.PendingReference;
             artifact.StateReasonCode = "profile.rig-not-found";
             return;
         }
         if (hasUnresolvedSource ?? artifact.Sources.Any(source => source.ResolvedCentralArtifactId == null))
         {
+            ResetReferenceRetryIfNewlyPending(artifact);
             artifact.ReconstructionState = CentralReconstructionState.PendingReference;
             artifact.StateReasonCode = unavailableSource
                 ? "lineage.source-unavailable"
@@ -1250,6 +1274,17 @@ internal sealed class ArtifactIngestService(
         }
         artifact.ReconstructionState = CentralReconstructionState.Complete;
         artifact.StateReasonCode = null;
+        artifact.ReferenceRetryCount = 0;
+        artifact.ReferenceRetryAtUtc = null;
+    }
+
+    private static void ResetReferenceRetryIfNewlyPending(CentralArtifact artifact)
+    {
+        if (artifact.ReconstructionState != CentralReconstructionState.PendingReference)
+        {
+            artifact.ReferenceRetryCount = 0;
+            artifact.ReferenceRetryAtUtc = null;
+        }
     }
 
     private static bool IsUsableLineageSource(CentralArtifact artifact)
@@ -1284,6 +1319,8 @@ internal sealed class ArtifactIngestService(
                 dependent.ReconstructionState = CentralReconstructionState.PendingReference;
                 dependent.StateReasonCode = "lineage.source-unavailable";
                 dependent.ReconciledAtUtc = null;
+                dependent.ReferenceRetryCount = 0;
+                dependent.ReferenceRetryAtUtc = null;
                 pending.Enqueue(dependent.Id);
             }
             var jobs = await dbContext.CentralDerivativeJobs

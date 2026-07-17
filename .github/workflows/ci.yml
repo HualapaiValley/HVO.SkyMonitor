@@ -45,12 +45,13 @@ jobs:
           /tmp/actionlint .github/workflows/*.yml
       - name: Audit identity and security operations guidance
         run: |
-          bash -n scripts/docs:audit-operations scripts/identity:smoke scripts/user-secret:set scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:opencode scripts/catalog/*.sh scripts/catalog:install scripts/opencode:enable scripts/opencode:disable
+          bash -n scripts/docs:audit-operations scripts/identity:smoke scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:opencode scripts/catalog/*.sh scripts/catalog:install scripts/opencode:enable scripts/opencode:disable
           ./scripts/docs:audit-operations
           ./scripts/test:infra
           bash ./scripts/test:opencode
           ./scripts/catalog/smoke-test.sh
           SQLSERVER_PASSWORD=validation-only REDIS_PASSWORD=validation-only MINIO_ACCESS_KEY=validation-only MINIO_SECRET_KEY=validation-only CAMERA_AGENT_ADMIN_PASSWORD=validation-only-password CAMERA_AGENT_OAUTH_CLIENT_SECRET=validation-only-oauth-secret docker compose --env-file .env.template -f docker-compose.apps.yml config --quiet
+          MINIO_ROOT_USER=validation-only MINIO_ROOT_PASSWORD=validation-only REDIS_PASSWORD=validation-only docker compose --env-file .env.template -f deploy/hvo-docker/docker-compose.shared-services.yml config --quiet
       - name: Audit vulnerable and deprecated packages
         run: ./scripts/package:audit
       - name: Upload package audit

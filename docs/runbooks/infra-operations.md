@@ -4,8 +4,9 @@ This runbook covers persistent shared services on `hvo-docker.hvo.lan` and the
 local application containers that consume them.
 
 Repository infrastructure helpers require the Linux/devcontainer GNU toolchain
-(`bash`, GNU `realpath`, `tar`, `sha256sum`, and `stat`). Run them from the
-supported devcontainer on macOS or Windows hosts.
+(`bash`, GNU `realpath`, `tar`, `find`, `sort`, `stat`, `flock`, `sha256sum`,
+`cmp`, and Perl). Run them from the supported devcontainer on macOS or Windows
+hosts.
 
 ## Service Layout and Ownership
 
@@ -122,14 +123,21 @@ Reset is destructive and requires an approved backup and rollback decision:
 - Neither reset command deletes `data/catalog`; activation and rollback remain
   separately controlled catalog operations.
 
-`./scripts/test:infra` validates command-selection and cleanup behavior with an
-isolated temporary runtime-data root. It does not touch repository `data/` or
-start Docker containers.
+`./scripts/test:infra` validates command selection, locks, transaction phases,
+archive rejection, file/mode round trips, and sentinel preservation with an
+isolated temporary runtime-data root and mocked Docker/health commands. Its
+shared-service checks are filesystem sentinels, not actual Docker-volume calls.
+It does not touch repository `data/`, start containers, prove Docker volume
+behavior, or replace the separate W2/W3 performance workloads.
 
 ## Redis Safety
 
-Use cursor-based inspection of only `skymonitor:*` keys. Confirm host, port,
-logical database, prefix, and the reviewed key-name manifest before deletion.
+The shared-service Compose topology disables Redis `default` and configures the
+`skymonitor-app` ACL user for only `skymonitor:*` keys, with administrative and
+dangerous command categories denied. Use that application identity for normal
+operations, not an unrestricted server credential. Use cursor-based inspection
+of only `skymonitor:*` keys. Confirm host, port, logical database, prefix, and
+the reviewed key-name manifest before deletion.
 Delete approved keys individually with `UNLINK`. Never clear an entire logical
 database or server. Redis deletion does not revoke cookies, OAuth tokens, API
 keys, or device credentials.
@@ -164,16 +172,112 @@ encryption, retention, restore command, and verification belong to the site's
 service runbook. Do not use a command for another database engine or copy SQL
 metadata without its corresponding MinIO objects.
 
-Restore Data Protection keys before protected envelopes/secrets, restore MinIO
-before validating SQL object references, start LogicHost before CameraAgent,
-then run health, auth, heartbeat, object-inventory, and checksum checks. See the
-[identity operations runbook](../identity/operations-runbook.md) for the
-ordered procedure.
+Keep both applications stopped while restoring MinIO and SQL Server, with MinIO
+available before SQL object references are validated. Then restore the local
+application state as one unit. The application restore starts LogicHost and
+waits for `/health` before it starts CameraAgent and waits for CameraAgent
+`/health`. Run auth, durable-heartbeat, object-inventory, and checksum checks
+afterward. See the [identity operations runbook](../identity/operations-runbook.md)
+for the ordered procedure.
 
 Use `./scripts/infra:backup-app-state BACKUP_DIRECTORY` and
 `./scripts/infra:restore-app-state APPLICATION_STATE_ARCHIVE` for the mounted
-application portion. These scripts create/verify a SHA-256 manifest and retain
-pre-restore state for rollback; they do not back up SQL Server or MinIO.
+application portion. New `.tgz` archives contain only the seven supported paths
+listed above, never `data/catalog` or other runtime-root content. They include a
+versioned file/directory inventory with modes, file sizes, and SHA-256 digests,
+and retain the adjacent one-line `.sha256` transport-checksum format used by
+legacy archives. Restore accepts those legacy archive/checksum pairs, validates
+new inventories before installation and after extraction, preserves the target
+catalog independently, and retains exact pre-restore state for rollback. For an
+inventory-v1 archive, every regular file and every directory beneath a supported
+root must have exactly one canonical inventory entry and every inventory entry
+must exist after extraction with the recorded type and mode; implicitly created
+nested directories are rejected. Legacy archives have no internal inventory and
+therefore retain reduced verification: transport checksum, canonical header and
+type safety, collision-safe extraction, and post-walk filesystem type checks,
+without requiring old archives to list every extraction scaffold directory. A
+failed application restore attempts collision-safe exact rollback and
+intentionally leaves both applications stopped. If exact rollback cannot
+complete, it preserves the durable transaction marker and rollback state for
+operator recovery rather than claiming success. These scripts do not back up
+or restore SQL Server or MinIO.
+
+Ordinary start, rebuild, reset, backup, restore, and production-catalog
+install/rollback share one nonblocking operation lock outside the runtime root.
+The lock helper creates a missing runtime parent but never chmods an existing
+parent. The parent must be owned by the current user, must not be a symlink, and
+must not be group- or world-writable; an existing safe mode such as `0751` is
+preserved. Control files must be owned nonsymlink regular files. A restore
+passes its already-held file descriptor and inode identity to its internal
+LogicHost/CameraAgent starts; environment variables without that held descriptor
+cannot bypass the lock. Direct start/reset and catalog mutation refuse a durable
+restore marker and direct the operator through `infra:restore-app-state`
+recovery.
+
+Backup validates the completed private partial archive against its generated
+inventory before publication. It syncs and publishes the checksum first, then
+atomically renames the archive as the usable commit point and syncs the
+destination directory. A handled publication failure removes the incomplete
+checksum; an uncatchable process or machine failure can leave a checksum with no
+archive, which restore treats as unusable and a later same-name backup treats as
+a collision.
+
+The seven supported sensitive state roots must be owned by the current user.
+Ordinary start normalizes those known roots to `0700`; backup refuses roots that
+are not already private. Restore validates archived metadata first, then its
+internal starts normalize restored known roots to `0700`. This policy never
+chmods the runtime parent. An existing runtime root and its `logichost` and
+`cameraagent` parents must be current-user-owned, nonsymlink real directories
+without group/world write permission before any operation validates,
+normalizes, or traverses leaf state. Unsafe parent state is rejected rather than
+repaired in place. The same ownership, nonsymlink, and no-group/world-write
+policy applies to an existing backup destination before publication.
+
+Restore copies the selected archive into private staging, verifies that copy,
+and performs all header validation and extraction against it. It rejects path
+aliases, duplicate canonical targets, absolute/traversal/control paths,
+link/special entries, and tar extension/path-override records. The historical
+single `./` prefix from repository legacy archives is canonicalized before
+duplicate detection. Bounded GNU long-name records from historical GNU tar
+archives are resolved and canonicalized before those checks, allowing supported
+long paths without accepting GNU long-link, sparse, or PAX override records.
+Staged filesystem swaps are individual same-filesystem
+renames coordinated by a durable phase marker; they are not a transaction that
+is atomic with SQL Server, MinIO, container startup, or health checks.
+
+## Cross-Store Recovery Inventory
+
+LogicHost persists a leased recovery checkpoint in SQL Server. After startup
+and once every 24 hours it verifies canonical `Available` artifacts against
+MinIO in bounded SQL and generated-key partitions. Missing objects return to
+`Pending`; length or checksum conflicts become `Quarantined`; pending lineage
+and rig references retry with capped recurring backoff. Unknown final objects
+are never adopted from bytes alone. A durable disposition copies each orphan to
+`quarantine/orphans/`, verifies the copy checksum, and only then removes the
+source key. Ingest, derivative publication, retention, and recovery hold the
+same hashed SQL application lock across each final object copy or deletion so a
+new SQL owner cannot race orphan cleanup.
+
+MinIO 7 does not expose a caller-supplied continuation token. Canonical keys are
+therefore partitioned and bounded; the noncanonical catch-all is one linear,
+cancellable namespace audit per recovery generation. Its operational cost is
+proportional to objects in the two artifact prefixes and must be included in
+site recovery capacity evidence. It does not run every 30 seconds.
+
+Central consistency health is `Degraded` while the first inventory is
+incomplete or durable findings await review and `Unhealthy` when progress is
+stalled. Inspect events `2120`-`2129`, span `central-artifact.reconcile`, and
+`skymonitor.central.recovery.*` metrics for scanned/matched/missing/corrupt/
+orphan counts and bytes, cycle duration, retry, and backlog. These signals use
+bounded outcomes only and never object keys or payload paths. Do not delete
+quarantine objects or disposition rows until SQL/object counts, checksums,
+lineage, jobs, and retention references have been reviewed.
+
+Every recovery or error rollback must first stop both LogicHost and CameraAgent
+successfully. If stop fails, no runtime or rollback tree is renamed or deleted;
+the marker remains and the operator must stop both applications before rerunning
+the same restore command. Marker rollback names are transaction-bound and a
+mismatch requires operator review.
 
 ## Log and Evidence Collection
 

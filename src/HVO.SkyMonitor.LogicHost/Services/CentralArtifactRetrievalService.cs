@@ -97,7 +97,9 @@ internal sealed partial class CentralArtifactRetrievalService(
                         .SetProperty(candidate => candidate.ObjectState, CentralArtifactObjectState.Pending)
                         .SetProperty(candidate => candidate.ReconstructionState, CentralReconstructionState.PendingReference)
                         .SetProperty(candidate => candidate.StateReasonCode, reasonCode)
-                        .SetProperty(candidate => candidate.ReconciledAtUtc, (DateTimeOffset?)null), cancellationToken)
+                        .SetProperty(candidate => candidate.ReconciledAtUtc, (DateTimeOffset?)null)
+                        .SetProperty(candidate => candidate.ReferenceRetryCount, 0)
+                        .SetProperty(candidate => candidate.ReferenceRetryAtUtc, (DateTimeOffset?)null), cancellationToken)
                     .ConfigureAwait(false);
             }
             dbContext.ChangeTracker.Clear();

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Back up bind-mounted application state. SQL Server and MinIO require separate operator backups.
+# Back up supported bind-mounted application state. SQL Server and MinIO require separate backups.
 
 set -euo pipefail
 umask 077
+export LC_ALL=C
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=scripts/infra:operation-lock
+source "$SCRIPT_DIR/infra:operation-lock"
 cd "$REPO_ROOT"
 
 [[ $# -eq 1 ]] || {
@@ -28,14 +31,24 @@ if [[ "$runtime_root_was_set" == true ]]; then
     HVO_RUNTIME_DATA_ROOT="$runtime_root_override"
 fi
 
-readonly RUNTIME_DATA_ROOT="$(realpath -m "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
-readonly BACKUP_DIRECTORY="$(realpath -m "$1")"
+readonly RUNTIME_DATA_ROOT="$(realpath -ms "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
+readonly BACKUP_DIRECTORY="$(realpath -ms "$1")"
+readonly INVENTORY_NAME=".hvo-application-state-inventory"
+readonly SUPPORTED_PATHS=(
+    logichost/dataprotection
+    logichost/home
+    cameraagent/identity
+    cameraagent/dataprotection
+    cameraagent/provisioning
+    agent
+    archive
+)
 if [[ -z "$RUNTIME_DATA_ROOT" || "$RUNTIME_DATA_ROOT" == "/" ]]; then
-    printf 'Refusing unsafe runtime data root: %s\n' "$RUNTIME_DATA_ROOT" >&2
+    printf 'Refusing unsafe runtime data root.\n' >&2
     exit 1
 fi
 if [[ -z "$BACKUP_DIRECTORY" || "$BACKUP_DIRECTORY" == "/" ]]; then
-    printf 'Refusing unsafe backup directory: %s\n' "$BACKUP_DIRECTORY" >&2
+    printf 'Refusing unsafe backup directory.\n' >&2
     exit 1
 fi
 case "$BACKUP_DIRECTORY/" in
@@ -45,42 +58,153 @@ case "$BACKUP_DIRECTORY/" in
         ;;
 esac
 
-install -d -m 700 "$BACKUP_DIRECTORY"
-readonly TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-readonly ARCHIVE="$BACKUP_DIRECTORY/hvo-application-state-$TIMESTAMP.tgz"
-readonly CHECKSUM="$ARCHIVE.sha256"
-readonly REQUIRED_DIRECTORIES=(
-    logichost/dataprotection
-    logichost/home
-    cameraagent/identity
-    cameraagent/dataprotection
-    cameraagent/provisioning
-    agent
-    archive
-)
+if [[ ! -e "$BACKUP_DIRECTORY" && ! -L "$BACKUP_DIRECTORY" ]]; then
+    install -d -m 700 -- "$BACKUP_DIRECTORY"
+fi
+[[ -d "$BACKUP_DIRECTORY" && ! -L "$BACKUP_DIRECTORY" && "$(realpath -m "$BACKUP_DIRECTORY")" == "$BACKUP_DIRECTORY" &&
+   "$(stat -c '%u' "$BACKUP_DIRECTORY")" == "$(id -u)" ]] || {
+    printf 'Backup directory must be a safe directory owned by the current user.\n' >&2
+    exit 1
+}
+backup_directory_mode="$(stat -c '%a' "$BACKUP_DIRECTORY")"
+(( (8#$backup_directory_mode & 0022) == 0 )) || {
+    printf 'Backup directory must not be group- or world-writable.\n' >&2
+    exit 1
+}
+hvo_acquire_application_state_lock "$RUNTIME_DATA_ROOT"
+hvo_require_restore_marker_access backup
 
-for relative_path in "${REQUIRED_DIRECTORIES[@]}"; do
-    if [[ ! -d "$RUNTIME_DATA_ROOT/$relative_path" || -L "$RUNTIME_DATA_ROOT/$relative_path" ]]; then
-        printf 'Required runtime directory is missing or unsafe: %s\n' "$relative_path" >&2
+for host_parent in "$RUNTIME_DATA_ROOT/logichost" "$RUNTIME_DATA_ROOT/cameraagent"; do
+    if [[ ! -d "$host_parent" || -L "$host_parent" || "$(realpath -m "$host_parent")" != "$host_parent" ||
+          "$(stat -c '%u' "$host_parent" 2>/dev/null)" != "$(id -u)" ]]; then
+        printf 'Application-state host parent is missing or unsafe.\n' >&2
         exit 1
     fi
 done
 
-"$SCRIPT_DIR/infra:stop" logichost cameraagent
-tar --create --gzip --file "$ARCHIVE" --directory "$RUNTIME_DATA_ROOT" .
-(cd "$BACKUP_DIRECTORY" && sha256sum "$(basename "$ARCHIVE")" > "$(basename "$CHECKSUM")")
-archive_verbose_listing="$(tar --list --verbose --numeric-owner --gzip --file "$ARCHIVE")"
-while IFS= read -r entry; do
-    case "${entry:0:1}" in
-        -|d) ;;
-        *)
-            rm -f "$ARCHIVE" "$CHECKSUM"
-            printf 'Backup contains unsupported link or special entry: %s\n' "$entry" >&2
-            exit 1
-            ;;
-    esac
-done <<< "$archive_verbose_listing"
+for relative_path in "${SUPPORTED_PATHS[@]}"; do
+    if [[ ! -d "$RUNTIME_DATA_ROOT/$relative_path" || -L "$RUNTIME_DATA_ROOT/$relative_path" ||
+          "$(stat -c '%u' "$RUNTIME_DATA_ROOT/$relative_path" 2>/dev/null)" != "$(id -u)" ||
+          "$(stat -c '%a' "$RUNTIME_DATA_ROOT/$relative_path" 2>/dev/null)" != 700 ]]; then
+        printf 'Required application-state directory is missing or unsafe.\n' >&2
+        exit 1
+    fi
+done
 
+readonly TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+readonly ARCHIVE="$BACKUP_DIRECTORY/hvo-application-state-$TIMESTAMP.tgz"
+readonly CHECKSUM="$ARCHIVE.sha256"
+if [[ -e "$ARCHIVE" || -L "$ARCHIVE" || -e "$CHECKSUM" || -L "$CHECKSUM" ]]; then
+    printf 'Backup publication collision; no files were replaced.\n' >&2
+    exit 1
+fi
+
+WORK_DIRECTORY="$(mktemp -d "$BACKUP_DIRECTORY/.hvo-application-state-$TIMESTAMP.XXXXXX.partial")"
+PARTIAL_ARCHIVE="$(mktemp "$BACKUP_DIRECTORY/.hvo-application-state-$TIMESTAMP.XXXXXX.tgz.partial")"
+PARTIAL_CHECKSUM="$(mktemp "$BACKUP_DIRECTORY/.hvo-application-state-$TIMESTAMP.XXXXXX.sha256.partial")"
+checksum_published=false
+archive_published=false
+cleanup() {
+    local status=$?
+    if [[ -f "$ARCHIVE" && ! -L "$ARCHIVE" && ! -e "$PARTIAL_ARCHIVE" ]]; then
+        archive_published=true
+    fi
+    if [[ "$checksum_published" == true && "$archive_published" != true ]]; then
+        rm -f -- "$CHECKSUM"
+        sync -f "$BACKUP_DIRECTORY" 2>/dev/null || true
+    fi
+    rm -rf -- "$WORK_DIRECTORY"
+    rm -f -- "$PARTIAL_ARCHIVE" "$PARTIAL_CHECKSUM"
+    return "$status"
+}
+trap cleanup EXIT
+
+"$SCRIPT_DIR/infra:stop" logichost cameraagent
+
+inventory="$WORK_DIRECTORY/$INVENTORY_NAME"
+printf 'HVO-APPLICATION-STATE-INVENTORY\t1\n' > "$inventory"
+entry_count=0
+while IFS= read -r -d '' relative_path; do
+    ((entry_count += 1))
+    if [[ "$relative_path" =~ [[:cntrl:]] || "$relative_path" == *//* ||
+          "$relative_path" == */./* || "$relative_path" == */../* ]]; then
+        printf 'Application state contains unsupported path syntax (count: 1).\n' >&2
+        exit 1
+    fi
+    path_hex="$(printf '%s' "$relative_path" | od -An -v -tx1 | tr -d ' \n')"
+    mode="$(stat -c '%a' "$RUNTIME_DATA_ROOT/$relative_path" 2>/dev/null)" || {
+        printf 'Application-state metadata changed during inventory generation.\n' >&2
+        exit 1
+    }
+    printf -v octal_mode '%04o' "$((8#$mode))"
+    if [[ -d "$RUNTIME_DATA_ROOT/$relative_path" && ! -L "$RUNTIME_DATA_ROOT/$relative_path" ]]; then
+        printf 'D\t%s\t-\t-\t%s\n' "$octal_mode" "$path_hex" >> "$inventory"
+    elif [[ -f "$RUNTIME_DATA_ROOT/$relative_path" && ! -L "$RUNTIME_DATA_ROOT/$relative_path" ]] &&
+         link_count="$(stat -c '%h' "$RUNTIME_DATA_ROOT/$relative_path" 2>/dev/null)" &&
+         [[ "$link_count" == 1 ]]; then
+        size="$(stat -c '%s' "$RUNTIME_DATA_ROOT/$relative_path" 2>/dev/null)" || {
+            printf 'Application-state metadata changed during inventory generation.\n' >&2
+            exit 1
+        }
+        digest="$(sha256sum "$RUNTIME_DATA_ROOT/$relative_path" 2>/dev/null)" || {
+            printf 'Application-state content changed during inventory generation.\n' >&2
+            exit 1
+        }
+        printf 'F\t%s\t%s\t%s\t%s\n' "$octal_mode" "$size" "${digest%% *}" "$path_hex" >> "$inventory"
+    else
+        printf 'Application state contains unsupported filesystem entries (count: 1).\n' >&2
+        exit 1
+    fi
+done < <(cd "$RUNTIME_DATA_ROOT" && find "${SUPPORTED_PATHS[@]}" -print0 2>"$WORK_DIRECTORY/find-error" | sort -z)
+if (( entry_count == 0 )); then
+    printf 'Application-state inventory is unexpectedly empty.\n' >&2
+    exit 1
+fi
+
+if ! tar --create --gzip --format=gnu --file "$PARTIAL_ARCHIVE" \
+    --directory "$RUNTIME_DATA_ROOT" "${SUPPORTED_PATHS[@]}" \
+    --directory "$WORK_DIRECTORY" "$INVENTORY_NAME" 2>"$WORK_DIRECTORY/tar-error"; then
+    printf 'Application-state archive creation failed.\n' >&2
+    exit 1
+fi
+install -d -m 700 "$WORK_DIRECTORY/validation"
+if ! archive_format="$("$SCRIPT_DIR/infra:validate-app-state-archive" \
+    "$PARTIAL_ARCHIVE" "$WORK_DIRECTORY/validation" "$inventory")"; then
+    exit 1
+fi
+[[ "$archive_format" == inventory-v1 ]] || {
+    printf 'Completed backup did not contain the required inventory.\n' >&2
+    exit 1
+}
+(
+    cd "$BACKUP_DIRECTORY"
+    printf '%s  %s\n' "$(sha256sum "$PARTIAL_ARCHIVE" | cut -d' ' -f1)" "$(basename "$ARCHIVE")" > "$PARTIAL_CHECKSUM"
+)
+sync -f "$PARTIAL_ARCHIVE"
+sync -f "$PARTIAL_CHECKSUM"
+
+mv -T --no-clobber "$PARTIAL_CHECKSUM" "$CHECKSUM" 2>/dev/null || true
+if [[ -e "$PARTIAL_CHECKSUM" || ! -f "$CHECKSUM" || -L "$CHECKSUM" ]]; then
+    printf 'Backup publication collision; no files were replaced.\n' >&2
+    exit 1
+fi
+checksum_published=true
+sync -f "$BACKUP_DIRECTORY"
+if [[ "${HVO_BACKUP_FAILPOINT:-}" == after-checksum-publish ]]; then
+    printf 'Backup publication test failure injected.\n' >&2
+    exit 97
+fi
+
+mv -T --no-clobber "$PARTIAL_ARCHIVE" "$ARCHIVE" 2>/dev/null || true
+if [[ -e "$PARTIAL_ARCHIVE" || ! -f "$ARCHIVE" || -L "$ARCHIVE" ]]; then
+    printf 'Backup publication collision; no files were replaced.\n' >&2
+    exit 1
+fi
+archive_published=true
+sync -f "$BACKUP_DIRECTORY"
+
+trap - EXIT
+cleanup
 printf 'Application state backup: %s\n' "$ARCHIVE"
 printf 'Checksum manifest: %s\n' "$CHECKSUM"
 printf 'Applications remain stopped for coordinated SQL Server and MinIO backup.\n'

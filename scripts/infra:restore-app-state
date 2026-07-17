@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Restore a checked application-state archive while retaining a local rollback copy.
+# Restore a checked application-state archive while retaining an exact local rollback copy.
 
 set -euo pipefail
 umask 077
+export LC_ALL=C
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=scripts/infra:operation-lock
+source "$SCRIPT_DIR/infra:operation-lock"
 cd "$REPO_ROOT"
 
 [[ $# -eq 1 ]] || {
@@ -28,149 +31,369 @@ if [[ "$runtime_root_was_set" == true ]]; then
     HVO_RUNTIME_DATA_ROOT="$runtime_root_override"
 fi
 
-readonly RUNTIME_DATA_ROOT="$(realpath -m "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
-readonly ARCHIVE="$(realpath "$1")"
-readonly CHECKSUM="$ARCHIVE.sha256"
-if [[ -z "$RUNTIME_DATA_ROOT" || "$RUNTIME_DATA_ROOT" == "/" ]]; then
-    printf 'Refusing unsafe runtime data root: %s\n' "$RUNTIME_DATA_ROOT" >&2
-    exit 1
-fi
-[[ -f "$CHECKSUM" ]] || {
-    printf 'Checksum manifest not found: %s\n' "$CHECKSUM" >&2
+readonly RUNTIME_DATA_ROOT="$(realpath -ms "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
+readonly SELECTED_ARCHIVE="$(realpath -m "$1")"
+readonly SELECTED_CHECKSUM="$SELECTED_ARCHIVE.sha256"
+readonly INVENTORY_NAME=".hvo-application-state-inventory"
+readonly SUPPORTED_PATHS=(
+    logichost/dataprotection
+    logichost/home
+    cameraagent/identity
+    cameraagent/dataprotection
+    cameraagent/provisioning
+    agent
+    archive
+)
+
+hvo_acquire_application_state_lock "$RUNTIME_DATA_ROOT"
+hvo_require_restore_marker_access restore
+readonly RUNTIME_PARENT="$HVO_RUNTIME_PARENT"
+readonly TRANSACTION_MARKER="$HVO_RESTORE_MARKER_PATH"
+
+safe_exact_rename() {
+    local source="$1"
+    local destination="$2"
+    [[ ( -e "$source" || -L "$source" ) && ! -e "$destination" && ! -L "$destination" ]] || return 1
+    mv -T --no-clobber -- "$source" "$destination" 2>/dev/null || true
+    [[ ! -e "$source" && ! -L "$source" && ( -e "$destination" || -L "$destination" ) ]]
+}
+
+remove_marker() {
+    [[ -f "$TRANSACTION_MARKER" && ! -L "$TRANSACTION_MARKER" ]] || return 1
+    rm -f -- "$TRANSACTION_MARKER"
+    sync -f "$RUNTIME_PARENT"
+}
+
+read_marker() {
+    local marker="$1"
+    local header version transaction_key phase_key rollback_key old_state_key
+    local header_extra transaction_extra phase_extra rollback_extra old_state_extra
+    local -a marker_lines
+    mapfile -t marker_lines < "$marker"
+    [[ ${#marker_lines[@]} -eq 5 ]] || return 1
+    IFS=$'\t' read -r header version header_extra <<< "${marker_lines[0]}"
+    IFS=$'\t' read -r transaction_key MARKER_TRANSACTION transaction_extra <<< "${marker_lines[1]}"
+    IFS=$'\t' read -r phase_key MARKER_PHASE phase_extra <<< "${marker_lines[2]}"
+    IFS=$'\t' read -r rollback_key MARKER_ROLLBACK rollback_extra <<< "${marker_lines[3]}"
+    IFS=$'\t' read -r old_state_key MARKER_OLD_STATE old_state_extra <<< "${marker_lines[4]}"
+    [[ "$header" == HVO-APPLICATION-STATE-RESTORE && "$version" == 1 &&
+       -z "$header_extra$transaction_extra$phase_extra$rollback_extra$old_state_extra" &&
+       "$transaction_key" == transaction && "$MARKER_TRANSACTION" =~ ^[[:xdigit:]]{32}$ &&
+       "$phase_key" == phase && "$MARKER_PHASE" =~ ^(prepared|old-moved|new-installed|logichost-started|cameraagent-started)$ &&
+       "$rollback_key" == rollback && "$MARKER_ROLLBACK" != */* &&
+       "$MARKER_ROLLBACK" == "$(basename "$RUNTIME_DATA_ROOT").rollback.${MARKER_TRANSACTION,,}" &&
+       "$old_state_key" == old-state && "$MARKER_OLD_STATE" =~ ^(true|false)$ ]]
+}
+
+recover_old_state() {
+    local rollback_path="$1"
+    local old_state="$2"
+    local phase="$3"
+    local transaction="$4"
+    local displaced="$RUNTIME_PARENT/.hvo-restore-displaced.$transaction"
+
+    [[ ! -e "$displaced" && ! -L "$displaced" ]] || return 1
+    if [[ "$old_state" == true ]]; then
+        if [[ -e "$rollback_path" || -L "$rollback_path" ]]; then
+            [[ -d "$rollback_path" && ! -L "$rollback_path" ]] || return 1
+            if [[ -e "$RUNTIME_DATA_ROOT" || -L "$RUNTIME_DATA_ROOT" ]]; then
+                [[ "$phase" != prepared && -d "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
+                safe_exact_rename "$RUNTIME_DATA_ROOT" "$displaced" || return 1
+            fi
+            if ! safe_exact_rename "$rollback_path" "$RUNTIME_DATA_ROOT"; then
+                if [[ -e "$displaced" && ! -e "$RUNTIME_DATA_ROOT" ]]; then
+                    safe_exact_rename "$displaced" "$RUNTIME_DATA_ROOT" || true
+                fi
+                return 1
+            fi
+            rm -rf -- "$displaced"
+        else
+            [[ "$phase" == prepared && -d "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
+        fi
+    else
+        [[ ! -e "$rollback_path" && ! -L "$rollback_path" ]] || return 1
+        if [[ -e "$RUNTIME_DATA_ROOT" || -L "$RUNTIME_DATA_ROOT" ]]; then
+            [[ "$phase" != prepared && -d "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
+            safe_exact_rename "$RUNTIME_DATA_ROOT" "$displaced" || return 1
+            rm -rf -- "$displaced"
+        fi
+    fi
+}
+
+recover_interrupted_transaction() {
+    [[ -e "$TRANSACTION_MARKER" || -L "$TRANSACTION_MARKER" ]] || return 0
+    hvo_validate_regular_control_file "$TRANSACTION_MARKER" 'Restore transaction marker' || return 1
+    if ! read_marker "$TRANSACTION_MARKER"; then
+        printf 'An invalid restore transaction marker requires operator review.\n' >&2
+        return 1
+    fi
+    local rollback_path="$RUNTIME_PARENT/$MARKER_ROLLBACK"
+    if ! "$SCRIPT_DIR/infra:stop" logichost cameraagent >/dev/null 2>&1; then
+        printf 'Recovery could not stop both applications; no state was changed and the marker was preserved. Stop both applications and rerun restore recovery.\n' >&2
+        return 1
+    fi
+    if ! recover_old_state "$rollback_path" "$MARKER_OLD_STATE" "$MARKER_PHASE" "$MARKER_TRANSACTION"; then
+        printf 'An interrupted restore cannot be rolled back exactly; the durable marker was preserved.\n' >&2
+        return 1
+    fi
+    remove_marker || {
+        printf 'Recovered state but could not durably clear the restore marker.\n' >&2
+        return 1
+    }
+    printf 'Recovered an interrupted application-state restore; applications remain stopped.\n' >&2
+}
+
+recover_interrupted_transaction
+
+[[ -f "$SELECTED_ARCHIVE" && ! -L "$SELECTED_ARCHIVE" &&
+   -f "$SELECTED_CHECKSUM" && ! -L "$SELECTED_CHECKSUM" ]] || {
+    printf 'Selected archive and adjacent checksum must be safe regular files.\n' >&2
     exit 1
 }
-mapfile -t checksum_lines < "$CHECKSUM"
+mapfile -t checksum_lines < "$SELECTED_CHECKSUM"
 if [[ ${#checksum_lines[@]} -ne 1 ]]; then
     printf 'Checksum manifest must contain exactly one entry.\n' >&2
     exit 1
 fi
 read -r expected_digest expected_name extra <<< "${checksum_lines[0]}"
 expected_name="${expected_name#\*}"
-if [[ -n "${extra:-}" || "$expected_name" != "$(basename "$ARCHIVE")" ]]; then
-    printf 'Checksum manifest does not name the selected archive.\n' >&2
+if [[ ! "$expected_digest" =~ ^[[:xdigit:]]{64}$ || -n "${extra:-}" ||
+      "$expected_name" != "$(basename "$SELECTED_ARCHIVE")" ]]; then
+    printf 'Checksum manifest does not name exactly the selected archive.\n' >&2
     exit 1
 fi
-actual_digest="$(sha256sum "$ARCHIVE")"
-actual_digest="${actual_digest%% *}"
-if [[ "$actual_digest" != "$expected_digest" ]]; then
+
+STAGING_DIRECTORY="$(mktemp -d "$RUNTIME_PARENT/.hvo-restore.XXXXXX")"
+EXTRACT_DIRECTORY="$STAGING_DIRECTORY/extracted"
+INSTALL_DIRECTORY="$STAGING_DIRECTORY/install"
+PRIVATE_ARCHIVE="$STAGING_DIRECTORY/verified-archive.tgz"
+install -d -m 700 "$EXTRACT_DIRECTORY" "$INSTALL_DIRECTORY"
+cleanup_staging() {
+    rm -rf -- "$STAGING_DIRECTORY"
+}
+trap cleanup_staging EXIT
+
+if ! cp --reflink=never -- "$SELECTED_ARCHIVE" "$PRIVATE_ARCHIVE" 2>/dev/null; then
+    printf 'Unable to copy the selected archive into private verification staging.\n' >&2
+    exit 1
+fi
+[[ -f "$PRIVATE_ARCHIVE" && ! -L "$PRIVATE_ARCHIVE" && "$(stat -c '%h' "$PRIVATE_ARCHIVE")" == 1 ]] || {
+    printf 'Private archive verification copy is unsafe.\n' >&2
+    exit 1
+}
+actual_digest="$(sha256sum "$PRIVATE_ARCHIVE" 2>/dev/null)" || {
+    printf 'Unable to hash the private archive verification copy.\n' >&2
+    exit 1
+}
+if [[ "${actual_digest%% *}" != "${expected_digest,,}" ]]; then
     printf 'Application-state archive checksum mismatch.\n' >&2
     exit 1
 fi
 
-archive_listing="$(tar --list --gzip --file "$ARCHIVE")"
-while IFS= read -r entry; do
-    case "$entry" in
-        /*|../*|*/../*|..)
-            printf 'Archive contains unsafe path: %s\n' "$entry" >&2
-            exit 1
-            ;;
-    esac
-done <<< "$archive_listing"
-archive_verbose_listing="$(tar --list --verbose --numeric-owner --gzip --file "$ARCHIVE")"
-while IFS= read -r entry; do
-    case "${entry:0:1}" in
-        -|d) ;;
-        *)
-            printf 'Archive contains unsupported link or special entry: %s\n' "$entry" >&2
-            exit 1
-            ;;
-    esac
-done <<< "$archive_verbose_listing"
-
-readonly RUNTIME_PARENT="$(dirname "$RUNTIME_DATA_ROOT")"
-if [[ ! -d "$RUNTIME_PARENT" ]]; then
-    install -d -m 700 "$RUNTIME_PARENT"
+if ! archive_format="$("$SCRIPT_DIR/infra:validate-app-state-archive" "$PRIVATE_ARCHIVE" "$EXTRACT_DIRECTORY")"; then
+    exit 1
 fi
-STAGING_DIRECTORY="$(mktemp -d "$RUNTIME_PARENT/.hvo-restore.XXXXXX")"
-ROLLBACK_DIRECTORY="$RUNTIME_DATA_ROOT.rollback.$(date -u +%Y%m%dT%H%M%SZ)"
-stopped=false
-old_state_moved=false
-new_state_installed=false
+[[ "$archive_format" == inventory-v1 || "$archive_format" == legacy ]] || {
+    printf 'Application-state archive rejected: unknown validated format (count: 1).\n' >&2
+    exit 1
+}
+mapfile -d '' -t extracted_paths < <(find "$EXTRACT_DIRECTORY" -mindepth 1 -print0 2>"$STAGING_DIRECTORY/post-walk-error")
+[[ ! -s "$STAGING_DIRECTORY/post-walk-error" && ${#extracted_paths[@]} -gt 0 ]] || {
+    printf 'Application-state archive rejected: post-extraction walk failed (count: 1).\n' >&2
+    exit 1
+}
+invalid_extracted_count=0
+for extracted_path in "${extracted_paths[@]}"; do
+    if [[ -L "$extracted_path" || ( ! -f "$extracted_path" && ! -d "$extracted_path" ) ]]; then
+        ((invalid_extracted_count += 1))
+    fi
+done
+(( invalid_extracted_count == 0 )) || {
+    printf 'Application-state archive rejected: post-extraction filesystem entries (count: %s).\n' "$invalid_extracted_count" >&2
+    exit 1
+}
 
-wait_for_logic_host() {
-    if [[ "${HVO_SKIP_RUNTIME_HEALTHCHECK:-false}" == "true" ]]; then
+for required_path in "${SUPPORTED_PATHS[@]}"; do
+    if [[ ! -d "$EXTRACT_DIRECTORY/$required_path" || -L "$EXTRACT_DIRECTORY/$required_path" ]]; then
+        printf 'Application-state archive rejected: missing required directories (count: 1).\n' >&2
+        exit 1
+    fi
+    install -d -m 700 "$INSTALL_DIRECTORY/$(dirname "$required_path")"
+    if ! safe_exact_rename "$EXTRACT_DIRECTORY/$required_path" "$INSTALL_DIRECTORY/$required_path"; then
+        printf 'Application-state archive rejected: staging path collision (count: 1).\n' >&2
+        exit 1
+    fi
+done
+
+copy_preserved_entries() {
+    local source_root="$1"
+    local destination_root="$2"
+    local source name child child_name
+    shopt -s dotglob nullglob
+    for source in "$source_root"/*; do
+        name="$(basename "$source")"
+        case "$name" in
+            agent|archive) continue ;;
+            logichost)
+                [[ -d "$source" && ! -L "$source" && "$(stat -c '%u' "$source")" == "$(id -u)" ]] || return 1
+                install -d -m 700 "$destination_root/logichost"
+                for child in "$source"/*; do
+                    child_name="$(basename "$child")"
+                    [[ "$child_name" == dataprotection || "$child_name" == home ]] && continue
+                    cp -a -- "$child" "$destination_root/logichost/" 2>/dev/null || return 1
+                done
+                ;;
+            cameraagent)
+                [[ -d "$source" && ! -L "$source" && "$(stat -c '%u' "$source")" == "$(id -u)" ]] || return 1
+                install -d -m 700 "$destination_root/cameraagent"
+                for child in "$source"/*; do
+                    child_name="$(basename "$child")"
+                    [[ "$child_name" == identity || "$child_name" == dataprotection || "$child_name" == provisioning ]] && continue
+                    cp -a -- "$child" "$destination_root/cameraagent/" 2>/dev/null || return 1
+                done
+                ;;
+            *) cp -a -- "$source" "$destination_root/" 2>/dev/null || return 1 ;;
+        esac
+    done
+    shopt -u dotglob nullglob
+}
+
+wait_for_service() {
+    local service_name="$1"
+    local service_url="$2"
+    if [[ "${HVO_SKIP_RUNTIME_HEALTHCHECK:-false}" == true ]]; then
         return 0
     fi
-
-    local logic_host_url="${LOGIC_HOST_URL:-http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}}"
     for _ in {1..60}; do
-        if curl --silent --show-error --fail --output /dev/null "${logic_host_url%/}/alive"; then
+        if curl --silent --show-error --fail --output /dev/null "${service_url%/}/health"; then
             return 0
         fi
         sleep 1
     done
+    printf '%s did not become healthy after restore.\n' "$service_name" >&2
     return 1
+}
+
+trigger_failpoint() {
+    local point="$1"
+    if [[ "${HVO_RESTORE_FAILPOINT:-}" == "$point" ]]; then
+        printf 'Restore test failpoint triggered: %s.\n' "$point" >&2
+        return 97
+    fi
+}
+
+if [[ "${HVO_ENABLE_TEST_FAILPOINTS:-false}" == true &&
+      "${HVO_RESTORE_TEST_TRANSACTION_ID:-}" =~ ^[[:xdigit:]]{32}$ ]]; then
+    HVO_RESTORE_TRANSACTION_ID="${HVO_RESTORE_TEST_TRANSACTION_ID,,}"
+else
+    HVO_RESTORE_TRANSACTION_ID="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+fi
+export HVO_RESTORE_TRANSACTION_ID
+ROLLBACK_DIRECTORY="$RUNTIME_DATA_ROOT.rollback.$HVO_RESTORE_TRANSACTION_ID"
+[[ ! -e "$ROLLBACK_DIRECTORY" && ! -L "$ROLLBACK_DIRECTORY" ]] || {
+    printf 'Restore rollback destination collision; no state was changed.\n' >&2
+    exit 1
+}
+old_state_existed=false
+old_state_moved=false
+new_state_installed=false
+transaction_started=false
+marker_temporary=""
+
+write_marker() {
+    local phase="$1"
+    marker_temporary="$(mktemp "$RUNTIME_PARENT/.hvo-restore-marker.XXXXXX")"
+    printf 'HVO-APPLICATION-STATE-RESTORE\t1\ntransaction\t%s\nphase\t%s\nrollback\t%s\nold-state\t%s\n' \
+        "$HVO_RESTORE_TRANSACTION_ID" "$phase" "$(basename "$ROLLBACK_DIRECTORY")" "$old_state_existed" > "$marker_temporary"
+    sync -f "$marker_temporary"
+    if [[ -e "$TRANSACTION_MARKER" || -L "$TRANSACTION_MARKER" ]]; then
+        hvo_validate_regular_control_file "$TRANSACTION_MARKER" 'Restore transaction marker' || return 1
+        mv -Tf -- "$marker_temporary" "$TRANSACTION_MARKER" 2>/dev/null || return 1
+    else
+        mv -T --no-clobber -- "$marker_temporary" "$TRANSACTION_MARKER" 2>/dev/null || return 1
+    fi
+    marker_temporary=""
+    hvo_validate_regular_control_file "$TRANSACTION_MARKER" 'Restore transaction marker'
+    sync -f "$RUNTIME_PARENT"
 }
 
 rollback_on_error() {
     local status=$?
+    local rollback_complete=false
+    local rollback_phase=prepared
     trap - EXIT
-    if [[ $status -ne 0 ]]; then
-        if [[ "$stopped" == true ]]; then
-            "$SCRIPT_DIR/infra:stop" logichost cameraagent >/dev/null 2>&1 || true
+    rm -f -- "$marker_temporary" 2>/dev/null || true
+    if (( status != 0 )) && [[ "$transaction_started" == true ]]; then
+        if "$SCRIPT_DIR/infra:stop" logichost cameraagent >/dev/null 2>&1; then
+            if [[ "$new_state_installed" == true ]]; then
+                rollback_phase=new-installed
+            elif [[ "$old_state_moved" == true ]]; then
+                rollback_phase=old-moved
+            fi
+            if recover_old_state "$ROLLBACK_DIRECTORY" "$old_state_existed" "$rollback_phase" \
+                "$HVO_RESTORE_TRANSACTION_ID"; then
+                rollback_complete=true
+            fi
+        else
+            printf 'Rollback could not stop both applications; no state tree was renamed or deleted. Stop both applications and rerun restore recovery.\n' >&2
         fi
-        if [[ "$new_state_installed" == true ]]; then
-            rm -rf -- "$RUNTIME_DATA_ROOT"
-        fi
-        if [[ "$old_state_moved" == true ]]; then
-            mv -- "$ROLLBACK_DIRECTORY" "$RUNTIME_DATA_ROOT"
+        if [[ "$rollback_complete" == true ]] && remove_marker; then
+            printf 'Application-state restore rolled back; applications remain stopped.\n' >&2
+        else
+            printf 'Restore rollback could not complete exactly; applications remain stopped and the durable marker was preserved.\n' >&2
         fi
     fi
-    rm -rf -- "$STAGING_DIRECTORY"
-    if [[ "$stopped" == true ]]; then
-        if "$SCRIPT_DIR/infra:start" logichost && wait_for_logic_host; then
-            "$SCRIPT_DIR/infra:start" cameraagent
-        fi
-    fi
+    cleanup_staging
     exit "$status"
 }
 trap rollback_on_error EXIT
 
-tar --extract --gzip --file "$ARCHIVE" --directory "$STAGING_DIRECTORY" --no-same-owner
-for relative_path in \
-    logichost/dataprotection \
-    logichost/home \
-    cameraagent/identity \
-    cameraagent/dataprotection \
-    cameraagent/provisioning \
-    agent \
-    archive; do
-    if [[ ! -d "$STAGING_DIRECTORY/$relative_path" || -L "$STAGING_DIRECTORY/$relative_path" ]]; then
-        printf 'Archive is missing required runtime directory: %s\n' "$relative_path" >&2
+if [[ -e "$RUNTIME_DATA_ROOT" ]]; then
+    [[ -d "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || {
+        printf 'Runtime data root is unsafe.\n' >&2
+        exit 1
+    }
+    old_state_existed=true
+fi
+write_marker prepared
+transaction_started=true
+"$SCRIPT_DIR/infra:stop" logichost cameraagent
+if [[ "$old_state_existed" == true ]]; then
+    if ! safe_exact_rename "$RUNTIME_DATA_ROOT" "$ROLLBACK_DIRECTORY"; then
+        printf 'Restore could not reserve the exact rollback state; the durable marker was preserved.\n' >&2
         exit 1
     fi
-done
-"$SCRIPT_DIR/infra:stop" logichost cameraagent
-stopped=true
-if [[ -e "$RUNTIME_DATA_ROOT" ]]; then
-    mv -- "$RUNTIME_DATA_ROOT" "$ROLLBACK_DIRECTORY"
     old_state_moved=true
+    if ! copy_preserved_entries "$ROLLBACK_DIRECTORY" "$INSTALL_DIRECTORY"; then
+        printf 'Unable to preserve target-only runtime state.\n' >&2
+        exit 1
+    fi
 fi
-mv -- "$STAGING_DIRECTORY" "$RUNTIME_DATA_ROOT"
-new_state_installed=true
-
-for directory in \
-    "$RUNTIME_DATA_ROOT/logichost/dataprotection" \
-    "$RUNTIME_DATA_ROOT/logichost/home" \
-    "$RUNTIME_DATA_ROOT/cameraagent/identity" \
-    "$RUNTIME_DATA_ROOT/cameraagent/dataprotection" \
-    "$RUNTIME_DATA_ROOT/cameraagent/provisioning" \
-    "$RUNTIME_DATA_ROOT/agent" \
-    "$RUNTIME_DATA_ROOT/archive"; do
-    install -d -m 700 "$directory"
-    chmod 700 "$directory"
-done
-
-"$SCRIPT_DIR/infra:start" logichost
-if ! wait_for_logic_host; then
-    printf 'LogicHost did not become healthy after restore.\n' >&2
+write_marker old-moved
+trigger_failpoint after-old-move
+if ! safe_exact_rename "$INSTALL_DIRECTORY" "$RUNTIME_DATA_ROOT"; then
+    printf 'Restore install destination collision; exact rollback will be attempted.\n' >&2
     exit 1
 fi
-"$SCRIPT_DIR/infra:start" cameraagent
-stopped=false
-trap - EXIT
+new_state_installed=true
+write_marker new-installed
+trigger_failpoint after-new-install
 
-printf 'Restored application state from %s\n' "$ARCHIVE"
-if [[ "$old_state_moved" == true ]]; then
+"$SCRIPT_DIR/infra:start" logichost
+write_marker logichost-started
+trigger_failpoint after-logichost-start
+wait_for_service LogicHost "${LOGIC_HOST_URL:-http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}}"
+"$SCRIPT_DIR/infra:start" cameraagent
+write_marker cameraagent-started
+trigger_failpoint after-cameraagent-start
+wait_for_service CameraAgent "${CAMERA_AGENT_URL:-http://localhost:${CAMERA_AGENT_HTTP_PORT:-5130}}"
+
+remove_marker
+transaction_started=false
+trap - EXIT
+cleanup_staging
+
+printf 'Restored application state from %s\n' "$SELECTED_ARCHIVE"
+if [[ "$old_state_existed" == true ]]; then
     printf 'Rollback state retained at %s until validation completes.\n' "$ROLLBACK_DIRECTORY"
 fi

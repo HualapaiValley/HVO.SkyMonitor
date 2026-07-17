@@ -31,6 +31,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralArtifactRecipe> CentralArtifactRecipes => Set<CentralArtifactRecipe>();
     internal DbSet<CentralArtifactSource> CentralArtifactSources => Set<CentralArtifactSource>();
     internal DbSet<CentralArtifactIngestIdentity> CentralArtifactIngestIdentities => Set<CentralArtifactIngestIdentity>();
+    internal DbSet<CentralRecoveryCheckpoint> CentralRecoveryCheckpoints => Set<CentralRecoveryCheckpoint>();
+    internal DbSet<CentralObjectRecoveryDisposition> CentralObjectRecoveryDispositions => Set<CentralObjectRecoveryDisposition>();
     internal DbSet<Observatory> Observatories => Set<Observatory>();
 
     protected override void OnModelCreating(ModelBuilder builder)
@@ -49,6 +51,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         CentralDerivativeExecutionConfiguration.Configure(builder);
         CentralDerivativeWindowConfiguration.Configure(builder);
         CentralReconstructionConfiguration.Configure(builder);
+        CentralRecoveryConfiguration.Configure(builder);
         builder.ApplyConfiguration(new ObservatoryConfiguration());
 
         // Configure OpenIddict entities to use the default Entity Framework Core conventions

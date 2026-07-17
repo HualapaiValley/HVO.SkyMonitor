@@ -4,6 +4,7 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260717021719_AddCentralRecoveryInventory")]
+    partial class AddCentralRecoveryInventory
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -216,12 +219,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<long>("RecoveryGeneration")
                         .HasColumnType("bigint");
 
-                    b.Property<DateTimeOffset?>("ReferenceRetryAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<int>("ReferenceRetryCount")
-                        .HasColumnType("int");
-
                     b.Property<string>("Role")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -271,9 +268,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasIndex("ObjectState", "RecoveryGeneration", "Id");
 
-                    b.HasIndex("ObjectState", "ObjectVerifiedAtUtc", "ReceivedAtUtc", "Id");
+                    b.HasIndex("ReconstructionState", "ReceivedAtUtc", "Id");
 
-                    b.HasIndex("ReconstructionState", "ReferenceRetryAtUtc", "ReceivedAtUtc", "Id");
+                    b.HasIndex("ObjectState", "ObjectVerifiedAtUtc", "ReceivedAtUtc", "Id");
 
                     b.ToTable("CentralArtifacts", (string)null);
                 });
