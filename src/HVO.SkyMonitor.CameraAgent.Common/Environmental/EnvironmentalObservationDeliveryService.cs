@@ -105,7 +105,7 @@ public sealed class EnvironmentalObservationDeliveryService(
     ILogger<EnvironmentalObservationDeliveryService> logger) : BackgroundService
 {
     private static readonly Action<ILogger, string, Exception?> Settled = LoggerMessage.Define<string>(
-        LogLevel.Information,
+        LogLevel.Debug,
         new EventId(2510, nameof(Settled)),
         "Environmental delivery settled durable work with outcome {Outcome}");
     private static readonly Action<ILogger, string, long, Exception?> Retrying = LoggerMessage.Define<string, long>(
