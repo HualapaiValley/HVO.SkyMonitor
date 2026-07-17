@@ -48,9 +48,11 @@ internal sealed class CentralObjectApplicationLock : IAsyncDisposable
             var result = command.Parameters.Add("@RETURN_VALUE", SqlDbType.Int);
             result.Direction = ParameterDirection.ReturnValue;
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            if (result.Value is not int lockResult || lockResult < 0)
+            var lockResult = result.Value is int status ? status : int.MinValue;
+            if (lockResult < 0)
             {
-                throw new InvalidOperationException("The central object application lock could not be acquired.");
+                throw new InvalidOperationException(
+                    $"The central object application lock failed with status {lockResult} within the {AcquisitionTimeout.TotalMilliseconds:0} ms timeout.");
             }
             var resultLock = new CentralObjectApplicationLock(connection, resource);
             connection = null;

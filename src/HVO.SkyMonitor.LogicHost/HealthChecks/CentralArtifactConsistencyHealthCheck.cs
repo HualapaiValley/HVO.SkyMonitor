@@ -56,8 +56,8 @@ internal sealed class CentralArtifactConsistencyHealthCheck(
                 || artifact.StateReasonCode == "object.missing", cancellationToken)
             .ConfigureAwait(false);
         var durableDispositionFinding = await dbContext.CentralObjectRecoveryDispositions.AsNoTracking()
-            .AnyAsync(item => item.Kind == CentralObjectRecoveryKinds.OrphanQuarantine
-                    && item.State != CentralObjectRecoveryStates.Cancelled
+            .AnyAsync(item => (item.Kind == CentralObjectRecoveryKinds.OrphanQuarantine
+                    && item.State != CentralObjectRecoveryStates.Cancelled)
                 || item.State == CentralObjectRecoveryStates.Failed, cancellationToken)
             .ConfigureAwait(false);
         if (durableArtifactFinding || durableDispositionFinding)
