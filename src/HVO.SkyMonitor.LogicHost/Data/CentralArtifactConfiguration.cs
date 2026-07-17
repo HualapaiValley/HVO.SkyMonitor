@@ -15,7 +15,8 @@ internal sealed class CentralArtifactConfiguration : IEntityTypeConfiguration<Ce
         builder.Property(artifact => artifact.ManifestSchemaVersion).HasMaxLength(16).IsRequired();
         builder.Property(artifact => artifact.MediaType).HasMaxLength(128).IsRequired();
         builder.Property(artifact => artifact.ChecksumSha256).HasMaxLength(64).IsRequired();
-        builder.Property(artifact => artifact.StorageReference).HasMaxLength(512).IsRequired();
+        builder.Property(artifact => artifact.StorageReference).HasMaxLength(512)
+            .UseCollation("Latin1_General_100_BIN2").IsRequired();
         builder.Property(artifact => artifact.IdempotencyKey).HasMaxLength(64).IsRequired();
         builder.Property(artifact => artifact.ReceivedAtUtc).IsRequired();
         builder.Property(artifact => artifact.SourceId).HasMaxLength(256);
@@ -35,6 +36,27 @@ internal sealed class CentralArtifactConfiguration : IEntityTypeConfiguration<Ce
             artifact.ObjectState,
             artifact.ReconstructionState,
             artifact.ReceivedAtUtc
+        });
+        builder.HasIndex(artifact => new
+        {
+            artifact.ObjectState,
+            artifact.ObjectVerifiedAtUtc,
+            artifact.ReceivedAtUtc,
+            artifact.Id
+        });
+        builder.HasIndex(artifact => new
+        {
+            artifact.ReconstructionState,
+            artifact.ReferenceRetryAtUtc,
+            artifact.ReceivedAtUtc,
+            artifact.Id
+        });
+        builder.HasIndex(artifact => artifact.StorageReference);
+        builder.HasIndex(artifact => new
+        {
+            artifact.ObjectState,
+            artifact.RecoveryGeneration,
+            artifact.Id
         });
         builder.HasOne(artifact => artifact.Frame)
             .WithMany(frame => frame.Artifacts)

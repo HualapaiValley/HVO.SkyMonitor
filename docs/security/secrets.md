@@ -119,11 +119,14 @@ also sensitive operational state.
 
 ## Credential Scope
 
-- SQL Server must point only to `SkyMonitor`. The current `.env` template uses
-  an instance administrator for local compatibility; production must use
-  operator-approved migration/runtime least privilege.
-- Redis keys must use `Redis:InstanceName=skymonitor:`. Redis is not an identity
-  authority or session revocation store.
+- SQL Server must point only to `SkyMonitor`. The `.env` template names the
+  database-scoped `skymonitor-app` login; the SQL operator creates it and grants
+  only the `SkyMonitor` rights required by startup migrations and runtime use.
+  Instance-administrator credentials never belong in application configuration.
+- Redis uses the `skymonitor-app` ACL user restricted to `skymonitor:*` keys,
+  with administrative and dangerous command categories denied. Keep
+  `Redis:InstanceName=skymonitor:` aligned with that ACL. Redis is not an
+  identity authority or session revocation store.
 - LogicHost uses only `skymonitor-diagnostics` and
   `skymonitor-artifacts` through the scoped MinIO application account.
 - MinIO root credentials never belong in LogicHost configuration.

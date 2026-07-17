@@ -309,6 +309,13 @@ for another database engine. Likewise, MinIO backup must use the approved
 site-specific replication or snapshot procedure; copying SQL metadata without
 the corresponding objects is not a complete backup.
 
+The application connection must use a login scoped to `SkyMonitor`, such as the
+template `skymonitor-app` identity, never `sa` or another instance
+administrator. Because LogicHost applies EF migrations at startup, the current
+combined migration/runtime identity needs database-local schema rights; the SQL
+operator must not grant it instance-wide roles. Redis similarly uses the
+`skymonitor-app` ACL identity restricted to `skymonitor:*` keys.
+
 Back up bind-mounted application state to an encrypted, access-controlled
 destination outside the runtime data root:
 
@@ -316,11 +323,13 @@ destination outside the runtime data root:
 ./scripts/infra:backup-app-state /approved/encrypted/backup-directory
 ```
 
-The script stops both applications, archives the effective
-`HVO_RUNTIME_DATA_ROOT`, creates a relocatable SHA-256 manifest, validates the
-archive listing, and leaves both applications stopped for coordinated SQL
-Server and MinIO backups. Do not print or attach the archive or checksum
-manifest. Start applications only after all authoritative backups complete.
+The script stops both applications, archives only the supported LogicHost and
+CameraAgent application paths, creates a versioned internal inventory and an
+adjacent relocatable one-line `.sha256` checksum, and leaves both applications
+stopped for coordinated SQL Server and MinIO backups. It never archives the
+catalog or arbitrary runtime-root content. Do not print or attach the archive,
+inventory, or checksum. Start applications only after all authoritative
+backups complete.
 
 After the SQL Server and MinIO operator restores are staged, restore application
 state with:
@@ -330,26 +339,46 @@ state with:
   /approved/encrypted/backup-directory/hvo-application-state-UTC_TIMESTAMP.tgz
 ```
 
-The restore verifies the adjacent `.sha256` file, rejects unsafe archive paths,
-extracts to staging, retains the old runtime root as a rollback directory, and
-starts LogicHost before CameraAgent. Delete the rollback directory only after
-all post-restore checks pass.
+The restore supports both new inventory archives and legacy `.tgz` plus
+`.sha256` pairs. It rejects unsafe or inconsistent entries before installation,
+and, for new archives, checks that the extracted inventory has an exact
+one-to-one file/directory mapping including nested directories and modes. Legacy
+archives retain structural and post-walk type checks without inventory-level
+verification. Restore preserves the target catalog regardless of legacy archive
+catalog content and retains the old runtime root as a rollback directory. It
+starts LogicHost and waits for `/health` before starting
+CameraAgent and waiting for CameraAgent `/health`. On failure it attempts exact
+old-tree rollback and leaves both applications stopped. If a collision prevents
+exact rollback, the durable marker and rollback state remain for operator
+recovery. Delete the rollback directory only after all post-restore checks pass.
+Recovery and rollback never rename or delete a state tree unless both
+applications stop successfully. If stop fails, stop both applications manually
+and rerun the same restore command; do not delete or edit the marker or rollback
+directory.
 
 Restore order is:
 
-1. Validate the backup manifest, authorization, and target environment.
-2. Stop both applications.
-3. Restore both hosts' Data Protection state.
-4. Restore MinIO buckets and verify inventory/checksums.
-5. Restore SQL Server and run database consistency checks.
-6. Restore CameraAgent Identity, provisioning, payload, and outbox state as one
-   application-state unit.
-7. Start LogicHost, allow migrations/seeding to complete, then start
-   CameraAgent.
-8. Run health and authentication smoke checks.
-9. Verify users, clients, API-key state, registration state, MinIO object
-   references and direct credential rejection/acceptance without exposing
-   secrets. Heartbeat scheduling is not implemented by CameraAgent.
+1. Validate recovery-set authorization, the target environment, and all
+   operator-managed backup evidence.
+2. Stop both applications and keep them stopped through shared-service restore.
+3. Restore MinIO buckets and verify object inventory and checksums.
+4. Restore SQL Server, run database consistency checks, and validate its MinIO
+   object references.
+5. Run `infra:restore-app-state` to validate and install, through staged
+   same-filesystem renames and a durable phase marker, both hosts' Data
+   Protection state plus CameraAgent Identity, provisioning, payload,
+   sidecar/index, outbox, quarantine, and archive state as one local unit.
+6. Allow the script to start LogicHost, wait for LogicHost `/health`, start
+   CameraAgent, and wait for CameraAgent `/health`.
+7. Run authentication smoke checks and verify users, clients, API-key state,
+   registration state, MinIO object references, and direct credential
+   rejection/acceptance without exposing secrets.
+8. Confirm durable fleet heartbeats resume, pending heartbeat delivery drains,
+   and fleet-heartbeat health returns to its expected state.
+9. Wait for the central recovery inventory to complete or explicitly disposition
+   its bounded findings. Verify SQL rows, MinIO objects, checksums, derivative
+   jobs, lineage, and retention references before deleting rollback or
+   quarantine state.
 
 The seeder may reconcile configured user passwords and confidential-client
 secrets after restore. Confirm the effective secret source before startup.

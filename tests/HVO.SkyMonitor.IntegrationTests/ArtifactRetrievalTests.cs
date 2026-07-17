@@ -333,6 +333,37 @@ public sealed class ArtifactRetrievalTests
     }
 
     [TestMethod]
+    public async Task RetentionRelease_WaitsForCanonicalObjectApplicationLock()
+    {
+        var seeded = await SeedArtifactAsync(TestUsers.Operator.Email, [45, 46, 47, 48]).ConfigureAwait(false);
+        await using var lockScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var lockDb = lockScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var artifact = await lockDb.CentralArtifacts.SingleAsync(item => item.ArtifactId == seeded.ArtifactId
+            && item.DevicePublicId == seeded.DevicePublicId).ConfigureAwait(false);
+        var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+            lockDb, artifact.StorageReference, CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            var release = Task.Run(async () =>
+            {
+                await using var releaseScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+                return await releaseScope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionService>()
+                    .ReleaseAsync(artifact.Id, CancellationToken.None).ConfigureAwait(false);
+            });
+            await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+            release.IsCompleted.Should().BeFalse("retention must serialize with canonical publishers and recovery");
+
+            await objectLock.DisposeAsync().ConfigureAwait(false);
+            (await release.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+                .Should().Be(CentralArtifactRetentionResult.Released);
+        }
+        finally
+        {
+            await objectLock.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
     public async Task RetentionRelease_RacingJobSchedulingNeverExpiresAnActivelyReferencedArtifact()
     {
         for (var iteration = 0; iteration < 5; iteration++)

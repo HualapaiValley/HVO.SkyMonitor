@@ -4,8 +4,11 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -84,61 +87,74 @@ public sealed class HealthCheckTests
     [TestMethod]
     public async Task HealthCheckReportsStaleArtifactConsistencyStateAsDegradedAsync()
     {
-        var devicePublicId = Guid.NewGuid();
-        var frame = new CentralFrame
+        var connection = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
         {
-            RegistrationId = Guid.NewGuid(),
-            DevicePublicId = devicePublicId,
-            ObservatoryId = Guid.NewGuid(),
-            AgentId = $"health-device-{Guid.NewGuid():N}",
-            FrameId = Guid.NewGuid(),
-            CapturedAtUtc = DateTimeOffset.UnixEpoch,
-            FirstReceivedAtUtc = DateTimeOffset.UnixEpoch
-        };
-        var artifactId = Guid.NewGuid();
-        var idempotencyKey = Convert.ToHexString(SHA256.HashData(artifactId.ToByteArray()));
-        frame.Artifacts.Add(new CentralArtifact
+            InitialCatalog = $"SkyMonitorStaleHealth_{Guid.NewGuid():N}"
+        }.ConnectionString;
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(connection)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var db = new ApplicationDbContext(options);
+        await db.Database.MigrateAsync().ConfigureAwait(false);
+        try
         {
-            Frame = frame,
-            ArtifactId = artifactId,
-            DevicePublicId = devicePublicId,
-            Role = FrameArtifactRole.Raw,
-            RecipeVersion = "health-test-v1",
-            ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
-            MediaType = "application/octet-stream",
-            ByteLength = 4,
-            ChecksumSha256 = new string('A', 64),
-            StorageReference = "minio://skymonitor-artifacts/health/missing.bin",
-            ReceivedAtUtc = DateTimeOffset.UtcNow - CentralArtifactConsistencyHealthCheck.StaleAfter - TimeSpan.FromMinutes(1),
-            IdempotencyKey = idempotencyKey,
-            ObjectState = CentralArtifactObjectState.Pending,
-            ReconstructionState = CentralReconstructionState.LegacyIncomplete,
-            StateReasonCode = "object.missing"
-        });
-        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var devicePublicId = Guid.NewGuid();
+            var frame = new CentralFrame
+            {
+                RegistrationId = Guid.NewGuid(),
+                DevicePublicId = devicePublicId,
+                ObservatoryId = Guid.NewGuid(),
+                AgentId = $"health-device-{Guid.NewGuid():N}",
+                FrameId = Guid.NewGuid(),
+                CapturedAtUtc = DateTimeOffset.UnixEpoch,
+                FirstReceivedAtUtc = DateTimeOffset.UnixEpoch
+            };
+            var artifactId = Guid.NewGuid();
+            var idempotencyKey = Convert.ToHexString(SHA256.HashData(artifactId.ToByteArray()));
+            frame.Artifacts.Add(new CentralArtifact
+            {
+                Frame = frame,
+                ArtifactId = artifactId,
+                DevicePublicId = devicePublicId,
+                Role = FrameArtifactRole.Raw,
+                RecipeVersion = "health-test-v1",
+                ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+                MediaType = "application/octet-stream",
+                ByteLength = 4,
+                ChecksumSha256 = new string('A', 64),
+                StorageReference = "minio://skymonitor-artifacts/health/missing.bin",
+                ReceivedAtUtc = DateTimeOffset.UtcNow - CentralArtifactConsistencyHealthCheck.StaleAfter - TimeSpan.FromMinutes(1),
+                IdempotencyKey = idempotencyKey,
+                ObjectState = CentralArtifactObjectState.Pending,
+                ReconstructionState = CentralReconstructionState.LegacyIncomplete,
+                StateReasonCode = "object.pending-test"
+            });
             db.CentralFrames.Add(frame);
             await db.SaveChangesAsync().ConfigureAwait(false);
+            await db.CentralRecoveryCheckpoints.ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Phase, CentralRecoveryPhases.Idle)
+                .SetProperty(item => item.NextInventoryAtUtc, DateTimeOffset.UtcNow.AddDays(1)))
+                .ConfigureAwait(false);
+
+            var consistency = await new CentralArtifactConsistencyHealthCheck(
+                db, TimeProvider.System, new CentralRecoveryStartupState(TimeProvider.System))
+                .CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+
+            Assert.AreEqual(HealthStatus.Degraded, consistency.Status);
+            Assert.AreEqual("stale-consistency-backlog", consistency.Data["Condition"]);
+            Assert.AreEqual(
+                (long)CentralArtifactConsistencyHealthCheck.StaleAfter.TotalSeconds,
+                consistency.Data["ReconciliationWindowSeconds"]);
+            Assert.IsFalse(consistency.Data.ContainsKey("ArtifactId"));
+            Assert.IsFalse(consistency.Data.ContainsKey("ObjectState"));
+            Assert.IsFalse(consistency.Data.ContainsKey("ReconstructionState"));
+            Assert.IsFalse(consistency.Data.ContainsKey("ReasonCode"));
+            Assert.IsFalse(consistency.Description?.Contains(artifactId.ToString(), StringComparison.OrdinalIgnoreCase) == true);
         }
-
-        using var response = await _client!.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
-
-        Assert.AreEqual(System.Net.HttpStatusCode.OK, response.StatusCode);
-        using var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
-        var consistency = payload.RootElement.GetProperty("checks").EnumerateArray()
-            .Single(check => check.GetProperty("name").GetString() == "artifact-consistency");
-        Assert.AreEqual("Degraded", consistency.GetProperty("status").GetString());
-        var data = consistency.GetProperty("data");
-        Assert.AreEqual("stale-consistency-backlog", data.GetProperty("Condition").GetString());
-        Assert.AreEqual(
-            (long)CentralArtifactConsistencyHealthCheck.StaleAfter.TotalSeconds,
-            data.GetProperty("ReconciliationWindowSeconds").GetInt64());
-        var publicPayload = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-        Assert.IsFalse(publicPayload.Contains(artifactId.ToString(), StringComparison.OrdinalIgnoreCase));
-        Assert.IsFalse(data.TryGetProperty("ArtifactId", out _));
-        Assert.IsFalse(data.TryGetProperty("ObjectState", out _));
-        Assert.IsFalse(data.TryGetProperty("ReconstructionState", out _));
-        Assert.IsFalse(data.TryGetProperty("ReasonCode", out _));
+        finally
+        {
+            await db.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
     }
 }

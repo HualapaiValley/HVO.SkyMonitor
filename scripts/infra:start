@@ -6,6 +6,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=scripts/infra:operation-lock
+source "$SCRIPT_DIR/infra:operation-lock"
 cd "$REPO_ROOT"
 
 runtime_root_was_set=false
@@ -24,7 +26,7 @@ if [[ "$runtime_root_was_set" == true ]]; then
 fi
 
 readonly APP_SERVICES=(logichost cameraagent)
-readonly RUNTIME_DATA_ROOT="$(realpath -m "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
+readonly RUNTIME_DATA_ROOT="$(realpath -ms "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
 if [[ -z "$RUNTIME_DATA_ROOT" || "$RUNTIME_DATA_ROOT" == "/" ]]; then
     printf 'Refusing unsafe runtime data root: %s\n' "$RUNTIME_DATA_ROOT" >&2
     exit 1
@@ -32,17 +34,31 @@ fi
 export HVO_RUNTIME_DATA_ROOT="$RUNTIME_DATA_ROOT"
 export LOCAL_UID="$(id -u)"
 export LOCAL_GID="$(id -g)"
+hvo_acquire_application_state_lock "$RUNTIME_DATA_ROOT"
+hvo_require_restore_marker_access start
 
 prepare_runtime_directory() {
     validate_runtime_directory "$1"
-    install -d -m 700 "$1"
-    chmod 700 "$1"
+    if [[ ! -d "$1" ]]; then
+        install -d -m 700 "$1"
+    else
+        [[ ! -L "$1" && "$(stat -c '%u' "$1")" == "$(id -u)" ]] || {
+            printf 'Runtime state directory must be owned by the current user and must not be a symbolic link.\n' >&2
+            exit 1
+        }
+        chmod 700 "$1"
+    fi
 }
 
 validate_runtime_directory() {
     local directory="$1"
     if [[ "$(realpath -m "$directory")" != "$directory" ]]; then
         printf 'Refusing runtime path through a symbolic link: %s\n' "$directory" >&2
+        exit 1
+    fi
+    if [[ -e "$directory" && ( ! -d "$directory" || -L "$directory" ||
+          "$(stat -c '%u' "$directory")" != "$(id -u)" ) ]]; then
+        printf 'Runtime state directory must be owned by the current user and must not be a symbolic link.\n' >&2
         exit 1
     fi
 }

@@ -139,6 +139,7 @@ public sealed partial class Program
         });
 
         // Health checks
+        builder.Services.AddSingleton(new CentralRecoveryStartupState(TimeProvider.System));
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks()
             .AddDbContextCheck<ApplicationDbContext>("database", tags: ["dependency"])
             .AddCheck<CentralArtifactConsistencyHealthCheck>("artifact-consistency", tags: ["consistency"])

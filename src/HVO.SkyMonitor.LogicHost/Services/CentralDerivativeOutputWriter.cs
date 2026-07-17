@@ -94,6 +94,8 @@ internal sealed partial class CentralDerivativeOutputWriter(
         var objectKey = $"derivatives/{lease.SourceDevicePublicId:N}/{product.OutputIdentitySha256}.bin";
         var artifact = await EnsureIntentAsync(lease, product, artifactId, objectKey, cancellationToken)
             .ConfigureAwait(false);
+        await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+            dbContext, artifact.StorageReference, cancellationToken).ConfigureAwait(false);
         if (!await HasValidObjectAsync(lease, artifact, cancellationToken).ConfigureAwait(false))
         {
             await PublishAsync(product, objectKey, cancellationToken).ConfigureAwait(false);

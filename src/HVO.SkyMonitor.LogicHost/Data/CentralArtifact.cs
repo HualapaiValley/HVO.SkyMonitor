@@ -47,6 +47,14 @@ internal sealed class CentralArtifact
 
     public DateTimeOffset? ReconciledAtUtc { get; set; }
 
+    public DateTimeOffset? ObjectVerifiedAtUtc { get; set; }
+
+    public long RecoveryGeneration { get; set; }
+
+    public int ReferenceRetryCount { get; set; }
+
+    public DateTimeOffset? ReferenceRetryAtUtc { get; set; }
+
     public byte[] RowVersion { get; set; } = [];
 
     public CentralArtifactLayout? Layout { get; set; }

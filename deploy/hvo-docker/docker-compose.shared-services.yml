@@ -23,15 +23,22 @@ services:
   redis:
     image: redis:7.4-alpine
     container_name: skymonitor-redis
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        exec redis-server --appendonly yes
+        --user default off
+        --user "$${REDIS_USER}" on ">$${REDIS_PASSWORD}" '~skymonitor:*' '+@all' '-@admin' '-@dangerous'
     environment:
+      REDIS_USER: ${REDIS_USER:-skymonitor-app}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - skymonitor-redis-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -qx PONG"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning --user \"$$REDIS_USER\" -a \"$$REDIS_PASSWORD\" ping | grep -qx PONG"]
       interval: 10s
       timeout: 5s
       retries: 6
