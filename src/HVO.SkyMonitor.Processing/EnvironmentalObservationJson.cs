@@ -50,7 +50,7 @@ public static class EnvironmentalObservationJson
         return JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(element));
     }
 
-    public static EnvironmentalObservationParseResult Parse(ReadOnlySpan<byte> utf8Json)
+    public static EnvironmentalObservationParseResult Parse(ReadOnlyMemory<byte> utf8Json)
     {
         if (utf8Json.Length > MaximumPayloadBytes)
         {
@@ -58,7 +58,7 @@ public static class EnvironmentalObservationJson
         }
         try
         {
-            using var document = JsonDocument.Parse(utf8Json.ToArray());
+            using var document = JsonDocument.Parse(utf8Json);
             if (HasDuplicateProperties(document.RootElement))
             {
                 return new(null, InvalidJson());
