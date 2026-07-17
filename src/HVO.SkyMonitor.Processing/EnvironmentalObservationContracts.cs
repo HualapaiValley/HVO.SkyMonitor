@@ -96,6 +96,67 @@ public sealed record EnvironmentalObservationV1(
     public const string CurrentSchemaVersion = "environmental-observation-v1";
 }
 
+/// <summary>A producer-authored environmental fact whose central target is assigned by the CameraAgent host.</summary>
+public sealed record EnvironmentalObservationFactV1(
+    [property: JsonRequired] string SchemaVersion,
+    [property: JsonRequired] Guid ObservationId,
+    [property: JsonRequired] EnvironmentalObservationSource Source,
+    [property: JsonRequired] DateTimeOffset ObservedAtUtc,
+    DateTimeOffset? ObservedFromUtc,
+    DateTimeOffset? ObservedThroughUtc,
+    [property: JsonRequired] DateTimeOffset ValidFromUtc,
+    [property: JsonRequired] DateTimeOffset ValidThroughUtc,
+    [property: JsonRequired] DateTimeOffset StaleAfterUtc,
+    [property: JsonRequired] EnvironmentalObservationValue Value,
+    [property: JsonRequired] IReadOnlyList<EnvironmentalObservationReference> Lineage)
+{
+    public const string CurrentSchemaVersion = EnvironmentalObservationV1.CurrentSchemaVersion;
+
+    public EnvironmentalObservationV1 Enrich(EnvironmentalObservationTarget target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        return new EnvironmentalObservationV1(
+            SchemaVersion,
+            ObservationId,
+            target,
+            Source,
+            ObservedAtUtc,
+            ObservedFromUtc,
+            ObservedThroughUtc,
+            ValidFromUtc,
+            ValidThroughUtc,
+            StaleAfterUtc,
+            Value,
+            Lineage);
+    }
+}
+
+public enum EnvironmentalObservationDeliveryDisposition
+{
+    Accepted,
+    Duplicate
+}
+
+public sealed record EnvironmentalObservationDeliveryEnvelope(
+    [property: JsonRequired] string SchemaVersion,
+    [property: JsonRequired] string DeviceId,
+    [property: JsonRequired] string DeviceKey,
+    [property: JsonRequired] EnvironmentalObservationV1 Observation)
+{
+    public const string CurrentSchemaVersion = "environmental-observation-delivery-v1";
+}
+
+public sealed record EnvironmentalObservationAcknowledgement(
+    [property: JsonRequired] string SchemaVersion,
+    [property: JsonRequired] Guid ObservationId,
+    [property: JsonRequired] string SourceIdentitySha256,
+    [property: JsonRequired] string ContentSha256,
+    [property: JsonRequired] DateTimeOffset ReceivedAtUtc,
+    [property: JsonRequired] EnvironmentalObservationDeliveryDisposition Disposition)
+{
+    public const string CurrentSchemaVersion = "environmental-observation-acknowledgement-v1";
+}
+
 /// <summary>Receiver-owned durable envelope. Receipt time does not participate in source-content identity.</summary>
 public sealed record ReceivedEnvironmentalObservationV1(
     [property: JsonRequired] EnvironmentalObservationV1 Observation,

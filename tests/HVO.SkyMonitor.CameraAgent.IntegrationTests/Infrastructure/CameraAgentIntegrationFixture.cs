@@ -6,10 +6,12 @@ using System.Threading.Tasks;
 using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent;
+using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.IntegrationTests;
 using HVO.SkyMonitor.TestSupport;
+using HVO.SkyMonitor.Common.Identity;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -44,7 +46,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     {
         await _hostFixture.InitializeAsync().ConfigureAwait(false);
         await _hostFixture.SeedActiveDeviceAsync("cameraagent-integration-test").ConfigureAwait(false);
-
         _storageRoot = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-integration-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_storageRoot);
         _catalogFixture = CatalogFixtureInstallation.Create(
@@ -108,6 +109,39 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
 
         using var scope = _agentFactory.Services.CreateScope();
         var scopedProvider = scope.ServiceProvider;
+        var identity = await scopedProvider.GetRequiredService<IDeviceIdentityStore>()
+            .GetOrCreateAsync(CancellationToken.None).ConfigureAwait(false);
+        await _hostFixture.SeedActiveDeviceAsync(identity.DeviceId).ConfigureAwait(false);
+        var activeDevice = await _hostFixture.GetActiveDeviceAsync(identity.DeviceId).ConfigureAwait(false);
+        var centralIdentity = new CentralIdentityOptions
+        {
+            ServiceUrl = CentralIdentityBaseUri,
+            Mode = AuthenticationMode.ClientCredentials,
+            ClientCredentials = new ClientCredentialsOptions
+            {
+                ClientId = TestClients.SystemCameraAgent.ClientId,
+                ClientSecret = TestClients.SystemCameraAgent.ClientSecret
+            }
+        };
+        foreach (var requestedScope in TestClients.SystemCameraAgent.Scopes)
+        {
+            centralIdentity.ClientCredentials.Scopes.Add(requestedScope);
+        }
+        await scopedProvider.GetRequiredService<IDeviceSecretStore>().SaveAsync(new DeviceSecrets(
+            activeDevice.DevicePublicId,
+            activeDevice.ObservatoryId,
+            "CameraAgent Integration Device",
+            "integration-registration-token",
+            "/api/device/heartbeat",
+            "/api/device/upload",
+            60,
+            activeDevice.IssuedAtUtc,
+            activeDevice.ExpiresAtUtc,
+            "cameraagent-integration-key",
+            centralIdentity), CancellationToken.None).ConfigureAwait(false);
+        DeviceId = identity.DeviceId;
+        DevicePublicId = activeDevice.DevicePublicId;
+        ObservatoryId = activeDevice.ObservatoryId;
         var configuration = scopedProvider.GetRequiredService<IConfiguration>();
         var configuredServiceUrl = configuration["CentralIdentity:ServiceUrl"];
         var jwtOptions = scopedProvider
@@ -165,6 +199,15 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
 
     public string StorageRoot => _storageRoot ?? throw new InvalidOperationException("Fixture has not been initialized.");
 
+    public string DeviceId { get; private set; } = string.Empty;
+
+    public Guid DevicePublicId { get; private set; }
+
+    public Guid ObservatoryId { get; private set; }
+
+    public Task<int> CountEnvironmentalObservationsAsync(Guid observationId)
+        => _hostFixture.CountEnvironmentalObservationsAsync(observationId);
+
     public void Dispose()
     {
         _agentFactory?.Dispose();
@@ -193,7 +236,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["Catalog:Root"] = _catalogFixture?.Root,
             ["Catalog:RequiredPackageKind"] = "Fixture",
             ["CameraAgent:ConfigFilePath"] = _configurationPath,
-            ["CameraAgent:RawIngressRoot"] = _storageRoot
+            ["CameraAgent:RawIngressRoot"] = _storageRoot,
+            ["DeviceProvisioning:StateDirectory"] = Path.Combine(_storageRoot!, "provisioning")
         };
 
         var scopePrefix = "CentralIdentity:ClientCredentials:Scopes";

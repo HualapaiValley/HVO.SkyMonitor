@@ -22,6 +22,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     [Required]
     public CaptureDistributionOptions CaptureDistribution { get; init; } = new();
 
+    [Required]
+    public EnvironmentalObservationDeliveryOptions EnvironmentalDelivery { get; init; } = new();
+
     public string? AgentId { get; init; }
 
     [Range(1, 1440)]
@@ -79,6 +82,65 @@ public sealed class CameraAgentHostOptions : IValidatableObject
         foreach (var result in distributionResults)
         {
             yield return result;
+        }
+
+        var environmentalResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            EnvironmentalDelivery,
+            new ValidationContext(EnvironmentalDelivery),
+            environmentalResults,
+            validateAllProperties: true);
+        foreach (var result in environmentalResults)
+        {
+            yield return result;
+        }
+    }
+}
+
+public sealed class EnvironmentalObservationDeliveryOptions : IValidatableObject
+{
+    public bool Enabled { get; init; } = true;
+
+    [Range(1, 1000)]
+    public int BatchSize { get; init; } = 100;
+
+    [Range(1, 3600)]
+    public int PollIntervalSeconds { get; init; } = 10;
+
+    [Range(10, 3600)]
+    public int LeaseSeconds { get; init; } = 120;
+
+    [Range(1, 3599)]
+    public int RequestTimeoutSeconds { get; init; } = 60;
+
+    [Range(1, 3600)]
+    public int RetryInitialDelaySeconds { get; init; } = 5;
+
+    [Range(1, 86400)]
+    public int RetryMaximumDelaySeconds { get; init; } = 300;
+
+    [Range(1, 100)]
+    public int MaximumAttempts { get; init; } = 10;
+
+    [Range(1, 1_000_000)]
+    public int MaximumPendingCount { get; init; } = 10_000;
+
+    [Range(1, long.MaxValue)]
+    public long MaximumPendingBytes { get; init; } = 64L * 1024 * 1024;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (RetryMaximumDelaySeconds < RetryInitialDelaySeconds)
+        {
+            yield return new ValidationResult(
+                "RetryMaximumDelaySeconds must be greater than or equal to RetryInitialDelaySeconds.",
+                [nameof(RetryMaximumDelaySeconds), nameof(RetryInitialDelaySeconds)]);
+        }
+        if (RequestTimeoutSeconds * 2 > LeaseSeconds)
+        {
+            yield return new ValidationResult(
+                "RequestTimeoutSeconds must not exceed half of LeaseSeconds.",
+                [nameof(RequestTimeoutSeconds), nameof(LeaseSeconds)]);
         }
     }
 }
