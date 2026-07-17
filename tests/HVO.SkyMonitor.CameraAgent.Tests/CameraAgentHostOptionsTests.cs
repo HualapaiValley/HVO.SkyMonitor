@@ -79,4 +79,25 @@ public sealed class CameraAgentHostOptionsTests
         Assert.IsFalse(valid);
         Assert.IsGreaterThanOrEqualTo(3, results.Count);
     }
+
+    [TestMethod]
+    public void Validate_WhenEnvironmentalRequestCanOutliveSafeLeaseWindow_ReturnsValidationError()
+    {
+        var options = new CameraAgentHostOptions
+        {
+            RawIngressRoot = "raw-ingress",
+            EnvironmentalDelivery = new EnvironmentalObservationDeliveryOptions
+            {
+                LeaseSeconds = 10,
+                RequestTimeoutSeconds = 6
+            }
+        };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(
+            nameof(EnvironmentalObservationDeliveryOptions.RequestTimeoutSeconds))));
+    }
 }

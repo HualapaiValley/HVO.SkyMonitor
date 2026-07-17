@@ -16,6 +16,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -68,6 +69,19 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<FleetHeartbeatTelemetry>();
         services.AddSingleton<FleetStatusCollector>();
         services.AddSingleton<IFleetStatusOutbox, SqliteFleetStatusOutbox>();
+        services.AddSingleton<EnvironmentalObservationDeliveryWakeup>();
+        services.AddSingleton<EnvironmentalObservationDeliveryState>();
+        services.AddSingleton<EnvironmentalObservationDeliveryTelemetry>();
+        services.AddSingleton<IEnvironmentalObservationOutbox>(provider =>
+        {
+            var configured = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<CameraAgentHostOptions>>().Value;
+            return new SqliteEnvironmentalObservationOutbox(
+                provider.GetRequiredService<TimeProvider>(),
+                configured.RawIngressSqliteBusyTimeoutSeconds,
+                configured.EnvironmentalDelivery.MaximumPendingCount,
+                configured.EnvironmentalDelivery.MaximumPendingBytes);
+        });
+        services.AddSingleton<IEnvironmentalObservationPublisher, EnvironmentalObservationPublisher>();
         services.AddSingleton<CaptureControlTelemetry>();
         services.AddSingleton<CaptureTelemetrySink>();
         services.AddSingleton<ICaptureTelemetrySink>(sp => sp.GetRequiredService<CaptureTelemetrySink>());
@@ -104,6 +118,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService<RetentionBackgroundService>();
         services.AddHostedService<ArtifactOutboxDrainService>();
         services.AddHostedService<FleetHeartbeatService>();
+        services.AddHostedService<EnvironmentalObservationDeliveryService>();
 
         return services;
     }

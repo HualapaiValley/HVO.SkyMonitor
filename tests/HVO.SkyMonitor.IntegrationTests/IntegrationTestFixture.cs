@@ -126,6 +126,31 @@ public sealed class IntegrationTestFixture : IDisposable
         await db.SaveChangesAsync().ConfigureAwait(false);
     }
 
+    public async Task<ActiveDeviceFixture> GetActiveDeviceAsync(string deviceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        return await db.DeviceRegistrations
+            .AsNoTracking()
+            .Where(registration => registration.DeviceId == deviceId && registration.Status == DeviceRegistrationStatus.Active)
+            .Select(registration => new ActiveDeviceFixture(
+                registration.Id,
+                registration.DevicePublicId!.Value,
+                registration.ObservatoryId,
+                registration.IssuedAtUtc,
+                registration.ExpiresAtUtc!.Value))
+            .SingleAsync().ConfigureAwait(false);
+    }
+
+    public async Task<int> CountEnvironmentalObservationsAsync(Guid observationId)
+    {
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        return await db.EnvironmentalObservations.CountAsync(observation => observation.ObservationId == observationId)
+            .ConfigureAwait(false);
+    }
+
     public async Task SeedRigProfileAsync(string deviceId, CameraRigConfig rig)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
@@ -451,3 +476,10 @@ public sealed class IntegrationTestFixture : IDisposable
         return port;
     }
 }
+
+public sealed record ActiveDeviceFixture(
+    Guid RegistrationId,
+    Guid DevicePublicId,
+    Guid ObservatoryId,
+    DateTimeOffset IssuedAtUtc,
+    DateTimeOffset ExpiresAtUtc);

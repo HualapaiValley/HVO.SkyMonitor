@@ -33,6 +33,7 @@ using OpenTelemetry.Metrics;
 using Scalar.AspNetCore;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 
 namespace HVO.SkyMonitor.CameraAgent;
 
@@ -158,6 +159,7 @@ public class Program
             {
                 metrics.AddPrometheusExporter();
                 metrics.AddMeter(FleetHeartbeatTelemetry.MeterName);
+                metrics.AddMeter(EnvironmentalObservationDeliveryTelemetry.MeterName);
             });
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
@@ -169,6 +171,11 @@ public class Program
         builder.Services.AddSingleton<IConfigureOptions<CentralIdentityOptions>, DeviceSecretsCentralIdentityConfigurator>();
         builder.Services.AddSkyMonitorApiClient(builder.Configuration);
         builder.Services.AddSingleton<IFleetHeartbeatTransport, CameraAgentFleetHeartbeatTransport>();
+        builder.Services.AddSingleton<CameraAgentEnvironmentalObservationBridge>();
+        builder.Services.AddSingleton<IEnvironmentalObservationTargetResolver>(provider =>
+            provider.GetRequiredService<CameraAgentEnvironmentalObservationBridge>());
+        builder.Services.AddSingleton<IEnvironmentalObservationTransport>(provider =>
+            provider.GetRequiredService<CameraAgentEnvironmentalObservationBridge>());
 
         var authenticationBuilder = builder.Services.AddAuthentication(options =>
         {
@@ -212,6 +219,7 @@ public class Program
         healthChecks.AddCheck<CaptureProcessingHealthCheck>("capture-processing", tags: ["dependency"]);
         healthChecks.AddCheck<ArtifactOutboxHealthCheck>("artifact-outbox", tags: ["dependency"]);
         healthChecks.AddCheck<FleetHeartbeatHealthCheck>("fleet-heartbeat", tags: ["dependency"]);
+        healthChecks.AddCheck<EnvironmentalObservationDeliveryHealthCheck>("environmental-delivery", tags: ["dependency"]);
         builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
         builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
 
