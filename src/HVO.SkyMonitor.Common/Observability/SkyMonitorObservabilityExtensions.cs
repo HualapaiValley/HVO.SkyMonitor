@@ -56,6 +56,11 @@ public static class SkyMonitorObservabilityExtensions
     {
         "Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds"
     };
+    private static readonly HashSet<string> EnvironmentalObservationHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "SourceCount", "ObservationCount", "NewestReceivedAgeSeconds", "RetentionEligibleCount",
+        "RetentionOldestAgeSeconds", "RetentionLastSucceededUtc"
+    };
 
     /// <summary>
     /// Configures the shared HVO telemetry stack and OTLP export.
@@ -82,6 +87,7 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Ingest");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Retrieval");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.DerivativeWorker");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.EnvironmentalObservations");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureControl");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
@@ -89,6 +95,7 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Outbox");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.DerivativeWorker");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.EnvironmentalObservations");
             options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
         });
 
@@ -107,6 +114,7 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.LogicHost.Ingest")
                     .AddMeter("HVO.SkyMonitor.LogicHost.Retrieval")
                     .AddMeter("HVO.SkyMonitor.LogicHost.DerivativeWorker")
+                    .AddMeter("HVO.SkyMonitor.LogicHost.EnvironmentalObservations")
                     .AddOtlpExporter());
         }
 
@@ -180,6 +188,7 @@ public static class SkyMonitorObservabilityExtensions
             "artifact-outbox" => ArtifactOutboxHealthDataKeys,
             "artifact-consistency" => ArtifactConsistencyHealthDataKeys,
             "central-derivative-worker" => CentralDerivativeWorkerHealthDataKeys,
+            "environmental-observations" => EnvironmentalObservationHealthDataKeys,
             _ => null
         };
         return allowedKeys is null

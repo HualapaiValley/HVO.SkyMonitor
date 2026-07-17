@@ -144,7 +144,8 @@ public sealed partial class Program
             .AddDbContextCheck<ApplicationDbContext>("database", tags: ["dependency"])
             .AddCheck<CentralArtifactConsistencyHealthCheck>("artifact-consistency", tags: ["consistency"])
             .AddCheck<CentralDerivativeWorkerHealthCheck>("central-derivative-worker", tags: ["worker"])
-            .AddCheck<FleetStatusHealthCheck>("fleet-status", tags: ["worker"]);
+            .AddCheck<FleetStatusHealthCheck>("fleet-status", tags: ["worker"])
+            .AddCheck<EnvironmentalObservationHealthCheck>("environmental-observations", tags: ["worker"]);
         healthChecks.AddInstalledCelestialCatalogHealthCheck();
 
         if (!string.IsNullOrWhiteSpace(redisConfiguration))
@@ -194,6 +195,7 @@ public sealed partial class Program
                 metrics.AddMeter(CentralArtifactRetrievalTelemetry.MeterName);
                 metrics.AddMeter(CentralDerivativeWorkerTelemetry.MeterName);
                 metrics.AddMeter(FleetStatusTelemetry.MeterName);
+                metrics.AddMeter(EnvironmentalObservationTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             });
 
@@ -303,6 +305,10 @@ public sealed partial class Program
             .ValidateOnStart();
         builder.Services.AddOptions<FleetStatusOptions>()
             .Bind(builder.Configuration.GetSection("FleetStatus"))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        builder.Services.AddOptions<EnvironmentalObservationOptions>()
+            .Bind(builder.Configuration.GetSection("EnvironmentalObservations"))
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
@@ -615,6 +621,11 @@ public sealed partial class Program
         builder.Services.AddSingleton<FleetStatusTelemetry>();
         builder.Services.AddSingleton<FleetRetentionState>();
         builder.Services.AddHostedService<FleetStatusRetentionWorker>();
+        builder.Services.AddScoped<IEnvironmentalObservationIngestService, EnvironmentalObservationIngestService>();
+        builder.Services.AddScoped<IEnvironmentalObservationQueryService, EnvironmentalObservationQueryService>();
+        builder.Services.AddSingleton<EnvironmentalObservationTelemetry>();
+        builder.Services.AddSingleton<EnvironmentalRetentionState>();
+        builder.Services.AddHostedService<EnvironmentalObservationRetentionWorker>();
         builder.Services.AddScoped<IDeviceUploadService, DeviceUploadService>();
         builder.Services.AddScoped<IArtifactIngestService, ArtifactIngestService>();
         builder.Services.AddSingleton<CentralIngestTelemetry>();

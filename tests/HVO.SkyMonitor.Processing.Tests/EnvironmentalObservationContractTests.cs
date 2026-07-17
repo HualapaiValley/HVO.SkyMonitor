@@ -1,0 +1,391 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Processing;
+
+namespace HVO.SkyMonitor.Processing.Tests;
+
+[TestClass]
+[TestCategory("Unit")]
+[SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
+public sealed class EnvironmentalObservationContractTests
+{
+    private static readonly DateTimeOffset Epoch = DateTimeOffset.Parse(
+        "2026-01-15T06:00:00Z",
+        CultureInfo.InvariantCulture);
+
+    [TestMethod]
+    public void CanonicalRoundTripAndContentIdentityAreStable()
+    {
+        var observation = CreateObservation();
+        var reorderedParameters = Json("""{"offset":1,"model":"weather-v1"}""");
+        var equivalent = observation with
+        {
+            Source = observation.Source with
+            {
+                Provenance = observation.Source.Provenance with
+                {
+                    Parameters = reorderedParameters,
+                    ParametersSha256 = LowerHex(CaptureContractJson.ComputeCanonicalJsonSha256(reorderedParameters))
+                }
+            }
+        };
+
+        var bytes = EnvironmentalObservationJson.Serialize(observation);
+        var parsed = EnvironmentalObservationJson.Parse(bytes);
+
+        Assert.IsTrue(parsed.Validation.IsValid);
+        Assert.IsNotNull(parsed.Observation);
+        CollectionAssert.AreEqual(bytes, EnvironmentalObservationJson.Serialize(parsed.Observation));
+        Assert.AreEqual(
+            EnvironmentalObservationJson.ComputeContentSha256(observation),
+            EnvironmentalObservationJson.ComputeContentSha256(equivalent));
+        Assert.AreEqual(
+            EnvironmentalObservationJson.ComputeSourceIdentitySha256(observation),
+            EnvironmentalObservationJson.ComputeSourceIdentitySha256(equivalent));
+        Assert.AreEqual(
+            EnvironmentalObservationJson.ComputeSourceContentSha256(observation),
+            EnvironmentalObservationJson.ComputeSourceContentSha256(equivalent));
+        Assert.AreEqual(64, EnvironmentalObservationJson.ComputeContentSha256(observation).Length);
+
+        var receivedLater = new ReceivedEnvironmentalObservationV1(
+            observation,
+            Epoch.AddHours(2),
+            EnvironmentalObservationJson.ComputeContentSha256(observation));
+        Assert.AreEqual(
+            receivedLater.ContentSha256,
+            EnvironmentalObservationJson.ComputeContentSha256(receivedLater.Observation));
+        Assert.IsTrue(EnvironmentalObservationJson.Validate(receivedLater).IsValid);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidTime,
+            EnvironmentalObservationJson.Validate(receivedLater with { ReceivedAtUtc = default }).ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidIdentity,
+            EnvironmentalObservationJson.Validate(receivedLater with { ContentSha256 = new string('A', 64) }).ReasonCode);
+    }
+
+    [TestMethod]
+    public void EverySupportedKindRequiresItsCanonicalUnitAndRange()
+    {
+        var valid = new[]
+        {
+            Value(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, -273.15),
+            Value(EnvironmentalObservationKind.RelativeHumidity, EnvironmentalObservationUnit.Percent, 100),
+            Value(EnvironmentalObservationKind.AtmosphericPressure, EnvironmentalObservationUnit.Pascals, 101_325),
+            Value(EnvironmentalObservationKind.WindSpeed, EnvironmentalObservationUnit.MetersPerSecond, 0),
+            Value(EnvironmentalObservationKind.WindDirection, EnvironmentalObservationUnit.DegreesTrue, 359.999),
+            Value(EnvironmentalObservationKind.WindGust, EnvironmentalObservationUnit.MetersPerSecond, 4),
+            Value(EnvironmentalObservationKind.PrecipitationRate, EnvironmentalObservationUnit.MillimetersPerHour, 0),
+            new EnvironmentalObservationValue(
+                EnvironmentalObservationKind.RainState,
+                EnvironmentalObservationUnit.Boolean,
+                null,
+                false,
+                EnvironmentalObservationQuality.Good),
+            Value(EnvironmentalObservationKind.SkyBrightness, EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond, 20.5),
+            Value(EnvironmentalObservationKind.SkyQuality, EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond, 21),
+            Value(EnvironmentalObservationKind.CloudCover, EnvironmentalObservationUnit.Fraction, 1)
+        };
+
+        foreach (var value in valid)
+        {
+            Assert.IsTrue(EnvironmentalObservationJson.Validate(CreateObservation(value: value)).IsValid, value.Kind.ToString());
+            var wrongUnit = value with { Unit = EnvironmentalObservationUnit.Pascals };
+            if (value.Kind != EnvironmentalObservationKind.AtmosphericPressure)
+            {
+                Assert.AreEqual(
+                    EnvironmentalObservationReasonCodes.InvalidUnit,
+                    EnvironmentalObservationJson.Validate(CreateObservation(value: wrongUnit)).ReasonCode,
+                    value.Kind.ToString());
+            }
+        }
+
+        var invalid = new[]
+        {
+            Value(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, -273.151),
+            Value(EnvironmentalObservationKind.RelativeHumidity, EnvironmentalObservationUnit.Percent, 100.1),
+            Value(EnvironmentalObservationKind.AtmosphericPressure, EnvironmentalObservationUnit.Pascals, 0),
+            Value(EnvironmentalObservationKind.WindSpeed, EnvironmentalObservationUnit.MetersPerSecond, -1),
+            Value(EnvironmentalObservationKind.WindDirection, EnvironmentalObservationUnit.DegreesTrue, 360),
+            Value(EnvironmentalObservationKind.PrecipitationRate, EnvironmentalObservationUnit.MillimetersPerHour, -1),
+            Value(EnvironmentalObservationKind.CloudCover, EnvironmentalObservationUnit.Fraction, 1.01)
+        };
+        foreach (var value in invalid)
+        {
+            Assert.IsFalse(EnvironmentalObservationJson.Validate(CreateObservation(value: value)).IsValid, value.Kind.ToString());
+        }
+    }
+
+    [TestMethod]
+    public void ValuesRejectNonfiniteAmbiguousAndInvalidUncertainty()
+    {
+        var source = CreateObservation();
+        var invalidValues = new[]
+        {
+            source.Value with { NumericValue = double.NaN },
+            source.Value with { NumericValue = double.PositiveInfinity },
+            source.Value with { BooleanValue = true },
+            source.Value with { NumericValue = null },
+            source.Value with { Uncertainty = -0.1 },
+            source.Value with { Uncertainty = double.NaN },
+            source.Value with { SubmittedNumericValue = 45 },
+            source.Value with { SubmittedUnit = "fahrenheit" },
+            source.Value with { SubmittedNumericValue = double.NegativeInfinity, SubmittedUnit = "fahrenheit" }
+        };
+
+        foreach (var value in invalidValues)
+        {
+            Assert.IsFalse(EnvironmentalObservationJson.Validate(source with { Value = value }).IsValid);
+        }
+    }
+
+    [TestMethod]
+    public void SourceKindsAndDerivedLineageRemainDistinct()
+    {
+        var source = CreateObservation();
+        var hashes = Enum.GetValues<EnvironmentalObservationSourceKind>()
+            .Select(kind =>
+            {
+                var sourceIds = kind == EnvironmentalObservationSourceKind.Derived
+                    ? new[]
+                    {
+                        new EnvironmentalObservationReference(
+                            new string('A', 64),
+                            Guid.Parse("22222222-2222-2222-2222-222222222222"))
+                    }
+                    : Array.Empty<EnvironmentalObservationReference>();
+                var observation = source with
+                {
+                    Source = source.Source with
+                    {
+                        Kind = kind
+                    },
+                    Lineage = sourceIds
+                };
+                Assert.IsTrue(EnvironmentalObservationJson.Validate(observation).IsValid);
+                return EnvironmentalObservationJson.ComputeContentSha256(observation);
+            })
+            .ToArray();
+
+        Assert.AreEqual(hashes.Length, hashes.Distinct(StringComparer.Ordinal).Count());
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidProvenance,
+            EnvironmentalObservationJson.Validate(source with
+            {
+                Source = source.Source with { Kind = EnvironmentalObservationSourceKind.Derived }
+            }).ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidProvenance,
+            EnvironmentalObservationJson.Validate(source with
+            {
+                Source = source.Source with
+                {
+                    Kind = EnvironmentalObservationSourceKind.Derived
+                },
+                Lineage =
+                [
+                    new EnvironmentalObservationReference(
+                        EnvironmentalObservationJson.ComputeSourceIdentitySha256(source),
+                        source.ObservationId)
+                ]
+            }).ReasonCode);
+    }
+
+    [TestMethod]
+    public void TimeValidationUsesUtcAndExplicitHalfOpenValidity()
+    {
+        var source = CreateObservation();
+        var invalid = new[]
+        {
+            source with { ObservedAtUtc = Epoch.ToOffset(TimeSpan.FromHours(1)) },
+            source with { ValidThroughUtc = source.ValidFromUtc },
+            source with { StaleAfterUtc = source.ValidFromUtc.AddTicks(-1) },
+            source with { StaleAfterUtc = source.ValidThroughUtc.AddTicks(1) },
+            source with { ObservedFromUtc = Epoch.AddSeconds(-1), ObservedThroughUtc = null },
+            source with { ObservedFromUtc = Epoch.AddSeconds(1), ObservedThroughUtc = Epoch.AddSeconds(2) },
+            source with { ObservedFromUtc = Epoch.AddSeconds(1), ObservedThroughUtc = Epoch.AddSeconds(-1) }
+        };
+
+        foreach (var observation in invalid)
+        {
+            Assert.AreEqual(
+                EnvironmentalObservationReasonCodes.InvalidTime,
+                EnvironmentalObservationJson.Validate(observation).ReasonCode);
+        }
+
+        Assert.IsTrue(EnvironmentalObservationJson.Validate(source with
+        {
+            ObservedFromUtc = Epoch,
+            ObservedThroughUtc = Epoch
+        }).IsValid);
+    }
+
+    [TestMethod]
+    public void TargetAndProvenanceValidationRejectAmbiguousIdentity()
+    {
+        var source = CreateObservation();
+        var duplicateParameters = Json("""{"calibration":1,"calibration":2}""");
+        var invalid = new[]
+        {
+            source with { ObservationId = Guid.Empty },
+            source with { Target = source.Target with { SiteId = Guid.Empty } },
+            source with { Target = source.Target with { AgentId = null, RigId = "rig-1" } },
+            source with { Source = source.Source with { Provider = " provider" } },
+            source with { Source = source.Source with { Version = new string('v', 65) } },
+            source with
+            {
+                Source = source.Source with
+                {
+                    Provenance = source.Source.Provenance with { ParametersSha256 = new string('A', 64) }
+                }
+            },
+            source with
+            {
+                Source = source.Source with
+                {
+                    Provenance = source.Source.Provenance with
+                    {
+                        Parameters = duplicateParameters,
+                        ParametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(duplicateParameters)
+                    }
+                }
+            }
+        };
+
+        foreach (var observation in invalid)
+        {
+            Assert.IsFalse(EnvironmentalObservationJson.Validate(observation).IsValid);
+        }
+    }
+
+    [TestMethod]
+    public void ParseRejectsMalformedNumericEnumsAndMissingRequiredMembers()
+    {
+        var source = Encoding.UTF8.GetString(EnvironmentalObservationJson.Serialize(CreateObservation()));
+        var numericEnum = source.Replace("\"Good\"", "1", StringComparison.Ordinal);
+        var missingSchema = source.Replace(
+            "\"schemaVersion\":\"environmental-observation-v1\",",
+            string.Empty,
+            StringComparison.Ordinal);
+        var unknownMember = source.Insert(1, "\"unknown\":true,");
+        var duplicateMember = source.Insert(1, "\"schemaVersion\":\"other\",");
+        var caseCollidingMember = source.Insert(1, "\"SchemaVersion\":\"other\",");
+        var unsupportedSchema = source.Replace(
+            "\"schemaVersion\":\"environmental-observation-v1\"",
+            "\"schemaVersion\":\"environmental-observation-v2\"",
+            StringComparison.Ordinal);
+        var oversized = Encoding.UTF8.GetBytes(source + new string(' ', EnvironmentalObservationJson.MaximumPayloadBytes));
+
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidJson,
+            EnvironmentalObservationJson.Parse(Encoding.UTF8.GetBytes("not-json")).Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidJson,
+            EnvironmentalObservationJson.Parse(Encoding.UTF8.GetBytes(numericEnum)).Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidJson,
+            EnvironmentalObservationJson.Parse(Encoding.UTF8.GetBytes(missingSchema)).Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidJson,
+            EnvironmentalObservationJson.Parse(Encoding.UTF8.GetBytes(unknownMember)).Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidJson,
+            EnvironmentalObservationJson.Parse(Encoding.UTF8.GetBytes(duplicateMember)).Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidJson,
+            EnvironmentalObservationJson.Parse(Encoding.UTF8.GetBytes(caseCollidingMember)).Validation.ReasonCode);
+        var unsupported = EnvironmentalObservationJson.Parse(Encoding.UTF8.GetBytes(unsupportedSchema));
+        Assert.IsNull(unsupported.Observation);
+        Assert.AreEqual(EnvironmentalObservationReasonCodes.UnsupportedSchema, unsupported.Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.PayloadTooLarge,
+            EnvironmentalObservationJson.Parse(oversized).Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.UnsupportedSchema,
+            EnvironmentalObservationJson.Validate(CreateObservation() with { SchemaVersion = "v2" }).ReasonCode);
+    }
+
+    [TestMethod]
+    public void CanonicalOperationsAreCultureAndAmbientTimeIndependent()
+    {
+        var observation = CreateObservation(value: Value(
+            EnvironmentalObservationKind.AirTemperature,
+            EnvironmentalObservationUnit.DegreesCelsius,
+            12.5) with
+        {
+            SubmittedNumericValue = 54.5,
+            SubmittedUnit = "degrees-fahrenheit"
+        });
+        var original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+            var first = EnvironmentalObservationJson.ComputeContentSha256(observation);
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("tr-TR");
+            var second = EnvironmentalObservationJson.ComputeContentSha256(observation);
+            Assert.AreEqual(first, second);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
+    }
+
+    private static EnvironmentalObservationV1 CreateObservation(
+        EnvironmentalObservationValue? value = null)
+    {
+        var parameters = Json("""{"model":"weather-v1","offset":1}""");
+        return new EnvironmentalObservationV1(
+            EnvironmentalObservationV1.CurrentSchemaVersion,
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            new EnvironmentalObservationTarget(
+                Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                "rig-1"),
+            new EnvironmentalObservationSource(
+                "virtual-sky",
+                "weather-primary",
+                "1.0.0",
+                EnvironmentalObservationSourceKind.Simulated,
+                new EnvironmentalObservationProvenance(
+                    new ProcessingAlgorithmIdentity("virtual-weather", "1.0.0"),
+                    parameters,
+                    CaptureContractJson.ComputeCanonicalJsonSha256(parameters))),
+            Epoch,
+            Epoch.AddSeconds(-1),
+            Epoch.AddSeconds(1),
+            Epoch.AddMinutes(-1),
+            Epoch.AddMinutes(10),
+            Epoch.AddMinutes(5),
+            value ?? Value(
+                EnvironmentalObservationKind.RelativeHumidity,
+                EnvironmentalObservationUnit.Percent,
+                45),
+            []);
+    }
+
+    private static EnvironmentalObservationValue Value(
+        EnvironmentalObservationKind kind,
+        EnvironmentalObservationUnit unit,
+        double numeric)
+        => new(kind, unit, numeric, null, EnvironmentalObservationQuality.Good, 0.1);
+
+    private static JsonElement Json(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
+    private static string LowerHex(string value)
+        => string.Create(value.Length, value, static (span, source) =>
+        {
+            for (var index = 0; index < source.Length; index++)
+            {
+                span[index] = source[index] is >= 'A' and <= 'F'
+                    ? (char)(source[index] + ('a' - 'A'))
+                    : source[index];
+            }
+        });
+}

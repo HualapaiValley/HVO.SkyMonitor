@@ -125,7 +125,16 @@ internal sealed class ObservatoryService(ApplicationDbContext dbContext, TimePro
         var registrations = await registrationQuery
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
-        if (registrations.Count == 0)
+        IQueryable<EnvironmentalObservationSourceRecord> environmentalSourceQuery = isRelational
+            ? dbContext.EnvironmentalObservationSources.FromSqlInterpolated($"""
+                SELECT * FROM [EnvironmentalObservationSources] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [SiteId] = {id}
+                """)
+            : dbContext.EnvironmentalObservationSources.Where(source => source.SiteId == id);
+        var hasEnvironmentalEvidence = await environmentalSourceQuery
+            .AnyAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (registrations.Count == 0 && !hasEnvironmentalEvidence)
         {
             dbContext.Observatories.Remove(entity);
         }
