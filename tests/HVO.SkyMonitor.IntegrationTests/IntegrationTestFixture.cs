@@ -269,7 +269,8 @@ public sealed class IntegrationTestFixture : IDisposable
                     foreach (var descriptor in services.Where(static descriptor =>
                              descriptor.ServiceType == typeof(IHostedService)
                              && (descriptor.ImplementationType == typeof(CentralArtifactReconciliationService)
-                                 || descriptor.ImplementationType == typeof(CentralDerivativeWorker))).ToArray())
+                                  || descriptor.ImplementationType == typeof(CentralDerivativeWorker)
+                                  || descriptor.ImplementationType == typeof(EnvironmentalObservationRetentionWorker))).ToArray())
                     {
                         services.Remove(descriptor);
                     }

@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using System.Data.Common;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.TestSupport;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -18,6 +19,51 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestCategory("Integration")]
 public sealed class ObservatoryDeletionTests
 {
+    [TestMethod]
+    public async Task Delete_WithEnvironmentalEvidence_DeactivatesAndPreservesProvenance()
+    {
+        var observatory = new Observatory
+        {
+            OwnerUserId = $"environment-delete-owner-{Guid.NewGuid():N}",
+            Name = "Environmental evidence observatory",
+            TimeZoneId = "UTC",
+            CreatedAtUtc = DateTimeOffset.UnixEpoch,
+            IsActive = true
+        };
+        var source = new EnvironmentalObservationSourceRecord
+        {
+            Site = observatory,
+            SiteId = observatory.Id,
+            IdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+            ContentSha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+            Provider = "deletion-test",
+            SourceId = $"source-{Guid.NewGuid():N}",
+            Version = "1.0.0",
+            Kind = EnvironmentalObservationSourceKind.Imported,
+            MethodName = "deletion-test",
+            MethodVersion = "1.0.0",
+            ParametersJson = "{}",
+            ParametersSha256 = Convert.ToHexString(SHA256.HashData("{}"u8)),
+            CreatedAtUtc = DateTimeOffset.UnixEpoch
+        };
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            db.EnvironmentalObservationSources.Add(source);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            var service = new ObservatoryService(db, TimeProvider.System);
+
+            (await service.DeleteAsync(observatory.Id, observatory.OwnerUserId).ConfigureAwait(false)).Should().BeTrue();
+        }
+
+        await using var assertionScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await assertionDb.Observatories.SingleAsync(item => item.Id == observatory.Id).ConfigureAwait(false))
+            .IsActive.Should().BeFalse();
+        (await assertionDb.EnvironmentalObservationSources.AnyAsync(item => item.Id == source.Id).ConfigureAwait(false))
+            .Should().BeTrue();
+    }
+
     [TestMethod]
     public async Task Delete_WithRegisteredDeviceAndRigHistory_DeactivatesWithoutLosingEvidence()
     {
