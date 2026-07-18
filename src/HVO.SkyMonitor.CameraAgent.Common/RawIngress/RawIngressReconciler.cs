@@ -193,7 +193,7 @@ internal sealed class RawIngressReconciler(
                 descriptor.Capture.CaptureId,
                 descriptor.Artifact.ArtifactId,
                 CaptureContractJson.ComputeDescriptorSha256(descriptor),
-                CaptureContractJson.ComputeManifestSha256(manifest),
+                CaptureContractJson.ComputeManifestSha256(sidecar),
                 descriptor.Artifact.ChecksumSha256,
                 descriptor.Layout.ByteLength,
                 manifest.RelativeArtifactPath,
@@ -359,7 +359,7 @@ internal sealed class RawIngressReconciler(
                descriptor.Capture.CaptureId == entry.CaptureId &&
                descriptor.Artifact.ArtifactId == entry.ArtifactId &&
                CaptureContractJson.ComputeDescriptorSha256(descriptor) == entry.DescriptorSha256 &&
-               CaptureContractJson.ComputeManifestSha256(manifest) == entry.ManifestSha256 &&
+               CaptureContractJson.ComputeManifestSha256(sidecar) == entry.ManifestSha256 &&
                descriptor.Artifact.ChecksumSha256 == entry.PayloadSha256 &&
                descriptor.Layout.ByteLength == entry.PayloadLength &&
                manifest.RelativeArtifactPath == entry.PayloadRelativePath &&

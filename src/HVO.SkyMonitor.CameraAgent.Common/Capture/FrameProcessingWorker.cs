@@ -369,6 +369,13 @@ internal sealed class FrameProcessingWorker
             {
                 throw new InvalidDataException($"Committed raw sidecar could not be parsed ({parsed.Validation.ReasonCode}).");
             }
+            if (!string.Equals(
+                    CaptureContractJson.ComputeManifestSha256(sidecar),
+                    receipt.CommittedManifestSha256,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Committed raw sidecar differs from the journaled manifest.");
+            }
             receipt = receipt with { Manifest = persistedManifest };
             rawCapture = receipt;
             var payload = await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, cancellationToken).ConfigureAwait(false);

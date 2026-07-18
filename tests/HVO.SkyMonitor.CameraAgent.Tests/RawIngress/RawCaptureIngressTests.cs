@@ -47,7 +47,7 @@ public sealed class RawCaptureIngressTests
             Assert.AreEqual("wal", await ScalarStringAsync(connection, "PRAGMA journal_mode;").ConfigureAwait(false));
             Assert.AreEqual(2L, await ScalarLongAsync(connection, "PRAGMA synchronous;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "PRAGMA foreign_keys;").ConfigureAwait(false));
-            Assert.AreEqual(2L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(3L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
 
             using var browser = new FileSystemFrameStorageService(
@@ -507,7 +507,7 @@ public sealed class RawCaptureIngressTests
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 3;";
+                command.CommandText = "PRAGMA user_version = 4;";
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var state = new RawIngressState(TimeProvider.System);
@@ -530,7 +530,7 @@ public sealed class RawCaptureIngressTests
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(3L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(4L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
             Assert.AreEqual(0L, telemetry.CheckpointCount);
             Assert.AreEqual(0L, telemetry.CheckpointFailureCount);
@@ -1176,10 +1176,98 @@ public sealed class RawCaptureIngressTests
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
 
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(2L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(3L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(3L, await ScalarLongAsync(
                 verify,
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('raw_capture_sequences','raw_capture_assignments','raw_captures');").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_MigratesV2CanonicalHashesToExactManifestBytes()
+    {
+        var root = CreateRoot();
+        try
+        {
+            RawCaptureReceipt receipt;
+            using (var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                receipt = (await ingress.AcceptAsync(
+                    CreateConfiguration(),
+                    CreateSubmission(Timestamp(2), [1, 2, 3, 4]),
+                    CancellationToken.None).ConfigureAwait(false))!;
+            }
+            var sidecarPath = Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json");
+            var canonical = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            var reformatted = System.Text.Encoding.UTF8.GetBytes(
+                $"\n{System.Text.Encoding.UTF8.GetString(canonical)}");
+            await File.WriteAllBytesAsync(sidecarPath, reformatted).ConfigureAwait(false);
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE raw_captures
+                    SET manifest_json = $manifest, manifest_sha256 = $canonical_hash;
+                    PRAGMA user_version = 2;
+                    """;
+                command.Parameters.AddWithValue("$manifest", reformatted);
+                command.Parameters.AddWithValue(
+                    "$canonical_hash",
+                    CaptureContractJson.ComputeManifestSha256(receipt.Manifest));
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            var state = new RawIngressState(TimeProvider.System);
+            using (var migrated = CreateIngress(root, state))
+            {
+                await migrated.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
+            using (var verify = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                Assert.AreEqual(3L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+                Assert.AreEqual(
+                    CaptureContractJson.ComputeManifestSha256(reformatted),
+                    await ScalarStringAsync(verify, "SELECT manifest_sha256 FROM raw_captures;").ConfigureAwait(false));
+                Assert.AreEqual("committed", await ScalarStringAsync(verify, "SELECT state FROM raw_captures;").ConfigureAwait(false));
+            }
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+            Assert.IsTrue(File.Exists(receipt.StoredFrame.AbsolutePath));
+            Assert.IsTrue(File.Exists(sidecarPath));
+
+            var altered = receipt.Manifest with
+            {
+                Descriptor = receipt.Manifest.Descriptor with
+                {
+                    Capture = receipt.Manifest.Descriptor.Capture with
+                    {
+                        CaptureSequence = receipt.Manifest.Descriptor.Capture.CaptureSequence + 1
+                    }
+                }
+            };
+            var alteredJson = CaptureContractJson.Serialize(altered);
+            await File.WriteAllBytesAsync(sidecarPath, alteredJson).ConfigureAwait(false);
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE raw_captures
+                    SET manifest_json = $manifest, manifest_sha256 = $old_canonical_hash;
+                    PRAGMA user_version = 2;
+                    """;
+                command.Parameters.AddWithValue("$manifest", alteredJson);
+                command.Parameters.AddWithValue(
+                    "$old_canonical_hash",
+                    CaptureContractJson.ComputeManifestSha256(receipt.Manifest));
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            using var rejected = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await rejected.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
         }
         finally
         {

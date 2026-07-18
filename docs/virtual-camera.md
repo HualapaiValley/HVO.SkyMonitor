@@ -86,7 +86,8 @@ flowchart LR
     A[Catalog and ephemeris] --> B[Visible celestial scene]
     B --> C[Shared optical projector]
     C --> D[Linear sensor-plane irradiance]
-    D --> E[Exposure and spectral response]
+    D --> CD[Optional deterministic cloud field]
+    CD --> E[Exposure and spectral response]
     E --> F[Shot read dark and fixed-pattern noise]
     F --> G[Mono integration or CFA sampling]
     G --> H[Quantization and raw CameraFrame]
@@ -156,6 +157,49 @@ The shared renderer must preserve these deterministic linear-image rules:
 Raw frames contain no labels, constellation lines, display gamma, or tone
 mapping. Every full-frame algorithm documents complexity and maximum
 simultaneously live full-frame buffers under the shared processing recipe.
+
+### Deterministic cloud scenarios
+
+`virtual-cloud-scenario-v1` is an optional VirtualSky module option. Absence of
+the option preserves the previous renderer path and exact raw bytes. A scenario
+contains an opaque identity, numeric revision, seed, UTC epoch, spatial frequency,
+east/north drift, deterministic evolution, one through six value-noise octaves,
+edge softness, horizon fade, one through sixteen temporal samples, and one
+through sixty-four strictly ordered keyframes. Each keyframe defines UTC-relative
+coverage, maximum opacity, and background-scatter fraction in `[0,1]`.
+
+The `virtual-cloud-value-field-v1` evaluator is a pure function of the canonical
+scenario, horizontal sky direction, and UTC. It uses stable integer hashing and
+fixed midpoint samples over the logical exposure. Cloud transmission and
+background scatter modify linear sky rates before exposure, shot/read/dark
+noise, physical-well clipping, CFA selection, defects, and quantization. The
+geometric horizon is cloud-free and the configured fade reaches full strength
+above it. Cloud-disabled and explicit-clear renderer fixtures remain
+byte-identical when every other renderer input, including the sensor seed, is
+fixed.
+
+VirtualSky remains accelerated: module acquisition timing records the immediate
+host operation, while additive `CloudScenarioProvenance` records the logical
+integration start/end, canonical parameters/hash, field algorithm, seed, epoch,
+and sample count. It never records clear/scattered/broken/overcast labels,
+expected assessment scores, or truth masks. Those semantic oracle labels exist
+only in `tests/fixtures/virtual-sky/cloud-scenarios-v1.json`.
+
+The configured `VirtualSkyCloudObservation` standard-lane step runs only after
+durable raw ingress. It verifies the captured provenance, evaluates a fixed
+equal-area sky-dome grid, and publishes a restart-stable targetless
+`environmental-observation-v1` fact with source kind `Simulated`, value kind
+`CloudCover`, and unit `Fraction`. The CameraAgent provisioning bridge remains
+the only owner of central site/device identity, and the existing SQLite outbox
+owns retry, restart, duplicate, and delivery behavior. This simulated fact is
+not the image-derived cloud assessment, mask, confidence, or processing gate
+owned by #105.
+
+Mono rendering evaluates effects on demand and retains one signal plane plus the
+raw output. RGB/Bayer rendering shares one temporary two-float effect map across
+three channel planes rather than evaluating the same field three times; the map
+is never persisted. Dated W1/W2 measurements and interpretation are retained in
+`docs/validation/virtual-cloud-scenarios.md`.
 
 ### Sky brightness and display
 

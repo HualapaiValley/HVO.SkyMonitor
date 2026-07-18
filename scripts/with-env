@@ -11,7 +11,7 @@ if [[ "$*" == *"HVO.SkyMonitor.LogicHost"* ]]; then
     export Catalog__Root="$runtime_data_root/catalog"
     export Catalog__RequiredPackageKind="Production"
     export "ConnectionStrings__skymonitordb=Server=${SQLSERVER_HOST:?SQLSERVER_HOST must be set},${SQLSERVER_PORT:?SQLSERVER_PORT must be set};Database=${SQLSERVER_DATABASE:?SQLSERVER_DATABASE must be set};User Id=${SQLSERVER_USER:?SQLSERVER_USER must be set};Password=${SQLSERVER_PASSWORD:?SQLSERVER_PASSWORD must be set};TrustServerCertificate=True"
-    export "Redis__Configuration=${REDIS_HOST:?REDIS_HOST must be set}:${REDIS_PORT:?REDIS_PORT must be set},password=${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+    export "Redis__Configuration=${REDIS_HOST:?REDIS_HOST must be set}:${REDIS_PORT:?REDIS_PORT must be set},user=${REDIS_USER:-skymonitor-app},password=${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
     export Redis__InstanceName="skymonitor:"
     export Minio__Endpoint="${MINIO_HOST:?MINIO_HOST must be set}"
     export Minio__Port="${MINIO_API_PORT:?MINIO_API_PORT must be set}"

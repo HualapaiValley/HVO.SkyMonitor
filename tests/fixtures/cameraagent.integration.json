@@ -11,6 +11,29 @@
       "shotNoiseEnabled": false,
       "readNoiseStandardDeviation": 0.0,
       "rigProfileVersion": "integration-virtual-asi174-v1",
+      "cloudScenario": {
+        "schemaVersion": "virtual-cloud-scenario-v1",
+        "scenarioId": "scn-104-c5219a7f",
+        "scenarioVersion": "1",
+        "seed": 10410,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "spatialFrequency": 3.0,
+        "driftEastCellsPerSecond": 0.01,
+        "driftNorthCellsPerSecond": -0.005,
+        "evolutionCellsPerSecond": 0.001,
+        "octaves": 3,
+        "edgeSoftness": 0.5,
+        "horizonFadeDegrees": 5.0,
+        "temporalSampleCount": 2,
+        "keyframes": [
+          {
+            "offsetSeconds": 0.0,
+            "coverage": 0.55,
+            "maximumOpacity": 0.8,
+            "scatterFraction": 0.1
+          }
+        ]
+      },
       "asi174Sensor": {
         "enabled": true,
         "blackLevelAdu": 64.0
@@ -66,6 +89,12 @@
     }
   },
   "processingSteps": [
+    {
+      "id": "CloudObservation",
+      "type": "VirtualSkyCloudObservation",
+      "order": 5,
+      "required": true
+    },
     {
       "id": "Calibration",
       "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CalibrationCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",

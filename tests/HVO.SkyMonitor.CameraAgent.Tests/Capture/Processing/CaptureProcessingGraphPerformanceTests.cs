@@ -472,7 +472,8 @@ public sealed class CaptureProcessingGraphPerformanceTests
                     new HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureReceipt(
                         HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressOutcome.Committed,
                         manifest,
-                        new StoredFrameReference(relativePath, payloadPath, timestamp, FrameArtifactRole.Raw)));
+                        new StoredFrameReference(relativePath, payloadPath, timestamp, FrameArtifactRole.Raw),
+                        CaptureContractJson.ComputeManifestSha256(manifest)));
                 lastContext = context;
                 var stopwatch = Stopwatch.StartNew();
                 var outcome = await handler.HandleAsync(context, CancellationToken.None).ConfigureAwait(false);

@@ -7,11 +7,11 @@ var categories = new[] { "Unit", "Integration", "Manual", "Soak", "External", "H
 var expected = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal)
 {
     ["tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj"] = Counts(unit: 122),
-    ["tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj"] = Counts(unit: 87, manual: 1),
+    ["tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj"] = Counts(unit: 94, manual: 1),
     ["tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"] = Counts(unit: 20, manual: 2),
     ["tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"] = Counts(unit: 58),
     ["tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj"] = Counts(manual: 3),
-    ["tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"] = Counts(unit: 391, integration: 97, manual: 6, soak: 1),
+    ["tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"] = Counts(unit: 406, integration: 100, manual: 9, soak: 1),
     ["tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj"] = Counts(unit: 116, integration: 6, manual: 1),
     ["tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"] = Counts(integration: 168, manual: 10),
     ["tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj"] = Counts(integration: 5)

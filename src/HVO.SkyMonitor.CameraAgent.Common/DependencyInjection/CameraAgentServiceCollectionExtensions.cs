@@ -112,6 +112,9 @@ public static class CameraAgentServiceCollectionExtensions
             "RollingCombination", typeof(RollingCombinationCaptureProcessingStep), typeof(RollingCombinationProcessingStepOptions), 25));
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "Annotation", typeof(AnnotationCaptureProcessingStep), typeof(AnnotationProcessingStepOptions), 75));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "VirtualSkyCloudObservation", typeof(VirtualSkyCloudObservationProcessingStep),
+            typeof(VirtualSkyCloudObservationProcessingStepOptions), 10, AutoInclude: false));
         services.AddHostedService<CameraAgentConfigurationInitializer>();
         services.AddHostedService(provider => provider.GetRequiredService<CaptureDistributionService>());
         services.AddHostedService<CameraCaptureService>();

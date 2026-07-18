@@ -1,0 +1,123 @@
+{
+  "schemaVersion": "virtual-cloud-fixture-v1",
+  "utc": "2025-01-15T08:00:00Z",
+  "exposureSeconds": 4.0,
+  "cases": [
+    {
+      "id": "clear",
+      "oracleLabel": "clear",
+      "expectedCoverage": 0.0,
+      "minimumCoverage": 0.0,
+      "maximumCoverage": 0.0,
+      "expectedRawMinimum": 0,
+      "expectedRawMaximum": 400,
+      "expectedRawMean": 216.66666666666666,
+      "expectedMono16Sha256": "A710AB6142EF0A7228FDA0CD821B9D1F110A9A52C4E7135FE05DF468F8B68CC2",
+      "definition": {
+        "schemaVersion": "virtual-cloud-scenario-v1",
+        "scenarioId": "scn-104-8f35a90c",
+        "scenarioVersion": "1",
+        "seed": 10401,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "spatialFrequency": 3.0,
+        "driftEastCellsPerSecond": 0.01,
+        "driftNorthCellsPerSecond": -0.005,
+        "evolutionCellsPerSecond": 0.001,
+        "octaves": 3,
+        "edgeSoftness": 0.5,
+        "horizonFadeDegrees": 5.0,
+        "temporalSampleCount": 4,
+        "keyframes": [
+          { "offsetSeconds": 0.0, "coverage": 0.0, "maximumOpacity": 0.0, "scatterFraction": 0.0 }
+        ]
+      }
+    },
+    {
+      "id": "scattered",
+      "oracleLabel": "scattered",
+      "expectedCoverage": 0.2881944444444444,
+      "minimumCoverage": 0.01,
+      "maximumCoverage": 0.65,
+      "expectedRawMinimum": 0,
+      "expectedRawMaximum": 400,
+      "expectedRawMean": 174.47493489583334,
+      "expectedMono16Sha256": "F5F8E5564501D18D49D6B8BE92EAA64C6019A5C43C0AFFC00E39E37192FC8EBB",
+      "definition": {
+        "schemaVersion": "virtual-cloud-scenario-v1",
+        "scenarioId": "scn-104-247cb61e",
+        "scenarioVersion": "1",
+        "seed": 10402,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "spatialFrequency": 3.0,
+        "driftEastCellsPerSecond": 0.01,
+        "driftNorthCellsPerSecond": -0.005,
+        "evolutionCellsPerSecond": 0.001,
+        "octaves": 3,
+        "edgeSoftness": 0.5,
+        "horizonFadeDegrees": 5.0,
+        "temporalSampleCount": 4,
+        "keyframes": [
+          { "offsetSeconds": 0.0, "coverage": 0.45, "maximumOpacity": 0.6, "scatterFraction": 0.08 }
+        ]
+      }
+    },
+    {
+      "id": "broken",
+      "oracleLabel": "broken",
+      "expectedCoverage": 0.7430555555555556,
+      "minimumCoverage": 0.3,
+      "maximumCoverage": 0.95,
+      "expectedRawMinimum": 0,
+      "expectedRawMaximum": 400,
+      "expectedRawMean": 99.587890625,
+      "expectedMono16Sha256": "65E1B2C96D7663F04133684FC79553C660ADC6D1B0915AB5AA2AF8FFB6FF4D64",
+      "definition": {
+        "schemaVersion": "virtual-cloud-scenario-v1",
+        "scenarioId": "scn-104-b9e61472",
+        "scenarioVersion": "1",
+        "seed": 10403,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "spatialFrequency": 3.0,
+        "driftEastCellsPerSecond": 0.01,
+        "driftNorthCellsPerSecond": -0.005,
+        "evolutionCellsPerSecond": 0.001,
+        "octaves": 3,
+        "edgeSoftness": 0.5,
+        "horizonFadeDegrees": 5.0,
+        "temporalSampleCount": 4,
+        "keyframes": [
+          { "offsetSeconds": 0.0, "coverage": 0.65, "maximumOpacity": 0.85, "scatterFraction": 0.12 }
+        ]
+      }
+    },
+    {
+      "id": "overcast",
+      "oracleLabel": "overcast",
+      "expectedCoverage": 0.9166666666666666,
+      "minimumCoverage": 0.9,
+      "maximumCoverage": 1.0,
+      "expectedRawMinimum": 0,
+      "expectedRawMaximum": 398,
+      "expectedRawMean": 51.626953125,
+      "expectedMono16Sha256": "E706091EDDC07112102B8C2C52D144C88346F60602372B0FBD6DCCA65BBEB8ED",
+      "definition": {
+        "schemaVersion": "virtual-cloud-scenario-v1",
+        "scenarioId": "scn-104-5a18d0cf",
+        "scenarioVersion": "1",
+        "seed": 10404,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "spatialFrequency": 3.0,
+        "driftEastCellsPerSecond": 0.01,
+        "driftNorthCellsPerSecond": -0.005,
+        "evolutionCellsPerSecond": 0.001,
+        "octaves": 3,
+        "edgeSoftness": 0.5,
+        "horizonFadeDegrees": 5.0,
+        "temporalSampleCount": 4,
+        "keyframes": [
+          { "offsetSeconds": 0.0, "coverage": 1.0, "maximumOpacity": 0.95, "scatterFraction": 0.15 }
+        ]
+      }
+    }
+  ]
+}

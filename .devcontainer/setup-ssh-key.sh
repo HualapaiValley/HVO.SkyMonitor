@@ -30,12 +30,10 @@ ssh-keygen -y -f "$key_file" > "${key_file}.pub"
 chmod 644 "${key_file}.pub"
 
 cat > "$config_file" <<'EOF'
-Host *
+Host hvo-docker devpi5
     User roys
     IdentityFile ~/.ssh/id_rsa
     IdentitiesOnly yes
-
-Host hvo-docker devpi5
     StrictHostKeyChecking accept-new
 EOF
 chmod 600 "$config_file"

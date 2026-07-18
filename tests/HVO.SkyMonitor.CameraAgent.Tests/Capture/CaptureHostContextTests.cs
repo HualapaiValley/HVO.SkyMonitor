@@ -22,9 +22,10 @@ public sealed class CaptureHostContextTests
             manifest,
             new StoredFrameReference(
                 manifest.RelativeArtifactPath,
-                "/tmp/committed.bin",
-                manifest.Descriptor.Timing.ExposureStartedUtc,
-                FrameArtifactRole.Raw));
+                 "/tmp/committed.bin",
+                 manifest.Descriptor.Timing.ExposureStartedUtc,
+                 FrameArtifactRole.Raw),
+            CaptureContractJson.ComputeManifestSha256(manifest));
         var ingress = new RecordingIngress(receipt);
         var distributor = new RecordingDistributor();
         var config = CreateConfig();
@@ -60,7 +61,8 @@ public sealed class CaptureHostContextTests
         var receipt = new RawCaptureReceipt(
             RawIngressOutcome.Committed,
             manifest,
-            new StoredFrameReference(manifest.RelativeArtifactPath, "/tmp/committed.bin", manifest.Descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw));
+            new StoredFrameReference(manifest.RelativeArtifactPath, "/tmp/committed.bin", manifest.Descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw),
+            CaptureContractJson.ComputeManifestSha256(manifest));
         var ingress = new RecordingIngress(receipt);
         var distributor = new RecordingDistributor();
         var config = CreateConfig();

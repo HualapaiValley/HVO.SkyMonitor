@@ -1,8 +1,11 @@
-#!/bin/bash
-set -e
-set -o pipefail
+#!/usr/bin/env bash
+set -euo pipefail
 
-LOG_ROOT="${POST_CREATE_LOG_ROOT:-/workspaces/HVO.SkyMonitor/.devcontainer/logs}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+LOG_ROOT="${POST_CREATE_LOG_ROOT:-$SCRIPT_DIR/logs}"
 TIMESTAMP="$(date -u +"%Y%m%dT%H%M%SZ")"
 mkdir -p "$LOG_ROOT"
 LOG_FILE="$LOG_ROOT/post-create-$TIMESTAMP.log"
@@ -18,7 +21,8 @@ echo
 
 # Make ignored repository secrets available to this setup process.
 # .devcontainer/devcontainer.local.env overrides the repository .env.
-source /workspaces/HVO.SkyMonitor/.devcontainer/load-repo-env.sh
+# shellcheck source=.devcontainer/load-repo-env.sh
+source "$SCRIPT_DIR/load-repo-env.sh"
 unset TAILSCALE_AUTHKEY
 
 command_exists() {
@@ -49,9 +53,9 @@ uname -a
 if [ -f /etc/os-release ]; then
 	cat /etc/os-release
 fi
-if git -C /workspaces/HVO.SkyMonitor rev-parse HEAD >/dev/null 2>&1; then
-	echo "Git HEAD: $(git -C /workspaces/HVO.SkyMonitor rev-parse HEAD)"
-	git -C /workspaces/HVO.SkyMonitor status --short
+if git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1; then
+	echo "Git HEAD: $(git -C "$REPO_ROOT" rev-parse HEAD)"
+	git -C "$REPO_ROOT" status --short
 fi
 echo
 
@@ -59,20 +63,22 @@ log_section "Tool versions (pre-setup)"
 log_tool_version "dotnet" dotnet --info
 log_tool_version "Docker" docker --version
 log_tool_version "ripgrep" rg --version
+log_tool_version "ShellCheck" shellcheck --version
 
 echo "Running post-create setup..."
+
+for required_command in jq rg shellcheck sqlite3; do
+	if ! command_exists "$required_command"; then
+		echo "Required development command '$required_command' is not installed." >&2
+		exit 1
+	fi
+done
 
 # Fix .dotnet directory ownership
 echo "Fixing .dotnet directory ownership..."
 sudo chown -R vscode:vscode /home/vscode/.dotnet || true
 sudo chown -R vscode:vscode /home/vscode/.config/opencode /home/vscode/.local/share/opencode
-chmod 700 /home/vscode/.config/opencode /home/vscode/.local/share/opencode
-OPENCODE_SERVER_PASSWORD_FILE=/home/vscode/.local/share/opencode/server-password
-if [[ ! -s "$OPENCODE_SERVER_PASSWORD_FILE" ]]; then
-	umask 077
-	openssl rand -hex 32 > "$OPENCODE_SERVER_PASSWORD_FILE"
-fi
-chmod 600 "$OPENCODE_SERVER_PASSWORD_FILE"
+bash "$SCRIPT_DIR/configure-opencode.sh"
 
 # Display .NET version and runtime details
 echo "Checking .NET installation..."
@@ -82,50 +88,27 @@ dotnet --list-sdks || true
 echo "Installed runtimes:"
 dotnet --list-runtimes || true
 
-# Ensure handy CLI tools are available (ripgrep, jq, sqlite3)
-echo "Installing development CLI utilities..."
-sudo apt-get update -y
-sudo apt-get install -y jq ripgrep sqlite3 || echo "Warning: CLI utility installation failed, continuing..."
-
-log_section "Tool versions (post CLI install)"
-log_tool_version "ripgrep" rg --version
-
-# Install EF Core CLI matching the repo packages
-EF_TOOLS_VERSION="10.0.*"
-echo "Installing dotnet-ef $EF_TOOLS_VERSION..."
-dotnet tool update --global dotnet-ef --version "$EF_TOOLS_VERSION" 2>/dev/null \
-	|| dotnet tool install --global dotnet-ef --version "$EF_TOOLS_VERSION"
+# Restore the exact EF Core and ReportGenerator versions pinned by the repository.
+echo "Restoring pinned .NET tools..."
+dotnet tool restore
 
 echo "Restoring solution dependencies..."
 dotnet restore HVO.SkyMonitor.v9.slnx
 
-# Add vscode user to docker group
-echo "Adding vscode user to docker group..."
-if getent group docker >/dev/null 2>&1; then
-	sudo usermod -aG docker vscode || true
-else
-	echo "Docker group not present; skipping usermod"
-fi
-
-# Set docker socket permissions
-echo "Setting docker socket permissions..."
-if [ -S /var/run/docker.sock ]; then
-	sudo chmod 666 /var/run/docker.sock || true
-else
-	echo "Docker socket not present; skipping chmod"
-fi
-
-# Verify docker is working
-echo "Verifying Docker installation..."
+# The Docker devcontainer feature owns socket permissions and group membership.
+echo "Verifying Docker daemon access..."
 if command_exists docker; then
 	docker --version
+	docker compose version
+	docker info >/dev/null
 else
-	echo "Warning: docker CLI not found on PATH"
+	echo "Docker CLI not found on PATH." >&2
+	exit 1
 fi
 
 log_section "SSH agent setup"
 echo "Setting up SSH agent..."
-if [ -z "$SSH_AUTH_SOCK" ]; then
+if [ -z "${SSH_AUTH_SOCK:-}" ]; then
 	echo "Starting new SSH agent..."
 	eval "$(ssh-agent -s)"
 else
@@ -133,18 +116,33 @@ else
 fi
 
 # SSH_PRIVATE_KEY is optional and must be injected from the host or ignored local env.
-bash /workspaces/HVO.SkyMonitor/.devcontainer/setup-ssh-key.sh
+bash "$SCRIPT_DIR/setup-ssh-key.sh"
 
 # Match the Website devcontainer behavior when these optional values are present.
 if [[ -n "${GIT_AUTHOR_NAME:-}" && -n "${GIT_AUTHOR_EMAIL:-}" ]]; then
 	git config --global user.name "$GIT_AUTHOR_NAME"
 	git config --global user.email "$GIT_AUTHOR_EMAIL"
+elif [[ -n "${GIT_AUTHOR_NAME:-}" || -n "${GIT_AUTHOR_EMAIL:-}" ]]; then
+	echo "GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL must be provided together." >&2
+	exit 1
+else
+	echo "Git author identity is not configured; commits will remain unavailable until it is supplied."
 fi
 
-if [[ -n "${GH_PAT:-}" ]]; then
-	(unset GITHUB_TOKEN GH_TOKEN; printf '%s' "$GH_PAT" | gh auth login --with-token) || true
-	gh auth setup-git || true
+github_token="${GH_TOKEN:-${GITHUB_TOKEN:-${GH_PAT:-}}}"
+if [[ -n "$github_token" ]]; then
+	if ! command_exists gh; then
+		echo "A GitHub token was supplied, but gh is not installed." >&2
+		exit 1
+	fi
+	(unset GITHUB_TOKEN GH_TOKEN; printf '%s' "$github_token" | gh auth login --hostname github.com --git-protocol https --with-token)
+	gh auth setup-git
+elif command_exists gh && gh auth status >/dev/null 2>&1; then
+	gh auth setup-git
+else
+	echo "GitHub authentication is not configured; GitHub operations will remain unavailable until a token is supplied."
 fi
+unset github_token
 
 # Generate HTTPS developer certificate
 echo "Generating HTTPS developer certificate..."
@@ -154,10 +152,14 @@ dotnet dev-certs https
 log_section "Post-create summary"
 echo "Logs captured at: $LOG_FILE"
 echo "Latest log symlink: $LOG_ROOT/latest.log"
-log_tool_version "dotnet-ef" dotnet-ef --version
+echo "Pinned .NET tools:"
+dotnet tool list --local
+echo
+log_tool_version "dotnet-ef" dotnet ef --version
 log_tool_version "OpenCode" opencode --version
 log_tool_version "Tailscale" tailscale version
 log_tool_version "Docker" docker --version
+log_tool_version "ShellCheck" shellcheck --version
 log_tool_version "dotnet" dotnet --version
 
 echo "Post-create setup completed successfully!"

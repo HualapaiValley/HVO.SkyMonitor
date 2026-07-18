@@ -12,6 +12,117 @@ public sealed class ReconstructableCaptureContractTests
     private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
+    public void ManifestV2_CloudScenarioProvenanceRoundTripsWithoutChangingDescriptorIdentity()
+    {
+        var original = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        var parameters = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new
+        {
+            schemaVersion = "virtual-cloud-scenario-v1",
+            scenarioId = "scenario-104-a",
+            seed = 104
+        }));
+        var parametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(parameters);
+        var scene = new SceneProvenance(
+            "scene-104",
+            "rig-v1",
+            "HYG",
+            "4.2",
+            new string('A', 64),
+            "EquidistantFisheye",
+            "projection-v1",
+            "astronomy-v1",
+            "sensor-v1",
+            CloudScenario: new CloudScenarioProvenance(
+                "virtual-cloud-scenario-v1",
+                "scenario-104-a",
+                "1",
+                "virtual-cloud-value-field-v1",
+                parametersSha256,
+                104,
+                DateTimeOffset.UnixEpoch,
+                DateTimeOffset.UnixEpoch.AddSeconds(10),
+                DateTimeOffset.UnixEpoch.AddSeconds(14),
+                4,
+                parameters));
+        var enriched = original with { Scene = scene };
+
+        var encoded = CaptureContractJson.Serialize(enriched);
+        var parsed = CaptureContractJson.ParseManifest(encoded);
+        var cloud = parsed.Document!.Manifest!.Scene!.CloudScenario!;
+
+        Assert.IsTrue(parsed.IsValid);
+        Assert.AreEqual(original.IdempotencyKey, enriched.IdempotencyKey);
+        Assert.AreNotEqual(CaptureContractJson.ComputeManifestSha256(original), CaptureContractJson.ComputeManifestSha256(enriched));
+        Assert.AreEqual(CaptureContractJson.ComputeManifestSha256(enriched), CaptureContractJson.ComputeManifestSha256(encoded));
+        var reformatted = Encoding.UTF8.GetBytes($"\n{Encoding.UTF8.GetString(encoded)}");
+        Assert.IsTrue(CaptureContractJson.ParseManifest(reformatted).IsValid);
+        Assert.AreNotEqual(CaptureContractJson.ComputeManifestSha256(encoded), CaptureContractJson.ComputeManifestSha256(reformatted));
+        Assert.AreEqual(parametersSha256, cloud.ParametersSha256);
+        Assert.AreEqual("scenario-104-a", cloud.ScenarioId);
+        Assert.AreEqual(DateTimeOffset.UnixEpoch.AddSeconds(14), cloud.IntegrationEndUtc);
+        CollectionAssert.AreEqual(encoded, CaptureContractJson.Serialize(parsed.Document.Manifest));
+        var nonCloudScene = enriched with { Scene = scene with { CloudScenario = null } };
+        Assert.IsFalse(Encoding.UTF8.GetString(CaptureContractJson.Serialize(nonCloudScene))
+            .Contains("cloudScenario", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void ManifestV1_CloudScenarioProvenanceRoundTripsAsOptionalLegacyScene()
+    {
+        var parameters = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new
+        {
+            schemaVersion = "virtual-cloud-scenario-v1",
+            scenarioId = "scn-legacy-cloud",
+            seed = 104
+        }));
+        var parametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(parameters);
+        var scene = new SceneProvenance(
+            "scene-v1-cloud",
+            "rig-v1",
+            "HYG",
+            "4.2",
+            new string('A', 64),
+            "EquidistantFisheye",
+            "projection-v1",
+            "astronomy-v1",
+            "sensor-v1",
+            CloudScenario: new CloudScenarioProvenance(
+                "virtual-cloud-scenario-v1",
+                "scn-legacy-cloud",
+                "1",
+                "virtual-cloud-value-field-v1",
+                parametersSha256,
+                104,
+                DateTimeOffset.UnixEpoch,
+                DateTimeOffset.UnixEpoch.AddSeconds(10),
+                DateTimeOffset.UnixEpoch.AddSeconds(14),
+                4,
+                parameters));
+        var legacy = new ArtifactUploadManifest(
+            ArtifactUploadManifest.CurrentSchemaVersion,
+            "agent-a",
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            Guid.Parse("00000000-0000-0000-0000-000000000002"),
+            FrameArtifactRole.Raw,
+            "application/octet-stream",
+            4,
+            new string('B', 64),
+            DateTimeOffset.UnixEpoch,
+            "raw-v1",
+            "frames/raw.bin",
+            scene);
+
+        var result = CaptureContractJson.ParseManifest(JsonSerializer.SerializeToUtf8Bytes(legacy, WebJsonOptions));
+        var cloud = result.Document!.LegacyManifest!.Scene!.CloudScenario!;
+
+        Assert.IsTrue(result.IsValid);
+        Assert.AreEqual(CaptureManifestCompleteness.LegacyIncomplete, result.Document.Completeness);
+        Assert.AreEqual(parametersSha256, cloud.ParametersSha256);
+        Assert.AreEqual("scn-legacy-cloud", cloud.ScenarioId);
+        Assert.AreEqual(DateTimeOffset.UnixEpoch.AddSeconds(14), cloud.IntegrationEndUtc);
+    }
+
+    [TestMethod]
     [DataRow(CameraPixelFormat.Mono16, 3, 2, 8,
         "925DB25F0A90DB14EDD8C8A47ECFF5C1B226A5E25C5DDACB6A21F469F9C1BD64",
         "EA0E62A3870BDAD3EF760AAAD03B542246ED7DB286AA7C83665B7BEF6655499D")]
@@ -834,6 +945,7 @@ public sealed class ReconstructableCaptureContractTests
         Assert.IsTrue(result.IsValid);
         Assert.AreEqual(CaptureManifestCompleteness.LegacyIncomplete, result.Document!.Completeness);
         Assert.IsNotNull(result.Document.LegacyManifest);
+        Assert.IsNull(result.Document.LegacyManifest.Scene);
         Assert.IsNull(result.Document.Manifest);
     }
 

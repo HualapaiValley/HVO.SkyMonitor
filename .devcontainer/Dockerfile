@@ -20,6 +20,8 @@ RUN apt-get update \
     curl \
     jq \
     openssl \
+    ripgrep \
+    shellcheck \
     sqlite3 \
     tar \
     && curl -fsSL --retry 3 \

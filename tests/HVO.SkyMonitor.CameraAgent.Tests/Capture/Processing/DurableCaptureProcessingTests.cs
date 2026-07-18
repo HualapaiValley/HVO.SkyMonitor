@@ -151,6 +151,40 @@ public sealed class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Integration")]
+    public async Task CommittedRawSidecarTampering_IsRejectedBeforeProcessing()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var sidecarPath = Path.ChangeExtension(fixture.Item.RawCapture!.StoredFrame.AbsolutePath, ".json");
+            var committed = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            var tampered = System.Text.Encoding.UTF8.GetBytes($"\n{System.Text.Encoding.UTF8.GetString(committed)}");
+            Assert.IsTrue(CaptureContractJson.ParseManifest(tampered).IsValid);
+            await File.WriteAllBytesAsync(
+                sidecarPath,
+                tampered).ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([CreateNode(new ProducingStep())]),
+                    null,
+                    telemetry,
+                    1,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
     public async Task StaleLaneLease_CannotCommitProcessingNode()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
@@ -226,6 +260,7 @@ public sealed class DurableCaptureProcessingTests
                         payload_relative_path TEXT NOT NULL,
                         sidecar_relative_path TEXT NOT NULL,
                         manifest_json BLOB NOT NULL,
+                        manifest_sha256 TEXT NOT NULL,
                         state TEXT NOT NULL);
                     CREATE TABLE capture_lane_work(
                         raw_capture_row_id INTEGER NOT NULL,
@@ -252,12 +287,13 @@ public sealed class DurableCaptureProcessingTests
                     };
                     var manifest = new ArtifactManifestV2(
                         ArtifactManifestV2.CurrentSchemaVersion, descriptor, $"raw/{sequence}.bin");
+                    var manifestJson = CaptureContractJson.Serialize(manifest);
                     using var insert = connection.CreateCommand();
                     insert.CommandText = """
                         INSERT INTO raw_captures(
                             raw_capture_row_id, capture_id, raw_artifact_id, agent_id, capture_sequence,
-                            payload_relative_path, sidecar_relative_path, manifest_json, state)
-                        VALUES ($row, $capture, $artifact, $agent, $sequence, $payload, $sidecar, $manifest, 'committed');
+                            payload_relative_path, sidecar_relative_path, manifest_json, manifest_sha256, state)
+                        VALUES ($row, $capture, $artifact, $agent, $sequence, $payload, $sidecar, $manifest, $manifest_sha, 'committed');
                         """;
                     insert.Parameters.AddWithValue("$row", sequence);
                     insert.Parameters.AddWithValue("$capture", descriptor.Capture.CaptureId.ToString("N"));
@@ -266,7 +302,8 @@ public sealed class DurableCaptureProcessingTests
                     insert.Parameters.AddWithValue("$sequence", sequence);
                     insert.Parameters.AddWithValue("$payload", manifest.RelativeArtifactPath);
                     insert.Parameters.AddWithValue("$sidecar", $"raw/{sequence}.json");
-                    insert.Parameters.AddWithValue("$manifest", CaptureContractJson.Serialize(manifest));
+                    insert.Parameters.AddWithValue("$manifest", manifestJson);
+                    insert.Parameters.AddWithValue("$manifest_sha", CaptureContractJson.ComputeManifestSha256(manifestJson));
                     await insert.ExecuteNonQueryAsync().ConfigureAwait(false);
                 }
             }
@@ -471,7 +508,11 @@ public sealed class DurableCaptureProcessingTests
             Path.ChangeExtension(payloadPath, ".json"),
             CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
         var stored = new StoredFrameReference("raw.bin", payloadPath, manifest.Descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw);
-        var receipt = new RawCaptureReceipt(RawIngressOutcome.Committed, manifest, stored);
+        var receipt = new RawCaptureReceipt(
+            RawIngressOutcome.Committed,
+            manifest,
+            stored,
+            CaptureContractJson.ComputeManifestSha256(manifest));
         var reconstruction = FrameReconstructor.TryReconstruct(manifest.Descriptor, payload, out var frame);
         Assert.IsTrue(reconstruction.IsValid);
         var config = CreateConfig();
@@ -530,7 +571,8 @@ public sealed class DurableCaptureProcessingTests
                 new RawCaptureReceipt(
                     RawIngressOutcome.Committed,
                     manifest,
-                    new StoredFrameReference($"{suffix}.bin", payloadPath, descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw))));
+                    new StoredFrameReference($"{suffix}.bin", payloadPath, descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw),
+                    CaptureContractJson.ComputeManifestSha256(manifest))));
     }
 
     private static async Task ProcessCanonicalGraphAsync(Fixture fixture)

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
@@ -17,9 +18,13 @@ public sealed class VirtualSkyCameraModule(
     IConstellationTopology? constellationTopology = null,
     IPlanetEphemeris? planetEphemeris = null) : ICameraModule, ICameraSetpointController
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+    };
     private CameraModuleConfig? _config;
     private VirtualSkyCameraModuleOptions _options = new();
+    private VirtualCloudField? _cloudField;
     private long _captureSequence;
 
     public string Id { get; } = Guid.NewGuid().ToString("N");
@@ -40,6 +45,14 @@ public sealed class VirtualSkyCameraModule(
         }
 
         _options.Validate();
+        if (_options.CloudScenario is { } configuredCloud)
+        {
+            _options.CloudScenario = configuredCloud with
+            {
+                ScenarioId = configuredCloud.ComputeCanonicalScenarioId()
+            };
+        }
+        _cloudField = _options.CloudScenario is null ? null : new VirtualCloudField(_options.CloudScenario);
         if (_options.Asi178Sensor.Enabled != (config.Rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16) ||
             _options.Asi174Sensor.Enabled && config.Rig.Sensor.PixelFormat != CameraPixelFormat.Mono16)
         {
@@ -102,16 +115,6 @@ public sealed class VirtualSkyCameraModule(
         var layout = new ImageLayout(sensor.WidthPixels, sensor.HeightPixels, sensor.PixelFormat,
             sensor.StrideBytes ?? checked(sensor.WidthPixels * ImageLayout.BytesPerPixel(sensor.PixelFormat)));
         var start = timeProvider.GetTimestamp();
-        var captureSequence = Interlocked.Increment(ref _captureSequence) - 1;
-        var render = sensor.PixelFormat switch
-        {
-            CameraPixelFormat.Mono16 => Mono16SceneRenderer.Render(
-                scene, layout, CreateMonoOptions(setpoint, captureSequence, projection)),
-            CameraPixelFormat.Rgb24 => Rgb24CompatibilityRenderer.Render(scene, layout, CreateRgbOptions(setpoint)),
-            CameraPixelFormat.BayerRggb16 => BayerRggb16Renderer.Render(
-                scene, layout, CreateBayerOptions(setpoint, captureSequence, projection)),
-            _ => throw new UnreachableException()
-        };
         var sceneId = CreateSceneId(
             sceneRequest,
             setpoint,
@@ -119,7 +122,23 @@ public sealed class VirtualSkyCameraModule(
             sensor,
             planetEphemeris?.ModelVersion,
             constellationTopology?.Metadata);
+        var captureSequence = _cloudField is null
+            ? Interlocked.Increment(ref _captureSequence) - 1
+            : CreateDeterministicCaptureSequence(sceneId);
+        var cloud = _cloudField is null
+            ? null
+            : new VirtualCloudRenderContext(_cloudField, request.RequestedStartUtc, setpoint.Exposure);
+        var render = sensor.PixelFormat switch
+        {
+            CameraPixelFormat.Mono16 => Mono16SceneRenderer.Render(
+                scene, layout, CreateMonoOptions(setpoint, captureSequence, projection, cloud)),
+            CameraPixelFormat.Rgb24 => Rgb24CompatibilityRenderer.Render(scene, layout, CreateRgbOptions(setpoint, cloud)),
+            CameraPixelFormat.BayerRggb16 => BayerRggb16Renderer.Render(
+                scene, layout, CreateBayerOptions(setpoint, captureSequence, projection, cloud)),
+            _ => throw new UnreachableException()
+        };
         sceneStore.Put(sceneId, scene);
+        var cloudProvenance = CreateCloudProvenance(_options.CloudScenario, request.RequestedStartUtc, setpoint.Exposure);
         var provenance = new SceneProvenance(
             sceneId,
             _options.RigProfileVersion,
@@ -148,7 +167,8 @@ public sealed class VirtualSkyCameraModule(
             sceneRequest.ConstellationIds,
             sceneRequest.IncludeConstellationEndpointStars,
             RigProfileHashSha256: RigProjectionContextFactory.CreateProfileHashSha256(config.Rig),
-            ProjectionCalibrationVersion: config.Rig.Optics.CalibrationVersion);
+            ProjectionCalibrationVersion: config.Rig.Optics.CalibrationVersion,
+            CloudScenario: cloudProvenance);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sceneId"] = sceneId,
@@ -159,6 +179,12 @@ public sealed class VirtualSkyCameraModule(
             ["compatibilityLabel"] = render.CompatibilityLabel,
             ["includeConstellationEndpointStars"] = sceneRequest.IncludeConstellationEndpointStars.ToString()
         };
+        if (cloudProvenance is not null)
+        {
+            extra["cloudScenarioId"] = cloudProvenance.ScenarioId;
+            extra["cloudParametersSha256"] = cloudProvenance.ParametersSha256;
+            extra["cloudAlgorithm"] = cloudProvenance.AlgorithmVersion;
+        }
         if (_options.Asi174Sensor.Enabled)
         {
             var response = Asi174MmSensorModel.Resolve(setpoint.Gain, _options.Asi174Sensor.BlackLevelAdu);
@@ -205,7 +231,10 @@ public sealed class VirtualSkyCameraModule(
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     private Mono16SceneRenderOptions CreateMonoOptions(
-        CaptureSetpoint setpoint, long captureSequence, ProjectionContext projection) => new()
+        CaptureSetpoint setpoint,
+        long captureSequence,
+        ProjectionContext projection,
+        VirtualCloudRenderContext? cloud) => new()
         {
             ExposureSeconds = setpoint.Exposure.TotalSeconds,
             Gain = setpoint.Gain,
@@ -222,29 +251,36 @@ public sealed class VirtualSkyCameraModule(
             Seed = _options.Asi174Sensor.Enabled
                 ? unchecked(_options.Seed + (int)(captureSequence * 104729))
                 : _options.Seed,
+            Cloud = cloud,
             SensorResponse = _options.Asi174Sensor.Enabled
                 ? Asi174MmSensorModel.Resolve(setpoint.Gain, _options.Asi174Sensor.BlackLevelAdu)
                 : null
         };
 
-    private Rgb24CompatibilityRenderOptions CreateRgbOptions(CaptureSetpoint setpoint) => new()
-    {
-        ExposureSeconds = setpoint.Exposure.TotalSeconds,
-        Gain = setpoint.Gain,
-        MagnitudeZeroElectronsPerSecond = _options.MagnitudeZeroElectronsPerSecond,
-        BackgroundElectronsPerSecond = _options.ResolveBackgroundElectronsPerSecond(),
-        PsfSigmaPixels = _options.PsfSigmaPixels,
-        PsfRadiusPixels = _options.PsfRadiusPixels,
-        VignettingStrength = _options.VignettingStrength,
-        Bias = _options.Bias,
-        ReadNoiseStandardDeviation = _options.ReadNoiseStandardDeviation,
-        ShotNoiseEnabled = _options.ShotNoiseEnabled,
-        DarkCurrentElectronsPerSecond = _options.DarkCurrentElectronsPerSecond,
-        Seed = _options.Seed
-    };
+    private Rgb24CompatibilityRenderOptions CreateRgbOptions(
+        CaptureSetpoint setpoint,
+        VirtualCloudRenderContext? cloud) => new()
+        {
+            ExposureSeconds = setpoint.Exposure.TotalSeconds,
+            Gain = setpoint.Gain,
+            MagnitudeZeroElectronsPerSecond = _options.MagnitudeZeroElectronsPerSecond,
+            BackgroundElectronsPerSecond = _options.ResolveBackgroundElectronsPerSecond(),
+            PsfSigmaPixels = _options.PsfSigmaPixels,
+            PsfRadiusPixels = _options.PsfRadiusPixels,
+            VignettingStrength = _options.VignettingStrength,
+            Bias = _options.Bias,
+            ReadNoiseStandardDeviation = _options.ReadNoiseStandardDeviation,
+            ShotNoiseEnabled = _options.ShotNoiseEnabled,
+            DarkCurrentElectronsPerSecond = _options.DarkCurrentElectronsPerSecond,
+            Seed = _options.Seed,
+            Cloud = cloud
+        };
 
     private BayerRggb16RenderOptions CreateBayerOptions(
-        CaptureSetpoint setpoint, long captureSequence, ProjectionContext projection) => new()
+        CaptureSetpoint setpoint,
+        long captureSequence,
+        ProjectionContext projection,
+        VirtualCloudRenderContext? cloud) => new()
         {
             ExposureSeconds = setpoint.Exposure.TotalSeconds,
             Gain = setpoint.Gain,
@@ -257,6 +293,7 @@ public sealed class VirtualSkyCameraModule(
             DarkCurrentElectronsPerSecond = _options.DarkCurrentElectronsPerSecond,
             DarkNoiseEnabled = _options.DarkCurrentElectronsPerSecond > 0,
             Seed = unchecked(_options.Seed + (int)(captureSequence * 104729)),
+            Cloud = cloud,
             SensorResponse = Asi178McSensorModel.Resolve(
                 setpoint.Gain, _options.Asi178Sensor.BlackLevelContainerAdu)
         };
@@ -336,6 +373,34 @@ public sealed class VirtualSkyCameraModule(
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
+    private static long CreateDeterministicCaptureSequence(string sceneId)
+        => Convert.ToInt64(sceneId[..15], 16);
+
+    private static CloudScenarioProvenance? CreateCloudProvenance(
+        VirtualCloudScenarioDefinition? definition,
+        DateTimeOffset integrationStartUtc,
+        TimeSpan exposure)
+    {
+        if (definition is null)
+        {
+            return null;
+        }
+
+        var parameters = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(definition));
+        return new CloudScenarioProvenance(
+            definition.SchemaVersion,
+            definition.ScenarioId,
+            definition.ScenarioVersion,
+            VirtualCloudScenarioDefinition.CurrentAlgorithmVersion,
+            CaptureContractJson.ComputeCanonicalJsonSha256(parameters),
+            definition.Seed,
+            definition.EpochUtc,
+            integrationStartUtc,
+            integrationStartUtc + exposure,
+            definition.TemporalSampleCount,
+            parameters);
+    }
+
     private static SolarSystemBody[] ParseSolarSystemBodies(IEnumerable<string> names)
         => names.Select(name => Enum.Parse<SolarSystemBody>(name, true)).Distinct().ToArray();
 }
@@ -359,6 +424,7 @@ public sealed class VirtualSkyCameraModuleOptions
     public double DarkCurrentElectronsPerSecond { get; init; }
     public Asi174MmSensorOptions Asi174Sensor { get; init; } = new();
     public Asi178McSensorOptions Asi178Sensor { get; init; } = new();
+    public VirtualCloudScenarioDefinition? CloudScenario { get; set; }
     public string CatalogName { get; init; } = "HYG";
     public string CatalogVersion { get; init; } = "4.2-test-fixture";
     public Uri CatalogSourceUrl { get; init; } = new("https://astronexus.com/projects/hyg");
@@ -383,6 +449,8 @@ public sealed class VirtualSkyCameraModuleOptions
         {
             throw new ArgumentOutOfRangeException(nameof(VirtualSkyCameraModuleOptions));
         }
+
+        CloudScenario?.Validate();
 
         if (Asi174Sensor.Enabled)
         {
