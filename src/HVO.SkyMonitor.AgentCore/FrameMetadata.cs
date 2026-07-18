@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace HVO.SkyMonitor.AgentCore;
 
@@ -43,7 +44,7 @@ public sealed record SceneProvenance(
     bool IncludeConstellationEndpointStars = false,
     string? RigProfileHashSha256 = null,
     string? ProjectionCalibrationVersion = null,
-    CloudScenarioProvenance? CloudScenario = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CloudScenarioProvenance? CloudScenario = null);
 
 /// <summary>Versioned cloud inputs and logical interval needed to reproduce a simulated frame.</summary>
 public sealed record CloudScenarioProvenance(

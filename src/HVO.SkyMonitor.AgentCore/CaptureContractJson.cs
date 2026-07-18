@@ -73,6 +73,9 @@ public static class CaptureContractJson
     public static string ComputeManifestSha256(ArtifactManifestV2 manifest)
         => Convert.ToHexString(SHA256.HashData(Serialize(manifest)));
 
+    public static string ComputeManifestSha256(ReadOnlySpan<byte> manifestJson)
+        => Convert.ToHexString(SHA256.HashData(manifestJson));
+
     public static string ComputeDescriptorSha256(ReconstructionDescriptor descriptor)
     {
         ArgumentNullException.ThrowIfNull(descriptor);

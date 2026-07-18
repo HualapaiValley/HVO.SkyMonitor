@@ -10,6 +10,7 @@ using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 
@@ -190,6 +191,88 @@ public sealed class DurableCaptureDistributionTests
         Assert.IsNull(lease.Context.Submission.Result.Frame);
         Assert.AreEqual(expected, lease.Context.Submission.CycleEvidence);
         Assert.AreEqual(expected, lease.Context.RawCapture.Manifest.Descriptor.CycleEvidence);
+        Assert.AreEqual(receipt.CommittedManifestSha256, lease.Context.RawCapture.CommittedManifestSha256);
+    }
+
+    [TestMethod]
+    public async Task AlteredJournalManifest_IsQuarantinedBeforeLaneHandling()
+    {
+        using var fixture = CreateFixture(new CaptureDistributionOptions());
+        var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
+        var altered = receipt.Manifest with
+        {
+            Descriptor = receipt.Manifest.Descriptor with
+            {
+                Capture = receipt.Manifest.Descriptor.Capture with
+                {
+                    CaptureSequence = receipt.Manifest.Descriptor.Capture.CaptureSequence + 1
+                }
+            }
+        };
+        Assert.IsTrue(altered.Validate().IsValid);
+        using (var connection = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE raw_captures SET manifest_json = $manifest;";
+            command.Parameters.AddWithValue("$manifest", CaptureContractJson.Serialize(altered));
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+
+        var lease = await fixture.ClaimAsync("standard").ConfigureAwait(false);
+
+        Assert.IsNull(lease);
+        using var verification = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual(
+            "quarantined",
+            await ScalarStringAsync(verification, "SELECT state FROM capture_lane_work;").ConfigureAwait(false));
+        Assert.AreEqual(
+            "evidence-invalid",
+            await ScalarStringAsync(verification, "SELECT failure_reason FROM capture_lane_work;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task AlteredJournalManifest_IsQuarantinedBeforeRollingWindowUse()
+    {
+        using var fixture = CreateFixture(new CaptureDistributionOptions());
+        var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
+        var altered = receipt.Manifest with
+        {
+            Descriptor = receipt.Manifest.Descriptor with
+            {
+                Capture = receipt.Manifest.Descriptor.Capture with
+                {
+                    CaptureSequence = receipt.Manifest.Descriptor.Capture.CaptureSequence + 1
+                }
+            }
+        };
+        using (var connection = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE raw_captures SET manifest_json = $manifest;";
+            command.Parameters.AddWithValue("$manifest", CaptureContractJson.Serialize(altered));
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+        using var processingStore = new SqliteCaptureProcessingStore(Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = fixture.Root,
+            RawIngressReserveBytes = 0
+        }));
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await processingStore.ReadRecentRawInputsAsync(
+                receipt.Manifest.Descriptor.Capture.AgentId,
+                receipt.Manifest.Descriptor.Capture.CaptureSequence,
+                1,
+                CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+        using var verification = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual(
+            "quarantined",
+            await ScalarStringAsync(verification, "SELECT state FROM capture_lane_work;").ConfigureAwait(false));
+        Assert.AreEqual(
+            "evidence-invalid",
+            await ScalarStringAsync(verification, "SELECT failure_reason FROM capture_lane_work;").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarLongAsync(verification, "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -325,6 +408,42 @@ public sealed class DurableCaptureDistributionTests
                     """;
                 command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+                foreach (var manifest in new[]
+                {
+                    CreateV1MigrationManifest(
+                        1,
+                        "11111111-1111-1111-1111-111111111111",
+                        "22222222-2222-2222-2222-222222222222",
+                        "frames/raw.bin"),
+                    CreateV1MigrationManifest(
+                        2,
+                        "33333333-3333-3333-3333-333333333333",
+                        "44444444-4444-4444-4444-444444444444",
+                        "frames/released.bin"),
+                    CreateV1MigrationManifest(
+                        3,
+                        "55555555-5555-5555-5555-555555555555",
+                        "66666666-6666-6666-6666-666666666666",
+                        "frames/fresh.bin")
+                })
+                {
+                    command.CommandText = """
+                        UPDATE raw_captures
+                        SET descriptor_sha256 = $descriptor, manifest_sha256 = $manifest_sha,
+                            manifest_json = $manifest
+                        WHERE capture_sequence = $sequence;
+                        """;
+                    command.Parameters.Clear();
+                    command.Parameters.AddWithValue(
+                        "$descriptor",
+                        CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor));
+                    command.Parameters.AddWithValue(
+                        "$manifest_sha",
+                        CaptureContractJson.ComputeManifestSha256(manifest));
+                    command.Parameters.AddWithValue("$manifest", CaptureContractJson.Serialize(manifest));
+                    command.Parameters.AddWithValue("$sequence", manifest.Descriptor.Capture.CaptureSequence);
+                    Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+                }
             }
             var distribution = new CaptureDistributionOptions
             {
@@ -362,7 +481,7 @@ public sealed class DurableCaptureDistributionTests
                 laneFaultInjector: new NullCaptureLaneFaultInjector());
             await retry.InitializeAsync(policy.Definitions, CancellationToken.None).ConfigureAwait(false);
             using var verify = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(2L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(3L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(6L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM capture_lane_work;").ConfigureAwait(false));
             Assert.AreEqual(3L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM capture_lane_contexts;").ConfigureAwait(false));
@@ -1648,6 +1767,34 @@ public sealed class DurableCaptureDistributionTests
                 throw new InvalidOperationException("Injected capture lane fault.");
             }
         }
+    }
+
+    private static ArtifactManifestV2 CreateV1MigrationManifest(
+        long sequence,
+        string captureId,
+        string artifactId,
+        string relativePath)
+    {
+        var manifest = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono8,
+            2,
+            2,
+            2,
+            [1, 2, 3, 4]);
+        return manifest with
+        {
+            RelativeArtifactPath = relativePath,
+            Descriptor = manifest.Descriptor with
+            {
+                Capture = manifest.Descriptor.Capture with
+                {
+                    AgentId = "agent",
+                    CaptureSequence = sequence,
+                    CaptureId = Guid.Parse(captureId)
+                },
+                Artifact = manifest.Descriptor.Artifact with { ArtifactId = Guid.Parse(artifactId) }
+            }
+        };
     }
 
     private const string V1SchemaWithCaptureSql = """

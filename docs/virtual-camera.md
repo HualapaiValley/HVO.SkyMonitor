@@ -162,7 +162,7 @@ simultaneously live full-frame buffers under the shared processing recipe.
 
 `virtual-cloud-scenario-v1` is an optional VirtualSky module option. Absence of
 the option preserves the previous renderer path and exact raw bytes. A scenario
-contains an opaque identity/version, seed, UTC epoch, spatial frequency,
+contains an opaque identity, numeric revision, seed, UTC epoch, spatial frequency,
 east/north drift, deterministic evolution, one through six value-noise octaves,
 edge softness, horizon fade, one through sixteen temporal samples, and one
 through sixty-four strictly ordered keyframes. Each keyframe defines UTC-relative

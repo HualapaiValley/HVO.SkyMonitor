@@ -151,7 +151,7 @@ To start or repair the services manually:
 ./scripts/opencode:enable
 ```
 
-The script starts OpenCode on container loopback and uses `tailscale serve` to provide a tailnet-only HTTPS endpoint. These scripts own the dedicated devcontainer node's complete Tailscale Serve configuration; do not add unrelated Serve or Funnel handlers to this node. Set `OPENCODE_BIND_HOST` or `OPENCODE_PORT` to use a different local bind address or port. To remove the tailnet endpoint and stop the OpenCode process started by the script:
+The script starts OpenCode on container loopback and uses `tailscale serve` to provide a tailnet-only HTTPS endpoint. These scripts own the dedicated devcontainer node's complete Tailscale Serve configuration; do not add unrelated Serve or Funnel handlers to this node. Set `OPENCODE_PORT` to use a different local port. To remove the tailnet endpoint and stop the OpenCode process started by the script:
 
 ```bash
 ./scripts/opencode:disable

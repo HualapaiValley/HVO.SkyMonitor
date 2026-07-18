@@ -23,6 +23,40 @@ public sealed class VirtualSkyCloudPerformanceTests
     {
         WriteIndented = true
     };
+    private static readonly Dictionary<(string Workload, string Scenario), OutputChecksums> ExpectedChecksums =
+        new Dictionary<(string Workload, string Scenario), OutputChecksums>
+        {
+            [("W1", "base")] = new(
+                "3FBC9C0786E50F5C88468949000D9AAA97C32875B00009E28EBE88C360A291E1",
+                "760BE91721EC3AEDA7282251808F5CB450DBF7393C626645774043AF7A4DBAB2"),
+            [("W1", "explicit-clear")] = new(
+                "FAB9A6BEA6DA154DEF8F23C192300B1222BF37B933EF83695A69C5CB27714EB5",
+                "2036FB091BC451579B63A5823452378970BA49A6A13519C479260F053A215539"),
+            [("W1", "partial-sustained")] = new(
+                "1190FC57EF910CC45EFD1F9B3722E74792D78172514B0C67FDB364F5CE6574F0",
+                "EC4244ACC53708D139F2B164F35BC7432CDC8F284DBB1B44700F419054584BF9"),
+            [("W1", "transition")] = new(
+                "41FB82F653B8A0ED6D91C946F4805AA8AEE21AECFAB17DE508F27720F6C51664",
+                "AF20D0DC9A4698DDE9E9E8A2E2E9E7C306D71DC3B430F04A2EC76BE52D0443B3"),
+            [("W1", "overcast")] = new(
+                "7DEC92F9A133884D236B1A75627C3019A1C9D97E9E82A98083A957A781A058B9",
+                "1E5A61480D1BDE4FADE2C19447A6E3AFB7A23E2758FF019214B1812A32FF508F"),
+            [("W2", "base")] = new(
+                "6CA0EE6A978B2044B96B88C9998A32344D0109E1FE60576DAB56F79F24F12A1B",
+                "F41EE465B439395025CFE91A6FD67861F9AB3CAE58DC9D42826A6E203407AF1E"),
+            [("W2", "explicit-clear")] = new(
+                "8D6BE092D14FB0E5EB9283C7947852CBF39C82E054D76F3488CCEE16CFC5C75C",
+                "6D4E916A5DB733AC13834E084A937DCBC3EFC6B3EAE6F94369EBDEC70861F49E"),
+            [("W2", "partial-sustained")] = new(
+                "83C8076903518D8C7F2E1272CD3FC35FE3F1FB0512924420462FADD2640B48BB",
+                "82809739770CD11B670894074BF090174442E70AFA23FD2A1DEEAC60081B828B"),
+            [("W2", "transition")] = new(
+                "C97C4B8ACD717BEDA61C16F4C6956432D5630BBFF78FE25D07AAD90A9A79046F",
+                "3A37D84CFAD9FAAB93F101D70646CCFFB0920D10DD28A61639BDA1EFA0F20E9D"),
+            [("W2", "overcast")] = new(
+                "05DDD55D8AE3CB982EC7F52EC4885396807CE369E82796CF3DC24D3A6EA6CC92",
+                "92E0C264C3BF418686C41E269C78D754E82814D6CFA2C8B93ADB145590CD74BB")
+        };
 
     [TestMethod]
     public async Task W1AndW2CloudRenderEvidence()
@@ -255,6 +289,9 @@ public sealed class VirtualSkyCloudPerformanceTests
         Array.Sort(durations);
         var totalSeconds = durations.Sum() / 1000;
         var renderOnly = MeasureRenderOnly(workload, scenario, scene!);
+        var expectedChecksums = ExpectedChecksums[(workload.Id, scenario.Id)];
+        Assert.AreEqual(expectedChecksums.Complete, finalSha256);
+        Assert.AreEqual(expectedChecksums.RenderOnly, renderOnly.FinalSha256);
         return new CloudRenderMeasurement(
             workload.Id,
             scenario.Id,
@@ -551,6 +588,8 @@ public sealed class VirtualSkyCloudPerformanceTests
         long LohGrowthBytes,
         long LohFragmentationStartBytes,
         long LohFragmentationEndBytes);
+
+    private sealed record OutputChecksums(string Complete, string RenderOnly);
 
     private sealed class PerformanceObservationPublisher(
         IEnvironmentalObservationOutbox outbox,

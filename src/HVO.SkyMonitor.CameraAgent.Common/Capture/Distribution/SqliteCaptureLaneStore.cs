@@ -118,6 +118,13 @@ internal sealed class SqliteCaptureLaneStore(
                 {
                     throw new InvalidDataException("Capture lane work references an invalid committed manifest.");
                 }
+                if (!string.Equals(
+                        CaptureContractJson.ComputeManifestSha256(candidate.ManifestJson),
+                        candidate.ManifestSha256,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("Capture lane work references altered committed manifest bytes.");
+                }
                 var envelope = candidate.ContextJson is not null && candidate.ContextSha256 is not null
                     ? CaptureLaneEnvelopeSerializer.Deserialize(candidate.ContextJson, candidate.ContextSha256)
                     : CreateFallbackEnvelope(fallbackConfiguration, manifest.Descriptor);
@@ -131,7 +138,11 @@ internal sealed class SqliteCaptureLaneStore(
                     absolutePath,
                     manifest.Descriptor.Timing.ExposureStartedUtc,
                     FrameArtifactRole.Raw);
-                var receipt = new RawCaptureReceipt(RawIngressOutcome.Existing, manifest, stored);
+                var receipt = new RawCaptureReceipt(
+                    RawIngressOutcome.Existing,
+                    manifest,
+                    stored,
+                    candidate.ManifestSha256);
                 context = new CaptureLaneHandlerContext(
                     lane.Name,
                     candidate.AttemptCount + 1,
@@ -398,7 +409,7 @@ internal sealed class SqliteCaptureLaneStore(
             ? """
               SELECT w.work_id, w.required, w.ordered, w.state, w.attempt_count,
                      w.available_unix_ms, w.lease_expires_unix_ms, r.raw_capture_row_id,
-                     r.manifest_json, r.payload_relative_path, c.context_json, c.context_sha256
+                     r.manifest_json, r.manifest_sha256, r.payload_relative_path, c.context_json, c.context_sha256
               FROM capture_lane_work w
               JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
                LEFT JOIN capture_lane_contexts c ON c.raw_capture_row_id = r.raw_capture_row_id
@@ -409,7 +420,7 @@ internal sealed class SqliteCaptureLaneStore(
             : """
               SELECT w.work_id, w.required, w.ordered, w.state, w.attempt_count,
                      w.available_unix_ms, w.lease_expires_unix_ms, r.raw_capture_row_id,
-                     r.manifest_json, r.payload_relative_path, c.context_json, c.context_sha256
+                     r.manifest_json, r.manifest_sha256, r.payload_relative_path, c.context_json, c.context_sha256
               FROM capture_lane_work w
               JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
               LEFT JOIN capture_lane_contexts c ON c.raw_capture_row_id = r.raw_capture_row_id
@@ -433,9 +444,9 @@ internal sealed class SqliteCaptureLaneStore(
             await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
                 ? null
                 : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6)),
-            reader.GetInt64(7), (byte[])reader[8], reader.GetString(9),
-            await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : (byte[])reader[10],
-            await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(11));
+            reader.GetInt64(7), (byte[])reader[8], reader.GetString(9), reader.GetString(10),
+            await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false) ? null : (byte[])reader[11],
+            await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(12));
     }
 
     private static bool IsEligible(Candidate candidate, DateTimeOffset now) => candidate.State switch
@@ -716,6 +727,7 @@ internal sealed class SqliteCaptureLaneStore(
         DateTimeOffset? LeaseExpiresUtc,
         long RawRowId,
         byte[] ManifestJson,
+        string ManifestSha256,
         string PayloadRelativePath,
         byte[]? ContextJson,
         string? ContextSha256);

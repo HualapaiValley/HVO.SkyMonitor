@@ -49,7 +49,7 @@ public sealed record VirtualCloudScenarioDefinition
     public void Validate()
     {
         if (!string.Equals(SchemaVersion, CurrentSchemaVersion, StringComparison.Ordinal) ||
-            !BoundedIdentity(ScenarioId, 128) || !BoundedIdentity(ScenarioVersion, 64) ||
+            !BoundedIdentity(ScenarioId, 128) || !NumericVersion(ScenarioVersion) ||
             EpochUtc == default || EpochUtc.Offset != TimeSpan.Zero ||
             !double.IsFinite(SpatialFrequency) || SpatialFrequency is < 0.1 or > 64 ||
             !BoundedRate(DriftEastCellsPerSecond) || !BoundedRate(DriftNorthCellsPerSecond) ||
@@ -107,6 +107,10 @@ public sealed record VirtualCloudScenarioDefinition
     private static bool BoundedIdentity(string? value, int maximum)
         => !string.IsNullOrWhiteSpace(value) && value.Length <= maximum && value == value.Trim();
 
+    private static bool NumericVersion(string? value)
+        => BoundedIdentity(value, 64) &&
+            value?.All(static character => character is >= '0' and <= '9') == true;
+
     private static bool BoundedRate(double value) => double.IsFinite(value) && Math.Abs(value) <= 10;
 }
 
@@ -127,7 +131,10 @@ public sealed class VirtualCloudField
     {
         ArgumentNullException.ThrowIfNull(definition);
         definition.Validate();
-        _definition = definition;
+        _definition = definition with
+        {
+            Keyframes = Array.AsReadOnly(definition.Keyframes.ToArray())
+        };
     }
 
     public VirtualCloudScenarioDefinition Definition => _definition;
@@ -136,7 +143,7 @@ public sealed class VirtualCloudField
     public VirtualCloudEffect Evaluate(AltAzPoint direction, DateTimeOffset utc)
     {
         ValidateDirectionAndTime(direction, utc);
-        if (direction.AltitudeDegrees < 0)
+        if (direction.AltitudeDegrees <= 0)
         {
             return VirtualCloudEffect.Clear;
         }

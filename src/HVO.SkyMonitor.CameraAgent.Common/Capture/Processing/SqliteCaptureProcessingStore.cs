@@ -343,7 +343,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT manifest_json, payload_relative_path
+            SELECT raw_capture_row_id, manifest_json, manifest_sha256, payload_relative_path
             FROM raw_captures
             WHERE state = 'committed' AND agent_id = $agent_id
               AND capture_sequence <= $current_capture_sequence
@@ -353,19 +353,70 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$agent_id", agentId);
         command.Parameters.AddWithValue("$current_capture_sequence", currentCaptureSequence);
         command.Parameters.AddWithValue("$maximum_count", maximumCount);
-        var entries = new List<DurableRawProcessingInput>(maximumCount);
-        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        var candidates = new List<(long RawRowId, byte[] ManifestJson, string ManifestSha256, string PayloadPath)>(maximumCount);
+        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-            var manifestJson = await reader.GetFieldValueAsync<byte[]>(0, cancellationToken).ConfigureAwait(false);
-            var parsed = CaptureContractJson.ParseManifest(manifestJson);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                candidates.Add((
+                    reader.GetInt64(0),
+                    await reader.GetFieldValueAsync<byte[]>(1, cancellationToken).ConfigureAwait(false),
+                    reader.GetString(2),
+                    reader.GetString(3)));
+            }
+        }
+
+        var entries = new List<DurableRawProcessingInput>(candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            if (!string.Equals(
+                    CaptureContractJson.ComputeManifestSha256(candidate.ManifestJson),
+                    candidate.ManifestSha256,
+                    StringComparison.Ordinal))
+            {
+                await QuarantineRawInputAsync(connection, candidate.RawRowId, cancellationToken).ConfigureAwait(false);
+                throw new InvalidDataException("Durable raw rolling input manifest differs from its committed bytes.");
+            }
+            var parsed = CaptureContractJson.ParseManifest(candidate.ManifestJson);
             if (!parsed.IsValid || parsed.Document?.Manifest?.Descriptor is not { } descriptor)
             {
+                await QuarantineRawInputAsync(connection, candidate.RawRowId, cancellationToken).ConfigureAwait(false);
                 throw new InvalidDataException("Durable raw rolling input manifest is invalid.");
             }
-            entries.Add(new DurableRawProcessingInput(descriptor, reader.GetString(1)));
+            entries.Add(new DurableRawProcessingInput(descriptor, candidate.PayloadPath));
         }
         return entries;
+    }
+
+    private static async Task QuarantineRawInputAsync(
+        SqliteConnection connection,
+        long rawRowId,
+        CancellationToken cancellationToken)
+    {
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                UPDATE capture_lane_work
+                SET state = 'quarantined', failure_reason = 'evidence-invalid',
+                    lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL,
+                    updated_unix_ms = unixepoch('subsec') * 1000
+                WHERE raw_capture_row_id = $raw AND lane_name = 'standard';
+                """;
+            command.Parameters.AddWithValue("$raw", rawRowId);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = "UPDATE raw_captures SET retention_hold = 1 WHERE raw_capture_row_id = $raw;";
+            command.Parameters.AddWithValue("$raw", rawRowId);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     internal async ValueTask<CaptureProcessingOperationalState> ReadOperationalStateAsync(

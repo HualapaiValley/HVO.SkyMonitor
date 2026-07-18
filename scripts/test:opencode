@@ -7,9 +7,15 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly ENABLE_SCRIPT="$REPO_ROOT/scripts/opencode:enable"
 readonly DISABLE_SCRIPT="$REPO_ROOT/scripts/opencode:disable"
+readonly CONFIGURE_SCRIPT="$REPO_ROOT/.devcontainer/configure-opencode.sh"
 readonly TEMP_DIR="$(mktemp -d -t hvo-opencode-test.XXXXXX)"
 
 cleanup() {
+    for pid_file in "$TEMP_DIR/legacy-server.pid" "$TEMP_DIR/migrated-opencode.pid"; do
+        if [[ -f "$pid_file" ]] && [[ "$(<"$pid_file")" =~ ^[0-9]+$ ]]; then
+            kill "$(<"$pid_file")" 2>/dev/null || true
+        fi
+    done
     rm -rf "$TEMP_DIR"
 }
 trap cleanup EXIT
@@ -20,13 +26,42 @@ if grep -Fq 'tailscale serve --https=443 off' "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"
 fi
 
 grep -Fq 'readonly TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-vscode-skymonitor}"' "$ENABLE_SCRIPT"
-grep -Fq 'readonly OPENCODE_BIND_HOST="${OPENCODE_BIND_HOST:-127.0.0.1}"' "$ENABLE_SCRIPT"
-grep -Fq 'readonly OPENCODE_HEALTH_HOST="127.0.0.1"' "$ENABLE_SCRIPT"
-grep -Fq 'nohup opencode serve --hostname "$OPENCODE_BIND_HOST" --port "$OPENCODE_PORT"' "$ENABLE_SCRIPT"
+grep -Fq 'readonly OPENCODE_HOST="127.0.0.1"' "$ENABLE_SCRIPT"
+grep -Fq 'nohup opencode serve --hostname "$OPENCODE_HOST" --port "$OPENCODE_PORT"' "$ENABLE_SCRIPT"
 grep -Fq 'TAILSCALE_HOSTNAME=vscode-skymonitor' "$REPO_ROOT/.env.template"
-grep -Fq 'if [[ ! -s "$OPENCODE_SERVER_PASSWORD_FILE" ]]' "$REPO_ROOT/.devcontainer/post-create.sh"
-grep -Fq 'openssl rand -hex 32 > "$OPENCODE_SERVER_PASSWORD_FILE"' "$REPO_ROOT/.devcontainer/post-create.sh"
-grep -Fq '"permission": "allow"' "$REPO_ROOT/.devcontainer/post-create.sh"
+grep -Fq 'bash "$SCRIPT_DIR/configure-opencode.sh"' "$REPO_ROOT/.devcontainer/post-create.sh"
+
+mkdir -p "$TEMP_DIR/legacy-config" "$TEMP_DIR/legacy-data"
+printf '{\n\t"$schema": "https://opencode.ai/config.json",\n\t"permission": "allow"\n}\n' \
+    > "$TEMP_DIR/legacy-config/opencode.jsonc"
+env -i HOME="$TEMP_DIR/home" PATH="/usr/bin:/bin" \
+    OPENCODE_CONFIG_DIR="$TEMP_DIR/legacy-config" \
+    OPENCODE_DATA_DIR="$TEMP_DIR/legacy-data" \
+    bash "$CONFIGURE_SCRIPT"
+if grep -Fq '"permission": "allow"' "$TEMP_DIR/legacy-config/opencode.jsonc"; then
+    echo "Legacy blanket-allow OpenCode policy was not migrated." >&2
+    exit 1
+fi
+test "$(stat -c %a "$TEMP_DIR/legacy-config/opencode.jsonc")" = 600
+test "$(stat -c %a "$TEMP_DIR/legacy-data/server-password")" = 600
+
+mkdir -p "$TEMP_DIR/custom-config" "$TEMP_DIR/custom-data"
+printf '{"permission":"ask"}\n' > "$TEMP_DIR/custom-config/opencode.jsonc"
+chmod 644 "$TEMP_DIR/custom-config/opencode.jsonc"
+env -i HOME="$TEMP_DIR/home" PATH="/usr/bin:/bin" \
+    OPENCODE_CONFIG_DIR="$TEMP_DIR/custom-config" \
+    OPENCODE_DATA_DIR="$TEMP_DIR/custom-data" \
+    bash "$CONFIGURE_SCRIPT"
+grep -Fqx '{"permission":"ask"}' "$TEMP_DIR/custom-config/opencode.jsonc"
+test "$(stat -c %a "$TEMP_DIR/custom-config/opencode.jsonc")" = 600
+
+mkdir -p "$TEMP_DIR/empty-config" "$TEMP_DIR/empty-data"
+: > "$TEMP_DIR/empty-config/opencode.jsonc"
+env -i HOME="$TEMP_DIR/home" PATH="/usr/bin:/bin" \
+    OPENCODE_CONFIG_DIR="$TEMP_DIR/empty-config" \
+    OPENCODE_DATA_DIR="$TEMP_DIR/empty-data" \
+    bash "$CONFIGURE_SCRIPT"
+grep -Fq '"$schema": "https://opencode.ai/config.json"' "$TEMP_DIR/empty-config/opencode.jsonc"
 
 first_reset_call_line="$(grep -nF '        reset_serve' "$ENABLE_SCRIPT" | cut -d: -f1 | head -n 1)"
 last_reset_call_line="$(grep -nF '        reset_serve' "$ENABLE_SCRIPT" | cut -d: -f1 | tail -n 1)"
@@ -48,6 +83,8 @@ elif [[ "$*" == "serve reset" ]]; then
     printf '%s\n' "$*" >> "${TAILSCALE_TEST_LOG:?}"
     [[ "${TAILSCALE_RESET_FAIL:-false}" != true ]]
 elif [[ "$1" == "up" ]]; then
+    printf '%s\n' "$*" >> "${TAILSCALE_TEST_LOG:?}"
+elif [[ "$1" == "set" || "$*" == "serve --bg --yes 4096" || "$*" == "serve status" ]]; then
     printf '%s\n' "$*" >> "${TAILSCALE_TEST_LOG:?}"
 else
     printf 'Unexpected Tailscale command: %s\n' "$*" >&2
@@ -98,6 +135,53 @@ if (( enrollment_line >= enrollment_reset_line )); then
     echo "Fresh Tailscale enrollment must complete before Serve reset." >&2
     exit 1
 fi
+
+cat > "$TEMP_DIR/opencode" <<'EOF'
+#!/usr/bin/env bash
+trap 'exit 0' TERM
+while sleep 1; do :; done
+EOF
+cat > "$TEMP_DIR/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '401'
+EOF
+cat > "$TEMP_DIR/ss" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$TEMP_DIR/opencode" "$TEMP_DIR/curl" "$TEMP_DIR/ss"
+mkdir -p "$TEMP_DIR/legacy-home/.local/share/opencode"
+printf 'test-password\n' > "$TEMP_DIR/legacy-home/.local/share/opencode/server-password"
+verify_legacy_process_migration() {
+    local legacy_host="$1"
+    local legacy_port="$2"
+    "$TEMP_DIR/opencode" serve --hostname "$legacy_host" --port "$legacy_port" &
+    local legacy_pid=$!
+    printf '%s\n' "$legacy_pid" > "$TEMP_DIR/legacy-server.pid"
+    sleep 0.1
+    printf '1\n%s\n' "$(ps -p "$legacy_pid" -o lstart=)" > "$TEMP_DIR/migrated-opencode.pid.meta"
+    printf '%s\n' "$legacy_pid" > "$TEMP_DIR/migrated-opencode.pid"
+    env -i \
+        HOME="$TEMP_DIR/legacy-home" \
+        PATH="$TEMP_DIR:/usr/bin:/bin" \
+        HVO_OPENCODE_PID_FILE="$TEMP_DIR/migrated-opencode.pid" \
+        HVO_OPENCODE_PID_METADATA_FILE="$TEMP_DIR/migrated-opencode.pid.meta" \
+        TAILSCALE_TEST_LOG="$TEMP_DIR/tailscale.log" \
+        bash "$ENABLE_SCRIPT" >/dev/null
+    if kill -0 "$legacy_pid" 2>/dev/null; then
+        echo "Legacy non-loopback OpenCode process survived secure migration." >&2
+        exit 1
+    fi
+    local new_pid
+    new_pid="$(<"$TEMP_DIR/migrated-opencode.pid")"
+    ps -p "$new_pid" -o args= | grep -Fq -- '--hostname 127.0.0.1 --port 4096'
+    kill "$new_pid"
+    wait "$new_pid" 2>/dev/null || true
+    rm -f "$TEMP_DIR/legacy-server.pid" "$TEMP_DIR/migrated-opencode.pid" "$TEMP_DIR/migrated-opencode.pid.meta"
+}
+
+verify_legacy_process_migration "0.0.0.0" 4096
+verify_legacy_process_migration "::" 5000
 
 printf 'invalid-test-pid\n' > "$TEMP_DIR/opencode.pid"
 printf 'test-metadata\n' > "$TEMP_DIR/opencode.pid.meta"

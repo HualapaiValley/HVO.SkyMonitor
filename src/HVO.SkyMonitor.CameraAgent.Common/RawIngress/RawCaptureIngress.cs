@@ -315,13 +315,14 @@ internal sealed class RawCaptureIngress :
             }
 
             var committedDescriptor = manifest.Descriptor;
+            var manifestSha256 = CaptureContractJson.ComputeManifestSha256(manifestJson);
             var entry = new RawIngressJournalEntry(
                 identity.AgentId,
                 identity.CaptureSequence,
                 identity.CaptureId,
                 identity.ArtifactId,
                 CaptureContractJson.ComputeDescriptorSha256(committedDescriptor),
-                CaptureContractJson.ComputeManifestSha256(manifest),
+                manifestSha256,
                 payloadSha256,
                 frame.PixelData.Length,
                 paths.PayloadRelativePath,
@@ -383,7 +384,8 @@ internal sealed class RawCaptureIngress :
                     paths.PayloadRelativePath,
                     paths.PayloadAbsolutePath,
                     committedDescriptor.Timing.ExposureStartedUtc,
-                    FrameArtifactRole.Raw));
+                    FrameArtifactRole.Raw),
+                manifestSha256);
             if (outcome == RawIngressOutcome.Committed || prior.Availability == RawIngressAvailability.Degraded)
             {
                 try

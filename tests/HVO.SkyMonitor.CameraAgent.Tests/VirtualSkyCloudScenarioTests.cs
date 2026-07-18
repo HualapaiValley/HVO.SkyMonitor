@@ -252,8 +252,10 @@ public sealed class VirtualSkyCloudScenarioTests
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+        var aliasConfig = config with { Module = config.Module with { Type = "virtualsky" } };
+        await step.ProcessAsync(Context(aliasConfig, request, result), CancellationToken.None).ConfigureAwait(false);
 
-        Assert.HasCount(2, publisher.Facts);
+        Assert.HasCount(3, publisher.Facts);
         var first = publisher.Facts[0];
         var repeated = publisher.Facts[1];
         Assert.AreEqual(first.ObservationId, repeated.ObservationId);
@@ -273,7 +275,7 @@ public sealed class VirtualSkyCloudScenarioTests
         await cloudlessModule.InitializeAsync(cloudlessConfig, CancellationToken.None).ConfigureAwait(false);
         var cloudless = await cloudlessModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
         await step.ProcessAsync(Context(cloudlessConfig, request, cloudless), CancellationToken.None).ConfigureAwait(false);
-        Assert.HasCount(2, publisher.Facts);
+        Assert.HasCount(3, publisher.Facts);
     }
 
     [TestMethod]
@@ -301,6 +303,37 @@ public sealed class VirtualSkyCloudScenarioTests
 
         await Assert.ThrowsAsync<InvalidDataException>(() =>
             step.ProcessAsync(Context(config, request, corrupted), CancellationToken.None).AsTask()).ConfigureAwait(false);
+
+        var shiftedCloud = result.Frame.Metadata.Scene.CloudScenario with
+        {
+            IntegrationStartUtc = result.Frame.Metadata.Scene.CloudScenario.IntegrationStartUtc.AddSeconds(1),
+            IntegrationEndUtc = result.Frame.Metadata.Scene.CloudScenario.IntegrationEndUtc.AddSeconds(1)
+        };
+        var shiftedFrame = result.Frame with
+        {
+            Metadata = result.Frame.Metadata with
+            {
+                Scene = result.Frame.Metadata.Scene with { CloudScenario = shiftedCloud }
+            }
+        };
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            step.ProcessAsync(
+                Context(config, request, result with { Frame = shiftedFrame, Artifacts = new FrameArtifactSet(shiftedFrame) }),
+                CancellationToken.None).AsTask()).ConfigureAwait(false);
+
+        var conflictingConfig = Config(CameraPixelFormat.Mono16, Definition() with { Seed = 105 });
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            step.ProcessAsync(Context(conflictingConfig, request, result), CancellationToken.None).AsTask()).ConfigureAwait(false);
+
+        var shiftedTimestampFrame = result.Frame with { TimestampUtc = result.Frame.TimestampUtc.AddSeconds(1) };
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            step.ProcessAsync(
+                Context(config, request, result with
+                {
+                    Frame = shiftedTimestampFrame,
+                    Artifacts = new FrameArtifactSet(shiftedTimestampFrame)
+                }),
+                CancellationToken.None).AsTask()).ConfigureAwait(false);
         Assert.IsEmpty(publisher.Facts);
     }
 

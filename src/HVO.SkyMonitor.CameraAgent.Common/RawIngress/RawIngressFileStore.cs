@@ -180,7 +180,8 @@ internal sealed class RawIngressFileStore(
                 manifest.RelativeArtifactPath,
                 Path.GetFullPath(Path.Combine(root, manifest.RelativeArtifactPath)),
                 descriptor.Timing.ExposureStartedUtc,
-                FrameArtifactRole.Raw));
+                FrameArtifactRole.Raw),
+            CaptureContractJson.ComputeManifestSha256(manifestJson.Span));
         await AppendCompatibilityIndexAsync(root, receipt, cancellationToken, fileFlushRecorder).ConfigureAwait(false);
     }
 

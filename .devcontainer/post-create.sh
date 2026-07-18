@@ -78,21 +78,7 @@ done
 echo "Fixing .dotnet directory ownership..."
 sudo chown -R vscode:vscode /home/vscode/.dotnet || true
 sudo chown -R vscode:vscode /home/vscode/.config/opencode /home/vscode/.local/share/opencode
-chmod 700 /home/vscode/.config/opencode /home/vscode/.local/share/opencode
-OPENCODE_SERVER_PASSWORD_FILE=/home/vscode/.local/share/opencode/server-password
-OPENCODE_CONFIG_FILE=/home/vscode/.config/opencode/opencode.jsonc
-umask 077
-if [[ ! -s "$OPENCODE_SERVER_PASSWORD_FILE" ]]; then
-	openssl rand -hex 32 > "$OPENCODE_SERVER_PASSWORD_FILE"
-fi
-cat > "$OPENCODE_CONFIG_FILE" <<'EOF'
-{
-	"$schema": "https://opencode.ai/config.json",
-	"permission": "allow"
-}
-EOF
-chmod 600 "$OPENCODE_SERVER_PASSWORD_FILE"
-chmod 600 "$OPENCODE_CONFIG_FILE"
+bash "$SCRIPT_DIR/configure-opencode.sh"
 
 # Display .NET version and runtime details
 echo "Checking .NET installation..."

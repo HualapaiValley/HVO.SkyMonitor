@@ -27,6 +27,7 @@ public sealed class VirtualCloudFieldTests
         [
             valid with { SchemaVersion = "unknown" },
             valid with { ScenarioId = " " },
+            valid with { ScenarioVersion = "clear" },
             valid with { ScenarioVersion = new string('x', 65) },
             valid with { EpochUtc = Epoch.ToOffset(TimeSpan.FromHours(1)) },
             valid with { SpatialFrequency = 0 },
@@ -99,6 +100,12 @@ public sealed class VirtualCloudFieldTests
         Assert.IsTrue(first.Transmission is >= 0 and <= 1);
         Assert.IsTrue(first.Scatter is >= 0 and <= 1);
         Assert.AreEqual(1, first.Opacity + first.Transmission, 1e-12);
+
+        var mutableKeyframes = definition.Keyframes.ToArray();
+        var isolated = new VirtualCloudField(definition with { Keyframes = mutableKeyframes });
+        var isolatedBeforeMutation = isolated.Evaluate(direction, Epoch.AddSeconds(10));
+        mutableKeyframes[0] = mutableKeyframes[0] with { Coverage = 0, MaximumOpacity = 0 };
+        Assert.AreEqual(isolatedBeforeMutation, isolated.Evaluate(direction, Epoch.AddSeconds(10)));
     }
 
     [TestMethod]
@@ -119,6 +126,8 @@ public sealed class VirtualCloudFieldTests
         Assert.AreEqual(VirtualCloudEffect.Clear, clear.Evaluate(direction, Epoch));
         Assert.AreEqual(VirtualCloudEffect.Clear, transition.Evaluate(new AltAzPoint(-1, 45), Epoch.AddSeconds(10)));
         Assert.AreEqual(0, transition.Evaluate(new AltAzPoint(0, 45), Epoch.AddSeconds(10)).Opacity, 1e-12);
+        var noFade = new VirtualCloudField(Definition(1, 1) with { HorizonFadeDegrees = 0 });
+        Assert.AreEqual(VirtualCloudEffect.Clear, noFade.Evaluate(new AltAzPoint(0, 45), Epoch));
 
         var before = transition.Integrate(direction, Epoch.AddSeconds(-10), TimeSpan.FromSeconds(5));
         var crossing = transition.Integrate(direction, Epoch, TimeSpan.FromSeconds(10));

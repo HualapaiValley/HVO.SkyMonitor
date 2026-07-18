@@ -12,7 +12,8 @@ public enum RawIngressOutcome
 public sealed record RawCaptureReceipt(
     RawIngressOutcome Outcome,
     ArtifactManifestV2 Manifest,
-    StoredFrameReference StoredFrame);
+    StoredFrameReference StoredFrame,
+    string CommittedManifestSha256);
 
 public interface IRawCaptureIngress
 {

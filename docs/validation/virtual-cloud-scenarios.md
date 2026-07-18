@@ -33,6 +33,44 @@ identities and behavior.
 
 ## Performance Candidate
 
+### Parent baseline
+
+The no-cloud complete-module and render-only paths were first measured in an
+isolated detached worktree at parent revision
+`ba0d71a4bfec4a7efc32408ee9973ff3ed44b5fa`. A source-compatible extraction of
+the no-cloud W1/W2 cases below used the same dimensions, rig and sensor options,
+empty catalog, five warmups, 30 measurements, and fixed five-second UTC
+progression. Output byte counts and final SHA-256 values were asserted on both
+revisions.
+
+To reproduce the parent run, create a detached `ba0d71a` worktree and copy the
+retained `VirtualSkyNoCloudBaselinePerformanceTests.cs` from a candidate
+worktree into the same test-project path in the parent worktree, then run:
+
+```bash
+ISSUE104_BASELINE_REVISION=ba0d71a4bfec4a7efc32408ee9973ff3ed44b5fa \
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --configuration Release \
+  --filter "FullyQualifiedName~VirtualSkyNoCloudBaselinePerformanceTests.W1AndW2NoCloudEvidence"
+```
+
+| Workload/path | Parent median/p95 | Candidate median/p95 | CPU change | Allocation change | Peak RSS change | Output identity |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| W1 complete | 60.80/64.33 ms | 64.40/68.51 ms | +0.0% | +0.00% | -0.00% | exact, 4,708,352 B |
+| W1 render | 60.05/67.22 ms | 63.43/68.29 ms | +8.3% | +0.01% | -0.01% | exact, 4,708,352 B |
+| W2 complete | 594.17/619.66 ms | 626.64/650.83 ms | +5.3% | +0.00% | -0.00% | exact, 12,879,360 B |
+| W2 render | 593.74/622.85 ms | 620.73/644.57 ms | +4.3% | +0.00% | -0.1% | exact, 12,879,360 B |
+
+Complete-path throughput changed from 16.377 to 15.462 frames/s for W1 and
+from 1.674 to 1.590 frames/s for W2. The largest no-cloud latency delta was
+6.5%, CPU varied by at most 8.3%, allocations were unchanged, and peak RSS was
+equal or lower. A separate full cloud-harness run measured smaller no-cloud
+deltas on the same candidate, confirming normal shared-runner timing variance.
+Exact parent/candidate output SHA-256 values matched for both workloads. There
+is no unexplained no-cloud resource or correctness regression.
+
+### Cloud workloads
+
 Command:
 
 ```bash
@@ -50,35 +88,35 @@ assertions. First-10 and complete-30 sequence medians are retained in JSON.
 
 | Workload | Scenario | Exposure | O x T | Complete median/p95 | Render median/p95 | Frames/s | CPU/frame | Final complete SHA-256 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| W1 1936x1216 Mono16 | base | 1 s | 0 x 0 | 64.61/71.02 ms | 63.57/67.86 ms | 15.300 | 79.91 ms | `3FBC9C0786E50F5C88468949000D9AAA97C32875B00009E28EBE88C360A291E1` |
-| W1 1936x1216 Mono16 | explicit clear | 0.1 s | 1 x 1 | 45.43/49.36 ms | 44.09/46.15 ms | 21.845 | 56.54 ms | `FAB9A6BEA6DA154DEF8F23C192300B1222BF37B933EF83695A69C5CB27714EB5` |
-| W1 1936x1216 Mono16 | partial sustained | 1 s | 3 x 2 | 471.29/490.50 ms | 475.39/497.49 ms | 2.112 | 478.89 ms | `1190FC57EF910CC45EFD1F9B3722E74792D78172514B0C67FDB364F5CE6574F0` |
-| W1 1936x1216 Mono16 | transition | 4 s | 5 x 8 | 2072.13/2128.86 ms | 2106.17/2129.35 ms | 0.481 | 2085.09 ms | `41FB82F653B8A0ED6D91C946F4805AA8AEE21AECFAB17DE508F27720F6C51664` |
-| W1 1936x1216 Mono16 | overcast | 10 s | 4 x 4 | 927.37/949.76 ms | 941.07/961.38 ms | 1.073 | 934.35 ms | `7DEC92F9A133884D236B1A75627C3019A1C9D97E9E82A98083A957A781A058B9` |
-| W2 3096x2080 RGGB16 | base | 1 s | 0 x 0 | 614.20/644.08 ms | 615.28/635.89 ms | 1.623 | 619.94 ms | `6CA0EE6A978B2044B96B88C9998A32344D0109E1FE60576DAB56F79F24F12A1B` |
-| W2 3096x2080 RGGB16 | explicit clear | 0.1 s | 1 x 1 | 415.53/434.85 ms | 418.11/430.37 ms | 2.403 | 419.11 ms | `8D6BE092D14FB0E5EB9283C7947852CBF39C82E054D76F3488CCEE16CFC5C75C` |
-| W2 3096x2080 RGGB16 | partial sustained | 1 s | 3 x 2 | 2043.93/2082.22 ms | 2046.04/2071.40 ms | 0.488 | 2054.06 ms | `83C8076903518D8C7F2E1272CD3FC35FE3F1FB0512924420462FADD2640B48BB` |
-| W2 3096x2080 RGGB16 | transition | 4 s | 5 x 8 | 7978.77/8170.65 ms | 7912.98/8153.56 ms | 0.125 | 8006.89 ms | `C97C4B8ACD717BEDA61C16F4C6956432D5630BBFF78FE25D07AAD90A9A79046F` |
-| W2 3096x2080 RGGB16 | overcast | 10 s | 4 x 4 | 3752.60/3792.65 ms | 3808.33/3817.99 ms | 0.266 | 3762.97 ms | `05DDD55D8AE3CB982EC7F52EC4885396807CE369E82796CF3DC24D3A6EA6CC92` |
+| W1 1936x1216 Mono16 | base | 1 s | 0 x 0 | 62.33/66.56 ms | 61.04/63.71 ms | 15.994 | 75.71 ms | `3FBC9C0786E50F5C88468949000D9AAA97C32875B00009E28EBE88C360A291E1` |
+| W1 1936x1216 Mono16 | explicit clear | 0.1 s | 1 x 1 | 43.16/47.16 ms | 42.25/43.78 ms | 23.009 | 52.83 ms | `FAB9A6BEA6DA154DEF8F23C192300B1222BF37B933EF83695A69C5CB27714EB5` |
+| W1 1936x1216 Mono16 | partial sustained | 1 s | 3 x 2 | 463.16/473.55 ms | 460.23/480.69 ms | 2.150 | 470.15 ms | `1190FC57EF910CC45EFD1F9B3722E74792D78172514B0C67FDB364F5CE6574F0` |
+| W1 1936x1216 Mono16 | transition | 4 s | 5 x 8 | 2069.07/2111.73 ms | 2069.57/2112.01 ms | 0.481 | 2083.14 ms | `41FB82F653B8A0ED6D91C946F4805AA8AEE21AECFAB17DE508F27720F6C51664` |
+| W1 1936x1216 Mono16 | overcast | 10 s | 4 x 4 | 921.02/931.67 ms | 919.82/940.61 ms | 1.084 | 925.53 ms | `7DEC92F9A133884D236B1A75627C3019A1C9D97E9E82A98083A957A781A058B9` |
+| W2 3096x2080 RGGB16 | base | 1 s | 0 x 0 | 603.53/630.85 ms | 605.07/622.70 ms | 1.650 | 609.55 ms | `6CA0EE6A978B2044B96B88C9998A32344D0109E1FE60576DAB56F79F24F12A1B` |
+| W2 3096x2080 RGGB16 | explicit clear | 0.1 s | 1 x 1 | 398.86/434.36 ms | 399.48/416.04 ms | 2.484 | 405.58 ms | `8D6BE092D14FB0E5EB9283C7947852CBF39C82E054D76F3488CCEE16CFC5C75C` |
+| W2 3096x2080 RGGB16 | partial sustained | 1 s | 3 x 2 | 1981.91/2011.03 ms | 1972.31/1996.07 ms | 0.503 | 1991.34 ms | `83C8076903518D8C7F2E1272CD3FC35FE3F1FB0512924420462FADD2640B48BB` |
+| W2 3096x2080 RGGB16 | transition | 4 s | 5 x 8 | 7972.08/8107.20 ms | 7965.11/8148.09 ms | 0.125 | 8007.25 ms | `C97C4B8ACD717BEDA61C16F4C6956432D5630BBFF78FE25D07AAD90A9A79046F` |
+| W2 3096x2080 RGGB16 | overcast | 10 s | 4 x 4 | 3813.50/3835.68 ms | 3809.30/3821.98 ms | 0.262 | 3822.59 ms | `05DDD55D8AE3CB982EC7F52EC4885396807CE369E82796CF3DC24D3A6EA6CC92` |
 
 | Workload | Scenario | Output | Allocated/frame | Peak RSS | Post-GC live delta |
 | --- | --- | ---: | ---: | ---: | ---: |
-| W1 | base | 4,708,352 B | 23,636,280 B | 243,658,752 B | 5,016,592 B |
-| W1 | explicit clear | 4,708,352 B | 23,629,559 B | 253,259,776 B | 4,732,320 B |
-| W1 | partial sustained | 4,708,352 B | 23,630,355 B | 255,934,464 B | 4,731,408 B |
-| W1 | transition | 4,708,352 B | 23,637,412 B | 254,914,560 B | 4,730,600 B |
-| W1 | overcast | 4,708,352 B | 23,629,314 B | 254,910,464 B | 4,732,160 B |
-| W2 | base | 12,879,360 B | 167,497,308 B | 955,924,480 B | 12,901,840 B |
-| W2 | explicit clear | 12,879,360 B | 167,520,999 B | 956,616,704 B | 12,894,848 B |
-| W2 | partial sustained | 12,879,360 B | 219,039,616 B | 1,253,146,624 B | 12,903,224 B |
-| W2 | transition | 12,879,360 B | 219,054,937 B | 1,254,649,856 B | 12,895,248 B |
-| W2 | overcast | 12,879,360 B | 219,042,106 B | 1,254,821,888 B | 12,903,024 B |
+| W1 | base | 4,708,352 B | 23,636,637 B | 243,118,080 B | 5,021,016 B |
+| W1 | explicit clear | 4,708,352 B | 23,629,402 B | 253,337,600 B | 4,732,400 B |
+| W1 | partial sustained | 4,708,352 B | 23,629,873 B | 256,647,168 B | 4,731,312 B |
+| W1 | transition | 4,708,352 B | 23,637,193 B | 255,627,264 B | 4,730,840 B |
+| W1 | overcast | 4,708,352 B | 23,628,993 B | 255,623,168 B | 4,724,096 B |
+| W2 | base | 12,879,360 B | 167,496,873 B | 956,641,280 B | 12,902,600 B |
+| W2 | explicit clear | 12,879,360 B | 167,520,871 B | 957,288,448 B | 12,903,288 B |
+| W2 | partial sustained | 12,879,360 B | 219,039,307 B | 1,253,777,408 B | 12,903,328 B |
+| W2 | transition | 12,879,360 B | 219,054,997 B | 1,254,105,088 B | 12,903,632 B |
+| W2 | overcast | 12,879,360 B | 219,041,923 B | 1,254,215,680 B | 12,903,144 B |
 
 W1 evaluates non-clear cloud fields on demand and adds no full-frame
 allocation. W2 adds one temporary two-float effect map, approximately 51.5 MB,
 so three sensor channels reuse identical cloud values. Explicit-clear scenarios
 bypass field evaluation and the W2 map while retaining cloud provenance. The
-worst measured W2 transition p95 is 8.17 seconds, 3.06 times faster than the
+worst measured W2 transition p95 is 8.11 seconds, 3.08 times faster than the
 configured 25-second arrival cadence. Render-only allocation follows the same
 expected ownership: about 23.6 MB/frame for W1, 167.5 MB/frame for W2 without a
 field map, and 219.0 MB/frame for non-clear W2 cloud cases.
@@ -103,12 +141,12 @@ regression was observed.
 
 The actual canonical VirtualSky partial-cloud payload was measured through the
 cloud processing step and durable SQLite enqueue with five warmups and 30
-measurements. Median latency was 3.6631 ms, p95 was 4.6303 ms, throughput was
-282.78 observations/s, CPU was 56.447 ms total, and allocation was 395,577
+measurements. Median latency was 3.9630 ms, p95 was 6.1753 ms, throughput was
+260.73 observations/s, CPU was 54.891 ms total, and allocation was 434,948
 bytes/operation. The 35 warmup/measured rows occupied 53,703 payload bytes and
-1,108,096 SQLite/WAL bytes. Peak RSS was 108,605,440 bytes, with one Gen0 and no
-Gen1/Gen2 collections. This is over 5,000 times inside the 25-second configured
-arrival cadence.
+1,108,096 SQLite/WAL bytes. Peak RSS was 108,007,424 bytes, with one Gen0 and no
+Gen1/Gen2 collections. The observation enqueue p95 is over 4,000 times inside
+the 25-second configured arrival cadence.
 
 The two-host integration run reported every configured processing node as
 successful, returned healthy raw-ingress, processing, and environmental-delivery
@@ -123,6 +161,5 @@ metric, activity, and log text contained none of the scenario identity/hash,
 canonical parameters, site/device GUIDs, test credentials, or field parameter
 names.
 
-These measurements were taken in the authorized implementation worktree. The
-same harness must be rerun on the exact clean candidate revision before the PR
-performance gate is considered final.
+These measurements were rerun after the review corrections with exact output
+lengths, checksums, provenance, durable-state counts, and cadence assertions.

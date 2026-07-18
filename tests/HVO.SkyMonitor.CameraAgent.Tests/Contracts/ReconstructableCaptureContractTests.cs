@@ -53,10 +53,17 @@ public sealed class ReconstructableCaptureContractTests
         Assert.IsTrue(parsed.IsValid);
         Assert.AreEqual(original.IdempotencyKey, enriched.IdempotencyKey);
         Assert.AreNotEqual(CaptureContractJson.ComputeManifestSha256(original), CaptureContractJson.ComputeManifestSha256(enriched));
+        Assert.AreEqual(CaptureContractJson.ComputeManifestSha256(enriched), CaptureContractJson.ComputeManifestSha256(encoded));
+        var reformatted = Encoding.UTF8.GetBytes($"\n{Encoding.UTF8.GetString(encoded)}");
+        Assert.IsTrue(CaptureContractJson.ParseManifest(reformatted).IsValid);
+        Assert.AreNotEqual(CaptureContractJson.ComputeManifestSha256(encoded), CaptureContractJson.ComputeManifestSha256(reformatted));
         Assert.AreEqual(parametersSha256, cloud.ParametersSha256);
         Assert.AreEqual("scenario-104-a", cloud.ScenarioId);
         Assert.AreEqual(DateTimeOffset.UnixEpoch.AddSeconds(14), cloud.IntegrationEndUtc);
         CollectionAssert.AreEqual(encoded, CaptureContractJson.Serialize(parsed.Document.Manifest));
+        var nonCloudScene = enriched with { Scene = scene with { CloudScenario = null } };
+        Assert.IsFalse(Encoding.UTF8.GetString(CaptureContractJson.Serialize(nonCloudScene))
+            .Contains("cloudScenario", StringComparison.Ordinal));
     }
 
     [TestMethod]

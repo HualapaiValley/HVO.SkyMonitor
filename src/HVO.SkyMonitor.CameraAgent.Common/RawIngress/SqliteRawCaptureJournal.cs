@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using System.Diagnostics.CodeAnalysis;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 
@@ -16,7 +17,7 @@ internal sealed class SqliteRawCaptureJournal(
     ICaptureLaneFaultInjector? laneFaultInjector = null,
     Func<DateTimeOffset>? utcNow = null)
 {
-    internal const int CurrentSchemaVersion = 2;
+    internal const int CurrentSchemaVersion = 3;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly int _busyTimeoutSeconds = busyTimeoutSeconds;
     private readonly Action<TimeSpan>? _lockWaitRecorder = lockWaitRecorder;
@@ -66,6 +67,10 @@ internal sealed class SqliteRawCaptureJournal(
                     await BackfillLaneWorkAsync(
                         connection, transaction, laneDefinitions, _distributionOptions, cancellationToken).ConfigureAwait(false);
                 }
+                if (version is 1 or 2)
+                {
+                    await RehashCommittedManifestBytesAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                }
                 await ExecuteNonQueryAsync(connection, transaction, $"PRAGMA user_version = {CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -108,6 +113,53 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyIndexAsync(connection, "ix_capture_lane_work_raw", "raw_capture_row_id,required,state", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_ordered", "lane_name,agent_id,capture_sequence", cancellationToken).ConfigureAwait(false);
         await VerifyConnectionSettingsAsync(connection, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task RehashCommittedManifestBytesAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var manifests = new List<(long RawRowId, byte[] Json, string ManifestSha256, string DescriptorSha256)>();
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT raw_capture_row_id, manifest_json, manifest_sha256, descriptor_sha256
+                FROM raw_captures;
+                """;
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                manifests.Add((
+                    reader.GetInt64(0),
+                    await reader.GetFieldValueAsync<byte[]>(1, cancellationToken).ConfigureAwait(false),
+                    reader.GetString(2),
+                    reader.GetString(3)));
+            }
+        }
+        foreach (var manifest in manifests)
+        {
+            var parsed = CaptureContractJson.ParseManifest(manifest.Json);
+            if (!parsed.IsValid || parsed.Document?.Manifest is not { } document ||
+                !string.Equals(
+                    CaptureContractJson.ComputeManifestSha256(document),
+                    manifest.ManifestSha256,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    CaptureContractJson.ComputeDescriptorSha256(document.Descriptor),
+                    manifest.DescriptorSha256,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Raw ingress v2 manifest evidence failed migration validation.");
+            }
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "UPDATE raw_captures SET manifest_sha256 = $sha WHERE raw_capture_row_id = $raw;";
+            command.Parameters.AddWithValue("$sha", CaptureContractJson.ComputeManifestSha256(manifest.Json));
+            command.Parameters.AddWithValue("$raw", manifest.RawRowId);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     internal Task<RawCaptureIdentity> ReserveIdentityAsync(
