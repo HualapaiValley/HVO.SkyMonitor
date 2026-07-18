@@ -108,12 +108,11 @@ This mode keeps hot reload and a faster edit/run cycle while still talking to th
 The `.devcontainer/devcontainer.json` uses the Docker-outside-of-Docker feature so containers run through the host Docker daemon without granting the devcontainer privileged mode.
 
 **Post-create script** (`.devcontainer/post-create.sh`):
-- Adds `vscode` user to the `docker` group
-- Sets Docker socket permissions (`chmod 666 /var/run/docker.sock`)
-- Installs the pinned `dotnet-ef` CLI tool for Entity Framework migrations
+- Restores the pinned `dotnet-ef` and ReportGenerator tools from `dotnet-tools.json`
 - Restores `HVO.SkyMonitor.v9.slnx` so a fresh container can build immediately
 - Generates HTTPS developer certificate (`dotnet dev-certs https`)
-- Verifies Docker installation
+- Configures optional Git, GitHub, and remote-host SSH access from ignored settings
+- Verifies Docker and Compose daemon access
 
 **Note:** We default to HTTP endpoints inside the dev container to avoid certificate trust issues.
 
@@ -124,10 +123,10 @@ The devcontainer configuration includes:
 
 - **.NET 10 SDK** - Latest .NET SDK for building and running applications
 - **Docker CLI** - Manage host and remote Docker contexts from the dev container
-- **dotnet-ef CLI** - Pinned Entity Framework Core tooling installed automatically
+- **.NET local tools** - Pinned Entity Framework Core and ReportGenerator tooling restored automatically
 - **OpenCode CLI** - Checksum-verified, pinned CLI started automatically on loopback
 - **Tailscale CLI** - Signature-verified, pinned client started with accepted tailnet routes
-- **Command-line tools** - `jq`, `rg`, and `sqlite3` are installed during container setup
+- **Command-line tools** - `jq`, `rg`, `shellcheck`, and `sqlite3` are installed in the container image
 - **C# Dev Kit** - Complete C# development experience with IntelliSense, debugging, and more
 - **GitHub Copilot** - AI-powered code completion and chat
 - **Git & GitHub CLI** - Version control and GitHub integration
@@ -142,9 +141,9 @@ The devcontainer configuration includes:
 
 OpenCode and Tailscale are installed and started automatically. Their credentials and runtime identity are retained under the ignored `.devcontainer/state/` directory, so rebuilding the same workspace does not require authentication again.
 
-For first-time enrollment in a new clone, set a one-time `TAILSCALE_AUTHKEY` in `.env` or `.devcontainer/devcontainer.local.env` and keep that file mode `0600`. Remove the key after successful enrollment; the persisted node state replaces it. The startup script connects as `dev-host-skymonitor`, accepts advertised routes, starts OpenCode on loopback, and exposes it through tailnet-only HTTPS. Set `TAILSCALE_ACCEPT_ROUTES=false` only when advertised routes would conflict with another local network. Authenticate OpenCode providers once with `opencode auth login`; provider credentials then persist across rebuilds in the ignored state directory.
+For first-time enrollment in a new clone, set a one-time `TAILSCALE_AUTHKEY` in `.env` or `.devcontainer/devcontainer.local.env` and keep that file mode `0600`. Remove the key after successful enrollment; the persisted node state replaces it. The startup script connects as `vscode-skymonitor`, accepts advertised routes, binds OpenCode to the container loopback interface, and exposes it through tailnet-only HTTPS. Set `TAILSCALE_ACCEPT_ROUTES=false` only when advertised routes would conflict with another local network. Authenticate OpenCode providers once with `opencode auth login`; provider credentials then persist across rebuilds in the ignored state directory.
 
-The HTTPS endpoint also requires OpenCode Basic Auth. Its username is `opencode`; a random password is generated at `.devcontainer/state/opencode-data/server-password` and retained across rebuilds.
+The HTTPS endpoint also requires OpenCode Basic Auth. Its username is `opencode`; the post-create setup generates a random password at `.devcontainer/state/opencode-data/server-password` and retains it across rebuilds. Read that ignored file locally when authenticating.
 
 To start or repair the services manually:
 
@@ -152,7 +151,7 @@ To start or repair the services manually:
 ./scripts/opencode:enable
 ```
 
-The script starts OpenCode only on loopback and uses `tailscale serve` to provide a tailnet-only HTTPS endpoint. These scripts own the dedicated devcontainer node's complete Tailscale Serve configuration; do not add unrelated Serve or Funnel handlers to this node. Set `OPENCODE_PORT` to use a different local port. To remove the tailnet endpoint and stop the OpenCode process started by the script:
+The script starts OpenCode on container loopback and uses `tailscale serve` to provide a tailnet-only HTTPS endpoint. These scripts own the dedicated devcontainer node's complete Tailscale Serve configuration; do not add unrelated Serve or Funnel handlers to this node. Set `OPENCODE_BIND_HOST` or `OPENCODE_PORT` to use a different local bind address or port. To remove the tailnet endpoint and stop the OpenCode process started by the script:
 
 ```bash
 ./scripts/opencode:disable

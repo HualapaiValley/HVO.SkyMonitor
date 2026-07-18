@@ -19,6 +19,15 @@ if grep -Fq 'tailscale serve --https=443 off' "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"
     exit 1
 fi
 
+grep -Fq 'readonly TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-vscode-skymonitor}"' "$ENABLE_SCRIPT"
+grep -Fq 'readonly OPENCODE_BIND_HOST="${OPENCODE_BIND_HOST:-127.0.0.1}"' "$ENABLE_SCRIPT"
+grep -Fq 'readonly OPENCODE_HEALTH_HOST="127.0.0.1"' "$ENABLE_SCRIPT"
+grep -Fq 'nohup opencode serve --hostname "$OPENCODE_BIND_HOST" --port "$OPENCODE_PORT"' "$ENABLE_SCRIPT"
+grep -Fq 'TAILSCALE_HOSTNAME=vscode-skymonitor' "$REPO_ROOT/.env.template"
+grep -Fq 'if [[ ! -s "$OPENCODE_SERVER_PASSWORD_FILE" ]]' "$REPO_ROOT/.devcontainer/post-create.sh"
+grep -Fq 'openssl rand -hex 32 > "$OPENCODE_SERVER_PASSWORD_FILE"' "$REPO_ROOT/.devcontainer/post-create.sh"
+grep -Fq '"permission": "allow"' "$REPO_ROOT/.devcontainer/post-create.sh"
+
 first_reset_call_line="$(grep -nF '        reset_serve' "$ENABLE_SCRIPT" | cut -d: -f1 | head -n 1)"
 last_reset_call_line="$(grep -nF '        reset_serve' "$ENABLE_SCRIPT" | cut -d: -f1 | tail -n 1)"
 environment_load_line="$(grep -nF 'source "$REPO_ROOT/.devcontainer/load-repo-env.sh"' "$ENABLE_SCRIPT" | cut -d: -f1)"

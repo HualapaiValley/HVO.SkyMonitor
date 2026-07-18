@@ -22,11 +22,11 @@ public sealed class DashboardTests
     [TestMethod]
     public void Dashboard_WithNoSamples_ShowsEmptyState()
     {
-        using var ctx = new Bunit.TestContext();
+        using var ctx = new BunitContext();
         var snapshot = CreateSnapshot();
         ConfigureServices(ctx, snapshot, DateTimeOffset.Parse("2025-11-26T05:00:00Z", CultureInfo.InvariantCulture));
 
-        var cut = ctx.RenderComponent<Dashboard>();
+        var cut = ctx.Render<Dashboard>();
 
         var statusText = cut.Find(".status-pill").TextContent.Trim();
         Assert.AreEqual("Waiting for frames", statusText);
@@ -42,10 +42,10 @@ public sealed class DashboardTests
         var sample = CreateSample(sampleTime);
         var snapshot = CreateSnapshot(sample);
 
-        using var ctx = new Bunit.TestContext();
+        using var ctx = new BunitContext();
         ConfigureServices(ctx, snapshot, sampleTime.AddSeconds(1));
 
-        var cut = ctx.RenderComponent<Dashboard>();
+        var cut = ctx.Render<Dashboard>();
 
         var statusText = cut.Find(".status-pill").TextContent.Trim();
         Assert.AreEqual("Live", statusText);
@@ -60,7 +60,7 @@ public sealed class DashboardTests
         StringAssert.Contains(historyRow.TextContent, sampleTime.ToString("HH:mm:ss", CultureInfo.InvariantCulture), StringComparison.Ordinal);
     }
 
-    private static void ConfigureServices(Bunit.TestContext ctx, CaptureTelemetrySnapshot snapshot, DateTimeOffset utcNow)
+    private static void ConfigureServices(BunitContext ctx, CaptureTelemetrySnapshot snapshot, DateTimeOffset utcNow)
     {
         ctx.Services.AddSingleton<ICaptureTelemetryProvider>(new TestTelemetryProvider(snapshot));
         ctx.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(utcNow));

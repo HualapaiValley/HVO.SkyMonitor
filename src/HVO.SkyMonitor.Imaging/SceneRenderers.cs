@@ -23,6 +23,7 @@ public record LinearSceneRenderOptions
     public bool DarkNoiseEnabled { get; init; }
     public int Seed { get; init; }
     public IReadOnlyList<SensorDefect> Defects { get; init; } = Array.Empty<SensorDefect>();
+    public VirtualCloudRenderContext? Cloud { get; init; }
 
     /// <summary>Validates finite, non-negative sensor parameters and bounded optical settings.</summary>
     public virtual void Validate()
@@ -54,6 +55,8 @@ public record LinearSceneRenderOptions
         {
             throw new ArgumentOutOfRangeException(nameof(LinearSceneRenderOptions), "Combined exposure and signal scaling must remain finite.");
         }
+
+        Cloud?.Validate();
     }
 
     private static bool IsNonNegativeFinite(double value) => double.IsFinite(value) && value >= 0;
@@ -260,6 +263,7 @@ public static class Mono16SceneRenderer
 {
     public const string AlgorithmVersion = "linear-visible-scene-v1";
     public const string ElectronDomainAlgorithmVersion = "electron-domain-visible-scene-v2";
+    public const string CloudAlgorithmSuffix = "+virtual-cloud-value-field-v1";
 
     /// <summary>Returns flux relative to a magnitude-zero source: 10^(-0.4 * magnitude).</summary>
     public static double RelativeFlux(double magnitude)
@@ -280,9 +284,10 @@ public static class Mono16SceneRenderer
         var pixels = new byte[layout.RequiredByteLength];
         var maximumAdu = options.SensorResponse?.MaximumAdu ?? ushort.MaxValue;
         var statistics = QuantizeMono16(scene, layout, plane, pixels, maximumAdu);
+        var algorithmVersion = options.SensorResponse is null ? AlgorithmVersion : ElectronDomainAlgorithmVersion;
         return new SceneRenderResult(
             pixels,
-            options.SensorResponse is null ? AlgorithmVersion : ElectronDomainAlgorithmVersion,
+            options.Cloud is null ? algorithmVersion : algorithmVersion + CloudAlgorithmSuffix,
             options.SensorResponse is null ? "Mono16 linear sensor" : "ASI174MM native 12-bit ADU in Mono16",
             statistics,
             geometry);
@@ -293,7 +298,8 @@ public static class Mono16SceneRenderer
         ImageLayout layout,
         LinearSceneRenderOptions options,
         Func<ProjectedCelestialObject, double> objectScale,
-        out IReadOnlyList<RenderedObjectGeometry> geometry)
+        out IReadOnlyList<RenderedObjectGeometry> geometry,
+        CloudPixelEffect[]? cloudEffects = null)
     {
         var length = checked(layout.Width * layout.Height);
         var rates = new double[length];
@@ -323,6 +329,11 @@ public static class Mono16SceneRenderer
 
         var random = new StableRandom(options.Seed);
         var darkExpected = options.DarkCurrentElectronsPerSecond * options.ExposureSeconds;
+        var cloud = options.Cloud;
+        var requiresCloudEvaluation = cloud?.RequiresEvaluation == true;
+        var cloudProjector = !requiresCloudEvaluation || cloudEffects is not null
+            ? null
+            : ProjectorFactory.Create(projection);
         for (var y = 0; y < layout.Height; y++)
         {
             for (var x = 0; x < layout.Width; x++)
@@ -332,6 +343,14 @@ public static class Mono16SceneRenderer
                 {
                     rates[index] = 0;
                     continue;
+                }
+
+                if (requiresCloudEvaluation)
+                {
+                    var effect = cloudEffects is null
+                        ? EvaluateCloud(cloudProjector!, cloud!, x, y)
+                        : cloudEffects[index];
+                    rates[index] = rates[index] * effect.Transmission + options.BackgroundElectronsPerSecond * effect.Scatter;
                 }
 
                 var radialFraction = projection.NormalizedRadiusSquared(x + 0.5, y + 0.5);
@@ -364,6 +383,39 @@ public static class Mono16SceneRenderer
         ApplyDefects(rates, layout.Width, layout.Height, projection, options.Defects);
         geometry = footprints;
         return rates;
+    }
+
+    internal static CloudPixelEffect[] CreateCloudEffects(
+        VisibleScene scene,
+        ImageLayout layout,
+        VirtualCloudRenderContext cloud)
+    {
+        var projection = scene.Request.Projection;
+        var projector = ProjectorFactory.Create(projection);
+        var effects = new CloudPixelEffect[checked(layout.Width * layout.Height)];
+        for (var y = 0; y < layout.Height; y++)
+        {
+            for (var x = 0; x < layout.Width; x++)
+            {
+                if (InsideAperture(x, y, projection))
+                {
+                    effects[y * layout.Width + x] = EvaluateCloud(projector, cloud, x, y);
+                }
+            }
+        }
+        return effects;
+    }
+
+    private static CloudPixelEffect EvaluateCloud(
+        IImageProjector projector,
+        VirtualCloudRenderContext cloud,
+        int x,
+        int y)
+    {
+        var direction = projector.Unproject(new PixelPoint(x + 0.5, y + 0.5))
+            ?? throw new InvalidOperationException("An active cloud sample could not be unprojected.");
+        var effect = cloud.Field.Integrate(direction, cloud.IntegrationStartUtc, cloud.IntegrationDuration);
+        return new CloudPixelEffect((float)effect.Transmission, (float)effect.Scatter);
     }
 
     private static RenderedObjectGeometry AddPsf(
@@ -500,12 +552,15 @@ public static class Rgb24CompatibilityRenderer
     {
         Mono16SceneRenderer.Validate(scene, layout, CameraPixelFormat.Rgb24, options ??= new());
         var channels = new double[3][];
+        var cloudEffects = options.Cloud is null || !options.Cloud.RequiresEvaluation
+            ? null
+            : Mono16SceneRenderer.CreateCloudEffects(scene, layout, options.Cloud);
         IReadOnlyList<RenderedObjectGeometry>? geometry = null;
         for (var channel = 0; channel < channels.Length; channel++)
         {
             var selected = channel;
             channels[channel] = Mono16SceneRenderer.RenderCore(scene, layout, options with { Seed = unchecked(options.Seed + channel * 104729) },
-                item => ColorFactors(item.ColorIndex ?? options.FallbackColorIndex)[selected], out var currentGeometry);
+                item => ColorFactors(item.ColorIndex ?? options.FallbackColorIndex)[selected], out var currentGeometry, cloudEffects);
             geometry ??= currentGeometry;
         }
 
@@ -536,7 +591,10 @@ public static class Rgb24CompatibilityRenderer
             }
         }
 
-        return new SceneRenderResult(pixels, Mono16SceneRenderer.AlgorithmVersion, CompatibilityLabel, statistics.Create(), geometry!);
+        var algorithmVersion = options.Cloud is null
+            ? Mono16SceneRenderer.AlgorithmVersion
+            : Mono16SceneRenderer.AlgorithmVersion + Mono16SceneRenderer.CloudAlgorithmSuffix;
+        return new SceneRenderResult(pixels, algorithmVersion, CompatibilityLabel, statistics.Create(), geometry!);
     }
 
     // Smooth bounded approximation suitable for compatibility previews, normalized to green.
@@ -561,6 +619,9 @@ public static class BayerRggb16Renderer
         Mono16SceneRenderer.Validate(scene, layout, CameraPixelFormat.BayerRggb16, options ??= new());
         var responses = new[] { options.ChannelResponse.Red, options.ChannelResponse.Green, options.ChannelResponse.Blue };
         var channels = new double[3][];
+        var cloudEffects = options.Cloud is null || !options.Cloud.RequiresEvaluation
+            ? null
+            : Mono16SceneRenderer.CreateCloudEffects(scene, layout, options.Cloud);
         IReadOnlyList<RenderedObjectGeometry>? geometry = null;
         for (var channel = 0; channel < channels.Length; channel++)
         {
@@ -571,7 +632,8 @@ public static class BayerRggb16Renderer
                 options with { Seed = unchecked(options.Seed + channel * 104729) },
                 item => Rgb24CompatibilityRenderer.ColorFactors(item.ColorIndex ?? options.FallbackColorIndex)[selected] *
                     responses[selected],
-                out var currentGeometry);
+                out var currentGeometry,
+                cloudEffects);
             geometry ??= currentGeometry;
         }
 
@@ -601,9 +663,14 @@ public static class BayerRggb16Renderer
             }
         }
 
-        return new SceneRenderResult(pixels, AlgorithmVersion, CompatibilityLabel, statistics.Create(), geometry!);
+        var algorithmVersion = options.Cloud is null
+            ? AlgorithmVersion
+            : AlgorithmVersion + Mono16SceneRenderer.CloudAlgorithmSuffix;
+        return new SceneRenderResult(pixels, algorithmVersion, CompatibilityLabel, statistics.Create(), geometry!);
     }
 }
+
+internal readonly record struct CloudPixelEffect(float Transmission, float Scatter);
 
 internal sealed class StatisticsAccumulator
 {

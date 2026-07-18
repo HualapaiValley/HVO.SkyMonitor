@@ -61,9 +61,10 @@ source "$REPO_ROOT/.devcontainer/load-repo-env.sh"
 readonly TAILSCALE_AUTHKEY_VALUE="${TAILSCALE_AUTHKEY:-}"
 unset TAILSCALE_AUTHKEY
 
-readonly OPENCODE_HOST="127.0.0.1"
+readonly OPENCODE_BIND_HOST="${OPENCODE_BIND_HOST:-127.0.0.1}"
+readonly OPENCODE_HEALTH_HOST="127.0.0.1"
 readonly OPENCODE_PORT="${OPENCODE_PORT:-4096}"
-readonly TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-dev-host-skymonitor}"
+readonly TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-vscode-skymonitor}"
 readonly TAILSCALE_ACCEPT_ROUTES="${TAILSCALE_ACCEPT_ROUTES:-true}"
 readonly OPENCODE_PID_FILE="${HVO_OPENCODE_PID_FILE:-/tmp/skymonitor-opencode.pid}"
 readonly OPENCODE_PID_METADATA_FILE="${HVO_OPENCODE_PID_METADATA_FILE:-/tmp/skymonitor-opencode.pid.meta}"
@@ -75,7 +76,7 @@ is_opencode_healthy() {
     # Basic Auth protects this endpoint, so 401 proves the server is responsive
     # without sending the password through the process list or command history.
     [[ "$(curl --connect-timeout 2 --max-time 5 -sS -o /dev/null -w '%{http_code}' \
-        "http://${OPENCODE_HOST}:${OPENCODE_PORT}/global/health" 2>/dev/null || true)" == 401 ]]
+    "http://${OPENCODE_HEALTH_HOST}:${OPENCODE_PORT}/global/health" 2>/dev/null || true)" == 401 ]]
 }
 
 case "$TAILSCALE_ACCEPT_ROUTES" in
@@ -147,6 +148,7 @@ if [[ "$opencode_pid" =~ ^[0-9]+$ ]] \
     if [[ "${opencode_metadata[0]:-}" == "$OPENCODE_PROCESS_METADATA_VERSION" ]] \
         && [[ "${opencode_metadata[1]:-}" == "$opencode_start_time" ]] \
         && [[ "$opencode_command" == *"opencode serve"* ]] \
+        && [[ "$opencode_command" == *"--hostname $OPENCODE_BIND_HOST"* ]] \
         && [[ "$opencode_command" == *"--port $OPENCODE_PORT"* ]]; then
         is_managed_opencode=true
     fi
@@ -157,7 +159,7 @@ if [[ "$is_managed_opencode" == false ]]; then
 fi
 
 if [[ "$is_managed_opencode" == true ]] && is_opencode_healthy; then
-    echo "OpenCode is already running securely on ${OPENCODE_HOST}:${OPENCODE_PORT}."
+    echo "OpenCode is already running securely on ${OPENCODE_BIND_HOST}:${OPENCODE_PORT}."
 elif [[ "$is_managed_opencode" == true ]]; then
     echo "Restarting OpenCode to apply secure server settings..."
     kill "$opencode_pid"
@@ -170,7 +172,7 @@ fi
 
 if [[ ! -f "$OPENCODE_PID_FILE" ]]; then
     rm -f "$OPENCODE_PID_FILE"
-    echo "Starting OpenCode on ${OPENCODE_HOST}:${OPENCODE_PORT}..."
+    echo "Starting OpenCode on ${OPENCODE_BIND_HOST}:${OPENCODE_PORT}..."
     env -i \
         HOME="$HOME" \
         PATH="$PATH" \
@@ -180,7 +182,7 @@ if [[ ! -f "$OPENCODE_PID_FILE" ]]; then
         HTTPS_PROXY="${HTTPS_PROXY:-}" \
         NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-}" \
         OPENCODE_SERVER_PASSWORD="$(<"$OPENCODE_SERVER_PASSWORD_FILE")" \
-        nohup opencode serve --hostname "$OPENCODE_HOST" --port "$OPENCODE_PORT" \
+        nohup opencode serve --hostname "$OPENCODE_BIND_HOST" --port "$OPENCODE_PORT" \
         >"$OPENCODE_LOG_FILE" 2>&1 &
     echo $! >"$OPENCODE_PID_FILE"
     printf '%s\n%s\n' \

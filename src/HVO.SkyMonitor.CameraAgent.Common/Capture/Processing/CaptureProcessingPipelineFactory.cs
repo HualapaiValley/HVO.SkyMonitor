@@ -60,10 +60,10 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         if (pipelineConfig.Count == 0 && _registrationsByType.Count > 0)
         {
             pipelineConfig = _registrationsByType.Values
-                .Where(registration =>
-                    config.Rig.Sensor.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 ||
-                    registration.ImplementationType != typeof(CalibrationCaptureProcessingStep) &&
-                    registration.ImplementationType != typeof(RollingCombinationCaptureProcessingStep))
+                .Where(registration => registration.AutoInclude &&
+                    (config.Rig.Sensor.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 ||
+                     registration.ImplementationType != typeof(CalibrationCaptureProcessingStep) &&
+                     registration.ImplementationType != typeof(RollingCombinationCaptureProcessingStep)))
                 .OrderBy(r => r.DefaultOrder)
                 .Select(r => new CaptureProcessingStepConfig(
                     r.Alias,
