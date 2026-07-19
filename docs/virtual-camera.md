@@ -201,6 +201,62 @@ three channel planes rather than evaluating the same field three times; the map
 is never persisted. Dated W1/W2 measurements and interpretation are retained in
 `docs/validation/virtual-cloud-scenarios.md`.
 
+### Deterministic transient scenarios
+
+`virtual-transient-scenario-v1` is an optional VirtualSky module option. It
+contains an opaque canonical identity, numeric revision, seed, UTC epoch, one
+through sixty-four temporal midpoint samples, and at most 128 generic sky or
+sensor primitives with at most 1,024 total keyframes. Keyframes are strictly
+ordered within one day of the epoch. Production definitions contain no meteor,
+fireball, satellite, aircraft, cosmic-ray, hot-pixel, expected-class, score, or
+mask fields.
+
+Sky primitives use topocentric altitude/azimuth keyframes, magnitude, angular
+width, and RGB weights. Directions follow the shared Astronomy shortest
+spherical arc and are projected through the configured fisheye, rectilinear, or
+telescope calibration. Their half-open UTC timeline is integrated only where it
+overlaps the logical exposure, then cloud transmission, image aperture,
+vignetting, sensor response/noise, CFA sampling, physical-well clipping, and
+quantization apply in that order. Edge energy is lost rather than renormalized.
+
+Sensor primitives use sensor coordinates, charge rate, and Gaussian width. They
+bypass sky projection, clouds, and optics, but remain sensor-bounded and pass
+through physical-well clipping and quantization. Both primitive kinds are
+rasterized into sparse per-pixel charge; no dense truth mask or detector-only
+input is created. A configured scenario with no active support follows the
+ordinary renderer hot path.
+
+`TransientScenarioProvenance` records canonical parameters and SHA-256,
+algorithm identity, seed/epoch, logical integration interval, sample count, and
+sky/sensor primitive counts. Manifest v1/v2 parsing verifies those values and
+the canonical parameter hash. Processing recipes receive the normal image
+artifact, not simulator provenance as a detector feature. Semantic oracle labels
+exist only in `tests/fixtures/virtual-sky/transient-scenarios-v1.json`.
+
+For example, one generic sensor-stage fixture can be configured as:
+
+```json
+"transientScenario": {
+  "schemaVersion": "virtual-transient-scenario-v1",
+  "scenarioId": "configured-scenario",
+  "scenarioVersion": "1",
+  "seed": 61,
+  "epochUtc": "2025-01-15T08:00:00Z",
+  "temporalSampleCount": 8,
+  "skyTracks": [],
+  "sensorTracks": [{
+    "primitiveId": "s-001",
+    "keyframes": [
+      { "offsetSeconds": 0, "pixelX": 100.5, "pixelY": 90.5, "electronsPerSecond": 250000, "sigmaPixels": 2 },
+      { "offsetSeconds": 1, "pixelX": 100.5, "pixelY": 90.5, "electronsPerSecond": 250000, "sigmaPixels": 2 }
+    ]
+  }]
+}
+```
+
+Dated fixture, W1/W2, ordinary-pipeline, runtime-signal, and privacy evidence is
+retained in `docs/validation/virtual-transient-scenarios.md`.
+
 ### Sky brightness and display
 
 The virtual sensor keeps raw Mono16 values linear. The ASI174MM response applies

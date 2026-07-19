@@ -1,0 +1,206 @@
+{
+  "schemaVersion": "virtual-transient-fixture-v1",
+  "utc": "2025-01-15T08:00:00Z",
+  "exposureSeconds": 1,
+  "cases": [
+    {
+      "id": "no-event",
+      "oracleLabel": "none",
+      "captureOffsetSeconds": 0,
+      "expectedRawMinimum": 0,
+      "expectedRawMaximum": 1,
+      "expectedRawMean": 0.5416666666666666,
+      "expectedMono16Sha256": "D9438A1E5E3B6CC7D74EF56B4C6054C74D7FDC3F06E22845D9398483CB8211CC",
+      "definition": {
+        "schemaVersion": "virtual-transient-scenario-v1",
+        "scenarioId": "fixture-61-00",
+        "scenarioVersion": "1",
+        "seed": 61,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "temporalSampleCount": 8,
+        "skyTracks": [],
+        "sensorTracks": []
+      }
+    },
+    {
+      "id": "short-track",
+      "oracleLabel": "meteor",
+      "captureOffsetSeconds": 0,
+      "expectedRawMinimum": 0,
+      "expectedRawMaximum": 836,
+      "expectedRawMean": 5.259765625,
+      "expectedMono16Sha256": "C6D59E2BBCF44F6820A9E77E5E9A926BDBC0A9CEAB376544FF32F0D1037E6206",
+      "definition": {
+        "schemaVersion": "virtual-transient-scenario-v1",
+        "scenarioId": "fixture-61-01",
+        "scenarioVersion": "1",
+        "seed": 61,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "temporalSampleCount": 16,
+        "skyTracks": [
+          {
+            "primitiveId": "p-101",
+            "keyframes": [
+              { "offsetSeconds": 0.1, "altitudeDegrees": 72, "azimuthDegrees": 250, "magnitude": -2, "angularWidthDegrees": 0.1 },
+              { "offsetSeconds": 0.9, "altitudeDegrees": 68, "azimuthDegrees": 110, "magnitude": -4, "angularWidthDegrees": 0.2 }
+            ]
+          }
+        ],
+        "sensorTracks": []
+      }
+    },
+    {
+      "id": "fragmented-flare",
+      "oracleLabel": "fireball",
+      "captureOffsetSeconds": 0,
+      "expectedRawMinimum": 0,
+      "expectedRawMaximum": 65535,
+      "expectedRawMean": 420.3030598958333,
+      "expectedMono16Sha256": "BE4C2467147DDE396598AC78FB1D5F32004F0A443FD2D3DDB2B04C4BB32A0D52",
+      "definition": {
+        "schemaVersion": "virtual-transient-scenario-v1",
+        "scenarioId": "fixture-61-02",
+        "scenarioVersion": "1",
+        "seed": 61,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "temporalSampleCount": 24,
+        "skyTracks": [
+          { "primitiveId": "p-201", "keyframes": [
+            { "offsetSeconds": 0, "altitudeDegrees": 78, "azimuthDegrees": 260, "magnitude": -3, "angularWidthDegrees": 0.2 },
+            { "offsetSeconds": 0.5, "altitudeDegrees": 73, "azimuthDegrees": 180, "magnitude": -10, "angularWidthDegrees": 0.8 },
+            { "offsetSeconds": 1, "altitudeDegrees": 67, "azimuthDegrees": 100, "magnitude": -4, "angularWidthDegrees": 0.3 }
+          ] },
+          { "primitiveId": "p-202", "keyframes": [
+            { "offsetSeconds": 0.5, "altitudeDegrees": 73, "azimuthDegrees": 180, "magnitude": -5, "angularWidthDegrees": 0.15 },
+            { "offsetSeconds": 1, "altitudeDegrees": 65, "azimuthDegrees": 92, "magnitude": -2, "angularWidthDegrees": 0.1 }
+          ] },
+          { "primitiveId": "p-203", "keyframes": [
+            { "offsetSeconds": 0.5, "altitudeDegrees": 73, "azimuthDegrees": 180, "magnitude": -5, "angularWidthDegrees": 0.15 },
+            { "offsetSeconds": 1, "altitudeDegrees": 69, "azimuthDegrees": 104, "magnitude": -2, "angularWidthDegrees": 0.1 }
+          ] },
+          { "primitiveId": "p-204", "keyframes": [
+            { "offsetSeconds": 0.5, "altitudeDegrees": 73, "azimuthDegrees": 180, "magnitude": -6, "angularWidthDegrees": 0.12 },
+            { "offsetSeconds": 1, "altitudeDegrees": 71, "azimuthDegrees": 98, "magnitude": -3, "angularWidthDegrees": 0.1 }
+          ] }
+        ],
+        "sensorTracks": []
+      }
+    },
+    {
+      "id": "boundary-crossing",
+      "oracleLabel": "boundary meteor",
+      "captureOffsetSeconds": 0,
+      "expectedRawMinimum": 0,
+      "expectedRawMaximum": 746,
+      "expectedRawMean": 3.7766927083333335,
+      "expectedMono16Sha256": "7034977C6C7273EE207FF930B0803213A1BCDAFB7724E1C842A45134CA4381A7",
+      "expectedSecondMono16Sha256": "B13D64D6E20EF8867AD2DC7374B1F2753E7ACAABC4D206630E27A3F0458463BA",
+      "definition": {
+        "schemaVersion": "virtual-transient-scenario-v1",
+        "scenarioId": "fixture-61-03",
+        "scenarioVersion": "1",
+        "seed": 61,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "temporalSampleCount": 16,
+        "skyTracks": [
+          { "primitiveId": "p-301", "keyframes": [
+            { "offsetSeconds": 0.75, "altitudeDegrees": 75, "azimuthDegrees": 280, "magnitude": -4, "angularWidthDegrees": 0.15 },
+            { "offsetSeconds": 1.25, "altitudeDegrees": 65, "azimuthDegrees": 80, "magnitude": -4, "angularWidthDegrees": 0.15 }
+          ] }
+        ],
+        "sensorTracks": []
+      }
+    },
+    {
+      "id": "long-shadow-track",
+      "oracleLabel": "satellite",
+      "captureOffsetSeconds": 13.5,
+      "expectedRawMinimum": 0,
+      "expectedRawMaximum": 16,
+      "expectedRawMean": 0.5729166666666666,
+      "expectedMono16Sha256": "138BC7259C0B7530C63FA3A86DD4E6FD754045357E195622187CE988FA62D514",
+      "definition": {
+        "schemaVersion": "virtual-transient-scenario-v1",
+        "scenarioId": "fixture-61-04",
+        "scenarioVersion": "1",
+        "seed": 61,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "temporalSampleCount": 16,
+        "skyTracks": [
+          { "primitiveId": "p-401", "keyframes": [
+            { "offsetSeconds": 0, "altitudeDegrees": 35, "azimuthDegrees": 260, "magnitude": 2, "angularWidthDegrees": 0.08 },
+            { "offsetSeconds": 8, "altitudeDegrees": 70, "azimuthDegrees": 200, "magnitude": -4, "angularWidthDegrees": 0.08 },
+            { "offsetSeconds": 14, "altitudeDegrees": 75, "azimuthDegrees": 150, "magnitude": 2, "angularWidthDegrees": 0.08 },
+            { "offsetSeconds": 14.01, "altitudeDegrees": 75, "azimuthDegrees": 149.9, "magnitude": 20, "angularWidthDegrees": 0.08 },
+            { "offsetSeconds": 20, "altitudeDegrees": 40, "azimuthDegrees": 80, "magnitude": 20, "angularWidthDegrees": 0.08 }
+          ] }
+        ],
+        "sensorTracks": []
+      }
+    },
+    {
+      "id": "blinking-track",
+      "oracleLabel": "aircraft",
+      "captureOffsetSeconds": 0,
+      "expectedRawMinimum": 0,
+      "expectedRawMaximum": 180,
+      "expectedRawMean": 1.7174479166666667,
+      "expectedMono16Sha256": "2B45C8EAD0B20364D0F990C1725BB03E42ED20AB05C93F80959B6C1314AB4378",
+      "definition": {
+        "schemaVersion": "virtual-transient-scenario-v1",
+        "scenarioId": "fixture-61-05",
+        "scenarioVersion": "1",
+        "seed": 61,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "temporalSampleCount": 32,
+        "skyTracks": [
+          { "primitiveId": "p-501", "keyframes": [
+            { "offsetSeconds": 0, "altitudeDegrees": 45, "azimuthDegrees": 260, "magnitude": -2, "angularWidthDegrees": 0.1, "redWeight": 2, "greenWeight": 1, "blueWeight": 0.5 },
+            { "offsetSeconds": 0.24, "altitudeDegrees": 50, "azimuthDegrees": 240, "magnitude": -2, "angularWidthDegrees": 0.1, "redWeight": 2, "greenWeight": 1, "blueWeight": 0.5 },
+            { "offsetSeconds": 0.25, "altitudeDegrees": 50.2, "azimuthDegrees": 239, "magnitude": 20, "angularWidthDegrees": 0.1 },
+            { "offsetSeconds": 0.49, "altitudeDegrees": 55, "azimuthDegrees": 220, "magnitude": 20, "angularWidthDegrees": 0.1 },
+            { "offsetSeconds": 0.5, "altitudeDegrees": 55.2, "azimuthDegrees": 219, "magnitude": -2, "angularWidthDegrees": 0.1, "redWeight": 0.5, "greenWeight": 1, "blueWeight": 2 },
+            { "offsetSeconds": 0.74, "altitudeDegrees": 60, "azimuthDegrees": 200, "magnitude": -2, "angularWidthDegrees": 0.1, "redWeight": 0.5, "greenWeight": 1, "blueWeight": 2 },
+            { "offsetSeconds": 0.75, "altitudeDegrees": 60.2, "azimuthDegrees": 199, "magnitude": 20, "angularWidthDegrees": 0.1 },
+            { "offsetSeconds": 0.99, "altitudeDegrees": 65, "azimuthDegrees": 180, "magnitude": 20, "angularWidthDegrees": 0.1 },
+            { "offsetSeconds": 1, "altitudeDegrees": 65.2, "azimuthDegrees": 179, "magnitude": -2, "angularWidthDegrees": 0.1 },
+            { "offsetSeconds": 2, "altitudeDegrees": 70, "azimuthDegrees": 100, "magnitude": -2, "angularWidthDegrees": 0.1 }
+          ] }
+        ],
+        "sensorTracks": []
+      }
+    },
+    {
+      "id": "sensor-artifacts",
+      "oracleLabel": "cosmic ray and hot pixels",
+      "captureOffsetSeconds": 0,
+      "expectedRawMinimum": 0,
+      "expectedRawMaximum": 19973,
+      "expectedRawMean": 42.858723958333336,
+      "expectedMono16Sha256": "DCECBCCB97C5869632E3C54A60C0DF2BCA7A422E1E0DAEE693802BC5A870212B",
+      "definition": {
+        "schemaVersion": "virtual-transient-scenario-v1",
+        "scenarioId": "fixture-61-06",
+        "scenarioVersion": "1",
+        "seed": 61,
+        "epochUtc": "2025-01-15T08:00:00Z",
+        "temporalSampleCount": 16,
+        "skyTracks": [],
+        "sensorTracks": [
+          { "primitiveId": "s-601", "keyframes": [
+            { "offsetSeconds": 0.2, "pixelX": 5.5, "pixelY": 4.5, "electronsPerSecond": 1000000, "sigmaPixels": 0.25 },
+            { "offsetSeconds": 0.3, "pixelX": 30.5, "pixelY": 20.5, "electronsPerSecond": 1000000, "sigmaPixels": 0.25 }
+          ] },
+          { "primitiveId": "s-602", "keyframes": [
+            { "offsetSeconds": 0, "pixelX": 1.5, "pixelY": 1.5, "electronsPerSecond": 10000, "sigmaPixels": 0.25 },
+            { "offsetSeconds": 3, "pixelX": 1.5, "pixelY": 1.5, "electronsPerSecond": 10000, "sigmaPixels": 0.25 }
+          ] },
+          { "primitiveId": "s-603", "keyframes": [
+            { "offsetSeconds": 0, "pixelX": 62.5, "pixelY": 46.5, "electronsPerSecond": 20000, "sigmaPixels": 0.25 },
+            { "offsetSeconds": 3, "pixelX": 62.5, "pixelY": 46.5, "electronsPerSecond": 20000, "sigmaPixels": 0.25 }
+          ] }
+        ]
+      }
+    }
+  ]
+}

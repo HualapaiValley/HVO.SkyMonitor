@@ -45,9 +45,10 @@ public sealed record ArtifactUploadManifest(
             || string.IsNullOrWhiteSpace(ChecksumSha256)
             || ChecksumSha256.Length != 64
             || ChecksumSha256.Any(static character => !Uri.IsHexDigit(character))
-            || CapturedAtUtc.Offset != TimeSpan.Zero
-            || string.IsNullOrWhiteSpace(RecipeVersion)
-            || !IsSafeRelativePath(RelativeArtifactPath))
+             || CapturedAtUtc.Offset != TimeSpan.Zero
+             || string.IsNullOrWhiteSpace(RecipeVersion)
+             || !IsSafeRelativePath(RelativeArtifactPath)
+             || Scene?.TransientScenario is { } transient && !transient.IsValid())
         {
             throw new ArgumentException("Artifact manifest is invalid.", nameof(ArtifactUploadManifest));
         }

@@ -61,7 +61,7 @@ public sealed class VirtualCloudRendererTests
     public async Task Render_RgbAndBayerCloudPathsAreDeterministic()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(17, 17, 8).ConfigureAwait(false);
-        var cloud = Context(coverage: 1, opacity: 1);
+        var cloud = Context(coverage: 1, opacity: 1) with { IntegrationDuration = TimeSpan.FromSeconds(2) };
         var rgbLayout = new ImageLayout(17, 17, CameraPixelFormat.Rgb24, 51);
         var bayerLayout = new ImageLayout(17, 17, CameraPixelFormat.BayerRggb16, 34);
         var rgbOptions = new Rgb24CompatibilityRenderOptions
