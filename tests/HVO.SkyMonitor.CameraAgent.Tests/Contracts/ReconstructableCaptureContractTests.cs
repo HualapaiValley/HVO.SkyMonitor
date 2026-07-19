@@ -123,6 +123,101 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
+    public void TransientScenarioProvenanceRoundTripsWithoutChangingDescriptorIdentity()
+    {
+        var parameters = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new
+        {
+            schemaVersion = "virtual-transient-scenario-v1",
+            scenarioId = "scn-transient",
+            scenarioVersion = "1",
+            seed = 61,
+            epochUtc = DateTimeOffset.UnixEpoch,
+            temporalSampleCount = 8,
+            skyTracks = new[] { new { primitiveId = "p-001" } },
+            sensorTracks = new[] { new { primitiveId = "s-001" } }
+        }));
+        var transient = new TransientScenarioProvenance(
+            "virtual-transient-scenario-v1",
+            "scn-transient",
+            "1",
+            "virtual-transient-raster-v1",
+            CaptureContractJson.ComputeCanonicalJsonSha256(parameters),
+            61,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch.AddSeconds(10),
+            DateTimeOffset.UnixEpoch.AddSeconds(11),
+            8,
+            1,
+            1,
+            parameters);
+        var scene = new SceneProvenance(
+            "scene-transient",
+            "rig-v1",
+            "HYG",
+            "4.2",
+            new string('A', 64),
+            "EquidistantFisheye",
+            "projection-v1",
+            "astronomy-v1",
+            "sensor-v1",
+            TransientScenario: transient);
+        var original = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        var enriched = original with { Scene = scene };
+
+        var v2 = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(enriched));
+        Assert.IsTrue(v2.IsValid);
+        Assert.AreEqual(original.IdempotencyKey, enriched.IdempotencyKey);
+        Assert.AreEqual(transient.ParametersSha256,
+            v2.Document!.Manifest!.Scene!.TransientScenario!.ParametersSha256);
+        Assert.AreNotEqual(
+            CaptureContractJson.ComputeManifestSha256(original),
+            CaptureContractJson.ComputeManifestSha256(enriched));
+        var withoutTransient = enriched with { Scene = scene with { TransientScenario = null } };
+        Assert.IsFalse(Encoding.UTF8.GetString(CaptureContractJson.Serialize(withoutTransient))
+            .Contains("transientScenario", StringComparison.Ordinal));
+
+        var legacy = new ArtifactUploadManifest(
+            ArtifactUploadManifest.CurrentSchemaVersion,
+            "agent-a",
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            Guid.Parse("00000000-0000-0000-0000-000000000002"),
+            FrameArtifactRole.Raw,
+            "application/octet-stream",
+            4,
+            new string('B', 64),
+            DateTimeOffset.UnixEpoch,
+            "raw-v1",
+            "frames/raw.bin",
+            scene);
+        var v1 = CaptureContractJson.ParseManifest(JsonSerializer.SerializeToUtf8Bytes(legacy, WebJsonOptions));
+        Assert.IsTrue(v1.IsValid);
+        Assert.AreEqual(transient.ParametersSha256,
+            v1.Document!.LegacyManifest!.Scene!.TransientScenario!.ParametersSha256);
+
+        var tampered = enriched with
+        {
+            Scene = scene with
+            {
+                TransientScenario = transient with { ParametersSha256 = new string('0', 64) }
+            }
+        };
+        var rejectedV2 = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(tampered));
+        Assert.IsFalse(rejectedV2.IsValid);
+        Assert.AreEqual("scene.transientScenario", rejectedV2.Validation.FieldPath);
+        var rejectedV1 = CaptureContractJson.ParseManifest(JsonSerializer.SerializeToUtf8Bytes(
+            legacy with { Scene = tampered.Scene }, WebJsonOptions));
+        Assert.IsFalse(rejectedV1.IsValid);
+        var nullHash = enriched with
+        {
+            Scene = scene with
+            {
+                TransientScenario = transient with { ParametersSha256 = null! }
+            }
+        };
+        Assert.IsFalse(CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(nullHash)).IsValid);
+    }
+
+    [TestMethod]
     [DataRow(CameraPixelFormat.Mono16, 3, 2, 8,
         "925DB25F0A90DB14EDD8C8A47ECFF5C1B226A5E25C5DDACB6A21F469F9C1BD64",
         "EA0E62A3870BDAD3EF760AAAD03B542246ED7DB286AA7C83665B7BEF6655499D")]

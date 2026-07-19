@@ -34,6 +34,56 @@
           }
         ]
       },
+      "transientScenario": {
+        "schemaVersion": "virtual-transient-scenario-v1",
+        "scenarioId": "configured-scenario",
+        "scenarioVersion": "1",
+        "seed": 6101,
+        "epochUtc": __TRANSIENT_EPOCH_UTC__,
+        "temporalSampleCount": 4,
+        "skyTracks": [
+          {
+            "primitiveId": "p-001",
+            "keyframes": [
+              {
+                "offsetSeconds": 0.0,
+                "altitudeDegrees": 70.0,
+                "azimuthDegrees": 260.0,
+                "magnitude": -3.0,
+                "angularWidthDegrees": 0.2
+              },
+              {
+                "offsetSeconds": 3600.0,
+                "altitudeDegrees": 70.0,
+                "azimuthDegrees": 100.0,
+                "magnitude": -3.0,
+                "angularWidthDegrees": 0.2
+              }
+            ]
+          }
+        ],
+        "sensorTracks": [
+          {
+            "primitiveId": "s-001",
+            "keyframes": [
+              {
+                "offsetSeconds": 0.0,
+                "pixelX": 1.5,
+                "pixelY": 1.5,
+                "electronsPerSecond": 1000000000.0,
+                "sigmaPixels": 0.25
+              },
+              {
+                "offsetSeconds": 3600.0,
+                "pixelX": 1.5,
+                "pixelY": 1.5,
+                "electronsPerSecond": 1000000000.0,
+                "sigmaPixels": 0.25
+              }
+            ]
+          }
+        ]
+      },
       "asi174Sensor": {
         "enabled": true,
         "blackLevelAdu": 64.0

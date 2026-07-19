@@ -68,6 +68,30 @@ public sealed class CameraBasisTests
         }
     }
 
+    [TestMethod]
+    public void SphericalInterpolate_UsesShortestArcAcrossAzimuthWrap()
+    {
+        var start = CameraBasis.FromHorizontal(new AltAzPoint(30, 350));
+        var end = CameraBasis.FromHorizontal(new AltAzPoint(30, 10));
+
+        var midpoint = CameraBasis.ToHorizontal(EnuVector.SphericalInterpolate(start, end, 0.5));
+
+        Assert.AreEqual(30.381255142470486, midpoint.AltitudeDegrees, 1e-12);
+        Assert.IsTrue(midpoint.AzimuthDegrees < 1e-12 || midpoint.AzimuthDegrees > 360 - 1e-12);
+        AssertVector(start.Normalize(), EnuVector.SphericalInterpolate(start, end, 0));
+        AssertVector(end.Normalize(), EnuVector.SphericalInterpolate(start, end, 1));
+    }
+
+    [TestMethod]
+    public void SphericalInterpolate_RejectsInvalidFractionAndAntipodes()
+    {
+        var direction = new EnuVector(1, 0, 0);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            EnuVector.SphericalInterpolate(direction, direction, -0.1));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            EnuVector.SphericalInterpolate(direction, direction * -1, 0.5));
+    }
+
     private static void AssertVector(EnuVector expected, EnuVector actual)
     {
         Assert.AreEqual(expected.East, actual.East, 1e-12);

@@ -14,6 +14,7 @@ public sealed class VirtualSkyNoCloudBaselinePerformanceTests
 {
     private const int WarmupCount = 5;
     private const int MeasurementCount = 30;
+    private const int RuntimePrewarmCount = 64;
     private static readonly DateTimeOffset FixtureUtc = new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -31,8 +32,17 @@ public sealed class VirtualSkyNoCloudBaselinePerformanceTests
         var measurements = new List<NoCloudMeasurement>();
         foreach (var workload in new[] { Workload.W1, Workload.W2 })
         {
+            await PrewarmRuntimeAsync(workload).ConfigureAwait(false);
             measurements.Add(await MeasureAsync(workload).ConfigureAwait(false));
         }
+        Assert.IsLessThanOrEqualTo(61.4295 * 1.05,
+            measurements.Single(static item => item.Workload == "W1").MedianMilliseconds);
+        Assert.IsLessThanOrEqualTo(59.3849 * 1.05,
+            measurements.Single(static item => item.Workload == "W1").RenderOnly.MedianMilliseconds);
+        Assert.IsLessThanOrEqualTo(602.9345 * 1.05,
+            measurements.Single(static item => item.Workload == "W2").MedianMilliseconds);
+        Assert.IsLessThanOrEqualTo(595.034 * 1.05,
+            measurements.Single(static item => item.Workload == "W2").RenderOnly.MedianMilliseconds);
 
         var outputDirectory = Path.Combine(AppContext.BaseDirectory, "TestResults", "issue-104");
         Directory.CreateDirectory(outputDirectory);
@@ -48,6 +58,7 @@ public sealed class VirtualSkyNoCloudBaselinePerformanceTests
                 Framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
                 Runtime = System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier,
                 ProcessorCount = Environment.ProcessorCount,
+                RuntimePrewarmCount,
                 WarmupCount,
                 MeasurementCount
             },
@@ -57,6 +68,27 @@ public sealed class VirtualSkyNoCloudBaselinePerformanceTests
     }
 
     public TestContext TestContext { get; set; } = null!;
+
+    private static async Task PrewarmRuntimeAsync(Workload workload)
+    {
+        var sceneStore = new ProjectedSceneStore();
+        var module = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog([]), sceneStore);
+        await module.InitializeAsync(CreateConfig(workload), CancellationToken.None).ConfigureAwait(false);
+        var capture = await CaptureAsync(
+            module,
+            new CaptureSetpoint(TimeSpan.FromSeconds(1), 0, null, null),
+            0).ConfigureAwait(false);
+        Assert.IsTrue(sceneStore.TryGet(capture.Frame!.Metadata.Extra!["sceneId"], out var scene));
+        var layout = new ImageLayout(
+            workload.Width,
+            workload.Height,
+            workload.PixelFormat,
+            workload.Width * ImageLayout.BytesPerPixel(workload.PixelFormat));
+        for (var index = 0; index < RuntimePrewarmCount; index++)
+        {
+            _ = Render(workload, scene!, layout);
+        }
+    }
 
     private static string ReadGit(params string[] arguments)
     {

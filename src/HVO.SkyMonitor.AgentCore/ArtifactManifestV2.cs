@@ -23,8 +23,15 @@ public sealed record ArtifactManifestV2(
         {
             return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidPath, "relativeArtifactPath");
         }
-        return Descriptor?.Validate() ?? CaptureContractValidationResult.Failure(
+        var descriptorValidation = Descriptor?.Validate() ?? CaptureContractValidationResult.Failure(
             CaptureContractReasonCodes.InvalidIdentity, "descriptor");
+        if (!descriptorValidation.IsValid)
+        {
+            return descriptorValidation;
+        }
+        return Scene?.TransientScenario is not { } transient || transient.IsValid()
+            ? CaptureContractValidationResult.Success
+            : CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.transientScenario");
     }
 
     private static bool IsSafeRelativePath(string path)

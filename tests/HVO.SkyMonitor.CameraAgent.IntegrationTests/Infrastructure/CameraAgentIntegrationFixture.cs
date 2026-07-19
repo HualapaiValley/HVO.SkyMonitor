@@ -53,8 +53,11 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         _configurationPath = Path.Combine(_storageRoot, "cameraagent.integration.json");
         var template = await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.integration.json")).ConfigureAwait(false);
+        TransientEpochUtc = DateTimeOffset.UtcNow.AddMinutes(-1).ToUniversalTime();
         await File.WriteAllTextAsync(_configurationPath,
-            template.Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(_storageRoot), StringComparison.Ordinal))
+            template
+                .Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(_storageRoot), StringComparison.Ordinal)
+                .Replace("__TRANSIENT_EPOCH_UTC__", JsonSerializer.Serialize(TransientEpochUtc), StringComparison.Ordinal))
             .ConfigureAwait(false);
 
         using var hostClient = _hostFixture.Factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -204,6 +207,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     public Guid DevicePublicId { get; private set; }
 
     public Guid ObservatoryId { get; private set; }
+
+    public DateTimeOffset TransientEpochUtc { get; private set; }
 
     public Task<int> CountEnvironmentalObservationsAsync(Guid observationId)
         => _hostFixture.CountEnvironmentalObservationsAsync(observationId);

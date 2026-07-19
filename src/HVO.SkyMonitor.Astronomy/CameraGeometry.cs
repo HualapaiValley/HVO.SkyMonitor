@@ -29,6 +29,32 @@ public readonly record struct EnuVector(double East, double North, double Up)
             left.Up * right.East - left.East * right.Up,
             left.East * right.North - left.North * right.East);
 
+    /// <summary>Interpolates two directions along their shortest spherical arc.</summary>
+    public static EnuVector SphericalInterpolate(EnuVector start, EnuVector end, double fraction)
+    {
+        if (!double.IsFinite(fraction) || fraction is < 0 or > 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(fraction));
+        }
+
+        var from = start.Normalize();
+        var to = end.Normalize();
+        var dot = Math.Clamp(Dot(from, to), -1d, 1d);
+        if (dot < -0.999999999999)
+        {
+            throw new ArgumentException("Antipodal directions do not define one shortest arc.", nameof(end));
+        }
+        if (dot > 0.999999999999)
+        {
+            return (from * (1 - fraction) + to * fraction).Normalize();
+        }
+
+        var angle = Math.Acos(dot);
+        var denominator = Math.Sin(angle);
+        return (from * (Math.Sin((1 - fraction) * angle) / denominator) +
+            to * (Math.Sin(fraction * angle) / denominator)).Normalize();
+    }
+
     /// <summary>Adds two vectors.</summary>
     public static EnuVector operator +(EnuVector left, EnuVector right)
         => Add(left, right);
