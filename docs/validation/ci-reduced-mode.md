@@ -42,5 +42,13 @@ The run completed in 5 minutes 2 seconds and used approximately 5.1 aggregate
 runner-minutes. Against the 30.4 runner-minute baseline, this saves about 25.3
 runner-minutes, or 83.2%. Wall time decreased by 2 minutes 16 seconds, or 31.1%.
 
-The review-correction replacement run is recorded below after this evidence
-update receives its own reduced-mode validation.
+Review-correction run
+[`29674552014`](https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/29674552014)
+at `39b6512` repeated the same result matrix, completed in 4 minutes 59
+seconds, and used approximately 5.0 aggregate runner-minutes. The independent
+replacement confirms that reduced selection and Required CI acceptance remain
+stable after updating the retained evidence.
+
+The proof pull request's final current-head Required CI run validates this
+completed record before merge; its immutable check history remains attached to
+the pull request.
