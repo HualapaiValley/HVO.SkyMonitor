@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+event_name="${1:-}"
+base_sha="${2:-}"
+head_sha="${3:-}"
+summary_file="${GITHUB_STEP_SUMMARY:-}"
+
+mode="full"
+reason="non-pull-request events always run the full matrix"
+path_count=0
+
+write_summary_header() {
+  [[ -n "$summary_file" ]] || return 0
+  printf '### CI change classification\n\nObserved paths:\n' >> "$summary_file"
+}
+
+write_summary_path() {
+  [[ -n "$summary_file" ]] || return 0
+  printf -- '- %q %q\n' "$1" "$2" >> "$summary_file"
+}
+
+finish() {
+  if [[ -n "$summary_file" ]]; then
+    printf '\nMode: **%s**  \nReason: %s  \nPath count: %s\n' \
+      "$mode" "$reason" "$path_count" >> "$summary_file"
+  fi
+
+  printf 'CI classification: mode=%s reason=%s paths=%s\n' \
+    "$mode" "$reason" "$path_count" >&2
+  printf 'mode=%s\n' "$mode"
+}
+
+is_reduced_path() {
+  local path="$1"
+
+  case "$path" in
+    docs/catalog/hyg-v42-attribution.md | docs/catalog/hyg-v42-license.md)
+      return 1
+      ;;
+  esac
+
+  case "$path" in
+    docs/* | .devcontainer/* | .vscode/* | .github/prompts/*)
+      return 0
+      ;;
+    README.md | AGENTS.md | THIRD-PARTY-NOTICES.md)
+      return 0
+      ;;
+    .github/copilot-instructions.md | .github/pull_request_template.md)
+      return 0
+      ;;
+    deploy/hvo-docker/README.md | tools/asi-capture/README.md)
+      return 0
+      ;;
+    tests/fixtures/catalog/SOURCE.md | tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md)
+      return 0
+      ;;
+    scripts/opencode:disable | scripts/opencode:enable | scripts/test:opencode)
+      return 0
+      ;;
+  esac
+
+  [[ "$path" =~ ^(src|tests)/[^/]+/README\.md$ ]]
+}
+
+if [[ "$event_name" != "pull_request" ]]; then
+  finish
+  exit 0
+fi
+
+reason="pull request contains only allowlisted documentation and developer-environment changes"
+
+if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null \
+  || ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
+  reason="base or head commit is unavailable"
+  finish
+  exit 0
+fi
+
+diff_file="$(mktemp)"
+trap 'rm -f "$diff_file"' EXIT
+
+if ! git diff --name-status --no-renames -z "${base_sha}...${head_sha}" -- > "$diff_file"; then
+  reason="git diff failed"
+  finish
+  exit 0
+fi
+
+mode="reduced"
+write_summary_header
+
+while IFS= read -r -d '' status; do
+  if ! IFS= read -r -d '' path; then
+    mode="full"
+    reason="git diff returned malformed name-status data"
+    break
+  fi
+
+  ((path_count += 1))
+  write_summary_path "$status" "$path"
+
+  if [[ "$status" != "A" && "$status" != "M" ]]; then
+    mode="full"
+    reason="deleted, renamed, or type-changed paths require the full matrix"
+  elif ! tree_entry="$(git ls-tree "$head_sha" -- ":(literal)$path")" \
+    || [[ "${tree_entry%% *}" != "100644" && "${tree_entry%% *}" != "100755" ]]; then
+    mode="full"
+    reason="missing or non-regular paths require the full matrix"
+  elif ! is_reduced_path "$path"; then
+    mode="full"
+    reason="at least one path is outside the reduced-mode allowlist"
+  fi
+done < "$diff_file"
+
+if [[ "$path_count" -eq 0 ]]; then
+  mode="full"
+  reason="empty change sets require the full matrix"
+fi
+
+finish
