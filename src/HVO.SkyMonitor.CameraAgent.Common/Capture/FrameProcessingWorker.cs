@@ -272,6 +272,10 @@ internal sealed class FrameProcessingWorker
                 var products = exception is null
                     ? outcomes.SelectMany(static value => value.Products).ToArray()
                     : [];
+                foreach (var product in products)
+                {
+                    context.RegisterProcessingProduct(product);
+                }
                 telemetry.RecordNode(node, status, reason, stopwatch.Elapsed);
                 logger.CaptureProcessingNodeOutcome(node.Id, status.ToString());
                 nodeActivity?.SetStatus(

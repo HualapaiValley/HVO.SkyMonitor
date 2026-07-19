@@ -1576,8 +1576,10 @@ public sealed class ArtifactIngestTests
             .Where(job => job.SourceCentralArtifactId == artifact.Id)
             .ToListAsync().ConfigureAwait(false);
         var recipes = assertionScope.ServiceProvider.GetRequiredService<ICentralDerivativeRecipeCatalog>()
-            .GetRequiredRecipes(FrameArtifactRole.Raw);
-        jobs.Should().HaveCount(recipes.Count);
+            .GetRequiredRecipes(FrameArtifactRole.Raw)
+            .Where(recipe => recipe.RecipeName != BuiltInProcessingRecipes.CloudAssessment)
+            .ToArray();
+        jobs.Should().HaveCount(recipes.Length);
         jobs.Select(job => job.RequestIdentitySha256).Should().OnlyHaveUniqueItems();
         foreach (var recipe in recipes)
         {

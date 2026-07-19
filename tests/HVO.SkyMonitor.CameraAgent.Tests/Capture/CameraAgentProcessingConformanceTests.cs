@@ -64,6 +64,30 @@ public sealed class CameraAgentProcessingConformanceTests
         Assert.AreEqual(64d, projected.Layout.BlackLevel);
         Assert.AreEqual(4095d, projected.Layout.WhiteLevel);
 
+        configuredFrame = configuredFrame with
+        {
+            Metadata = configuredFrame.Metadata with
+            {
+                Extra = new Dictionary<string, string>
+                {
+                    ["blackLevelAdu"] = "64",
+                    ["sensorAdcBitDepth"] = "14",
+                    ["containerBitDepth"] = "16",
+                    ["whiteLevelAdu"] = "65535"
+                }
+            }
+        };
+        configuredArtifact = new FrameArtifact(
+            artifact.ArtifactId,
+            artifact.Role,
+            configuredFrame,
+            artifact.SourceArtifactIds,
+            artifact.RecipeVersion);
+        projected = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            ProcessingConformanceFixture.CameraConfig with { Rig = configuredRig }, configuredArtifact, "source");
+        Assert.AreEqual(64d, projected.Layout!.BlackLevel);
+        Assert.AreEqual(ushort.MaxValue, projected.Layout.WhiteLevel);
+
         var previewFrame = new CameraFrame(
             configuredFrame.TimestampUtc,
             2,

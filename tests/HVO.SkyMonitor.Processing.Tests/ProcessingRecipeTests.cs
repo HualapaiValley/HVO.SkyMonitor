@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -704,6 +705,98 @@ public sealed class ProcessingRecipeTests
                 "quality")).ConfigureAwait(false);
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, formatQuality.Status);
         }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task ExecutorRejectsMalformedAuxiliariesAndMismatchedInputArtifact()
+    {
+        var input = CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono16, 1, 1, [1, 0]);
+        var other = input with { ArtifactId = Guid.NewGuid(), Variant = "other" };
+        var payload = Encoding.UTF8.GetBytes("{\"a\":[{\"b\":1}]}");
+        var identity = ProcessingIdentity.ComputePayloadSha256(payload);
+        var validCanonical = new ProcessingAuxiliaryInput(
+            "context", ProcessingAuxiliaryInputKind.CanonicalJson,
+            SchemaVersion: "context-v1", IdentitySha256: identity, Payload: payload);
+        var validArtifact = new ProcessingAuxiliaryInput(
+            "artifact", ProcessingAuxiliaryInputKind.Artifact,
+            ProcessingInputSelector.Raw("other"), ArtifactId: other.ArtifactId);
+        var invalidJson = Encoding.UTF8.GetBytes("{");
+        var duplicateJson = Encoding.UTF8.GetBytes("{\"a\":1,\"A\":2}");
+        var noncanonicalJson = Encoding.UTF8.GetBytes("{ \"a\": 1 }");
+        var invalidAuxiliaryCases = new IReadOnlyList<ProcessingAuxiliaryInput>[]
+        {
+            Enumerable.Range(0, 33).Select(index => validCanonical with { Name = $"context-{index}" }).ToArray(),
+            new ProcessingAuxiliaryInput[] { null! },
+            [validCanonical with { Name = " " }],
+            [validCanonical with { Name = new string('a', 65) }],
+            [validCanonical, validCanonical with { Name = "CONTEXT" }],
+            [validArtifact with { Selector = null }],
+            [validArtifact with { SchemaVersion = "invalid" }],
+            [validArtifact with { IdentitySha256 = new string('A', 64) }],
+            [validArtifact with { Payload = payload }],
+            [validArtifact with { ArtifactId = Guid.Empty }],
+            [validCanonical with { Selector = ProcessingInputSelector.Raw() }],
+            [validCanonical with { SchemaVersion = " " }],
+            [validCanonical with { ArtifactId = Guid.NewGuid() }],
+            [validCanonical with { IdentitySha256 = "invalid" }],
+            [validCanonical with { IdentitySha256 = new string('G', 64) }],
+            [validCanonical with
+                {
+                    IdentitySha256 = ProcessingIdentity.ComputePayloadSha256(ReadOnlyMemory<byte>.Empty),
+                    Payload = default
+                }],
+            [validCanonical with { IdentitySha256 = new string('A', 64) }],
+            [validCanonical with
+                {
+                    IdentitySha256 = ProcessingIdentity.ComputePayloadSha256(invalidJson),
+                    Payload = invalidJson
+                }],
+            [validCanonical with
+                {
+                    IdentitySha256 = ProcessingIdentity.ComputePayloadSha256(duplicateJson),
+                    Payload = duplicateJson
+                }],
+            [validCanonical with
+                {
+                    IdentitySha256 = ProcessingIdentity.ComputePayloadSha256(noncanonicalJson),
+                    Payload = noncanonicalJson
+                }],
+            [validCanonical with { Kind = (ProcessingAuxiliaryInputKind)999 }]
+        };
+        var executor = new ProcessingRecipeExecutor();
+        foreach (var auxiliaries in invalidAuxiliaryCases)
+        {
+            var outcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+                BuiltInProcessingRecipes.NoOpAnalyzer,
+                EmptyOptions(),
+                ProcessingInputSelector.Raw(),
+                [input, other],
+                "invalid",
+                AuxiliaryInputs: auxiliaries,
+                InputArtifactId: input.ArtifactId)).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidInput, outcome.ReasonCode);
+        }
+
+        var valid = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.NoOpAnalyzer,
+            EmptyOptions(),
+            ProcessingInputSelector.Raw(),
+            [input, other],
+            "valid",
+            AuxiliaryInputs: [validArtifact, validCanonical],
+            InputArtifactId: input.ArtifactId)).ConfigureAwait(false);
+        var mismatched = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.NoOpAnalyzer,
+            EmptyOptions(),
+            ProcessingInputSelector.Raw("source"),
+            [input, other],
+            "invalid",
+            InputArtifactId: other.ArtifactId)).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, valid.Status);
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, mismatched.Status);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidInput, mismatched.ReasonCode);
+        Assert.AreEqual(nameof(ProcessingExecutionRequest.InputArtifactId), mismatched.Field);
     }
 
     [TestMethod]

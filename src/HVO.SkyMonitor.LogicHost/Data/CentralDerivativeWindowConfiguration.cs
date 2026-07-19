@@ -35,8 +35,11 @@ internal static class CentralDerivativeWindowConfiguration
             item.ResolutionState,
             item.CentralDerivativeJobId
         });
+        requirement.HasIndex(item => item.ExpectedCentralArtifactId);
         requirement.HasOne(item => item.Job).WithMany(job => job.InputRequirements)
             .HasForeignKey(item => item.CentralDerivativeJobId).OnDelete(DeleteBehavior.Cascade).IsRequired();
+        requirement.HasOne(item => item.ExpectedArtifact).WithMany()
+            .HasForeignKey(item => item.ExpectedCentralArtifactId).OnDelete(DeleteBehavior.Restrict);
     }
 
     private static void ConfigureInput(ModelBuilder builder)

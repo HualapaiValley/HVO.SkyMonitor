@@ -28,6 +28,11 @@ internal sealed record EnvironmentalObservationCorrelationRequest(
     DateTimeOffset ThroughUtc,
     EnvironmentalObservationSelector Selector);
 
+internal sealed record EnvironmentalObservationSelection(
+    EnvironmentalObservationMatch Match,
+    Guid? RecordId,
+    string? ContentSha256);
+
 internal interface IEnvironmentalObservationQueryService
 {
     Task<IReadOnlyList<ReceivedEnvironmentalObservationV1>> QueryAsync(
@@ -39,6 +44,11 @@ internal interface IEnvironmentalObservationQueryService
         CancellationToken cancellationToken = default);
 
     Task<EnvironmentalObservationMatch> CorrelateFrameAsync(
+        Guid frameId,
+        EnvironmentalObservationSelector selector,
+        CancellationToken cancellationToken = default);
+
+    Task<EnvironmentalObservationSelection> SelectFrameAsync(
         Guid frameId,
         EnvironmentalObservationSelector selector,
         CancellationToken cancellationToken = default);
@@ -78,6 +88,12 @@ internal sealed class EnvironmentalObservationQueryService(
         Guid frameId,
         EnvironmentalObservationSelector selector,
         CancellationToken cancellationToken = default)
+        => (await SelectFrameAsync(frameId, selector, cancellationToken).ConfigureAwait(false)).Match;
+
+    public async Task<EnvironmentalObservationSelection> SelectFrameAsync(
+        Guid frameId,
+        EnvironmentalObservationSelector selector,
+        CancellationToken cancellationToken = default)
     {
         if (frameId == Guid.Empty)
         {
@@ -90,21 +106,27 @@ internal sealed class EnvironmentalObservationQueryService(
             .ConfigureAwait(false) ?? throw new InvalidOperationException("The central frame does not exist.");
         var from = frame.Timing?.ExposureStartedUtc ?? frame.CapturedAtUtc;
         var through = frame.Timing?.ExposureEndedUtc ?? from;
-        return await CorrelateAsync(
+        return await CorrelateCoreAsync(
             new EnvironmentalObservationCorrelationRequest(
                 new EnvironmentalObservationTarget(frame.ObservatoryId, frame.DevicePublicId, frame.RigId),
                 from,
                 through,
                 selector),
+            allowReselection: true,
             cancellationToken).ConfigureAwait(false);
     }
 
     public Task<EnvironmentalObservationMatch> CorrelateAsync(
         EnvironmentalObservationCorrelationRequest request,
         CancellationToken cancellationToken = default)
-        => CorrelateCoreAsync(request, allowReselection: true, cancellationToken);
+        => CorrelateMatchAsync(request, cancellationToken);
 
-    private async Task<EnvironmentalObservationMatch> CorrelateCoreAsync(
+    private async Task<EnvironmentalObservationMatch> CorrelateMatchAsync(
+        EnvironmentalObservationCorrelationRequest request,
+        CancellationToken cancellationToken)
+        => (await CorrelateCoreAsync(request, allowReselection: true, cancellationToken).ConfigureAwait(false)).Match;
+
+    private async Task<EnvironmentalObservationSelection> CorrelateCoreAsync(
         EnvironmentalObservationCorrelationRequest request,
         bool allowReselection,
         CancellationToken cancellationToken)
@@ -217,7 +239,7 @@ internal sealed class EnvironmentalObservationQueryService(
             timeProvider.GetElapsedTime(started));
         activity?.SetTag("environment.outcome", match.Status.ToString());
         activity?.SetTag("environment.overlap", match.HadOverlap);
-        return match;
+        return new EnvironmentalObservationSelection(match, selected?.Id, selected?.PayloadSha256);
     }
 
     internal IQueryable<Guid> BuildFreshSelectionIdQuery(

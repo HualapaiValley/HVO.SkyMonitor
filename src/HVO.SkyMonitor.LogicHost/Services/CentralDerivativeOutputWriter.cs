@@ -51,7 +51,11 @@ internal sealed partial class CentralDerivativeOutputWriter(
         {
             return null;
         }
-        if (!HasExpectedSources(artifact, lease))
+        if (!HasExpectedSources(artifact, lease)
+            || HasBoundExpectedIdentity(lease) && !string.Equals(
+                evidence.RecipeIdentitySha256,
+                lease.ExpectedRecipeIdentitySha256,
+                StringComparison.OrdinalIgnoreCase))
         {
             throw new CentralDerivativeJobStateException(
                 "The pending derivative output does not match the frozen input set.");
@@ -463,6 +467,10 @@ internal sealed partial class CentralDerivativeOutputWriter(
     {
         if (product.Role != lease.TargetRole
             || product.Variant != lease.TargetVariant
+            || HasBoundExpectedIdentity(lease) && !string.Equals(
+                product.Recipe.IdentitySha256,
+                lease.ExpectedRecipeIdentitySha256,
+                StringComparison.OrdinalIgnoreCase)
             || !product.SourceArtifactIds.SequenceEqual(
                 lease.Inputs is { Count: > 0 }
                     ? lease.Inputs.OrderBy(input => input.Ordinal).Select(input => input.ArtifactId)
@@ -511,6 +519,13 @@ internal sealed partial class CentralDerivativeOutputWriter(
             .Select(source => (source.SourceArtifactId, source.ResolvedCentralArtifactId))
             .SequenceEqual(expected);
     }
+
+    private static bool HasBoundExpectedIdentity(CentralDerivativeJobLease lease)
+        => !string.IsNullOrWhiteSpace(lease.ExpectedRecipeIdentitySha256)
+            && !string.Equals(
+                lease.ExpectedRecipeIdentitySha256,
+                lease.RequestedRecipeIdentitySha256,
+                StringComparison.OrdinalIgnoreCase);
 
     private static partial class Log
     {

@@ -71,7 +71,10 @@ internal sealed class CentralDerivativeWorkerHealthCheck(
             && (job.InputSetIdentitySha256 == null || !job.Inputs.Any()
                 || job.InputRequirements.Any(requirement => requirement.IsRequired
                     && (requirement.ResolutionState == CentralDerivativeInputResolutionState.Resolved
-                        ? !job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id)
+                        ? requirement.SourceKind == CentralDerivativeInputSourceKind.Artifact
+                            ? !job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id)
+                            : !job.CanonicalInputs.Any(input =>
+                                input.CentralDerivativeJobInputRequirementId == requirement.Id)
                         : requirement.ResolutionState != CentralDerivativeInputResolutionState.Missing
                             || job.MissingInputOutcome != CentralDerivativeWindowOutcome.Run))),
             cancellationToken).ConfigureAwait(false);

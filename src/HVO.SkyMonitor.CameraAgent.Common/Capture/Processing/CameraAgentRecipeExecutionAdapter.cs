@@ -37,7 +37,8 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             frame.PixelData,
             frame.TimestampUtc,
             frame.Metadata.Exposure,
-            CreateCompatibility(config, frame));
+            CreateCompatibility(config, frame),
+            SourceArtifactIds: artifact.SourceArtifactIds);
     }
 
     public static CameraFrame CreateFrame(ProcessingProduct product, CameraFrame source, string sourceId)
@@ -86,9 +87,14 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             ? TryGetInteger(frame.Metadata.Extra, "sensorAdcBitDepth") ??
                 TryGetInteger(frame.Metadata.Extra, "adcBitDepth")
             : null;
-        var whiteLevel = adcDepth is > 0 and <= 16
-            ? Math.Pow(2, adcDepth.Value) - 1
-            : is16Bit ? ushort.MaxValue : byte.MaxValue;
+        var containerMaximum = is16Bit ? ushort.MaxValue : byte.MaxValue;
+        var declaredWhiteLevel = is16Bit ? TryGetLevel(frame.Metadata.Extra, "whiteLevelAdu") : null;
+        var whiteLevel = declaredWhiteLevel is { } declared &&
+            double.IsFinite(declared) && declared > (blackLevel ?? -1) && declared <= containerMaximum
+                ? declared
+                : adcDepth is > 0 and <= 16
+                    ? Math.Pow(2, adcDepth.Value) - 1
+                    : containerMaximum;
         return new FrameLayoutDescriptor(
             frame.Width,
             frame.Height,

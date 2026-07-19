@@ -15,7 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Manual")]
-public sealed class VirtualSkyCloudPerformanceTests
+public sealed partial class VirtualSkyCloudPerformanceTests
 {
     private const int WarmupCount = 5;
     private static readonly DateTimeOffset FixtureUtc = new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);

@@ -105,10 +105,14 @@ internal sealed class CentralDerivativeJobService(
                                 WHERE requirement.[CentralDerivativeJobId] = job.[Id]
                                     AND requirement.[IsRequired] = CAST(1 AS bit)
                                     AND ((requirement.[ResolutionState] = N'Resolved'
-                                            AND NOT EXISTS (
-                                                SELECT 1 FROM [CentralDerivativeJobInputs] AS resolved
-                                                WHERE resolved.[CentralDerivativeJobId] = job.[Id]
-                                                    AND resolved.[CentralDerivativeJobInputRequirementId] = requirement.[Id]))
+                                            AND ((requirement.[SourceKind] = N'Artifact' AND NOT EXISTS (
+                                                    SELECT 1 FROM [CentralDerivativeJobInputs] AS resolved
+                                                    WHERE resolved.[CentralDerivativeJobId] = job.[Id]
+                                                        AND resolved.[CentralDerivativeJobInputRequirementId] = requirement.[Id]))
+                                                OR (requirement.[SourceKind] = N'EnvironmentalObservation' AND NOT EXISTS (
+                                                    SELECT 1 FROM [CentralDerivativeJobCanonicalInputs] AS canonical
+                                                    WHERE canonical.[CentralDerivativeJobId] = job.[Id]
+                                                        AND canonical.[CentralDerivativeJobInputRequirementId] = requirement.[Id]))))
                                         OR (requirement.[ResolutionState] <> N'Resolved'
                                             AND NOT (requirement.[ResolutionState] = N'Missing'
                                                 AND job.[MissingInputOutcome] = N'Run'))))
@@ -231,7 +235,10 @@ internal sealed class CentralDerivativeJobService(
                     && job.Inputs.Any()
                     && !job.InputRequirements.Any(requirement => requirement.IsRequired
                         && (requirement.ResolutionState == CentralDerivativeInputResolutionState.Resolved
-                            ? !job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id)
+                            ? requirement.SourceKind == CentralDerivativeInputSourceKind.Artifact
+                                ? !job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id)
+                                : !job.CanonicalInputs.Any(input =>
+                                    input.CentralDerivativeJobInputRequirementId == requirement.Id)
                             : requirement.ResolutionState != CentralDerivativeInputResolutionState.Missing
                                 || job.MissingInputOutcome != CentralDerivativeWindowOutcome.Run))
                     && !job.Inputs.Any(input => input.Artifact!.ObjectState != CentralArtifactObjectState.Available
@@ -303,7 +310,10 @@ internal sealed class CentralDerivativeJobService(
                 && job.Inputs.Any()
                 && !job.InputRequirements.Any(requirement => requirement.IsRequired
                     && (requirement.ResolutionState == CentralDerivativeInputResolutionState.Resolved
-                        ? !job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id)
+                        ? requirement.SourceKind == CentralDerivativeInputSourceKind.Artifact
+                            ? !job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id)
+                            : !job.CanonicalInputs.Any(input =>
+                                input.CentralDerivativeJobInputRequirementId == requirement.Id)
                         : requirement.ResolutionState != CentralDerivativeInputResolutionState.Missing
                             || job.MissingInputOutcome != CentralDerivativeWindowOutcome.Run))
                 && !job.Inputs.Any(input => input.Artifact!.ObjectState != CentralArtifactObjectState.Available
@@ -606,6 +616,8 @@ internal sealed class CentralDerivativeJobService(
         => await dbContext.CentralDerivativeJobs.AsNoTracking()
             .Include(job => job.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)
             .Include(job => job.Inputs).ThenInclude(input => input.Artifact)!.ThenInclude(artifact => artifact!.Frame)
+            .Include(job => job.Inputs).ThenInclude(input => input.Requirement)
+            .Include(job => job.CanonicalInputs).ThenInclude(input => input.Requirement)
             .Include(job => job.ResultArtifact)
             .AsSplitQuery()
             .SingleOrDefaultAsync(job => job.Id == jobId, cancellationToken).ConfigureAwait(false)
@@ -681,8 +693,20 @@ internal sealed class CentralDerivativeJobService(
                 inputFrame.CaptureSequence,
                 inputFrame.CapturedAtUtc,
                 input.CompatibilitySha256,
-                input.SelectedAtUtc);
+                input.SelectedAtUtc,
+                input.Requirement?.BindingName ?? "input");
         }).ToArray();
+        var canonicalInputs = job.CanonicalInputs.OrderBy(input => input.Ordinal).Select(input =>
+            new CentralDerivativeJobLeaseCanonicalInput(
+                input.Ordinal,
+                input.Requirement?.BindingName ?? throw new InvalidOperationException(
+                    "A canonical derivative input requirement was not loaded."),
+                input.SchemaVersion,
+                input.IdentitySha256,
+                input.CanonicalJson,
+                input.ByteLength,
+                input.EnvironmentalObservationRecordId,
+                input.SelectedAtUtc)).ToArray();
         return new CentralDerivativeJobLease(
             job.Id, job.LeaseToken!.Value, job.LeaseOwner!, job.LeaseExpiresAtUtc!.Value,
             frame.DevicePublicId, source.ArtifactId, source.Role, source.RecipeVersion,
@@ -694,7 +718,9 @@ internal sealed class CentralDerivativeJobService(
             job.RequestedRecipeIdentitySha256, job.RequestIdentitySha256,
             job.TraceParent, job.TraceState,
             job.AttemptCount, job.MaxAttempts,
-            inputs);
+            inputs,
+            job.ExpectedRecipeIdentitySha256,
+            canonicalInputs);
     }
 
     private static bool IsUsable(CentralArtifact? artifact)
@@ -731,7 +757,9 @@ internal sealed record CentralDerivativeJobLease(
     string? TraceState,
     int AttemptCount,
     int MaxAttempts,
-    IReadOnlyList<CentralDerivativeJobLeaseInput>? Inputs = null);
+    IReadOnlyList<CentralDerivativeJobLeaseInput>? Inputs = null,
+    string? ExpectedRecipeIdentitySha256 = null,
+    IReadOnlyList<CentralDerivativeJobLeaseCanonicalInput>? CanonicalInputs = null);
 
 internal sealed record CentralDerivativeJobLeaseInput(
     int Ordinal,
@@ -748,7 +776,18 @@ internal sealed record CentralDerivativeJobLeaseInput(
     long? CaptureSequence,
     DateTimeOffset CapturedAtUtc,
     string CompatibilitySha256,
-    DateTimeOffset SelectedAtUtc = default);
+    DateTimeOffset SelectedAtUtc = default,
+    string BindingName = "input");
+
+internal sealed record CentralDerivativeJobLeaseCanonicalInput(
+    int Ordinal,
+    string BindingName,
+    string SchemaVersion,
+    string IdentitySha256,
+    string CanonicalJson,
+    int ByteLength,
+    Guid? EnvironmentalObservationRecordId,
+    DateTimeOffset SelectedAtUtc);
 
 internal sealed class CentralDerivativeJobStateException : Exception
 {

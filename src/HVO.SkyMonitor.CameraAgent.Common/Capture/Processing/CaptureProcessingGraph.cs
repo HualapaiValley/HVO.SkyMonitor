@@ -20,6 +20,11 @@ internal interface IWindowCaptureProcessingGraphStep
     int MaximumInputCount { get; }
 }
 
+internal interface ICompoundCaptureProcessingGraphStep
+{
+    IReadOnlySet<FrameArtifactRole> RequiredDependencyRoles { get; }
+}
+
 public sealed record CaptureProcessingGraphNode(
     string Id,
     ICaptureProcessingStep Step,

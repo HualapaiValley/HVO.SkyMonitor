@@ -23,6 +23,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralDerivativeJobAttempt> CentralDerivativeJobAttempts => Set<CentralDerivativeJobAttempt>();
     internal DbSet<CentralDerivativeJobInputRequirement> CentralDerivativeJobInputRequirements => Set<CentralDerivativeJobInputRequirement>();
     internal DbSet<CentralDerivativeJobInput> CentralDerivativeJobInputs => Set<CentralDerivativeJobInput>();
+    internal DbSet<CentralDerivativeJobCanonicalInput> CentralDerivativeJobCanonicalInputs => Set<CentralDerivativeJobCanonicalInput>();
+    internal DbSet<CentralClearReferenceDesignation> CentralClearReferenceDesignations => Set<CentralClearReferenceDesignation>();
     internal DbSet<CentralArtifactProcessingEvidence> CentralArtifactProcessingEvidence => Set<CentralArtifactProcessingEvidence>();
     internal DbSet<CentralCaptureTiming> CentralCaptureTimings => Set<CentralCaptureTiming>();
     internal DbSet<CentralCaptureControl> CentralCaptureControls => Set<CentralCaptureControl>();
@@ -53,6 +55,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.ApplyConfiguration(new CentralDerivativeJobConfiguration());
         CentralDerivativeExecutionConfiguration.Configure(builder);
         CentralDerivativeWindowConfiguration.Configure(builder);
+        CentralCloudProcessingConfiguration.Configure(builder);
         CentralReconstructionConfiguration.Configure(builder);
         CentralRecoveryConfiguration.Configure(builder);
         EnvironmentalObservationConfiguration.Configure(builder);

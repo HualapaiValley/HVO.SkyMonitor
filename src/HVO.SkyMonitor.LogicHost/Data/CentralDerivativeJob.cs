@@ -24,6 +24,8 @@ internal sealed class CentralDerivativeJob
 
     public string RequestedRecipeIdentitySha256 { get; set; } = string.Empty;
 
+    public string ExpectedRecipeIdentitySha256 { get; set; } = string.Empty;
+
     public string RequestIdentitySha256 { get; set; } = string.Empty;
 
     public string? TraceParent { get; set; }
@@ -91,6 +93,8 @@ internal sealed class CentralDerivativeJob
     public ICollection<CentralDerivativeJobInputRequirement> InputRequirements { get; } = [];
 
     public ICollection<CentralDerivativeJobInput> Inputs { get; } = [];
+
+    public ICollection<CentralDerivativeJobCanonicalInput> CanonicalInputs { get; } = [];
 
     public byte[] RowVersion { get; set; } = [];
 }

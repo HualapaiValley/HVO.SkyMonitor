@@ -21,6 +21,7 @@ internal sealed class CentralDerivativeJobConfiguration : IEntityTypeConfigurati
         builder.Property(job => job.RecipeOptionsJson).IsRequired();
         builder.Property(job => job.InputSelectorJson).HasMaxLength(2048).IsRequired();
         builder.Property(job => job.RequestedRecipeIdentitySha256).HasMaxLength(64).IsUnicode(false).IsRequired();
+        builder.Property(job => job.ExpectedRecipeIdentitySha256).HasMaxLength(64).IsUnicode(false).IsRequired();
         builder.Property(job => job.RequestIdentitySha256).HasMaxLength(64).IsUnicode(false).IsRequired();
         builder.Property(job => job.TraceParent).HasMaxLength(128).IsUnicode(false);
         builder.Property(job => job.TraceState).HasMaxLength(512).IsUnicode(false);

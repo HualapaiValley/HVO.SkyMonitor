@@ -592,6 +592,51 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.ToTable("CentralCaptureTimings", (string)null);
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralClearReferenceDesignation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CentralArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("RegistrationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("RigId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CentralArtifactId");
+
+                    b.HasIndex("RegistrationId", "RigId")
+                        .IsUnique();
+
+                    b.ToTable("CentralClearReferenceDesignations", (string)null);
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJob", b =>
                 {
                     b.Property<Guid>("Id")
@@ -616,6 +661,12 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ExpectedRecipeIdentitySha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)");
 
                     b.Property<string>("InputSelectorJson")
                         .IsRequired()
@@ -836,6 +887,63 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobCanonicalInput", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("ByteLength")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CanonicalJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("CentralDerivativeJobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CentralDerivativeJobInputRequirementId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("EnvironmentalObservationRecordId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("IdentitySha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SchemaVersion")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset>("SelectedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EnvironmentalObservationRecordId");
+
+                    b.HasIndex("CentralDerivativeJobId", "CentralDerivativeJobInputRequirementId")
+                        .IsUnique();
+
+                    b.HasIndex("CentralDerivativeJobId", "Ordinal")
+                        .IsUnique();
+
+                    b.ToTable("CentralDerivativeJobCanonicalInputs", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_CentralDerivativeJobCanonicalInputs_ByteLength", "[ByteLength] > 0");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobCanonicalInputs_Ordinal", "[Ordinal] >= 0");
+                        });
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobInput", b =>
                 {
                     b.Property<Guid>("Id")
@@ -921,6 +1029,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<long?>("ExpectedCaptureSequence")
                         .HasColumnType("bigint");
 
+                    b.Property<Guid?>("ExpectedCentralArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("ExpectedRigId")
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
@@ -957,6 +1068,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasColumnType("nvarchar(32)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ExpectedCentralArtifactId");
 
                     b.HasIndex("CentralDerivativeJobId", "Ordinal")
                         .IsUnique();
@@ -2445,6 +2558,25 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Frame");
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralClearReferenceDesignation", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralArtifact", "Artifact")
+                        .WithMany()
+                        .HasForeignKey("CentralArtifactId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.DeviceRegistration", "Registration")
+                        .WithMany()
+                        .HasForeignKey("RegistrationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Artifact");
+
+                    b.Navigation("Registration");
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJob", b =>
                 {
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJob", "PredecessorJob")
@@ -2493,6 +2625,33 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Job");
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobCanonicalInput", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJob", "Job")
+                        .WithMany("CanonicalInputs")
+                        .HasForeignKey("CentralDerivativeJobId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.EnvironmentalObservationRecord", "EnvironmentalObservation")
+                        .WithMany()
+                        .HasForeignKey("EnvironmentalObservationRecordId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobInputRequirement", "Requirement")
+                        .WithOne("CanonicalInput")
+                        .HasForeignKey("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobCanonicalInput", "CentralDerivativeJobId", "CentralDerivativeJobInputRequirementId")
+                        .HasPrincipalKey("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobInputRequirement", "CentralDerivativeJobId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("EnvironmentalObservation");
+
+                    b.Navigation("Job");
+
+                    b.Navigation("Requirement");
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobInput", b =>
                 {
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralArtifact", "Artifact")
@@ -2528,6 +2687,13 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasForeignKey("CentralDerivativeJobId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralArtifact", "ExpectedArtifact")
+                        .WithMany()
+                        .HasForeignKey("ExpectedCentralArtifactId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("ExpectedArtifact");
 
                     b.Navigation("Job");
                 });
@@ -2773,6 +2939,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 {
                     b.Navigation("Attempts");
 
+                    b.Navigation("CanonicalInputs");
+
                     b.Navigation("InputRequirements");
 
                     b.Navigation("Inputs");
@@ -2780,6 +2948,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobInputRequirement", b =>
                 {
+                    b.Navigation("CanonicalInput");
+
                     b.Navigation("Input");
                 });
 

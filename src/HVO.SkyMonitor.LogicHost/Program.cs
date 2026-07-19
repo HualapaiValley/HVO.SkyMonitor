@@ -636,6 +636,7 @@ public sealed partial class Program
         builder.Services.AddSingleton<CentralArtifactRetrievalTelemetry>();
         builder.Services.AddHostedService<CentralArtifactReconciliationService>();
         builder.Services.AddSingleton<ICentralDerivativeRecipeCatalog, CentralDerivativeRecipeCatalog>();
+        builder.Services.AddScoped<ICentralClearReferenceService, CentralClearReferenceService>();
         builder.Services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         builder.Services.AddSingleton<LogicHostRecipeExecutionAdapter>();
         builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();

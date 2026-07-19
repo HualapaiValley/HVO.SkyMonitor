@@ -118,7 +118,9 @@ internal sealed class EnvironmentalObservationRetentionWorker(
         }
         var ids = await dbContext.EnvironmentalObservations
             .Where(observation => observation.ReceivedAtUtc < receiptCutoff &&
-                observation.ValidThroughUtc < now && !observation.ReferencedBy.Any())
+                observation.ValidThroughUtc < now && !observation.ReferencedBy.Any() &&
+                !dbContext.CentralDerivativeJobCanonicalInputs.Any(input =>
+                    input.EnvironmentalObservationRecordId == observation.Id))
             .OrderBy(observation => observation.ReceivedAtUtc)
             .ThenBy(observation => observation.ValidThroughUtc)
             .ThenBy(observation => observation.Id)
@@ -129,7 +131,9 @@ internal sealed class EnvironmentalObservationRetentionWorker(
         var batch = ids.Length == 0
             ? 0
             : await dbContext.EnvironmentalObservations
-                .Where(observation => ids.Contains(observation.Id) && !observation.ReferencedBy.Any())
+                .Where(observation => ids.Contains(observation.Id) && !observation.ReferencedBy.Any() &&
+                    !dbContext.CentralDerivativeJobCanonicalInputs.Any(input =>
+                        input.EnvironmentalObservationRecordId == observation.Id))
                 .ExecuteDeleteAsync(cancellationToken)
                 .ConfigureAwait(false);
         if (transaction is not null)

@@ -42,19 +42,30 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
     internal const string AnnotatedPreviewRecipeVersion = "central-annotated-preview-v1";
     internal const string ImageQualityRecipeVersion = "central-image-quality-v1";
     internal const string RollingMeanRecipeVersion = "central-rolling-mean-v1";
+    internal const string CloudAssessmentRecipeVersion = "central-cloud-assessment-v1";
+    internal const string WeatherCloudOverlayRecipeVersion = "central-weather-cloud-overlay-v1";
     internal const string PreviewVariant = "central-preview";
     internal const string AnnotatedPreviewVariant = "central-annotated-preview";
     internal const string ImageQualityVariant = "central-image-quality";
     internal const string RollingMeanVariant = "central-rolling-mean";
+    internal const string CloudAssessmentVariant = "cloud-assessment-v1";
+    internal const string WeatherCloudOverlayVariant = "weather-cloud-overlay-v1";
     private static readonly JsonElement PreviewOptions = CaptureContractJson.SerializeToElement(new EncodedPreviewOptions());
     private static readonly JsonElement AnnotationOptions = CaptureContractJson.SerializeToElement(new AnnotationRecipeOptions());
     private static readonly JsonElement ImageQualityOptions = CaptureContractJson.SerializeToElement(new { });
     private static readonly JsonElement RollingMeanOptions = CaptureContractJson.SerializeToElement(new RollingMeanOptions());
+    internal static readonly JsonElement CloudAssessmentOptions = CaptureContractJson.SerializeToElement(new CloudAssessmentOptions());
+    internal static readonly JsonElement WeatherCloudOverlayOptions = CaptureContractJson.SerializeToElement(
+        new WeatherCloudOverlayOptions());
     private static readonly ProcessingInputSelector RawInput = ProcessingInputSelector.Raw();
     internal static readonly string PreviewRequestedRecipeIdentity = BuiltInProcessingRecipes.CreateRequestedIdentity(
         BuiltInProcessingRecipes.EncodedPreview,
         PreviewOptions,
         RawInput).IdentitySha256;
+    internal static readonly ProcessingInputSelector PreviewInput = ProcessingInputSelector.RecipeResult(
+        FrameArtifactRole.Preview,
+        PreviewVariant,
+        PreviewRequestedRecipeIdentity);
     internal static readonly string AnnotatedPreviewRequestedRecipeIdentity = BuiltInProcessingRecipes.CreateRequestedIdentity(
         BuiltInProcessingRecipes.Annotation,
         AnnotationOptions,
@@ -67,6 +78,14 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
         BuiltInProcessingRecipes.RollingMean,
         RollingMeanOptions,
         RawInput).IdentitySha256;
+    internal static readonly string CloudAssessmentRequestedRecipeIdentity = BuiltInProcessingRecipes.CreateRequestedIdentity(
+        BuiltInProcessingRecipes.CloudAssessment,
+        CloudAssessmentOptions,
+        RawInput).IdentitySha256;
+    internal static readonly string WeatherCloudOverlayRequestedRecipeIdentity = BuiltInProcessingRecipes.CreateRequestedIdentity(
+        BuiltInProcessingRecipes.WeatherCloudOverlay,
+        WeatherCloudOverlayOptions,
+        PreviewInput).IdentitySha256;
     internal const int DefaultMaxAttempts = 5;
 
     private static readonly IReadOnlyList<CentralDerivativeRecipe> RawRecipes =
@@ -80,6 +99,9 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
         new(FrameArtifactRole.Raw, FrameArtifactRole.Metadata, ImageQualityRecipeVersion, ImageQualityVariant,
             BuiltInProcessingRecipes.ImageQuality, ImageQualityOptions, RawInput,
             ImageQualityRequestedRecipeIdentity, DefaultMaxAttempts),
+        new(FrameArtifactRole.Raw, FrameArtifactRole.Metadata, CloudAssessmentRecipeVersion, CloudAssessmentVariant,
+            BuiltInProcessingRecipes.CloudAssessment, CloudAssessmentOptions, RawInput,
+            CloudAssessmentRequestedRecipeIdentity, DefaultMaxAttempts),
         new(FrameArtifactRole.Raw, FrameArtifactRole.Combined, RollingMeanRecipeVersion, RollingMeanVariant,
             BuiltInProcessingRecipes.RollingMean, RollingMeanOptions, RawInput,
             RollingMeanRequestedRecipeIdentity, DefaultMaxAttempts,
@@ -89,6 +111,17 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
                 TimeSpan.FromMinutes(5),
                 CentralDerivativeWindowOutcome.Skip))
     ];
+
+    internal static readonly CentralDerivativeRecipe WeatherCloudOverlayRecipe = new(
+        FrameArtifactRole.Preview,
+        FrameArtifactRole.AnnotatedPreview,
+        WeatherCloudOverlayRecipeVersion,
+        WeatherCloudOverlayVariant,
+        BuiltInProcessingRecipes.WeatherCloudOverlay,
+        WeatherCloudOverlayOptions,
+        PreviewInput,
+        WeatherCloudOverlayRequestedRecipeIdentity,
+        DefaultMaxAttempts);
 
     public IReadOnlyList<CentralDerivativeRecipe> GetRequiredRecipes(FrameArtifactRole sourceRole)
         => sourceRole == FrameArtifactRole.Raw ? RawRecipes : [];

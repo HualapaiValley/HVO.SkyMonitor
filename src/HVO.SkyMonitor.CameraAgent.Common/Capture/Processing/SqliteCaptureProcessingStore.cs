@@ -22,13 +22,22 @@ internal sealed record DurableProcessingOutput(
     Guid ArtifactId,
     string PayloadRelativePath,
     string SidecarRelativePath,
-    ReconstructionDescriptor Descriptor,
+    byte[] EvidenceJson,
+    ReconstructionDescriptor? Descriptor,
+    DurableProcessingProductManifestV1? ProductManifest,
     string RecipeIdentitySha256,
     IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms,
     ProcessingCompatibilityIdentity Compatibility,
     TimeSpan TotalIntegration,
     long CaptureSequence,
-    string? LegacyRecipeVersion);
+    string? LegacyRecipeVersion)
+{
+    internal CaptureIdentityDescriptor Capture => Descriptor?.Capture ?? ProductManifest?.Capture
+        ?? throw new InvalidDataException("Durable processing output has no capture descriptor.");
+
+    internal ArtifactDescriptor Artifact => Descriptor?.Artifact ?? ProductManifest?.Artifact
+        ?? throw new InvalidDataException("Durable processing output has no artifact descriptor.");
+}
 
 internal sealed record DurableProcessingNode(
     Guid CaptureId,
@@ -271,8 +280,9 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT output.output_identity_sha256, output.artifact_id, output.payload_relative_path, output.sidecar_relative_path,
-                   output.descriptor_json, output.recipe_identity_sha256, output.algorithms_json, output.compatibility_json,
-                   output.total_integration_ticks, output.capture_sequence, output.legacy_recipe_version
+                   output.descriptor_json, output.capture_id, output.agent_id, output.node_id, output.role, output.variant,
+                   output.recipe_identity_sha256, output.algorithms_json, output.compatibility_json, output.total_integration_ticks,
+                   output.capture_sequence, output.legacy_recipe_version
             FROM processing_outputs AS output
             WHERE output.agent_id = $agent_id
               AND output.capture_sequence <= $current_capture_sequence
@@ -454,10 +464,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         DurableProcessingOutput output,
         CancellationToken cancellationToken)
     {
-        var descriptorJson = CaptureContractJson.Serialize(new ArtifactManifestV2(
-            ArtifactManifestV2.CurrentSchemaVersion,
-            output.Descriptor,
-            output.PayloadRelativePath));
+        var descriptorJson = output.EvidenceJson;
         var algorithmsJson = JsonSerializer.SerializeToUtf8Bytes(output.Algorithms, SerializerOptions);
         var compatibilityJson = JsonSerializer.SerializeToUtf8Bytes(output.Compatibility, SerializerOptions);
         using var command = connection.CreateCommand();
@@ -526,11 +533,11 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
     {
         command.Parameters.AddWithValue("$output_identity_sha256", output.OutputIdentitySha256);
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
-        command.Parameters.AddWithValue("$agent_id", output.Descriptor.Capture.AgentId);
+        command.Parameters.AddWithValue("$agent_id", output.Capture.AgentId);
         command.Parameters.AddWithValue("$node_id", nodeId);
         command.Parameters.AddWithValue("$artifact_id", output.ArtifactId.ToString("N"));
-        command.Parameters.AddWithValue("$role", output.Descriptor.Artifact.Role.ToString());
-        command.Parameters.AddWithValue("$variant", output.Descriptor.Artifact.Variant);
+        command.Parameters.AddWithValue("$role", output.Artifact.Role.ToString());
+        command.Parameters.AddWithValue("$variant", output.Artifact.Variant);
         command.Parameters.AddWithValue("$payload_relative_path", output.PayloadRelativePath);
         command.Parameters.AddWithValue("$sidecar_relative_path", output.SidecarRelativePath);
         command.Parameters.AddWithValue("$descriptor_json", descriptorJson);
@@ -552,8 +559,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
-                   descriptor_json, recipe_identity_sha256, algorithms_json, compatibility_json,
-                   total_integration_ticks, capture_sequence, legacy_recipe_version
+                   descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
+                   algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, legacy_recipe_version
             FROM processing_outputs
             WHERE capture_id = $capture_id AND node_id = $node_id
             ORDER BY output_identity_sha256;
@@ -572,31 +579,86 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             var descriptorJson = await reader.GetFieldValueAsync<byte[]>(4, cancellationToken).ConfigureAwait(false);
-            var algorithmsJson = await reader.GetFieldValueAsync<byte[]>(6, cancellationToken).ConfigureAwait(false);
-            var compatibilityJson = await reader.GetFieldValueAsync<byte[]>(7, cancellationToken).ConfigureAwait(false);
-            var parsed = CaptureContractJson.ParseManifest(descriptorJson);
-            var descriptor = parsed.Document?.Manifest?.Descriptor;
-            if (!parsed.IsValid || descriptor is null)
+            var algorithmsJson = await reader.GetFieldValueAsync<byte[]>(11, cancellationToken).ConfigureAwait(false);
+            var compatibilityJson = await reader.GetFieldValueAsync<byte[]>(12, cancellationToken).ConfigureAwait(false);
+            ReconstructionDescriptor? descriptor = null;
+            DurableProcessingProductManifestV1? productManifest = null;
+            try
             {
-                throw new InvalidDataException("Committed processing output descriptor is invalid.");
+                using var evidence = JsonDocument.Parse(descriptorJson);
+                if (evidence.RootElement.ValueKind != JsonValueKind.Object ||
+                    !evidence.RootElement.TryGetProperty("schemaVersion", out var schema) ||
+                    schema.ValueKind != JsonValueKind.String)
+                {
+                    throw new InvalidDataException("Committed processing output descriptor is invalid.");
+                }
+                if (string.Equals(schema.GetString(), DurableProcessingProductManifestV1.CurrentSchemaVersion, StringComparison.Ordinal))
+                {
+                    productManifest = DurableProcessingProductManifestJson.Parse(descriptorJson);
+                }
+                else
+                {
+                    var parsed = CaptureContractJson.ParseManifest(descriptorJson);
+                    descriptor = parsed.Document?.Manifest?.Descriptor;
+                    if (!parsed.IsValid || descriptor is null)
+                    {
+                        throw new InvalidDataException("Committed processing output descriptor is invalid.");
+                    }
+                }
+            }
+            catch (JsonException exception)
+            {
+                throw new InvalidDataException("Committed processing output descriptor is invalid.", exception);
+            }
+            catch (InvalidOperationException exception)
+            {
+                throw new InvalidDataException("Committed processing output descriptor is invalid.", exception);
             }
             var algorithms = JsonSerializer.Deserialize<ProcessingAlgorithmIdentity[]>(
                 algorithmsJson, SerializerOptions) ?? [];
             var compatibility = JsonSerializer.Deserialize<ProcessingCompatibilityIdentity>(
                 compatibilityJson, SerializerOptions)
                 ?? throw new InvalidDataException("Committed processing compatibility is invalid.");
+            var artifact = descriptor?.Artifact ?? productManifest!.Artifact;
+            var capture = descriptor?.Capture ?? productManifest!.Capture;
+            var outputIdentity = reader.GetString(0);
+            var artifactId = Guid.ParseExact(reader.GetString(1), "N");
+            var payloadRelativePath = reader.GetString(2);
+            var recipeIdentity = reader.GetString(10);
+            var totalIntegration = TimeSpan.FromTicks(reader.GetInt64(13));
+            var captureSequence = reader.GetInt64(14);
+            if (!string.Equals(reader.GetString(5), capture.CaptureId.ToString("N"), StringComparison.Ordinal) ||
+                !string.Equals(reader.GetString(6), capture.AgentId, StringComparison.Ordinal) ||
+                string.IsNullOrWhiteSpace(reader.GetString(7)) ||
+                productManifest is not null && !string.Equals(
+                    reader.GetString(7), productManifest.Artifact.SourceId, StringComparison.Ordinal) ||
+                !string.Equals(reader.GetString(8), artifact.Role.ToString(), StringComparison.Ordinal) ||
+                !string.Equals(reader.GetString(9), artifact.Variant, StringComparison.Ordinal) ||
+                artifactId != artifact.ArtifactId ||
+                !string.Equals(payloadRelativePath, productManifest?.RelativeArtifactPath ?? payloadRelativePath, StringComparison.Ordinal) ||
+                !string.Equals(outputIdentity, productManifest?.OutputIdentitySha256 ?? outputIdentity, StringComparison.Ordinal) ||
+                !string.Equals(recipeIdentity, ProcessingIdentity.CreateRecipeIdentity(artifact.Recipe).IdentitySha256, StringComparison.Ordinal) ||
+                !algorithms.SequenceEqual(productManifest?.Algorithms ?? algorithms) ||
+                compatibility != (productManifest?.Compatibility ?? compatibility) ||
+                totalIntegration.Ticks != (productManifest?.TotalIntegrationTicks ?? totalIntegration.Ticks) ||
+                captureSequence != capture.CaptureSequence)
+            {
+                throw new InvalidDataException("Committed processing output columns conflict with its descriptor.");
+            }
             outputs.Add(new DurableProcessingOutput(
-                reader.GetString(0),
-                Guid.ParseExact(reader.GetString(1), "N"),
-                reader.GetString(2),
+                outputIdentity,
+                artifactId,
+                payloadRelativePath,
                 reader.GetString(3),
+                descriptorJson,
                 descriptor,
-                reader.GetString(5),
+                productManifest,
+                recipeIdentity,
                 algorithms,
                 compatibility,
-                TimeSpan.FromTicks(reader.GetInt64(8)),
-                reader.GetInt64(9),
-                await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(10)));
+                totalIntegration,
+                captureSequence,
+                await reader.IsDBNullAsync(15, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(15)));
         }
         return outputs;
     }

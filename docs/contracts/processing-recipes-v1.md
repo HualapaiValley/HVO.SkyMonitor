@@ -16,6 +16,7 @@ A recipe identity covers this canonical JSON envelope:
 - explicit input kind and role, plus variant and producing recipe identity for
   exact recipe-result selectors;
 - annotation provenance identity when annotation geometry is required.
+- canonical named auxiliary selectors and JSON-context identities when supplied.
 
 Object properties are sorted by `CaptureContractJson`; array and source order are
 significant. The output identity additionally covers the target role, target
@@ -38,6 +39,10 @@ carry stable reason codes and fields. Cancellation throws
 `OperationCanceledException`; it does not produce or commit a partial product.
 Exception messages are not protocol reason codes.
 Malformed artifact metadata or annotation geometry is rejected before identity binding.
+Named auxiliary inputs are unique case-insensitively. Canonical JSON context rejects
+duplicate properties and non-canonical byte representations; auxiliary order does not
+change identity because names are sorted before binding. Requests without auxiliary
+inputs retain the original v1 identity envelope.
 Unexpected recipe exceptions are terminal; retryable outcomes must be returned explicitly by
 the recipe.
 
@@ -56,6 +61,8 @@ filesystem, logging, stream, or disposable Skia types.
 | `rolling-mean` | Window | Explicit ordered compatible linear sources | Packed combined linear frame | O(pixels x sources), sources plus UInt64 accumulator and one output; no source is retained |
 | `image-quality` | Analyzer | Any supported unpacked image | Canonical JSON integer statistics | O(samples), no full-frame output |
 | `no-op-analyzer` | Analyzer | Any explicit input | Canonical JSON acknowledgement | O(1), no full-frame allocation |
+| `cloud-assessment` | Analyzer | Linear current image, named compatible clear reference, and optional environmental snapshot | `Metadata/cloud-assessment-v1` canonical JSON | O(pixels + tiles), two borrowed inputs plus O(tile count) accumulators |
+| `weather-cloud-overlay` | Transform | Preview, named assessment, and named environmental snapshot | Packed or JPEG annotated preview | O(pixels + tiles), borrowed inputs plus one display/output copy |
 
 JPEG bytes are deterministic for the repository-pinned Skia/runtime environment.
 Cross-platform conformance compares decoded pixels and provenance unless the
@@ -78,6 +85,20 @@ axes and resets the window.
 The arithmetic is a linear integer mean using UInt64 accumulation. Registration,
 sigma clipping, dark subtraction, and motion compensation are not implicit.
 
+## Cloud Assessment
+
+Cloud assessment compares Mono16 or RGGB16 current/reference samples at identical
+photosites. A fixed-point per-tile regression slope removes an additive background;
+RGGB lanes are accumulated separately and never demosaiced. Coverage is weighted by
+accepted valid-sky samples rather than unweighted tile count. The optional mask has one
+row-major, least-significant-bit-first bit per tile.
+
+Missing or incompatible clear reference/calibration, insufficient support, excessive
+saturation, precipitation, or daylight never produces a percentage. Environmental
+missing/stale state remains explicit. The algorithm receives no simulator scenario
+provenance, expected coverage, fixture labels, or truth masks. See
+`cloud-assessment-v1.md` for the compound product contract.
+
 ## Host Adapters
 
 CameraAgent maps canonical products back into its legacy role-keyed
@@ -88,3 +109,9 @@ multi-source windows. Both adapters derive compatibility from equivalent
 capture-time profile versions, processing-profile hashes, effective exposure,
 gain/offset, and temperature setpoint rather than measured temperature. Neither
 adapter owns a durable graph or worker lifecycle in this phase.
+
+CameraAgent persists layoutless metadata with a separate versioned local product
+manifest under `derived/`; it does not fabricate a `CameraFrame`. LogicHost processing
+inputs retain durable binding names so configured reference artifacts reach the same
+auxiliary-input identity envelope. Central automatic cloud scheduling requires a
+configured durable reference designation and frozen environmental context.

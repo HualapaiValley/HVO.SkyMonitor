@@ -75,7 +75,7 @@ public sealed class DurableCaptureProcessingTests
             Assert.AreEqual(DurableProcessingNodeStatus.Completed, durable.Status);
             Assert.HasCount(1, durable.Outputs);
             var output = durable.Outputs[0];
-            Assert.AreEqual(fixture.Manifest.Descriptor.CycleEvidence, output.Descriptor.CycleEvidence);
+            Assert.AreEqual(fixture.Manifest.Descriptor.CycleEvidence, output.Descriptor!.CycleEvidence);
             Assert.AreEqual(fixture.Manifest.Descriptor.Artifact.ArtifactId, output.Descriptor.Artifact.SourceArtifactIds.Single());
             Assert.IsTrue(File.Exists(Path.Combine(root, output.PayloadRelativePath)));
             Assert.IsTrue(File.Exists(Path.Combine(root, output.SidecarRelativePath)));
@@ -87,6 +87,208 @@ public sealed class DurableCaptureProcessingTests
                 sidecar.Document!.Manifest!.Descriptor.CycleEvidence);
             Assert.AreEqual(1, Directory.EnumerateFiles(
                 Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories).Count());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task CompletedMetadataNode_RestartRestoresExactProductWithoutFabricatingFrame()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var firstStep = new MetadataProducingStep();
+            var firstInspector = new RestoredMetadataInspectingStep();
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var first = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([
+                        CreateMetadataNode(firstStep),
+                        new CaptureProcessingGraphNode(
+                            "inspect-first", firstInspector, ["metadata"], true, null, null, null, new string('F', 64))
+                    ]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    telemetry,
+                    1,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, first.Outcome);
+                Assert.AreEqual(1, firstStep.ExecutionCount);
+                Assert.IsNotNull(firstStep.Product);
+                Assert.IsTrue(firstInspector.SawExactProduct);
+            }
+
+            var restartedStep = new MetadataProducingStep();
+            var inspector = new RestoredMetadataInspectingStep(firstStep.Product!);
+            DurableProcessingNode? durable;
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var second = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([
+                        CreateMetadataNode(restartedStep),
+                        new CaptureProcessingGraphNode(
+                            "inspect", inspector, ["metadata"], true, null, null, null, new string('I', 64))
+                    ]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    telemetry,
+                    2,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, second.Outcome);
+                durable = await store.ReadNodeAsync(
+                    fixture.Manifest.Descriptor.Capture.CaptureId,
+                    "metadata",
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            Assert.AreEqual(0, restartedStep.ExecutionCount);
+            Assert.IsTrue(inspector.SawExactProduct);
+            Assert.IsNotNull(durable);
+            Assert.HasCount(1, durable.Outputs);
+            var output = durable.Outputs[0];
+            Assert.IsNull(output.Descriptor);
+            Assert.IsNotNull(output.ProductManifest);
+            Assert.IsTrue(output.PayloadRelativePath.StartsWith("derived/", StringComparison.Ordinal));
+            Assert.IsTrue(File.Exists(Path.Combine(root, output.PayloadRelativePath)));
+            Assert.IsTrue(File.Exists(Path.Combine(root, output.SidecarRelativePath)));
+            Assert.IsFalse(Directory.Exists(Path.Combine(root, "frames")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    [TestCategory("Integration")]
+    public async Task CommittedMetadataEvidenceTampering_IsRejectedOnRestart(bool tamperPayload)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            DurableProcessingOutput output;
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var step = new MetadataProducingStep();
+                await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([CreateMetadataNode(step)]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    telemetry,
+                    1,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false);
+                var durable = await store.ReadNodeAsync(
+                    fixture.Manifest.Descriptor.Capture.CaptureId,
+                    "metadata",
+                    CancellationToken.None).ConfigureAwait(false);
+                output = durable!.Outputs.Single();
+            }
+
+            var evidencePath = Path.Combine(
+                root,
+                tamperPayload ? output.PayloadRelativePath : output.SidecarRelativePath);
+            var committed = await File.ReadAllBytesAsync(evidencePath).ConfigureAwait(false);
+            var tampered = tamperPayload
+                ? committed.Select(static value => (byte)(value ^ 0x01)).ToArray()
+                : [.. "\n"u8, .. committed];
+            await File.WriteAllBytesAsync(evidencePath, tampered).ConfigureAwait(false);
+
+            using var restartedTelemetry = new CaptureProcessingTelemetry();
+            using var restartedStore = new SqliteCaptureProcessingStore(fixture.Options);
+            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
+                    CreatePersistence(fixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                    restartedTelemetry,
+                    2,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task PublishedMetadataEvidenceWithoutSqliteCommit_ReplayConvergesExactEvidence()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            DurableProcessingOutput output;
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    telemetry,
+                    1,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false);
+                output = (await store.ReadNodeAsync(
+                    fixture.Manifest.Descriptor.Capture.CaptureId,
+                    "metadata",
+                    CancellationToken.None).ConfigureAwait(false))!.Outputs.Single();
+            }
+
+            var payloadPath = Path.Combine(root, output.PayloadRelativePath);
+            var sidecarPath = Path.Combine(root, output.SidecarRelativePath);
+            var payloadBytes = await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false);
+            var sidecarBytes = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            await DeleteProcessingCommitAsync(root).ConfigureAwait(false);
+
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var replay = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    telemetry,
+                    2,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, replay.Outcome, replay.Reason);
+                Assert.HasCount(1, (await store.ReadNodeAsync(
+                    fixture.Manifest.Descriptor.Capture.CaptureId,
+                    "metadata",
+                    CancellationToken.None).ConfigureAwait(false))!.Outputs);
+            }
+
+            CollectionAssert.AreEqual(payloadBytes, await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false));
+            CollectionAssert.AreEqual(sidecarBytes, await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false));
+            Assert.IsFalse(Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).Any());
         }
         finally
         {
@@ -137,7 +339,7 @@ public sealed class DurableCaptureProcessingTests
                 CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(durable);
             Assert.HasCount(1, durable.Outputs);
-            Assert.IsNull(durable.Outputs[0].Descriptor.CycleEvidence);
+            Assert.IsNull(durable.Outputs[0].Descriptor!.CycleEvidence);
             var sidecar = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(
                 Path.Combine(root, durable.Outputs[0].SidecarRelativePath)).ConfigureAwait(false));
             Assert.IsTrue(sidecar.IsValid, sidecar.Validation.ReasonCode);
@@ -347,7 +549,7 @@ public sealed class DurableCaptureProcessingTests
                 CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(rolling);
             Assert.HasCount(1, rolling.Outputs);
-            Assert.HasCount(2, rolling.Outputs[0].Descriptor.Artifact.SourceArtifactIds);
+            Assert.HasCount(2, rolling.Outputs[0].Descriptor!.Artifact.SourceArtifactIds);
         }
         finally
         {
@@ -365,6 +567,18 @@ public sealed class DurableCaptureProcessingTests
     private static CaptureProcessingGraphNode CreateNode(ProducingStep step)
         => new("normalize", step, [], true, step.RecipeName, step.OutputRole, step.OutputVariant, new string('D', 64));
 
+    private static CaptureProcessingGraphNode CreateMetadataNode(MetadataProducingStep step)
+        => new("metadata", step, [], true, step.RecipeName, step.OutputRole, step.OutputVariant, new string('M', 64));
+
+    private static async Task DeleteProcessingCommitAsync(string root)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM processing_outputs; DELETE FROM processing_nodes;";
+        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+    }
+
     [TestMethod]
     [TestCategory("Unit")]
     public async Task OptionalTerminalNode_DoesNotBlockIndependentRequiredNode()
@@ -380,7 +594,7 @@ public sealed class DurableCaptureProcessingTests
         var result = await FrameProcessingWorker.ProcessGraphItemAsync(
             CreateEphemeralItem(), graph, null, telemetry, 1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome);
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
         Assert.AreEqual(1, required.ExecutionCount);
     }
 
@@ -419,7 +633,7 @@ public sealed class DurableCaptureProcessingTests
         var result = await FrameProcessingWorker.ProcessGraphItemAsync(
             CreateEphemeralItem(), graph, null, telemetry, 5, NullLogger.Instance, CancellationToken.None, 5).ConfigureAwait(false);
 
-        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome);
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
         Assert.AreEqual(1, required.ExecutionCount);
     }
 
@@ -605,7 +819,7 @@ public sealed class DurableCaptureProcessingTests
             1,
             NullLogger.Instance,
             CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome);
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
     }
 
     private static FrameProcessingItem CreateEphemeralItem()
@@ -702,6 +916,96 @@ public sealed class DurableCaptureProcessingTests
                 CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
             context.AssociateProcessingProduct(artifact, product);
             context.AddProcessingOutcome(ProcessingOutcome.Produced(product));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class MetadataProducingStep : ICaptureProcessingStep, ICaptureProcessingGraphStep
+    {
+        private static readonly IReadOnlySet<FrameArtifactRole> InputRoles =
+            new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+        private static readonly int[] MetadataValues = [1, 2, 3, 4];
+
+        public bool Enabled => true;
+        public int ExecutionCount { get; private set; }
+        public string Name => "metadata";
+        public int Order => 0;
+        public string RecipeName => "test-metadata";
+        public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
+        public string OutputVariant => "test-metadata-v1";
+        public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles => InputRoles;
+        public ProcessingProduct? Product { get; private set; }
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            ExecutionCount++;
+            var raw = context.Artifacts!.Raw;
+            var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+                RecipeName, "1.0.0", "test-v1", JsonSerializer.SerializeToElement(new { gridColumns = 2, gridRows = 2 })));
+            var sources = new[] { raw.ArtifactId };
+            var payload = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                schemaVersion = "test-metadata-v1",
+                values = MetadataValues
+            });
+            Product = new ProcessingProduct(
+                OutputRole,
+                OutputVariant,
+                ProcessingIdentity.CreateOutputIdentity(OutputRole, OutputVariant, recipe.IdentitySha256, sources),
+                "application/json",
+                null,
+                payload,
+                ProcessingIdentity.ComputePayloadSha256(payload),
+                recipe,
+                [new ProcessingAlgorithmIdentity("test-metadata", "v1")],
+                sources,
+                raw.Frame.Metadata.Exposure,
+                CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source").Compatibility);
+            context.AddProcessingOutcome(ProcessingOutcome.Produced(Product));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class RestoredMetadataInspectingStep : ICaptureProcessingStep
+    {
+        private readonly ProcessingProduct? _expected;
+
+        public RestoredMetadataInspectingStep()
+        {
+        }
+
+        public RestoredMetadataInspectingStep(ProcessingProduct expected)
+        {
+            _expected = expected;
+        }
+
+        public string Name => "inspect";
+        public int Order => 1;
+        public bool SawExactProduct { get; private set; }
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            var actual = context.GetDependencyProducts().Single();
+            var expected = _expected ?? actual;
+            Assert.AreEqual(expected.Role, actual.Role);
+            Assert.AreEqual(expected.Variant, actual.Variant);
+            Assert.AreEqual(expected.OutputIdentitySha256, actual.OutputIdentitySha256);
+            Assert.AreEqual(expected.MediaType, actual.MediaType);
+            Assert.AreEqual(expected.ChecksumSha256, actual.ChecksumSha256);
+            Assert.AreEqual(expected.Recipe.IdentitySha256, actual.Recipe.IdentitySha256);
+            Assert.AreEqual(expected.Recipe.Descriptor.Name, actual.Recipe.Descriptor.Name);
+            Assert.AreEqual(expected.Recipe.Descriptor.SemanticVersion, actual.Recipe.Descriptor.SemanticVersion);
+            Assert.AreEqual(expected.Recipe.Descriptor.ImplementationVersion, actual.Recipe.Descriptor.ImplementationVersion);
+            Assert.AreEqual(expected.Recipe.Descriptor.OptionsSha256, actual.Recipe.Descriptor.OptionsSha256);
+            CollectionAssert.AreEqual(expected.Algorithms.ToArray(), actual.Algorithms.ToArray());
+            CollectionAssert.AreEqual(expected.SourceArtifactIds.ToArray(), actual.SourceArtifactIds.ToArray());
+            Assert.AreEqual(expected.TotalIntegration, actual.TotalIntegration);
+            Assert.AreEqual(expected.Compatibility, actual.Compatibility);
+            CollectionAssert.AreEqual(expected.Payload.ToArray(), actual.Payload.ToArray());
+            Assert.IsNull(actual.Layout);
+            Assert.HasCount(1, context.AllArtifacts);
+            Assert.AreEqual(FrameArtifactRole.Raw, context.AllArtifacts[0].Role);
+            SawExactProduct = true;
             return ValueTask.CompletedTask;
         }
     }

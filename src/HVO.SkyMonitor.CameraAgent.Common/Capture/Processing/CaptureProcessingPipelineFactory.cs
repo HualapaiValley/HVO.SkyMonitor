@@ -210,6 +210,17 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 .Cast<ICaptureProcessingGraphStep>()
                 .Where(dependency => graphStep.AcceptedInputRoles.Contains(dependency.OutputRole))
                 .ToArray();
+            if (item.Step is ICompoundCaptureProcessingGraphStep compound)
+            {
+                var roles = matching.Select(static dependency => dependency.OutputRole).ToHashSet();
+                if (matching.Length != producers.Length || matching.Length != compound.RequiredDependencyRoles.Count ||
+                    !compound.RequiredDependencyRoles.SetEquals(roles))
+                {
+                    throw new InvalidOperationException(
+                        $"Capture processing step '{item.Step.Name}' does not have its required compound inputs.");
+                }
+                continue;
+            }
             if (matching.Length != 1 || matching.Length != producers.Length)
             {
                 throw new InvalidOperationException(
