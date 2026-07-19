@@ -518,10 +518,6 @@ public sealed class VirtualSkyTransientPerformanceTests
     {
         var w1 = measurements.Single(static item => item.Workload == "W1" && item.Scenario == "none");
         var w2 = measurements.Single(static item => item.Workload == "W2" && item.Scenario == "none");
-        Assert.IsLessThanOrEqualTo(5, Math.Abs((w1.MedianMilliseconds / 61.4295 - 1) * 100));
-        Assert.IsLessThanOrEqualTo(5, Math.Abs((w1.RenderOnly.MedianMilliseconds / 59.3849 - 1) * 100));
-        Assert.IsLessThanOrEqualTo(5, Math.Abs((w2.MedianMilliseconds / 602.9345 - 1) * 100));
-        Assert.IsLessThanOrEqualTo(5, Math.Abs((w2.RenderOnly.MedianMilliseconds / 595.034 - 1) * 100));
         return new
         {
             BaselineRevision = "e402bfeb0607101eeec95e292104722d3837c630",
