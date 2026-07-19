@@ -29,6 +29,18 @@ selected full mode, completed in approximately 7 minutes, and consumed about
 
 ## Reduced Proof
 
-The proof branch changes only this allowlisted documentation path. Record the
-initial reduced run and final current-head replacement run here before merging
-the proof pull request.
+The proof branch changed only this allowlisted documentation path. Initial run
+[`29674399230`](https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/29674399230)
+at `c61f017` selected reduced mode and produced the required result matrix:
+
+- Change Classification, Quality, and Required CI succeeded.
+- Build, Unit Tests, Integration Tests, Architecture & Publish, Migrations, and
+  Coverage were skipped.
+- Required CI accepted only that explicit reduced pull request combination.
+
+The run completed in 5 minutes 2 seconds and used approximately 5.1 aggregate
+runner-minutes. Against the 30.4 runner-minute baseline, this saves about 25.3
+runner-minutes, or 83.2%. Wall time decreased by 2 minutes 16 seconds, or 31.1%.
+
+The review-correction replacement run is recorded below after this evidence
+update receives its own reduced-mode validation.
