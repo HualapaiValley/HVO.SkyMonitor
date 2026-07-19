@@ -35,10 +35,12 @@ Create or refresh the ignored file from `.env` and the template:
 ./scripts/smoke:env init
 ```
 
-Existing `.env.smoketest` values win, so rerunning initialization preserves an
-established run. Missing smoke owner credentials are generated without being
-printed. Shared-service and CameraAgent credentials are never invented because
-they must match provisioned services.
+Existing `.env.smoketest` operator values win, so rerunning initialization
+preserves an established run. The canonical Compose/SQL/Redis/MinIO namespaces
+are re-derived in isolated mode. The development `.env` runtime root is ignored
+so a smoke cannot silently reuse ordinary application state. Missing smoke owner
+credentials are generated without being printed. Shared-service and CameraAgent
+credentials are never invented because they must match provisioned services.
 
 Non-secret host-specific values can be supplied without opening the secret file:
 
@@ -73,9 +75,11 @@ database-file, and checksum checks:
 ./scripts/smoke:env preflight
 ```
 
-Both commands fail closed and print variable names or resource classes, never
-secret values. Preflight does not contact application login/bootstrap endpoints
-because the applications may not have started yet.
+Both commands clear ambient contract variables, fail closed, and print variable
+names or resource classes, never secret values. Validation also checks that the
+selected CameraAgent JSON has the declared dimensions, cadence mode/interval,
+and night exposure. Preflight does not contact application login/bootstrap
+endpoints because the applications may not have started yet.
 
 ## Data Policy
 
@@ -91,10 +95,15 @@ intent; it does not delete data. A reset implementation must enumerate the exact
 SQL database, Redis namespace, MinIO buckets, application state, and Mailpit data
 before deletion and remain scoped to HVO.SkyMonitor resources.
 
+`preserve` and `reset-shared` accept only database `SkyMonitor`, Redis prefix
+`skymonitor:`, and buckets `skymonitor-artifacts` and
+`skymonitor-diagnostics`. This prevents a future reset consumer from accepting
+an unrelated resource merely because the confirmation token matched.
+
 For `isolated`, initialization derives run-scoped SQL database, Redis prefix,
 MinIO artifact/diagnostic bucket, and Compose project names from
 `SMOKETEST_RUN_ID`; validation rejects an isolated contract if any namespace no
-longer contains that run identity.
+longer exactly matches its canonical run-owned name.
 
 ## Contract Tests
 

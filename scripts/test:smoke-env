@@ -10,11 +10,14 @@ readonly BASE_ENV="$TEMP_DIR/base.env"
 readonly SMOKE_ENV="$TEMP_DIR/.env.smoketest"
 readonly PRISTINE_ENV="$TEMP_DIR/pristine.env"
 readonly TOOL_LOG="$TEMP_DIR/tools.log"
+readonly EARLY_BIN="$TEMP_DIR/early-bin"
 readonly TEST_DAEMON_NAME="$(hostname)"
 readonly ROUNDTRIP_SECRET='literal-"quote"-$()-`tick`-#-backslash\\'
 readonly REAL_JQ="$(command -v jq)"
+readonly REAL_DIRNAME="$(command -v dirname)"
 repo_test_run_link=""
 repo_test_target=""
+repo_test_config_link=""
 
 cleanup() {
     if [[ -n "$repo_test_run_link" ]]; then
@@ -23,9 +26,13 @@ cleanup() {
     if [[ -n "$repo_test_target" ]]; then
         rm -rf "$repo_test_target"
     fi
+    if [[ -n "$repo_test_config_link" ]]; then
+        rm -f "$repo_test_config_link"
+    fi
     rm -rf "$TEMP_DIR"
 }
 trap cleanup EXIT
+trap 'printf "Smoke environment contract test failed near line %s.\n" "$LINENO" >&2' ERR
 
 fail() {
     printf '%s\n' "$1" >&2
@@ -33,7 +40,7 @@ fail() {
 }
 
 run_smoke_env() {
-    SMOKETEST_BASE_ENV_FILE="$BASE_ENV" SMOKETEST_ENV_FILE="$SMOKE_ENV" \
+    PATH="$EARLY_BIN:$PATH" SMOKETEST_BASE_ENV_FILE="$BASE_ENV" SMOKETEST_ENV_FILE="$SMOKE_ENV" \
         "$REPO_ROOT/scripts/smoke:env" "$@"
 }
 
@@ -67,7 +74,7 @@ cp "$REPO_ROOT/.env.smoketest.template" "$BASE_ENV"
 cat >> "$BASE_ENV" <<EOF
 SMOKETEST_CONTROL_REPO_PATH=$REPO_ROOT
 SMOKETEST_REPO_HOST_PATH=$REPO_ROOT
-HVO_RUNTIME_DATA_ROOT=$REPO_ROOT/data/smoke-test
+HVO_RUNTIME_DATA_ROOT=./data
 SMOKETEST_CATALOG_ROOT_CONTROL=$TEMP_DIR/catalog
 SQLSERVER_PASSWORD=sql-secret-value
 REDIS_PASSWORD=redis-secret-value
@@ -78,10 +85,18 @@ EOF
 printf 'CAMERA_AGENT_OAUTH_CLIENT_SECRET=' >> "$BASE_ENV"
 jq -Rn --arg value "$ROUNDTRIP_SECRET" '$value' >> "$BASE_ENV"
 chmod 600 "$BASE_ENV"
+mkdir -p "$EARLY_BIN"
+cat > "$EARLY_BIN/dirname" <<'EOF'
+#!/usr/bin/env bash
+[[ ! -v SQLSERVER_PASSWORD && ! -v CAMERA_AGENT_ADMIN_PASSWORD ]] || exit 97
+exec "${REAL_DIRNAME:?}" "$@"
+EOF
+chmod +x "$EARLY_BIN/dirname"
+export REAL_DIRNAME
 
 output="$(run_smoke_env init SMOKETEST_DOCKER_HOST_NAME="$TEST_DAEMON_NAME" SMOKETEST_DOCKER_HOST_ADDRESS=192.0.2.10 SMOKETEST_LOGIC_HOST_PUBLIC_URL=http://192.0.2.10:5174 SMOKETEST_CAMERA_AGENT_PUBLIC_URL=http://192.0.2.10:5130)"
 [[ "$output" != *sql-secret-value* && "$output" != *Camera-Agent-A1-secret* ]] || fail "Initialization printed a secret."
-test "$(stat -c '%a' "$SMOKE_ENV")" = 600
+test "$(stat -c '%a' "$SMOKE_ENV")" = 600 || fail "Generated smoke environment is not mode 600."
 cp "$SMOKE_ENV" "$PRISTINE_ENV"
 run_smoke_env init >/dev/null
 cmp -s "$PRISTINE_ENV" "$SMOKE_ENV" || fail "Reinitialization did not preserve the smoke environment exactly."
@@ -100,6 +115,9 @@ cmp -s "$PRISTINE_ENV" "$SMOKE_ENV" || fail "Instrumented initialization changed
 mkdir -p "$TEMP_DIR/bin"
 cat > "$TEMP_DIR/bin/docker" <<'EOF'
 #!/usr/bin/env bash
+for name in SQLSERVER_PASSWORD REDIS_PASSWORD MINIO_ROOT_PASSWORD MINIO_SECRET_KEY CAMERA_AGENT_ADMIN_PASSWORD CAMERA_AGENT_OAUTH_CLIENT_SECRET; do
+    [[ ! -v "$name" ]] || exit 97
+done
 printf 'docker\n' >> "${TOOL_LOG:?}"
 case "${1:-}" in
     info) printf '%s\n' "${TEST_DAEMON_NAME:?}" ;;
@@ -109,11 +127,13 @@ exit 0
 EOF
 cat > "$TEMP_DIR/bin/getent" <<'EOF'
 #!/usr/bin/env bash
+[[ ! -v SQLSERVER_PASSWORD && ! -v CAMERA_AGENT_ADMIN_PASSWORD ]] || exit 97
 printf 'getent\n' >> "${TOOL_LOG:?}"
 printf '192.0.2.10 STREAM smoke-docker.example\n'
 EOF
 cat > "$TEMP_DIR/bin/timeout" <<'EOF'
 #!/usr/bin/env bash
+[[ ! -v SQLSERVER_PASSWORD && ! -v CAMERA_AGENT_ADMIN_PASSWORD ]] || exit 97
 printf 'timeout\n' >> "${TOOL_LOG:?}"
 exit 0
 EOF
@@ -127,14 +147,21 @@ output="$(run_smoke_env validate)"
 [[ "$output" != *sql-secret-value* && "$output" != *Camera-Agent-A1-secret* ]] || fail "Validation printed a secret."
 
 run_id="$(read_value SMOKETEST_RUN_ID)"
-test -n "$run_id"
-test -n "$(read_value LOGIC_HOST_SMOKE_OWNER_PASSWORD)"
-test -n "$(read_value LOGIC_HOST_SMOKE_API_KEY)"
-test "$(read_value SMOKETEST_DOCKER_HOST_NAME)" = "$TEST_DAEMON_NAME"
-test "$(read_value SMOKETEST_DOCKER_HOST_ADDRESS)" = "192.0.2.10"
-test "$(read_value CAMERA_AGENT_OAUTH_CLIENT_SECRET)" = "$ROUNDTRIP_SECRET"
-test "$(read_value SMOKETEST_RUN_STATE_PATH)" = "TestResults/smoke/$run_id/state"
-test "$(read_value SMOKETEST_EVIDENCE_ROOT)" = "TestResults/smoke/$run_id/evidence"
+test -n "$run_id" || fail "Run ID was not generated."
+test -n "$(read_value LOGIC_HOST_SMOKE_OWNER_PASSWORD)" || fail "Owner password was not generated."
+test -n "$(read_value LOGIC_HOST_SMOKE_API_KEY)" || fail "API key was not generated."
+test "$(read_value SMOKETEST_DOCKER_HOST_NAME)" = "$TEST_DAEMON_NAME" || fail "Docker host override was not retained."
+test "$(read_value SMOKETEST_DOCKER_HOST_ADDRESS)" = "192.0.2.10" || fail "Docker address override was not retained."
+test "$(read_value CAMERA_AGENT_OAUTH_CLIENT_SECRET)" = "$ROUNDTRIP_SECRET" || fail "OAuth secret did not round trip exactly."
+test "$(read_value SMOKETEST_RUN_STATE_PATH)" = "TestResults/smoke/$run_id/state" || fail "Run-state path was not derived."
+test "$(read_value SMOKETEST_EVIDENCE_ROOT)" = "TestResults/smoke/$run_id/evidence" || fail "Evidence path was not derived."
+test "$(read_value HVO_RUNTIME_DATA_ROOT)" = "$REPO_ROOT/data/smoke/$run_id" || fail "Smoke runtime root inherited the baseline development root."
+
+grep -v '^SQLSERVER_PASSWORD=' "$PRISTINE_ENV" > "$SMOKE_ENV"
+export SQLSERVER_PASSWORD=ambient-must-not-satisfy-contract
+expect_invalid "SQLSERVER_PASSWORD is required"
+unset SQLSERVER_PASSWORD
+cp "$PRISTINE_ENV" "$SMOKE_ENV"
 
 printf '\nSQLSERVER_PASSWORD=\n' >> "$SMOKE_ENV"
 expect_invalid "SQLSERVER_PASSWORD is required"
@@ -190,10 +217,34 @@ printf '\nSMOKETEST_CAMERA_CONFIG_PATH=../../etc/passwd\n' >> "$SMOKE_ENV"
 expect_invalid "CameraAgent config path must be safe and repository-relative"
 cp "$PRISTINE_ENV" "$SMOKE_ENV"
 
+printf '\nSMOKETEST_CAMERA_CONFIG_PATH=.env.smoketest.template\n' >> "$SMOKE_ENV"
+expect_invalid "CameraAgent config is invalid or missing sensor width"
+cp "$PRISTINE_ENV" "$SMOKE_ENV"
+
+printf '\nSMOKETEST_EXPECTED_WIDTH_PIXELS=999\n' >> "$SMOKE_ENV"
+expect_invalid "expected width does not match CameraAgent config"
+cp "$PRISTINE_ENV" "$SMOKE_ENV"
+
+repo_test_config_link="$REPO_ROOT/TestResults/smoke/$run_id-config.json"
+ln -s "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json" "$repo_test_config_link"
+printf '\nSMOKETEST_CAMERA_CONFIG_PATH=TestResults/smoke/%s-config.json\n' "$run_id" >> "$SMOKE_ENV"
+expect_invalid "configured path must not traverse symbolic links"
+rm "$repo_test_config_link"
+repo_test_config_link=""
+cp "$PRISTINE_ENV" "$SMOKE_ENV"
+
+override_marker="$TEMP_DIR/override-executed"
+malicious_override="SMOKETEST_X[\$(touch $override_marker)0]=value"
+if run_smoke_env init "$malicious_override" > "$TEMP_DIR/invalid.out" 2>&1; then
+    fail "Malformed override name unexpectedly passed initialization."
+fi
+grep -Fq 'invalid variable name' "$TEMP_DIR/invalid.out"
+test ! -e "$override_marker" || fail "Malformed override name executed shell content."
+
 mkdir -p "$REPO_ROOT/TestResults/smoke"
 repo_test_run_link="$REPO_ROOT/TestResults/smoke/$run_id"
 repo_test_target="$REPO_ROOT/TestResults/smoke/$run_id-other"
-test ! -e "$repo_test_run_link" && test ! -L "$repo_test_run_link"
+test ! -e "$repo_test_run_link" && test ! -L "$repo_test_run_link" || fail "Temporary run-link path already exists."
 mkdir -m 700 "$repo_test_target"
 ln -s "$repo_test_target" "$repo_test_run_link"
 expect_invalid "unsafe or non-owned ancestor"
@@ -207,6 +258,10 @@ printf '\nSMOKETEST_DATA_POLICY=reset-shared\nSMOKETEST_CONFIRM_SHARED_DATA_RESE
 expect_invalid "reset-shared requires"
 cp "$PRISTINE_ENV" "$SMOKE_ENV"
 
+printf '\nSMOKETEST_DATA_POLICY=reset-shared\nSMOKETEST_CONFIRM_SHARED_DATA_RESET=%s\nSQLSERVER_DATABASE=master\n' "$run_id" >> "$SMOKE_ENV"
+expect_invalid "reset-shared SQL database must be SkyMonitor"
+cp "$PRISTINE_ENV" "$SMOKE_ENV"
+
 chmod 644 "$SMOKE_ENV"
 expect_invalid "must use mode 600 or 400"
 chmod 600 "$SMOKE_ENV"
@@ -217,10 +272,9 @@ isolated_run_id="$(read_value SMOKETEST_RUN_ID)"
 custom_redis_prefix="skymonitor:custom:$isolated_run_id:"
 printf 'SMOKETEST_REDIS_PREFIX=' >> "$SMOKE_ENV"
 jq -Rn --arg value "$custom_redis_prefix" '$value' >> "$SMOKE_ENV"
+expect_invalid "isolated Redis prefix must equal the run-owned canonical prefix"
 run_smoke_env init >/dev/null
-test "$(read_value SMOKETEST_REDIS_PREFIX)" = "$custom_redis_prefix" || fail "Isolated reinitialization replaced a valid custom namespace."
-printf '\nSMOKETEST_REDIS_PREFIX=skymonitor:wrong-run:\n' >> "$SMOKE_ENV"
-expect_invalid "isolated Redis prefix must contain SMOKETEST_RUN_ID"
+test "$(read_value SMOKETEST_REDIS_PREFIX)" = "skymonitor:$isolated_run_id:" || fail "Isolated initialization did not restore the canonical namespace."
 cp "$PRISTINE_ENV" "$SMOKE_ENV"
 
 mkdir -p "$TEMP_DIR/catalog/current"
@@ -276,7 +330,7 @@ jq '.database.relativePath = "payload/catalog.sqlite"' "$TEMP_DIR/catalog/curren
 if PATH="$TEMP_DIR/bin:$PATH" run_smoke_env preflight > "$TEMP_DIR/invalid.out" 2>&1; then
     fail "Escaped catalog database path unexpectedly passed preflight."
 fi
-grep -Fq 'database path escapes' "$TEMP_DIR/invalid.out"
+grep -Fq 'configured path must not traverse symbolic links' "$TEMP_DIR/invalid.out"
 mv "$TEMP_DIR/catalog/current/manifest.original.json" "$TEMP_DIR/catalog/current/manifest.json"
 rm "$TEMP_DIR/catalog/current/payload"
 

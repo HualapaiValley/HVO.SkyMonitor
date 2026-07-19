@@ -3,11 +3,53 @@
 
 set -euo pipefail
 
+smoketest_env_file_override="${SMOKETEST_ENV_FILE-}"
+smoketest_base_env_file_override="${SMOKETEST_BASE_ENV_FILE-}"
+readonly SMOKE_ENVIRONMENT_VARIABLES=(
+    SMOKETEST_SCHEMA_VERSION SMOKETEST_RUN_ID SMOKETEST_DATA_POLICY
+    SMOKETEST_CONFIRM_SHARED_DATA_RESET SMOKETEST_BOOTSTRAP_MODE
+    SMOKETEST_RUN_STATE_PATH SMOKETEST_EVIDENCE_ROOT
+    SMOKETEST_COMPOSE_PROJECT SMOKETEST_REDIS_PREFIX
+    SMOKETEST_MINIO_ARTIFACT_BUCKET SMOKETEST_MINIO_DIAGNOSTICS_BUCKET
+    SMOKETEST_DOCKER_HOST_NAME SMOKETEST_DOCKER_HOST_ADDRESS
+    SMOKETEST_CONTROL_REPO_PATH SMOKETEST_REPO_HOST_PATH HVO_RUNTIME_DATA_ROOT
+    LOGIC_HOST_HTTP_PORT CAMERA_AGENT_HTTP_PORT
+    SMOKETEST_LOGIC_HOST_PUBLIC_URL SMOKETEST_CAMERA_AGENT_PUBLIC_URL
+    SQLSERVER_HOST SQLSERVER_PORT SQLSERVER_DATABASE SQLSERVER_USER SQLSERVER_PASSWORD
+    REDIS_HOST REDIS_PORT REDIS_USER REDIS_PASSWORD
+    MINIO_HOST MINIO_API_PORT MINIO_CONSOLE_PORT MINIO_ROOT_USER MINIO_ROOT_PASSWORD
+    MINIO_ACCESS_KEY MINIO_SECRET_KEY SMTP_HOST SMTP_PORT SMTP_WEB_PORT SMTP_FROM
+    OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL
+    LOGIC_HOST_SMOKE_OWNER_EMAIL LOGIC_HOST_SMOKE_OWNER_USERNAME
+    LOGIC_HOST_SMOKE_OWNER_PASSWORD LOGIC_HOST_SMOKE_API_KEY
+    CAMERA_AGENT_ADMIN_EMAIL CAMERA_AGENT_ADMIN_PASSWORD
+    CAMERA_AGENT_OAUTH_CLIENT_ID CAMERA_AGENT_OAUTH_CLIENT_SECRET
+    CAMERA_AGENT_LOGIC_BASEURL CAMERA_AGENT_IDENTITY_URL
+    SMOKETEST_OBSERVATORY_NAME SMOKETEST_OBSERVATORY_LATITUDE
+    SMOKETEST_OBSERVATORY_LONGITUDE SMOKETEST_OBSERVATORY_ELEVATION_METERS
+    SMOKETEST_OBSERVATORY_TIMEZONE SMOKETEST_CAMERA_AGENT_FRIENDLY_NAME
+    SMOKETEST_CAMERA_CONFIG_PATH SMOKETEST_EXPECTED_WIDTH_PIXELS
+    SMOKETEST_EXPECTED_HEIGHT_PIXELS SMOKETEST_EXPOSURE_SECONDS
+    SMOKETEST_CADENCE_SECONDS SMOKETEST_CADENCE_MODE
+    SMOKETEST_CATALOG_ROOT_CONTROL SMOKETEST_CATALOG_KIND SMOKETEST_CATALOG_PACKAGE_VERSION
+    SMOKETEST_CATALOG_VERSION SMOKETEST_CATALOG_SCHEMA_VERSION
+    SMOKETEST_CATALOG_PREPROCESSING_VERSION SMOKETEST_CATALOG_DATABASE_SHA256
+    SMOKETEST_CATALOG_ROW_COUNT
+)
+for startup_name in "${SMOKE_ENVIRONMENT_VARIABLES[@]}"; do
+    unset "$startup_name" 2>/dev/null || true
+done
+for startup_name in ${!SMOKETEST_@}; do
+    unset "$startup_name"
+done
+unset startup_name
+
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly TEMPLATE_FILE="$REPO_ROOT/.env.smoketest.template"
-readonly ENV_FILE="${SMOKETEST_ENV_FILE:-$REPO_ROOT/.env.smoketest}"
-readonly BASE_ENV_FILE="${SMOKETEST_BASE_ENV_FILE:-$REPO_ROOT/.env}"
+readonly ENV_FILE="${smoketest_env_file_override:-$REPO_ROOT/.env.smoketest}"
+readonly BASE_ENV_FILE="${smoketest_base_env_file_override:-$REPO_ROOT/.env}"
+unset smoketest_env_file_override smoketest_base_env_file_override
 initialize_temporary=""
 
 cleanup() {
@@ -45,7 +87,7 @@ is_smoke_variable() {
 }
 
 load_env_file() {
-    local path="$1"
+    local path="$1" source_kind="${2:-contract}"
     [[ -f "$path" && ! -L "$path" ]] || fail "environment file is missing or unsafe: $path"
     local line name value line_number=0
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -56,6 +98,9 @@ load_env_file() {
         value="${line#*=}"
         [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "$path:$line_number has an invalid variable name"
         is_smoke_variable "$name" || continue
+        if [[ "$source_kind" == "baseline" && "$name" == "HVO_RUNTIME_DATA_ROOT" ]]; then
+            continue
+        fi
         if [[ "$value" == \"* ]]; then
             [[ "${value: -1}" == '"' ]] || fail "$path:$line_number has mismatched quotes"
             value="$(printf '%s' "$value" | jq -Rer 'fromjson' 2>/dev/null)" || fail "$path:$line_number has invalid JSON quoting"
@@ -66,6 +111,16 @@ load_env_file() {
         [[ "$value" != *$'\r'* && "$value" != *$'\n'* ]] || fail "$path:$line_number contains a line break"
         printf -v "$name" '%s' "$value"
     done < "$path"
+}
+
+clear_smoke_variables() {
+    local name
+    for name in ${!SMOKETEST_@}; do
+        unset "$name"
+    done
+    for name in "${SMOKE_ENVIRONMENT_VARIABLES[@]}"; do
+        unset "$name" 2>/dev/null || true
+    done
 }
 
 require_private_file() {
@@ -96,10 +151,11 @@ write_variable() {
 
 initialize() {
     command -v jq >/dev/null || fail "jq is required"
+    clear_smoke_variables
     load_env_file "$TEMPLATE_FILE"
     if [[ -f "$BASE_ENV_FILE" ]]; then
         require_private_file "$BASE_ENV_FILE"
-        load_env_file "$BASE_ENV_FILE"
+        load_env_file "$BASE_ENV_FILE" baseline
     fi
     if [[ -f "$ENV_FILE" ]]; then
         require_private_file "$ENV_FILE"
@@ -111,6 +167,7 @@ initialize() {
         [[ "$assignment" == *=* ]] || fail "init override must use NAME=value"
         name="${assignment%%=*}"
         value="${assignment#*=}"
+        [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "init override has an invalid variable name"
         case "$name" in
             SMOKETEST_*|HVO_RUNTIME_DATA_ROOT) printf -v "$name" '%s' "$value" ;;
             *) fail "init override is not allowed: $name" ;;
@@ -131,18 +188,10 @@ initialize() {
     SMOKETEST_MINIO_ARTIFACT_BUCKET="${SMOKETEST_MINIO_ARTIFACT_BUCKET:-skymonitor-artifacts}"
     SMOKETEST_MINIO_DIAGNOSTICS_BUCKET="${SMOKETEST_MINIO_DIAGNOSTICS_BUCKET:-skymonitor-diagnostics}"
     if [[ "$SMOKETEST_DATA_POLICY" == "isolated" ]]; then
-        if [[ -z "$SQLSERVER_DATABASE" || "$SQLSERVER_DATABASE" == "SkyMonitor" ]]; then
-            SQLSERVER_DATABASE="SkyMonitorSmoke_$namespace_token"
-        fi
-        if [[ "$SMOKETEST_REDIS_PREFIX" == "skymonitor:" ]]; then
-            SMOKETEST_REDIS_PREFIX="skymonitor:$SMOKETEST_RUN_ID:"
-        fi
-        if [[ "$SMOKETEST_MINIO_ARTIFACT_BUCKET" == "skymonitor-artifacts" ]]; then
-            SMOKETEST_MINIO_ARTIFACT_BUCKET="hvo-$bucket_token-artifacts"
-        fi
-        if [[ "$SMOKETEST_MINIO_DIAGNOSTICS_BUCKET" == "skymonitor-diagnostics" ]]; then
-            SMOKETEST_MINIO_DIAGNOSTICS_BUCKET="hvo-$bucket_token-diagnostics"
-        fi
+        SQLSERVER_DATABASE="SkyMonitorSmoke_$namespace_token"
+        SMOKETEST_REDIS_PREFIX="skymonitor:$SMOKETEST_RUN_ID:"
+        SMOKETEST_MINIO_ARTIFACT_BUCKET="hvo-$bucket_token-artifacts"
+        SMOKETEST_MINIO_DIAGNOSTICS_BUCKET="hvo-$bucket_token-diagnostics"
     fi
     LOGIC_HOST_SMOKE_OWNER_PASSWORD="${LOGIC_HOST_SMOKE_OWNER_PASSWORD:-$(generate_password)}"
     LOGIC_HOST_SMOKE_API_KEY="${LOGIC_HOST_SMOKE_API_KEY:-$(generate_key)}"
@@ -152,39 +201,8 @@ initialize() {
     {
         printf '# Generated by scripts/smoke:env. Owner-only; never commit.\n'
         printf '# Generated device/bootstrap state belongs in SMOKETEST_RUN_STATE_PATH, not this file.\n\n'
-        local variables=(
-            SMOKETEST_SCHEMA_VERSION SMOKETEST_RUN_ID SMOKETEST_DATA_POLICY
-            SMOKETEST_CONFIRM_SHARED_DATA_RESET SMOKETEST_BOOTSTRAP_MODE
-            SMOKETEST_RUN_STATE_PATH SMOKETEST_EVIDENCE_ROOT
-            SMOKETEST_COMPOSE_PROJECT SMOKETEST_REDIS_PREFIX
-            SMOKETEST_MINIO_ARTIFACT_BUCKET SMOKETEST_MINIO_DIAGNOSTICS_BUCKET
-            SMOKETEST_DOCKER_HOST_NAME SMOKETEST_DOCKER_HOST_ADDRESS
-            SMOKETEST_CONTROL_REPO_PATH SMOKETEST_REPO_HOST_PATH HVO_RUNTIME_DATA_ROOT
-            LOGIC_HOST_HTTP_PORT CAMERA_AGENT_HTTP_PORT
-            SMOKETEST_LOGIC_HOST_PUBLIC_URL SMOKETEST_CAMERA_AGENT_PUBLIC_URL
-            SQLSERVER_HOST SQLSERVER_PORT SQLSERVER_DATABASE SQLSERVER_USER SQLSERVER_PASSWORD
-            REDIS_HOST REDIS_PORT REDIS_USER REDIS_PASSWORD
-            MINIO_HOST MINIO_API_PORT MINIO_CONSOLE_PORT MINIO_ROOT_USER MINIO_ROOT_PASSWORD
-            MINIO_ACCESS_KEY MINIO_SECRET_KEY SMTP_HOST SMTP_PORT SMTP_WEB_PORT SMTP_FROM
-            OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL
-            LOGIC_HOST_SMOKE_OWNER_EMAIL LOGIC_HOST_SMOKE_OWNER_USERNAME
-            LOGIC_HOST_SMOKE_OWNER_PASSWORD LOGIC_HOST_SMOKE_API_KEY
-            CAMERA_AGENT_ADMIN_EMAIL CAMERA_AGENT_ADMIN_PASSWORD
-            CAMERA_AGENT_OAUTH_CLIENT_ID CAMERA_AGENT_OAUTH_CLIENT_SECRET
-            CAMERA_AGENT_LOGIC_BASEURL CAMERA_AGENT_IDENTITY_URL
-            SMOKETEST_OBSERVATORY_NAME SMOKETEST_OBSERVATORY_LATITUDE
-            SMOKETEST_OBSERVATORY_LONGITUDE SMOKETEST_OBSERVATORY_ELEVATION_METERS
-            SMOKETEST_OBSERVATORY_TIMEZONE SMOKETEST_CAMERA_AGENT_FRIENDLY_NAME
-            SMOKETEST_CAMERA_CONFIG_PATH SMOKETEST_EXPECTED_WIDTH_PIXELS
-            SMOKETEST_EXPECTED_HEIGHT_PIXELS SMOKETEST_EXPOSURE_SECONDS
-            SMOKETEST_CADENCE_SECONDS SMOKETEST_CADENCE_MODE
-            SMOKETEST_CATALOG_ROOT_CONTROL SMOKETEST_CATALOG_KIND SMOKETEST_CATALOG_PACKAGE_VERSION
-            SMOKETEST_CATALOG_VERSION
-            SMOKETEST_CATALOG_SCHEMA_VERSION SMOKETEST_CATALOG_PREPROCESSING_VERSION
-            SMOKETEST_CATALOG_DATABASE_SHA256 SMOKETEST_CATALOG_ROW_COUNT
-        )
         local variable
-        for variable in "${variables[@]}"; do
+        for variable in "${SMOKE_ENVIRONMENT_VARIABLES[@]}"; do
             write_variable "$variable"
         done
     } > "$initialize_temporary"
@@ -270,6 +288,25 @@ require_safe_existing_ancestors() {
     done
 }
 
+reject_symlink_components() {
+    local base="$1" relative="$2" current="$1" component
+    IFS='/' read -r -a components <<< "$relative"
+    for component in "${components[@]}"; do
+        current="$current/$component"
+        [[ ! -L "$current" ]] || fail "configured path must not traverse symbolic links"
+    done
+}
+
+timespan_seconds() {
+    local value="$1"
+    [[ "$value" =~ ^([0-9]+):([0-5][0-9]):([0-5][0-9])([.][0-9]+)?$ ]] ||
+        fail "CameraAgent cadence/exposure must use HH:MM:SS[.fraction]"
+    local hours=$((10#${BASH_REMATCH[1]})) minutes=$((10#${BASH_REMATCH[2]})) seconds=$((10#${BASH_REMATCH[3]}))
+    local fraction="${BASH_REMATCH[4]:-.0}"
+    jq -en --argjson hours "$hours" --argjson minutes "$minutes" --argjson seconds "$seconds" \
+        --argjson fraction "0$fraction" '$hours * 3600 + $minutes * 60 + $seconds + $fraction'
+}
+
 validate_loaded() {
     command -v jq >/dev/null || fail "jq is required"
     local required=(
@@ -307,12 +344,17 @@ validate_loaded() {
     fi
     local namespace_token="${SMOKETEST_RUN_ID//-/_}"
     local bucket_token="${SMOKETEST_RUN_ID,,}"
+    [[ "$SMOKETEST_COMPOSE_PROJECT" == "hvo-smoke-$bucket_token" ]] || fail "Compose project must equal the run-owned canonical name"
     if [[ "$SMOKETEST_DATA_POLICY" == "isolated" ]]; then
-        [[ "$SMOKETEST_COMPOSE_PROJECT" == *"$bucket_token"* ]] || fail "isolated Compose project must contain the lowercase run namespace"
-        [[ "$SQLSERVER_DATABASE" == *"$namespace_token"* ]] || fail "isolated SQL database must contain the run namespace"
-        [[ "$SMOKETEST_REDIS_PREFIX" == *"$SMOKETEST_RUN_ID"* ]] || fail "isolated Redis prefix must contain SMOKETEST_RUN_ID"
-        [[ "$SMOKETEST_MINIO_ARTIFACT_BUCKET" == *"$bucket_token"* ]] || fail "isolated artifact bucket must contain SMOKETEST_RUN_ID"
-        [[ "$SMOKETEST_MINIO_DIAGNOSTICS_BUCKET" == *"$bucket_token"* ]] || fail "isolated diagnostics bucket must contain SMOKETEST_RUN_ID"
+        [[ "$SQLSERVER_DATABASE" == "SkyMonitorSmoke_$namespace_token" ]] || fail "isolated SQL database must equal the run-owned canonical name"
+        [[ "$SMOKETEST_REDIS_PREFIX" == "skymonitor:$SMOKETEST_RUN_ID:" ]] || fail "isolated Redis prefix must equal the run-owned canonical prefix"
+        [[ "$SMOKETEST_MINIO_ARTIFACT_BUCKET" == "hvo-$bucket_token-artifacts" ]] || fail "isolated artifact bucket must equal the run-owned canonical name"
+        [[ "$SMOKETEST_MINIO_DIAGNOSTICS_BUCKET" == "hvo-$bucket_token-diagnostics" ]] || fail "isolated diagnostics bucket must equal the run-owned canonical name"
+    else
+        [[ "$SQLSERVER_DATABASE" == "SkyMonitor" ]] || fail "$SMOKETEST_DATA_POLICY SQL database must be SkyMonitor"
+        [[ "$SMOKETEST_REDIS_PREFIX" == "skymonitor:" ]] || fail "$SMOKETEST_DATA_POLICY Redis prefix must be skymonitor:"
+        [[ "$SMOKETEST_MINIO_ARTIFACT_BUCKET" == "skymonitor-artifacts" ]] || fail "$SMOKETEST_DATA_POLICY artifact bucket must be skymonitor-artifacts"
+        [[ "$SMOKETEST_MINIO_DIAGNOSTICS_BUCKET" == "skymonitor-diagnostics" ]] || fail "$SMOKETEST_DATA_POLICY diagnostics bucket must be skymonitor-diagnostics"
     fi
     [[ "$SMOKETEST_COMPOSE_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Compose project name must contain only lowercase letters, digits, hyphens, and underscores"
     [[ "$SMOKETEST_MINIO_ARTIFACT_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || fail "artifact bucket name is invalid"
@@ -392,10 +434,29 @@ validate_loaded() {
         fail "observatory timezone is not installed or is unsafe"
     [[ "$SMOKETEST_CAMERA_CONFIG_PATH" != /* && "$SMOKETEST_CAMERA_CONFIG_PATH" != *..* ]] ||
         fail "CameraAgent config path must be safe and repository-relative"
-    local camera_config_path
-    camera_config_path="$(realpath -e "$SMOKETEST_CONTROL_REPO_PATH/$SMOKETEST_CAMERA_CONFIG_PATH")" || fail "CameraAgent config does not exist"
-    [[ "$camera_config_path" == "$SMOKETEST_CONTROL_REPO_PATH/"* && -f "$camera_config_path" && ! -L "$camera_config_path" ]] ||
+    reject_symlink_components "$SMOKETEST_CONTROL_REPO_PATH" "$SMOKETEST_CAMERA_CONFIG_PATH"
+    local configured_camera_path="$SMOKETEST_CONTROL_REPO_PATH/$SMOKETEST_CAMERA_CONFIG_PATH" camera_config_path
+    camera_config_path="$(realpath -e "$configured_camera_path")" || fail "CameraAgent config does not exist"
+    [[ "$camera_config_path" == "$SMOKETEST_CONTROL_REPO_PATH/"* && -f "$configured_camera_path" ]] ||
         fail "CameraAgent config must be a regular file inside the repository"
+    jq -e '.rig.sensor.widthPixels | numbers' "$camera_config_path" >/dev/null 2>&1 || fail "CameraAgent config is invalid or missing sensor width"
+    jq -e '.rig.sensor.heightPixels | numbers' "$camera_config_path" >/dev/null 2>&1 || fail "CameraAgent config is invalid or missing sensor height"
+    local config_width config_height config_cadence_mode config_interval config_exposure
+    config_width="$(jq -er '.rig.sensor.widthPixels' "$camera_config_path")"
+    config_height="$(jq -er '.rig.sensor.heightPixels' "$camera_config_path")"
+    config_cadence_mode="$(jq -er '.rig.pipeline.cadenceMode // "MinimumStartInterval"' "$camera_config_path")"
+    config_interval="$(jq -er '.rig.pipeline.captureInterval' "$camera_config_path")"
+    config_exposure="$(jq -er '.rig.pipeline.nightExposure' "$camera_config_path")"
+    [[ "$config_width" == "$SMOKETEST_EXPECTED_WIDTH_PIXELS" ]] || fail "expected width does not match CameraAgent config"
+    [[ "$config_height" == "$SMOKETEST_EXPECTED_HEIGHT_PIXELS" ]] || fail "expected height does not match CameraAgent config"
+    [[ "$config_cadence_mode" == "$SMOKETEST_CADENCE_MODE" ]] || fail "cadence mode does not match CameraAgent config"
+    local config_interval_seconds config_exposure_seconds
+    config_interval_seconds="$(timespan_seconds "$config_interval")"
+    config_exposure_seconds="$(timespan_seconds "$config_exposure")"
+    jq -en --arg configured "$config_interval_seconds" --arg expected "$SMOKETEST_CADENCE_SECONDS" \
+        '$configured | tonumber == ($expected | tonumber)' >/dev/null || fail "cadence seconds do not match CameraAgent config"
+    jq -en --arg configured "$config_exposure_seconds" --arg expected "$SMOKETEST_EXPOSURE_SECONDS" \
+        '$configured | tonumber == ($expected | tonumber)' >/dev/null || fail "exposure seconds do not match CameraAgent night exposure"
 
     for name in SMOKETEST_DEVICE_ID SMOKETEST_VERIFICATION_CODE SMOKETEST_REGISTRATION_ID SMOKETEST_PUBLIC_ID \
         SMOKETEST_DEVICE_PUBLIC_ID SMOKETEST_ENVELOPE SMOKETEST_DEVICE_SECRET; do
@@ -405,6 +466,7 @@ validate_loaded() {
 
 validate() {
     require_private_file "$ENV_FILE"
+    clear_smoke_variables
     load_env_file "$ENV_FILE"
     validate_loaded
     printf 'Smoke environment validation passed (schema %s, run %s).\n' "$SMOKETEST_SCHEMA_VERSION" "$SMOKETEST_RUN_ID"
@@ -417,6 +479,7 @@ probe_tcp() {
 
 preflight() {
     require_private_file "$ENV_FILE"
+    clear_smoke_variables
     load_env_file "$ENV_FILE"
     validate_loaded
     command -v docker >/dev/null || fail "docker is required"
@@ -496,8 +559,9 @@ preflight() {
     local relative_path database_path actual_sha
     relative_path="$(jq -er '.database.relativePath' "$manifest")"
     [[ "$relative_path" != /* && "$relative_path" != *..* ]] || fail "catalog database path is unsafe"
+    reject_symlink_components "$current_target" "$relative_path"
     database_path="$(realpath -e "$current_target/$relative_path")" || fail "catalog database is missing"
-    [[ "$database_path" == "$current_target/"* && -f "$database_path" && ! -L "$database_path" ]] ||
+    [[ "$database_path" == "$current_target/"* && -f "$database_path" ]] ||
         fail "catalog database path escapes the active catalog version"
     actual_sha="$(sha256sum "$database_path")"
     [[ "${actual_sha%% *}" == "${SMOKETEST_CATALOG_DATABASE_SHA256,,}" ]] || fail "catalog database checksum does not match"
