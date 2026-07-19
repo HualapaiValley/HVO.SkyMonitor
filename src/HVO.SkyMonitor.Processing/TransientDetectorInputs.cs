@@ -257,6 +257,7 @@ public static class TransientDetectorInputFactory
             levels.WhiteLevel,
             converted.PixelData.Length);
         var normalizedSource = TransientContractJson.NormalizeSourceEvidence(source);
+        var transform = converted.SourceToOutputTransform;
         var descriptor = new TransientDetectorInputDescriptorV1(
             TransientDetectorInputDescriptorV1.CurrentSchemaVersion,
             string.Empty,
@@ -269,11 +270,11 @@ public static class TransientDetectorInputFactory
             artifact.Compatibility,
             new ProcessingAlgorithmIdentity("linear16-detector-input", converted.AlgorithmVersion),
             new TransientDetectorTransformV1(
-                Linear16DetectorInputConverter.TransformVersion,
-                layout.PixelFormat == CameraPixelFormat.Mono16 ? 1 : 0.5,
-                layout.PixelFormat == CameraPixelFormat.Mono16 ? 1 : 0.5,
-                0,
-                0));
+                transform.Version,
+                transform.ScaleX,
+                transform.ScaleY,
+                transform.OffsetX,
+                transform.OffsetY));
         descriptor = descriptor with
         {
             InputIdentitySha256 = TransientContractJson.ComputeDetectorInputIdentitySha256(descriptor)

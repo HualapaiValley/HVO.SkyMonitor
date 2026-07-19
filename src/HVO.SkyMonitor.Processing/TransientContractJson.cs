@@ -235,16 +235,32 @@ public static class TransientContractJson
         {
             return Failure(TransientContractReasonCodes.UnsupportedSchema, "schemaVersion");
         }
-        if (transientEvent.EventId == Guid.Empty || transientEvent.EventVersionId == Guid.Empty ||
-            transientEvent.EventId == transientEvent.EventVersionId ||
-            transientEvent.PreviousEventVersionId == Guid.Empty ||
-            transientEvent.PreviousEventVersionId == transientEvent.EventId ||
-            transientEvent.PreviousEventVersionId == transientEvent.EventVersionId ||
-            !Bounded(transientEvent.AgentId, MaximumIdentityLength) || transientEvent.Version < 1 ||
-            (transientEvent.Version == 1) != (transientEvent.PreviousEventVersionId is null) ||
-            (transientEvent.Version == 1) != (transientEvent.PreviousVersionCreatedUtc is null))
+        if (transientEvent.EventId == Guid.Empty)
+        {
+            return Failure(TransientContractReasonCodes.InvalidIdentity, "eventId");
+        }
+        if (transientEvent.EventVersionId == Guid.Empty || transientEvent.EventId == transientEvent.EventVersionId)
         {
             return Failure(TransientContractReasonCodes.InvalidIdentity, "eventVersionId");
+        }
+        if (transientEvent.PreviousEventVersionId == Guid.Empty ||
+            transientEvent.PreviousEventVersionId == transientEvent.EventId ||
+            transientEvent.PreviousEventVersionId == transientEvent.EventVersionId ||
+            (transientEvent.Version == 1) != (transientEvent.PreviousEventVersionId is null))
+        {
+            return Failure(TransientContractReasonCodes.InvalidIdentity, "previousEventVersionId");
+        }
+        if ((transientEvent.Version == 1) != (transientEvent.PreviousVersionCreatedUtc is null))
+        {
+            return Failure(TransientContractReasonCodes.InvalidIdentity, "previousVersionCreatedUtc");
+        }
+        if (!Bounded(transientEvent.AgentId, MaximumIdentityLength))
+        {
+            return Failure(TransientContractReasonCodes.InvalidIdentity, "agentId");
+        }
+        if (transientEvent.Version < 1)
+        {
+            return Failure(TransientContractReasonCodes.InvalidIdentity, "version");
         }
         if (!Enum.IsDefined(transientEvent.State))
         {

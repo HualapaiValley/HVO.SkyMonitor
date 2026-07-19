@@ -437,10 +437,12 @@ public sealed class TransientContractTests
         {
             PreviousVersionCreatedUtc = value.VersionCreatedUtc
         });
-        AssertReason(TransientContractReasonCodes.InvalidIdentity, value with
+        var invalidPredecessor = TransientContractJson.Validate(value with
         {
             PreviousEventVersionId = Guid.Empty
         });
+        Assert.AreEqual(TransientContractReasonCodes.InvalidIdentity, invalidPredecessor.ReasonCode);
+        Assert.AreEqual("previousEventVersionId", invalidPredecessor.FieldPath);
         AssertReason(TransientContractReasonCodes.InvalidIdentity, value with
         {
             PreviousEventVersionId = value.EventId
