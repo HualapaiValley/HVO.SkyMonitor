@@ -225,6 +225,7 @@ printf '\nSMOKETEST_EXPECTED_WIDTH_PIXELS=999\n' >> "$SMOKE_ENV"
 expect_invalid "expected width does not match CameraAgent config"
 cp "$PRISTINE_ENV" "$SMOKE_ENV"
 
+mkdir -p "$REPO_ROOT/TestResults/smoke"
 repo_test_config_link="$REPO_ROOT/TestResults/smoke/$run_id-config.json"
 ln -s "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json" "$repo_test_config_link"
 printf '\nSMOKETEST_CAMERA_CONFIG_PATH=TestResults/smoke/%s-config.json\n' "$run_id" >> "$SMOKE_ENV"
@@ -241,7 +242,6 @@ fi
 grep -Fq 'invalid variable name' "$TEMP_DIR/invalid.out"
 test ! -e "$override_marker" || fail "Malformed override name executed shell content."
 
-mkdir -p "$REPO_ROOT/TestResults/smoke"
 repo_test_run_link="$REPO_ROOT/TestResults/smoke/$run_id"
 repo_test_target="$REPO_ROOT/TestResults/smoke/$run_id-other"
 test ! -e "$repo_test_run_link" && test ! -L "$repo_test_run_link" || fail "Temporary run-link path already exists."
