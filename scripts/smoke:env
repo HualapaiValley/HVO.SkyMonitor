@@ -70,6 +70,13 @@ fail() {
     exit 1
 }
 
+require_commands() {
+    local command_name
+    for command_name in "$@"; do
+        command -v "$command_name" >/dev/null || fail "$command_name is required"
+    done
+}
+
 is_smoke_variable() {
     case "$1" in
         SMOKETEST_*|HVO_RUNTIME_DATA_ROOT|LOGIC_HOST_HTTP_PORT|CAMERA_AGENT_HTTP_PORT|\
@@ -150,8 +157,8 @@ write_variable() {
 }
 
 initialize() {
-    command -v jq >/dev/null || fail "jq is required"
     clear_smoke_variables
+    require_commands jq openssl date mktemp chmod mv stat id realpath
     load_env_file "$TEMPLATE_FILE"
     if [[ -f "$BASE_ENV_FILE" ]]; then
         require_private_file "$BASE_ENV_FILE"
@@ -465,8 +472,9 @@ validate_loaded() {
 }
 
 validate() {
-    require_private_file "$ENV_FILE"
     clear_smoke_variables
+    require_commands jq stat id realpath
+    require_private_file "$ENV_FILE"
     load_env_file "$ENV_FILE"
     validate_loaded
     printf 'Smoke environment validation passed (schema %s, run %s).\n' "$SMOKETEST_SCHEMA_VERSION" "$SMOKETEST_RUN_ID"
@@ -478,8 +486,9 @@ probe_tcp() {
 }
 
 preflight() {
-    require_private_file "$ENV_FILE"
     clear_smoke_variables
+    require_commands jq stat id realpath docker getent timeout sha256sum hostname dirname
+    require_private_file "$ENV_FILE"
     load_env_file "$ENV_FILE"
     validate_loaded
     command -v docker >/dev/null || fail "docker is required"
