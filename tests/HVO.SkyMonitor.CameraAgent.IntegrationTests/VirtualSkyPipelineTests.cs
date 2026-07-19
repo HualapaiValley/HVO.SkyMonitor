@@ -530,9 +530,7 @@ public sealed class VirtualSkyPipelineTests
 
     private static OutboxCheckpoint ReadPendingOutboxCheckpoint()
     {
-        var path = Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db");
-        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
-        connection.Open();
+        using var connection = OpenOutboxReadConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT idempotency_key, artifact_id, payload_sha256, payload_length
@@ -557,8 +555,7 @@ public sealed class VirtualSkyPipelineTests
         {
             return false;
         }
-        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
-        connection.Open();
+        using var connection = OpenOutboxReadConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT status, acknowledgement
@@ -596,8 +593,7 @@ public sealed class VirtualSkyPipelineTests
         {
             return 0;
         }
-        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
-        connection.Open();
+        using var connection = OpenOutboxReadConnection();
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE status <> 'acknowledged';";
         return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
@@ -706,9 +702,7 @@ public sealed class VirtualSkyPipelineTests
 
     private static string ReadOutboxState(string idempotencyKey)
     {
-        var path = Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db");
-        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
-        connection.Open();
+        using var connection = OpenOutboxReadConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT status || ':' || COALESCE(last_reason, '') || ':ack=' ||
@@ -731,6 +725,20 @@ public sealed class VirtualSkyPipelineTests
         using var reader = command.ExecuteReader();
         reader.Read();
         return $"selected={selected}; counts=pending:{reader.GetInt64(0)},leased:{reader.GetInt64(1)},retry:{reader.GetInt64(2)},acknowledged:{reader.GetInt64(3)},quarantined:{reader.GetInt64(4)}";
+    }
+
+    private static SqliteConnection OpenOutboxReadConnection()
+    {
+        var path = Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db");
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadOnly,
+            DefaultTimeout = 5,
+            Pooling = false
+        }.ToString());
+        connection.Open();
+        return connection;
     }
 
     private sealed record OutboxCheckpoint(
