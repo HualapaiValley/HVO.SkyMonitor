@@ -91,9 +91,12 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureProcessingTelemetry>();
         services.AddSingleton<SqliteCaptureProcessingStore>();
         services.AddSingleton<CaptureProcessingPersistence>();
+        services.AddSingleton<CameraAgentClearReferenceLoader>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
         services.AddSingleton<IProcessingRetentionHolds>(provider =>
-            provider.GetRequiredService<CaptureProcessingPersistence>());
+            new CompositeProcessingRetentionHolds(
+                provider.GetRequiredService<CaptureProcessingPersistence>(),
+                provider.GetRequiredService<CameraAgentClearReferenceLoader>()));
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         services.AddSingleton<CameraAgentRecipeExecutionAdapter>();
         services.AddSingleton<ArtifactOutboxState>();
@@ -115,6 +118,12 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "VirtualSkyCloudObservation", typeof(VirtualSkyCloudObservationProcessingStep),
             typeof(VirtualSkyCloudObservationProcessingStepOptions), 10, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "CloudAssessment", typeof(CloudAssessmentCaptureProcessingStep),
+            typeof(CloudAssessmentProcessingStepOptions), 80, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "WeatherCloudOverlay", typeof(WeatherCloudOverlayCaptureProcessingStep),
+            typeof(WeatherCloudOverlayProcessingStepOptions), 90, AutoInclude: false));
         services.AddHostedService<CameraAgentConfigurationInitializer>();
         services.AddHostedService(provider => provider.GetRequiredService<CaptureDistributionService>());
         services.AddHostedService<CameraCaptureService>();

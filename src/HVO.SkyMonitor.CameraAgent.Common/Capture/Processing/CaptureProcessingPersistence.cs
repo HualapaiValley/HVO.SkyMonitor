@@ -7,6 +7,8 @@ using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using System.Diagnostics;
+using System.Globalization;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -48,7 +50,14 @@ internal sealed class CaptureProcessingPersistence(
         foreach (var output in durableNode.Outputs)
         {
             var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
-            context.RestoreProduct(durableNode.NodeId, restored.Artifact, restored.Product);
+            if (restored.Artifact is not null)
+            {
+                context.RestoreProduct(durableNode.NodeId, restored.Artifact, restored.Product);
+            }
+            else
+            {
+                context.RestoreProduct(durableNode.NodeId, restored.ArtifactId, restored.Product);
+            }
             _telemetry.RecordRecovered(restored.Product.Role, restored.Product.Variant);
         }
         _logger.CaptureProcessingNodeRecovered(durableNode.NodeId, durableNode.Outputs.Count);
@@ -71,14 +80,14 @@ internal sealed class CaptureProcessingPersistence(
         {
             var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
             artifacts.Add(new ProcessingArtifact(
-                restored.Artifact.ArtifactId,
+                restored.ArtifactId,
                 restored.Product.Role,
                 restored.Product.Variant,
                 restored.Product.Recipe.IdentitySha256,
                 restored.Product.MediaType,
                 restored.Product.Layout,
                 restored.Product.Payload,
-                restored.Artifact.Frame.TimestampUtc,
+                restored.CreatedUtc,
                 restored.Product.TotalIntegration,
                 restored.Product.Compatibility));
         }
@@ -153,26 +162,46 @@ internal sealed class CaptureProcessingPersistence(
             {
                 var stopwatch = Stopwatch.StartNew();
                 using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-artifact.persist");
-                var artifact = context.FindArtifact(product);
-                var descriptor = DerivativeDescriptorFactory.Create(
-                    rawCapture.Manifest.Descriptor,
-                    artifact.ArtifactId,
-                    artifact.Frame.Metadata.SourceId ?? node.Id,
-                    product);
-                var stored = await _frameStorage.SaveAsync(
-                    _storageRoot, artifact, descriptor, cancellationToken).ConfigureAwait(false);
-                outputs.Add(new DurableProcessingOutput(
-                    product.OutputIdentitySha256,
-                    artifact.ArtifactId,
-                    NormalizeRelativePath(stored.RelativePath),
-                    NormalizeRelativePath(Path.ChangeExtension(stored.RelativePath, ".json")),
-                    descriptor,
-                    product.Recipe.IdentitySha256,
-                    product.Algorithms,
-                    product.Compatibility,
-                    product.TotalIntegration,
-                    rawCapture.Manifest.Descriptor.Capture.CaptureSequence,
-                    artifact.RecipeVersion));
+                if (product.Layout is null && product.Role == FrameArtifactRole.Metadata)
+                {
+                    outputs.Add(await PersistMetadataProductAsync(
+                        rawCapture.Manifest.Descriptor, node, product, cancellationToken).ConfigureAwait(false));
+                }
+                else if (product.Layout is null)
+                {
+                    throw new InvalidDataException(
+                        "Only metadata products may use layoutless CameraAgent durable persistence.");
+                }
+                else
+                {
+                    var artifact = context.FindArtifact(product);
+                    var descriptor = DerivativeDescriptorFactory.Create(
+                        rawCapture.Manifest.Descriptor,
+                        artifact.ArtifactId,
+                        artifact.Frame.Metadata.SourceId ?? node.Id,
+                        product);
+                    var stored = await _frameStorage.SaveAsync(
+                        _storageRoot, artifact, descriptor, cancellationToken).ConfigureAwait(false);
+                    var relativePayloadPath = NormalizeRelativePath(stored.RelativePath);
+                    var evidenceJson = CaptureContractJson.Serialize(new ArtifactManifestV2(
+                        ArtifactManifestV2.CurrentSchemaVersion,
+                        descriptor,
+                        relativePayloadPath));
+                    outputs.Add(new DurableProcessingOutput(
+                        product.OutputIdentitySha256,
+                        artifact.ArtifactId,
+                        relativePayloadPath,
+                        NormalizeRelativePath(Path.ChangeExtension(stored.RelativePath, ".json")),
+                        evidenceJson,
+                        descriptor,
+                        null,
+                        product.Recipe.IdentitySha256,
+                        product.Algorithms,
+                        product.Compatibility,
+                        product.TotalIntegration,
+                        rawCapture.Manifest.Descriptor.Capture.CaptureSequence,
+                        artifact.RecipeVersion));
+                }
                 stopwatch.Stop();
                 _telemetry.RecordPersistence(node, product, stopwatch.Elapsed);
                 activity?.SetStatus(ActivityStatusCode.Ok);
@@ -201,17 +230,25 @@ internal sealed class CaptureProcessingPersistence(
         }
     }
 
-    private async ValueTask<(FrameArtifact Artifact, ProcessingProduct Product)> RestoreOutputAsync(
+    private async ValueTask<RestoredProcessingOutput> RestoreOutputAsync(
         DurableProcessingOutput output,
         CancellationToken cancellationToken)
     {
         var payloadPath = ResolveSafePath(output.PayloadRelativePath);
         var sidecarPath = ResolveSafePath(output.SidecarRelativePath);
         var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+        if (output.ProductManifest is not null)
+        {
+            return await RestoreMetadataProductAsync(
+                output, payloadPath, sidecar, cancellationToken).ConfigureAwait(false);
+        }
+
+        var descriptor = output.Descriptor
+            ?? throw new InvalidDataException("Committed processing output has no reconstruction descriptor.");
         var parsed = CaptureContractJson.ParseManifest(sidecar);
         if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
             !string.Equals(manifest.IdempotencyKey,
-                CaptureContractJson.ComputeDescriptorSha256(output.Descriptor),
+                CaptureContractJson.ComputeDescriptorSha256(descriptor),
                 StringComparison.Ordinal) ||
             !string.Equals(
                 NormalizeRelativePath(manifest.RelativeArtifactPath),
@@ -221,36 +258,36 @@ internal sealed class CaptureProcessingPersistence(
             throw new InvalidDataException("Committed processing output sidecar conflicts with durable state.");
         }
         var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
-        var reconstruction = FrameReconstructor.TryReconstruct(output.Descriptor, payload, out var frame);
+        var reconstruction = FrameReconstructor.TryReconstruct(descriptor, payload, out var frame);
         if (!reconstruction.IsValid || frame is null)
         {
             throw new InvalidDataException($"Committed processing output is not reconstructable ({reconstruction.ReasonCode}).");
         }
-        var recipe = ProcessingIdentity.CreateRecipeIdentity(output.Descriptor.Artifact.Recipe);
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe);
         if (!string.Equals(recipe.IdentitySha256, output.RecipeIdentitySha256, StringComparison.Ordinal))
         {
             throw new InvalidDataException("Committed processing recipe identity conflicts with its descriptor.");
         }
         var expectedOutputIdentity = ProcessingIdentity.CreateOutputIdentity(
-            output.Descriptor.Artifact.Role,
-            output.Descriptor.Artifact.Variant,
+            descriptor.Artifact.Role,
+            descriptor.Artifact.Variant,
             recipe.IdentitySha256,
-            output.Descriptor.Artifact.SourceArtifactIds);
+            descriptor.Artifact.SourceArtifactIds);
         if (!string.Equals(expectedOutputIdentity, output.OutputIdentitySha256, StringComparison.Ordinal))
         {
             throw new InvalidDataException("Committed processing output identity conflicts with its lineage.");
         }
         var product = new ProcessingProduct(
-            output.Descriptor.Artifact.Role,
-            output.Descriptor.Artifact.Variant,
+            descriptor.Artifact.Role,
+            descriptor.Artifact.Variant,
             output.OutputIdentitySha256,
-            output.Descriptor.Artifact.MediaType,
-            output.Descriptor.Layout,
+            descriptor.Artifact.MediaType,
+            descriptor.Layout,
             payload,
-            output.Descriptor.Artifact.ChecksumSha256,
+            descriptor.Artifact.ChecksumSha256,
             recipe,
             output.Algorithms,
-            output.Descriptor.Artifact.SourceArtifactIds,
+            descriptor.Artifact.SourceArtifactIds,
             output.TotalIntegration,
             output.Compatibility);
         var artifact = new FrameArtifact(
@@ -259,8 +296,247 @@ internal sealed class CaptureProcessingPersistence(
             frame,
             product.SourceArtifactIds,
             output.LegacyRecipeVersion ?? product.Recipe.Descriptor.ImplementationVersion);
-        return (artifact, product);
+        return new RestoredProcessingOutput(
+            artifact.ArtifactId,
+            frame.TimestampUtc,
+            artifact,
+            product);
     }
+
+    private async ValueTask<DurableProcessingOutput> PersistMetadataProductAsync(
+        ReconstructionDescriptor sourceDescriptor,
+        CaptureProcessingGraphNode node,
+        ProcessingProduct product,
+        CancellationToken cancellationToken)
+    {
+        var checksum = ProcessingIdentity.ComputePayloadSha256(product.Payload);
+        var expectedOutputIdentity = ProcessingIdentity.CreateOutputIdentity(
+            product.Role,
+            product.Variant,
+            product.Recipe.IdentitySha256,
+            product.SourceArtifactIds);
+        if (product.Role != FrameArtifactRole.Metadata ||
+            !string.Equals(checksum, product.ChecksumSha256, StringComparison.Ordinal) ||
+            !string.Equals(expectedOutputIdentity, product.OutputIdentitySha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Layoutless processing product has invalid immutable facts.");
+        }
+        var artifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
+        try
+        {
+            using var _ = JsonDocument.Parse(product.Payload);
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException("Layoutless processing product payload is not valid JSON.", exception);
+        }
+
+        var createdUtc = sourceDescriptor.Timing.ReadoutCompletedUtc.ToUniversalTime();
+        var directory = Path.Combine(
+            _storageRoot,
+            "derived",
+            createdUtc.Year.ToString("D4", CultureInfo.InvariantCulture),
+            createdUtc.Month.ToString("D2", CultureInfo.InvariantCulture),
+            createdUtc.Day.ToString("D2", CultureInfo.InvariantCulture),
+            product.Role.ToString());
+        var stem = string.Concat(
+            createdUtc.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture),
+            "-",
+            artifactId.ToString("N"));
+        var payloadPath = Path.Combine(directory, string.Concat(stem, ".json"));
+        var sidecarPath = Path.Combine(directory, string.Concat(stem, ".manifest.json"));
+        var payloadRelativePath = NormalizeRelativePath(Path.GetRelativePath(_storageRoot, payloadPath));
+        var sidecarRelativePath = NormalizeRelativePath(Path.GetRelativePath(_storageRoot, sidecarPath));
+        var artifact = new ArtifactDescriptor(
+            artifactId,
+            product.Role,
+            node.Id,
+            product.Variant,
+            createdUtc,
+            product.SourceArtifactIds,
+            product.Recipe.Descriptor,
+            product.MediaType,
+            product.ChecksumSha256);
+        using var nullDocument = JsonDocument.Parse("null");
+        var manifest = new DurableProcessingProductManifestV1(
+            DurableProcessingProductManifestV1.CurrentSchemaVersion,
+            sourceDescriptor.Capture,
+            artifact,
+            product.OutputIdentitySha256,
+            product.Algorithms,
+            product.Compatibility,
+            product.TotalIntegration.Ticks,
+            product.Payload.Length,
+            payloadRelativePath,
+            nullDocument.RootElement.Clone());
+        var evidenceJson = DurableProcessingProductManifestJson.Serialize(manifest);
+
+        var directoryExisted = Directory.Exists(directory);
+        Directory.CreateDirectory(directory);
+        RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, directory);
+        if (!directoryExisted)
+        {
+            RawIngressFileStore.SyncDirectoryHierarchy(_storageRoot, directory);
+        }
+        await ValidateExistingMetadataEvidenceAsync(
+            payloadPath, sidecarPath, product.Payload, product.ChecksumSha256, evidenceJson, cancellationToken).ConfigureAwait(false);
+        if (!File.Exists(payloadPath))
+        {
+            await WriteAtomicallyAsync(payloadPath, product.Payload, cancellationToken).ConfigureAwait(false);
+        }
+        if (!File.Exists(sidecarPath))
+        {
+            await WriteAtomicallyAsync(sidecarPath, evidenceJson, cancellationToken).ConfigureAwait(false);
+        }
+
+        return new DurableProcessingOutput(
+            product.OutputIdentitySha256,
+            artifactId,
+            payloadRelativePath,
+            sidecarRelativePath,
+            evidenceJson,
+            null,
+            manifest,
+            product.Recipe.IdentitySha256,
+            product.Algorithms,
+            product.Compatibility,
+            product.TotalIntegration,
+            sourceDescriptor.Capture.CaptureSequence,
+            null);
+    }
+
+    private static async ValueTask ValidateExistingMetadataEvidenceAsync(
+        string payloadPath,
+        string sidecarPath,
+        ReadOnlyMemory<byte> expectedPayload,
+        string expectedChecksum,
+        ReadOnlyMemory<byte> expectedSidecar,
+        CancellationToken cancellationToken)
+    {
+        var payloadExists = File.Exists(payloadPath);
+        var sidecarExists = File.Exists(sidecarPath);
+        if (sidecarExists && !payloadExists)
+        {
+            throw new InvalidDataException("Existing metadata sidecar has no payload.");
+        }
+        if (payloadExists)
+        {
+            var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), expectedChecksum, StringComparison.Ordinal) ||
+                !payload.AsSpan().SequenceEqual(expectedPayload.Span))
+            {
+                throw new InvalidDataException("Existing metadata payload conflicts with the requested output identity.");
+            }
+        }
+        if (sidecarExists)
+        {
+            var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+            if (!sidecar.AsSpan().SequenceEqual(expectedSidecar.Span))
+            {
+                throw new InvalidDataException("Existing metadata sidecar conflicts with the requested output identity.");
+            }
+        }
+    }
+
+    private static async ValueTask<RestoredProcessingOutput> RestoreMetadataProductAsync(
+        DurableProcessingOutput output,
+        string payloadPath,
+        byte[] sidecar,
+        CancellationToken cancellationToken)
+    {
+        if (!sidecar.AsSpan().SequenceEqual(output.EvidenceJson))
+        {
+            throw new InvalidDataException("Committed metadata sidecar differs from its durable bytes.");
+        }
+        var manifest = DurableProcessingProductManifestJson.Parse(sidecar);
+        var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        if (payload.LongLength != manifest.ByteLength ||
+            !string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), manifest.Artifact.ChecksumSha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Committed metadata payload conflicts with its manifest.");
+        }
+        try
+        {
+            using var _ = JsonDocument.Parse(payload);
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException("Committed metadata payload is not valid JSON.", exception);
+        }
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(manifest.Artifact.Recipe);
+        var product = new ProcessingProduct(
+            manifest.Artifact.Role,
+            manifest.Artifact.Variant,
+            manifest.OutputIdentitySha256,
+            manifest.Artifact.MediaType,
+            null,
+            payload,
+            manifest.Artifact.ChecksumSha256,
+            recipe,
+            manifest.Algorithms,
+            manifest.Artifact.SourceArtifactIds,
+            TimeSpan.FromTicks(manifest.TotalIntegrationTicks),
+            manifest.Compatibility);
+        return new RestoredProcessingOutput(
+            manifest.Artifact.ArtifactId,
+            manifest.Artifact.CreatedUtc,
+            null,
+            product);
+    }
+
+    private async Task WriteAtomicallyAsync(
+        string destinationPath,
+        ReadOnlyMemory<byte> content,
+        CancellationToken cancellationToken)
+    {
+        var temporaryPath = string.Concat(destinationPath, ".", Guid.NewGuid().ToString("N"), ".tmp");
+        try
+        {
+            using (var stream = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                64 * 1024,
+                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
+                stream.Flush(flushToDisk: true);
+#pragma warning restore CA1849
+            }
+            RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, Path.GetDirectoryName(destinationPath)!);
+            try
+            {
+                File.Move(temporaryPath, destinationPath, overwrite: false);
+            }
+            catch (IOException) when (File.Exists(destinationPath))
+            {
+                var existing = await File.ReadAllBytesAsync(destinationPath, cancellationToken).ConfigureAwait(false);
+                if (!existing.AsSpan().SequenceEqual(content.Span))
+                {
+                    throw new InvalidDataException("Existing metadata evidence conflicts with immutable content.");
+                }
+                return;
+            }
+            RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, destinationPath);
+            RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationPath)!);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
+    }
+
+    private sealed record RestoredProcessingOutput(
+        Guid ArtifactId,
+        DateTimeOffset CreatedUtc,
+        FrameArtifact? Artifact,
+        ProcessingProduct Product);
 
     private string ResolveSafePath(string relativePath)
     {

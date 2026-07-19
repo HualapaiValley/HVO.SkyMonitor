@@ -353,25 +353,54 @@ public sealed class RetentionBackgroundService(
         CancellationToken cancellationToken)
     {
         var policies = plan.Policies?.Where(static policy => policy.RetentionDays.HasValue).ToArray() ?? [];
-        var framesRoot = Path.Combine(plan.StorageRoot, "frames");
-        if (policies.Length == 0 || !Directory.Exists(framesRoot))
+        if (policies.Length == 0)
         {
             return pending;
         }
-        RawIngressFileStore.EnsureNoSymbolicLinks(plan.StorageRoot, framesRoot);
         var paths = pending.AbsolutePaths.ToHashSet(PathComparer);
         var artifactIds = pending.ArtifactIds.ToHashSet();
-        foreach (var sidecarPath in Directory.EnumerateFiles(framesRoot, "*.json", SearchOption.AllDirectories))
+
+        var framesRoot = Path.Combine(plan.StorageRoot, "frames");
+        if (Directory.Exists(framesRoot))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            RawIngressFileStore.EnsureNoSymbolicLinks(plan.StorageRoot, sidecarPath);
-            var parsed = CaptureContractJson.ParseManifest(File.ReadAllBytes(sidecarPath));
-            var manifest = parsed.Document?.Manifest;
-            if (!parsed.IsValid || manifest is null)
+            RawIngressFileStore.EnsureNoSymbolicLinks(plan.StorageRoot, framesRoot);
+            foreach (var sidecarPath in Directory.EnumerateFiles(framesRoot, "*.json", SearchOption.AllDirectories))
             {
-                continue;
+                cancellationToken.ThrowIfCancellationRequested();
+                RawIngressFileStore.EnsureNoSymbolicLinks(plan.StorageRoot, sidecarPath);
+                var parsed = CaptureContractJson.ParseManifest(File.ReadAllBytes(sidecarPath));
+                var manifest = parsed.Document?.Manifest;
+                if (parsed.IsValid && manifest is not null)
+                {
+                    AddPolicyHold(manifest.Descriptor.Artifact, manifest.RelativeArtifactPath, sidecarPath);
+                }
             }
-            var artifact = manifest.Descriptor.Artifact;
+        }
+
+        var derivedRoot = Path.Combine(plan.StorageRoot, "derived");
+        if (Directory.Exists(derivedRoot))
+        {
+            RawIngressFileStore.EnsureNoSymbolicLinks(plan.StorageRoot, derivedRoot);
+            foreach (var sidecarPath in Directory.EnumerateFiles(
+                derivedRoot, "*.manifest.json", SearchOption.AllDirectories))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                RawIngressFileStore.EnsureNoSymbolicLinks(plan.StorageRoot, sidecarPath);
+                try
+                {
+                    var manifest = DurableProcessingProductManifestJson.Parse(File.ReadAllBytes(sidecarPath));
+                    AddPolicyHold(manifest.Artifact, manifest.RelativeArtifactPath, sidecarPath);
+                }
+                catch (InvalidDataException)
+                {
+                    // Unrecognized derived sidecars remain governed by the root retention policy.
+                }
+            }
+        }
+        return new PendingArtifacts(paths, artifactIds);
+
+        void AddPolicyHold(ArtifactDescriptor artifact, string relativeArtifactPath, string sidecarPath)
+        {
             var policy = policies
                 .Where(policy => policy.Role is null || policy.Role == artifact.Role)
                 .Where(policy => policy.Variant is null || string.Equals(policy.Variant, artifact.Variant, StringComparison.Ordinal))
@@ -383,9 +412,9 @@ public sealed class RetentionBackgroundService(
             if (policy?.RetentionDays is not { } retentionDays ||
                 artifact.CreatedUtc < evaluatedUtc.AddDays(-retentionDays))
             {
-                continue;
+                return;
             }
-            var payloadPath = Path.GetFullPath(Path.Combine(plan.StorageRoot, manifest.RelativeArtifactPath));
+            var payloadPath = Path.GetFullPath(Path.Combine(plan.StorageRoot, relativeArtifactPath));
             RawIngressFileStore.EnsureNoSymbolicLinks(plan.StorageRoot, payloadPath);
             if (!File.Exists(payloadPath))
             {
@@ -395,7 +424,6 @@ public sealed class RetentionBackgroundService(
             paths.Add(sidecarPath);
             artifactIds.Add(artifact.ArtifactId);
         }
-        return new PendingArtifacts(paths, artifactIds);
     }
 
     private static int PruneFrameDirectories(

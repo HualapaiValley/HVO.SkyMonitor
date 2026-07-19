@@ -137,6 +137,7 @@ internal sealed partial class CentralDerivativeJobOperationsService(
             .Include(candidate => candidate.SourceArtifact)
             .Include(candidate => candidate.InputRequirements)
             .Include(candidate => candidate.Inputs).ThenInclude(input => input.Artifact)
+            .Include(candidate => candidate.CanonicalInputs)
             .SingleOrDefaultAsync(candidate => candidate.Id == jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new CentralDerivativeJobStateException("The derivative job does not exist.");
         if (job.Status is not (CentralDerivativeJobStatus.TerminalFailure
@@ -216,10 +217,15 @@ internal sealed partial class CentralDerivativeJobOperationsService(
             throw new CentralDerivativeJobStateException(
                 "The unavailable derivative output must be repaired or replaced through reprocessing.");
         }
-        var needsResolution = job.InputRequirements.Count > 1
+        var isWindow = job.ResolutionDeadlineUtc.HasValue || job.ResolutionStartedAtUtc.HasValue;
+        var needsResolution = isWindow
             && (job.InputSetIdentitySha256 is null
                 || job.InputRequirements.Any(requirement => requirement.IsRequired
-                    && requirement.ResolutionState != CentralDerivativeInputResolutionState.Resolved));
+                    && (requirement.ResolutionState != CentralDerivativeInputResolutionState.Resolved
+                        || (requirement.SourceKind == CentralDerivativeInputSourceKind.Artifact
+                            ? !job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id)
+                            : !job.CanonicalInputs.Any(input =>
+                                input.CentralDerivativeJobInputRequirementId == requirement.Id)))));
         if (hasPublishedOutput && needsResolution)
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -242,7 +248,10 @@ internal sealed partial class CentralDerivativeJobOperationsService(
             job.StateReasonCode = CentralDerivativeWindowReasonCodes.WaitingRequiredInput;
             foreach (var requirement in job.InputRequirements)
             {
-                if (!job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id))
+                var hasInput = requirement.SourceKind == CentralDerivativeInputSourceKind.Artifact
+                    ? job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id)
+                    : job.CanonicalInputs.Any(input => input.CentralDerivativeJobInputRequirementId == requirement.Id);
+                if (!hasInput)
                 {
                     requirement.ResolutionState = CentralDerivativeInputResolutionState.Waiting;
                     requirement.ResolutionReasonCode = null;
@@ -457,6 +466,7 @@ internal sealed partial class CentralDerivativeJobOperationsService(
             InputSelectorJson = CaptureContractJson.Canonicalize(
                 CaptureContractJson.SerializeToElement(plan.InputSelector)).GetRawText(),
             RequestedRecipeIdentitySha256 = plan.RequestedRecipeIdentitySha256,
+            ExpectedRecipeIdentitySha256 = plan.RequestedRecipeIdentitySha256,
             RequestIdentitySha256 = requestIdentity,
             TraceParent = Activity.Current?.Id,
             TraceState = Activity.Current?.TraceStateString,

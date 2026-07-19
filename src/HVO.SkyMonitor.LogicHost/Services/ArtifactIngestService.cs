@@ -1348,15 +1348,15 @@ internal sealed class ArtifactIngestService(
                     continue;
                 }
                 var invalidatedInput = job.Inputs.SingleOrDefault(input => input.CentralArtifactId == sourceId);
-                var reResolveWindow = invalidatedInput is not null && job.InputRequirements.Count > 1
+                var isWindow = job.ResolutionStartedAtUtc.HasValue;
+                var reResolveWindow = invalidatedInput is not null && isWindow
                     && job.ResultCentralArtifactId != sourceId
                     && !publishedJobIds.Contains(job.Id);
                 var wakeFrozenWindowAfterRepair = invalidatedInput is not null
-                    && job.InputRequirements.Count > 1
-                    && publishedJobIds.Contains(job.Id)
+                    && (!isWindow || publishedJobIds.Contains(job.Id))
                     && job.SourceCentralArtifactId != sourceId;
                 var preserveWindowResolution = job.Status == CentralDerivativeJobStatus.Waiting
-                    && job.InputRequirements.Count > 1
+                    && isWindow
                     && job.InputSetIdentitySha256 is null;
                 var activeAttempt = job.Attempts.SingleOrDefault(attempt =>
                     attempt.Outcome == CentralDerivativeAttemptOutcome.Leased);

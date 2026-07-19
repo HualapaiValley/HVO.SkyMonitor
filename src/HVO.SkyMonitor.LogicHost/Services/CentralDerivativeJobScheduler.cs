@@ -5,22 +5,47 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
 internal interface ICentralDerivativeJobScheduler
 {
     Task EnsureRequiredJobsAsync(CentralArtifact artifact, DateTimeOffset now, CancellationToken cancellationToken);
+
+    Task EnsureRequiredJobsAsync(
+        Guid devicePublicId,
+        Guid artifactId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
 internal sealed class CentralDerivativeJobScheduler(
     ApplicationDbContext dbContext,
     ICentralDerivativeRecipeCatalog recipeCatalog,
-    ICentralDerivativeWindowResolver windowResolver) : ICentralDerivativeJobScheduler
+    ICentralDerivativeWindowResolver windowResolver,
+    IEnvironmentalObservationQueryService? environmentalQuery = null) : ICentralDerivativeJobScheduler
 {
     internal const string SourceInvalidatedReason = "The derivative source artifact is not usable.";
     internal const string ResultInvalidatedReason = "The derivative result artifact is not usable.";
     internal const string LegacySourceSkippedReason = "The legacy derivative source is not reconstructable.";
+    private static readonly EnvironmentalObservationSourceKind[] EnvironmentalSourcePriority =
+        Enum.GetValues<EnvironmentalObservationSourceKind>();
+    private static readonly EnvironmentalObservationQuality[] EnvironmentalQualities =
+        Enum.GetValues<EnvironmentalObservationQuality>();
+
+    public async Task EnsureRequiredJobsAsync(
+        Guid devicePublicId,
+        Guid artifactId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var artifact = await dbContext.CentralArtifacts
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
+            .SingleAsync(item => item.DevicePublicId == devicePublicId && item.ArtifactId == artifactId,
+                cancellationToken).ConfigureAwait(false);
+        await EnsureRequiredJobsAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+    }
 
     public async Task EnsureRequiredJobsAsync(
         CentralArtifact artifact,
@@ -107,7 +132,9 @@ internal sealed class CentralDerivativeJobScheduler(
                     ?? await dbContext.CentralDerivativeJobs.SingleOrDefaultAsync(job =>
                         job.RequestIdentitySha256 == requestIdentity,
                         cancellationToken).ConfigureAwait(false);
-                var target = recipe.Window is null ? frame.Artifacts.FirstOrDefault(candidate =>
+                var isCloudAssessment = string.Equals(
+                    recipe.RecipeName, BuiltInProcessingRecipes.CloudAssessment, StringComparison.Ordinal);
+                var target = recipe.Window is null && !isCloudAssessment ? frame.Artifacts.FirstOrDefault(candidate =>
                     candidate.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion
                     && candidate.Role == recipe.TargetRole
                     && candidate.RecipeVersion == recipe.RecipeVersion
@@ -120,7 +147,13 @@ internal sealed class CentralDerivativeJobScheduler(
                 }
                 if (existing is null)
                 {
-                    dbContext.CentralDerivativeJobs.Add(CreateJob(artifact, recipe, target, now));
+                    var job = isCloudAssessment
+                        ? await CreateCloudAssessmentJobAsync(artifact, recipe, now, cancellationToken).ConfigureAwait(false)
+                        : CreateJob(artifact, recipe, target, now);
+                    if (job is not null)
+                    {
+                        dbContext.CentralDerivativeJobs.Add(job);
+                    }
                 }
                 else if (target is not null && CanComplete(existing) && !IsInvalidationFailure(existing))
                 {
@@ -131,10 +164,12 @@ internal sealed class CentralDerivativeJobScheduler(
                     Restore(existing, artifact, now);
                 }
             }
+            await EnsureWeatherCloudOverlayJobAsync(frame, now, cancellationToken).ConfigureAwait(false);
             return;
         }
 
         var sources = frame.Artifacts.Where(candidate => candidate.Role == FrameArtifactRole.Raw && IsUsable(candidate)).ToArray();
+        await EnsureWeatherCloudOverlayJobAsync(frame, now, cancellationToken).ConfigureAwait(false);
         if (artifact.ManifestSchemaVersion != ArtifactUploadManifest.CurrentSchemaVersion)
         {
             return;
@@ -142,6 +177,8 @@ internal sealed class CentralDerivativeJobScheduler(
         foreach (var source in sources)
         {
             var recipe = recipeCatalog.GetRequiredRecipes(source.Role).FirstOrDefault(candidate =>
+                candidate.RecipeName != BuiltInProcessingRecipes.CloudAssessment
+                &&
                 candidate.TargetRole == artifact.Role
                 && candidate.RecipeVersion == artifact.RecipeVersion
                 && candidate.TargetVariant == (artifact.Variant ?? string.Empty));
@@ -194,6 +231,7 @@ internal sealed class CentralDerivativeJobScheduler(
             InputSelectorJson = CaptureContractJson.Canonicalize(
                 CaptureContractJson.SerializeToElement(recipe.InputSelector)).GetRawText(),
             RequestedRecipeIdentitySha256 = recipe.RequestedRecipeIdentitySha256,
+            ExpectedRecipeIdentitySha256 = recipe.RequestedRecipeIdentitySha256,
             RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateRequestIdentity(
                 source.Frame!.DevicePublicId, source.ArtifactId, recipe),
             TraceParent = Activity.Current?.Id,
@@ -234,6 +272,7 @@ internal sealed class CentralDerivativeJobScheduler(
                 ExpectedAgentId = frame.AgentId,
                 ExpectedRigId = frame.RigId,
                 ExpectedCaptureSequence = AddSequenceOffset(frame.CaptureSequence, position.SequenceOffset),
+                ExpectedCentralArtifactId = recipe.Window is null ? source.Id : null,
                 ResolutionState = recipe.Window is null
                     ? CentralDerivativeInputResolutionState.Resolved
                     : CentralDerivativeInputResolutionState.Waiting,
@@ -265,6 +304,302 @@ internal sealed class CentralDerivativeJobScheduler(
             job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
         }
         return job;
+    }
+
+    private async Task<CentralDerivativeJob?> CreateCloudAssessmentJobAsync(
+        CentralArtifact source,
+        CentralDerivativeRecipe recipe,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var frame = source.Frame!;
+        if (string.IsNullOrWhiteSpace(frame.RigId) || environmentalQuery is null)
+        {
+            return null;
+        }
+        var designation = await dbContext.CentralClearReferenceDesignations
+            .Include(item => item.Artifact)!.ThenInclude(artifact => artifact!.Frame)
+            .SingleOrDefaultAsync(item => item.RegistrationId == frame.RegistrationId
+                && item.RigId == frame.RigId
+                && item.Artifact!.ObjectState == CentralArtifactObjectState.Available
+                && item.Artifact.ReconstructionState == CentralReconstructionState.Complete,
+                cancellationToken).ConfigureAwait(false);
+        if (designation?.Artifact is not { } clearReference)
+        {
+            return null;
+        }
+
+        await AcquireEnvironmentalRetentionLockAsync(cancellationToken).ConfigureAwait(false);
+        var observation = await SelectPrecipitationAsync(frame.Id, cancellationToken).ConfigureAwait(false);
+        var match = observation.Match;
+        var environment = new CloudAssessmentEnvironmentV1(
+            CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
+            ParseSolarRegime(frame.CycleEvidenceJson),
+            match.Status,
+            match.Observation?.ObservationId,
+            observation.ContentSha256,
+            IsPrecipitationDetected(match.Observation));
+        var environmentElement = CaptureContractJson.SerializeToElement(environment);
+        var environmentPayload = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(environmentElement));
+        var environmentIdentity = ProcessingIdentity.ComputePayloadSha256(environmentPayload);
+        var clearSelector = ProcessingInputSelector.Raw(clearReference.Variant);
+        var auxiliaries = new ProcessingAuxiliaryInput[]
+        {
+            new("clear-reference", ProcessingAuxiliaryInputKind.Artifact, clearSelector,
+                ArtifactId: clearReference.ArtifactId),
+            new("environment", ProcessingAuxiliaryInputKind.CanonicalJson,
+                SchemaVersion: CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
+                IdentitySha256: environmentIdentity)
+        };
+
+        var job = CreateJob(source, recipe, result: null, now);
+        job.ExpectedRecipeIdentitySha256 = BuiltInProcessingRecipes.CreateExecutionIdentity(
+            recipe.RecipeName, recipe.Options, recipe.InputSelector, auxiliaryInputs: auxiliaries).IdentitySha256;
+        var clearRequirement = new CentralDerivativeJobInputRequirement
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Ordinal = job.InputRequirements.Count,
+            BindingName = "clear-reference",
+            SourceKind = CentralDerivativeInputSourceKind.Artifact,
+            IsRequired = true,
+            SelectorJson = CaptureContractJson.Canonicalize(
+                CaptureContractJson.SerializeToElement(clearSelector)).GetRawText(),
+            CompatibilityMode = CentralDerivativeCompatibilityMode.None,
+            ExpectedAgentId = clearReference.Frame?.AgentId ?? frame.AgentId,
+            ExpectedRigId = frame.RigId,
+            ExpectedCaptureSequence = clearReference.Frame?.CaptureSequence,
+            ExpectedCentralArtifactId = clearReference.Id,
+            ResolutionState = CentralDerivativeInputResolutionState.Resolved,
+            ResolvedAtUtc = now
+        };
+        job.InputRequirements.Add(clearRequirement);
+        job.Inputs.Add(CreateExactInput(job, clearRequirement, clearReference, now));
+
+        var environmentRequirement = new CentralDerivativeJobInputRequirement
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Ordinal = job.InputRequirements.Count,
+            BindingName = "environment",
+            SourceKind = CentralDerivativeInputSourceKind.EnvironmentalObservation,
+            IsRequired = true,
+            SelectorJson = "{}",
+            CompatibilityMode = CentralDerivativeCompatibilityMode.None,
+            ExpectedAgentId = frame.AgentId,
+            ExpectedRigId = frame.RigId,
+            ExpectedCaptureSequence = frame.CaptureSequence,
+            ResolutionState = CentralDerivativeInputResolutionState.Resolved,
+            ResolvedAtUtc = now
+        };
+        job.InputRequirements.Add(environmentRequirement);
+        job.CanonicalInputs.Add(new CentralDerivativeJobCanonicalInput
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Requirement = environmentRequirement,
+            CentralDerivativeJobInputRequirementId = environmentRequirement.Id,
+            Ordinal = environmentRequirement.Ordinal,
+            SchemaVersion = CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
+            IdentitySha256 = environmentIdentity,
+            CanonicalJson = System.Text.Encoding.UTF8.GetString(environmentPayload),
+            ByteLength = environmentPayload.Length,
+            EnvironmentalObservationRecordId = observation.RecordId,
+            SelectedAtUtc = now
+        });
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        return job;
+    }
+
+    private async Task<EnvironmentalObservationSelection> SelectPrecipitationAsync(
+        Guid frameId,
+        CancellationToken cancellationToken)
+    {
+        var rain = await environmentalQuery!.SelectFrameAsync(
+            frameId,
+            CreateEnvironmentalSelector(EnvironmentalObservationKind.RainState),
+            cancellationToken).ConfigureAwait(false);
+        return rain.Match.Status != EnvironmentalObservationMatchStatus.Missing
+            ? rain
+            : await environmentalQuery.SelectFrameAsync(
+                frameId,
+                CreateEnvironmentalSelector(EnvironmentalObservationKind.PrecipitationRate),
+                cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task EnsureWeatherCloudOverlayJobAsync(
+        CentralFrame frame,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var preview = frame.Artifacts.FirstOrDefault(candidate =>
+            candidate.Role == FrameArtifactRole.Preview
+            && candidate.RecipeVersion == CentralDerivativeRecipeCatalog.PreviewRecipeVersion
+            && candidate.Variant == CentralDerivativeRecipeCatalog.PreviewVariant
+            && IsUsable(candidate));
+        var assessment = frame.Artifacts.FirstOrDefault(candidate =>
+            candidate.Role == FrameArtifactRole.Metadata
+            && candidate.RecipeVersion == CentralDerivativeRecipeCatalog.CloudAssessmentRecipeVersion
+            && candidate.Variant == CentralDerivativeRecipeCatalog.CloudAssessmentVariant
+            && IsUsable(candidate));
+        if (preview is null || assessment is null)
+        {
+            return;
+        }
+        var cloudJob = await dbContext.CentralDerivativeJobs
+            .Include(job => job.CanonicalInputs)
+            .SingleOrDefaultAsync(job => job.ResultCentralArtifactId == assessment.Id
+                && job.RecipeName == BuiltInProcessingRecipes.CloudAssessment
+                && job.Status == CentralDerivativeJobStatus.Completed,
+                cancellationToken).ConfigureAwait(false);
+        if (cloudJob?.CanonicalInputs.SingleOrDefault() is not { } environmentInput)
+        {
+            return;
+        }
+        var recipe = CentralDerivativeRecipeCatalog.WeatherCloudOverlayRecipe;
+        var requestIdentity = CentralDerivativeJobIdentity.CreateRequestIdentity(
+            frame.DevicePublicId, preview.ArtifactId, recipe);
+        if (dbContext.CentralDerivativeJobs.Local.Any(job => job.RequestIdentitySha256 == requestIdentity)
+            || await dbContext.CentralDerivativeJobs.AnyAsync(job => job.RequestIdentitySha256 == requestIdentity,
+                cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        var assessmentEvidence = await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()
+            .SingleOrDefaultAsync(evidence => evidence.CentralArtifactId == assessment.Id,
+                cancellationToken).ConfigureAwait(false);
+        if (assessmentEvidence is null)
+        {
+            return;
+        }
+        var assessmentSelector = ProcessingInputSelector.RecipeResult(
+            FrameArtifactRole.Metadata,
+            CentralDerivativeRecipeCatalog.CloudAssessmentVariant,
+            assessmentEvidence.RecipeIdentitySha256);
+        var auxiliaries = new ProcessingAuxiliaryInput[]
+        {
+            new("assessment", ProcessingAuxiliaryInputKind.Artifact, assessmentSelector,
+                ArtifactId: assessment.ArtifactId),
+            new("environment", ProcessingAuxiliaryInputKind.CanonicalJson,
+                SchemaVersion: environmentInput.SchemaVersion,
+                IdentitySha256: environmentInput.IdentitySha256)
+        };
+        var job = CreateJob(preview, recipe, result: null, now);
+        job.ExpectedRecipeIdentitySha256 = BuiltInProcessingRecipes.CreateExecutionIdentity(
+            recipe.RecipeName, recipe.Options, recipe.InputSelector, auxiliaryInputs: auxiliaries).IdentitySha256;
+        var assessmentRequirement = new CentralDerivativeJobInputRequirement
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Ordinal = job.InputRequirements.Count,
+            BindingName = "assessment",
+            SourceKind = CentralDerivativeInputSourceKind.Artifact,
+            IsRequired = true,
+            SelectorJson = CaptureContractJson.Canonicalize(
+                CaptureContractJson.SerializeToElement(assessmentSelector)).GetRawText(),
+            CompatibilityMode = CentralDerivativeCompatibilityMode.None,
+            ExpectedAgentId = frame.AgentId,
+            ExpectedRigId = frame.RigId,
+            ExpectedCaptureSequence = frame.CaptureSequence,
+            ExpectedCentralArtifactId = assessment.Id,
+            ResolutionState = CentralDerivativeInputResolutionState.Resolved,
+            ResolvedAtUtc = now
+        };
+        job.InputRequirements.Add(assessmentRequirement);
+        job.Inputs.Add(CreateExactInput(job, assessmentRequirement, assessment, now));
+        var environmentRequirement = new CentralDerivativeJobInputRequirement
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Ordinal = job.InputRequirements.Count,
+            BindingName = "environment",
+            SourceKind = CentralDerivativeInputSourceKind.EnvironmentalObservation,
+            IsRequired = true,
+            SelectorJson = "{}",
+            CompatibilityMode = CentralDerivativeCompatibilityMode.None,
+            ExpectedAgentId = frame.AgentId,
+            ExpectedRigId = frame.RigId,
+            ExpectedCaptureSequence = frame.CaptureSequence,
+            ResolutionState = CentralDerivativeInputResolutionState.Resolved,
+            ResolvedAtUtc = now
+        };
+        job.InputRequirements.Add(environmentRequirement);
+        job.CanonicalInputs.Add(new CentralDerivativeJobCanonicalInput
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Requirement = environmentRequirement,
+            CentralDerivativeJobInputRequirementId = environmentRequirement.Id,
+            Ordinal = environmentRequirement.Ordinal,
+            SchemaVersion = environmentInput.SchemaVersion,
+            IdentitySha256 = environmentInput.IdentitySha256,
+            CanonicalJson = environmentInput.CanonicalJson,
+            ByteLength = environmentInput.ByteLength,
+            EnvironmentalObservationRecordId = environmentInput.EnvironmentalObservationRecordId,
+            SelectedAtUtc = now
+        });
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        dbContext.CentralDerivativeJobs.Add(job);
+    }
+
+    private async Task AcquireEnvironmentalRetentionLockAsync(CancellationToken cancellationToken)
+    {
+        if (!dbContext.Database.IsRelational())
+        {
+            return;
+        }
+        var lockResource = EnvironmentalObservationLockNames.Retention;
+        await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+            DECLARE @result int;
+            EXEC @result = sys.sp_getapplock
+                @Resource = {lockResource},
+                @LockMode = 'Shared',
+                @LockOwner = 'Transaction',
+                @LockTimeout = 10000;
+            IF @result < 0
+                THROW 51007, 'Could not acquire the environmental retention lock.', 1;
+            """, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static EnvironmentalObservationSelector CreateEnvironmentalSelector(EnvironmentalObservationKind kind)
+        => new(kind, EnvironmentalSourcePriority, EnvironmentalQualities, TimeSpan.FromHours(24));
+
+    private static bool IsPrecipitationDetected(EnvironmentalObservationV1? observation)
+        => observation?.Value.Kind switch
+        {
+            EnvironmentalObservationKind.RainState => observation.Value.BooleanValue == true,
+            EnvironmentalObservationKind.PrecipitationRate => observation.Value.NumericValue > 0,
+            _ => false
+        };
+
+    private static CaptureSolarRegime? ParseSolarRegime(string? cycleEvidenceJson)
+        => string.IsNullOrWhiteSpace(cycleEvidenceJson)
+            ? null
+            : JsonSerializer.Deserialize<CaptureCycleEvidence>(cycleEvidenceJson)?.SolarRegime;
+
+    private static CentralDerivativeJobInput CreateExactInput(
+        CentralDerivativeJob job,
+        CentralDerivativeJobInputRequirement requirement,
+        CentralArtifact artifact,
+        DateTimeOffset now)
+    {
+        var snapshot = CentralDerivativeWindowCompatibility.EmptySnapshot;
+        return new CentralDerivativeJobInput
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Requirement = requirement,
+            CentralDerivativeJobInputRequirementId = requirement.Id,
+            Ordinal = requirement.Ordinal,
+            CentralArtifactId = artifact.Id,
+            Artifact = artifact,
+            CaptureSequence = artifact.Frame?.CaptureSequence,
+            CompatibilityJson = snapshot.Json,
+            CompatibilitySha256 = snapshot.Sha256,
+            ByteLength = artifact.ByteLength,
+            SelectedAtUtc = now
+        };
     }
 
     private static long? AddSequenceOffset(long? captureSequence, int sequenceOffset)

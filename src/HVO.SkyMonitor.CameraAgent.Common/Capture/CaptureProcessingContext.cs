@@ -16,6 +16,7 @@ public sealed class CaptureProcessingContext
     private FrameArtifactSet? _artifacts;
     private readonly List<ProcessingOutcome> _processingOutcomes = new();
     private readonly Dictionary<Guid, ProcessingProduct> _processingProductsByArtifactId = new();
+    private readonly Dictionary<string, List<Guid>> _productArtifactIdsByNode = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<FrameArtifact> _allArtifacts = new();
     private readonly Dictionary<string, List<FrameArtifact>> _artifactsByNode = new(StringComparer.OrdinalIgnoreCase);
     private string? _currentNodeId;
@@ -118,7 +119,11 @@ public sealed class CaptureProcessingContext
         {
             throw new ArgumentException("Artifact and processing product roles must match.", nameof(product));
         }
-        _processingProductsByArtifactId[artifact.ArtifactId] = product;
+        if (artifact.ArtifactId != CreateArtifactId(product.OutputIdentitySha256))
+        {
+            throw new ArgumentException("Artifact and processing product identities must match.", nameof(product));
+        }
+        RegisterProcessingProduct(product);
     }
 
     internal ProcessingProduct? GetProcessingProduct(Guid artifactId) =>
@@ -134,6 +139,13 @@ public sealed class CaptureProcessingContext
         => _currentDependencies
             .Where(_artifactsByNode.ContainsKey)
             .SelectMany(dependency => _artifactsByNode[dependency])
+            .ToArray();
+
+    internal IReadOnlyList<ProcessingProduct> GetDependencyProducts()
+        => _currentDependencies
+            .Where(_productArtifactIdsByNode.ContainsKey)
+            .SelectMany(dependency => _productArtifactIdsByNode[dependency])
+            .Select(artifactId => _processingProductsByArtifactId[artifactId])
             .ToArray();
 
     internal bool HasDeclaredDependencies => _currentDependencies.Count > 0;
@@ -167,7 +179,39 @@ public sealed class CaptureProcessingContext
             artifact.SourceArtifactIds,
             artifact.ArtifactId);
         _submission = _submission with { Result = _submission.Result with { Artifacts = _artifacts } };
-        _processingProductsByArtifactId[artifact.ArtifactId] = product;
+        RegisterProcessingProduct(product);
+    }
+
+    internal void RestoreProduct(string nodeId, Guid artifactId, ProcessingProduct product)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(nodeId);
+        ArgumentNullException.ThrowIfNull(product);
+        if (artifactId == Guid.Empty || artifactId != CreateArtifactId(product.OutputIdentitySha256))
+        {
+            throw new ArgumentException("Restored product artifact identity is invalid.", nameof(artifactId));
+        }
+        _currentNodeId = nodeId;
+        RegisterProcessingProduct(product);
+    }
+
+    internal void RegisterProcessingProduct(ProcessingProduct product)
+    {
+        ArgumentNullException.ThrowIfNull(product);
+        var artifactId = CreateArtifactId(product.OutputIdentitySha256);
+        _processingProductsByArtifactId[artifactId] = product;
+        if (_currentNodeId is null)
+        {
+            return;
+        }
+        if (!_productArtifactIdsByNode.TryGetValue(_currentNodeId, out var productIds))
+        {
+            productIds = [];
+            _productArtifactIdsByNode[_currentNodeId] = productIds;
+        }
+        if (!productIds.Contains(artifactId))
+        {
+            productIds.Add(artifactId);
+        }
     }
 
     internal static Guid CreateArtifactId(string outputIdentitySha256)

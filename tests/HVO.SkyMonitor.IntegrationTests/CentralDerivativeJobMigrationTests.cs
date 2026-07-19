@@ -110,7 +110,7 @@ public sealed class CentralDerivativeJobMigrationTests
                 frame.DevicePublicId,
                 raw.ArtifactId,
                 new CentralDerivativeRecipeCatalog().GetRequiredRecipes(FrameArtifactRole.Raw)
-                    .Single(recipe => recipe.TargetRole == FrameArtifactRole.Metadata)));
+                    .Single(recipe => recipe.RecipeName == BuiltInProcessingRecipes.ImageQuality)));
             jobs.Should().OnlyHaveUniqueItems(job => job.RequestIdentitySha256);
             jobs.Should().OnlyContain(job => job.InputRequirements.Count == 1
                 && job.Inputs.Count == 1

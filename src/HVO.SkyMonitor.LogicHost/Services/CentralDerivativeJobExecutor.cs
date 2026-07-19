@@ -5,6 +5,7 @@ using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -25,6 +26,7 @@ internal sealed class CentralDerivativeJobExecutor(
     LogicHostRecipeExecutionAdapter recipeAdapter,
     ICentralDerivativeOutputWriter outputWriter,
     ICentralDerivativeJobService jobService,
+    ICentralDerivativeJobScheduler jobScheduler,
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider) : ICentralDerivativeJobExecutor
 {
@@ -54,6 +56,15 @@ internal sealed class CentralDerivativeJobExecutor(
             RecordPinRelease(lease, "terminal");
             return new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason);
         }
+        var canonicalInputs = CreateCanonicalInputs(lease);
+        if (canonicalInputs is null)
+        {
+            const string reason = "processing.canonical-input-integrity-failed";
+            await jobService.FailAsync(
+                lease.JobId, lease.LeaseToken, reason, retryable: false, cancellationToken).ConfigureAwait(false);
+            RecordPinRelease(lease, "terminal");
+            return new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason);
+        }
         Guid? recoveredArtifactId;
         var recoveryStarted = timeProvider.GetTimestamp();
         using (telemetry.StartStage("recover", lease.RecipeName))
@@ -63,6 +74,11 @@ internal sealed class CentralDerivativeJobExecutor(
         }
         if (recoveredArtifactId.HasValue)
         {
+            await jobScheduler.EnsureRequiredJobsAsync(
+                lease.SourceDevicePublicId,
+                recoveredArtifactId.Value,
+                timeProvider.GetUtcNow(),
+                cancellationToken).ConfigureAwait(false);
             telemetry.RecordStage(
                 "recover", lease.RecipeName, "adopted", timeProvider.GetElapsedTime(recoveryStarted));
             telemetry.RecordRecovery("adopted");
@@ -97,7 +113,8 @@ internal sealed class CentralDerivativeJobExecutor(
                 selector,
                 lease.TargetVariant,
                 annotation,
-                cancellationToken).ConfigureAwait(false);
+                canonicalInputs,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         var duration = timeProvider.GetElapsedTime(started);
         telemetry.RecordStage("execute", lease.RecipeName, GetOutcome(outcome.Status), duration);
@@ -108,6 +125,17 @@ internal sealed class CentralDerivativeJobExecutor(
                 {
                     throw new CentralDerivativeJobStateException("A derivative job must produce exactly one product.");
                 }
+                if (RequiresBoundExpectedIdentity(lease) && !string.Equals(
+                        outcome.Products[0].Recipe.IdentitySha256,
+                        lease.ExpectedRecipeIdentitySha256,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    const string reason = "processing.recipe-identity-mismatch";
+                    await jobService.FailAsync(
+                        lease.JobId, lease.LeaseToken, reason, retryable: false, cancellationToken).ConfigureAwait(false);
+                    RecordPinRelease(lease, "terminal");
+                    return new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason);
+                }
                 var publishStarted = timeProvider.GetTimestamp();
                 Guid artifactId;
                 using (telemetry.StartStage("publish", lease.RecipeName))
@@ -115,6 +143,11 @@ internal sealed class CentralDerivativeJobExecutor(
                     artifactId = await outputWriter.PersistAsync(
                         lease, outcome.Products[0], input.ByteLength, duration, cancellationToken).ConfigureAwait(false);
                 }
+                await jobScheduler.EnsureRequiredJobsAsync(
+                    lease.SourceDevicePublicId,
+                    artifactId,
+                    timeProvider.GetUtcNow(),
+                    cancellationToken).ConfigureAwait(false);
                 telemetry.RecordStage(
                     "publish",
                     lease.RecipeName,
@@ -142,6 +175,46 @@ internal sealed class CentralDerivativeJobExecutor(
                 throw new InvalidOperationException("The processing outcome status is unsupported.");
         }
     }
+
+    private static List<ProcessingAuxiliaryInput>? CreateCanonicalInputs(CentralDerivativeJobLease lease)
+    {
+        if (lease.CanonicalInputs is not { Count: > 0 })
+        {
+            return [];
+        }
+        var inputs = new List<ProcessingAuxiliaryInput>(lease.CanonicalInputs.Count);
+        foreach (var input in lease.CanonicalInputs.OrderBy(item => item.Ordinal))
+        {
+            var payload = Encoding.UTF8.GetBytes(input.CanonicalJson);
+            if (payload.Length != input.ByteLength ||
+                !string.Equals(
+                    ProcessingIdentity.ComputePayloadSha256(payload),
+                    input.IdentitySha256,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+            inputs.Add(new ProcessingAuxiliaryInput(
+                input.BindingName,
+                ProcessingAuxiliaryInputKind.CanonicalJson,
+                SchemaVersion: input.SchemaVersion,
+                IdentitySha256: input.IdentitySha256,
+                Payload: payload));
+        }
+        return inputs;
+    }
+
+    internal static bool RequiresBoundExpectedIdentity(CentralDerivativeJobLease lease)
+        => RequiresBoundExpectedIdentity(
+            lease.RequestedRecipeIdentitySha256,
+            lease.ExpectedRecipeIdentitySha256);
+
+    internal static bool RequiresBoundExpectedIdentity(string requestedIdentity, string? expectedIdentity)
+        => !string.IsNullOrWhiteSpace(expectedIdentity)
+            && !string.Equals(
+                expectedIdentity,
+                requestedIdentity,
+                StringComparison.OrdinalIgnoreCase);
 
     private static ProcessingAnnotationInput? CreateAnnotation(string? sceneProvenanceJson)
     {

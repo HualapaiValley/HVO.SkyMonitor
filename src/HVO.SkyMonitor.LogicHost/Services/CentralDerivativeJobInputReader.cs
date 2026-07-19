@@ -1,6 +1,8 @@
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
+using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -38,6 +40,8 @@ internal sealed class CentralDerivativeJobInputReader(
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider) : ICentralDerivativeJobInputReader
 {
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+
     public async Task<CentralDerivativeJobInputs> ReadAsync(
         CentralDerivativeJobLease lease,
         CancellationToken cancellationToken)
@@ -153,9 +157,41 @@ internal sealed class CentralDerivativeJobInputReader(
         {
             throw new CentralDerivativeJobStateException("The derivative job lease became stale while loading input.");
         }
+        if (artifact.Layout is null)
+        {
+            var evidence = await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()
+                .SingleOrDefaultAsync(item => item.CentralArtifactId == artifact.Id, cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new CentralDerivativeInputRejectedException(
+                    "A layoutless derivative input requires immutable processing evidence.");
+            var compatibility = JsonSerializer.Deserialize<ProcessingCompatibilityIdentity>(
+                evidence.CompatibilityJson,
+                SerializerOptions)
+                ?? throw new CentralDerivativeInputRejectedException(
+                    "The layoutless derivative compatibility evidence is invalid.");
+            return new LogicHostProcessingInput(
+                Descriptor: null,
+                payload,
+                leaseInput.BindingName,
+                new ProcessingArtifact(
+                    artifact.ArtifactId,
+                    artifact.Role,
+                    artifact.Variant ?? string.Empty,
+                    evidence.RecipeIdentitySha256,
+                    artifact.MediaType,
+                    Layout: null,
+                    payload,
+                    artifact.CreatedUtc ?? artifact.Frame!.CapturedAtUtc,
+                    TimeSpan.FromTicks(evidence.TotalIntegrationTicks),
+                    compatibility,
+                    artifact.Frame!.CaptureSequence,
+                    artifact.Sources.OrderBy(source => source.Ordinal)
+                        .Select(source => source.SourceArtifactId).ToArray()));
+        }
         return new LogicHostProcessingInput(
             CentralReconstructionDescriptorFactory.Create(artifact.Frame!, artifact),
-            payload);
+            payload,
+            leaseInput.BindingName);
     }
 
     private async Task<CentralArtifact> LoadAuthorizedSourceAsync(

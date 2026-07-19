@@ -20,10 +20,18 @@ internal interface ICentralArtifactRetentionService
 internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext dbContext)
     : ICentralArtifactRetentionReferences
 {
-    public Task<bool> IsHeldAsync(Guid centralArtifactId, CancellationToken cancellationToken)
-        => dbContext.CentralDerivativeJobs.AnyAsync(job =>
+    public async Task<bool> IsHeldAsync(Guid centralArtifactId, CancellationToken cancellationToken)
+    {
+        if (await dbContext.CentralClearReferenceDesignations.AnyAsync(designation =>
+                designation.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false))
+        {
+            return true;
+        }
+        return await dbContext.CentralDerivativeJobs.AnyAsync(job =>
             (job.SourceCentralArtifactId == centralArtifactId
                 || job.Inputs.Any(input => input.CentralArtifactId == centralArtifactId)
+                || job.InputRequirements.Any(requirement =>
+                    requirement.ExpectedCentralArtifactId == centralArtifactId)
                 || job.PredecessorJob!.ResultCentralArtifactId == centralArtifactId
                 || job.RetainedResultCentralArtifactId == centralArtifactId
                 || dbContext.CentralArtifactProcessingEvidence.Any(evidence =>
@@ -33,7 +41,8 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
                 || job.Status == CentralDerivativeJobStatus.Pending
                 || job.Status == CentralDerivativeJobStatus.Leased
                 || job.Status == CentralDerivativeJobStatus.RetryableFailure
-                || job.Status == CentralDerivativeJobStatus.CancelRequested), cancellationToken);
+                || job.Status == CentralDerivativeJobStatus.CancelRequested), cancellationToken).ConfigureAwait(false);
+    }
 }
 
 internal sealed class CentralArtifactRetentionService(

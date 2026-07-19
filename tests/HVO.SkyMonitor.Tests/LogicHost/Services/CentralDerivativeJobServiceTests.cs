@@ -15,13 +15,16 @@ public sealed class CentralDerivativeJobServiceTests
 
         var recipes = catalog.GetRequiredRecipes(FrameArtifactRole.Raw);
 
-        recipes.Should().HaveCount(4);
+        recipes.Should().HaveCount(5);
         recipes.Should().Contain(recipe => recipe.TargetRole == FrameArtifactRole.Preview
             && recipe.RecipeVersion == CentralDerivativeRecipeCatalog.PreviewRecipeVersion);
         recipes.Should().Contain(recipe => recipe.TargetRole == FrameArtifactRole.AnnotatedPreview
             && recipe.RecipeVersion == CentralDerivativeRecipeCatalog.AnnotatedPreviewRecipeVersion);
         recipes.Should().Contain(recipe => recipe.TargetRole == FrameArtifactRole.Metadata
             && recipe.RecipeVersion == CentralDerivativeRecipeCatalog.ImageQualityRecipeVersion);
+        recipes.Should().Contain(recipe => recipe.TargetRole == FrameArtifactRole.Metadata
+            && recipe.RecipeVersion == CentralDerivativeRecipeCatalog.CloudAssessmentRecipeVersion
+            && recipe.RecipeName == HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment);
         var rolling = recipes.Single(recipe => recipe.TargetRole == FrameArtifactRole.Combined);
         rolling.RecipeVersion.Should().Be(CentralDerivativeRecipeCatalog.RollingMeanRecipeVersion);
         rolling.Window!.Positions.Select(position => position.SequenceOffset).Should().Equal(-2, -1, 0, 1, 2);
@@ -34,7 +37,7 @@ public sealed class CentralDerivativeJobServiceTests
             .RequestedRecipeIdentitySha256.Should().Be(CentralDerivativeRecipeCatalog.PreviewRequestedRecipeIdentity);
         recipes.Single(recipe => recipe.TargetRole == FrameArtifactRole.AnnotatedPreview)
             .RequestedRecipeIdentitySha256.Should().Be(CentralDerivativeRecipeCatalog.AnnotatedPreviewRequestedRecipeIdentity);
-        recipes.Single(recipe => recipe.TargetRole == FrameArtifactRole.Metadata)
+        recipes.Single(recipe => recipe.RecipeName == HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.ImageQuality)
             .RequestedRecipeIdentitySha256.Should().Be(CentralDerivativeRecipeCatalog.ImageQualityRequestedRecipeIdentity);
         catalog.GetRequiredRecipes(FrameArtifactRole.Preview).Should().BeEmpty();
         var preview = recipes.Single(recipe => recipe.TargetRole == FrameArtifactRole.Preview);
@@ -95,5 +98,16 @@ public sealed class CentralDerivativeJobServiceTests
 
         CentralDerivativeJobService.CalculateRetryDelay(3, initial, TimeSpan.MaxValue)
             .Should().Be(TimeSpan.MaxValue);
+    }
+
+    [TestMethod]
+    public void BoundExpectedIdentity_IsEnforcedOnlyWhenAuxiliariesChangedIt()
+    {
+        var requested = new string('a', 64);
+
+        CentralDerivativeJobExecutor.RequiresBoundExpectedIdentity(requested, requested.ToUpperInvariant())
+            .Should().BeFalse();
+        CentralDerivativeJobExecutor.RequiresBoundExpectedIdentity(requested, new string('B', 64))
+            .Should().BeTrue();
     }
 }

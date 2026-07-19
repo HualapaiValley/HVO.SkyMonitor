@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Processing;
 
@@ -46,11 +47,25 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
                 ProcessingReasonCodes.InvalidInput,
                 nameof(request.Inputs));
         }
+        if (request.InputArtifactId == Guid.Empty ||
+            request.InputArtifactId is { } inputArtifactId &&
+            request.Inputs.Count(input => input.ArtifactId == inputArtifactId) != 1)
+        {
+            return ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidInput,
+                nameof(request.InputArtifactId));
+        }
         if (!IsValidAnnotation(request.Annotation))
         {
             return ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.InvalidAnnotation,
                 nameof(request.Annotation));
+        }
+        if (!AreValidAuxiliaryInputs(request.AuxiliaryInputs))
+        {
+            return ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidInput,
+                nameof(request.AuxiliaryInputs));
         }
 
         ProcessingRecipeIdentity identity;
@@ -58,7 +73,7 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
         {
             var normalized = recipe.NormalizeOptions(request.Options);
             var effective = ProcessingIdentity.BindExecutionInputs(
-                normalized, request.Input, request.Annotation);
+                normalized, request.Input, request.Annotation, request.AuxiliaryInputs);
             identity = ProcessingIdentity.CreateRecipeIdentity(recipe.Definition, effective);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -176,5 +191,93 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
 
         static bool IsFinite(double x, double y) => double.IsFinite(x) && double.IsFinite(y);
         static bool IsFiniteNonZero(double value) => double.IsFinite(value) && value != 0;
+    }
+
+    private static bool AreValidAuxiliaryInputs(IReadOnlyList<ProcessingAuxiliaryInput>? inputs)
+    {
+        if (inputs is null)
+        {
+            return true;
+        }
+        if (inputs.Count > 32 || inputs.Any(static input => input is null ||
+                string.IsNullOrWhiteSpace(input.Name) || input.Name.Length > 64) ||
+            inputs.Select(static input => input.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != inputs.Count)
+        {
+            return false;
+        }
+        foreach (var input in inputs)
+        {
+            if (input.Kind == ProcessingAuxiliaryInputKind.Artifact)
+            {
+                if (input.Selector is null || input.SchemaVersion is not null ||
+                    input.IdentitySha256 is not null || !input.Payload.IsEmpty || input.ArtifactId == Guid.Empty)
+                {
+                    return false;
+                }
+            }
+            else if (input.Kind == ProcessingAuxiliaryInputKind.CanonicalJson)
+            {
+                if (input.Selector is not null || string.IsNullOrWhiteSpace(input.SchemaVersion) ||
+                    input.ArtifactId is not null ||
+                    input.IdentitySha256 is not { Length: 64 } ||
+                    !input.IdentitySha256.All(Uri.IsHexDigit) || input.Payload.IsEmpty ||
+                    !string.Equals(
+                        ProcessingIdentity.ComputePayloadSha256(input.Payload),
+                        input.IdentitySha256,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+                try
+                {
+                    using var document = JsonDocument.Parse(input.Payload);
+                    if (HasDuplicateProperties(document.RootElement))
+                    {
+                        return false;
+                    }
+                    var canonical = JsonSerializer.SerializeToUtf8Bytes(
+                        CaptureContractJson.Canonicalize(document.RootElement));
+                    if (!canonical.AsSpan().SequenceEqual(input.Payload.Span))
+                    {
+                        return false;
+                    }
+                }
+                catch (JsonException)
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool HasDuplicateProperties(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!names.Add(property.Name) || HasDuplicateProperties(property.Value))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (HasDuplicateProperties(item))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

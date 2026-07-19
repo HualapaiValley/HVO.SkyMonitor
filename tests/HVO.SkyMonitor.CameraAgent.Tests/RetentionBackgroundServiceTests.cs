@@ -5,9 +5,12 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -324,6 +327,120 @@ public sealed class RetentionBackgroundServiceTests
         }
     }
 
+    [TestMethod]
+    public async Task ApplyRetentionAsync_ProcessingHoldPreservesDerivedMetadataEvidence()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var artifactId = Guid.NewGuid();
+            var (payload, sidecar) = await CreateDerivedMetadataEvidenceAsync(root).ConfigureAwait(false);
+            var holds = new FixedProcessingHolds([
+                new ProcessingRetentionHold(
+                    artifactId,
+                    Path.GetRelativePath(root, payload),
+                    Path.GetRelativePath(root, sidecar))
+            ]);
+
+            await CreateService(new FileSystemArtifactOutbox(), root, holds)
+                .ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(payload));
+            Assert.IsTrue(File.Exists(sidecar));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_UnheldExpiredDerivedMetadataEvidenceIsDeleted()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var (payload, sidecar) = await CreateDerivedMetadataEvidenceAsync(root).ConfigureAwait(false);
+
+            await CreateService(new FileSystemArtifactOutbox(), root, new FixedProcessingHolds([]))
+                .ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(File.Exists(payload));
+            Assert.IsFalse(File.Exists(sidecar));
+            Assert.IsFalse(Directory.Exists(Path.GetDirectoryName(payload)));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_MetadataPolicyExtendsDerivedEvidenceRetention()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var createdUtc = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
+            var directory = Path.Combine(root, "derived", "2026", "07", "01", "Metadata");
+            Directory.CreateDirectory(directory);
+            var payloadPath = Path.Combine(directory, "assessment.json");
+            var sidecarPath = Path.Combine(directory, "assessment.manifest.json");
+            var payload = "{}"u8.ToArray();
+            await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
+            var sourceId = Guid.Parse("80000000-0000-0000-0000-000000000001");
+            var recipe = RecipeIdentityDescriptor.Create(
+                "cloud-assessment",
+                "1.0.0",
+                "test-v1",
+                JsonSerializer.SerializeToElement(new { }));
+            var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256;
+            var outputIdentity = ProcessingIdentity.CreateOutputIdentity(
+                FrameArtifactRole.Metadata,
+                "cloud-assessment-v1",
+                recipeIdentity,
+                [sourceId]);
+            var artifact = new ArtifactDescriptor(
+                ProcessingIdentity.CreateArtifactId(outputIdentity),
+                FrameArtifactRole.Metadata,
+                "cloud",
+                "cloud-assessment-v1",
+                createdUtc,
+                [sourceId],
+                recipe,
+                "application/json",
+                ProcessingIdentity.ComputePayloadSha256(payload));
+            using var nullDocument = JsonDocument.Parse("null");
+            var manifest = new DurableProcessingProductManifestV1(
+                DurableProcessingProductManifestV1.CurrentSchemaVersion,
+                new CaptureIdentityDescriptor(
+                    "agent", "rig", 1, Guid.Parse("80000000-0000-0000-0000-000000000002")),
+                artifact,
+                outputIdentity,
+                [new ProcessingAlgorithmIdentity("cloud", "v1")],
+                new ProcessingCompatibilityIdentity("rig", "orientation", "cal", "mask", "sensor", "setpoint", "processing"),
+                TimeSpan.FromSeconds(1).Ticks,
+                payload.Length,
+                Path.GetRelativePath(root, payloadPath),
+                nullDocument.RootElement.Clone());
+            await File.WriteAllBytesAsync(
+                sidecarPath,
+                DurableProcessingProductManifestJson.Serialize(manifest)).ConfigureAwait(false);
+            File.SetLastWriteTimeUtc(payloadPath, createdUtc.UtcDateTime);
+            File.SetLastWriteTimeUtc(sidecarPath, createdUtc.UtcDateTime);
+
+            await CreateService(new FileSystemArtifactOutbox(), root)
+                .ApplyRetentionAsync(CreateConfigWithMetadataPolicy(root), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(payloadPath));
+            Assert.IsTrue(File.Exists(sidecarPath));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
     private static CameraModuleConfig CreateConfig(params string[] roots)
     {
         return new CameraModuleConfig(new ObservatoryLocation(0, 0, 0, "UTC"), new CameraModuleDescriptor("VirtualSky"),
@@ -335,15 +452,60 @@ public sealed class RetentionBackgroundServiceTests
                 Options: System.Text.Json.JsonSerializer.SerializeToElement(new { storageRoot = root, retentionDays = 7 }))).ToArray());
     }
 
-    private static RetentionBackgroundService CreateService(IArtifactOutbox outbox)
+    private static CameraModuleConfig CreateConfigWithMetadataPolicy(string root)
+        => new(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            new CameraModuleDescriptor("VirtualSky"),
+            new CameraRigConfig(
+                new SensorProfile("Virtual", 1, 1, 1, SensorColorMode.Mono, CameraPixelFormat.Mono16),
+                new OpticsProfile("EquidistantFisheye", 1, 180, 0),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(
+                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            [new CaptureProcessingStepConfig(
+                "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+                Options: JsonSerializer.SerializeToElement(new
+                {
+                    storageRoot = root,
+                    retentionDays = 7,
+                    policies = new[]
+                    {
+                        new
+                        {
+                            role = FrameArtifactRole.Metadata,
+                            variant = "cloud-assessment-v1",
+                            retentionDays = 30
+                        }
+                    }
+                }))]);
+
+    private static RetentionBackgroundService CreateService(
+        IArtifactOutbox outbox,
+        string? root = null,
+        IProcessingRetentionHolds? processingHolds = null)
         => new(
             new StubConfigurationAccessor(),
-            Options.Create(new CameraAgentHostOptions()),
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root ?? "data" }),
             new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)),
             outbox,
             new FixedCapacityProvider(50),
             new StoragePressureState(),
-            NullLogger<RetentionBackgroundService>.Instance);
+            NullLogger<RetentionBackgroundService>.Instance,
+            processingHolds: processingHolds);
+
+    private static async Task<(string Payload, string Sidecar)> CreateDerivedMetadataEvidenceAsync(string root)
+    {
+        var directory = Path.Combine(root, "derived", "2020", "01", "01", "Metadata");
+        Directory.CreateDirectory(directory);
+        var payload = Path.Combine(directory, "assessment.json");
+        var sidecar = Path.Combine(directory, "assessment.manifest.json");
+        await File.WriteAllTextAsync(payload, "{}").ConfigureAwait(false);
+        await File.WriteAllTextAsync(sidecar, "{}").ConfigureAwait(false);
+        var expired = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(payload, expired);
+        File.SetLastWriteTimeUtc(sidecar, expired);
+        return (payload, sidecar);
+    }
 
     private static async Task<StoredArtifact> CreateStoredArtifactAsync(string root, string stem, Guid artifactId)
     {
@@ -405,6 +567,14 @@ public sealed class RetentionBackgroundServiceTests
     private sealed class FixedRawIngressHolds(IReadOnlyList<RawIngressRetentionHold> holds) : IRawIngressRetentionHolds
     {
         public ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsAsync(
+            string storageRoot,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult(holds);
+    }
+
+    private sealed class FixedProcessingHolds(IReadOnlyList<ProcessingRetentionHold> holds) : IProcessingRetentionHolds
+    {
+        public ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
             string storageRoot,
             CancellationToken cancellationToken)
             => ValueTask.FromResult(holds);

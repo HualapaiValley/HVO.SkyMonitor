@@ -6,8 +6,10 @@ using HVO.SkyMonitor.Processing;
 namespace HVO.SkyMonitor.LogicHost.Services.Processing;
 
 internal sealed record LogicHostProcessingInput(
-    ReconstructionDescriptor Descriptor,
-    ReadOnlyMemory<byte> Payload);
+    ReconstructionDescriptor? Descriptor,
+    ReadOnlyMemory<byte> Payload,
+    string BindingName = "input",
+    ProcessingArtifact? Artifact = null);
 
 internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor executor)
 {
@@ -21,6 +23,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
         ProcessingInputSelector selector,
         string outputVariant,
         ProcessingAnnotationInput? annotation = null,
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null,
         CancellationToken cancellationToken = default)
         => ExecuteAsync(
             [new LogicHostProcessingInput(descriptor, payload)],
@@ -29,6 +32,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             selector,
             outputVariant,
             annotation,
+            auxiliaryInputs,
             cancellationToken);
 
     internal ValueTask<ProcessingOutcome> ExecuteAsync(
@@ -38,6 +42,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
         ProcessingInputSelector selector,
         string outputVariant,
         ProcessingAnnotationInput? annotation = null,
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(inputs);
@@ -45,37 +50,93 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
         foreach (var input in inputs)
         {
             ArgumentNullException.ThrowIfNull(input);
-            ArgumentNullException.ThrowIfNull(input.Descriptor);
-            var reconstruction = FrameReconstructor.TryReconstruct(
-                input.Descriptor, input.Payload, out _);
-            if (!reconstruction.IsValid)
+            if (input.Artifact is { } processingArtifact)
             {
-                return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
-                    MapReconstructionReason(reconstruction.ReasonCode),
-                    reconstruction.FieldPath));
+                artifacts.Add(processingArtifact with { Payload = input.Payload });
             }
-            var descriptor = input.Descriptor;
-            artifacts.Add(new ProcessingArtifact(
-                descriptor.Artifact.ArtifactId,
-                descriptor.Artifact.Role,
-                descriptor.Artifact.Variant,
-                ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256,
-                descriptor.Artifact.MediaType,
-                descriptor.Layout,
-                input.Payload,
-                descriptor.Timing.ExposureStartedUtc,
-                descriptor.Controls.EffectiveExposure,
-                CreateCompatibility(descriptor),
-                descriptor.Capture.CaptureSequence));
+            else
+            {
+                var descriptor = input.Descriptor ?? throw new ArgumentException(
+                    "A processing input must provide a reconstruction descriptor or processing artifact.", nameof(inputs));
+                var reconstruction = FrameReconstructor.TryReconstruct(descriptor, input.Payload, out _);
+                if (!reconstruction.IsValid)
+                {
+                    return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
+                        MapReconstructionReason(reconstruction.ReasonCode),
+                        reconstruction.FieldPath));
+                }
+                artifacts.Add(new ProcessingArtifact(
+                    descriptor.Artifact.ArtifactId,
+                    descriptor.Artifact.Role,
+                    descriptor.Artifact.Variant,
+                    ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256,
+                    descriptor.Artifact.MediaType,
+                    descriptor.Layout,
+                    input.Payload,
+                    descriptor.Timing.ExposureStartedUtc,
+                    descriptor.Controls.EffectiveExposure,
+                    CreateCompatibility(descriptor),
+                    descriptor.Capture.CaptureSequence,
+                    descriptor.Artifact.SourceArtifactIds));
+            }
         }
+        var artifactAuxiliaryInputs = inputs
+            .Where(static input => !string.Equals(input.BindingName, "input", StringComparison.Ordinal))
+            .OrderBy(static input => input.BindingName, StringComparer.Ordinal)
+            .Select(static input => new ProcessingAuxiliaryInput(
+                input.BindingName,
+                ProcessingAuxiliaryInputKind.Artifact,
+                CreateSelector(ResolveArtifact(input)),
+                ArtifactId: ResolveArtifact(input).ArtifactId))
+            .ToArray();
+        auxiliaryInputs = artifactAuxiliaryInputs
+            .Concat(auxiliaryInputs ?? [])
+            .OrderBy(static input => input.Name, StringComparer.Ordinal)
+            .ToArray();
+        var primaryInputs = inputs.Where(static input =>
+            string.Equals(input.BindingName, "input", StringComparison.Ordinal)).ToArray();
         return _executor.ExecuteAsync(new ProcessingExecutionRequest(
             recipeName,
             options,
             selector,
             artifacts,
             outputVariant,
-            annotation), cancellationToken);
+            annotation,
+            auxiliaryInputs,
+            primaryInputs.Length == 1
+                ? ResolveArtifact(primaryInputs[0]).ArtifactId
+                : null), cancellationToken);
     }
+
+    private static ProcessingArtifact ResolveArtifact(LogicHostProcessingInput input)
+        => input.Artifact ?? CreateArtifact(input.Descriptor!);
+
+    private static ProcessingArtifact CreateArtifact(ReconstructionDescriptor descriptor)
+        => new(
+            descriptor.Artifact.ArtifactId,
+            descriptor.Artifact.Role,
+            descriptor.Artifact.Variant,
+            ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256,
+            descriptor.Artifact.MediaType,
+            descriptor.Layout,
+            ReadOnlyMemory<byte>.Empty,
+            descriptor.Timing.ExposureStartedUtc,
+            descriptor.Controls.EffectiveExposure,
+            CreateCompatibility(descriptor),
+            descriptor.Capture.CaptureSequence,
+            descriptor.Artifact.SourceArtifactIds);
+
+    private static ProcessingInputSelector CreateSelector(ProcessingArtifact artifact)
+        => artifact.Role switch
+        {
+            FrameArtifactRole.Raw => ProcessingInputSelector.Raw(artifact.Variant),
+            FrameArtifactRole.Calibrated => ProcessingInputSelector.Calibrated(artifact.Variant),
+            FrameArtifactRole.Combined => ProcessingInputSelector.Combined(artifact.Variant),
+            _ => ProcessingInputSelector.RecipeResult(
+                artifact.Role,
+                artifact.Variant,
+                artifact.RecipeIdentitySha256)
+        };
 
     private static string MapReconstructionReason(string? reasonCode) => reasonCode switch
     {

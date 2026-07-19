@@ -73,7 +73,8 @@ public sealed record ProcessingArtifact(
     DateTimeOffset CreatedUtc,
     TimeSpan Integration,
     ProcessingCompatibilityIdentity Compatibility,
-    long? CaptureSequence = null);
+    long? CaptureSequence = null,
+    IReadOnlyList<Guid>? SourceArtifactIds = null);
 
 public sealed record ProcessingAlgorithmIdentity(string Name, string Version);
 
@@ -105,13 +106,31 @@ public sealed record ProcessingAnnotationInput(
     ProjectedAnnotationOverlay? ProjectionOverlay,
     string ProvenanceSha256);
 
+public enum ProcessingAuxiliaryInputKind
+{
+    Artifact,
+    CanonicalJson
+}
+
+/// <summary>A named artifact selector or immutable canonical JSON context supplied explicitly by a host.</summary>
+public sealed record ProcessingAuxiliaryInput(
+    string Name,
+    ProcessingAuxiliaryInputKind Kind,
+    ProcessingInputSelector? Selector = null,
+    string? SchemaVersion = null,
+    string? IdentitySha256 = null,
+    ReadOnlyMemory<byte> Payload = default,
+    Guid? ArtifactId = null);
+
 public sealed record ProcessingExecutionRequest(
     string RecipeName,
     JsonElement Options,
     ProcessingInputSelector Input,
     IReadOnlyList<ProcessingArtifact> Inputs,
     string OutputVariant,
-    ProcessingAnnotationInput? Annotation = null);
+    ProcessingAnnotationInput? Annotation = null,
+    IReadOnlyList<ProcessingAuxiliaryInput>? AuxiliaryInputs = null,
+    Guid? InputArtifactId = null);
 
 public sealed record ProcessingOutcome(
     ProcessingOutcomeStatus Status,

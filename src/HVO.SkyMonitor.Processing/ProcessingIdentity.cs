@@ -81,7 +81,8 @@ public static class ProcessingIdentity
     internal static JsonElement BindExecutionInputs(
         JsonElement normalizedOptions,
         ProcessingInputSelector selector,
-        ProcessingAnnotationInput? annotation)
+        ProcessingAnnotationInput? annotation,
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null)
     {
         var annotationIdentity = annotation is null
             ? null
@@ -93,8 +94,26 @@ public static class ProcessingIdentity
                 annotation.Segments,
                 annotation.ProjectionOverlay
             }, SerializerOptions));
+        if (auxiliaryInputs is null or { Count: 0 })
+        {
+            var legacyEnvelope = JsonSerializer.SerializeToElement(new
+            {
+                input = new
+                {
+                    kind = selector.Kind.ToString(),
+                    role = selector.Role.ToString(),
+                    selector.Variant,
+                    recipeIdentitySha256 = selector.RecipeIdentitySha256?.ToUpperInvariant()
+                },
+                parameters = normalizedOptions,
+                annotationIdentitySha256 = annotationIdentity
+            }, SerializerOptions);
+            return CaptureContractJson.Canonicalize(legacyEnvelope);
+        }
+
         var envelope = JsonSerializer.SerializeToElement(new
         {
+            schema = "hvo-processing-bound-inputs-v2",
             input = new
             {
                 kind = selector.Kind.ToString(),
@@ -103,7 +122,21 @@ public static class ProcessingIdentity
                 recipeIdentitySha256 = selector.RecipeIdentitySha256?.ToUpperInvariant()
             },
             parameters = normalizedOptions,
-            annotationIdentitySha256 = annotationIdentity
+            annotationIdentitySha256 = annotationIdentity,
+            auxiliaryInputs = auxiliaryInputs.OrderBy(static input => input.Name, StringComparer.Ordinal).Select(static input => new
+            {
+                input.Name,
+                kind = input.Kind.ToString(),
+                selector = input.Selector is null ? null : new
+                {
+                    kind = input.Selector.Kind.ToString(),
+                    role = input.Selector.Role.ToString(),
+                    input.Selector.Variant,
+                    recipeIdentitySha256 = input.Selector.RecipeIdentitySha256?.ToUpperInvariant()
+                },
+                input.SchemaVersion,
+                identitySha256 = input.IdentitySha256?.ToUpperInvariant()
+            }).ToArray()
         }, SerializerOptions);
         return CaptureContractJson.Canonicalize(envelope);
     }

@@ -13,18 +13,28 @@ public static class BuiltInProcessingRecipes
     public const string RollingMean = "rolling-mean";
     public const string ImageQuality = "image-quality";
     public const string NoOpAnalyzer = "no-op-analyzer";
+    public const string CloudAssessment = "cloud-assessment";
+    public const string WeatherCloudOverlay = "weather-cloud-overlay";
 
     public static ProcessingRecipeIdentity CreateRequestedIdentity(
         string recipeName,
         JsonElement options,
         ProcessingInputSelector selector)
+        => CreateExecutionIdentity(recipeName, options, selector);
+
+    public static ProcessingRecipeIdentity CreateExecutionIdentity(
+        string recipeName,
+        JsonElement options,
+        ProcessingInputSelector selector,
+        ProcessingAnnotationInput? annotation = null,
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null)
     {
         ArgumentNullException.ThrowIfNull(selector);
         var recipe = CreateAll().SingleOrDefault(candidate =>
             string.Equals(candidate.Definition.Name, recipeName, StringComparison.Ordinal))
             ?? throw new ArgumentException("The requested built-in recipe is unknown.", nameof(recipeName));
         var normalized = recipe.NormalizeOptions(options);
-        var effective = ProcessingIdentity.BindExecutionInputs(normalized, selector, null);
+        var effective = ProcessingIdentity.BindExecutionInputs(normalized, selector, annotation, auxiliaryInputs);
         return ProcessingIdentity.CreateRecipeIdentity(recipe.Definition, effective);
     }
 
@@ -43,7 +53,9 @@ public static class BuiltInProcessingRecipes
         new AnnotationRecipe(),
         new RollingMeanRecipe(),
         new ImageQualityRecipe(),
-        new NoOpAnalyzerRecipe()
+        new NoOpAnalyzerRecipe(),
+        new CloudAssessmentRecipe(),
+        new WeatherCloudOverlayRecipe()
     ];
 }
 
@@ -84,7 +96,9 @@ internal static class ProcessingRecipeSupport
             return null;
         }
 
-        var matches = request.Inputs.Where(input => Matches(input, request.Input)).ToArray();
+        var matches = request.Inputs.Where(input =>
+            (request.InputArtifactId is null || input.ArtifactId == request.InputArtifactId) &&
+            Matches(input, request.Input)).ToArray();
         if (matches.Length == 0)
         {
             failure = ProcessingOutcome.Skipped(
@@ -116,7 +130,9 @@ internal static class ProcessingRecipeSupport
             return [];
         }
 
-        var matches = request.Inputs.Where(input => Matches(input, request.Input)).ToArray();
+        var matches = request.Inputs.Where(input =>
+            (request.InputArtifactId is null || input.ArtifactId == request.InputArtifactId) &&
+            Matches(input, request.Input)).ToArray();
         failure = matches.Length == 0
             ? ProcessingOutcome.Skipped(ProcessingReasonCodes.MissingInput, nameof(request.Input))
             : null;
@@ -262,7 +278,7 @@ internal static class ProcessingRecipeSupport
         return output;
     }
 
-    private static bool SelectorIsValid(ProcessingInputSelector selector) => selector.Kind switch
+    internal static bool SelectorIsValid(ProcessingInputSelector selector) => selector.Kind switch
     {
         ProcessingInputKind.Raw => selector.Role == FrameArtifactRole.Raw && selector.RecipeIdentitySha256 is null &&
             VariantIsValid(selector.Variant),
@@ -276,7 +292,7 @@ internal static class ProcessingRecipeSupport
         _ => false
     };
 
-    private static bool Matches(ProcessingArtifact input, ProcessingInputSelector selector) =>
+    internal static bool Matches(ProcessingArtifact input, ProcessingInputSelector selector) =>
         input.Role == selector.Role &&
         (selector.Variant is null || string.Equals(input.Variant, selector.Variant, StringComparison.Ordinal)) &&
         (selector.RecipeIdentitySha256 is null || string.Equals(

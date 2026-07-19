@@ -28,6 +28,10 @@ internal sealed class CentralDerivativeJobInputRequirement
 
     public long? ExpectedCaptureSequence { get; set; }
 
+    public Guid? ExpectedCentralArtifactId { get; set; }
+
+    public CentralArtifact? ExpectedArtifact { get; set; }
+
     public CentralDerivativeInputResolutionState ResolutionState { get; set; }
 
     public string? ResolutionReasonCode { get; set; }
@@ -35,6 +39,8 @@ internal sealed class CentralDerivativeJobInputRequirement
     public DateTimeOffset? ResolvedAtUtc { get; set; }
 
     public CentralDerivativeJobInput? Input { get; set; }
+
+    public CentralDerivativeJobCanonicalInput? CanonicalInput { get; set; }
 }
 
 internal sealed class CentralDerivativeJobInput
