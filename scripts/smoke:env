@@ -1,0 +1,515 @@
+#!/usr/bin/env bash
+# Generate and validate the owner-only smoke-test environment before any mutation.
+
+set -euo pipefail
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly TEMPLATE_FILE="$REPO_ROOT/.env.smoketest.template"
+readonly ENV_FILE="${SMOKETEST_ENV_FILE:-$REPO_ROOT/.env.smoketest}"
+readonly BASE_ENV_FILE="${SMOKETEST_BASE_ENV_FILE:-$REPO_ROOT/.env}"
+initialize_temporary=""
+
+cleanup() {
+    if [[ -n "$initialize_temporary" ]]; then
+        rm -f "$initialize_temporary"
+    fi
+}
+trap cleanup EXIT
+
+usage() {
+    printf 'Usage: %s init [SMOKETEST_NAME=value|HVO_RUNTIME_DATA_ROOT=value ...]\n' "${0##*/}" >&2
+    printf '       %s <validate|preflight>\n' "${0##*/}" >&2
+    exit 2
+}
+
+fail() {
+    printf 'Smoke environment invalid: %s\n' "$1" >&2
+    exit 1
+}
+
+is_smoke_variable() {
+    case "$1" in
+        SMOKETEST_*|HVO_RUNTIME_DATA_ROOT|LOGIC_HOST_HTTP_PORT|CAMERA_AGENT_HTTP_PORT|\
+        SQLSERVER_HOST|SQLSERVER_PORT|SQLSERVER_DATABASE|SQLSERVER_USER|SQLSERVER_PASSWORD|\
+        REDIS_HOST|REDIS_PORT|REDIS_USER|REDIS_PASSWORD|\
+        MINIO_HOST|MINIO_API_PORT|MINIO_CONSOLE_PORT|MINIO_ROOT_USER|MINIO_ROOT_PASSWORD|\
+        MINIO_ACCESS_KEY|MINIO_SECRET_KEY|SMTP_HOST|SMTP_PORT|SMTP_WEB_PORT|SMTP_FROM|\
+        OTEL_EXPORTER_OTLP_ENDPOINT|OTEL_EXPORTER_OTLP_PROTOCOL|\
+        LOGIC_HOST_SMOKE_OWNER_EMAIL|LOGIC_HOST_SMOKE_OWNER_USERNAME|\
+        LOGIC_HOST_SMOKE_OWNER_PASSWORD|LOGIC_HOST_SMOKE_API_KEY|\
+        CAMERA_AGENT_ADMIN_EMAIL|CAMERA_AGENT_ADMIN_PASSWORD|CAMERA_AGENT_OAUTH_CLIENT_ID|\
+        CAMERA_AGENT_OAUTH_CLIENT_SECRET|CAMERA_AGENT_LOGIC_BASEURL|CAMERA_AGENT_IDENTITY_URL) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+load_env_file() {
+    local path="$1"
+    [[ -f "$path" && ! -L "$path" ]] || fail "environment file is missing or unsafe: $path"
+    local line name value line_number=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        (( line_number += 1 ))
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        [[ "$line" == *=* ]] || fail "$path:$line_number is not NAME=value"
+        name="${line%%=*}"
+        value="${line#*=}"
+        [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "$path:$line_number has an invalid variable name"
+        is_smoke_variable "$name" || continue
+        if [[ "$value" == \"* ]]; then
+            [[ "${value: -1}" == '"' ]] || fail "$path:$line_number has mismatched quotes"
+            value="$(printf '%s' "$value" | jq -Rer 'fromjson' 2>/dev/null)" || fail "$path:$line_number has invalid JSON quoting"
+        elif [[ "$value" == \'* ]]; then
+            [[ "${value: -1}" == "'" ]] || fail "$path:$line_number has mismatched quotes"
+            value="${value:1:${#value}-2}"
+        fi
+        [[ "$value" != *$'\r'* && "$value" != *$'\n'* ]] || fail "$path:$line_number contains a line break"
+        printf -v "$name" '%s' "$value"
+    done < "$path"
+}
+
+require_private_file() {
+    local path="$1"
+    local mode owner
+    [[ -f "$path" && ! -L "$path" ]] || fail "environment file is missing or unsafe: $path"
+    mode="$(stat -c '%a' "$path")"
+    owner="$(stat -c '%u' "$path")"
+    [[ "$owner" == "$(id -u)" ]] || fail "$path must be owned by the current user"
+    [[ "$mode" == "600" || "$mode" == "400" ]] || fail "$path must use mode 600 or 400"
+}
+
+generate_password() {
+    printf 'Smoke-A1!%s' "$(openssl rand -hex 24)"
+}
+
+generate_key() {
+    openssl rand -hex 32
+}
+
+write_variable() {
+    local name="$1"
+    local value="${!name-}"
+    [[ "$value" != *$'\r'* && "$value" != *$'\n'* ]] || fail "$name cannot contain a line break"
+    printf '%s=' "$name"
+    printf '%s' "$value" | jq -Rsa '.'
+}
+
+initialize() {
+    command -v jq >/dev/null || fail "jq is required"
+    load_env_file "$TEMPLATE_FILE"
+    if [[ -f "$BASE_ENV_FILE" ]]; then
+        require_private_file "$BASE_ENV_FILE"
+        load_env_file "$BASE_ENV_FILE"
+    fi
+    if [[ -f "$ENV_FILE" ]]; then
+        require_private_file "$ENV_FILE"
+        load_env_file "$ENV_FILE"
+    fi
+
+    local assignment name value
+    for assignment in "$@"; do
+        [[ "$assignment" == *=* ]] || fail "init override must use NAME=value"
+        name="${assignment%%=*}"
+        value="${assignment#*=}"
+        case "$name" in
+            SMOKETEST_*|HVO_RUNTIME_DATA_ROOT) printf -v "$name" '%s' "$value" ;;
+            *) fail "init override is not allowed: $name" ;;
+        esac
+    done
+
+    SMOKETEST_RUN_ID="${SMOKETEST_RUN_ID:-smoke-$(date -u +%Y%m%dt%H%M%Sz)-$(openssl rand -hex 4)}"
+    SMOKETEST_CONTROL_REPO_PATH="${SMOKETEST_CONTROL_REPO_PATH:-$REPO_ROOT}"
+    SMOKETEST_REPO_HOST_PATH="${SMOKETEST_REPO_HOST_PATH:-$REPO_ROOT}"
+    HVO_RUNTIME_DATA_ROOT="${HVO_RUNTIME_DATA_ROOT:-$SMOKETEST_REPO_HOST_PATH/data/smoke/$SMOKETEST_RUN_ID}"
+    SMOKETEST_CATALOG_ROOT_CONTROL="${SMOKETEST_CATALOG_ROOT_CONTROL:-$SMOKETEST_CONTROL_REPO_PATH/data/catalog}"
+    SMOKETEST_RUN_STATE_PATH="${SMOKETEST_RUN_STATE_PATH:-TestResults/smoke/$SMOKETEST_RUN_ID/state}"
+    SMOKETEST_EVIDENCE_ROOT="${SMOKETEST_EVIDENCE_ROOT:-TestResults/smoke/$SMOKETEST_RUN_ID/evidence}"
+    local namespace_token="${SMOKETEST_RUN_ID//-/_}"
+    local bucket_token="${SMOKETEST_RUN_ID,,}"
+    SMOKETEST_COMPOSE_PROJECT="${SMOKETEST_COMPOSE_PROJECT:-hvo-smoke-$bucket_token}"
+    SMOKETEST_REDIS_PREFIX="${SMOKETEST_REDIS_PREFIX:-skymonitor:}"
+    SMOKETEST_MINIO_ARTIFACT_BUCKET="${SMOKETEST_MINIO_ARTIFACT_BUCKET:-skymonitor-artifacts}"
+    SMOKETEST_MINIO_DIAGNOSTICS_BUCKET="${SMOKETEST_MINIO_DIAGNOSTICS_BUCKET:-skymonitor-diagnostics}"
+    if [[ "$SMOKETEST_DATA_POLICY" == "isolated" ]]; then
+        if [[ -z "$SQLSERVER_DATABASE" || "$SQLSERVER_DATABASE" == "SkyMonitor" ]]; then
+            SQLSERVER_DATABASE="SkyMonitorSmoke_$namespace_token"
+        fi
+        if [[ "$SMOKETEST_REDIS_PREFIX" == "skymonitor:" ]]; then
+            SMOKETEST_REDIS_PREFIX="skymonitor:$SMOKETEST_RUN_ID:"
+        fi
+        if [[ "$SMOKETEST_MINIO_ARTIFACT_BUCKET" == "skymonitor-artifacts" ]]; then
+            SMOKETEST_MINIO_ARTIFACT_BUCKET="hvo-$bucket_token-artifacts"
+        fi
+        if [[ "$SMOKETEST_MINIO_DIAGNOSTICS_BUCKET" == "skymonitor-diagnostics" ]]; then
+            SMOKETEST_MINIO_DIAGNOSTICS_BUCKET="hvo-$bucket_token-diagnostics"
+        fi
+    fi
+    LOGIC_HOST_SMOKE_OWNER_PASSWORD="${LOGIC_HOST_SMOKE_OWNER_PASSWORD:-$(generate_password)}"
+    LOGIC_HOST_SMOKE_API_KEY="${LOGIC_HOST_SMOKE_API_KEY:-$(generate_key)}"
+
+    initialize_temporary="$(mktemp "$REPO_ROOT/.env.smoketest.tmp.XXXXXX")"
+    chmod 600 "$initialize_temporary"
+    {
+        printf '# Generated by scripts/smoke:env. Owner-only; never commit.\n'
+        printf '# Generated device/bootstrap state belongs in SMOKETEST_RUN_STATE_PATH, not this file.\n\n'
+        local variables=(
+            SMOKETEST_SCHEMA_VERSION SMOKETEST_RUN_ID SMOKETEST_DATA_POLICY
+            SMOKETEST_CONFIRM_SHARED_DATA_RESET SMOKETEST_BOOTSTRAP_MODE
+            SMOKETEST_RUN_STATE_PATH SMOKETEST_EVIDENCE_ROOT
+            SMOKETEST_COMPOSE_PROJECT SMOKETEST_REDIS_PREFIX
+            SMOKETEST_MINIO_ARTIFACT_BUCKET SMOKETEST_MINIO_DIAGNOSTICS_BUCKET
+            SMOKETEST_DOCKER_HOST_NAME SMOKETEST_DOCKER_HOST_ADDRESS
+            SMOKETEST_CONTROL_REPO_PATH SMOKETEST_REPO_HOST_PATH HVO_RUNTIME_DATA_ROOT
+            LOGIC_HOST_HTTP_PORT CAMERA_AGENT_HTTP_PORT
+            SMOKETEST_LOGIC_HOST_PUBLIC_URL SMOKETEST_CAMERA_AGENT_PUBLIC_URL
+            SQLSERVER_HOST SQLSERVER_PORT SQLSERVER_DATABASE SQLSERVER_USER SQLSERVER_PASSWORD
+            REDIS_HOST REDIS_PORT REDIS_USER REDIS_PASSWORD
+            MINIO_HOST MINIO_API_PORT MINIO_CONSOLE_PORT MINIO_ROOT_USER MINIO_ROOT_PASSWORD
+            MINIO_ACCESS_KEY MINIO_SECRET_KEY SMTP_HOST SMTP_PORT SMTP_WEB_PORT SMTP_FROM
+            OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL
+            LOGIC_HOST_SMOKE_OWNER_EMAIL LOGIC_HOST_SMOKE_OWNER_USERNAME
+            LOGIC_HOST_SMOKE_OWNER_PASSWORD LOGIC_HOST_SMOKE_API_KEY
+            CAMERA_AGENT_ADMIN_EMAIL CAMERA_AGENT_ADMIN_PASSWORD
+            CAMERA_AGENT_OAUTH_CLIENT_ID CAMERA_AGENT_OAUTH_CLIENT_SECRET
+            CAMERA_AGENT_LOGIC_BASEURL CAMERA_AGENT_IDENTITY_URL
+            SMOKETEST_OBSERVATORY_NAME SMOKETEST_OBSERVATORY_LATITUDE
+            SMOKETEST_OBSERVATORY_LONGITUDE SMOKETEST_OBSERVATORY_ELEVATION_METERS
+            SMOKETEST_OBSERVATORY_TIMEZONE SMOKETEST_CAMERA_AGENT_FRIENDLY_NAME
+            SMOKETEST_CAMERA_CONFIG_PATH SMOKETEST_EXPECTED_WIDTH_PIXELS
+            SMOKETEST_EXPECTED_HEIGHT_PIXELS SMOKETEST_EXPOSURE_SECONDS
+            SMOKETEST_CADENCE_SECONDS SMOKETEST_CADENCE_MODE
+            SMOKETEST_CATALOG_ROOT_CONTROL SMOKETEST_CATALOG_KIND SMOKETEST_CATALOG_PACKAGE_VERSION
+            SMOKETEST_CATALOG_VERSION
+            SMOKETEST_CATALOG_SCHEMA_VERSION SMOKETEST_CATALOG_PREPROCESSING_VERSION
+            SMOKETEST_CATALOG_DATABASE_SHA256 SMOKETEST_CATALOG_ROW_COUNT
+        )
+        local variable
+        for variable in "${variables[@]}"; do
+            write_variable "$variable"
+        done
+    } > "$initialize_temporary"
+    mv "$initialize_temporary" "$ENV_FILE"
+    initialize_temporary=""
+    printf 'Initialized owner-only smoke environment: %s\n' "$ENV_FILE"
+}
+
+require_value() {
+    local name="$1"
+    [[ -n "${!name-}" ]] || fail "$name is required"
+}
+
+require_integer() {
+    local name="$1"
+    [[ "${!name-}" =~ ^[0-9]+$ ]] || fail "$name must be a non-negative integer"
+}
+
+require_positive_number() {
+    local name="$1"
+    [[ "${!name-}" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "$name must be a positive number"
+    jq -en --arg value "${!name}" '$value | tonumber > 0' >/dev/null || fail "$name must be greater than zero"
+}
+
+require_identity_password() {
+    local name="$1" value="${!1}"
+    (( ${#value} >= 12 )) || fail "$name must contain at least 12 characters"
+    [[ "$value" == *[[:upper:]]* && "$value" == *[[:lower:]]* && "$value" == *[[:digit:]]* &&
+       "$value" == *[^[:alnum:]]* ]] || fail "$name must contain uppercase, lowercase, digit, and non-alphanumeric characters"
+}
+
+require_port() {
+    local name="$1"
+    require_integer "$name"
+    (( 10#${!name} >= 1 && 10#${!name} <= 65535 )) || fail "$name must be between 1 and 65535"
+}
+
+require_url() {
+    local name="$1"
+    [[ "${!name-}" =~ ^https?://[^/[:space:]]+(/.*)?$ ]] || fail "$name must be an HTTP(S) URL"
+    local url="${!name}" authority
+    authority="${url#*://}"
+    authority="${authority%%/*}"
+    [[ "$authority" != *@* ]] || fail "$name must not contain user information"
+    [[ "$authority" =~ ^([A-Za-z0-9][A-Za-z0-9.-]*)(:([0-9]+))?$ ]] || fail "$name has an invalid authority"
+    if [[ -n "${BASH_REMATCH[3]}" ]]; then
+        local port="${BASH_REMATCH[3]}"
+        [[ "$port" =~ ^[0-9]+$ ]] || fail "$name has an invalid port"
+        (( 10#$port >= 1 && 10#$port <= 65535 )) || fail "$name has an invalid port"
+    fi
+}
+
+require_absolute_path() {
+    local name="$1"
+    [[ "${!name-}" == /* ]] || fail "$name must be an absolute path"
+}
+
+require_public_url() {
+    local name="$1" expected_port="$2"
+    require_url "$name"
+    local url="${!name}" authority
+    authority="${url#*://}"
+    authority="${authority%%/*}"
+    [[ "$authority" == *:* ]] || fail "$name must include its published port"
+    local host="${authority%%:*}" port="${authority##*:}"
+    [[ "$host" == "$SMOKETEST_DOCKER_HOST_NAME" || "$host" == "$SMOKETEST_DOCKER_HOST_ADDRESS" ]] ||
+        fail "$name must use the declared Docker host name or address"
+    [[ "$port" == "$expected_port" ]] || fail "$name must use published port $expected_port"
+}
+
+require_safe_existing_ancestors() {
+    local path="$1" relative current component mode
+    relative="${path#"$REPO_ROOT/"}"
+    current="$REPO_ROOT"
+    IFS='/' read -r -a components <<< "$relative"
+    for component in "${components[@]}"; do
+        current="$current/$component"
+        [[ -e "$current" || -L "$current" ]] || continue
+        [[ ! -L "$current" && "$(stat -c '%u' "$current")" == "$(id -u)" ]] ||
+            fail "smoke output path has an unsafe or non-owned ancestor"
+        mode="$(stat -c '%a' "$current")"
+        (( (8#$mode & 022) == 0 )) || fail "smoke output ancestors must not be group/world writable"
+    done
+}
+
+validate_loaded() {
+    command -v jq >/dev/null || fail "jq is required"
+    local required=(
+        SMOKETEST_SCHEMA_VERSION SMOKETEST_RUN_ID SMOKETEST_DATA_POLICY SMOKETEST_BOOTSTRAP_MODE
+        SMOKETEST_RUN_STATE_PATH SMOKETEST_EVIDENCE_ROOT SMOKETEST_COMPOSE_PROJECT
+        SMOKETEST_REDIS_PREFIX SMOKETEST_MINIO_ARTIFACT_BUCKET SMOKETEST_MINIO_DIAGNOSTICS_BUCKET
+        SMOKETEST_DOCKER_HOST_NAME
+        SMOKETEST_DOCKER_HOST_ADDRESS SMOKETEST_CONTROL_REPO_PATH SMOKETEST_REPO_HOST_PATH
+        HVO_RUNTIME_DATA_ROOT SMOKETEST_LOGIC_HOST_PUBLIC_URL SMOKETEST_CAMERA_AGENT_PUBLIC_URL
+        SQLSERVER_HOST SQLSERVER_DATABASE SQLSERVER_USER SQLSERVER_PASSWORD REDIS_HOST REDIS_USER
+        REDIS_PASSWORD MINIO_HOST MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_ACCESS_KEY MINIO_SECRET_KEY
+        SMTP_HOST SMTP_FROM OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL
+        LOGIC_HOST_SMOKE_OWNER_EMAIL LOGIC_HOST_SMOKE_OWNER_USERNAME LOGIC_HOST_SMOKE_OWNER_PASSWORD
+        LOGIC_HOST_SMOKE_API_KEY CAMERA_AGENT_ADMIN_EMAIL CAMERA_AGENT_ADMIN_PASSWORD
+        CAMERA_AGENT_OAUTH_CLIENT_ID CAMERA_AGENT_OAUTH_CLIENT_SECRET CAMERA_AGENT_LOGIC_BASEURL
+        CAMERA_AGENT_IDENTITY_URL SMOKETEST_OBSERVATORY_NAME SMOKETEST_OBSERVATORY_LATITUDE
+        SMOKETEST_OBSERVATORY_LONGITUDE SMOKETEST_OBSERVATORY_ELEVATION_METERS
+        SMOKETEST_OBSERVATORY_TIMEZONE SMOKETEST_CAMERA_AGENT_FRIENDLY_NAME
+        SMOKETEST_CAMERA_CONFIG_PATH SMOKETEST_CADENCE_MODE SMOKETEST_CATALOG_ROOT_CONTROL
+        SMOKETEST_CATALOG_KIND SMOKETEST_CATALOG_PACKAGE_VERSION SMOKETEST_CATALOG_VERSION
+        SMOKETEST_CATALOG_SCHEMA_VERSION
+        SMOKETEST_CATALOG_PREPROCESSING_VERSION SMOKETEST_CATALOG_DATABASE_SHA256
+    )
+    local name
+    for name in "${required[@]}"; do require_value "$name"; done
+
+    [[ "$SMOKETEST_SCHEMA_VERSION" == "1" ]] || fail "unsupported SMOKETEST_SCHEMA_VERSION"
+    [[ "$SMOKETEST_RUN_ID" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || fail "SMOKETEST_RUN_ID must be lowercase, namespace-safe, and at most 32 characters"
+    [[ "$SMOKETEST_DOCKER_HOST_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || fail "SMOKETEST_DOCKER_HOST_NAME has an unsafe format"
+    [[ "$SMOKETEST_DOCKER_HOST_ADDRESS" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || fail "SMOKETEST_DOCKER_HOST_ADDRESS has an unsafe format"
+    [[ "$SMOKETEST_DATA_POLICY" == "preserve" || "$SMOKETEST_DATA_POLICY" == "isolated" ||
+       "$SMOKETEST_DATA_POLICY" == "reset-shared" ]] || fail "SMOKETEST_DATA_POLICY must be preserve, isolated, or reset-shared"
+    if [[ "$SMOKETEST_DATA_POLICY" == "reset-shared" && "$SMOKETEST_CONFIRM_SHARED_DATA_RESET" != "$SMOKETEST_RUN_ID" ]]; then
+        fail "reset-shared requires SMOKETEST_CONFIRM_SHARED_DATA_RESET to equal SMOKETEST_RUN_ID"
+    fi
+    local namespace_token="${SMOKETEST_RUN_ID//-/_}"
+    local bucket_token="${SMOKETEST_RUN_ID,,}"
+    if [[ "$SMOKETEST_DATA_POLICY" == "isolated" ]]; then
+        [[ "$SMOKETEST_COMPOSE_PROJECT" == *"$bucket_token"* ]] || fail "isolated Compose project must contain the lowercase run namespace"
+        [[ "$SQLSERVER_DATABASE" == *"$namespace_token"* ]] || fail "isolated SQL database must contain the run namespace"
+        [[ "$SMOKETEST_REDIS_PREFIX" == *"$SMOKETEST_RUN_ID"* ]] || fail "isolated Redis prefix must contain SMOKETEST_RUN_ID"
+        [[ "$SMOKETEST_MINIO_ARTIFACT_BUCKET" == *"$bucket_token"* ]] || fail "isolated artifact bucket must contain SMOKETEST_RUN_ID"
+        [[ "$SMOKETEST_MINIO_DIAGNOSTICS_BUCKET" == *"$bucket_token"* ]] || fail "isolated diagnostics bucket must contain SMOKETEST_RUN_ID"
+    fi
+    [[ "$SMOKETEST_COMPOSE_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Compose project name must contain only lowercase letters, digits, hyphens, and underscores"
+    [[ "$SMOKETEST_MINIO_ARTIFACT_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || fail "artifact bucket name is invalid"
+    [[ "$SMOKETEST_MINIO_DIAGNOSTICS_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || fail "diagnostics bucket name is invalid"
+    [[ "$SMOKETEST_BOOTSTRAP_MODE" == "manual" || "$SMOKETEST_BOOTSTRAP_MODE" == "automated" ]] ||
+        fail "SMOKETEST_BOOTSTRAP_MODE must be manual or automated"
+    [[ "$SMOKETEST_CADENCE_MODE" == "MinimumStartInterval" ]] || fail "smoke cadence must use MinimumStartInterval"
+    [[ "$SMOKETEST_CATALOG_KIND" == "production" ]] || fail "smoke catalog kind must be production"
+    [[ "$SMOKETEST_CATALOG_DATABASE_SHA256" =~ ^[[:xdigit:]]{64}$ ]] || fail "catalog SHA-256 must contain 64 hexadecimal characters"
+    [[ "$LOGIC_HOST_SMOKE_API_KEY" =~ ^[[:xdigit:]]{64}$ ]] || fail "LOGIC_HOST_SMOKE_API_KEY must contain exactly 64 hexadecimal characters"
+    [[ "$LOGIC_HOST_SMOKE_OWNER_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || fail "LOGIC_HOST_SMOKE_OWNER_EMAIL must be an email address"
+    [[ "$CAMERA_AGENT_ADMIN_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || fail "CAMERA_AGENT_ADMIN_EMAIL must be an email address"
+    [[ "$SMTP_FROM" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || fail "SMTP_FROM must be an email address"
+    require_identity_password LOGIC_HOST_SMOKE_OWNER_PASSWORD
+    require_identity_password CAMERA_AGENT_ADMIN_PASSWORD
+    [[ "$OTEL_EXPORTER_OTLP_PROTOCOL" == "http/protobuf" ]] || fail "OTEL_EXPORTER_OTLP_PROTOCOL must be http/protobuf"
+
+    for name in LOGIC_HOST_HTTP_PORT CAMERA_AGENT_HTTP_PORT SQLSERVER_PORT REDIS_PORT MINIO_API_PORT MINIO_CONSOLE_PORT SMTP_PORT SMTP_WEB_PORT; do
+        require_port "$name"
+    done
+    for name in SMOKETEST_EXPECTED_WIDTH_PIXELS SMOKETEST_EXPECTED_HEIGHT_PIXELS SMOKETEST_CATALOG_ROW_COUNT; do
+        require_integer "$name"
+        (( 10#${!name} > 0 )) || fail "$name must be greater than zero"
+    done
+    for name in SMOKETEST_EXPOSURE_SECONDS SMOKETEST_CADENCE_SECONDS; do require_positive_number "$name"; done
+    require_public_url SMOKETEST_LOGIC_HOST_PUBLIC_URL "$LOGIC_HOST_HTTP_PORT"
+    require_public_url SMOKETEST_CAMERA_AGENT_PUBLIC_URL "$CAMERA_AGENT_HTTP_PORT"
+    require_url CAMERA_AGENT_LOGIC_BASEURL
+    require_url CAMERA_AGENT_IDENTITY_URL
+    require_url OTEL_EXPORTER_OTLP_ENDPOINT
+    for name in SMOKETEST_CONTROL_REPO_PATH SMOKETEST_REPO_HOST_PATH HVO_RUNTIME_DATA_ROOT SMOKETEST_CATALOG_ROOT_CONTROL; do
+        require_absolute_path "$name"
+    done
+    local control_repo host_repo runtime_root catalog_root state_path evidence_root
+    control_repo="$(realpath -m "$SMOKETEST_CONTROL_REPO_PATH")"
+    host_repo="$(realpath -m "$SMOKETEST_REPO_HOST_PATH")"
+    runtime_root="$(realpath -m "$HVO_RUNTIME_DATA_ROOT")"
+    catalog_root="$(realpath -m "$SMOKETEST_CATALOG_ROOT_CONTROL")"
+    [[ "$control_repo" == "$SMOKETEST_CONTROL_REPO_PATH" && "$control_repo" == "$REPO_ROOT" ]] ||
+        fail "SMOKETEST_CONTROL_REPO_PATH must be the canonical current repository"
+    [[ "$host_repo" == "$SMOKETEST_REPO_HOST_PATH" ]] || fail "SMOKETEST_REPO_HOST_PATH must be canonical"
+    [[ "$runtime_root" == "$HVO_RUNTIME_DATA_ROOT" ]] || fail "HVO_RUNTIME_DATA_ROOT must be canonical"
+    [[ "$catalog_root" == "$SMOKETEST_CATALOG_ROOT_CONTROL" ]] || fail "SMOKETEST_CATALOG_ROOT_CONTROL must be canonical"
+    [[ "$runtime_root" == "$host_repo/"* ]] ||
+        fail "HVO_RUNTIME_DATA_ROOT must be below SMOKETEST_REPO_HOST_PATH"
+    [[ "$SMOKETEST_RUN_STATE_PATH" != /* && "$SMOKETEST_RUN_STATE_PATH" != *..* ]] ||
+        fail "SMOKETEST_RUN_STATE_PATH must be a safe repository-relative path"
+    [[ "$SMOKETEST_EVIDENCE_ROOT" != /* && "$SMOKETEST_EVIDENCE_ROOT" != *..* ]] ||
+        fail "SMOKETEST_EVIDENCE_ROOT must be a safe repository-relative path"
+    local run_output_prefix="TestResults/smoke/$SMOKETEST_RUN_ID/"
+    [[ "$SMOKETEST_RUN_STATE_PATH" == "$run_output_prefix"* && "$SMOKETEST_EVIDENCE_ROOT" == "$run_output_prefix"* ]] ||
+        fail "smoke state and evidence paths must remain in the ignored run-specific TestResults tree"
+    state_path="$(realpath -m "$control_repo/$SMOKETEST_RUN_STATE_PATH")"
+    evidence_root="$(realpath -m "$control_repo/$SMOKETEST_EVIDENCE_ROOT")"
+    [[ "$state_path" == "$control_repo/"* && "$evidence_root" == "$control_repo/"* ]] ||
+        fail "smoke state and evidence paths must remain below the repository"
+    local run_output_root
+    run_output_root="$(realpath -m "$control_repo/TestResults/smoke/$SMOKETEST_RUN_ID")"
+    [[ "$state_path" == "$run_output_root/"* && "$evidence_root" == "$run_output_root/"* ]] ||
+        fail "smoke state and evidence paths must remain inside their own run directory"
+    [[ "$state_path" != "$evidence_root" && "$state_path" != "$evidence_root/"* && "$evidence_root" != "$state_path/"* ]] ||
+        fail "SMOKETEST_RUN_STATE_PATH and SMOKETEST_EVIDENCE_ROOT must not overlap"
+    require_safe_existing_ancestors "$control_repo/TestResults/smoke/$SMOKETEST_RUN_ID"
+    require_safe_existing_ancestors "$state_path"
+    require_safe_existing_ancestors "$evidence_root"
+    if [[ -e "$state_path" ]]; then
+        [[ -d "$state_path" && ! -L "$state_path" && "$(stat -c '%u' "$state_path")" == "$(id -u)" &&
+           "$(stat -c '%a' "$state_path")" == "700" ]] || fail "existing smoke run-state directory must be owner-only"
+    fi
+
+    jq -en --arg value "$SMOKETEST_OBSERVATORY_LATITUDE" '$value | tonumber >= -90 and tonumber <= 90' >/dev/null ||
+        fail "observatory latitude must be between -90 and 90"
+    jq -en --arg value "$SMOKETEST_OBSERVATORY_LONGITUDE" '$value | tonumber >= -180 and tonumber <= 180' >/dev/null ||
+        fail "observatory longitude must be east-positive and between -180 and 180"
+    [[ "$SMOKETEST_OBSERVATORY_ELEVATION_METERS" =~ ^-?[0-9]+([.][0-9]+)?$ ]] || fail "observatory elevation must be numeric"
+    [[ "$SMOKETEST_OBSERVATORY_TIMEZONE" != *..* && -f "/usr/share/zoneinfo/$SMOKETEST_OBSERVATORY_TIMEZONE" ]] ||
+        fail "observatory timezone is not installed or is unsafe"
+    [[ "$SMOKETEST_CAMERA_CONFIG_PATH" != /* && "$SMOKETEST_CAMERA_CONFIG_PATH" != *..* ]] ||
+        fail "CameraAgent config path must be safe and repository-relative"
+    local camera_config_path
+    camera_config_path="$(realpath -e "$SMOKETEST_CONTROL_REPO_PATH/$SMOKETEST_CAMERA_CONFIG_PATH")" || fail "CameraAgent config does not exist"
+    [[ "$camera_config_path" == "$SMOKETEST_CONTROL_REPO_PATH/"* && -f "$camera_config_path" && ! -L "$camera_config_path" ]] ||
+        fail "CameraAgent config must be a regular file inside the repository"
+
+    for name in SMOKETEST_DEVICE_ID SMOKETEST_VERIFICATION_CODE SMOKETEST_REGISTRATION_ID SMOKETEST_PUBLIC_ID \
+        SMOKETEST_DEVICE_PUBLIC_ID SMOKETEST_ENVELOPE SMOKETEST_DEVICE_SECRET; do
+        [[ -z "${!name-}" ]] || fail "$name is generated run state and must not be stored in .env.smoketest"
+    done
+}
+
+validate() {
+    require_private_file "$ENV_FILE"
+    load_env_file "$ENV_FILE"
+    validate_loaded
+    printf 'Smoke environment validation passed (schema %s, run %s).\n' "$SMOKETEST_SCHEMA_VERSION" "$SMOKETEST_RUN_ID"
+}
+
+probe_tcp() {
+    local label="$1" host="$2" port="$3"
+    timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$port" 2>/dev/null || fail "$label endpoint is unreachable"
+}
+
+preflight() {
+    require_private_file "$ENV_FILE"
+    load_env_file "$ENV_FILE"
+    validate_loaded
+    command -v docker >/dev/null || fail "docker is required"
+    local daemon_name
+    daemon_name="$(docker info --format '{{.Name}}' 2>/dev/null)" || fail "Docker daemon is unreachable"
+    [[ "$daemon_name" == "$SMOKETEST_DOCKER_HOST_NAME" ]] || fail "active Docker daemon does not match SMOKETEST_DOCKER_HOST_NAME"
+    local resolved=false address ignored
+    while read -r address ignored; do
+        if [[ "$address" == "$SMOKETEST_DOCKER_HOST_ADDRESS" ]]; then
+            resolved=true
+            break
+        fi
+    done < <(getent ahosts "$SMOKETEST_DOCKER_HOST_NAME")
+    [[ "$resolved" == true ]] || fail "Docker host name does not resolve to SMOKETEST_DOCKER_HOST_ADDRESS"
+
+    local control_mode runtime_relative control_runtime existing_runtime_ancestor ancestor_mode
+    [[ ! -L "$SMOKETEST_CONTROL_REPO_PATH" && "$(stat -c '%u' "$SMOKETEST_CONTROL_REPO_PATH")" == "$(id -u)" ]] ||
+        fail "control repository must be owned by the current user and must not be a symbolic link"
+    control_mode="$(stat -c '%a' "$SMOKETEST_CONTROL_REPO_PATH")"
+    (( (8#$control_mode & 022) == 0 )) || fail "control repository must not be group/world writable"
+    runtime_relative="${HVO_RUNTIME_DATA_ROOT#"$SMOKETEST_REPO_HOST_PATH/"}"
+    control_runtime="$SMOKETEST_CONTROL_REPO_PATH/$runtime_relative"
+    existing_runtime_ancestor="$control_runtime"
+    while [[ ! -e "$existing_runtime_ancestor" && "$existing_runtime_ancestor" != "$SMOKETEST_CONTROL_REPO_PATH" ]]; do
+        existing_runtime_ancestor="$(dirname "$existing_runtime_ancestor")"
+    done
+    [[ -d "$existing_runtime_ancestor" && ! -L "$existing_runtime_ancestor" &&
+       "$(stat -c '%u' "$existing_runtime_ancestor")" == "$(id -u)" ]] ||
+        fail "mapped runtime root has no safe owner-controlled ancestor"
+    ancestor_mode="$(stat -c '%a' "$existing_runtime_ancestor")"
+    (( (8#$ancestor_mode & 022) == 0 )) || fail "mapped runtime ancestor must not be group/world writable"
+    if [[ -e "$control_runtime" ]]; then
+        [[ -d "$control_runtime" && ! -L "$control_runtime" && "$(realpath -m "$control_runtime")" == "$control_runtime" &&
+           "$(stat -c '%u' "$control_runtime")" == "$(id -u)" ]] ||
+            fail "mapped runtime root must be an owner-controlled canonical directory"
+        [[ "$(stat -c '%a' "$control_runtime")" == "700" ]] || fail "mapped runtime root must use mode 700"
+    fi
+    if [[ "$SMOKETEST_CONTROL_REPO_PATH" != "$SMOKETEST_REPO_HOST_PATH" ]]; then
+        docker inspect --format '{{json .Mounts}}' "$(hostname)" 2>/dev/null |
+            jq -e --arg source "$SMOKETEST_REPO_HOST_PATH" --arg destination "$SMOKETEST_CONTROL_REPO_PATH" \
+                'any(.[]; .Source == $source and .Destination == $destination and .Type == "bind" and .RW == true)' >/dev/null ||
+            fail "current control container does not prove the declared host repository mapping"
+    else
+        [[ "$daemon_name" == "$(hostname)" || "$daemon_name" == "$(hostname -s)" ]] ||
+            fail "equal control/host paths require execution directly on the declared Docker host"
+    fi
+    probe_tcp "SQL Server" "$SQLSERVER_HOST" "$SQLSERVER_PORT"
+    probe_tcp "Redis" "$REDIS_HOST" "$REDIS_PORT"
+    probe_tcp "MinIO" "$MINIO_HOST" "$MINIO_API_PORT"
+    probe_tcp "SMTP" "$SMTP_HOST" "$SMTP_PORT"
+    local otel_authority otel_host otel_port require_port_value
+    otel_authority="${OTEL_EXPORTER_OTLP_ENDPOINT#*://}"
+    otel_authority="${otel_authority%%/*}"
+    otel_host="${otel_authority%%:*}"
+    otel_port="${otel_authority##*:}"
+    if [[ "$otel_port" == "$otel_host" ]]; then
+        otel_port=4318
+    fi
+    require_port_value="$otel_port"
+    [[ "$require_port_value" =~ ^[0-9]+$ ]] || fail "OpenTelemetry URL port is invalid"
+    (( 10#$require_port_value >= 1 && 10#$require_port_value <= 65535 )) || fail "OpenTelemetry URL port is invalid"
+    probe_tcp "OpenTelemetry" "$otel_host" "$otel_port"
+
+    local current_path="$SMOKETEST_CATALOG_ROOT_CONTROL/current" current_target
+    [[ -d "$current_path" ]] || fail "production catalog current pointer is missing"
+    current_target="$(realpath -e "$current_path")" || fail "production catalog current pointer cannot be resolved"
+    [[ "$current_target" == "$SMOKETEST_CATALOG_ROOT_CONTROL/"* ]] || fail "production catalog current pointer escapes the catalog root"
+    local manifest="$current_target/manifest.json"
+    [[ -f "$manifest" && ! -L "$manifest" ]] || fail "production catalog manifest is missing"
+    jq -e --arg kind "$SMOKETEST_CATALOG_KIND" --arg package "$SMOKETEST_CATALOG_PACKAGE_VERSION" \
+        --arg version "$SMOKETEST_CATALOG_VERSION" \
+        --arg schema "$SMOKETEST_CATALOG_SCHEMA_VERSION" --arg preprocessing "$SMOKETEST_CATALOG_PREPROCESSING_VERSION" \
+        --arg sha "${SMOKETEST_CATALOG_DATABASE_SHA256,,}" --argjson rows "$SMOKETEST_CATALOG_ROW_COUNT" \
+        '.package.kind == $kind and .package.version == $package and .catalog.version == $version and .schemaVersion == $schema and
+         .preprocessingVersion == $preprocessing and (.database.sha256 | ascii_downcase) == $sha and
+         .database.rowCount == $rows' "$manifest" >/dev/null || fail "production catalog identity does not match the smoke contract"
+    local relative_path database_path actual_sha
+    relative_path="$(jq -er '.database.relativePath' "$manifest")"
+    [[ "$relative_path" != /* && "$relative_path" != *..* ]] || fail "catalog database path is unsafe"
+    database_path="$(realpath -e "$current_target/$relative_path")" || fail "catalog database is missing"
+    [[ "$database_path" == "$current_target/"* && -f "$database_path" && ! -L "$database_path" ]] ||
+        fail "catalog database path escapes the active catalog version"
+    actual_sha="$(sha256sum "$database_path")"
+    [[ "${actual_sha%% *}" == "${SMOKETEST_CATALOG_DATABASE_SHA256,,}" ]] || fail "catalog database checksum does not match"
+    printf 'Smoke environment preflight passed (run %s; no resources mutated).\n' "$SMOKETEST_RUN_ID"
+}
+
+(( $# >= 1 )) || usage
+command="$1"
+shift
+case "$command" in
+    init) initialize "$@" ;;
+    validate) (( $# == 0 )) || usage; validate ;;
+    preflight) (( $# == 0 )) || usage; preflight ;;
+    *) usage ;;
+esac

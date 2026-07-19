@@ -16,6 +16,7 @@
 .env.local
 .env.production
 .env.staging
+.env.smoketest
 .devcontainer/devcontainer.local.env
 .devcontainer/hvo-docker.key
 .devcontainer/state/

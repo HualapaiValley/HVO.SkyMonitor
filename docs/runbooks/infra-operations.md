@@ -54,6 +54,18 @@ Install the verified production catalog before starting either application. The
 build and offline installation procedure is in
 [`docs/catalog/production-install.md`](../catalog/production-install.md).
 
+Before a coordinated platform smoke, generate and verify the owner-only smoke
+contract. This does not mutate services:
+
+```bash
+./scripts/smoke:env init
+./scripts/smoke:env validate
+./scripts/smoke:env preflight
+```
+
+See [`docs/runbooks/smoke-test.md`](smoke-test.md) for the complete input,
+generated-state, and reset-policy boundaries.
+
 Start both applications or a selected application:
 
 ```bash
