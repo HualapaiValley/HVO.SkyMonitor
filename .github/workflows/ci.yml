@@ -18,6 +18,26 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 jobs:
+  changes:
+    name: Change Classification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.classify.outputs.mode }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select full or reduced CI
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/ci:classify "$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
   quality:
     name: Quality
     runs-on: ubuntu-24.04
@@ -45,10 +65,11 @@ jobs:
           /tmp/actionlint .github/workflows/*.yml
       - name: Audit identity and security operations guidance
         run: |
-          bash -n scripts/docs:audit-operations scripts/identity:smoke scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:opencode scripts/catalog/*.sh scripts/catalog:install scripts/opencode:enable scripts/opencode:disable
+          bash -n .devcontainer/*.sh scripts/docs:audit-operations scripts/identity:smoke scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:opencode scripts/ci:classify scripts/ci:require scripts/test:ci-classification scripts/catalog/*.sh scripts/catalog:install scripts/opencode:enable scripts/opencode:disable
           ./scripts/docs:audit-operations
           ./scripts/test:infra
           bash ./scripts/test:opencode
+          bash ./scripts/test:ci-classification
           ./scripts/catalog/smoke-test.sh
           SQLSERVER_PASSWORD=validation-only REDIS_PASSWORD=validation-only MINIO_ACCESS_KEY=validation-only MINIO_SECRET_KEY=validation-only CAMERA_AGENT_ADMIN_PASSWORD=validation-only-password CAMERA_AGENT_OAUTH_CLIENT_SECRET=validation-only-oauth-secret docker compose --env-file .env.template -f docker-compose.apps.yml config --quiet
           MINIO_ROOT_USER=validation-only MINIO_ROOT_PASSWORD=validation-only REDIS_PASSWORD=validation-only docker compose --env-file .env.template -f deploy/hvo-docker/docker-compose.shared-services.yml config --quiet
@@ -65,6 +86,8 @@ jobs:
 
   build:
     name: Build
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -87,6 +110,8 @@ jobs:
 
   unit:
     name: Unit Tests
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -124,6 +149,8 @@ jobs:
 
   integration:
     name: Integration Tests
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -157,6 +184,8 @@ jobs:
 
   architecture:
     name: Architecture & Publish
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -212,6 +241,8 @@ jobs:
 
   migrations:
     name: Migrations
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -239,7 +270,8 @@ jobs:
     name: Coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    needs: [unit, integration, architecture]
+    needs: [changes, unit, integration, architecture]
+    if: needs.changes.outputs.mode == 'full'
     outputs:
       line: ${{ steps.coverage-metrics.outputs.line }}
       branch: ${{ steps.coverage-metrics.outputs.branch }}
@@ -365,15 +397,22 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [quality, build, unit, integration, architecture, migrations, coverage]
+    needs: [changes, quality, build, unit, integration, architecture, migrations, coverage]
     steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
       - name: Require every current-head gate
         env:
-          RESULTS: ${{ join(needs.*.result, ',') }}
-        run: |
-          for result in ${RESULTS//,/ }; do
-            if [[ "$result" != "success" ]]; then
-              printf 'Required gate results: %s\n' "$RESULTS" >&2
-              exit 1
-            fi
-          done
+          MODE: ${{ needs.changes.outputs.mode }}
+          EVENT_NAME: ${{ github.event_name }}
+          CLASSIFICATION: ${{ needs.changes.result }}
+          QUALITY: ${{ needs.quality.result }}
+          BUILD: ${{ needs.build.result }}
+          UNIT: ${{ needs.unit.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+          ARCHITECTURE: ${{ needs.architecture.result }}
+          MIGRATIONS: ${{ needs.migrations.result }}
+          COVERAGE: ${{ needs.coverage.result }}
+        run: ./scripts/ci:require "$MODE" "$EVENT_NAME" "$CLASSIFICATION" "$QUALITY" "$BUILD" "$UNIT" "$INTEGRATION" "$ARCHITECTURE" "$MIGRATIONS" "$COVERAGE"

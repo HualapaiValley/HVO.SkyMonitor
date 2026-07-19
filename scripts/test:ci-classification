@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+classifier="$repo_root/scripts/ci:classify"
+required="$repo_root/scripts/ci:require"
+work_root="$(mktemp -d)"
+trap 'rm -rf "$work_root"' EXIT
+
+git -C "$work_root" init --quiet
+git -C "$work_root" config user.email ci-classification@example.invalid
+git -C "$work_root" config user.name "CI Classification Test"
+git -C "$work_root" commit --quiet --allow-empty -m baseline
+
+expect_mode() {
+  local expected="$1"
+  local event_name="$2"
+  local base_sha="$3"
+  local head_sha="$4"
+  local output
+
+  output="$(cd "$work_root" && "$classifier" "$event_name" "$base_sha" "$head_sha")"
+  if [[ "$output" != "mode=$expected" ]]; then
+    printf 'Expected mode=%s, received %s\n' "$expected" "$output" >&2
+    exit 1
+  fi
+}
+
+commit_file() {
+  local path="$1"
+  mkdir -p "$work_root/$(dirname "$path")"
+  printf 'classification fixture\n' > "$work_root/$path"
+  git -C "$work_root" add -- "$path"
+  git -C "$work_root" commit --quiet -m "Add $path"
+}
+
+base_sha="$(git -C "$work_root" rev-parse HEAD)"
+allowlisted_paths=(
+  "docs/runbooks/example.md"
+  "README.md"
+  "AGENTS.md"
+  "THIRD-PARTY-NOTICES.md"
+  ".devcontainer/devcontainer.json"
+  ".vscode/settings.json"
+  ".github/copilot-instructions.md"
+  ".github/pull_request_template.md"
+  ".github/prompts/example.md"
+  "deploy/hvo-docker/README.md"
+  "src/Example/README.md"
+  "tests/Example.Tests/README.md"
+  "tests/fixtures/catalog/SOURCE.md"
+  "tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md"
+  "tools/asi-capture/README.md"
+  "scripts/opencode:disable"
+  "scripts/opencode:enable"
+  "scripts/test:opencode"
+)
+
+for path in "${allowlisted_paths[@]}"; do
+  mkdir -p "$work_root/$(dirname "$path")"
+  printf 'allowlisted fixture\n' > "$work_root/$path"
+done
+git -C "$work_root" add --all
+git -C "$work_root" commit --quiet -m "Add allowlisted paths"
+head_sha="$(git -C "$work_root" rev-parse HEAD)"
+expect_mode reduced pull_request "$base_sha" "$head_sha"
+expect_mode full push "$base_sha" "$head_sha"
+
+disallowed_paths=(
+  ".github/workflows/ci.yml"
+  ".env.template"
+  ".editorconfig"
+  "docs/catalog/hyg-v42-attribution.md"
+  "docs/catalog/hyg-v42-license.md"
+  "global.json"
+  "dotnet-tools.json"
+  "Directory.Build.props"
+  "HVO.SkyMonitor.v9.slnx"
+  "docker-compose.apps.yml"
+  "deploy/hvo-docker/docker-compose.shared-services.yml"
+  "src/Example/Program.cs"
+  "src/Example/Migrations/Example.cs"
+  "tests/Example.Tests/ExampleTests.cs"
+  "scripts/example"
+  "unknown/example.txt"
+)
+
+for path in "${disallowed_paths[@]}"; do
+  base_sha="$(git -C "$work_root" rev-parse HEAD)"
+  commit_file "$path"
+  head_sha="$(git -C "$work_root" rev-parse HEAD)"
+  expect_mode full pull_request "$base_sha" "$head_sha"
+done
+
+base_sha="$(git -C "$work_root" rev-parse HEAD)"
+commit_file "docs/mixed.md"
+commit_file "src/Example/Mixed.cs"
+head_sha="$(git -C "$work_root" rev-parse HEAD)"
+expect_mode full pull_request "$base_sha" "$head_sha"
+expect_mode full pull_request "$head_sha" "$head_sha"
+expect_mode full pull_request "$head_sha" missing-commit
+
+commit_file "docs/delete.md"
+base_sha="$(git -C "$work_root" rev-parse HEAD)"
+rm "$work_root/docs/delete.md"
+git -C "$work_root" add --all
+git -C "$work_root" commit --quiet -m "Delete documentation"
+head_sha="$(git -C "$work_root" rev-parse HEAD)"
+expect_mode full pull_request "$base_sha" "$head_sha"
+
+commit_file "docs/rename.md"
+base_sha="$(git -C "$work_root" rev-parse HEAD)"
+git -C "$work_root" mv docs/rename.md docs/renamed.md
+git -C "$work_root" commit --quiet -m "Rename documentation"
+head_sha="$(git -C "$work_root" rev-parse HEAD)"
+expect_mode full pull_request "$base_sha" "$head_sha"
+
+commit_file "docs/type-change.md"
+base_sha="$(git -C "$work_root" rev-parse HEAD)"
+rm "$work_root/docs/type-change.md"
+ln -s ../README.md "$work_root/docs/type-change.md"
+git -C "$work_root" add --all
+git -C "$work_root" commit --quiet -m "Change documentation path type"
+head_sha="$(git -C "$work_root" rev-parse HEAD)"
+expect_mode full pull_request "$base_sha" "$head_sha"
+
+base_sha="$(git -C "$work_root" rev-parse HEAD)"
+ln -s ../README.md "$work_root/docs/added-link.md"
+git -C "$work_root" add --all
+git -C "$work_root" commit --quiet -m "Add documentation symlink"
+head_sha="$(git -C "$work_root" rev-parse HEAD)"
+expect_mode full pull_request "$base_sha" "$head_sha"
+
+base_sha="$(git -C "$work_root" rev-parse HEAD)"
+newline_path=$'docs/line\nbreak.md'
+commit_file "$newline_path"
+head_sha="$(git -C "$work_root" rev-parse HEAD)"
+expect_mode reduced pull_request "$base_sha" "$head_sha"
+
+"$required" full push success success success success success success success success >/dev/null
+"$required" reduced pull_request success success skipped skipped skipped skipped skipped skipped >/dev/null
+
+invalid_required_cases=(
+  "reduced push success success skipped skipped skipped skipped skipped skipped"
+  "unknown pull_request success success skipped skipped skipped skipped skipped skipped"
+  "full pull_request failure success skipped skipped skipped skipped skipped skipped"
+  "full pull_request success success skipped success success success success success"
+  "reduced pull_request success success success skipped skipped skipped skipped skipped"
+  "reduced pull_request success cancelled skipped skipped skipped skipped skipped skipped"
+)
+
+for arguments in "${invalid_required_cases[@]}"; do
+  read -r -a fields <<< "$arguments"
+  if "$required" "${fields[@]}" >/dev/null 2>&1; then
+    printf 'Expected Required CI rejection for: %s\n' "$arguments" >&2
+    exit 1
+  fi
+done
+
+printf 'CI classification and Required CI contract tests passed.\n'

@@ -6,20 +6,21 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 
 | Check | Enforced behavior |
 | --- | --- |
+| **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
 | **Quality** | Pinned local tools, formatting, vulnerability audit, and exact reviewed deprecation allowlist. |
-| **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. |
-| **Unit Tests** | 816 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. |
-| **Integration Tests** | 273 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. |
+| **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. Skipped only in classified reduced mode. |
+| **Unit Tests** | 862 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
+| **Integration Tests** | 282 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. Skipped only in classified reduced mode. |
 | **Architecture & Publish** | The remaining six Integration-category repository graph/MSBuild/publish cases plus retained host publish manifests. |
 | **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
 | **Coverage** | Exact source-path and branch merge of ten expected reports, checked-in aggregate non-regression, and risk-file floors. |
-| **Required CI** | Current-head aggregate that fails when any required check fails, times out, is canceled, or is missing. |
+| **Required CI** | Current-head aggregate that fails when any expected check fails, times out, is canceled, is missing, or is unexpectedly skipped or run for the selected mode. |
 
 Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected ten, preventing missing or overwritten evidence.
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=816`, `Integration=279`, `Manual=26`, `Soak=1`, `External=0`, and `Hardware=0`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=862`, `Integration=288`, `Manual=29`, `Soak=1`, `External=0`, and `Hardware=0`.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. No Hardware check is published until real device tests and a suitable runner exist.
 
@@ -38,6 +39,12 @@ dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "
 ```
 
 Use the exact per-project commands in `.github/workflows/ci.yml` when producing coverage evidence; solution-level TRX names are not collision-proof.
+
+Run the path-classification and aggregate-protection contract tests when changing CI orchestration or the reduced-mode allowlist:
+
+```bash
+bash ./scripts/test:ci-classification
+```
 
 Use a fresh result root for every collection. Before merging, require exactly one report from each of the ten category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those ten explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
@@ -77,6 +84,27 @@ ConnectionStrings__skymonitordb="Server=127.0.0.1,1433;Database=ModelCheck;User 
 ## Protection And Review
 
 Protect `main` with the stable `Required CI` check and require branches to be current before merge. The project uses an independent PR review plus corrected-head reruns and resolved review threads; it does not impose a self-approval rule that a single-author workflow cannot satisfy. Stale, canceled, timed-out, failed, or absent checks do not satisfy `Required CI`.
+
+The aggregate is fail-closed for classification inputs and job results, but a workflow running from a pull request cannot be an independent trust boundary against an author who maliciously rewrites that workflow or its CI helper scripts. Independent review of `.github/workflows/**` and `scripts/ci:*` remains part of this repository's solo-maintainer protection model. Repositories accepting untrusted workflow changes require a separately trusted required workflow or mandatory reviewer policy.
+
+## Reduced Pull Request Mode
+
+The workflow always triggers for pull requests. A lightweight classifier uses the pull request's base and head commits and selects reduced mode only when every changed path is an added or modified member of this allowlist:
+
+- `docs/**`, except the production bundle inputs `docs/catalog/hyg-v42-attribution.md` and `docs/catalog/hyg-v42-license.md`
+- `.devcontainer/**`
+- `.vscode/**`
+- `.github/prompts/**`
+- `README.md`, `AGENTS.md`, and `THIRD-PARTY-NOTICES.md`
+- `.github/copilot-instructions.md` and `.github/pull_request_template.md`
+- `deploy/hvo-docker/README.md` and `tools/asi-capture/README.md`
+- one-level `src/*/README.md` and `tests/*/README.md`
+- `tests/fixtures/catalog/SOURCE.md` and `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
+- `scripts/opencode:enable`, `scripts/opencode:disable`, and `scripts/test:opencode`
+
+Reduced mode still runs **Quality** and **Required CI**. It intentionally skips Build, Unit Tests, Integration Tests, Architecture & Publish, Migrations, and Coverage. `Required CI` accepts those skipped results only when classification succeeded in reduced pull-request mode. This preserves the stable protected check while avoiding approximately 25 of the 30.4 aggregate runner-minutes observed in baseline run `29673206708`.
+
+Pushes to `main` or `release/**` always use the full matrix. Deletions, renames, type changes, symlinks or other non-regular entries, empty diffs, unavailable commits, failed diffs, workflow/build/package/runtime/deployment changes, general scripts, product code, tests, migrations, production catalog bundle inputs, `.env.template`, and every unknown path also use the full matrix. Add or modify any non-allowlisted path to force full CI when extra evidence is desired.
 
 ## Failure Triage
 

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode="${1:-}"
+event_name="${2:-}"
+classification="${3:-}"
+quality="${4:-}"
+build="${5:-}"
+unit="${6:-}"
+integration="${7:-}"
+architecture="${8:-}"
+migrations="${9:-}"
+coverage="${10:-}"
+
+results="classification=$classification quality=$quality build=$build unit=$unit integration=$integration architecture=$architecture migrations=$migrations coverage=$coverage"
+
+if [[ "$classification" != "success" || "$quality" != "success" ]]; then
+  printf 'Required gate results: mode=%s event=%s %s\n' "$mode" "$event_name" "$results" >&2
+  exit 1
+fi
+
+case "$mode" in
+  full)
+    expected="success"
+    ;;
+  reduced)
+    if [[ "$event_name" != "pull_request" ]]; then
+      printf 'Reduced CI is valid only for pull requests: event=%s\n' "$event_name" >&2
+      exit 1
+    fi
+    expected="skipped"
+    ;;
+  *)
+    printf 'Unknown or missing CI classification: mode=%s\n' "$mode" >&2
+    exit 1
+    ;;
+esac
+
+for result in "$build" "$unit" "$integration" "$architecture" "$migrations" "$coverage"; do
+  if [[ "$result" != "$expected" ]]; then
+    printf 'Required gate results: mode=%s event=%s expected-expensive=%s %s\n' \
+      "$mode" "$event_name" "$expected" "$results" >&2
+    exit 1
+  fi
+done
+
+printf 'Required gate results: mode=%s event=%s %s\n' "$mode" "$event_name" "$results"
