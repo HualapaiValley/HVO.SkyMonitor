@@ -41,7 +41,8 @@ internal sealed class PreviewCaptureProcessingStep(
 
         var sourceProduct = context.GetProcessingProduct(sourceArtifact.ArtifactId);
         var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(
-            context.Config, sourceArtifact, sourceProduct?.Variant ?? "source");
+            context.Config, sourceArtifact, sourceProduct?.Variant ?? "source", context.AcquisitionTiming,
+            context.ReconstructionDescriptor, sourceProduct);
         if (sourceProduct is not null)
         {
             input = input with { RecipeIdentitySha256 = sourceProduct.Recipe.IdentitySha256 };

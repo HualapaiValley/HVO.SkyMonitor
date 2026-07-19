@@ -99,7 +99,9 @@ public static class ProcessingConformanceFixture
         Payload,
         CapturedUtc,
         TimeSpan.FromSeconds(20),
-        Compatibility);
+        Compatibility,
+        ObservationStartedUtc: CapturedUtc,
+        ObservationEndedUtc: CapturedUtc.AddSeconds(20));
 
     public static ReconstructionDescriptor CreateDescriptor() => new(
         new CaptureIdentityDescriptor("agent-93", "rig-93", 1, CaptureId),

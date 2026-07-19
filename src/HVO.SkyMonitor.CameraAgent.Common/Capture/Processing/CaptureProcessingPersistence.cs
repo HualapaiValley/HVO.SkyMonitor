@@ -79,6 +79,13 @@ internal sealed class CaptureProcessingPersistence(
         foreach (var output in outputs)
         {
             var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
+            var observationStartedUtc = output.Descriptor?.Timing.ExposureStartedUtc;
+            DateTimeOffset? observationEndedUtc = observationStartedUtc is { } startedUtc && output.Descriptor is { } descriptor
+                ? ProcessingArtifact.ResolveObservationEndedUtc(
+                    startedUtc,
+                    descriptor.Timing.ExposureEndedUtc,
+                    restored.Product.TotalIntegration)
+                : null;
             artifacts.Add(new ProcessingArtifact(
                 restored.ArtifactId,
                 restored.Product.Role,
@@ -89,7 +96,9 @@ internal sealed class CaptureProcessingPersistence(
                 restored.Product.Payload,
                 restored.CreatedUtc,
                 restored.Product.TotalIntegration,
-                restored.Product.Compatibility));
+                restored.Product.Compatibility,
+                ObservationStartedUtc: observationStartedUtc,
+                ObservationEndedUtc: observationEndedUtc));
         }
         return artifacts;
     }
@@ -135,7 +144,12 @@ internal sealed class CaptureProcessingPersistence(
                 payload,
                 entry.Descriptor.Artifact.CreatedUtc,
                 entry.Descriptor.Controls.EffectiveExposure,
-                current.Compatibility));
+                current.Compatibility,
+                ObservationStartedUtc: entry.Descriptor.Timing.ExposureStartedUtc,
+                ObservationEndedUtc: ProcessingArtifact.ResolveObservationEndedUtc(
+                    entry.Descriptor.Timing.ExposureStartedUtc,
+                    entry.Descriptor.Timing.ExposureEndedUtc,
+                    entry.Descriptor.Controls.EffectiveExposure)));
         }
         artifacts.Reverse();
         return artifacts;

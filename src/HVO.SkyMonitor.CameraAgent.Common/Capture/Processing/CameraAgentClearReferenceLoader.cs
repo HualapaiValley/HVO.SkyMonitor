@@ -87,7 +87,12 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
             descriptor.Controls.EffectiveExposure,
             CreateCompatibility(descriptor),
             descriptor.Capture.CaptureSequence,
-            descriptor.Artifact.SourceArtifactIds);
+            descriptor.Artifact.SourceArtifactIds,
+            descriptor.Timing.ExposureStartedUtc,
+            ProcessingArtifact.ResolveObservationEndedUtc(
+                descriptor.Timing.ExposureStartedUtc,
+                descriptor.Timing.ExposureEndedUtc,
+                descriptor.Controls.EffectiveExposure));
     }
 
     private string ResolveSafePath(string relativePath)

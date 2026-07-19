@@ -61,7 +61,10 @@ public sealed record ProcessingCompatibilityIdentity(
     string SetpointRegime,
     string ProcessingProfile);
 
-/// <summary>A borrowed immutable input. Its payload must remain valid until execution completes.</summary>
+/// <summary>
+/// A borrowed immutable input. Its payload must remain valid until execution completes. Observation bounds describe
+/// sensor integration independently of artifact creation and are required by detector-input construction.
+/// </summary>
 public sealed record ProcessingArtifact(
     Guid ArtifactId,
     FrameArtifactRole Role,
@@ -74,7 +77,22 @@ public sealed record ProcessingArtifact(
     TimeSpan Integration,
     ProcessingCompatibilityIdentity Compatibility,
     long? CaptureSequence = null,
-    IReadOnlyList<Guid>? SourceArtifactIds = null);
+    IReadOnlyList<Guid>? SourceArtifactIds = null,
+    DateTimeOffset? ObservationStartedUtc = null,
+    DateTimeOffset? ObservationEndedUtc = null)
+{
+    /// <summary>
+    /// Resolves the observation end. Accelerated captures may report an instantaneous acquisition while retaining a
+    /// positive modeled integration; all execution locations expand that interval identically.
+    /// </summary>
+    public static DateTimeOffset ResolveObservationEndedUtc(
+        DateTimeOffset observationStartedUtc,
+        DateTimeOffset observationEndedUtc,
+        TimeSpan integration)
+        => observationEndedUtc == observationStartedUtc && integration > TimeSpan.Zero
+            ? observationStartedUtc.Add(integration)
+            : observationEndedUtc;
+}
 
 public sealed record ProcessingAlgorithmIdentity(string Name, string Version);
 

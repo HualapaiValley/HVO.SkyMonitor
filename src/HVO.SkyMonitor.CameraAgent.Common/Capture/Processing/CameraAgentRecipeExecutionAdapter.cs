@@ -21,24 +21,41 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
     public static ProcessingArtifact CreateArtifact(
         CameraModuleConfig config,
         FrameArtifact artifact,
-        string variant)
+        string variant,
+        CaptureAcquisitionTiming? acquisitionTiming = null,
+        ReconstructionDescriptor? reconstructionDescriptor = null,
+        ProcessingProduct? product = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(artifact);
         var frame = artifact.Frame;
-        var layout = CreateLayout(config, frame);
+        var layout = product?.Layout ?? (reconstructionDescriptor?.Artifact.ArtifactId == artifact.ArtifactId
+            ? reconstructionDescriptor.Layout
+            : CreateLayout(config, frame));
+        var integration = product?.TotalIntegration ?? frame.Metadata.Exposure;
+        var observationStartedUtc = reconstructionDescriptor?.Timing.ExposureStartedUtc ??
+            acquisitionTiming?.ExposureStartedUtc ?? frame.TimestampUtc;
+        var observationEndedUtc = reconstructionDescriptor?.Timing.ExposureEndedUtc ??
+            acquisitionTiming?.ExposureEndedUtc ??
+            observationStartedUtc.Add(integration);
+        observationEndedUtc = ProcessingArtifact.ResolveObservationEndedUtc(
+            observationStartedUtc, observationEndedUtc, integration);
         return new ProcessingArtifact(
             artifact.ArtifactId,
             artifact.Role,
             variant,
-            NormalizeLegacyRecipeIdentity(artifact.RecipeVersion),
+            product?.Recipe.IdentitySha256 ?? NormalizeLegacyRecipeIdentity(artifact.RecipeVersion),
             "application/x-hvo-frame",
             layout,
             frame.PixelData,
             frame.TimestampUtc,
-            frame.Metadata.Exposure,
-            CreateCompatibility(config, frame),
-            SourceArtifactIds: artifact.SourceArtifactIds);
+            integration,
+            product?.Compatibility ?? (reconstructionDescriptor is null
+                ? CreateCompatibility(config, frame)
+                : CreateCompatibility(reconstructionDescriptor)),
+            SourceArtifactIds: artifact.SourceArtifactIds,
+            ObservationStartedUtc: observationStartedUtc.ToUniversalTime(),
+            ObservationEndedUtc: observationEndedUtc.ToUniversalTime());
     }
 
     public static CameraFrame CreateFrame(ProcessingProduct product, CameraFrame source, string sourceId)
@@ -134,6 +151,17 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             setpoint,
             CaptureContractJson.ComputeCanonicalJsonSha256(processing));
     }
+
+    private static ProcessingCompatibilityIdentity CreateCompatibility(ReconstructionDescriptor descriptor)
+        => new(
+            descriptor.Profiles.Rig.Sha256,
+            descriptor.Profiles.Rig.Sha256,
+            descriptor.Profiles.Calibration.Sha256,
+            descriptor.Profiles.Mask.Sha256,
+            descriptor.Profiles.Sensor.Sha256,
+            string.Create(CultureInfo.InvariantCulture,
+                $"exposure={descriptor.Controls.EffectiveExposure.TotalMilliseconds:R};gain={descriptor.Controls.EffectiveGain:R};offset={descriptor.Controls.EffectiveOffset:R};temperatureSetpoint={descriptor.Controls.TemperatureSetpointC:R}"),
+            descriptor.Profiles.Processing.Sha256);
 
     private static double? TryGetLevel(IReadOnlyDictionary<string, string>? metadata, string key) =>
         metadata is not null && metadata.TryGetValue(key, out var value) &&

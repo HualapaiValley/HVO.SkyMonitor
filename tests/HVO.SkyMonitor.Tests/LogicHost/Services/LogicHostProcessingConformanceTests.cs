@@ -14,6 +14,119 @@ public sealed class LogicHostProcessingConformanceTests
 {
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task EdgeAndReconstructionAdaptersPreserveReportedObservationTimingAndDetectorIdentity()
+    {
+        var descriptor = ProcessingConformanceFixture.CreateDescriptor();
+        var frameTimestamp = descriptor.Timing.ExposureStartedUtc.AddSeconds(5);
+        var frame = new CameraFrame(
+            frameTimestamp,
+            descriptor.Layout.Width,
+            descriptor.Layout.Height,
+            descriptor.Layout.PixelFormat,
+            ProcessingConformanceFixture.Payload,
+            new FrameMetadata(
+                descriptor.Controls.EffectiveExposure,
+                descriptor.Controls.EffectiveGain,
+                0,
+                Extra: new Dictionary<string, string>
+                {
+                    ["blackLevelAdu"] = "0",
+                    ["whiteLevelAdu"] = ushort.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                }));
+        var frameArtifact = new FrameArtifact(
+            descriptor.Artifact.ArtifactId,
+            descriptor.Artifact.Role,
+            frame,
+            descriptor.Artifact.SourceArtifactIds,
+            ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256);
+        var timing = new CaptureAcquisitionTiming(
+            descriptor.Timing.ExposureStartedUtc,
+            descriptor.Timing.ExposureEndedUtc,
+            descriptor.Timing.ReadoutCompletedUtc);
+        var edge = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            ProcessingConformanceFixture.CameraConfig,
+            frameArtifact,
+            descriptor.Artifact.Variant,
+            timing,
+            descriptor);
+        var recorder = new RecordingExecutor();
+        var centralAdapter = new LogicHostRecipeExecutionAdapter(recorder);
+
+        _ = await centralAdapter.ExecuteAsync(
+            descriptor,
+            ProcessingConformanceFixture.Payload,
+            BuiltInProcessingRecipes.EncodedPreview,
+            JsonSerializer.SerializeToElement(new EncodedPreviewOptions(OutputEncoding: "Packed")),
+            ProcessingInputSelector.Raw(descriptor.Artifact.Variant),
+            "timing-conformance").ConfigureAwait(false);
+
+        var central = recorder.Request!.Inputs.Single();
+        Assert.AreNotEqual(frameTimestamp, edge.ObservationStartedUtc);
+        Assert.AreEqual(descriptor.Timing.ExposureStartedUtc, edge.ObservationStartedUtc);
+        Assert.AreEqual(descriptor.Timing.ExposureEndedUtc, edge.ObservationEndedUtc);
+        Assert.AreEqual(edge.ObservationStartedUtc, central.ObservationStartedUtc);
+        Assert.AreEqual(edge.ObservationEndedUtc, central.ObservationEndedUtc);
+        var source = new TransientSourceEvidenceReferenceV1(
+            TransientSourceEvidenceReferenceV1.CurrentSchemaVersion,
+            Guid.Parse("93000000-0000-0000-0000-000000000099"),
+            new TransientWholeArtifactLocatorV1(
+                TransientWholeArtifactLocatorV1.CurrentSchemaVersion,
+                TransientSourceLocatorKind.WholeArtifact,
+                new TransientArtifactReferenceV1(
+                    edge.ArtifactId,
+                    edge.Role,
+                    edge.Variant,
+                    edge.RecipeIdentitySha256,
+                    PayloadChecksum.ComputeSha256(edge.Payload.Span))),
+            timing.ExposureStartedUtc,
+            timing.ExposureEndedUtc,
+            TransientTimingQuality.Reported,
+            new TransientTimingProvenanceV1("camera-module", "conformance-v1"));
+        var levels = new TransientLinearLevelsV1(0, ushort.MaxValue, ushort.MaxValue);
+        var edgeInput = TransientDetectorInputFactory.Create(edge, source, levels);
+        var centralInput = TransientDetectorInputFactory.Create(central, source, levels);
+        Assert.IsTrue(edgeInput.Validation.IsValid, edgeInput.Validation.ReasonCode);
+        Assert.IsTrue(centralInput.Validation.IsValid, centralInput.Validation.ReasonCode);
+        Assert.AreEqual(
+            edgeInput.Input!.Descriptor.InputIdentitySha256,
+            centralInput.Input!.Descriptor.InputIdentitySha256);
+
+        var acceleratedDescriptor = descriptor with
+        {
+            Timing = descriptor.Timing with
+            {
+                ExposureEndedUtc = descriptor.Timing.ExposureStartedUtc,
+                ReadoutCompletedUtc = descriptor.Timing.ExposureStartedUtc
+            }
+        };
+        var acceleratedTiming = new CaptureAcquisitionTiming(
+            acceleratedDescriptor.Timing.ExposureStartedUtc,
+            acceleratedDescriptor.Timing.ExposureEndedUtc,
+            acceleratedDescriptor.Timing.ReadoutCompletedUtc);
+        var acceleratedEdge = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            ProcessingConformanceFixture.CameraConfig,
+            frameArtifact,
+            acceleratedDescriptor.Artifact.Variant,
+            acceleratedTiming,
+            acceleratedDescriptor);
+        var acceleratedRecorder = new RecordingExecutor();
+        _ = await new LogicHostRecipeExecutionAdapter(acceleratedRecorder).ExecuteAsync(
+            acceleratedDescriptor,
+            ProcessingConformanceFixture.Payload,
+            BuiltInProcessingRecipes.EncodedPreview,
+            JsonSerializer.SerializeToElement(new EncodedPreviewOptions(OutputEncoding: "Packed")),
+            ProcessingInputSelector.Raw(acceleratedDescriptor.Artifact.Variant),
+            "accelerated-timing-conformance").ConfigureAwait(false);
+        var acceleratedCentral = acceleratedRecorder.Request!.Inputs.Single();
+        Assert.AreEqual(
+            acceleratedDescriptor.Timing.ExposureStartedUtc.Add(acceleratedDescriptor.Controls.EffectiveExposure),
+            acceleratedEdge.ObservationEndedUtc);
+        Assert.AreEqual(acceleratedEdge.ObservationStartedUtc, acceleratedCentral.ObservationStartedUtc);
+        Assert.AreEqual(acceleratedEdge.ObservationEndedUtc, acceleratedCentral.ObservationEndedUtc);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task LogicHostAdapterProducesCanonicalPreviewFixture()
     {
         var descriptor = ProcessingConformanceFixture.CreateDescriptor();
@@ -371,5 +484,18 @@ public sealed class LogicHostProcessingConformanceTests
                 ChecksumSha256 = HVO.SkyMonitor.AgentCore.PayloadChecksum.ComputeSha256(payload)
             }
         };
+    }
+
+    private sealed class RecordingExecutor : IProcessingRecipeExecutor
+    {
+        internal ProcessingExecutionRequest? Request { get; private set; }
+
+        public ValueTask<ProcessingOutcome> ExecuteAsync(
+            ProcessingExecutionRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Request = request;
+            return ValueTask.FromResult(ProcessingOutcome.Skipped("recorded"));
+        }
     }
 }

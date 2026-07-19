@@ -36,7 +36,10 @@ internal sealed class CloudAssessmentCaptureProcessingStep(
         var current = CameraAgentRecipeExecutionAdapter.CreateArtifact(
             context.Config,
             currentArtifact,
-            currentProduct?.Variant ?? "source");
+            currentProduct?.Variant ?? "source",
+            context.AcquisitionTiming,
+            context.ReconstructionDescriptor,
+            currentProduct);
         if (currentProduct is not null)
         {
             current = current with { RecipeIdentitySha256 = currentProduct.Recipe.IdentitySha256 };
