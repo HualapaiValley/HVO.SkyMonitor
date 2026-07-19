@@ -49,7 +49,10 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
         }
         if (request.InputArtifactId == Guid.Empty ||
             request.InputArtifactId is { } inputArtifactId &&
-            request.Inputs.Count(input => input.ArtifactId == inputArtifactId) != 1)
+            (request.Inputs.Count(input => input.ArtifactId == inputArtifactId) != 1 ||
+             !ProcessingRecipeSupport.Matches(
+                 request.Inputs.Single(input => input.ArtifactId == inputArtifactId),
+                 request.Input)))
         {
             return ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.InvalidInput,
