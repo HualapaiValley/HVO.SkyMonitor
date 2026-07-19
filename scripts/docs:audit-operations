@@ -13,6 +13,7 @@ readonly DOCS=(
     docs/security/secrets.md
     docs/runbooks/infra-operations.md
     docs/runbooks/local-dev.md
+    docs/runbooks/smoke-test.md
 )
 
 forbidden_command='^[[:space:]]*(\$[[:space:]]+)?(pg_dump|psql|kubectl|az[[:space:]]+keyvault|redis-cli[^#]*(FLUSHDB|FLUSHALL)|docker[^#]*[[:space:]]env([[:space:]]|$))'

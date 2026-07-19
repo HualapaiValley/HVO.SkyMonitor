@@ -24,6 +24,7 @@ documents link back without maintaining a competing roadmap.
 | Identity architecture | `docs/identity/overview.md` | Registration/bootstrap and local identity boundaries; live status remains in the project plan/issues. |
 | Identity runbooks | `docs/identity/operations-runbook.md` | Current SQL Server/Compose routes, onboarding, rotation, revocation, incident, backup, monitoring, and troubleshooting procedures. |
 | Runbooks (daily ops) | `docs/runbooks/*.md` | `local-dev.md`, `infra-operations.md`, and `ci-pipeline.md` remain the authoritative workflow docs. |
+| Smoke-test environment | `docs/runbooks/smoke-test.md` | Owner-only smoke inputs, initialization, fail-closed preflight, generated-state boundary, and data-policy guard. |
 | CameraAgent retention recovery | `docs/runbooks/cameraagent-retention.md` | Pending-upload retention invariant and outage recovery procedure. |
 
 ## Documentation Rules
