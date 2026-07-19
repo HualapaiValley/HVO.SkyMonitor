@@ -95,9 +95,8 @@ public sealed class VirtualSkyPipelineTests
             SerializerOptions)!;
         Assert.AreEqual(transientDefinition.ComputeCanonicalScenarioId(), transientProvenance.ScenarioId);
         Assert.AreEqual(transientDefinition.ComputeParametersSha256(), transientProvenance.ParametersSha256);
-        Assert.IsLessThan(
-            TimeSpan.FromMilliseconds(1),
-            (raw.TimestampUtc - transientProvenance.IntegrationStartUtc).Duration());
+        Assert.IsTrue(
+            (raw.TimestampUtc - transientProvenance.IntegrationStartUtc).Duration() <= TimeSpan.FromMilliseconds(1));
         Assert.AreEqual(
             transientProvenance.IntegrationStartUtc + raw.Metadata.Exposure,
             transientProvenance.IntegrationEndUtc);

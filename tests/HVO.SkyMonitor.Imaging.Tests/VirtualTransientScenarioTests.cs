@@ -149,11 +149,36 @@ public sealed class VirtualTransientScenarioTests
             10_000, 0.6, 3);
 
         Assert.AreEqual(0, atEnd.ActivePixelCount);
-        Assert.IsGreaterThan(first.Geometry[0].DepositedCentroid!.Value.X, second.Geometry[0].DepositedCentroid!.Value.X);
+        Assert.IsTrue(first.Geometry[0].DepositedCentroid!.Value.X < second.Geometry[0].DepositedCentroid!.Value.X);
         Assert.AreEqual(
             whole.Geometry[0].ExpectedElectrons,
             first.Geometry[0].ExpectedElectrons + second.Geometry[0].ExpectedElectrons,
             1e-9);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task SignalRenderer_ReportsTheInvalidTransientRenderParameter()
+    {
+        var scene = await SceneTestFactory.CreateEmptyAsync(16, 16, 5).ConfigureAwait(false);
+        var transient = new VirtualTransientRenderContext(new VirtualTransientScenario(CreateDefinition()), Epoch, TimeSpan.FromSeconds(1));
+        var layout = new ImageLayout(16, 16, HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16, 32);
+        var invalidSigma = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualTransientSignalRenderer.Render(scene, layout, transient, 10_000, 0, 3));
+        var invalidRadius = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualTransientSignalRenderer.Render(scene, layout, transient, 10_000, 0.6, 0));
+        var mismatchedLayout = Assert.ThrowsExactly<ArgumentException>(() =>
+            VirtualTransientSignalRenderer.Render(
+                scene,
+                new ImageLayout(8, 16, HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16, 16),
+                transient,
+                10_000,
+                0.6,
+                3));
+
+        Assert.AreEqual("minimumPsfSigmaPixels", invalidSigma.ParamName);
+        Assert.AreEqual("minimumPsfRadiusPixels", invalidRadius.ParamName);
+        Assert.AreEqual("layout", mismatchedLayout.ParamName);
     }
 
     [TestMethod]

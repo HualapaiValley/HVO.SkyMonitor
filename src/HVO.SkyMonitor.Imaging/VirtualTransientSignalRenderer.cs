@@ -75,13 +75,22 @@ public static class VirtualTransientSignalRenderer
         {
             throw new ArgumentException("Cloud and transient intervals must match.", nameof(cloud));
         }
-        if (!double.IsFinite(magnitudeZeroElectronsPerSecond) || magnitudeZeroElectronsPerSecond < 0 ||
-            !double.IsFinite(minimumPsfSigmaPixels) || minimumPsfSigmaPixels <= 0 ||
-            !double.IsFinite(minimumPsfRadiusPixels) || minimumPsfRadiusPixels <= 0 || minimumPsfRadiusPixels > 64 ||
-            scene.Request.Projection.WidthPixels != layout.Width ||
-            scene.Request.Projection.HeightPixels != layout.Height)
+        if (!double.IsFinite(magnitudeZeroElectronsPerSecond) || magnitudeZeroElectronsPerSecond < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(magnitudeZeroElectronsPerSecond));
+        }
+        if (!double.IsFinite(minimumPsfSigmaPixels) || minimumPsfSigmaPixels <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(minimumPsfSigmaPixels));
+        }
+        if (!double.IsFinite(minimumPsfRadiusPixels) || minimumPsfRadiusPixels <= 0 || minimumPsfRadiusPixels > 64)
+        {
+            throw new ArgumentOutOfRangeException(nameof(minimumPsfRadiusPixels));
+        }
+        if (scene.Request.Projection.WidthPixels != layout.Width ||
+            scene.Request.Projection.HeightPixels != layout.Height)
+        {
+            throw new ArgumentException("Scene projection dimensions must match the image layout.", nameof(layout));
         }
 
         var definition = context.Scenario.Definition;
