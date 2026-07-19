@@ -45,9 +45,13 @@ public sealed class CaptureProcessingContext
 
     public CameraFrame? Frame => _submission.Result.Frame;
 
+    public CaptureAcquisitionTiming? AcquisitionTiming => _submission.Result.AcquisitionTiming;
+
     public FrameArtifactSet? Artifacts => _artifacts;
 
     public RawCaptureReceipt? RawCapture { get; }
+
+    public ReconstructionDescriptor? ReconstructionDescriptor => RawCapture?.Manifest.Descriptor;
 
     public IReadOnlyList<CaptureProcessingStepTelemetry> StepTelemetry => _stepTelemetry;
 

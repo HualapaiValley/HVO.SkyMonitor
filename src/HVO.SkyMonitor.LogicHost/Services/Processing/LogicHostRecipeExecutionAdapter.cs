@@ -65,6 +65,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
                         MapReconstructionReason(reconstruction.ReasonCode),
                         reconstruction.FieldPath));
                 }
+                var observation = ResolveObservationBounds(descriptor);
                 artifacts.Add(new ProcessingArtifact(
                     descriptor.Artifact.ArtifactId,
                     descriptor.Artifact.Role,
@@ -73,11 +74,13 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
                     descriptor.Artifact.MediaType,
                     descriptor.Layout,
                     input.Payload,
-                    descriptor.Timing.ExposureStartedUtc,
+                    observation.StartedUtc,
                     descriptor.Controls.EffectiveExposure,
                     CreateCompatibility(descriptor),
                     descriptor.Capture.CaptureSequence,
-                    descriptor.Artifact.SourceArtifactIds));
+                    descriptor.Artifact.SourceArtifactIds,
+                    observation.StartedUtc,
+                    observation.EndedUtc));
             }
         }
         var artifactAuxiliaryInputs = inputs
@@ -112,7 +115,9 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
         => input.Artifact ?? CreateArtifact(input.Descriptor!);
 
     private static ProcessingArtifact CreateArtifact(ReconstructionDescriptor descriptor)
-        => new(
+    {
+        var observation = ResolveObservationBounds(descriptor);
+        return new ProcessingArtifact(
             descriptor.Artifact.ArtifactId,
             descriptor.Artifact.Role,
             descriptor.Artifact.Variant,
@@ -120,11 +125,25 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             descriptor.Artifact.MediaType,
             descriptor.Layout,
             ReadOnlyMemory<byte>.Empty,
-            descriptor.Timing.ExposureStartedUtc,
+            observation.StartedUtc,
             descriptor.Controls.EffectiveExposure,
             CreateCompatibility(descriptor),
             descriptor.Capture.CaptureSequence,
-            descriptor.Artifact.SourceArtifactIds);
+            descriptor.Artifact.SourceArtifactIds,
+            observation.StartedUtc,
+            observation.EndedUtc);
+    }
+
+    private static (DateTimeOffset StartedUtc, DateTimeOffset EndedUtc) ResolveObservationBounds(
+        ReconstructionDescriptor descriptor)
+    {
+        var startedUtc = descriptor.Timing.ExposureStartedUtc;
+        var endedUtc = ProcessingArtifact.ResolveObservationEndedUtc(
+            startedUtc,
+            descriptor.Timing.ExposureEndedUtc,
+            descriptor.Controls.EffectiveExposure);
+        return (startedUtc, endedUtc);
+    }
 
     private static ProcessingInputSelector CreateSelector(ProcessingArtifact artifact)
         => artifact.Role switch

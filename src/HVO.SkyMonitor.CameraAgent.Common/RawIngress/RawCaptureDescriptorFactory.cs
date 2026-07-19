@@ -112,9 +112,11 @@ internal static class RawCaptureDescriptorFactory
         DateTimeOffset durableIngressUtc)
     {
         var reported = submission.Result.AcquisitionTiming;
-        var exposureStarted = ResolveExposureStartedUtc(submission, frame);
-        var exposureEnded = ToMilliseconds(reported?.ExposureEndedUtc ?? frame.TimestampUtc);
-        var readoutCompleted = ToMilliseconds(reported?.ReadoutCompletedUtc ?? frame.TimestampUtc);
+        var reportedExposureStarted = reported?.ExposureStartedUtc ?? frame.TimestampUtc;
+        var reportedExposureEnded = reported?.ExposureEndedUtc ?? reportedExposureStarted.Add(frame.Metadata.Exposure);
+        var exposureStarted = ToMilliseconds(reportedExposureStarted);
+        var exposureEnded = ToMilliseconds(reportedExposureEnded);
+        var readoutCompleted = ToMilliseconds(reported?.ReadoutCompletedUtc ?? reportedExposureEnded);
         var requested = ToMilliseconds(submission.Request.RequestedStartUtc);
         durableIngressUtc = ToMilliseconds(durableIngressUtc);
         if (exposureStarted > exposureEnded || exposureEnded > readoutCompleted || readoutCompleted > durableIngressUtc)

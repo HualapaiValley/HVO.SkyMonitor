@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 
@@ -29,6 +30,57 @@ public sealed class CameraAgentProcessingConformanceTests
         var adapter = new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor());
         var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(
             ProcessingConformanceFixture.CameraConfig, artifact, "source");
+        Assert.AreEqual(frame.TimestampUtc, input.ObservationStartedUtc);
+        Assert.AreEqual(frame.TimestampUtc.Add(frame.Metadata.Exposure), input.ObservationEndedUtc);
+
+        var reportedTiming = new CaptureAcquisitionTiming(
+            frame.TimestampUtc.AddSeconds(-2),
+            frame.TimestampUtc.AddSeconds(18),
+            frame.TimestampUtc.AddSeconds(19));
+        var reportedInput = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            ProcessingConformanceFixture.CameraConfig, artifact, "source", reportedTiming);
+        Assert.AreEqual(reportedTiming.ExposureStartedUtc, reportedInput.ObservationStartedUtc);
+        Assert.AreEqual(reportedTiming.ExposureEndedUtc, reportedInput.ObservationEndedUtc);
+        var acceleratedTiming = new CaptureAcquisitionTiming(
+            frame.TimestampUtc,
+            frame.TimestampUtc,
+            frame.TimestampUtc);
+        var acceleratedInput = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            ProcessingConformanceFixture.CameraConfig, artifact, "source", acceleratedTiming);
+        Assert.AreEqual(frame.TimestampUtc, acceleratedInput.ObservationStartedUtc);
+        Assert.AreEqual(frame.TimestampUtc.Add(frame.Metadata.Exposure), acceleratedInput.ObservationEndedUtc);
+
+        var fallbackTimestamp = frame.TimestampUtc.AddTicks(1234);
+        var fallbackFrame = frame with
+        {
+            TimestampUtc = fallbackTimestamp,
+            Metadata = frame.Metadata with { Exposure = TimeSpan.FromSeconds(1) }
+        };
+        var fallbackSubmission = new CaptureLoopSubmission(
+            new CaptureRequest(fallbackTimestamp, fallbackFrame.Metadata.Exposure, CaptureMode.Still),
+            new CaptureResult(
+                fallbackFrame,
+                new CaptureSetpoint(fallbackFrame.Metadata.Exposure, fallbackFrame.Metadata.Gain, null, null),
+                TimeSpan.Zero,
+                CaptureMode.Still,
+                false),
+            fallbackTimestamp,
+            fallbackFrame.Metadata.Exposure,
+            TimeSpan.Zero);
+        var fallbackDescriptor = RawCaptureDescriptorFactory.Create(
+            ProcessingConformanceFixture.CameraConfig,
+            fallbackSubmission,
+            new RawCaptureIdentity(
+                ProcessingConformanceFixture.CameraConfig.AgentId!,
+                1,
+                Guid.NewGuid(),
+                Guid.NewGuid()),
+            new string('A', 64),
+            fallbackTimestamp.AddSeconds(2));
+        var canonicalFallbackStart = DateTimeOffset.FromUnixTimeMilliseconds(fallbackTimestamp.ToUnixTimeMilliseconds());
+        Assert.AreEqual(canonicalFallbackStart, fallbackDescriptor.Timing.ExposureStartedUtc);
+        Assert.AreEqual(canonicalFallbackStart.AddSeconds(1), fallbackDescriptor.Timing.ExposureEndedUtc);
+        Assert.AreEqual(fallbackDescriptor.Timing.ExposureEndedUtc, fallbackDescriptor.Timing.ReadoutCompletedUtc);
 
         var outcome = await adapter.ExecuteAsync(
             ProcessingConformanceFixture.CreateRequest(input), CancellationToken.None).ConfigureAwait(false);

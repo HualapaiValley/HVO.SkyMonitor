@@ -550,6 +550,19 @@ public sealed class DurableCaptureProcessingTests
             Assert.IsNotNull(rolling);
             Assert.HasCount(1, rolling.Outputs);
             Assert.HasCount(2, rolling.Outputs[0].Descriptor!.Artifact.SourceArtifactIds);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var restoredHistory = await CreatePersistence(second.Options, store, storage, telemetry).ReadRecentInputsAsync(
+                second.Manifest.Descriptor,
+                "calibration",
+                FrameArtifactRole.Calibrated,
+                2,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotEmpty(restoredHistory);
+            Assert.IsTrue(restoredHistory.All(input => input.ObservationStartedUtc is not null));
+            Assert.IsTrue(restoredHistory.All(input => input.ObservationEndedUtc is not null));
+            Assert.IsTrue(restoredHistory.All(input =>
+                input.ObservationEndedUtc == input.ObservationStartedUtc!.Value.Add(input.Integration)));
         }
         finally
         {
@@ -761,6 +774,11 @@ public sealed class DurableCaptureProcessingTests
             {
                 CaptureSequence = sequence,
                 CaptureId = captureId
+            },
+            Timing = template.Descriptor.Timing with
+            {
+                ExposureEndedUtc = template.Descriptor.Timing.ExposureStartedUtc,
+                ReadoutCompletedUtc = template.Descriptor.Timing.ExposureStartedUtc
             },
             Artifact = template.Descriptor.Artifact with { ArtifactId = artifactId }
         };

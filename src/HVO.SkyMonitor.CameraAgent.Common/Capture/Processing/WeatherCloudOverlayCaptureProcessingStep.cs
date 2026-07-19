@@ -46,7 +46,10 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
         var preview = CameraAgentRecipeExecutionAdapter.CreateArtifact(
             context.Config,
             previewArtifact,
-            previewProduct.Variant) with
+            previewProduct.Variant,
+            context.AcquisitionTiming,
+            context.ReconstructionDescriptor,
+            previewProduct) with
         {
             RecipeIdentitySha256 = previewProduct.Recipe.IdentitySha256
         };
@@ -61,7 +64,9 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
             assessmentProduct.Payload,
             preview.CreatedUtc,
             assessmentProduct.TotalIntegration,
-            assessmentProduct.Compatibility);
+            assessmentProduct.Compatibility,
+            ObservationStartedUtc: preview.ObservationStartedUtc,
+            ObservationEndedUtc: preview.ObservationEndedUtc);
         var environment = CameraAgentCloudEnvironment.CreateInput(context);
         var auxiliary = new ProcessingAuxiliaryInput[]
         {

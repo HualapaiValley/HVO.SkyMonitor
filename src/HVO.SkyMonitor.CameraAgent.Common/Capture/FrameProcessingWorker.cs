@@ -227,7 +227,9 @@ internal sealed class FrameProcessingWorker
                 {
                     context.SetHistoricalInputs(await persistence.ReadRecentRawInputsAsync(
                         rawCapture.Manifest.Descriptor,
-                        CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, rawArtifact, "source"),
+                        CameraAgentRecipeExecutionAdapter.CreateArtifact(
+                            context.Config, rawArtifact, "source", context.AcquisitionTiming,
+                            context.ReconstructionDescriptor),
                         rawWindow.MaximumInputCount,
                         cancellationToken).ConfigureAwait(false));
                 }
@@ -395,7 +397,9 @@ internal sealed class FrameProcessingWorker
             var artifact = new FrameArtifact(
                 receipt.Manifest.Descriptor.Artifact.ArtifactId,
                 FrameArtifactRole.Raw,
-                frame);
+                frame,
+                recipeVersion: ProcessingIdentity.CreateRecipeIdentity(
+                    receipt.Manifest.Descriptor.Artifact.Recipe).IdentitySha256);
             submission = submission with
             {
                 Result = submission.Result with

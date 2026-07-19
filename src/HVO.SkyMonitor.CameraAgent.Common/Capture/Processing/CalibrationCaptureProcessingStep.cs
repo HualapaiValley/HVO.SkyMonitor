@@ -40,7 +40,8 @@ internal sealed class CalibrationCaptureProcessingStep(
             return;
         }
 
-        var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source");
+        var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            context.Config, raw, "source", context.AcquisitionTiming, context.ReconstructionDescriptor);
         var outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.LinearNormalization,
             JsonSerializer.SerializeToElement(new LinearNormalizationOptions(Options.Strategy)),

@@ -47,10 +47,13 @@ internal sealed class RollingCombinationCaptureProcessingStep(
         cancellationToken.ThrowIfCancellationRequested();
         var sourceProduct = context.GetProcessingProduct(sourceArtifact.ArtifactId);
         var current = CameraAgentRecipeExecutionAdapter.CreateArtifact(
-            context.Config, sourceArtifact, sourceProduct?.Variant ?? "source") with
+            context.Config, sourceArtifact, sourceProduct?.Variant ?? "source", context.AcquisitionTiming,
+            context.ReconstructionDescriptor, sourceProduct) with
         {
             RecipeIdentitySha256 = sourceProduct?.Recipe.IdentitySha256 ??
-                CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, sourceArtifact, "source").RecipeIdentitySha256,
+                CameraAgentRecipeExecutionAdapter.CreateArtifact(
+                    context.Config, sourceArtifact, "source", context.AcquisitionTiming,
+                    context.ReconstructionDescriptor, sourceProduct).RecipeIdentitySha256,
             Payload = sourceArtifact.Frame.PixelData.ToArray()
         };
         var durableHistory = context.GetHistoricalInputs();

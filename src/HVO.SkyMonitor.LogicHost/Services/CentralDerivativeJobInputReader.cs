@@ -186,7 +186,12 @@ internal sealed class CentralDerivativeJobInputReader(
                     compatibility,
                     artifact.Frame!.CaptureSequence,
                     artifact.Sources.OrderBy(source => source.Ordinal)
-                        .Select(source => source.SourceArtifactId).ToArray()));
+                        .Select(source => source.SourceArtifactId).ToArray(),
+                    artifact.Frame!.Timing!.ExposureStartedUtc,
+                    ProcessingArtifact.ResolveObservationEndedUtc(
+                        artifact.Frame.Timing.ExposureStartedUtc,
+                        artifact.Frame.Timing.ExposureEndedUtc,
+                        TimeSpan.FromTicks(evidence.TotalIntegrationTicks))));
         }
         return new LogicHostProcessingInput(
             CentralReconstructionDescriptorFactory.Create(artifact.Frame!, artifact),

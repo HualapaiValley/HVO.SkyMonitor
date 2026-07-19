@@ -8,4 +8,9 @@
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\fixtures\processing\*.json" Link="Fixtures\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 </Project>
