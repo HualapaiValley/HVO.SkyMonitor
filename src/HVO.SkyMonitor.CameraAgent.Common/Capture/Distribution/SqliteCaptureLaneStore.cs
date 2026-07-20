@@ -524,13 +524,13 @@ internal sealed class SqliteCaptureLaneStore(
             SELECT
                 (SELECT COUNT(*) FROM capture_lane_work
                  WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')) +
-                    (SELECT COUNT(*) FROM transient_capture_work WHERE state = 'pending') +
+                    (SELECT COUNT(*) FROM transient_capture_work WHERE state IN ('pending', 'quarantined')) +
                     (SELECT COUNT(*) FROM transient_candidates WHERE source_hold_released = 0),
                 (SELECT COALESCE(SUM(payload_length), 0) FROM raw_captures WHERE raw_capture_row_id IN (
                     SELECT raw_capture_row_id FROM capture_lane_work
                     WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                     UNION
-                    SELECT raw_capture_row_id FROM transient_capture_work WHERE state = 'pending'
+                    SELECT raw_capture_row_id FROM transient_capture_work WHERE state IN ('pending', 'quarantined')
                     UNION
                     SELECT s.raw_capture_row_id
                     FROM transient_candidate_sources s
@@ -540,7 +540,7 @@ internal sealed class SqliteCaptureLaneStore(
                     SELECT created_unix_ms FROM capture_lane_work
                     WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                     UNION ALL
-                    SELECT created_unix_ms FROM transient_capture_work WHERE state = 'pending'
+                    SELECT created_unix_ms FROM transient_capture_work WHERE state IN ('pending', 'quarantined')
                     UNION ALL
                     SELECT created_unix_ms FROM transient_candidates WHERE source_hold_released = 0)),
                 (SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'leased'),

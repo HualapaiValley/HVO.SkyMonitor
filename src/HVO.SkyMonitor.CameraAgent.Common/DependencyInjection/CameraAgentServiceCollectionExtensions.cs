@@ -51,12 +51,22 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IRawIngressFaultInjector, NullRawIngressFaultInjector>();
         services.AddSingleton<ICaptureLaneFaultInjector, NullCaptureLaneFaultInjector>();
         services.AddSingleton<ITransientCandidateFaultInjector>(NullTransientCandidateFaultInjector.Instance);
+        services.AddSingleton<ITransientRuntimeFaultInjector>(NullTransientRuntimeFaultInjector.Instance);
         services.AddSingleton<CaptureLanePolicy>();
         services.AddSingleton<RawCaptureIngress>();
         services.AddSingleton<IRawCaptureIngress>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<ICaptureLaneStore>(provider => provider.GetRequiredService<RawCaptureIngress>());
-        services.AddSingleton<ITransientCandidateJournal, SqliteTransientCandidateJournal>();
+        services.AddSingleton<SqliteTransientCandidateJournal>();
+        services.AddSingleton<ITransientCandidateJournal>(provider =>
+            provider.GetRequiredService<SqliteTransientCandidateJournal>());
+        services.AddSingleton<SqliteTransientRuntimeStore>();
+        services.AddSingleton<ITransientRuntimeManagement>(provider =>
+            provider.GetRequiredService<SqliteTransientRuntimeStore>());
+        services.AddSingleton<TransientDetectorRuntime>();
+        services.AddSingleton<TransientWorkerWakeup>();
+        services.AddSingleton<TransientWorkerState>();
+        services.AddSingleton<TransientWorkerTelemetry>();
         services.AddSingleton<ICameraModuleFactory, CameraModuleFactory>();
         services.AddSingleton<IProjectedSceneStore, ProjectedSceneStore>();
         services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());
@@ -136,6 +146,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService<ArtifactOutboxDrainService>();
         services.AddHostedService<FleetHeartbeatService>();
         services.AddHostedService<EnvironmentalObservationDeliveryService>();
+        services.AddSingleton<TransientWorkerService>();
+        services.AddHostedService(provider => provider.GetRequiredService<TransientWorkerService>());
 
         return services;
     }

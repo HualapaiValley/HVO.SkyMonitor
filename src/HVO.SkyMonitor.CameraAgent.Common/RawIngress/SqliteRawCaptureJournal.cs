@@ -18,7 +18,7 @@ internal sealed class SqliteRawCaptureJournal(
     Func<DateTimeOffset>? utcNow = null,
     TransientDetectionOptions? transientOptions = null)
 {
-    internal const int CurrentSchemaVersion = 4;
+    internal const int CurrentSchemaVersion = 5;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly int _busyTimeoutSeconds = busyTimeoutSeconds;
     private readonly Action<TimeSpan>? _lockWaitRecorder = lockWaitRecorder;
@@ -80,6 +80,11 @@ internal sealed class SqliteRawCaptureJournal(
                 if (version is > 0 and < 4)
                 {
                     await ExecuteNonQueryAsync(connection, transaction, TransientSchemaSql, cancellationToken).ConfigureAwait(false);
+                }
+                if (version == 4)
+                {
+                    await ExecuteNonQueryAsync(
+                        connection, transaction, TransientCaptureWorkV5MigrationSql, cancellationToken).ConfigureAwait(false);
                 }
                 if (version == 1)
                 {
@@ -897,13 +902,13 @@ internal sealed class SqliteRawCaptureJournal(
               SELECT
                   (SELECT COUNT(*) FROM capture_lane_work
                    WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')) +
-                      (SELECT COUNT(*) FROM transient_capture_work WHERE state = 'pending') +
+                       (SELECT COUNT(*) FROM transient_capture_work WHERE state IN ('pending', 'quarantined')) +
                       (SELECT COUNT(*) FROM transient_candidates WHERE source_hold_released = 0),
                   (SELECT COALESCE(SUM(payload_length), 0) FROM raw_captures WHERE raw_capture_row_id IN (
                       SELECT raw_capture_row_id FROM capture_lane_work
                       WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                       UNION
-                      SELECT raw_capture_row_id FROM transient_capture_work WHERE state = 'pending'
+                       SELECT raw_capture_row_id FROM transient_capture_work WHERE state IN ('pending', 'quarantined')
                       UNION
                       SELECT s.raw_capture_row_id FROM transient_candidate_sources s
                       JOIN transient_candidates c ON c.candidate_id = s.candidate_id
@@ -912,7 +917,7 @@ internal sealed class SqliteRawCaptureJournal(
                       SELECT created_unix_ms FROM capture_lane_work
                       WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                       UNION ALL
-                      SELECT created_unix_ms FROM transient_capture_work WHERE state = 'pending'
+                       SELECT created_unix_ms FROM transient_capture_work WHERE state IN ('pending', 'quarantined')
                       UNION ALL
                       SELECT created_unix_ms FROM transient_candidates WHERE source_hold_released = 0)),
                   (SELECT COUNT(*) FROM transient_capture_work WHERE state = 'quarantined') +
@@ -1744,7 +1749,7 @@ internal sealed class SqliteRawCaptureJournal(
             lane_work_id INTEGER NOT NULL UNIQUE,
             mode TEXT NOT NULL CHECK (mode IN ('edge', 'hybrid')),
             required INTEGER NOT NULL CHECK (required IN (0, 1)),
-            state TEXT NOT NULL CHECK (state IN ('pending', 'candidate_persisted', 'completed', 'quarantined')),
+            state TEXT NOT NULL CHECK (state IN ('pending', 'candidate_persisted', 'completed', 'quarantined', 'abandoned')),
             artifact_id TEXT NOT NULL UNIQUE,
             manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
             created_unix_ms INTEGER NOT NULL,
@@ -1769,6 +1774,33 @@ internal sealed class SqliteRawCaptureJournal(
             ON transient_candidate_conflicts(observed_unix_ms, conflict_id);
         CREATE INDEX IF NOT EXISTS ix_transient_candidate_conflicts_candidate
             ON transient_candidate_conflicts(candidate_id, conflict_id);
+        """;
+
+    private const string TransientCaptureWorkV5MigrationSql = """
+        DROP INDEX ix_transient_capture_work_backlog;
+        ALTER TABLE transient_capture_work RENAME TO transient_capture_work_v4;
+        CREATE TABLE transient_capture_work (
+            raw_capture_row_id INTEGER PRIMARY KEY,
+            lane_work_id INTEGER NOT NULL UNIQUE,
+            mode TEXT NOT NULL CHECK (mode IN ('edge', 'hybrid')),
+            required INTEGER NOT NULL CHECK (required IN (0, 1)),
+            state TEXT NOT NULL CHECK (state IN ('pending', 'candidate_persisted', 'completed', 'quarantined', 'abandoned')),
+            artifact_id TEXT NOT NULL UNIQUE,
+            manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+            created_unix_ms INTEGER NOT NULL,
+            updated_unix_ms INTEGER NOT NULL,
+            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id),
+            FOREIGN KEY (lane_work_id) REFERENCES capture_lane_work(work_id)
+        ) STRICT;
+        INSERT INTO transient_capture_work(
+            raw_capture_row_id, lane_work_id, mode, required, state,
+            artifact_id, manifest_sha256, created_unix_ms, updated_unix_ms)
+        SELECT raw_capture_row_id, lane_work_id, mode, required, state,
+               artifact_id, manifest_sha256, created_unix_ms, updated_unix_ms
+        FROM transient_capture_work_v4;
+        DROP TABLE transient_capture_work_v4;
+        CREATE INDEX ix_transient_capture_work_backlog
+            ON transient_capture_work(state, created_unix_ms, raw_capture_row_id);
         """;
 
     private const string InsertCaptureSql = """

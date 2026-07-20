@@ -97,6 +97,13 @@ public sealed class CameraAgentHostOptions : IValidatableObject
         {
             yield return result;
         }
+        if (TransientDetection.Mode is TransientOperatingMode.Central or TransientOperatingMode.Hybrid &&
+            !CaptureDistribution.UploadEnabled)
+        {
+            yield return new ValidationResult(
+                "Central and Hybrid transient detection require the upload lane.",
+                [nameof(TransientDetection), nameof(CaptureDistribution)]);
+        }
 
         var environmentalResults = new List<ValidationResult>();
         Validator.TryValidateObject(
@@ -129,6 +136,33 @@ public sealed class TransientDetectionOptions : IValidatableObject
     [Range(1, 10_080)]
     public int CandidateTimeoutMinutes { get; init; } = 10;
 
+    [Range(100, 60_000)]
+    public int WorkerPollIntervalMilliseconds { get; init; } = 1_000;
+
+    [Range(1, 3_600)]
+    public int RetryInitialDelaySeconds { get; init; } = 1;
+
+    [Range(1, 86_400)]
+    public int RetryMaximumDelaySeconds { get; init; } = 60;
+
+    [Range(1, 100)]
+    public int MaximumAttempts { get; init; } = 5;
+
+    [Range(1, 3_600)]
+    public int MaximumAdjacentStartIntervalSeconds { get; init; } = 30;
+
+    [Range(-30, 30)]
+    public double StarMaximumMagnitude { get; init; } = 8;
+
+    [Range(1, 100_000)]
+    public int StarMaximumResults { get; init; } = 2_000;
+
+    [Range(0.5, 256)]
+    public double StarSupportRadiusSourcePixels { get; init; } = 5;
+
+    [Required]
+    public TransientCandidateAssociationOptions Association { get; init; } = new();
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (!Enum.IsDefined(Mode))
@@ -143,7 +177,41 @@ public sealed class TransientDetectionOptions : IValidatableObject
                 "Transient detection can be required only in Edge or Hybrid mode.",
                 [nameof(Required), nameof(Mode)]);
         }
+        if (RetryMaximumDelaySeconds < RetryInitialDelaySeconds)
+        {
+            yield return new ValidationResult(
+                "RetryMaximumDelaySeconds must be greater than or equal to RetryInitialDelaySeconds.",
+                [nameof(RetryMaximumDelaySeconds), nameof(RetryInitialDelaySeconds)]);
+        }
+        var associationResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            Association,
+            new ValidationContext(Association),
+            associationResults,
+            validateAllProperties: true);
+        foreach (var result in associationResults)
+        {
+            yield return result;
+        }
     }
+}
+
+public sealed class TransientCandidateAssociationOptions
+{
+    public const string CurrentAlgorithmVersion = "adjacent-candidate-association-v1";
+
+    [Required]
+    [RegularExpression("adjacent-candidate-association-v1")]
+    public string AlgorithmVersion { get; init; } = CurrentAlgorithmVersion;
+
+    [Range(0.001, 3_600)]
+    public double MaximumStartIntervalSeconds { get; init; } = 30;
+
+    [Range(0, 4_096)]
+    public double MaximumEndpointGapPixels { get; init; } = 24;
+
+    [Range(0, 1)]
+    public double MinimumAbsolutePrincipalAxisAlignment { get; init; } = 0.85;
 }
 
 public sealed class EnvironmentalObservationDeliveryOptions : IValidatableObject

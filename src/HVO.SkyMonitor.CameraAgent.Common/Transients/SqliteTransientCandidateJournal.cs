@@ -563,11 +563,15 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
             throw new ArgumentException("Transient finalization receipt does not match the reservation.", nameof(receipt));
         }
         var payload = TransientCandidateDeliveryJson.Serialize(receipt);
+        var originatingSources = receipt.Event.Observations
+            .Where(observation => observation.Extraction.OriginatingCandidateId == candidateId)
+            .Select(static observation => observation.Source)
+            .ToArray();
         return PersistPayloadAsync(
             candidateId,
             eventId,
             receipt.Event.AgentId,
-            receipt.Event.Observations.Select(static observation => observation.Source).ToArray(),
+            originatingSources,
             receipt.Event.State,
             TransientCandidateWorkflowPhase.Finalized,
             "finalization_payload",
@@ -1495,8 +1499,9 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
                 entry.FinalizationReceipt.CandidateId != entry.CandidateId ||
                 entry.FinalizationReceipt.EventId != entry.EventId ||
                 !string.Equals(entry.FinalizationReceipt.Event.AgentId, entry.AgentId, StringComparison.Ordinal) ||
-                entry.FinalizationReceipt.Event.Observations.Any(observation =>
-                    !entry.Sources.Contains(observation.Source)))
+                entry.FinalizationReceipt.Event.Observations
+                    .Where(observation => observation.Extraction.OriginatingCandidateId == entry.CandidateId)
+                    .Any(observation => !entry.Sources.Contains(observation.Source)))
             {
                 return "finalization-content-mismatch";
             }
@@ -1807,17 +1812,17 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         command.Transaction = transaction;
         command.CommandText = """
             SELECT
-                (SELECT COUNT(*) FROM transient_capture_work WHERE state = 'pending') +
+                (SELECT COUNT(*) FROM transient_capture_work WHERE state IN ('pending', 'quarantined')) +
                     (SELECT COUNT(*) FROM transient_candidates WHERE source_hold_released = 0),
                 (SELECT COALESCE(SUM(payload_length), 0) FROM raw_captures WHERE raw_capture_row_id IN (
-                    SELECT raw_capture_row_id FROM transient_capture_work WHERE state = 'pending'
+                    SELECT raw_capture_row_id FROM transient_capture_work WHERE state IN ('pending', 'quarantined')
                     UNION
                     SELECT s.raw_capture_row_id
                     FROM transient_candidate_sources s
                     JOIN transient_candidates c ON c.candidate_id = s.candidate_id
                     WHERE c.source_hold_released = 0)),
                 (SELECT MIN(created_unix_ms) FROM (
-                    SELECT created_unix_ms FROM transient_capture_work WHERE state = 'pending'
+                    SELECT created_unix_ms FROM transient_capture_work WHERE state IN ('pending', 'quarantined')
                     UNION ALL
                     SELECT created_unix_ms FROM transient_candidates WHERE source_hold_released = 0)),
                 (SELECT COUNT(*) FROM transient_capture_work WHERE state = 'quarantined') +

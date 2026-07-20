@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -131,6 +132,26 @@ public sealed class CameraAgentHostOptionsTests
     }
 
     [TestMethod]
+    [DataRow(TransientOperatingMode.Central)]
+    [DataRow(TransientOperatingMode.Hybrid)]
+    public void Validate_WhenCentralDeliveryModeHasNoUploadLane_ReturnsValidationError(
+        TransientOperatingMode mode)
+    {
+        var options = new CameraAgentHostOptions
+        {
+            RawIngressRoot = "raw-ingress",
+            TransientDetection = new TransientDetectionOptions { Mode = mode },
+            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = false }
+        };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(CameraAgentHostOptions.CaptureDistribution))));
+    }
+
+    [TestMethod]
     [DataRow(TransientOperatingMode.Off, false)]
     [DataRow(TransientOperatingMode.Central, false)]
     [DataRow(TransientOperatingMode.Edge, true)]
@@ -176,6 +197,7 @@ public sealed class CameraAgentHostOptionsTests
 
         Assert.IsTrue(policy.Definitions.Any(static lane => lane.Name == "transient" && lane.Enabled && lane.Ordered));
         Assert.IsTrue(handlers.Any(static handler => handler.Lane == "transient"));
+        Assert.IsNotNull(provider.GetRequiredService<ITransientRuntimeManagement>());
     }
 
     [TestMethod]

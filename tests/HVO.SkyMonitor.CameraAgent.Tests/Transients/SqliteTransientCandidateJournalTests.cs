@@ -18,6 +18,271 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 public sealed class SqliteTransientCandidateJournalTests
 {
     [TestMethod]
+    public async Task RuntimeStore_RestartRecoversStagedWorkAndHistoryIsNotReclaimed()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var context = await fixture.CreateLaneContextAsync(1, 100).ConfigureAwait(false);
+        var handler = new TransientCaptureLaneHandler(fixture.Journal);
+        Assert.AreEqual(
+            CaptureLaneHandlerOutcome.Completed,
+            (await handler.HandleAsync(context, CancellationToken.None).ConfigureAwait(false)).Outcome);
+        var first = fixture.CreateRuntimeStore();
+        await first.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var discovered = await first.ReadNextAsync(CancellationToken.None).ConfigureAwait(false);
+        var restarted = fixture.CreateRuntimeStore();
+        await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var recovered = await restarted.ReadNextAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(discovered);
+        Assert.IsNotNull(recovered);
+        Assert.AreEqual(discovered.RawCaptureRowId, recovered.RawCaptureRowId);
+        Assert.AreEqual(discovered.ArtifactId, recovered.ArtifactId);
+        await restarted.MarkCausalCompletionAsync(
+            recovered.RawCaptureRowId, "test-history", succeeded: true, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNull(await fixture.CreateRuntimeStore().ReadNextAsync(CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RuntimeStore_MissingImmutableEvidenceFailsWithoutLosingDurableWork()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var context = await fixture.CreateLaneContextAsync(1, 100).ConfigureAwait(false);
+        var handler = new TransientCaptureLaneHandler(fixture.Journal);
+        _ = await handler.HandleAsync(context, CancellationToken.None).ConfigureAwait(false);
+        var store = fixture.CreateRuntimeStore();
+        await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var work = await store.ReadNextAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(work);
+        File.Delete(context.RawCapture.StoredFrame.AbsolutePath);
+
+        await Assert.ThrowsExactlyAsync<FileNotFoundException>(async () =>
+            await store.LoadWindowAsync("agent", 1, [0], CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+
+        Assert.IsNotNull(await fixture.CreateRuntimeStore().ReadNextAsync(CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RuntimeStore_IdentityBatchRollsBackCompletelyBeforeCommit()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var context = await fixture.CreateLaneContextAsync(1, 100).ConfigureAwait(false);
+        _ = await new TransientCaptureLaneHandler(fixture.Journal)
+            .HandleAsync(context, CancellationToken.None).ConfigureAwait(false);
+        var store = fixture.CreateRuntimeStore(new ThrowingRuntimeFaultInjector(
+            TransientRuntimeFaultPoint.BeforeIdentityBatchCommit));
+        await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var frame = await store.ReadNextAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(frame);
+        var allocations = CreateRuntimeAllocations(frame.RawCaptureRowId, 2);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await store.AllocateBatchAsync(frame.RawCaptureRowId, allocations, CancellationToken.None)
+                .ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(0L, await fixture.ScalarLongAsync(
+            "SELECT COUNT(*) FROM transient_worker_candidates;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RuntimeStore_IdentityBatchIsCompleteAndIdempotentAfterCommitInterruption()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var context = await fixture.CreateLaneContextAsync(1, 100).ConfigureAwait(false);
+        _ = await new TransientCaptureLaneHandler(fixture.Journal)
+            .HandleAsync(context, CancellationToken.None).ConfigureAwait(false);
+        var interrupted = fixture.CreateRuntimeStore(new ThrowingRuntimeFaultInjector(
+            TransientRuntimeFaultPoint.AfterIdentityBatchCommit));
+        await interrupted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var frame = await interrupted.ReadNextAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(frame);
+        var allocations = CreateRuntimeAllocations(frame.RawCaptureRowId, 2);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await interrupted.AllocateBatchAsync(frame.RawCaptureRowId, allocations, CancellationToken.None)
+                .ConfigureAwait(false)).ConfigureAwait(false);
+        var recovered = await fixture.CreateRuntimeStore().AllocateBatchAsync(
+            frame.RawCaptureRowId,
+            CreateRuntimeAllocations(frame.RawCaptureRowId, 2),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(2, recovered);
+        CollectionAssert.AreEqual(
+            allocations.Select(static value => value.CandidateId).ToArray(),
+            recovered.Select(static value => value.CandidateId).ToArray());
+    }
+
+    [TestMethod]
+    public async Task RuntimeStore_QuarantineRetainsPressureUntilExplicitRelease()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var context = await fixture.CreateLaneContextAsync(1, 100).ConfigureAwait(false);
+        _ = await new TransientCaptureLaneHandler(fixture.Journal)
+            .HandleAsync(context, CancellationToken.None).ConfigureAwait(false);
+        await fixture.ExecuteAsync(
+            "UPDATE capture_lane_work SET state = 'completed', lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL;")
+            .ConfigureAwait(false);
+        var store = fixture.CreateRuntimeStore();
+        await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var frame = await store.ReadNextAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(frame);
+
+        await store.QuarantineAsync(
+            frame.RawCaptureRowId, "test-quarantine", CancellationToken.None).ConfigureAwait(false);
+        var quarantined = await fixture.Journal.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1L, quarantined.ActiveCount);
+        Assert.AreEqual(100L, quarantined.HeldSourceBytes);
+        Assert.AreEqual(2, quarantined.PressureLevel);
+
+        Assert.AreEqual(
+            TransientQuarantineReleaseDisposition.Abandoned,
+            await ((ITransientRuntimeManagement)store)
+                .AbandonQuarantinedCaptureAsync(frame.ArtifactId, CancellationToken.None)
+                .ConfigureAwait(false));
+        var released = await fixture.Journal.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(0L, released.ActiveCount);
+        Assert.AreEqual(0L, released.HeldSourceBytes);
+        Assert.AreEqual(0, released.PressureLevel);
+        Assert.AreEqual(0L, await fixture.ScalarLongAsync(
+            "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
+        Assert.AreEqual("abandoned", await fixture.ScalarStringAsync(
+            "SELECT state FROM transient_worker_frames;").ConfigureAwait(false));
+        Assert.AreEqual("abandoned", await fixture.ScalarStringAsync(
+            "SELECT state FROM transient_capture_work;").ConfigureAwait(false));
+        Assert.IsEmpty(await store.LoadWindowAsync("agent", 1, [0], CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow(TransientOperatingMode.Edge)]
+    [DataRow(TransientOperatingMode.Hybrid)]
+    public async Task RuntimeStore_RestartReconcilesCompletedDeliveryCommit(TransientOperatingMode mode)
+    {
+        using var fixture = await Fixture.CreateAsync(mode: mode).ConfigureAwait(false);
+        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
+        var reservation = Fixture.CreateReservation(source);
+        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
+        var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
+        await fixture.Journal.PersistCandidateAsync(
+            reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
+        if (mode == TransientOperatingMode.Edge)
+        {
+            await fixture.Journal.PersistFinalizationAsync(
+                reservation.CandidateId,
+                reservation.EventId,
+                CreateFinalization(reservation, TransientEventState.NeedsReview),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        else
+        {
+            await fixture.Journal.PersistSubmissionAsync(
+                reservation.CandidateId,
+                reservation.EventId,
+                CreateSubmission(reservation, candidate),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        var rawCaptureRowId = await fixture.ScalarLongAsync(
+            $"SELECT raw_capture_row_id FROM raw_captures WHERE raw_artifact_id = '{source.Locator.Artifact.ArtifactId:N}';")
+            .ConfigureAwait(false);
+        var allocation = CreateRuntimeAllocations(rawCaptureRowId, 1)[0] with
+        {
+            CandidateId = reservation.CandidateId,
+            EventId = reservation.EventId
+        };
+        var first = fixture.CreateRuntimeStore();
+        await first.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        _ = await first.AllocateBatchAsync(rawCaptureRowId, [allocation], CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("pending", await fixture.ScalarStringAsync(
+            "SELECT state FROM transient_worker_candidates;").ConfigureAwait(false));
+
+        await fixture.CreateRuntimeStore().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual("completed", await fixture.ScalarStringAsync(
+            "SELECT state FROM transient_worker_candidates;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RuntimeStore_NormalDiscoveryReconcilesPostCommitCompletionFailureInProcess()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
+        var reservation = Fixture.CreateReservation(source);
+        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
+        var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
+        await fixture.Journal.PersistCandidateAsync(
+            reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
+        await fixture.Journal.PersistFinalizationAsync(
+            reservation.CandidateId,
+            reservation.EventId,
+            CreateFinalization(reservation, TransientEventState.NeedsReview),
+            CancellationToken.None).ConfigureAwait(false);
+        var rawCaptureRowId = await fixture.ScalarLongAsync(
+            $"SELECT raw_capture_row_id FROM raw_captures WHERE raw_artifact_id = '{source.Locator.Artifact.ArtifactId:N}';")
+            .ConfigureAwait(false);
+        var allocation = CreateRuntimeAllocations(rawCaptureRowId, 1)[0] with
+        {
+            CandidateId = reservation.CandidateId,
+            EventId = reservation.EventId
+        };
+        var store = fixture.CreateRuntimeStore(new ThrowingRuntimeFaultInjector(
+            TransientRuntimeFaultPoint.BeforeRuntimeCompletionCommit));
+        await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        _ = await store.AllocateBatchAsync(rawCaptureRowId, [allocation], CancellationToken.None).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await store.MarkCandidateCompletedAsync(reservation.CandidateId, CancellationToken.None)
+                .ConfigureAwait(false)).ConfigureAwait(false);
+        Assert.AreEqual("pending", await fixture.ScalarStringAsync(
+            "SELECT state FROM transient_worker_candidates;").ConfigureAwait(false));
+
+        Assert.IsEmpty(await store.ReadPendingCandidatesAsync(CancellationToken.None).ConfigureAwait(false));
+        Assert.AreEqual("completed", await fixture.ScalarStringAsync(
+            "SELECT state FROM transient_worker_candidates;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task AdjacentAssociation_RequiresMeasuredTimeEndpointAndAxisAgreement()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var first = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
+        var second = await fixture.AddRawSourceAsync(2, 100).ConfigureAwait(false);
+        second = second with
+        {
+            ObservationStartedUtc = first.ObservationStartedUtc.AddSeconds(2),
+            ObservationEndedUtc = first.ObservationEndedUtc.AddSeconds(2)
+        };
+        var reservation = Fixture.CreateReservation(first);
+        var previous = CreateCandidate(reservation, TransientCandidateState.Provisional) with
+        {
+            Geometry = new TransientGeometryV1(
+                first.EvidenceId,
+                200,
+                200,
+                new TransientBoundingRegionV1(1, 1, 10, 2),
+                [new TransientPointV1(1, 1), new TransientPointV1(11, 1)])
+        };
+        var current = previous with
+        {
+            CandidateId = Guid.NewGuid(),
+            CenterEvidenceId = second.EvidenceId,
+            ContextSources = [second]
+        };
+        var options = new TransientCandidateAssociationOptions();
+
+        Assert.IsTrue(TransientWorkerService.AssociationMatches(previous, current, options));
+        Assert.IsFalse(TransientWorkerService.GeometryMatches(
+            previous,
+            current with
+            {
+                Geometry = current.Geometry! with
+                {
+                    Polyline = [new TransientPointV1(100, 100), new TransientPointV1(100, 110)]
+                }
+            },
+            options));
+    }
+
+    [TestMethod]
     public async Task ReserveAsync_IsIdempotentAndRejectsConflictingIdentityReuse()
     {
         using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
@@ -456,7 +721,7 @@ public sealed class SqliteTransientCandidateJournalTests
 
         await fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: false).ConfigureAwait(false);
 
-        Assert.AreEqual(4L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual(5L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(
             "edge",
             await fixture.ScalarStringAsync(
@@ -976,6 +1241,30 @@ public sealed class SqliteTransientCandidateJournalTests
             CancellationToken.None).ConfigureAwait(false);
     }
 
+    private static TransientRuntimeCandidate[] CreateRuntimeAllocations(
+        long rawCaptureRowId,
+        int count)
+    {
+        var allocatedUtc = new DateTimeOffset(2026, 7, 20, 12, 0, 0, TimeSpan.Zero);
+        return Enumerable.Range(0, count)
+            .Select(index => new TransientRuntimeCandidate(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                rawCaptureRowId,
+                index,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                allocatedUtc,
+                AssociationAmbiguous: false,
+                AttemptCount: 0,
+                allocatedUtc,
+                CausalExtraction: null,
+                ObservationExtraction: null,
+                AssessmentExecution: null))
+            .ToArray();
+    }
+
     private sealed class Fixture : IDisposable
     {
         private static readonly DateTimeOffset Now = new(2026, 7, 20, 12, 0, 0, TimeSpan.Zero);
@@ -1025,6 +1314,9 @@ public sealed class SqliteTransientCandidateJournalTests
         internal SqliteTransientCandidateJournal CreateJournal(ITransientCandidateFaultInjector? faultInjector = null)
             => new SqliteTransientCandidateJournal(
                 Options.Create(_options), new FixedTimeProvider(Now), faultInjector);
+
+        internal SqliteTransientRuntimeStore CreateRuntimeStore(ITransientRuntimeFaultInjector? faultInjector = null)
+            => new(Options.Create(_options), new FixedTimeProvider(Now), faultInjector);
 
         internal async Task ReinitializeAsync(TransientOperatingMode mode, bool required)
         {
@@ -1367,6 +1659,19 @@ public sealed class SqliteTransientCandidateJournalTests
             if (current == point && Interlocked.Exchange(ref _thrown, 1) == 0)
             {
                 throw new InvalidOperationException("Injected transient candidate fault.");
+            }
+        }
+    }
+
+    private sealed class ThrowingRuntimeFaultInjector(TransientRuntimeFaultPoint point) : ITransientRuntimeFaultInjector
+    {
+        private int _thrown;
+
+        public void Inject(TransientRuntimeFaultPoint current)
+        {
+            if (current == point && Interlocked.Exchange(ref _thrown, 1) == 0)
+            {
+                throw new InvalidOperationException("Injected transient runtime fault.");
             }
         }
     }

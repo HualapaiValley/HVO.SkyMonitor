@@ -29,3 +29,27 @@ internal sealed class NullTransientCandidateFaultInjector : ITransientCandidateF
     {
     }
 }
+
+internal enum TransientRuntimeFaultPoint
+{
+    BeforeIdentityBatchCommit,
+    AfterIdentityBatchCommit,
+    AfterCandidateJournalCommit,
+    AfterFinalizationJournalCommit,
+    AfterHandoffJournalCommit,
+    BeforeRuntimeCompletionCommit
+}
+
+internal interface ITransientRuntimeFaultInjector
+{
+    void Inject(TransientRuntimeFaultPoint point);
+}
+
+internal sealed class NullTransientRuntimeFaultInjector : ITransientRuntimeFaultInjector
+{
+    internal static NullTransientRuntimeFaultInjector Instance { get; } = new();
+
+    public void Inject(TransientRuntimeFaultPoint point)
+    {
+    }
+}
