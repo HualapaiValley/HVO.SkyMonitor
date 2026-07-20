@@ -168,6 +168,17 @@ public sealed class TransientCandidateExtractionPerformanceTests
         Assert.IsLessThan(detectorPixels * 6 + 2_000_000, allocatedPerOperation,
             $"{workload.Id} allocations exceeded the declared state/queue plus metadata boundary.");
         var outputBytes = JsonSerializer.SerializeToUtf8Bytes(final.Components).Length;
+        var geometryBytes = JsonSerializer.SerializeToUtf8Bytes(final.Components.Select(static component => new
+        {
+            component.BoundsX,
+            component.BoundsY,
+            component.BoundsWidth,
+            component.BoundsHeight,
+            component.StartX,
+            component.StartY,
+            component.EndX,
+            component.EndY
+        })).Length;
         var outputIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(final.Components);
         Assert.AreEqual(workload.ExpectedOutputIdentitySha256, outputIdentity, workload.Id);
         var processing = MeasureProcessing(fixture.Request, workload.Id);
@@ -198,7 +209,8 @@ public sealed class TransientCandidateExtractionPerformanceTests
             {
                 CandidateCount = final.Components.Count,
                 CandidateRatePerFrame = final.Components.Count,
-                GeometryBytes = outputBytes,
+                GeometryBytes = geometryBytes,
+                StructuredComponentBytes = outputBytes,
                 OverlayBytes = "N/A; V1 emits authoritative geometry and overlay derivatives are outside issue #121.",
                 IdentitySha256 = outputIdentity,
                 final.ForegroundPixelCount,
