@@ -186,6 +186,10 @@ conservative strategy.
 The V1 window, normalization, mask encoding, persistent catalog-projected star
 mask, background arithmetic, outcomes, and lineage are defined in
 [`transient-temporal-background-v1.md`](../contracts/transient-temporal-background-v1.md).
+The V1 residual qualification, saturation topology, component geometry,
+candidate receipt, observation promotion, and deterministic assessment rules are
+defined in
+[`transient-extraction-assessment-v1.md`](../contracts/transient-extraction-assessment-v1.md).
 
 Structured output includes a polyline, bounding region, width and brightness
 profiles, saturation, fragments, measured features, confidence, reason codes,
