@@ -75,7 +75,8 @@ internal sealed class CentralDerivativeJobInput
 internal enum CentralDerivativeInputSourceKind
 {
     Artifact,
-    EnvironmentalObservation
+    EnvironmentalObservation,
+    Canonical
 }
 
 internal enum CentralDerivativeCompatibilityMode

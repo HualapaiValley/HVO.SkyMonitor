@@ -27,6 +27,15 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
         {
             return true;
         }
+        if (await dbContext.CentralTransientObservations.AnyAsync(observation =>
+                observation.Source!.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false)
+            || await dbContext.CentralTransientObservationBackgrounds.AnyAsync(reference =>
+                reference.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false)
+            || await dbContext.CentralTransientExtractionSources.AnyAsync(reference =>
+                reference.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false))
+        {
+            return true;
+        }
         return await dbContext.CentralDerivativeJobs.AnyAsync(job =>
             (job.SourceCentralArtifactId == centralArtifactId
                 || job.Inputs.Any(input => input.CentralArtifactId == centralArtifactId)

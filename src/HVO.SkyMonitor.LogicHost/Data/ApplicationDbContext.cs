@@ -38,6 +38,16 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<EnvironmentalObservationSourceRecord> EnvironmentalObservationSources => Set<EnvironmentalObservationSourceRecord>();
     internal DbSet<EnvironmentalObservationRecord> EnvironmentalObservations => Set<EnvironmentalObservationRecord>();
     internal DbSet<EnvironmentalObservationLineageRecord> EnvironmentalObservationLineage => Set<EnvironmentalObservationLineageRecord>();
+    internal DbSet<CentralTransientEventRecord> CentralTransientEvents => Set<CentralTransientEventRecord>();
+    internal DbSet<CentralTransientEventVersionRecord> CentralTransientEventVersions => Set<CentralTransientEventVersionRecord>();
+    internal DbSet<CentralTransientObservationRecord> CentralTransientObservations => Set<CentralTransientObservationRecord>();
+    internal DbSet<CentralTransientObservationSourceReference> CentralTransientObservationSources => Set<CentralTransientObservationSourceReference>();
+    internal DbSet<CentralTransientObservationBackgroundReference> CentralTransientObservationBackgrounds => Set<CentralTransientObservationBackgroundReference>();
+    internal DbSet<CentralTransientAssessmentRecord> CentralTransientAssessments => Set<CentralTransientAssessmentRecord>();
+    internal DbSet<CentralTransientValidationJob> CentralTransientValidationJobs => Set<CentralTransientValidationJob>();
+    internal DbSet<CentralTransientExtractionReceipt> CentralTransientExtractionReceipts => Set<CentralTransientExtractionReceipt>();
+    internal DbSet<CentralTransientExtractionSourceReference> CentralTransientExtractionSources => Set<CentralTransientExtractionSourceReference>();
+    internal DbSet<CentralTransientValidationIdentitySlot> CentralTransientValidationIdentitySlots => Set<CentralTransientValidationIdentitySlot>();
     internal DbSet<Observatory> Observatories => Set<Observatory>();
 
     protected override void OnModelCreating(ModelBuilder builder)
@@ -59,6 +69,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         CentralReconstructionConfiguration.Configure(builder);
         CentralRecoveryConfiguration.Configure(builder);
         EnvironmentalObservationConfiguration.Configure(builder);
+        CentralTransientValidationConfiguration.Configure(builder);
         builder.ApplyConfiguration(new ObservatoryConfiguration());
 
         // Configure OpenIddict entities to use the default Entity Framework Core conventions
