@@ -39,10 +39,10 @@ public sealed record TransientDetectorInputDescriptorV1(
     [property: JsonRequired] TransientDetectorRepresentation Representation,
     [property: JsonRequired] FrameLayoutDescriptor Layout,
     [property: JsonRequired] TransientLinearLevelsV1 Levels,
-    [property: JsonRequired] string SaturationMaskChecksumSha256,
     [property: JsonRequired] ProcessingCompatibilityIdentity Compatibility,
     [property: JsonRequired] ProcessingAlgorithmIdentity Conversion,
-    [property: JsonRequired] TransientDetectorTransformV1 SourceToDetectorTransform)
+    [property: JsonRequired] TransientDetectorTransformV1 SourceToDetectorTransform,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SaturationMaskChecksumSha256 = null)
 {
     public const string CurrentSchemaVersion = "transient-detector-input-v1";
 }
@@ -294,7 +294,6 @@ public static class TransientDetectorInputFactory
                 : TransientDetectorRepresentation.Rggb16CellAverage,
             outputLayout,
             levels,
-            Convert.ToHexString(SHA256.HashData(saturationMask.Bits.Span)),
             artifact.Compatibility,
             new ProcessingAlgorithmIdentity("linear16-detector-input", converted.AlgorithmVersion),
             new TransientDetectorTransformV1(
@@ -302,7 +301,8 @@ public static class TransientDetectorInputFactory
                 transform.ScaleX,
                 transform.ScaleY,
                 transform.OffsetX,
-                transform.OffsetY));
+                transform.OffsetY),
+            Convert.ToHexString(SHA256.HashData(saturationMask.Bits.Span)));
         descriptor = descriptor with
         {
             InputIdentitySha256 = TransientContractJson.ComputeDetectorInputIdentitySha256(descriptor)
