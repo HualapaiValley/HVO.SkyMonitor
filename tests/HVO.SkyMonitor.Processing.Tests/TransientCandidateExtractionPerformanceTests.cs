@@ -36,8 +36,11 @@ public sealed class TransientCandidateExtractionPerformanceTests
     [TestMethod]
     public async Task W1W2CandidateExtractionEvidence()
     {
-        Assert.AreEqual(Architecture.X64, RuntimeInformation.OSArchitecture, "Issue #119 closure evidence requires an x64 host.");
-        Assert.AreEqual(Architecture.X64, RuntimeInformation.ProcessArchitecture, "Run the evidence command with --arch x64.");
+        if (RuntimeInformation.OSArchitecture != Architecture.X64 ||
+            RuntimeInformation.ProcessArchitecture != Architecture.X64)
+        {
+            Assert.Inconclusive("Issue #119 closure evidence requires an x64 host and process; run with --arch x64.");
+        }
         var results = new List<object>();
         foreach (var workload in new[] { Workload.W1, Workload.W2 })
         {
@@ -407,10 +410,7 @@ public sealed class TransientCandidateExtractionPerformanceTests
             fixture.SourceBackground,
             sourceResolution: true);
         var extraction = TransientCandidateExtractionFactory.Create(request);
-        if (extraction.Status != TransientCandidateExtractionStatus.Produced || extraction.Candidates.Count == 0)
-        {
-            return new CompletePathOutcome(extraction, null!);
-        }
+        AssertExtraction(extraction);
         var observation = TransientObservationFactory.CreateAssessmentObservation(new TransientObservationPromotionRequest(
             extraction.Candidates[0].CandidateId,
             Guid.Parse("f1000000-0000-0000-0000-000000000001"),
