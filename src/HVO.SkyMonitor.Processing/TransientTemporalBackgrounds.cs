@@ -140,6 +140,7 @@ public sealed record TransientTemporalBackgroundDescriptorV1(
     [property: JsonRequired] FrameLayoutDescriptor Layout,
     [property: JsonRequired] string BackgroundChecksumSha256,
     [property: JsonRequired] string EffectiveMaskChecksumSha256,
+    [property: JsonRequired] string NoSupportMaskChecksumSha256,
     [property: JsonRequired] IReadOnlyList<TransientTemporalSourceLineageV1> Sources,
     [property: JsonRequired] IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms)
 {
@@ -151,6 +152,7 @@ public sealed record TransientTemporalBackgroundProduct(
     TransientTemporalBackgroundDescriptorV1 Descriptor,
     ReadOnlyMemory<byte> Pixels,
     Linear16PixelMask EffectiveMask,
+    Linear16PixelMask NoSupportMask,
     long IncludedSamples,
     long MaskedSamples);
 
@@ -312,6 +314,7 @@ public static class TransientTemporalBackgroundJson
             !Enum.IsDefined(product.Kind) || !CanonicalSha256(product.BackgroundIdentitySha256) ||
             !CanonicalSha256(product.TargetDetectorInputIdentitySha256) ||
             !CanonicalSha256(product.BackgroundChecksumSha256) || !CanonicalSha256(product.EffectiveMaskChecksumSha256) ||
+            !CanonicalSha256(product.NoSupportMaskChecksumSha256) ||
             product.Layout is null || product.Layout.Width <= 0 || product.Layout.Height <= 0 ||
             product.Layout.StrideBytes != (long)product.Layout.Width * 2 ||
             product.Layout.ByteLength != (long)product.Layout.StrideBytes * product.Layout.Height ||
@@ -547,6 +550,7 @@ public static class TransientTemporalBackgroundFactory
         var effectiveMask = Linear16MaskOperations.Combine(targetMasks, cancellationToken);
         var backgroundChecksum = Convert.ToHexString(SHA256.HashData(background.PixelData.Span));
         var maskChecksum = Convert.ToHexString(SHA256.HashData(effectiveMask.Bits.Span));
+        var noSupportMaskChecksum = Convert.ToHexString(SHA256.HashData(background.NoSupportMask.Bits.Span));
         var targetLayout = request.Target.Input.Descriptor.Layout;
         var outputLayout = targetLayout with
         {
@@ -561,6 +565,7 @@ public static class TransientTemporalBackgroundFactory
             outputLayout,
             backgroundChecksum,
             maskChecksum,
+            noSupportMaskChecksum,
             lineages.OrderBy(static source => (int)source.Position).ToArray(),
             [
                 new ProcessingAlgorithmIdentity("linear16-temporal-background", background.AlgorithmVersion),
@@ -571,6 +576,7 @@ public static class TransientTemporalBackgroundFactory
             descriptor,
             background.PixelData,
             effectiveMask,
+            background.NoSupportMask,
             background.IncludedSamples,
             background.MaskedSamples);
         return new TransientTemporalBackgroundOutcome(
@@ -860,6 +866,7 @@ public static class TransientTemporalBackgroundFactory
             TargetDetectorInputIdentitySha256 = descriptor.TargetDetectorInputIdentitySha256.ToUpperInvariant(),
             BackgroundChecksumSha256 = descriptor.BackgroundChecksumSha256.ToUpperInvariant(),
             EffectiveMaskChecksumSha256 = descriptor.EffectiveMaskChecksumSha256.ToUpperInvariant(),
+            NoSupportMaskChecksumSha256 = descriptor.NoSupportMaskChecksumSha256.ToUpperInvariant(),
             Sources = descriptor.Sources.Select(static source => source with
             {
                 DetectorInputIdentitySha256 = source.DetectorInputIdentitySha256.ToUpperInvariant(),
@@ -878,6 +885,7 @@ public static class TransientTemporalBackgroundFactory
             normalized.Layout,
             normalized.BackgroundChecksumSha256,
             normalized.EffectiveMaskChecksumSha256,
+            normalized.NoSupportMaskChecksumSha256,
             normalized.Sources,
             normalized.Algorithms
         });

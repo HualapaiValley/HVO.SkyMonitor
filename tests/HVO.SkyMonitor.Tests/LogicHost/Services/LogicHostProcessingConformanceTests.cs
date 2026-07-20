@@ -147,8 +147,10 @@ public sealed class LogicHostProcessingConformanceTests
             var offset = TimeSpan.FromSeconds((int)position * 25);
             var payload = new byte[]
             {
-                (byte)(10 + sequence), 0, (byte)(20 + sequence), 0,
-                (byte)(30 + sequence), 0, (byte)(40 + sequence), 0
+                (byte)(10 + sequence), 0,
+                (byte)(20 + sequence + (position == TransientTemporalPosition.N ? 50 : 0)), 0,
+                (byte)(30 + sequence + (position == TransientTemporalPosition.N ? 50 : 0)), 0,
+                (byte)(40 + sequence), 0
             };
             var started = baseline.Timing.ExposureStartedUtc.Add(offset);
             var ended = started.Add(baseline.Controls.EffectiveExposure);
@@ -267,6 +269,85 @@ public sealed class LogicHostProcessingConformanceTests
         CollectionAssert.AreEqual(
             JsonSerializer.SerializeToUtf8Bytes(edgeOutcome.Product.Descriptor),
             JsonSerializer.SerializeToUtf8Bytes(centralOutcome.Product.Descriptor));
+
+        var options = new TransientCandidateExtractionOptionsV1(
+            20,
+            2,
+            40,
+            4,
+            4,
+            16,
+            1_000,
+            1,
+            0.9);
+        var identitySlots = Enumerable.Range(1, options.MaximumCandidates).Select(index =>
+            new TransientCandidateIdentitySlot(
+                Guid.Parse($"99000000-0000-0000-0000-{index:D12}"),
+                Guid.Parse($"9a000000-0000-0000-0000-{index:D12}"))).ToArray();
+        var edgeByEvidence = edgeWindow.Values.ToDictionary(static source => source.Input.Descriptor.Source.EvidenceId);
+        var centralByEvidence = centralWindow.Values.ToDictionary(static source => source.Input.Descriptor.Source.EvidenceId);
+        var createdUtc = edgeOutcome.Product.Descriptor.Sources.Max(static source => source.ObservationEndedUtc).AddSeconds(1);
+        var edgeExtraction = TransientCandidateExtractionFactory.Create(new TransientCandidateExtractionRequest(
+            "conformance-agent",
+            createdUtc,
+            edgeWindow[TransientTemporalPosition.N],
+            edgeOutcome.Product,
+            edgeOutcome.Product.Descriptor.Sources.Select(source =>
+                edgeByEvidence[source.EvidenceId]).ToArray(),
+            identitySlots,
+            options,
+            CenteredContextConverged: true));
+        var centralExtraction = TransientCandidateExtractionFactory.Create(new TransientCandidateExtractionRequest(
+            "conformance-agent",
+            createdUtc,
+            centralWindow[TransientTemporalPosition.N],
+            centralOutcome.Product,
+            centralOutcome.Product.Descriptor.Sources.Select(source =>
+                centralByEvidence[source.EvidenceId]).ToArray(),
+            identitySlots,
+            options,
+            CenteredContextConverged: true));
+
+        Assert.AreEqual(TransientCandidateExtractionStatus.Produced, edgeExtraction.Status, edgeExtraction.ReasonCode);
+        Assert.AreEqual(TransientCandidateExtractionStatus.Produced, centralExtraction.Status, centralExtraction.ReasonCode);
+        CollectionAssert.AreEqual(
+            TransientCandidateExtractionJson.Serialize(edgeExtraction.Descriptor!),
+            TransientCandidateExtractionJson.Serialize(centralExtraction.Descriptor!));
+        CollectionAssert.AreEqual(
+            TransientContractJson.Serialize(edgeExtraction.Candidates.Single()),
+            TransientContractJson.Serialize(centralExtraction.Candidates.Single()));
+
+        var observationId = Guid.Parse("9b000000-0000-0000-0000-000000000001");
+        var edgeObservation = TransientObservationFactory.CreateAssessmentObservation(new TransientObservationPromotionRequest(
+            edgeExtraction.Candidates.Single().CandidateId,
+            observationId,
+            0,
+            edgeExtraction.Descriptor!));
+        var centralObservation = TransientObservationFactory.CreateAssessmentObservation(new TransientObservationPromotionRequest(
+            centralExtraction.Candidates.Single().CandidateId,
+            observationId,
+            0,
+            centralExtraction.Descriptor!));
+        var assessmentOptions = new TransientDeterministicAssessmentOptionsV1(
+            5, 3, 4, 3, 1.8, 0.5, 5, 1_000, 3, 3, 3, 100, 20, 2);
+        var assessmentRequest = new TransientAssessmentExecutionRequest(
+            identitySlots[0].EventId,
+            Guid.Parse("9c000000-0000-0000-0000-000000000001"),
+            createdUtc.AddSeconds(1),
+            TransientAssessmentAuthority.Provisional,
+            [edgeObservation],
+            assessmentOptions,
+            []);
+        var edgeAssessment = TransientAssessmentFactory.Create(assessmentRequest);
+        var centralAssessment = TransientAssessmentFactory.Create(assessmentRequest with
+        {
+            Observations = [centralObservation]
+        });
+        Assert.AreEqual(TransientAssessmentExecutionStatus.Produced, edgeAssessment.Status, edgeAssessment.ReasonCode);
+        Assert.AreEqual(TransientAssessmentExecutionStatus.Produced, centralAssessment.Status, centralAssessment.ReasonCode);
+        CollectionAssert.AreEqual(
+            TransientAssessmentJson.Serialize(edgeAssessment.Descriptor!),
+            TransientAssessmentJson.Serialize(centralAssessment.Descriptor!));
     }
 
     [TestMethod]

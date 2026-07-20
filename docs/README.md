@@ -19,6 +19,7 @@ documents link back without maintaining a competing roadmap.
 | Capture manifest v2 | `docs/contracts/capture-manifest-v2.md` | Reconstructable identity, timing, layout, profile, recipe, lineage, compatibility, validation, and zero-copy semantics. |
 | Processing recipes v1 | `docs/contracts/processing-recipes-v1.md` | Canonical recipe identity, selectors, variants, products, outcomes, algorithms, memory ownership, and host-adapter boundaries. |
 | Transient contracts v1 | `docs/contracts/transient-contracts-v1.md` | Versioned event evidence, source locators, assessments, canonical JSON, and validated linear detector-input ownership. |
+| Transient extraction and assessment v1 | `docs/contracts/transient-extraction-assessment-v1.md` | Deterministic residual components, mask and saturation semantics, geometry, receipts, observation promotion, assessment, and bounded execution. |
 | Fireball/transient architecture | `docs/projects/fireball-transient-detection.md` | Subsystem constraints and design decisions; roadmap status and promotion remain in `docs/project-plan.md` and issues #61-#65. |
 | Legacy implementation references | `docs/reference-code.md` | Commit-pinned V5/V6 source map, behavior notes, caveats, and checkout instructions. |
 | Secrets & configuration | `docs/security/secrets.md` | Consolidates `SECRETS_MANAGEMENT.md`, `SECRETS_QUICKSTART.md`, `SECRETS_SUMMARY.md`, and identity-specific `secrets-reference.md`. |

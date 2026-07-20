@@ -104,6 +104,26 @@ public sealed class TransientStarMaskStrategyTests
         var threshold = CalculateThreshold(workload, controls[2], controlBackground);
         var baseline = Evaluate(workload, frames[2], starBackground, mask, threshold, applyMask: false);
         var masked = Evaluate(workload, frames[2], starBackground, mask, threshold, applyMask: true);
+        var extraction = Linear16TransientExtraction.Extract(
+            new Linear16Frame(layout.Width, layout.Height, layout.StrideBytes, CameraPixelFormat.Mono16, frames[2].Pixels),
+            new Linear16Frame(
+                starBackground.Width,
+                starBackground.Height,
+                starBackground.StrideBytes,
+                CameraPixelFormat.Mono16,
+                starBackground.PixelData),
+            Linear16MaskOperations.Combine([mask, starBackground.NoSupportMask]),
+            Linear16MaskOperations.Empty(layout.Width, layout.Height),
+            new Linear16TransientExtractionOptions(
+                (ushort)threshold,
+                1,
+                threshold,
+                64,
+                8,
+                64,
+                Linear16TransientExtraction.MaximumDetectorPixels,
+                0,
+                0.9));
         var validPixels = CountValidPixels(workload, layout);
         var maskedPixels = mask.Bits.Span.ToArray().Sum(static value => System.Numerics.BitOperations.PopCount(value));
         var maskedPercent = maskedPixels * 100d / validPixels;
@@ -137,6 +157,8 @@ public sealed class TransientStarMaskStrategyTests
         Assert.IsGreaterThanOrEqualTo(99, absoluteEnergySuppression);
         Assert.IsLessThanOrEqualTo(20, maskedPercent);
         Assert.AreEqual(0, masked.UnassociatedCount);
+        Assert.IsFalse(extraction.CandidateLimitExceeded);
+        Assert.IsEmpty(extraction.Components);
         Assert.IsLessThanOrEqualTo(maskedPixels, causalMaskedPixels);
         Assert.AreNotEqual(
             Convert.ToHexString(SHA256.HashData(mask.Bits.Span)),

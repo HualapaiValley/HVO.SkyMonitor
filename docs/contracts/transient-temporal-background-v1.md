@@ -108,7 +108,7 @@ A produced descriptor records:
 - included, target, and known-event dispositions;
 - source sensitivity and applied normalization rational;
 - component mask identities;
-- output layout and background/effective-mask checksums;
+- output layout and background/effective-mask/no-support-mask checksums;
 - background and mask algorithm identities;
 - a stable descriptor identity.
 
