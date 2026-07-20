@@ -32,7 +32,3 @@ if command -v docker >/dev/null 2>&1; then
         fi
     done
 fi
-
-if ! "$REPO_ROOT/scripts/opencode:enable"; then
-    echo "[post-start] OpenCode over Tailscale did not start; see the message above." >&2
-fi

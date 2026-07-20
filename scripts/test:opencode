@@ -1,34 +1,109 @@
 #!/usr/bin/env bash
-# Verify the fail-closed Tailscale Serve command contract without changing live state.
+# Verify the host-owned tmux OpenCode lifecycle contract without changing live state.
+# shellcheck disable=SC2016 # Literal grep patterns intentionally contain shell expressions.
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 readonly ENABLE_SCRIPT="$REPO_ROOT/scripts/opencode:enable"
 readonly DISABLE_SCRIPT="$REPO_ROOT/scripts/opencode:disable"
+readonly CONNECT_SCRIPT="$REPO_ROOT/scripts/opencode:connect"
 readonly CONFIGURE_SCRIPT="$REPO_ROOT/.devcontainer/configure-opencode.sh"
-readonly TEMP_DIR="$(mktemp -d -t hvo-opencode-test.XXXXXX)"
+readonly HOST_CONFIG_FILE="$REPO_ROOT/.devcontainer/opencode-host.conf"
+TEMP_DIR="$(mktemp -d -t hvo-opencode-test.XXXXXX)"
+readonly TEMP_DIR
 
 cleanup() {
-    for pid_file in "$TEMP_DIR/legacy-server.pid" "$TEMP_DIR/migrated-opencode.pid"; do
-        if [[ -f "$pid_file" ]] && [[ "$(<"$pid_file")" =~ ^[0-9]+$ ]]; then
-            kill "$(<"$pid_file")" 2>/dev/null || true
-        fi
-    done
     rm -rf "$TEMP_DIR"
 }
 trap cleanup EXIT
 
-if grep -Fq 'tailscale serve --https=443 off' "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"; then
-    echo "OpenCode scripts still use the incompatible per-handler Serve command." >&2
+for host_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT" "$CONNECT_SCRIPT"; do
+    grep -Fq 'Run this script on the Docker host, not inside the devcontainer.' "$host_script"
+    grep -Fq 'source "$HOST_CONFIG_FILE"' "$host_script"
+done
+for lifecycle_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"; do
+    grep -Fq 'label=devcontainer.local_folder=$REPO_ROOT' "$lifecycle_script"
+done
+grep -Fq 'tmux new-session -d -s "$TMUX_SESSION" "$tmux_command" 9>&-' "$ENABLE_SCRIPT"
+for lifecycle_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"; do
+    grep -Fq 'opencode-lifecycle-v2.lock' "$lifecycle_script"
+done
+grep -Fq 'tmux set-option -t "$TMUX_SESSION" @hvo-opencode-repo "$REPO_ROOT"' "$ENABLE_SCRIPT"
+grep -Fq 'tmux set-option -t "$TMUX_SESSION" @hvo-opencode-container "$CONTAINER"' "$ENABLE_SCRIPT"
+grep -Fq 'tmux set-option -t "$TMUX_SESSION" @hvo-opencode-generation "$GENERATION"' "$ENABLE_SCRIPT"
+grep -Fq 'exec --interactive --tty' "$ENABLE_SCRIPT"
+grep -Fq 'TMUX_DOCKER_COMMAND' "$ENABLE_SCRIPT"
+grep -Fq -- '-u DOCKER_HOST -u DOCKER_CONTEXT' "$ENABLE_SCRIPT"
+grep -Fq 'exec opencode --hostname 0.0.0.0 --port %q --continue' "$ENABLE_SCRIPT"
+grep -Fq 'OPENCODE_SERVER_PASSWORD' "$ENABLE_SCRIPT"
+grep -Fq '"127.0.0.1:${HOST_PORT}"' "$ENABLE_SCRIPT"
+grep -Fq 'flock -n 9' "$ENABLE_SCRIPT"
+grep -Fq 'container_port_in_use' "$ENABLE_SCRIPT"
+grep -Fq 'tmux kill-session -t "$TMUX_SESSION"' "$DISABLE_SCRIPT"
+grep -Fq 'tmux_option @hvo-opencode-repo' "$DISABLE_SCRIPT"
+grep -Fq 'tmux_option @hvo-opencode-container' "$DISABLE_SCRIPT"
+grep -Fq '"${metadata[2]:-}" == "$(cut -d " " -f 22 "/proc/$pid/stat"' "$DISABLE_SCRIPT"
+grep -Fq '"${metadata[3]:-}" == "$expected_uid"' "$DISABLE_SCRIPT"
+grep -Fq '"${metadata[4]:-}" == "$(hostname)"' "$DISABLE_SCRIPT"
+grep -Fq '"${metadata[7]:-}" == "$expected_generation"' "$DISABLE_SCRIPT"
+grep -Fq 'PID start ticks survive exec' "$DISABLE_SCRIPT"
+if grep -Fq 'readlink -f "/proc/$pid/exe"' "$DISABLE_SCRIPT"; then
+    echo "Managed shutdown must not depend on mutable process executable state." >&2
+    exit 1
+fi
+grep -Fq 'docker exec --user "$CONTAINER_USER"' "$DISABLE_SCRIPT"
+grep -Fq 'flock -n 9' "$DISABLE_SCRIPT"
+grep -Fq 'managed_process_absent' "$DISABLE_SCRIPT"
+grep -Fq 'process_state" == Z' "$DISABLE_SCRIPT"
+grep -Fq '[[ -e "$metadata_file" ]] || exit 2' "$DISABLE_SCRIPT"
+grep -Fq 'tmux_pane_dead && ! container_port_in_use' "$DISABLE_SCRIPT"
+grep -Fq 'Cleared exited tmux session' "$DISABLE_SCRIPT"
+grep -Fq "Cleared exited tmux state for replaced devcontainer" "$DISABLE_SCRIPT"
+grep -Fq "docker inspect --format '{{.State.Running}}' \"\$SESSION_CONTAINER\"" "$DISABLE_SCRIPT"
+grep -Fq 'Cleared stale OpenCode lifecycle state; no managed process remains.' "$DISABLE_SCRIPT"
+grep -Fq 'no tmux session or server listener remains' "$DISABLE_SCRIPT"
+grep -Fq 'container_port_in_use' "$DISABLE_SCRIPT"
+grep -Fq 'tmux attach-session -t "$TMUX_SESSION"' "$CONNECT_SCRIPT"
+grep -Fq 'tmux switch-client -t "$TMUX_SESSION"' "$CONNECT_SCRIPT"
+grep -Fq 'tmux_option @hvo-opencode-repo' "$CONNECT_SCRIPT"
+grep -Fq 'tmux_option @hvo-opencode-generation' "$CONNECT_SCRIPT"
+grep -Fq "'#{pane_dead}'" "$CONNECT_SCRIPT"
+grep -Fq "Clear it safely with: \$REPO_ROOT/scripts/opencode:disable" "$CONNECT_SCRIPT"
+if grep -Fq 'nohup opencode' "$ENABLE_SCRIPT"; then
+    echo "Host lifecycle must not daemonize OpenCode outside tmux." >&2
+    exit 1
+fi
+if grep -Fq 'scripts/opencode:enable' "$REPO_ROOT/.devcontainer/post-start.sh"; then
+    echo "The devcontainer still starts OpenCode automatically." >&2
     exit 1
 fi
 
-grep -Fq 'readonly TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-vscode-skymonitor}"' "$ENABLE_SCRIPT"
-grep -Fq 'readonly OPENCODE_HOST="127.0.0.1"' "$ENABLE_SCRIPT"
-grep -Fq 'nohup opencode serve --hostname "$OPENCODE_HOST" --port "$OPENCODE_PORT"' "$ENABLE_SCRIPT"
-grep -Fq 'TAILSCALE_HOSTNAME=vscode-skymonitor' "$REPO_ROOT/.env.template"
+# shellcheck source=.devcontainer/opencode-host.conf
+source "$HOST_CONFIG_FILE"
+[[ "$OPENCODE_TMUX_SESSION" =~ ^[A-Za-z0-9_.-]+$ ]]
+test "$OPENCODE_CONTAINER_PORT" = 4096
+test "$OPENCODE_HOST_PORT" = 4096
+grep -Fq "\"127.0.0.1:${OPENCODE_HOST_PORT}:${OPENCODE_CONTAINER_PORT}\"" \
+    "$REPO_ROOT/.devcontainer/devcontainer.json"
+if grep -Fq '"4096:4096"' "$REPO_ROOT/.devcontainer/devcontainer.json"; then
+    echo "OpenCode must not be published on every Docker-host interface." >&2
+    exit 1
+fi
+grep -Fq '4096: OpenCode server' "$REPO_ROOT/.devcontainer/devcontainer.json"
+if grep -Eq '^[[:space:]]+4096,?$' "$REPO_ROOT/.devcontainer/devcontainer.json"; then
+    echo "OpenCode must not use automatic devcontainer port forwarding." >&2
+    exit 1
+fi
+grep -Fq '"label": "OpenCode (SSH tunnel only)"' "$REPO_ROOT/.devcontainer/devcontainer.json"
+grep -Fq '"onAutoForward": "ignore"' "$REPO_ROOT/.devcontainer/devcontainer.json"
+if grep -Fq 'target": "/var/lib/tailscale"' "$REPO_ROOT/.devcontainer/devcontainer.json"; then
+    echo "Legacy persisted Tailscale Serve state must not be mounted." >&2
+    exit 1
+fi
 grep -Fq 'bash "$SCRIPT_DIR/configure-opencode.sh"' "$REPO_ROOT/.devcontainer/post-create.sh"
 
 mkdir -p "$TEMP_DIR/legacy-config" "$TEMP_DIR/legacy-data"
@@ -55,185 +130,25 @@ env -i HOME="$TEMP_DIR/home" PATH="/usr/bin:/bin" \
 grep -Fqx '{"permission":"ask"}' "$TEMP_DIR/custom-config/opencode.jsonc"
 test "$(stat -c %a "$TEMP_DIR/custom-config/opencode.jsonc")" = 600
 
-mkdir -p "$TEMP_DIR/empty-config" "$TEMP_DIR/empty-data"
-: > "$TEMP_DIR/empty-config/opencode.jsonc"
-env -i HOME="$TEMP_DIR/home" PATH="/usr/bin:/bin" \
-    OPENCODE_CONFIG_DIR="$TEMP_DIR/empty-config" \
-    OPENCODE_DATA_DIR="$TEMP_DIR/empty-data" \
-    bash "$CONFIGURE_SCRIPT"
-grep -Fq '"$schema": "https://opencode.ai/config.json"' "$TEMP_DIR/empty-config/opencode.jsonc"
-
-first_reset_call_line="$(grep -nF '        reset_serve' "$ENABLE_SCRIPT" | cut -d: -f1 | head -n 1)"
-last_reset_call_line="$(grep -nF '        reset_serve' "$ENABLE_SCRIPT" | cut -d: -f1 | tail -n 1)"
-environment_load_line="$(grep -nF 'source "$REPO_ROOT/.devcontainer/load-repo-env.sh"' "$ENABLE_SCRIPT" | cut -d: -f1)"
-opencode_check_line="$(grep -nF 'if ! command -v opencode' "$ENABLE_SCRIPT" | cut -d: -f1)"
-password_check_line="$(grep -nF 'if [[ ! -s "$OPENCODE_SERVER_PASSWORD_FILE" ]]' "$ENABLE_SCRIPT" | cut -d: -f1)"
-expose_line="$(grep -nF 'tailscale serve --bg --yes "$OPENCODE_PORT"' "$ENABLE_SCRIPT" | cut -d: -f1)"
-
-if (( first_reset_call_line >= environment_load_line || last_reset_call_line >= opencode_check_line || last_reset_call_line >= password_check_line || last_reset_call_line >= expose_line )); then
-    echo "OpenCode must reset persisted Serve state before any fallible server setup or re-exposure." >&2
+grep -Fq 'OpenCode from the Docker host' "$REPO_ROOT/README.md"
+grep -Fq 'host `tmux` session' "$REPO_ROOT/README.md"
+grep -Fq './scripts/opencode:connect' "$REPO_ROOT/README.md"
+grep -Fq "ssh -t hvo-dev-01 'cd /home/roys/development/HVO.SkyMonitor && ./scripts/opencode:connect'" \
+    "$REPO_ROOT/README.md"
+if grep -Fq 'opencode attach http://' "$ENABLE_SCRIPT" "$REPO_ROOT/README.md"; then
+    echo "The supported remote workflow must use the host tmux connection script." >&2
     exit 1
 fi
 
-cat > "$TEMP_DIR/tailscale" <<'EOF'
-#!/usr/bin/env bash
-if [[ "$*" == "status --json" ]]; then
-    printf '{"BackendState":"%s"}\n' "${TAILSCALE_TEST_STATE:-Running}"
-elif [[ "$*" == "serve reset" ]]; then
-    printf '%s\n' "$*" >> "${TAILSCALE_TEST_LOG:?}"
-    [[ "${TAILSCALE_RESET_FAIL:-false}" != true ]]
-elif [[ "$1" == "up" ]]; then
-    printf '%s\n' "$*" >> "${TAILSCALE_TEST_LOG:?}"
-elif [[ "$1" == "set" || "$*" == "serve --bg --yes 4096" || "$*" == "serve status" ]]; then
-    printf '%s\n' "$*" >> "${TAILSCALE_TEST_LOG:?}"
-else
-    printf 'Unexpected Tailscale command: %s\n' "$*" >&2
-    exit 1
-fi
-EOF
-cat > "$TEMP_DIR/tailscaled" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-cat > "$TEMP_DIR/pgrep" <<'EOF'
-#!/usr/bin/env bash
-[[ "$*" == "-x tailscaled" && "${TAILSCALED_RUNNING:-true}" == true ]]
-EOF
-cat > "$TEMP_DIR/sudo" <<'EOF'
-#!/usr/bin/env bash
-printf 'sudo %s\n' "$*" >> "${TAILSCALE_TEST_LOG:?}"
-exec "$@"
-EOF
-chmod +x "$TEMP_DIR/tailscale" "$TEMP_DIR/tailscaled" "$TEMP_DIR/pgrep" "$TEMP_DIR/sudo"
-mkdir "$TEMP_DIR/home"
-
-if env -i \
-    HOME="$TEMP_DIR/home" \
-    PATH="$TEMP_DIR:/usr/bin:/bin" \
-    TAILSCALE_TEST_LOG="$TEMP_DIR/tailscale.log" \
-    bash "$ENABLE_SCRIPT" >/dev/null 2>&1; then
-    echo "OpenCode enable unexpectedly succeeded without an OpenCode executable." >&2
-    exit 1
-fi
-grep -Fqx 'sudo tailscale serve reset' "$TEMP_DIR/tailscale.log"
-grep -Fqx 'serve reset' "$TEMP_DIR/tailscale.log"
-
-: > "$TEMP_DIR/tailscale.log"
-if env -i \
-    HOME="$TEMP_DIR/home" \
-    PATH="$TEMP_DIR:/usr/bin:/bin" \
-    TAILSCALE_AUTHKEY=test-enrollment-key \
-    TAILSCALE_TEST_LOG="$TEMP_DIR/tailscale.log" \
-    TAILSCALE_TEST_STATE=NeedsLogin \
-    bash "$ENABLE_SCRIPT" >/dev/null 2>&1; then
-    echo "OpenCode enable unexpectedly succeeded without an OpenCode executable." >&2
-    exit 1
-fi
-enrollment_line="$(grep -nF 'sudo tailscale up' "$TEMP_DIR/tailscale.log" | cut -d: -f1)"
-enrollment_reset_line="$(grep -nF 'sudo tailscale serve reset' "$TEMP_DIR/tailscale.log" | cut -d: -f1)"
-if (( enrollment_line >= enrollment_reset_line )); then
-    echo "Fresh Tailscale enrollment must complete before Serve reset." >&2
-    exit 1
+if [[ -f /.dockerenv ]]; then
+    for host_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT" "$CONNECT_SCRIPT"; do
+        if bash "$host_script" >"$TEMP_DIR/host-guard.out" 2>&1; then
+            echo "$(basename "$host_script") unexpectedly ran inside the devcontainer." >&2
+            exit 1
+        fi
+        grep -Fq 'Run this script on the Docker host, not inside the devcontainer.' \
+            "$TEMP_DIR/host-guard.out"
+    done
 fi
 
-cat > "$TEMP_DIR/opencode" <<'EOF'
-#!/usr/bin/env bash
-trap 'exit 0' TERM
-while sleep 1; do :; done
-EOF
-cat > "$TEMP_DIR/curl" <<'EOF'
-#!/usr/bin/env bash
-printf '401'
-EOF
-cat > "$TEMP_DIR/ss" <<'EOF'
-#!/usr/bin/env bash
-exit 1
-EOF
-chmod +x "$TEMP_DIR/opencode" "$TEMP_DIR/curl" "$TEMP_DIR/ss"
-mkdir -p "$TEMP_DIR/legacy-home/.local/share/opencode"
-printf 'test-password\n' > "$TEMP_DIR/legacy-home/.local/share/opencode/server-password"
-verify_legacy_process_migration() {
-    local legacy_host="$1"
-    local legacy_port="$2"
-    "$TEMP_DIR/opencode" serve --hostname "$legacy_host" --port "$legacy_port" &
-    local legacy_pid=$!
-    printf '%s\n' "$legacy_pid" > "$TEMP_DIR/legacy-server.pid"
-    sleep 0.1
-    printf '1\n%s\n' "$(ps -p "$legacy_pid" -o lstart=)" > "$TEMP_DIR/migrated-opencode.pid.meta"
-    printf '%s\n' "$legacy_pid" > "$TEMP_DIR/migrated-opencode.pid"
-    env -i \
-        HOME="$TEMP_DIR/legacy-home" \
-        PATH="$TEMP_DIR:/usr/bin:/bin" \
-        HVO_OPENCODE_PID_FILE="$TEMP_DIR/migrated-opencode.pid" \
-        HVO_OPENCODE_PID_METADATA_FILE="$TEMP_DIR/migrated-opencode.pid.meta" \
-        TAILSCALE_TEST_LOG="$TEMP_DIR/tailscale.log" \
-        bash "$ENABLE_SCRIPT" >/dev/null
-    if kill -0 "$legacy_pid" 2>/dev/null; then
-        echo "Legacy non-loopback OpenCode process survived secure migration." >&2
-        exit 1
-    fi
-    local new_pid
-    new_pid="$(<"$TEMP_DIR/migrated-opencode.pid")"
-    ps -p "$new_pid" -o args= | grep -Fq -- '--hostname 127.0.0.1 --port 4096'
-    kill "$new_pid"
-    wait "$new_pid" 2>/dev/null || true
-    rm -f "$TEMP_DIR/legacy-server.pid" "$TEMP_DIR/migrated-opencode.pid" "$TEMP_DIR/migrated-opencode.pid.meta"
-}
-
-verify_legacy_process_migration "0.0.0.0" 4096
-verify_legacy_process_migration "::" 5000
-
-printf 'invalid-test-pid\n' > "$TEMP_DIR/opencode.pid"
-printf 'test-metadata\n' > "$TEMP_DIR/opencode.pid.meta"
-if env -i \
-    HOME="$TEMP_DIR/home" \
-    PATH="$TEMP_DIR:/usr/bin:/bin" \
-    HVO_OPENCODE_PID_FILE="$TEMP_DIR/opencode.pid" \
-    HVO_OPENCODE_PID_METADATA_FILE="$TEMP_DIR/opencode.pid.meta" \
-    TAILSCALE_RESET_FAIL=true \
-    TAILSCALE_TEST_LOG="$TEMP_DIR/tailscale.log" \
-    bash "$DISABLE_SCRIPT" >"$TEMP_DIR/disable.out" 2>&1; then
-    echo "OpenCode disable unexpectedly succeeded after a Serve reset failure." >&2
-    exit 1
-fi
-grep -Fq "leaving authenticated OpenCode running" "$TEMP_DIR/disable.out"
-test -f "$TEMP_DIR/opencode.pid"
-test -f "$TEMP_DIR/opencode.pid.meta"
-
-if env -i \
-    HOME="$TEMP_DIR/home" \
-    PATH="$TEMP_DIR:/usr/bin:/bin" \
-    HVO_OPENCODE_PID_FILE="$TEMP_DIR/opencode.pid" \
-    HVO_OPENCODE_PID_METADATA_FILE="$TEMP_DIR/opencode.pid.meta" \
-    TAILSCALED_RUNNING=false \
-    TAILSCALE_TEST_LOG="$TEMP_DIR/tailscale.log" \
-    bash "$DISABLE_SCRIPT" >"$TEMP_DIR/daemon-stopped.out" 2>&1; then
-    echo "OpenCode disable unexpectedly succeeded while the Tailscale daemon was stopped." >&2
-    exit 1
-fi
-grep -Fq "daemon is stopped" "$TEMP_DIR/daemon-stopped.out"
-test -f "$TEMP_DIR/opencode.pid"
-test -f "$TEMP_DIR/opencode.pid.meta"
-
-mkdir "$TEMP_DIR/cli-missing"
-ln -s /usr/bin/bash "$TEMP_DIR/cli-missing/bash"
-ln -s /usr/bin/dirname "$TEMP_DIR/cli-missing/dirname"
-if env -i \
-    HOME="$TEMP_DIR/home" \
-    PATH="$TEMP_DIR/cli-missing" \
-    HVO_OPENCODE_PID_FILE="$TEMP_DIR/opencode.pid" \
-    HVO_OPENCODE_PID_METADATA_FILE="$TEMP_DIR/opencode.pid.meta" \
-    bash "$DISABLE_SCRIPT" >"$TEMP_DIR/cli-missing.out" 2>&1; then
-    echo "OpenCode disable unexpectedly succeeded without the Tailscale CLI." >&2
-    exit 1
-fi
-grep -Fq "CLI is unavailable" "$TEMP_DIR/cli-missing.out"
-test -f "$TEMP_DIR/opencode.pid"
-test -f "$TEMP_DIR/opencode.pid.meta"
-
-test "$(grep -Fc 'sudo tailscale serve reset' "$DISABLE_SCRIPT")" -eq 1
-grep -Fq "reserves its Serve config for OpenCode" "$DISABLE_SCRIPT"
-grep -Fq "leaving authenticated OpenCode running" "$DISABLE_SCRIPT"
-grep -Fq "complete Tailscale Serve configuration" "$REPO_ROOT/README.md"
-
-echo "OpenCode Tailscale command contract passed."
+echo "OpenCode host tmux lifecycle contract passed."

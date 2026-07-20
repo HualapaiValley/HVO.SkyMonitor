@@ -92,6 +92,10 @@
   // 7096: Logic Host HTTPS (dotnet run)
   // 5174: SkyMonitor container mode (HTTP)
   // 5130: Camera agent container mode
+  // 4096: OpenCode server (Basic Auth)
+  "appPort": [
+    "127.0.0.1:4096:4096"
+  ],
   "forwardPorts": [
     5000,
     5001,
@@ -127,6 +131,10 @@
     },
     "5130": {
       "onAutoForward": "silent"
+    },
+    "4096": {
+      "label": "OpenCode (SSH tunnel only)",
+      "onAutoForward": "ignore"
     }
   },
   "otherPortsAttributes": {
@@ -150,11 +158,6 @@
       "type": "volume",
       "source": "hvo-skymonitor-ssh-config",
       "target": "/home/vscode/.ssh"
-    },
-    {
-      "type": "bind",
-      "source": "${localWorkspaceFolder}/.devcontainer/state/tailscale",
-      "target": "/var/lib/tailscale"
     },
     {
       "type": "bind",

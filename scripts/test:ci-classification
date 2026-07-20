@@ -53,6 +53,7 @@ allowlisted_paths=(
   "tools/asi-capture/README.md"
   "scripts/opencode:disable"
   "scripts/opencode:enable"
+  "scripts/opencode:connect"
   "scripts/test:opencode"
 )
 

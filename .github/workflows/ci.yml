@@ -65,7 +65,7 @@ jobs:
           /tmp/actionlint .github/workflows/*.yml
       - name: Audit identity and security operations guidance
         run: |
-          bash -n .devcontainer/*.sh scripts/docs:audit-operations scripts/identity:smoke scripts/smoke:env scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:smoke-env scripts/test:opencode scripts/ci:classify scripts/ci:require scripts/test:ci-classification scripts/catalog/*.sh scripts/catalog:install scripts/opencode:enable scripts/opencode:disable
+          bash -n .devcontainer/*.sh .devcontainer/opencode-host.conf scripts/docs:audit-operations scripts/identity:smoke scripts/smoke:env scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:smoke-env scripts/test:opencode scripts/ci:classify scripts/ci:require scripts/test:ci-classification scripts/catalog/*.sh scripts/catalog:install scripts/opencode:connect scripts/opencode:enable scripts/opencode:disable
           ./scripts/docs:audit-operations
           ./scripts/test:infra
           ./scripts/test:smoke-env
