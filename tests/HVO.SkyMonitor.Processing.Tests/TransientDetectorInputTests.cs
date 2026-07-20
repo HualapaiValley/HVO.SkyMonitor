@@ -1,7 +1,9 @@
+using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.Processing.Tests;
@@ -23,11 +25,12 @@ public sealed class TransientDetectorInputTests
         Assert.IsNotNull(result.Input);
         Assert.AreEqual(TransientDetectorInputOwnership.Borrowed, result.Input.Ownership);
         Assert.AreEqual(value.Artifact.Payload.Length, result.BytesScanned);
-        Assert.AreEqual(0, result.BytesCopied);
+        Assert.AreEqual(1, result.BytesCopied);
         Assert.IsTrue(MemoryMarshal.TryGetArray(result.Input.Pixels, out var inputSegment));
         Assert.IsTrue(MemoryMarshal.TryGetArray(value.Artifact.Payload, out var sourceSegment));
         Assert.AreSame(sourceSegment.Array, inputSegment.Array);
         CollectionAssert.AreEqual(original, value.Artifact.Payload.ToArray());
+        Assert.IsFalse(Linear16MaskOperations.IsExcluded(result.Input.SaturationMask, 0, 0));
         Assert.IsTrue(TransientContractJson.Validate(result.Input.Descriptor).IsValid);
     }
 
@@ -44,7 +47,7 @@ public sealed class TransientDetectorInputTests
         Assert.IsNotNull(result.Input);
         Assert.AreEqual(TransientDetectorInputOwnership.Owned, result.Input.Ownership);
         Assert.AreEqual(value.Artifact.Payload.Length * 2L, result.BytesScanned);
-        Assert.AreEqual(2, result.BytesCopied);
+        Assert.AreEqual(3, result.BytesCopied);
         CollectionAssert.AreEqual(new byte[] { 250, 0 }, result.Input.Pixels.ToArray());
         CollectionAssert.AreEqual(original, value.Artifact.Payload.ToArray());
         Assert.AreEqual(sourceChecksum, Sha256(value.Artifact.Payload.Span));
@@ -54,6 +57,31 @@ public sealed class TransientDetectorInputTests
         Assert.AreEqual(0.5, result.Input.Descriptor.SourceToDetectorTransform.ScaleY);
         Assert.AreEqual(0, result.Input.Descriptor.SourceToDetectorTransform.OffsetX);
         Assert.AreEqual(0, result.Input.Descriptor.SourceToDetectorTransform.OffsetY);
+    }
+
+    [TestMethod]
+    public void RggbSaturationMaskPreservesAnyPhotositeClippingHiddenByCellAverage()
+    {
+        var value = TransientTestData.CreateDetectorSource(CameraPixelFormat.BayerRggb16);
+        var pixels = new byte[] { 0xA0, 0x0F, 0, 0, 0, 0, 0, 0 };
+        var artifact = value.Artifact with { Payload = pixels };
+        var source = value.Source with
+        {
+            Locator = value.Source.Locator with
+            {
+                Artifact = value.Source.Locator.Artifact with
+                {
+                    ChecksumSha256 = Sha256(pixels)
+                }
+            }
+        };
+
+        var result = TransientDetectorInputFactory.Create(artifact, source, value.Levels);
+
+        Assert.IsTrue(result.Validation.IsValid, result.Validation.ReasonCode);
+        Assert.IsNotNull(result.Input);
+        Assert.IsTrue(Linear16MaskOperations.IsExcluded(result.Input.SaturationMask, 0, 0));
+        Assert.IsLessThan(value.Levels.SaturationLevel, BinaryPrimitives.ReadUInt16LittleEndian(result.Input.Pixels.Span));
     }
 
     [TestMethod]

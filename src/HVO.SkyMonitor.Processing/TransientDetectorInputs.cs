@@ -39,6 +39,7 @@ public sealed record TransientDetectorInputDescriptorV1(
     [property: JsonRequired] TransientDetectorRepresentation Representation,
     [property: JsonRequired] FrameLayoutDescriptor Layout,
     [property: JsonRequired] TransientLinearLevelsV1 Levels,
+    [property: JsonRequired] string SaturationMaskChecksumSha256,
     [property: JsonRequired] ProcessingCompatibilityIdentity Compatibility,
     [property: JsonRequired] ProcessingAlgorithmIdentity Conversion,
     [property: JsonRequired] TransientDetectorTransformV1 SourceToDetectorTransform)
@@ -53,7 +54,9 @@ public sealed record TransientDetectorInputDescriptorV1(
 public sealed record TransientDetectorInput(
     TransientDetectorInputDescriptorV1 Descriptor,
     ReadOnlyMemory<byte> Pixels,
-    TransientDetectorInputOwnership Ownership);
+    TransientDetectorInputOwnership Ownership,
+    long? CaptureSequence,
+    Linear16PixelMask SaturationMask);
 
 /// <summary>Detector-input creation result with explicit source scan and bounded-copy accounting.</summary>
 public sealed record TransientDetectorInputCreationResult(
@@ -215,7 +218,22 @@ public static class TransientDetectorInputFactory
             return Failure(TransientDetectorInputReasonCodes.InvalidLevels, "levels");
         }
 
-        var checksum = ComputeSha256(artifact.Payload.Span, cancellationToken);
+        Linear16PixelMask? monoSaturationMask = null;
+        string checksum;
+        if (layout.PixelFormat == CameraPixelFormat.Mono16)
+        {
+            (checksum, monoSaturationMask) = ComputeSha256AndSaturationMask(
+                artifact.Payload.Span,
+                layout.Width,
+                layout.Height,
+                layout.StrideBytes,
+                levels.SaturationLevel,
+                cancellationToken);
+        }
+        else
+        {
+            checksum = ComputeSha256(artifact.Payload.Span, cancellationToken);
+        }
         var checksumScanned = artifact.Payload.Length;
         if (!string.Equals(checksum, reference.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
         {
@@ -228,11 +246,19 @@ public static class TransientDetectorInputFactory
         Linear16DetectorInputResult converted;
         try
         {
-            converted = Linear16DetectorInputConverter.Convert(
-                new ImageLayout(layout.Width, layout.Height, layout.PixelFormat, layout.StrideBytes),
-                layout.ByteOrder,
-                artifact.Payload,
-                cancellationToken);
+            var imageLayout = new ImageLayout(layout.Width, layout.Height, layout.PixelFormat, layout.StrideBytes);
+            converted = layout.PixelFormat == CameraPixelFormat.BayerRggb16
+                ? Linear16DetectorInputConverter.ConvertRggb16WithSaturationMask(
+                    imageLayout,
+                    layout.ByteOrder,
+                    artifact.Payload,
+                    levels.SaturationLevel,
+                    cancellationToken)
+                : Linear16DetectorInputConverter.Convert(
+                    imageLayout,
+                    layout.ByteOrder,
+                    artifact.Payload,
+                    cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -257,6 +283,7 @@ public static class TransientDetectorInputFactory
             levels.WhiteLevel,
             converted.PixelData.Length);
         var normalizedSource = TransientContractJson.NormalizeSourceEvidence(source);
+        var saturationMask = converted.SourceSaturationMask ?? monoSaturationMask!;
         var transform = converted.SourceToOutputTransform;
         var descriptor = new TransientDetectorInputDescriptorV1(
             TransientDetectorInputDescriptorV1.CurrentSchemaVersion,
@@ -267,6 +294,7 @@ public static class TransientDetectorInputFactory
                 : TransientDetectorRepresentation.Rggb16CellAverage,
             outputLayout,
             levels,
+            Convert.ToHexString(SHA256.HashData(saturationMask.Bits.Span)),
             artifact.Compatibility,
             new ProcessingAlgorithmIdentity("linear16-detector-input", converted.AlgorithmVersion),
             new TransientDetectorTransformV1(
@@ -285,10 +313,12 @@ public static class TransientDetectorInputFactory
                 converted.PixelData,
                 converted.Ownership == Linear16DetectorInputOwnership.Borrowed
                     ? TransientDetectorInputOwnership.Borrowed
-                    : TransientDetectorInputOwnership.Owned),
+                    : TransientDetectorInputOwnership.Owned,
+                artifact.CaptureSequence,
+                saturationMask),
             TransientContractValidationResult.Success,
             checked(checksumScanned + converted.BytesScanned),
-            converted.BytesCopied);
+            checked(converted.BytesCopied + saturationMask.Bits.Length));
     }
 
     private static bool ValidCompatibility(ProcessingCompatibilityIdentity? compatibility)
@@ -318,6 +348,38 @@ public static class TransientDetectorInputFactory
         }
         cancellationToken.ThrowIfCancellationRequested();
         return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
+    private static (string Checksum, Linear16PixelMask SaturationMask) ComputeSha256AndSaturationMask(
+        ReadOnlySpan<byte> payload,
+        int width,
+        int height,
+        int strideBytes,
+        ushort saturationLevel,
+        CancellationToken cancellationToken)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var mask = new byte[Linear16MaskOperations.RequiredByteLength(width, height)];
+        for (var y = 0; y < height; y++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var row = y * strideBytes;
+            hash.AppendData(payload.Slice(row, strideBytes));
+            for (var x = 0; x < width; x++)
+            {
+                var offset = row + x * 2;
+                var sample = (ushort)(payload[offset] | payload[offset + 1] << 8);
+                if (sample >= saturationLevel)
+                {
+                    var pixel = y * width + x;
+                    mask[pixel >> 3] |= (byte)(1 << (pixel & 7));
+                }
+            }
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return (
+            Convert.ToHexString(hash.GetHashAndReset()),
+            new Linear16PixelMask(width, height, mask));
     }
 
     private static TransientDetectorInputCreationResult Failure(

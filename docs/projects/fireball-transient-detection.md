@@ -183,6 +183,10 @@ bad-pixel, and saturation masks. It normalizes compatible exposure/gain changes
 and handles star motion through registration, star masks, or another measured
 conservative strategy.
 
+The V1 window, normalization, mask encoding, persistent catalog-projected star
+mask, background arithmetic, outcomes, and lineage are defined in
+[`transient-temporal-background-v1.md`](../contracts/transient-temporal-background-v1.md).
+
 Structured output includes a polyline, bounding region, width and brightness
 profiles, saturation, fragments, measured features, confidence, reason codes,
 source references, and algorithm/calibration/mask versions. An overlay is a view

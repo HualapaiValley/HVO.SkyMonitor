@@ -81,6 +81,12 @@ public sealed class CameraAgentProcessingConformanceTests
         Assert.AreEqual(canonicalFallbackStart, fallbackDescriptor.Timing.ExposureStartedUtc);
         Assert.AreEqual(canonicalFallbackStart.AddSeconds(1), fallbackDescriptor.Timing.ExposureEndedUtc);
         Assert.AreEqual(fallbackDescriptor.Timing.ExposureEndedUtc, fallbackDescriptor.Timing.ReadoutCompletedUtc);
+        var reconstructedArtifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            ProcessingConformanceFixture.CameraConfig,
+            new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Raw, fallbackFrame),
+            "source",
+            reconstructionDescriptor: fallbackDescriptor);
+        Assert.AreEqual(fallbackDescriptor.Capture.CaptureSequence, reconstructedArtifact.CaptureSequence);
 
         var outcome = await adapter.ExecuteAsync(
             ProcessingConformanceFixture.CreateRequest(input), CancellationToken.None).ConfigureAwait(false);

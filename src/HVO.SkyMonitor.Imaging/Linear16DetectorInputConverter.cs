@@ -36,7 +36,8 @@ public sealed record Linear16DetectorInputResult(
     string AlgorithmVersion,
     long BytesScanned,
     long BytesCopied,
-    Linear16SourceToOutputTransform SourceToOutputTransform);
+    Linear16SourceToOutputTransform SourceToOutputTransform,
+    Linear16PixelMask? SourceSaturationMask);
 
 /// <summary>Creates canonical little-endian Mono16 inputs for detector algorithms.</summary>
 /// <remarks>
@@ -66,6 +67,29 @@ public static class Linear16DetectorInputConverter
         FrameByteOrder sourceByteOrder,
         ReadOnlyMemory<byte> sourcePixels,
         CancellationToken cancellationToken = default)
+        => ConvertCore(sourceLayout, sourceByteOrder, sourcePixels, null, cancellationToken);
+
+    /// <summary>Converts RGGB16 pixels and preserves any-source-photosite saturation in detector coordinates.</summary>
+    public static Linear16DetectorInputResult ConvertRggb16WithSaturationMask(
+        ImageLayout sourceLayout,
+        FrameByteOrder sourceByteOrder,
+        ReadOnlyMemory<byte> sourcePixels,
+        ushort sourceSaturationLevel,
+        CancellationToken cancellationToken = default)
+    {
+        if (sourceLayout.PixelFormat != CameraPixelFormat.BayerRggb16)
+        {
+            throw new ArgumentException("Saturation-preserving conversion requires BayerRggb16 source pixels.", nameof(sourceLayout));
+        }
+        return ConvertCore(sourceLayout, sourceByteOrder, sourcePixels, sourceSaturationLevel, cancellationToken);
+    }
+
+    private static Linear16DetectorInputResult ConvertCore(
+        ImageLayout sourceLayout,
+        FrameByteOrder sourceByteOrder,
+        ReadOnlyMemory<byte> sourcePixels,
+        ushort? sourceSaturationLevel,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (sourceLayout.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
@@ -92,7 +116,8 @@ public static class Linear16DetectorInputConverter
                 Mono16AlgorithmVersion,
                 0,
                 0,
-                new Linear16SourceToOutputTransform(TransformVersion, 1, 1, 0, 0));
+                new Linear16SourceToOutputTransform(TransformVersion, 1, 1, 0, 0),
+                null);
         }
         if ((sourceLayout.Width & 1) != 0 || (sourceLayout.Height & 1) != 0)
         {
@@ -105,6 +130,9 @@ public static class Linear16DetectorInputConverter
         var outputHeight = sourceLayout.Height / 2;
         var outputStride = checked(outputWidth * 2);
         var output = GC.AllocateUninitializedArray<byte>(checked(outputStride * outputHeight));
+        var saturationBits = sourceSaturationLevel is null
+            ? null
+            : new byte[Linear16MaskOperations.RequiredByteLength(outputWidth, outputHeight)];
         var source = sourcePixels.Span;
         for (var outputY = 0; outputY < outputHeight; outputY++)
         {
@@ -122,6 +150,13 @@ public static class Linear16DetectorInputConverter
                     var greenOnRedRow = ReadLittleEndian(source, redRow + sourceOffset + 2);
                     var greenOnBlueRow = ReadLittleEndian(source, blueRow + sourceOffset);
                     var blue = ReadLittleEndian(source, blueRow + sourceOffset + 2);
+                    if (sourceSaturationLevel is { } saturationLevel &&
+                        (red >= saturationLevel || greenOnRedRow >= saturationLevel ||
+                         greenOnBlueRow >= saturationLevel || blue >= saturationLevel))
+                    {
+                        var pixelIndex = outputY * outputWidth + outputX;
+                        saturationBits![pixelIndex >> 3] |= (byte)(1 << (pixelIndex & 7));
+                    }
                     var luminance = (ushort)(((uint)red + greenOnRedRow + greenOnBlueRow + blue + 2) / 4);
                     var outputOffset = outputRow + outputX * 2;
                     output[outputOffset] = (byte)luminance;
@@ -143,7 +178,8 @@ public static class Linear16DetectorInputConverter
             Rggb16AlgorithmVersion,
             checked((long)sourceLayout.Width * sourceLayout.Height * 2),
             output.LongLength,
-            new Linear16SourceToOutputTransform(TransformVersion, 0.5, 0.5, 0, 0));
+            new Linear16SourceToOutputTransform(TransformVersion, 0.5, 0.5, 0, 0),
+            saturationBits is null ? null : new Linear16PixelMask(outputWidth, outputHeight, saturationBits));
     }
 
     private static ushort ReadLittleEndian(ReadOnlySpan<byte> source, int offset)

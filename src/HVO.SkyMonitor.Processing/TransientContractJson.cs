@@ -131,6 +131,7 @@ public static class TransientContractJson
             normalized.Representation,
             normalized.Layout,
             normalized.Levels,
+            normalized.SaturationMaskChecksumSha256,
             normalized.Compatibility,
             normalized.Conversion,
             normalized.SourceToDetectorTransform
@@ -468,7 +469,8 @@ public static class TransientContractJson
         {
             return Failure(TransientContractReasonCodes.InvalidDetectorInput, "levels");
         }
-        if (!ValidCompatibility(descriptor.Compatibility) || !ValidDetectorProvenance(descriptor))
+        if (!Sha256(descriptor.SaturationMaskChecksumSha256) ||
+            !ValidCompatibility(descriptor.Compatibility) || !ValidDetectorProvenance(descriptor))
         {
             return Failure(TransientContractReasonCodes.InvalidDetectorInput, "provenance");
         }
@@ -904,6 +906,7 @@ public static class TransientContractJson
         => value with
         {
             InputIdentitySha256 = value.InputIdentitySha256.ToUpperInvariant(),
+            SaturationMaskChecksumSha256 = value.SaturationMaskChecksumSha256.ToUpperInvariant(),
             Source = NormalizeSourceEvidence(value.Source),
             Layout = value.Layout with
             {

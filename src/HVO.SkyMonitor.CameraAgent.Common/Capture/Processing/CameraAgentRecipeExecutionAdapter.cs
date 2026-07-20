@@ -53,6 +53,7 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             product?.Compatibility ?? (reconstructionDescriptor is null
                 ? CreateCompatibility(config, frame)
                 : CreateCompatibility(reconstructionDescriptor)),
+            CaptureSequence: reconstructionDescriptor?.Capture.CaptureSequence,
             SourceArtifactIds: artifact.SourceArtifactIds,
             ObservationStartedUtc: observationStartedUtc.ToUniversalTime(),
             ObservationEndedUtc: observationEndedUtc.ToUniversalTime());
@@ -152,7 +153,7 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             CaptureContractJson.ComputeCanonicalJsonSha256(processing));
     }
 
-    private static ProcessingCompatibilityIdentity CreateCompatibility(ReconstructionDescriptor descriptor)
+    internal static ProcessingCompatibilityIdentity CreateCompatibility(ReconstructionDescriptor descriptor)
         => new(
             descriptor.Profiles.Rig.Sha256,
             descriptor.Profiles.Rig.Sha256,
