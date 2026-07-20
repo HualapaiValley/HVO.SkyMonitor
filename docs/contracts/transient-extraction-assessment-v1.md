@@ -73,6 +73,10 @@ polyline follows the residual-weighted principal axis. Isotropic covariance
 uses the positive X axis; otherwise axis sign is fixed to positive X, then
 positive Y. Endpoints are the minimum and maximum support projections.
 
+Bounds and saturation counts include accepted saturation bridges. Principal-axis
+endpoints and width statistics use only qualified foreground support because a
+clipped bridge has no recoverable residual measurement.
+
 `LengthPixels` is the projection span plus one. Mean width is support area over
 length; maximum width is the perpendicular span plus one. Brightness and width
 profiles use the configured fixed bin count at strictly increasing normalized

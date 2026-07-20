@@ -132,6 +132,8 @@ public sealed class Linear16TransientExtractionTests
         Assert.AreEqual(2, first.Components[0].FirstPixelIndex);
         Assert.AreEqual(6, first.Components[1].FirstPixelIndex);
         Assert.AreEqual(1, first.Components[0].BoundsX);
+        Assert.AreEqual(2, first.Components[0].LengthPixels, 1e-12);
+        Assert.AreEqual(1, first.Components[0].MeanWidthPixels, 1e-12);
     }
 
     [TestMethod]

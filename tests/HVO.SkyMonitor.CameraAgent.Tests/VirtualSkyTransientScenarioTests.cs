@@ -33,7 +33,7 @@ public sealed class VirtualSkyTransientScenarioTests
     {
         ["no-event"] = "4F53CDA18C2BAA0C0354BB5F9A3ECBE5ED12AB4D8E11BA873C2F11161202B945",
         ["short-track"] = "B560555D29A89A08C2F0CDDD3BE4061E677FAB84DB1E701E803EE427195436C8",
-        ["fragmented-flare"] = "E934FE031C651F5CABD6D556D5E0EA3BA7F0612F6C7541535237F25354017133",
+        ["fragmented-flare"] = "54F7DB647708134A68908FBFC3FB5CBFCB3BBF02E3526FF35674B4F5C918E43C",
         ["boundary-crossing"] = "963EB61991EC5D053EDCD6278CB82ABC79600728BE8C40D8BD8045093FB74CD5",
         ["long-shadow-track"] = "6548D195C6544BB40262C552E5E5BC1B927D9C67C7E3051EBE6E6A7B96075664",
         ["blinking-track"] = "FD222CC77C931A8ADB6FE90071EB480B427359DDB7FA7F70FD2F148D73B83792",
@@ -140,13 +140,13 @@ public sealed class VirtualSkyTransientScenarioTests
                 .ConfigureAwait(false);
             var componentIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(result.Candidates.Select(
                 static candidate => new { candidate.Geometry, candidate.Features }));
-            Assert.AreEqual(ExpectedComponentIdentities[scenario.Id], componentIdentity, scenario.Id);
             TestContext.WriteLine(
                 $"{scenario.Id}: identity={componentIdentity}, components={result.Candidates.Count}; " +
                 string.Join(';', result.Candidates.Select(static candidate =>
                     $"length={candidate.Features!.LengthPixels:F2},width={candidate.Features.MeanWidthPixels:F2}," +
                     $"signal={candidate.Features.IntegratedSignalAdu},sat={candidate.Features.SaturatedSampleCount}," +
                     $"fragments={candidate.Features.FragmentCount}")));
+            Assert.AreEqual(ExpectedComponentIdentities[scenario.Id], componentIdentity, scenario.Id);
 
             if (scenario.Id == "no-event")
             {

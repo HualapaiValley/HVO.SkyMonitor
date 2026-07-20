@@ -582,7 +582,7 @@ public static class Linear16TransientExtraction
         var maximumProjection = double.NegativeInfinity;
         var minimumPerpendicular = double.PositiveInfinity;
         var maximumPerpendicular = double.NegativeInfinity;
-        foreach (var pixel in pixels)
+        foreach (var pixel in support)
         {
             var x = pixel % width + 0.5 - centerX;
             var y = pixel / width + 0.5 - centerY;
@@ -596,7 +596,7 @@ public static class Linear16TransientExtraction
         var projectionRange = maximumProjection - minimumProjection;
         var length = projectionRange + 1;
         var maximumWidth = maximumPerpendicular - minimumPerpendicular + 1;
-        var meanWidth = pixels.Length / length;
+        var meanWidth = support.Count / length;
         var (widthProfile, brightnessProfile) = CreateProfiles(
             target,
             background,
