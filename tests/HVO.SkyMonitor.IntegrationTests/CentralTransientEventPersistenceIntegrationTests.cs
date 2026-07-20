@@ -74,7 +74,7 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
             slots[0].Should().Match<CentralTransientValidationIdentitySlot>(item =>
                 item.PersistedObservationId == item.ObservationId
                 && item.PersistedAssessmentId == item.AssessmentId
-                && item.EventId == fixture.Event.EventId);
+                && item.PersistedEventId == fixture.Event.EventId);
             (await database.Context.CentralTransientExtractionSources.CountAsync().ConfigureAwait(false))
                 .Should().Be(fixture.Extraction.OrderedSources.Count);
 
@@ -101,6 +101,64 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
                 WHERE [CentralDerivativeJobId] = {seeded.JobId} AND [Ordinal] = 0;
                 """).ConfigureAwait(false);
             await mutateSlot.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task CenteredSuccessorNoCandidate_AppendsRejectedProvisionalEventVersion()
+    {
+        await using var database = CreateDatabase("CenteredNoCandidate");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var provisional = CentralTransientPersistenceFixture.Create();
+            var provisionalSeed = await SeedAsync(database.Context, provisional).ConfigureAwait(false);
+            var service = new CentralTransientEventPersistence(database.Context);
+            _ = await service.AppendAsync(provisional.Request with
+            {
+                CentralDerivativeJobId = provisionalSeed.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+
+            var centeredNoCandidate = CentralTransientPersistenceFixture.CreateNoCandidate();
+            var successorSeed = await SeedAsync(
+                database.Context,
+                centeredNoCandidate,
+                provisionalJobId: provisionalSeed.JobId).ConfigureAwait(false);
+            var commit = await service.AppendAsync(centeredNoCandidate.Request with
+            {
+                CentralDerivativeJobId = successorSeed.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+
+            var versions = await database.Context.CentralTransientEventVersions.AsNoTracking()
+                .OrderBy(item => item.Version)
+                .ToListAsync().ConfigureAwait(false);
+            versions.Select(item => item.Version).Should().Equal(1, 2);
+            versions[^1].State.Should().Be(TransientEventState.Rejected);
+            commit.EventVersionIds.Should().Equal(versions[^1].EventVersionId);
+            var rejected = TransientContractJson.ParseEvent(Encoding.UTF8.GetBytes(versions[^1].CanonicalEventJson));
+            rejected.Validation.IsValid.Should().BeTrue();
+            rejected.Value!.PreviousEventVersionId.Should().Be(versions[0].EventVersionId);
+            rejected.Value.Observations.Should().BeEquivalentTo(provisional.Event.Observations);
+
+            var successor = await database.Context.CentralTransientValidationJobs.AsNoTracking()
+                .Include(item => item.ExtractionReceipt)
+                .SingleAsync(item => item.CentralDerivativeJobId == successorSeed.JobId).ConfigureAwait(false);
+            successor.OutcomeState.Should().Be(TransientEventState.Rejected);
+            successor.OutcomeReasonCode.Should().Be(TransientCandidateExtractionReasonCodes.NoCandidate);
+            successor.ExtractionReceipt.Should().NotBeNull();
+            using var evidence = JsonDocument.Parse(successor.OutcomeEvidenceJson!);
+            evidence.RootElement.GetProperty("extractionReceiptSha256").GetString()
+                .Should().Be(successor.ExtractionReceipt!.CanonicalReceiptSha256);
+            evidence.RootElement.GetProperty("events")[0].GetProperty("eventVersionId").GetGuid()
+                .Should().Be(versions[^1].EventVersionId);
+            evidence.RootElement.GetProperty("events")[0].GetProperty("state").GetString()
+                .Should().Be(nameof(TransientEventState.Rejected));
         }
         finally
         {
@@ -451,10 +509,14 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
     private static async Task<SeededDatabase> SeedAsync(
         ApplicationDbContext db,
         CentralTransientPersistenceFixture fixture,
-        bool mismatchFirstObservation = false)
+        bool mismatchFirstObservation = false,
+        Guid? provisionalJobId = null)
     {
         var artifacts = new List<CentralArtifact>();
         var sourceOrdinal = 0;
+        var eventCreatedUtc = fixture.Events.Count > 0
+            ? fixture.Event.EventCreatedUtc
+            : fixture.Extraction.OrderedSources.Max(item => item.Source.ObservationEndedUtc).AddSeconds(1);
         foreach (var source in fixture.Extraction.OrderedSources)
         {
             var reference = source.Source.Locator.Artifact;
@@ -463,7 +525,7 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
                 RegistrationId = Guid.NewGuid(),
                 DevicePublicId = Guid.NewGuid(),
                 ObservatoryId = Guid.NewGuid(),
-                AgentId = fixture.Event.AgentId,
+                AgentId = fixture.AgentId,
                 FrameId = Guid.NewGuid(),
                 CapturedAtUtc = source.Source.ObservationStartedUtc,
                 FirstReceivedAtUtc = source.Source.ObservationEndedUtc,
@@ -521,8 +583,8 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
             Status = CentralDerivativeJobStatus.Leased,
             AttemptCount = 1,
             MaxAttempts = 3,
-            CreatedAtUtc = fixture.Event.EventCreatedUtc,
-            UpdatedAtUtc = fixture.Event.EventCreatedUtc
+            CreatedAtUtc = eventCreatedUtc,
+            UpdatedAtUtc = eventCreatedUtc
         };
         var compatibilityJson = "{}";
         var compatibilitySha256 = ProcessingIdentity.ComputePayloadSha256(Encoding.UTF8.GetBytes(compatibilityJson));
@@ -538,11 +600,11 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
                 IsRequired = true,
                 SelectorJson = "{}",
                 CompatibilityMode = CentralDerivativeCompatibilityMode.Exact,
-                ExpectedAgentId = fixture.Event.AgentId,
+                ExpectedAgentId = fixture.AgentId,
                 ExpectedCaptureSequence = artifact.Frame!.CaptureSequence,
                 ExpectedCentralArtifactId = artifact.Id,
                 ResolutionState = CentralDerivativeInputResolutionState.Resolved,
-                ResolvedAtUtc = fixture.Event.EventCreatedUtc
+                ResolvedAtUtc = eventCreatedUtc
             };
             var input = new CentralDerivativeJobInput
             {
@@ -555,7 +617,7 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
                 CompatibilityJson = compatibilityJson,
                 CompatibilitySha256 = compatibilitySha256,
                 ByteLength = artifact.ByteLength,
-                SelectedAtUtc = fixture.Event.EventCreatedUtc
+                SelectedAtUtc = eventCreatedUtc
             };
             requirement.Input = input;
             job.InputRequirements.Add(requirement);
@@ -576,9 +638,9 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
             IsRequired = true,
             SelectorJson = "{}",
             CompatibilityMode = CentralDerivativeCompatibilityMode.None,
-            ExpectedAgentId = fixture.Event.AgentId,
+            ExpectedAgentId = fixture.AgentId,
             ResolutionState = CentralDerivativeInputResolutionState.Resolved,
-            ResolvedAtUtc = fixture.Event.EventCreatedUtc
+            ResolvedAtUtc = eventCreatedUtc
         };
         job.InputRequirements.Add(optionsRequirement);
         job.CanonicalInputs.Add(new CentralDerivativeJobCanonicalInput
@@ -591,16 +653,32 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
             IdentitySha256 = fixture.Extraction.OptionsIdentitySha256,
             CanonicalJson = optionsJson,
             ByteLength = Encoding.UTF8.GetByteCount(optionsJson),
-            SelectedAtUtc = fixture.Event.EventCreatedUtc
+            SelectedAtUtc = eventCreatedUtc
         });
         job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        var executionOptions = CentralTransientExecutionOptionsJson.Serialize(new CentralTransientExecutionOptionsV1(
+            CentralTransientExecutionOptionsV1.CurrentSchemaVersion,
+            fixture.Extraction.Options,
+            fixture.AssessmentOptions,
+            TimeSpan.FromMinutes(5).Ticks,
+            TimeSpan.FromSeconds(20).Ticks,
+            TimeSpan.FromSeconds(5).Ticks,
+            8,
+            0.85,
+            6.5,
+            2_000,
+            1,
+            CentralTransientMaskPolicyV1.ProfileBoundProjectedStarsV1));
         var validationJob = new CentralTransientValidationJob
         {
             CentralDerivativeJobId = job.Id,
-            AgentId = fixture.Event.AgentId,
+            AgentId = fixture.AgentId,
             SubmissionSchemaVersion = "central-transient-validation-submission-v1",
             SubmissionIdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
-            CreatedAtUtc = fixture.Event.EventCreatedUtc
+            ExecutionOptionsJson = executionOptions.Json,
+            ExecutionOptionsIdentitySha256 = executionOptions.Sha256,
+            ProvisionalCentralDerivativeJobId = provisionalJobId,
+            CreatedAtUtc = eventCreatedUtc
         };
         foreach (var slot in fixture.Slots)
         {
@@ -608,7 +686,7 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
             {
                 Ordinal = slot.Ordinal,
                 State = CentralTransientValidationIdentitySlotState.Reserved,
-                EventId = slot.EventId,
+                SubmittedEventId = slot.EventId,
                 CandidateId = slot.CandidateId,
                 ObservationId = mismatchFirstObservation && slot.Ordinal == 0 ? Guid.NewGuid() : slot.ObservationId,
                 AssessmentId = slot.AssessmentId
@@ -651,7 +729,9 @@ internal sealed record CentralTransientPersistenceFixture(
     IReadOnlyList<TransientEventV1> Events,
     IReadOnlyList<FixtureIdentitySlot> Slots,
     IReadOnlyDictionary<Guid, byte[]> Payloads,
-    CentralTransientPersistenceRequest Request)
+    CentralTransientPersistenceRequest Request,
+    TransientDeterministicAssessmentOptionsV1 AssessmentOptions,
+    string AgentId)
 {
     public TransientAssessmentExecutionDescriptorV1 Assessment => Assessments[0];
     public TransientEventV1 Event => Events[0];
@@ -661,6 +741,10 @@ internal sealed record CentralTransientPersistenceFixture(
 
     public static CentralTransientPersistenceFixture CreateMultiCandidate()
         => Create(reservedSlots: null, candidateCount: 2);
+
+    public static CentralTransientPersistenceFixture CreateNoCandidate(
+        IReadOnlyList<FixtureIdentitySlot>? reservedSlots = null)
+        => Create(reservedSlots, candidateCount: 0);
 
     private static CentralTransientPersistenceFixture Create(
         IReadOnlyList<FixtureIdentitySlot>? reservedSlots,
@@ -692,7 +776,7 @@ internal sealed record CentralTransientPersistenceFixture(
         {
             var index = Array.IndexOf(positions, position);
             var samples = Enumerable.Repeat((ushort)100, width * height).ToArray();
-            if (position == TransientTemporalPosition.N)
+            if (position == TransientTemporalPosition.N && candidateCount > 0)
             {
                 if (candidateCount == 1)
                 {
@@ -782,7 +866,9 @@ internal sealed record CentralTransientPersistenceFixture(
             candidateSlots,
             extractionOptions,
             CenteredContextConverged: true));
-        if (extraction.Status != TransientCandidateExtractionStatus.Produced ||
+        if (extraction.Status != (candidateCount == 0
+                ? TransientCandidateExtractionStatus.NoCandidate
+                : TransientCandidateExtractionStatus.Produced) ||
             extraction.Candidates.Count != candidateCount)
         {
             throw new InvalidOperationException(
@@ -790,6 +876,8 @@ internal sealed record CentralTransientPersistenceFixture(
         }
         var assessments = new List<TransientAssessmentExecutionDescriptorV1>(candidateCount);
         var transientEvents = new List<TransientEventV1>(candidateCount);
+        var assessmentOptions = new TransientDeterministicAssessmentOptionsV1(
+            5, 3, 4, 3, 1.8, 0.5, 5, 1_000, 3, 3, 3, 100, 20, 2);
         for (var ordinal = 0; ordinal < candidateCount; ordinal++)
         {
             var promoted = TransientObservationFactory.CreateAssessmentObservation(new TransientObservationPromotionRequest(
@@ -803,7 +891,7 @@ internal sealed record CentralTransientPersistenceFixture(
                 createdUtc.AddSeconds(1),
                 TransientAssessmentAuthority.Authoritative,
                 [promoted],
-                new TransientDeterministicAssessmentOptionsV1(5, 3, 4, 3, 1.8, 0.5, 5, 1_000, 3, 3, 3, 100, 20, 2),
+                assessmentOptions,
                 []));
             if (assessment.Status != TransientAssessmentExecutionStatus.Produced)
             {
@@ -845,7 +933,8 @@ internal sealed record CentralTransientPersistenceFixture(
             CanonicalPayload(extractionBytes),
             transientEvents.Select(item => CanonicalPayload(TransientContractJson.Serialize(item))).ToArray(),
             assessments.Select(item => CanonicalPayload(TransientAssessmentJson.Serialize(item))).ToArray());
-        return new(extraction.Descriptor!, assessments, transientEvents, slots, payloads, request);
+        return new(
+            extraction.Descriptor!, assessments, transientEvents, slots, payloads, request, assessmentOptions, agentId);
     }
 
     internal static CentralTransientCanonicalPayload CanonicalPayload(byte[] bytes)

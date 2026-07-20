@@ -23,6 +23,8 @@ public sealed class CentralTransientValidationModelTests
         var assessment = model.FindEntityType(typeof(CentralTransientAssessmentRecord))!;
         var validationJob = model.FindEntityType(typeof(CentralTransientValidationJob))!;
         var identitySlot = model.FindEntityType(typeof(CentralTransientValidationIdentitySlot))!;
+        var contextDependency = model.FindEntityType(typeof(CentralTransientContextDependency))!;
+        var outcomeVersion = model.FindEntityType(typeof(CentralTransientValidationOutcomeVersion))!;
 
         Assert.IsTrue(transientEvent.GetKeys().Any(key => key.Properties.Select(property => property.Name)
             .SequenceEqual([nameof(CentralTransientEventRecord.AgentId), nameof(CentralTransientEventRecord.EventId)])));
@@ -73,6 +75,14 @@ public sealed class CentralTransientValidationModelTests
         AssertUniqueIndex(identitySlot, nameof(CentralTransientValidationIdentitySlot.CandidateId));
         AssertUniqueIndex(identitySlot, nameof(CentralTransientValidationIdentitySlot.ObservationId));
         AssertUniqueIndex(identitySlot, nameof(CentralTransientValidationIdentitySlot.AssessmentId));
+        AssertUniqueIndex(identitySlot, nameof(CentralTransientValidationIdentitySlot.AssociationIdentitySha256));
+        AssertUniqueIndex(validationJob, nameof(CentralTransientValidationJob.ProvisionalCentralDerivativeJobId));
+        AssertUniqueIndex(outcomeVersion,
+            nameof(CentralTransientValidationOutcomeVersion.CentralDerivativeJobId),
+            nameof(CentralTransientValidationOutcomeVersion.Version));
+        Assert.IsTrue(contextDependency.GetForeignKeys().Any(foreignKey =>
+            foreignKey.PrincipalEntityType.ClrType == typeof(CentralTransientValidationJob) &&
+            foreignKey.Properties.Single().Name == nameof(CentralTransientContextDependency.RequiredCentralDerivativeJobId)));
     }
 
     private static void AssertUniqueIndex(

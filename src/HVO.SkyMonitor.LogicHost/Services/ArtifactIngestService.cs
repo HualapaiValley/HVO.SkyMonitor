@@ -1296,6 +1296,10 @@ internal sealed class ArtifactIngestService(
         CentralArtifact sourceArtifact,
         CancellationToken cancellationToken)
     {
+        await using var ownedTransaction = dbContext.Database.CurrentTransaction is null
+            ? await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false)
+            : null;
         var invalidatedAtUtc = DateTimeOffset.UtcNow;
         var pending = new Queue<Guid>();
         var visited = new HashSet<Guid>();
@@ -1358,6 +1362,18 @@ internal sealed class ArtifactIngestService(
                 var preserveWindowResolution = job.Status == CentralDerivativeJobStatus.Waiting
                     && isWindow
                     && job.InputSetIdentitySha256 is null;
+                var invalidationReason = job.SourceCentralArtifactId == sourceId
+                    ? sourceId == sourceArtifact.Id
+                        ? sourceArtifact.StateReasonCode ?? CentralDerivativeJobScheduler.SourceInvalidatedReason
+                        : CentralDerivativeJobScheduler.SourceInvalidatedReason
+                    : CentralDerivativeJobScheduler.ResultInvalidatedReason;
+                if (await dbContext.CentralTransientValidationJobs.AsNoTracking().AnyAsync(validation =>
+                        validation.CentralDerivativeJobId == job.Id && validation.CommittedAtUtc != null,
+                        cancellationToken).ConfigureAwait(false))
+                {
+                    await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                        dbContext, job, invalidationReason, invalidatedAtUtc, cancellationToken).ConfigureAwait(false);
+                }
                 var activeAttempt = job.Attempts.SingleOrDefault(attempt =>
                     attempt.Outcome == CentralDerivativeAttemptOutcome.Leased);
                 if (activeAttempt is not null)
@@ -1366,11 +1382,7 @@ internal sealed class ArtifactIngestService(
                         && sourceArtifact.ObjectState == CentralArtifactObjectState.Quarantined
                             ? CentralDerivativeAttemptOutcome.Quarantined
                             : CentralDerivativeAttemptOutcome.RetryableFailure;
-                    activeAttempt.ReasonCode = job.SourceCentralArtifactId == sourceId
-                        ? sourceId == sourceArtifact.Id
-                            ? sourceArtifact.StateReasonCode ?? CentralDerivativeJobScheduler.SourceInvalidatedReason
-                            : CentralDerivativeJobScheduler.SourceInvalidatedReason
-                        : CentralDerivativeJobScheduler.ResultInvalidatedReason;
+                    activeAttempt.ReasonCode = invalidationReason;
                     activeAttempt.EndedAtUtc = invalidatedAtUtc;
                 }
                 job.Status = reResolveWindow || preserveWindowResolution
@@ -1409,6 +1421,11 @@ internal sealed class ArtifactIngestService(
                 }
                 job.UpdatedAtUtc = invalidatedAtUtc;
             }
+        }
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (ownedTransaction is not null)
+        {
+            await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 

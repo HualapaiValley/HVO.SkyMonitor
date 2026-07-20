@@ -68,6 +68,11 @@ internal sealed partial class CentralDerivativeWorker(
                 await using var claimScope = scopeFactory.CreateAsyncScope();
                 if (slot == 0)
                 {
+                    if (claimScope.ServiceProvider.GetService<ICentralTransientRetrospectiveScheduler>() is { } scheduler)
+                    {
+                        await scheduler.ScheduleBatchAsync(timeProvider.GetUtcNow(), stoppingToken)
+                            .ConfigureAwait(false);
+                    }
                     await claimScope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
                         .ResolveWaitingAsync(timeProvider.GetUtcNow(), stoppingToken)
                         .ConfigureAwait(false);

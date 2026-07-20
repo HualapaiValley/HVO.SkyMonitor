@@ -1,6 +1,7 @@
 using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
@@ -59,6 +60,81 @@ public sealed class CentralDerivativeJobServiceTests
         CentralDerivativeJobIdentity.CreateRequestIdentity(Guid.Empty, Guid.Empty,
                 rolling with { RecipeVersion = "central-rolling-mean-v2" })
             .Should().NotBe(CentralDerivativeJobIdentity.CreateRequestIdentity(Guid.Empty, Guid.Empty, rolling));
+    }
+
+    [TestMethod]
+    public void CentralTransientOptions_CreatePinnedDurableWindowRecipe()
+    {
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central
+        };
+
+        options.Validate(new System.ComponentModel.DataAnnotations.ValidationContext(options)).Should().BeEmpty();
+        var recipe = new CentralDerivativeRecipeCatalog(options).GetRequiredRecipes(FrameArtifactRole.Raw)
+            .Single(item => item.RecipeName == CentralTransientRuntime.RecipeName);
+
+        recipe.Window!.Positions.Select(position => position.SequenceOffset).Should().Equal(-2, -1, 0, 1, 2);
+        recipe.Window.Positions.Should().OnlyContain(position => position.IsRequired
+            && position.Selector.Role == FrameArtifactRole.Raw);
+        recipe.Transient!.IdentitySlotCount.Should().Be(32);
+        recipe.RequestedRecipeIdentitySha256.Should().Be(
+            TransientCandidateExtractionFactory.ComputeRecipeIdentitySha256(options.Extraction.ToContract()));
+        CentralTransientExecutionOptionsJson.Deserialize(recipe.Transient.ExecutionOptionsJson)
+            .Should().Match<CentralTransientExecutionOptionsV1>(value =>
+                value.Assessment == options.Assessment.ToContract() &&
+                value.MaskPolicy == CentralTransientMaskPolicyV1.ProfileBoundProjectedStarsV1 &&
+                value.StarMaximumMagnitude == options.StarMaximumMagnitude &&
+                value.StarMaximumResults == options.StarMaximumResults &&
+                value.StarSourceSupportRadiusPixels == options.StarSourceSupportRadiusPixels);
+
+        var calibrated = new CentralDerivativeRecipeCatalog(new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            SourceRole = FrameArtifactRole.Calibrated
+        });
+        calibrated.GetRequiredRecipes(FrameArtifactRole.Raw).Should().HaveCount(5);
+        calibrated.GetRequiredRecipes(FrameArtifactRole.Calibrated).Should().ContainSingle(item =>
+            item.RecipeName == CentralTransientRuntime.RecipeName
+            && item.InputSelector.Role == FrameArtifactRole.Calibrated);
+    }
+
+    [TestMethod]
+    public void CentralTransientOptions_RejectHybridAndUnsupportedSourceRole()
+    {
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Hybrid,
+            SourceRole = FrameArtifactRole.Preview
+        };
+
+        options.Validate(new System.ComponentModel.DataAnnotations.ValidationContext(options)).Should().HaveCount(2);
+    }
+
+    [TestMethod]
+    [DataRow("candidates")]
+    [DataRow("bridge")]
+    [DataRow("foreground")]
+    [DataRow("gap")]
+    [DataRow("negative-zero")]
+    [DataRow("step-ratio")]
+    public void CentralTransientOptions_RejectValuesOutsideSharedContractBounds(string invalidValue)
+    {
+        var extraction = invalidValue switch
+        {
+            "candidates" => new CentralTransientExtractionOptions { MaximumCandidates = 65 },
+            "bridge" => new CentralTransientExtractionOptions { MaximumSaturationBridgePixels = 0 },
+            "foreground" => new CentralTransientExtractionOptions { MaximumForegroundPixels = 10_000_001 },
+            "gap" => new CentralTransientExtractionOptions { MaximumFragmentGapPixels = 1025 },
+            "negative-zero" => new CentralTransientExtractionOptions { MaximumFragmentGapPixels = -0d },
+            _ => new CentralTransientExtractionOptions()
+        };
+        var assessment = invalidValue == "step-ratio"
+            ? new CentralTransientAssessmentOptions { SmoothMotionMaximumStepRatio = 0.99 }
+            : new CentralTransientAssessmentOptions();
+        var options = new CentralTransientOptions { Extraction = extraction, Assessment = assessment };
+
+        options.Validate(new System.ComponentModel.DataAnnotations.ValidationContext(options)).Should().NotBeEmpty();
     }
 
     [TestMethod]

@@ -5,6 +5,8 @@ using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Minio;
 using Minio.DataModel.Args;
 using System.Buffers.Binary;
@@ -17,6 +19,802 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class CentralDerivativeWindowIntegrationTests
 {
     private const string Bucket = "skymonitor-artifacts";
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task CentralTransientRuntime_UsesDelayedExactWindowAndPersistsCanonicalOutcome(bool hasCandidate)
+    {
+        var scenario = $"transient-runtime-{hasCandidate}-{Guid.NewGuid():N}";
+        var devicePublicId = Guid.NewGuid();
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            StarMaximumMagnitude = -30
+        };
+        var sources = new Dictionary<long, Guid>();
+        foreach (var sequence in new long[] { 100, 102, 98, 101, 99 })
+        {
+            var payload = hasCandidate && sequence == 100
+                ? CreatePayload([100, 1_000, 1_000, 100])
+                : CreatePayload(100);
+            var sourceId = await SeedAndScheduleSourceAsync(
+                scenario, devicePublicId, sequence, capturedBase, payload, "transient-compatible")
+                .ConfigureAwait(false);
+            sources.Add(sequence, sourceId);
+            await ScheduleTransientAsync(sourceId, options).ConfigureAwait(false);
+        }
+
+        Guid jobId;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            jobId = await db.CentralDerivativeJobs.AsNoTracking()
+                .Where(item => item.SourceCentralArtifactId == sources[100]
+                    && item.RecipeName == CentralTransientRuntime.RecipeName)
+                .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
+            await scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
+                .ResolveAsync(jobId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+            db.ChangeTracker.Clear();
+            var job = await db.CentralDerivativeJobs.AsNoTracking()
+                .Include(item => item.InputRequirements)
+                .Include(item => item.Inputs)
+                .Include(item => item.CanonicalInputs)
+                .SingleAsync(item => item.SourceCentralArtifactId == sources[100]
+                    && item.RecipeName == CentralTransientRuntime.RecipeName).ConfigureAwait(false);
+            job.Status.Should().Be(CentralDerivativeJobStatus.Pending,
+                string.Join(";", job.InputRequirements.OrderBy(item => item.Ordinal).Select(item =>
+                    $"{item.Ordinal}:{item.SourceKind}:{item.ExpectedCaptureSequence}:{item.ResolutionState}:{item.ResolutionReasonCode}")));
+            job.InputRequirements.Where(item => item.SourceKind == CentralDerivativeInputSourceKind.Artifact)
+                .OrderBy(item => item.Ordinal).Select(item => item.SequenceOffset).Should().Equal(-2, -1, 0, 1, 2);
+            job.Inputs.OrderBy(item => item.Ordinal).Select(item => item.CaptureSequence)
+                .Should().Equal(98, 99, 100, 101, 102);
+            job.CanonicalInputs.Should().ContainSingle();
+            var validation = await db.CentralTransientValidationJobs.AsNoTracking()
+                .Include(item => item.IdentitySlots)
+                .SingleAsync(item => item.CentralDerivativeJobId == job.Id).ConfigureAwait(false);
+            validation.IdentitySlots.Should().HaveCount(32);
+            validation.IdentitySlots.Select(item => item.CandidateId).Should().OnlyHaveUniqueItems();
+            validation.ExecutionOptionsIdentitySha256.Should().HaveLength(64);
+        }
+        await DisableOtherActiveJobsAsync(jobId).ConfigureAwait(false);
+
+        CentralDerivativeJobLease lease;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            lease = (await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                .ClaimNextAsync("transient-runtime-worker", TimeSpan.FromMinutes(2), CancellationToken.None)
+                .ConfigureAwait(false))!;
+            lease.JobId.Should().Be(jobId);
+        }
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var result = await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+            result.Status.Should().Be(hasCandidate ? ProcessingOutcomeStatus.Produced : ProcessingOutcomeStatus.Skipped);
+            result.ReasonCode.Should().Be(hasCandidate ? null : TransientCandidateExtractionReasonCodes.NoCandidate);
+        }
+
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var job = await db.CentralDerivativeJobs.AsNoTracking().Include(item => item.Attempts)
+                .SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
+            job.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+            job.ResultCentralArtifactId.Should().BeNull();
+            job.StateReasonCode.Should().Be(hasCandidate
+                ? CentralTransientRuntimeReasonCodes.Persisted
+                : TransientCandidateExtractionReasonCodes.NoCandidate);
+            job.Attempts.Single().Outcome.Should().Be(CentralDerivativeAttemptOutcome.Completed);
+            var receipt = await db.CentralTransientExtractionReceipts.AsNoTracking()
+                .Include(item => item.Sources)
+                .SingleAsync(item => item.CentralDerivativeJobId == jobId).ConfigureAwait(false);
+            receipt.Sources.OrderBy(item => item.Ordinal).Select(item => item.Position).Should().Equal(
+                TransientTemporalPosition.NMinus2,
+                TransientTemporalPosition.NMinus1,
+                TransientTemporalPosition.N,
+                TransientTemporalPosition.NPlus1,
+                TransientTemporalPosition.NPlus2);
+            var validation = await db.CentralTransientValidationJobs.AsNoTracking()
+                .Include(item => item.IdentitySlots)
+                .SingleAsync(item => item.CentralDerivativeJobId == jobId).ConfigureAwait(false);
+            validation.IdentitySlots.Count(item => item.State == CentralTransientValidationIdentitySlotState.Committed)
+                .Should().Be(hasCandidate ? 1 : 0);
+            validation.IdentitySlots.Count(item => item.State == CentralTransientValidationIdentitySlotState.Unused)
+                .Should().Be(hasCandidate ? 31 : 32);
+            (await db.CentralTransientEventVersions.CountAsync(version =>
+                    version.Event!.AgentId == scenario).ConfigureAwait(false))
+                .Should().Be(hasCandidate ? 1 : 0);
+            if (hasCandidate)
+            {
+                var assessment = await db.CentralTransientAssessments.AsNoTracking()
+                    .SingleAsync(item => item.Event!.AgentId == scenario).ConfigureAwait(false);
+                assessment.Authority.Should().Be(TransientAssessmentAuthority.Authoritative);
+            }
+            var retention = scope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionReferences>();
+            foreach (var sourceId in sources.Values)
+            {
+                (await retention.IsHeldAsync(sourceId, CancellationToken.None).ConfigureAwait(false)).Should().BeTrue();
+            }
+        }
+
+        if (hasCandidate)
+        {
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                await db.CentralDerivativeJobs.Where(item => item.Id == jobId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.Status, CentralDerivativeJobStatus.Pending)
+                        .SetProperty(item => item.AvailableAtUtc, DateTimeOffset.UtcNow)
+                        .SetProperty(item => item.CompletedAtUtc, (DateTimeOffset?)null)
+                        .SetProperty(item => item.StateReasonCode, (string?)null))
+                    .ConfigureAwait(false);
+            }
+            CentralDerivativeJobLease retryLease;
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                retryLease = (await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                    .ClaimNextAsync("transient-restart-worker", TimeSpan.FromMinutes(2), CancellationToken.None)
+                    .ConfigureAwait(false))!;
+            }
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var adopted = await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                    .ExecuteAsync(retryLease, CancellationToken.None).ConfigureAwait(false);
+                adopted.ReasonCode.Should().Be(CentralTransientRuntimeReasonCodes.OutputAdopted);
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var job = await db.CentralDerivativeJobs.AsNoTracking().Include(item => item.Attempts)
+                    .SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
+                job.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+                job.StateReasonCode.Should().Be(CentralTransientRuntimeReasonCodes.OutputAdopted);
+                job.Attempts.OrderBy(item => item.AttemptNumber).Select(item => item.Outcome)
+                    .Should().Equal(CentralDerivativeAttemptOutcome.Completed, CentralDerivativeAttemptOutcome.Completed);
+                (await db.CentralTransientEventVersions.CountAsync(version => version.Event!.AgentId == scenario)
+                    .ConfigureAwait(false)).Should().Be(1);
+            }
+
+            var expiredAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            var expiredToken = Guid.NewGuid();
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                await db.CentralDerivativeJobs.Where(item => item.Id == jobId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.Status, CentralDerivativeJobStatus.Leased)
+                        .SetProperty(item => item.AttemptCount, 2)
+                        .SetProperty(item => item.MaxAttempts, 2)
+                        .SetProperty(item => item.CompletedAtUtc, (DateTimeOffset?)null)
+                        .SetProperty(item => item.LeaseOwner, "expired-committed-worker")
+                        .SetProperty(item => item.LeaseToken, expiredToken)
+                        .SetProperty(item => item.LeaseAcquiredAtUtc, expiredAt.AddMinutes(-1))
+                        .SetProperty(item => item.LeaseExpiresAtUtc, expiredAt))
+                    .ConfigureAwait(false);
+                await db.CentralDerivativeJobAttempts.Where(item => item.CentralDerivativeJobId == jobId &&
+                        item.AttemptNumber == 2)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.Outcome, CentralDerivativeAttemptOutcome.Leased)
+                        .SetProperty(item => item.EndedAtUtc, (DateTimeOffset?)null)
+                        .SetProperty(item => item.ReasonCode, (string?)null)
+                        .SetProperty(item => item.LeaseExpiresAtUtc, expiredAt))
+                    .ConfigureAwait(false);
+            }
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var service = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+                (await service.ClaimNextAsync("max-attempt-adopter", TimeSpan.FromMinutes(1), CancellationToken.None)
+                    .ConfigureAwait(false)).Should().BeNull();
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var adopted = await db.CentralDerivativeJobs.AsNoTracking().Include(item => item.Attempts)
+                    .SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
+                adopted.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+                adopted.StateReasonCode.Should().Be(CentralTransientRuntimeReasonCodes.OutputAdopted);
+                adopted.Attempts.Single(item => item.AttemptNumber == 2).Outcome
+                    .Should().Be(CentralDerivativeAttemptOutcome.Completed);
+            }
+
+            await using (var corruptScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = corruptScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var source = await db.CentralArtifacts.AsNoTracking()
+                    .SingleAsync(item => item.Id == sources[100]).ConfigureAwait(false);
+                var objectName = source.StorageReference[$"minio://{Bucket}/".Length..];
+                await using var corrupt = new MemoryStream(CreatePayload(101), writable: false);
+                await corruptScope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(new PutObjectArgs()
+                    .WithBucket(Bucket)
+                    .WithObject(objectName)
+                    .WithStreamData(corrupt)
+                    .WithObjectSize(corrupt.Length)
+                    .WithContentType(source.MediaType), CancellationToken.None).ConfigureAwait(false);
+            }
+
+            async Task InvalidateFromRetrievalAsync()
+            {
+                await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var source = await db.CentralArtifacts.AsNoTracking()
+                    .SingleAsync(item => item.Id == sources[100]).ConfigureAwait(false);
+                await scope.ServiceProvider.GetRequiredService<ICentralArtifactRetrievalService>()
+                    .MarkUnavailableAsync(
+                        source, "object.checksum-mismatch", quarantine: true, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            await Task.WhenAll(InvalidateFromRetrievalAsync(), InvalidateFromRetrievalAsync()).ConfigureAwait(false);
+
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                db.ChangeTracker.Clear();
+                var versions = await db.CentralTransientEventVersions.AsNoTracking()
+                    .Where(item => item.Event!.AgentId == scenario)
+                    .OrderBy(item => item.Version)
+                    .ToListAsync().ConfigureAwait(false);
+                versions.Select(item => item.Version).Should().Equal(1, 2);
+                versions[^1].State.Should().Be(TransientEventState.NeedsReview);
+                (await db.CentralTransientValidationOutcomeVersions.AsNoTracking()
+                    .Where(item => item.CentralDerivativeJobId == jobId)
+                    .OrderBy(item => item.Version)
+                    .Select(item => item.ReasonCode)
+                    .ToListAsync().ConfigureAwait(false)).Should().Equal(
+                        CentralTransientRuntimeReasonCodes.Persisted,
+                        "object.checksum-mismatch");
+                (await db.CentralArtifacts.AsNoTracking().Where(item => item.Id == sources[100])
+                    .Select(item => item.ObjectState).SingleAsync().ConfigureAwait(false))
+                    .Should().Be(CentralArtifactObjectState.Quarantined);
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task AdjacentMeasuredCandidates_AssociateAndPreservePreviousEventVersion(bool reverseExecution)
+    {
+        var scenario = $"transient-boundary-{Guid.NewGuid():N}";
+        var devicePublicId = Guid.NewGuid();
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            StarMaximumMagnitude = -30
+        };
+        var sources = new Dictionary<long, Guid>();
+        foreach (var sequence in new long[] { 100, 103, 98, 102, 99, 101 })
+        {
+            var payload = sequence is 100 or 101
+                ? CreatePayload([100, 1_000, 1_000, 100])
+                : CreatePayload(100);
+            var sourceId = await SeedAndScheduleSourceAsync(
+                scenario, devicePublicId, sequence, capturedBase, payload, "boundary-compatible")
+                .ConfigureAwait(false);
+            sources.Add(sequence, sourceId);
+            await ScheduleTransientAsync(sourceId, options).ConfigureAwait(false);
+        }
+
+        Guid firstJobId;
+        Guid secondJobId;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            firstJobId = await db.CentralDerivativeJobs.Where(item =>
+                    item.SourceCentralArtifactId == sources[100]
+                    && item.RecipeName == CentralTransientRuntime.RecipeName)
+                .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
+            secondJobId = await db.CentralDerivativeJobs.Where(item =>
+                    item.SourceCentralArtifactId == sources[101]
+                    && item.RecipeName == CentralTransientRuntime.RecipeName)
+                .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
+            var resolver = scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>();
+            await resolver.ResolveAsync(firstJobId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+            await resolver.ResolveAsync(secondJobId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        }
+        var initialJobId = reverseExecution ? secondJobId : firstJobId;
+        var followingJobId = reverseExecution ? firstJobId : secondJobId;
+        await DisableOtherActiveJobsAsync(initialJobId).ConfigureAwait(false);
+        await ExecuteClaimedTransientAsync(initialJobId, "boundary-first").ConfigureAwait(false);
+
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await db.CentralDerivativeJobs.Where(item => item.Id == followingJobId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Status, CentralDerivativeJobStatus.Pending)
+                    .SetProperty(item => item.AvailableAtUtc, DateTimeOffset.UtcNow)
+                    .SetProperty(item => item.StateReasonCode, (string?)null)
+                    .SetProperty(item => item.LastError, (string?)null))
+                .ConfigureAwait(false);
+        }
+        await ExecuteClaimedTransientAsync(followingJobId, "boundary-second").ConfigureAwait(false);
+
+        await using var verifyScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var verify = verifyScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var transientEvent = await verify.CentralTransientEvents.AsNoTracking()
+            .Include(item => item.Versions)
+            .SingleAsync(item => item.AgentId == scenario).ConfigureAwait(false);
+        transientEvent.Versions.OrderBy(item => item.Version).Select(item => item.Version).Should().Equal(1, 2);
+        var canonical = TransientContractJson.ParseEvent(System.Text.Encoding.UTF8.GetBytes(
+            transientEvent.Versions.Single(item => item.Version == 2).CanonicalEventJson));
+        canonical.Validation.IsValid.Should().BeTrue();
+        canonical.Value!.Observations.Should().HaveCount(2);
+        canonical.Value.Assessments.Should().HaveCount(2);
+        canonical.Value.PreviousEventVersionId.Should().Be(
+            transientEvent.Versions.Single(item => item.Version == 1).EventVersionId);
+        var followingReceipt = await verify.CentralTransientExtractionReceipts.AsNoTracking()
+            .SingleAsync(item => item.CentralDerivativeJobId == followingJobId).ConfigureAwait(false);
+        var followingExtraction = TransientCandidateExtractionJson.Parse(
+            System.Text.Encoding.UTF8.GetBytes(followingReceipt.CanonicalReceiptJson));
+        var initialPosition = reverseExecution
+            ? TransientTemporalPosition.NPlus1
+            : TransientTemporalPosition.NMinus1;
+        followingExtraction.Background.Sources.Single(item => item.Position == initialPosition).Disposition
+            .Should().Be(TransientTemporalSourceDisposition.ExcludedKnownEvent);
+        followingExtraction.CenteredContextConverged.Should().BeFalse();
+        canonical.Value.State.Should().Be(TransientEventState.Pending);
+        var eventIds = await verify.CentralTransientValidationIdentitySlots.AsNoTracking()
+            .Where(item => item.CentralDerivativeJobId == firstJobId || item.CentralDerivativeJobId == secondJobId)
+            .Where(item => item.State == CentralTransientValidationIdentitySlotState.Committed)
+            .Select(item => item.PersistedEventId).ToListAsync().ConfigureAwait(false);
+        eventIds.Should().HaveCount(2).And.OnlyContain(item => item == transientEvent.EventId);
+    }
+
+    [TestMethod]
+    public async Task ProvisionalContextDependencies_EventuallyAppendCenteredEventVersion()
+    {
+        var scenario = $"transient-convergence-{Guid.NewGuid():N}";
+        var devicePublicId = Guid.NewGuid();
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            StarMaximumMagnitude = -30
+        };
+        var sources = new Dictionary<long, Guid>();
+        foreach (var sequence in new long[] { 100, 104, 96, 102, 98, 103, 97, 101, 99 })
+        {
+            var payload = sequence == 100
+                ? CreatePayload([100, 1_000, 1_000, 100])
+                : CreatePayload(100);
+            var sourceId = await SeedAndScheduleSourceAsync(
+                scenario, devicePublicId, sequence, capturedBase, payload, "convergence-compatible")
+                .ConfigureAwait(false);
+            sources.Add(sequence, sourceId);
+            await ScheduleTransientAsync(sourceId, options).ConfigureAwait(false);
+        }
+
+        Guid provisionalJobId;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            provisionalJobId = await db.CentralDerivativeJobs.Where(item =>
+                    item.SourceCentralArtifactId == sources[100] &&
+                    item.RecipeName == CentralTransientRuntime.RecipeName)
+                .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
+            await scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
+                .ResolveAsync(provisionalJobId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        }
+        await DisableOtherActiveJobsAsync(provisionalJobId).ConfigureAwait(false);
+        await ExecuteClaimedTransientAsync(provisionalJobId, "convergence-provisional").ConfigureAwait(false);
+
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var dependencies = await db.CentralTransientContextDependencies.AsNoTracking()
+                .Where(item => item.CentralDerivativeJobId == provisionalJobId)
+                .OrderBy(item => item.Ordinal)
+                .ToListAsync().ConfigureAwait(false);
+            dependencies.Should().HaveCount(4);
+            dependencies.Should().OnlyContain(item => item.RequiredCentralDerivativeJobId.HasValue);
+        }
+        Guid[] dependencyJobIds;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            dependencyJobIds = await db.CentralTransientContextDependencies.AsNoTracking()
+                .Where(item => item.CentralDerivativeJobId == provisionalJobId)
+                .OrderBy(item => item.Ordinal)
+                .Select(item => item.RequiredCentralDerivativeJobId!.Value)
+                .ToArrayAsync().ConfigureAwait(false);
+        }
+        foreach (var dependencyJobId in dependencyJobIds)
+        {
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var hasFrozenInputs = await db.CentralDerivativeJobs.AsNoTracking()
+                    .Where(item => item.Id == dependencyJobId)
+                    .Select(item => item.InputSetIdentitySha256 != null)
+                    .SingleAsync().ConfigureAwait(false);
+                await db.CentralDerivativeJobs.Where(item => item.Id == dependencyJobId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.Status, hasFrozenInputs
+                            ? CentralDerivativeJobStatus.Pending
+                            : CentralDerivativeJobStatus.Waiting)
+                        .SetProperty(item => item.AvailableAtUtc,
+                            hasFrozenInputs ? DateTimeOffset.UtcNow : (DateTimeOffset?)null)
+                        .SetProperty(item => item.CompletedAtUtc, (DateTimeOffset?)null)
+                        .SetProperty(item => item.StateReasonCode, hasFrozenInputs
+                            ? null
+                            : CentralDerivativeWindowReasonCodes.WaitingRequiredInput)
+                        .SetProperty(item => item.LastError, (string?)null))
+                    .ConfigureAwait(false);
+                if (!hasFrozenInputs)
+                {
+                    await scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
+                        .ResolveAsync(dependencyJobId, DateTimeOffset.UtcNow, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+            }
+            await DisableOtherActiveJobsAsync(dependencyJobId).ConfigureAwait(false);
+            _ = await ExecuteClaimedTransientAsync(
+                dependencyJobId, $"convergence-context-{dependencyJobId:N}", expectedStatus: null)
+                .ConfigureAwait(false);
+        }
+
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            (await db.CentralTransientValidationJobs.AsNoTracking().CountAsync(item =>
+                dependencyJobIds.Contains(item.CentralDerivativeJobId) &&
+                item.CommittedAtUtc != null &&
+                item.ExtractionReceipt != null).ConfigureAwait(false)).Should().Be(4);
+            var scheduler = new CentralDerivativeJobScheduler(
+                db,
+                new CentralDerivativeRecipeCatalog(options),
+                scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>());
+            var retrospective = new CentralTransientRetrospectiveScheduler(
+                db,
+                scheduler,
+                new CentralDerivativeRecipeCatalog(options),
+                Options.Create(options),
+                scope.ServiceProvider.GetRequiredService<CentralDerivativeWorkerTelemetry>(),
+                scope.ServiceProvider.GetRequiredService<ILogger<CentralTransientRetrospectiveScheduler>>());
+            await retrospective.ScheduleBatchAsync(DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        Guid successorJobId;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            successorJobId = await db.CentralTransientValidationJobs.AsNoTracking()
+                .Where(item => item.ProvisionalCentralDerivativeJobId == provisionalJobId)
+                .Select(item => item.CentralDerivativeJobId)
+                .SingleAsync().ConfigureAwait(false);
+        }
+        await DisableOtherActiveJobsAsync(successorJobId).ConfigureAwait(false);
+        await ExecuteClaimedTransientAsync(successorJobId, "convergence-centered").ConfigureAwait(false);
+
+        await using var verifyScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var verify = verifyScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var eventRecord = await verify.CentralTransientEvents.AsNoTracking()
+            .Include(item => item.Versions)
+            .SingleAsync(item => item.AgentId == scenario).ConfigureAwait(false);
+        eventRecord.Versions.OrderBy(item => item.Version).Select(item => item.Version).Should().Equal(1, 2);
+        var receipt = await verify.CentralTransientExtractionReceipts.AsNoTracking()
+            .SingleAsync(item => item.CentralDerivativeJobId == successorJobId).ConfigureAwait(false);
+        TransientCandidateExtractionJson.Parse(System.Text.Encoding.UTF8.GetBytes(receipt.CanonicalReceiptJson))
+            .CenteredContextConverged.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task TerminalContextOutcomesWithoutExtraction_DoNotScheduleConvergence()
+    {
+        var scenario = $"transient-unsettled-context-{Guid.NewGuid():N}";
+        var devicePublicId = Guid.NewGuid();
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            StarMaximumMagnitude = -30
+        };
+        var sources = new Dictionary<long, Guid>();
+        foreach (var sequence in new long[] { 100, 102, 98, 101, 99 })
+        {
+            var sourceId = await SeedAndScheduleSourceAsync(
+                scenario,
+                devicePublicId,
+                sequence,
+                capturedBase,
+                sequence == 100 ? CreatePayload([100, 1_000, 1_000, 100]) : CreatePayload(100),
+                "unsettled-compatible").ConfigureAwait(false);
+            sources.Add(sequence, sourceId);
+            await ScheduleTransientAsync(sourceId, options).ConfigureAwait(false);
+        }
+
+        Guid provisionalJobId;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            provisionalJobId = await db.CentralDerivativeJobs.Where(item =>
+                    item.SourceCentralArtifactId == sources[100] &&
+                    item.RecipeName == CentralTransientRuntime.RecipeName)
+                .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
+            await scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
+                .ResolveAsync(provisionalJobId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        }
+        await DisableOtherActiveJobsAsync(provisionalJobId).ConfigureAwait(false);
+        _ = await ExecuteClaimedTransientAsync(provisionalJobId, "unsettled-provisional").ConfigureAwait(false);
+
+        await using var assertionScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var dependencyJobIds = await assertionDb.CentralTransientContextDependencies.AsNoTracking()
+            .Where(item => item.CentralDerivativeJobId == provisionalJobId)
+            .Select(item => item.RequiredCentralDerivativeJobId!.Value)
+            .ToArrayAsync().ConfigureAwait(false);
+        foreach (var dependencyJobId in dependencyJobIds)
+        {
+            await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                assertionDb,
+                dependencyJobId,
+                "transient-validation.context-terminal-without-extraction",
+                DateTimeOffset.UtcNow,
+                CancellationToken.None).ConfigureAwait(false);
+            assertionDb.ChangeTracker.Clear();
+        }
+        var scheduler = new CentralDerivativeJobScheduler(
+            assertionDb,
+            new CentralDerivativeRecipeCatalog(options),
+            assertionScope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>());
+
+        (await scheduler.EnsureTransientContextConvergenceAsync(
+            provisionalJobId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false)).Should().BeNull();
+        (await assertionDb.CentralTransientValidationJobs.AsNoTracking().AnyAsync(item =>
+            item.ProvisionalCentralDerivativeJobId == provisionalJobId).ConfigureAwait(false)).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task CentralTransientWindowTimeout_FinalizesOpaqueSlotsWithStableReason()
+    {
+        var scenario = $"transient-timeout-{Guid.NewGuid():N}";
+        var devicePublicId = Guid.NewGuid();
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            WindowTimeout = TimeSpan.FromSeconds(5),
+            StarMaximumMagnitude = -30
+        };
+        var centerId = await SeedAndScheduleSourceAsync(
+            scenario, devicePublicId, 500, capturedBase, CreatePayload(100), "timeout-compatible")
+            .ConfigureAwait(false);
+        await ScheduleTransientAsync(centerId, options).ConfigureAwait(false);
+        var neighborId = await SeedAndScheduleSourceAsync(
+            scenario, devicePublicId, 498, capturedBase, CreatePayload(100), "timeout-compatible")
+            .ConfigureAwait(false);
+        await ScheduleTransientAsync(neighborId, options).ConfigureAwait(false);
+
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var waiting = await db.CentralDerivativeJobs.AsNoTracking().SingleAsync(item =>
+            item.SourceCentralArtifactId == centerId && item.RecipeName == CentralTransientRuntime.RecipeName)
+            .ConfigureAwait(false);
+        await scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
+            .ResolveAsync(waiting.Id, waiting.ResolutionDeadlineUtc!.Value.AddTicks(1), CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var terminal = await db.CentralDerivativeJobs.AsNoTracking().SingleAsync(item => item.Id == waiting.Id)
+            .ConfigureAwait(false);
+        terminal.Status.Should().Be(CentralDerivativeJobStatus.Skipped);
+        terminal.StateReasonCode.Should().Be(CentralDerivativeWindowReasonCodes.RequiredInputTimeout);
+        var outcome = await db.CentralTransientValidationJobs.AsNoTracking()
+            .SingleAsync(item => item.CentralDerivativeJobId == waiting.Id).ConfigureAwait(false);
+        outcome.OutcomeState.Should().Be(TransientEventState.NeedsReview);
+        outcome.OutcomeReasonCode.Should().Be(CentralDerivativeWindowReasonCodes.RequiredInputTimeout);
+        outcome.OutcomeEvidenceIdentitySha256.Should().HaveLength(64);
+        outcome.OutcomeRecordedAtUtc.Should().NotBeNull();
+        (await db.CentralTransientValidationIdentitySlots.AsNoTracking()
+            .CountAsync(item => item.CentralDerivativeJobId == waiting.Id
+                && item.State == CentralTransientValidationIdentitySlotState.Unused).ConfigureAwait(false)).Should().Be(32);
+    }
+
+    [TestMethod]
+    public async Task MissingImmutableMaskEvidence_CompletesAsPersistedNeedsReview()
+    {
+        var scenario = $"transient-mask-missing-{Guid.NewGuid():N}";
+        var devicePublicId = Guid.NewGuid();
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            StarMaximumMagnitude = -30
+        };
+        var sources = new Dictionary<long, Guid>();
+        foreach (var sequence in new long[] { 898, 899, 900, 901, 902 })
+        {
+            var sourceId = await SeedAndScheduleSourceAsync(
+                scenario, devicePublicId, sequence, capturedBase, CreatePayload(100), "mask-compatible")
+                .ConfigureAwait(false);
+            sources.Add(sequence, sourceId);
+            await ScheduleTransientAsync(sourceId, options).ConfigureAwait(false);
+        }
+
+        Guid jobId;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            jobId = await db.CentralDerivativeJobs.Where(item => item.SourceCentralArtifactId == sources[900] &&
+                    item.RecipeName == CentralTransientRuntime.RecipeName)
+                .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
+            await scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
+                .ResolveAsync(jobId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+            var frameIds = await db.CentralArtifacts.Where(item => sources.Values.Contains(item.Id))
+                .Select(item => item.CentralFrameId).ToArrayAsync().ConfigureAwait(false);
+            await db.CentralCaptureProfiles.Where(item => frameIds.Contains(item.CentralFrameId) &&
+                    item.Kind == CentralProfileKind.Mask)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    item => item.Sha256, new string('F', 64))).ConfigureAwait(false);
+        }
+        await DisableOtherActiveJobsAsync(jobId).ConfigureAwait(false);
+
+        CentralDerivativeJobLease lease;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            lease = (await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                .ClaimNextAsync("mask-needs-review", TimeSpan.FromMinutes(2), CancellationToken.None)
+                .ConfigureAwait(false))!;
+        }
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var result = await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+            result.Status.Should().Be(ProcessingOutcomeStatus.Skipped);
+            result.ReasonCode.Should().Be(CentralTransientRuntimeReasonCodes.MaskEvidenceUnavailable);
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var outcome = await db.CentralTransientValidationJobs.AsNoTracking()
+                .SingleAsync(item => item.CentralDerivativeJobId == jobId).ConfigureAwait(false);
+            outcome.OutcomeState.Should().Be(TransientEventState.NeedsReview);
+            outcome.OutcomeReasonCode.Should().Be(CentralTransientRuntimeReasonCodes.MaskEvidenceUnavailable);
+            (await db.CentralTransientExtractionReceipts.AnyAsync(item =>
+                item.CentralDerivativeJobId == jobId).ConfigureAwait(false)).Should().BeFalse();
+        }
+    }
+
+    [TestMethod]
+    public async Task RetrospectiveScheduler_UsesGenericCatalogAndAllocatesDurableSlots()
+    {
+        var scenario = $"transient-retrospective-{Guid.NewGuid():N}";
+        var sourceId = await SeedAndScheduleSourceAsync(
+            scenario,
+            Guid.NewGuid(),
+            700,
+            DateTimeOffset.UtcNow.AddMinutes(-10),
+            CreatePayload(100),
+            "retrospective-compatible",
+            DateTimeOffset.UnixEpoch.AddDays(1)).ConfigureAwait(false);
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            StarMaximumMagnitude = -30
+        };
+
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        db.CentralDerivativeJobs.Add(new CentralDerivativeJob
+        {
+            SourceCentralArtifactId = sourceId,
+            TargetRole = FrameArtifactRole.Metadata,
+            TargetRecipeVersion = CentralTransientRuntime.RecipeVersion,
+            TargetVariant = CentralTransientRuntime.Variant,
+            RecipeName = CentralTransientRuntime.RecipeName,
+            RecipeOptionsJson = "{}",
+            InputSelectorJson = "{}",
+            RequestedRecipeIdentitySha256 = TransientCandidateExtractionFactory.ComputeRecipeIdentitySha256(
+                options.Extraction.ToContract()),
+            ExpectedRecipeIdentitySha256 = TransientCandidateExtractionFactory.ComputeRecipeIdentitySha256(
+                options.Extraction.ToContract()),
+            RequestIdentitySha256 = HashText($"{scenario}-obsolete-transient"),
+            Status = CentralDerivativeJobStatus.Skipped,
+            AttemptCount = 0,
+            MaxAttempts = 1,
+            CreatedAtUtc = DateTimeOffset.UnixEpoch,
+            UpdatedAtUtc = DateTimeOffset.UnixEpoch,
+            CompletedAtUtc = DateTimeOffset.UnixEpoch,
+            StateReasonCode = "obsolete"
+        });
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        var scheduler = new CentralDerivativeJobScheduler(
+            db,
+            new CentralDerivativeRecipeCatalog(options),
+            scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>());
+        var recipeCatalog = new CentralDerivativeRecipeCatalog(options);
+        var retrospective = new CentralTransientRetrospectiveScheduler(
+            db,
+            scheduler,
+            recipeCatalog,
+            Options.Create(options),
+            scope.ServiceProvider.GetRequiredService<CentralDerivativeWorkerTelemetry>(),
+            scope.ServiceProvider.GetRequiredService<ILogger<CentralTransientRetrospectiveScheduler>>());
+
+        await retrospective.ScheduleBatchAsync(DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+
+        var currentExecutionIdentity = recipeCatalog.GetRequiredRecipes(FrameArtifactRole.Raw)
+            .Single(item => item.RecipeName == CentralTransientRuntime.RecipeName)
+            .Transient!.ExecutionOptionsIdentitySha256;
+        var job = await db.CentralDerivativeJobs.AsNoTracking().SingleAsync(item =>
+            item.SourceCentralArtifactId == sourceId && item.RecipeName == CentralTransientRuntime.RecipeName &&
+            item.TargetRecipeVersion == CentralTransientRuntime.RecipeVersion &&
+            db.CentralTransientValidationJobs.Any(validation => validation.CentralDerivativeJobId == item.Id &&
+                validation.ExecutionOptionsIdentitySha256 == currentExecutionIdentity))
+            .ConfigureAwait(false);
+        job.Status.Should().Be(CentralDerivativeJobStatus.Waiting);
+        (await db.CentralTransientValidationIdentitySlots.AsNoTracking()
+            .CountAsync(item => item.CentralDerivativeJobId == job.Id).ConfigureAwait(false)).Should().Be(32);
+        (await db.CentralDerivativeJobs.CountAsync(item => item.SourceCentralArtifactId == sourceId &&
+            item.RecipeName == CentralTransientRuntime.RecipeName).ConfigureAwait(false)).Should().Be(2);
+    }
+
+    [TestMethod]
+    public async Task CorruptTransientInput_QuarantinesJobAndFinalizesOpaqueSlots()
+    {
+        var scenario = $"transient-corrupt-{Guid.NewGuid():N}";
+        var devicePublicId = Guid.NewGuid();
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            StarMaximumMagnitude = -30
+        };
+        var sources = new Dictionary<long, Guid>();
+        foreach (var sequence in new long[] { 100, 102, 98, 101, 99 })
+        {
+            var sourceId = await SeedAndScheduleSourceAsync(
+                scenario, devicePublicId, sequence, capturedBase, CreatePayload(100), "corrupt-compatible")
+                .ConfigureAwait(false);
+            sources.Add(sequence, sourceId);
+            await ScheduleTransientAsync(sourceId, options).ConfigureAwait(false);
+        }
+
+        Guid jobId;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            jobId = await db.CentralDerivativeJobs.Where(item =>
+                    item.SourceCentralArtifactId == sources[100]
+                    && item.RecipeName == CentralTransientRuntime.RecipeName)
+                .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
+            await scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
+                .ResolveAsync(jobId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        }
+        await DisableOtherActiveJobsAsync(jobId).ConfigureAwait(false);
+        CentralDerivativeJobLease lease;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            lease = (await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                .ClaimNextAsync("transient-corrupt-worker", TimeSpan.FromMinutes(2), CancellationToken.None)
+                .ConfigureAwait(false))!;
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var storageReference = await db.CentralArtifacts.Where(item => item.Id == sources[99])
+                .Select(item => item.StorageReference).SingleAsync().ConfigureAwait(false);
+            var objectName = storageReference[$"minio://{Bucket}/".Length..];
+            await using var corrupt = new MemoryStream(CreatePayload(101), writable: false);
+            await scope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(new PutObjectArgs()
+                .WithBucket(Bucket)
+                .WithObject(objectName)
+                .WithStreamData(corrupt)
+                .WithObjectSize(corrupt.Length)
+                .WithContentType("application/x-hvo-linear-frame"), CancellationToken.None).ConfigureAwait(false);
+        }
+
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var execute = () => scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                .ExecuteAsync(lease, CancellationToken.None);
+            await execute.Should().ThrowAsync<CentralArtifactIntegrityException>().ConfigureAwait(false);
+        }
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var job = await db.CentralDerivativeJobs.AsNoTracking().SingleAsync(item => item.Id == jobId)
+                .ConfigureAwait(false);
+            job.Status.Should().Be(CentralDerivativeJobStatus.Quarantined);
+            (await db.CentralArtifacts.AsNoTracking().Where(item => item.Id == sources[99])
+                .Select(item => item.ObjectState).SingleAsync().ConfigureAwait(false))
+                .Should().Be(CentralArtifactObjectState.Quarantined);
+            (await db.CentralTransientValidationIdentitySlots.AsNoTracking()
+                .CountAsync(item => item.CentralDerivativeJobId == jobId
+                    && item.State == CentralTransientValidationIdentitySlotState.Unused).ConfigureAwait(false)).Should().Be(32);
+        }
+    }
 
     [TestMethod]
     public async Task OutOfOrderWindow_ResolvesExecutesAndPersistsExactLineage()
@@ -573,14 +1371,81 @@ public sealed class CentralDerivativeWindowIntegrationTests
         }
 
         var db = uploadScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var registration = await db.DeviceRegistrations.Include(item => item.Observatory)
+            .SingleOrDefaultAsync(item => item.DevicePublicId == devicePublicId).ConfigureAwait(false);
+        if (registration is null)
+        {
+            var observatory = new Observatory
+            {
+                OwnerUserId = scenario,
+                Name = $"{scenario}-observatory",
+                LatitudeDegrees = 35.347,
+                LongitudeDegrees = -113.878,
+                ElevationMeters = 0,
+                TimeZoneId = "UTC",
+                CreatedAtUtc = capturedAtUtc
+            };
+            registration = new DeviceRegistration
+            {
+                DeviceId = scenario,
+                DevicePublicId = devicePublicId,
+                ObservatoryId = observatory.Id,
+                Observatory = observatory,
+                FriendlyName = scenario,
+                ObservatoryName = observatory.Name,
+                ObservatoryLatitudeDegrees = observatory.LatitudeDegrees,
+                ObservatoryLongitudeDegrees = observatory.LongitudeDegrees,
+                ObservatoryElevationMeters = observatory.ElevationMeters,
+                ObservatoryTimeZoneId = observatory.TimeZoneId,
+                OwnerUserId = scenario,
+                OwnerDisplayName = scenario,
+                VerificationCodeHash = HashText($"{scenario}-verification"),
+                IssuedAtUtc = capturedAtUtc,
+                Status = DeviceRegistrationStatus.Active
+            };
+            db.DeviceRegistrations.Add(registration);
+        }
+        var rig = new CameraRigConfig(
+            new SensorProfile("window-sensor", 2, 2, 5, SensorColorMode.Mono, CameraPixelFormat.Mono16,
+                SensorRecipeVersion: "window-sensor-v1"),
+            new OpticsProfile("Perspective", 0, 120, 0, LensKind.Rectilinear,
+                CalibrationVersion: "window-calibration-v1"),
+            new RigOrientation(90, 0, 0),
+            new PipelineExposureProfile(
+                TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(900), TimeSpan.FromMilliseconds(900), 100, 100),
+            ProfileVersion: "window-rig-v1");
+        var rigSha = CameraRigProfileIdentity.ComputeSha256(rig);
+        var rigProfile = await db.DeviceRigProfiles.SingleOrDefaultAsync(item =>
+            item.DevicePublicId == devicePublicId && item.ProfileSha256 == rigSha).ConfigureAwait(false);
+        if (rigProfile is null)
+        {
+            rigProfile = new DeviceRigProfile
+            {
+                RegistrationId = registration.Id,
+                Registration = registration,
+                DevicePublicId = devicePublicId,
+                ObservatoryId = registration.ObservatoryId,
+                Version = 1,
+                ConfigHash = rigSha,
+                ConfigJson = System.Text.Json.JsonSerializer.Serialize(rig),
+                ProfileName = "rig",
+                ProfileVersion = rig.ProfileVersion,
+                ProfileSha256 = rigSha,
+                CreatedAtUtc = capturedAtUtc,
+                EffectiveFromUtc = capturedAtUtc
+            };
+            db.DeviceRigProfiles.Add(rigProfile);
+        }
         var frame = new CentralFrame
         {
-            RegistrationId = Guid.NewGuid(),
+            RegistrationId = registration.Id,
             DevicePublicId = devicePublicId,
-            ObservatoryId = Guid.NewGuid(),
+            ObservatoryId = registration.ObservatoryId,
             AgentId = scenario,
             FrameId = Guid.NewGuid(),
             RigProfileVersion = 1,
+            DeviceRigProfileId = rigProfile.Id,
+            DeviceRigProfile = rigProfile,
             RigId = $"{scenario}-rig",
             CaptureSequence = sequence,
             CapturedAtUtc = capturedAtUtc,
@@ -606,14 +1471,33 @@ public sealed class CentralDerivativeWindowIntegrationTests
             EffectiveTemperatureC = -5
         };
         var profileSha = HashText(profileSeed);
+        var emptyMaskSha = CaptureContractJson.ComputeCanonicalJsonSha256(
+            System.Text.Json.JsonSerializer.SerializeToElement(new { mode = "none" }));
         foreach (var kind in Enum.GetValues<CentralProfileKind>())
         {
             frame.Profiles.Add(new CentralCaptureProfile
             {
                 Kind = kind,
-                Name = $"{scenario}-{kind}",
-                Version = "1",
-                Sha256 = profileSha
+                Name = kind switch
+                {
+                    CentralProfileKind.Rig => "rig",
+                    CentralProfileKind.Mask => "mask",
+                    _ => $"{scenario}-{kind}"
+                },
+                Version = kind switch
+                {
+                    CentralProfileKind.Rig => rig.ProfileVersion,
+                    CentralProfileKind.Mask => "none-v1",
+                    _ => "1"
+                },
+                Sha256 = kind switch
+                {
+                    CentralProfileKind.Rig => rigSha,
+                    CentralProfileKind.Mask => emptyMaskSha,
+                    _ => profileSha
+                },
+                DeviceRigProfileId = kind == CentralProfileKind.Rig ? rigProfile.Id : null,
+                DeviceRigProfile = kind == CentralProfileKind.Rig ? rigProfile : null
             });
         }
         var rawOptions = CaptureContractJson.SerializeToElement(new { });
@@ -675,6 +1559,41 @@ public sealed class CentralDerivativeWindowIntegrationTests
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
             .SingleAsync(artifact => artifact.Id == sourceId).ConfigureAwait(false);
 
+    private static async Task ScheduleTransientAsync(Guid sourceId, CentralTransientOptions options)
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var source = await LoadSchedulableArtifactAsync(db, sourceId).ConfigureAwait(false);
+        var scheduler = new CentralDerivativeJobScheduler(
+            db,
+            new CentralDerivativeRecipeCatalog(options),
+            scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>());
+        await scheduler.EnsureRequiredJobsAsync(source, DateTimeOffset.UtcNow, CancellationToken.None)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<CentralDerivativeExecutionResult> ExecuteClaimedTransientAsync(
+        Guid expectedJobId,
+        string workerId,
+        ProcessingOutcomeStatus? expectedStatus = ProcessingOutcomeStatus.Produced)
+    {
+        CentralDerivativeJobLease lease;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            lease = (await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                .ClaimNextAsync(workerId, TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false))!;
+            lease.JobId.Should().Be(expectedJobId);
+        }
+        await using var executionScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var result = await executionScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+            .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+        if (expectedStatus.HasValue)
+        {
+            result.Status.Should().Be(expectedStatus.Value);
+        }
+        return result;
+    }
+
     private static async Task NotifySourceAsync(Guid sourceId)
     {
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
@@ -705,6 +1624,17 @@ public sealed class CentralDerivativeWindowIntegrationTests
         for (var offset = 0; offset < payload.Length; offset += sizeof(ushort))
         {
             BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(offset, sizeof(ushort)), value);
+        }
+        return payload;
+    }
+
+    private static byte[] CreatePayload(IReadOnlyList<ushort> values)
+    {
+        var payload = new byte[values.Count * sizeof(ushort)];
+        for (var index = 0; index < values.Count; index++)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(
+                payload.AsSpan(index * sizeof(ushort), sizeof(ushort)), values[index]);
         }
         return payload;
     }

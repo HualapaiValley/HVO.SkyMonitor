@@ -80,11 +80,11 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (request.CentralDerivativeJobId == Guid.Empty || request.Events is null or { Count: 0 } ||
+        if (request.CentralDerivativeJobId == Guid.Empty || request.Events is null ||
             request.AssessmentReceipts is null)
         {
             throw Failure(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding,
-                "A validation job, event payloads, and assessment receipts are required.");
+                "A validation job, event payload list, and assessment receipt list are required.");
         }
 
         var extraction = ParseExtraction(request.ExtractionReceipt);
@@ -97,8 +97,10 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
                 "Review, notification, and derivative history belongs to the later review boundary.");
         }
 
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        await using var ownedTransaction = dbContext.Database.CurrentTransaction is null
+            ? await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false)
+            : null;
         if (await AcquireValidationJobLockAsync(request.CentralDerivativeJobId, cancellationToken).ConfigureAwait(false) != 1)
         {
             throw Failure(CentralTransientPersistenceReasonCodes.JobNotFound, "Transient validation job was not found.");
@@ -109,6 +111,7 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
             .SingleOrDefaultAsync(item => item.CentralDerivativeJobId == request.CentralDerivativeJobId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw Failure(CentralTransientPersistenceReasonCodes.JobNotFound, "Transient validation job was not found.");
+        ValidateExecutionOptions(validationJob, extraction.Value, assessmentReceipts);
         var job = await dbContext.CentralDerivativeJobs
             .Include(item => item.InputRequirements)
             .Include(item => item.Inputs)
@@ -119,12 +122,17 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
         {
             var existing = await AdoptExistingCommitAsync(
                 validationJob, extraction, events, assessmentReceipts, cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
             return existing;
         }
 
         var slots = validationJob.IdentitySlots.OrderBy(item => item.Ordinal).ToArray();
-        ValidateIdentityBindings(validationJob, slots, extraction.Value, events, assessmentReceipts);
+        await ValidateIdentityBindingsAsync(
+            validationJob, slots, extraction.Value, events, assessmentReceipts, cancellationToken)
+            .ConfigureAwait(false);
         var artifacts = await ResolveAndLockArtifactsAsync(
             validationJob.AgentId, job.Inputs, extraction.Value, events.Select(item => item.Value), cancellationToken)
             .ConfigureAwait(false);
@@ -135,6 +143,7 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
         var pendingVersionAssessments = new List<CentralTransientEventVersionAssessment>();
         var pendingAssessmentObservations = new List<CentralTransientAssessmentObservation>();
         var assessmentPayloadById = assessmentReceipts.ToDictionary(item => item.Value.Assessment.AssessmentId);
+        var persistedEventEvidence = new List<PersistedEventEvidence>(events.Length);
 
         foreach (var eventPayload in events)
         {
@@ -219,6 +228,24 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
             var versionRecord = CreateVersion(eventRecord.Id, transientEvent, eventPayload);
             dbContext.CentralTransientEventVersions.Add(versionRecord);
             versionRecords.Add(versionRecord);
+            persistedEventEvidence.Add(new PersistedEventEvidence(
+                transientEvent.EventId,
+                transientEvent.EventVersionId,
+                transientEvent.State,
+                eventPayload.Sha256));
+        }
+
+        if (events.Length == 0 && extraction.Value.CenteredContextConverged &&
+            validationJob.ProvisionalCentralDerivativeJobId.HasValue)
+        {
+            await AppendCenteredNoCandidateRejectionsAsync(
+                validationJob,
+                extraction.Value,
+                versionRecords,
+                pendingVersionObservations,
+                pendingVersionAssessments,
+                persistedEventEvidence,
+                cancellationToken).ConfigureAwait(false);
         }
 
         var extractionRecord = CreateExtractionReceipt(validationJob.CentralDerivativeJobId, extraction, artifacts);
@@ -237,27 +264,140 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
                 slot.State = CentralTransientValidationIdentitySlotState.Unused;
                 continue;
             }
-            var eventRecord = eventRecords[slot.EventId];
+            var effectiveEventId = slot.AdoptedEventId ?? slot.SubmittedEventId;
+            var eventRecord = eventRecords[effectiveEventId];
             var version = versionRecords.Single(item => item.CentralTransientEventId == eventRecord.Id);
             slot.State = CentralTransientValidationIdentitySlotState.Committed;
             slot.CentralTransientEventId = eventRecord.Id;
+            slot.PersistedEventId = effectiveEventId;
             slot.PersistedEventVersionId = version.EventVersionId;
             slot.PersistedObservationId = slot.ObservationId;
             slot.PersistedAssessmentId = slot.AssessmentId;
         }
-        validationJob.CommittedAtUtc = versionRecords.Max(item => item.VersionCreatedUtc);
+        validationJob.CommittedAtUtc = versionRecords.Count == 0
+            ? extraction.Value.OrderedSources.Max(item => item.Source.ObservationEndedUtc)
+            : versionRecords.Max(item => item.VersionCreatedUtc);
+        var outcomeState = ResolveOutcomeState(
+            events.Select(item => item.Value.State).ToArray(), extraction.Value.CenteredContextConverged);
+        var outcomeReason = events.Length == 0
+            ? TransientCandidateExtractionReasonCodes.NoCandidate
+            : CentralTransientRuntimeReasonCodes.Persisted;
+        var outcomeEvidence = CanonicalJson(new
+        {
+            schemaVersion = "central-transient-validation-outcome-v1",
+            state = outcomeState,
+            reasonCode = outcomeReason,
+            extractionIdentitySha256 = extraction.Value.ExtractionIdentitySha256,
+            extractionReceiptSha256 = extraction.Sha256,
+            events = persistedEventEvidence
+        });
+        validationJob.OutcomeState = outcomeState;
+        validationJob.OutcomeReasonCode = outcomeReason;
+        validationJob.OutcomeEvidenceJson = outcomeEvidence;
+        validationJob.OutcomeEvidenceIdentitySha256 = ProcessingIdentity.ComputePayloadSha256(
+            Encoding.UTF8.GetBytes(outcomeEvidence));
+        validationJob.OutcomeRecordedAtUtc = validationJob.CommittedAtUtc;
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        _ = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO [CentralTransientValidationOutcomeVersions]
+                ([Id], [CentralDerivativeJobId], [Version], [State], [ReasonCode], [EvidenceJson],
+                 [EvidenceIdentitySha256], [RecordedAtUtc])
+            VALUES ({Guid.NewGuid()}, {validationJob.CentralDerivativeJobId}, {1}, {outcomeState.ToString()},
+                    {outcomeReason}, {outcomeEvidence}, {validationJob.OutcomeEvidenceIdentitySha256},
+                    {validationJob.OutcomeRecordedAtUtc.Value})
+            """, cancellationToken).ConfigureAwait(false);
+        if (ownedTransaction is not null)
+        {
+            await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         var committedSlots = slots.Take(candidateCount).ToArray();
         return new CentralTransientPersistenceCommit(
             validationJob.CentralDerivativeJobId,
-            committedSlots.Select(slot =>
-            {
-                var eventRecordId = eventRecords[slot.EventId].Id;
-                return versionRecords.Single(item => item.CentralTransientEventId == eventRecordId).EventVersionId;
-            }).ToArray(),
+            candidateCount == 0
+                ? versionRecords.Select(item => item.EventVersionId).ToArray()
+                : committedSlots.Select(slot =>
+                {
+                    var eventRecordId = eventRecords[slot.AdoptedEventId ?? slot.SubmittedEventId].Id;
+                    return versionRecords.Single(item => item.CentralTransientEventId == eventRecordId).EventVersionId;
+                }).ToArray(),
             committedSlots.Select(item => item.AssessmentId).ToArray());
+    }
+
+    private async Task AppendCenteredNoCandidateRejectionsAsync(
+        CentralTransientValidationJob validationJob,
+        TransientCandidateExtractionDescriptorV1 extraction,
+        List<CentralTransientEventVersionRecord> versionRecords,
+        List<CentralTransientEventVersionObservation> pendingVersionObservations,
+        List<CentralTransientEventVersionAssessment> pendingVersionAssessments,
+        List<PersistedEventEvidence> persistedEventEvidence,
+        CancellationToken cancellationToken)
+    {
+        var eventRecordIds = await dbContext.CentralTransientValidationIdentitySlots.AsNoTracking()
+            .Where(item => item.CentralDerivativeJobId == validationJob.ProvisionalCentralDerivativeJobId &&
+                item.State == CentralTransientValidationIdentitySlotState.Committed &&
+                item.CentralTransientEventId != null)
+            .Select(item => item.CentralTransientEventId!.Value)
+            .Distinct()
+            .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var receiptCreatedUtc = extraction.OrderedSources.Max(item => item.Source.ObservationEndedUtc).AddTicks(1);
+        foreach (var eventRecordId in eventRecordIds)
+        {
+            var latest = await dbContext.CentralTransientEventVersions.AsNoTracking()
+                .Where(item => item.CentralTransientEventId == eventRecordId &&
+                    item.Event!.AgentId == validationJob.AgentId)
+                .OrderByDescending(item => item.Version)
+                .FirstAsync(cancellationToken).ConfigureAwait(false);
+            var parsed = TransientContractJson.ParseEvent(Encoding.UTF8.GetBytes(latest.CanonicalEventJson));
+            var prior = parsed.Value ?? throw Failure(
+                CentralTransientPersistenceReasonCodes.InvalidHistory,
+                $"Persisted transient event failed canonical parsing: {parsed.Validation.ReasonCode}.");
+            var next = prior with
+            {
+                EventVersionId = Guid.NewGuid(),
+                Version = prior.Version + 1,
+                PreviousEventVersionId = prior.EventVersionId,
+                PreviousVersionCreatedUtc = prior.VersionCreatedUtc,
+                State = TransientEventState.Rejected,
+                VersionCreatedUtc = receiptCreatedUtc > prior.VersionCreatedUtc
+                    ? receiptCreatedUtc
+                    : prior.VersionCreatedUtc.AddTicks(1)
+            };
+            var canonical = TransientContractJson.Serialize(next);
+            var payload = new ValidatedPayload<TransientEventV1>(
+                next,
+                Encoding.UTF8.GetString(canonical),
+                Convert.ToHexString(SHA256.HashData(canonical)),
+                canonical.Length);
+            var version = CreateVersion(eventRecordId, next, payload);
+            dbContext.CentralTransientEventVersions.Add(version);
+            versionRecords.Add(version);
+            foreach (var observation in next.Observations)
+            {
+                pendingVersionObservations.Add(new CentralTransientEventVersionObservation
+                {
+                    CentralTransientEventId = eventRecordId,
+                    EventVersionId = next.EventVersionId,
+                    Ordinal = observation.Ordinal,
+                    ObservationId = observation.ObservationId
+                });
+            }
+            for (var ordinal = 0; ordinal < next.Assessments.Count; ordinal++)
+            {
+                pendingVersionAssessments.Add(new CentralTransientEventVersionAssessment
+                {
+                    CentralTransientEventId = eventRecordId,
+                    EventVersionId = next.EventVersionId,
+                    Ordinal = ordinal,
+                    AssessmentId = next.Assessments[ordinal].AssessmentId
+                });
+            }
+            persistedEventEvidence.Add(new PersistedEventEvidence(
+                next.EventId,
+                next.EventVersionId,
+                next.State,
+                payload.Sha256));
+        }
     }
 
     private async Task<int> AcquireValidationJobLockAsync(Guid jobId, CancellationToken cancellationToken)
@@ -311,7 +451,8 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
                 requirement.ResolutionState != CentralDerivativeInputResolutionState.Resolved ||
                 requirement.Ordinal != input.Ordinal ||
                 !string.Equals(requirement.ExpectedAgentId, agentId, StringComparison.Ordinal) ||
-                requirement.ExpectedCentralArtifactId != input.CentralArtifactId ||
+                requirement.ExpectedCentralArtifactId is { } expectedArtifactId &&
+                    expectedArtifactId != input.CentralArtifactId ||
                 requirement.ExpectedCaptureSequence != input.CaptureSequence ||
                 !string.Equals(input.CompatibilitySha256,
                     ProcessingIdentity.ComputePayloadSha256(Encoding.UTF8.GetBytes(input.CompatibilityJson)),
@@ -320,6 +461,34 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
                 throw Failure(CentralTransientPersistenceReasonCodes.JobInputConflict,
                     "Transient ordered sources differ from the resolved durable job inputs.");
             }
+        }
+    }
+
+    private static void ValidateExecutionOptions(
+        CentralTransientValidationJob validationJob,
+        TransientCandidateExtractionDescriptorV1 extraction,
+        IReadOnlyList<ValidatedPayload<TransientAssessmentExecutionDescriptorV1>> assessments)
+    {
+        CentralTransientExecutionOptionsV1 execution;
+        try
+        {
+            execution = CentralTransientExecutionOptionsJson.Deserialize(validationJob.ExecutionOptionsJson
+                ?? throw new JsonException("Durable transient execution options are missing."));
+        }
+        catch (JsonException exception)
+        {
+            throw Failure(CentralTransientPersistenceReasonCodes.JobInputConflict, exception.Message);
+        }
+        var canonical = CentralTransientExecutionOptionsJson.Serialize(execution);
+        if (!string.Equals(execution.SchemaVersion, CentralTransientExecutionOptionsV1.CurrentSchemaVersion,
+                StringComparison.Ordinal) ||
+            !string.Equals(canonical.Json, validationJob.ExecutionOptionsJson, StringComparison.Ordinal) ||
+            !string.Equals(canonical.Sha256, validationJob.ExecutionOptionsIdentitySha256, StringComparison.Ordinal) ||
+            !CanonicalEqual(execution.Extraction, extraction.Options) ||
+            assessments.Any(item => !CanonicalEqual(execution.Assessment, item.Value.Options)))
+        {
+            throw Failure(CentralTransientPersistenceReasonCodes.JobInputConflict,
+                "Transient extraction, assessment, association, or mask policy differs from the durable job selection.");
         }
     }
 
@@ -350,7 +519,8 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
             assessmentIds.Distinct().Count() != assessmentIds.Length ||
             !candidateIds.ToHashSet().SetEquals(committedSlotIds.Select(item => item.CandidateId)) ||
             !candidateEventIds.ToHashSet().SetEquals(eventIds) ||
-            !candidateEventIds.ToHashSet().SetEquals(committedSlotIds.Select(item => item.EventId)) ||
+            !candidateEventIds.ToHashSet().SetEquals(committedSlotIds.Select(item =>
+                item.AdoptedEventId ?? item.SubmittedEventId)) ||
             !assessmentIds.ToHashSet().SetEquals(committedSlotIds.Select(item => item.AssessmentId)))
         {
             throw ReplayConflict();
@@ -375,9 +545,10 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
             }
             var candidate = extraction.Value.Candidates[ordinal];
             if (slot.State != CentralTransientValidationIdentitySlotState.Committed ||
-                slot.EventId != candidate.EventId || slot.CandidateId != candidate.CandidateId ||
+                (slot.AdoptedEventId ?? slot.SubmittedEventId) != candidate.EventId ||
+                slot.PersistedEventId != candidate.EventId || slot.CandidateId != candidate.CandidateId ||
                 slot.PersistedObservationId != slot.ObservationId || slot.PersistedAssessmentId != slot.AssessmentId ||
-                !eventById.TryGetValue(slot.EventId, out var eventPayload) ||
+                !eventById.TryGetValue(candidate.EventId, out var eventPayload) ||
                 eventPayload.Value.EventVersionId != slot.PersistedEventVersionId ||
                 !assessmentById.TryGetValue(slot.AssessmentId, out var assessmentPayload))
             {
@@ -410,12 +581,36 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
         => Failure(CentralTransientPersistenceReasonCodes.ReplayConflict,
             "Committed transient output conflicts with the replayed canonical receipt or persisted identities.");
 
-    private static void ValidateIdentityBindings(
+    private static TransientEventState ResolveOutcomeState(
+        TransientEventState[] states,
+        bool centeredContextConverged)
+    {
+        if (states.Length == 0)
+        {
+            return centeredContextConverged ? TransientEventState.Rejected : TransientEventState.Pending;
+        }
+        if (states.All(static state => state == TransientEventState.Rejected))
+        {
+            return TransientEventState.Rejected;
+        }
+        if (states.Any(static state => state == TransientEventState.NeedsReview))
+        {
+            return TransientEventState.NeedsReview;
+        }
+        if (states.Any(static state => state == TransientEventState.Pending))
+        {
+            return TransientEventState.Pending;
+        }
+        return TransientEventState.Validated;
+    }
+
+    private async Task ValidateIdentityBindingsAsync(
         CentralTransientValidationJob validationJob,
         CentralTransientValidationIdentitySlot[] slots,
         TransientCandidateExtractionDescriptorV1 extraction,
         IReadOnlyList<ValidatedPayload<TransientEventV1>> events,
-        IReadOnlyList<ValidatedPayload<TransientAssessmentExecutionDescriptorV1>> assessments)
+        IReadOnlyList<ValidatedPayload<TransientAssessmentExecutionDescriptorV1>> assessments,
+        CancellationToken cancellationToken)
     {
         if (slots.Length < extraction.Candidates.Count || slots.Any(item => item.State != CentralTransientValidationIdentitySlotState.Reserved) ||
             events.Count != extraction.Candidates.Count || assessments.Count != extraction.Candidates.Count ||
@@ -428,15 +623,24 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
 
         var eventById = events.ToDictionary(item => item.Value.EventId, item => item.Value);
         var assessmentById = assessments.ToDictionary(item => item.Value.Assessment.AssessmentId, item => item.Value);
+        var requestedObservationIds = assessments.SelectMany(item => item.Value.OrderedObservationIds).Distinct().ToArray();
+        var persistedExtractionIdentities = await dbContext.CentralTransientObservations.AsNoTracking()
+            .Where(item => requestedObservationIds.Contains(item.ObservationId))
+            .ToDictionaryAsync(
+                item => item.ObservationId,
+                item => item.ExtractionReceiptIdentitySha256,
+                cancellationToken).ConfigureAwait(false);
+        var currentObservationIds = slots.Take(extraction.Candidates.Count).Select(item => item.ObservationId).ToHashSet();
         for (var ordinal = 0; ordinal < extraction.Candidates.Count; ordinal++)
         {
             var slot = slots[ordinal];
             var candidate = extraction.Candidates[ordinal];
-            if (slot.EventId != candidate.EventId || slot.CandidateId != candidate.CandidateId ||
+            var effectiveEventId = slot.AdoptedEventId ?? slot.SubmittedEventId;
+            if (effectiveEventId != candidate.EventId || slot.CandidateId != candidate.CandidateId ||
                 !string.Equals(candidate.AgentId, validationJob.AgentId, StringComparison.Ordinal) ||
-                !eventById.TryGetValue(slot.EventId, out var transientEvent) ||
+                !eventById.TryGetValue(effectiveEventId, out var transientEvent) ||
                 !string.Equals(transientEvent.AgentId, validationJob.AgentId, StringComparison.Ordinal) ||
-                !assessmentById.TryGetValue(slot.AssessmentId, out var receipt) || receipt.EventId != slot.EventId)
+                !assessmentById.TryGetValue(slot.AssessmentId, out var receipt) || receipt.EventId != effectiveEventId)
             {
                 throw Failure(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding,
                     "Committed candidate, event, observation, or assessment identity differs from its reserved slot.");
@@ -456,20 +660,33 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
                 throw Failure(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding,
                     "Event observation does not exactly match promotion from the extraction receipt.");
             }
-            ValidateAssessmentLineage(receipt, transientEvent, extraction.ExtractionIdentitySha256);
+            ValidateAssessmentLineage(
+                receipt,
+                transientEvent,
+                extraction.ExtractionIdentitySha256,
+                currentObservationIds,
+                persistedExtractionIdentities);
         }
     }
 
     private static void ValidateAssessmentLineage(
         TransientAssessmentExecutionDescriptorV1 receipt,
         TransientEventV1 transientEvent,
-        string extractionIdentitySha256)
+        string extractionIdentitySha256,
+        HashSet<Guid> currentObservationIds,
+        Dictionary<Guid, string> persistedExtractionIdentities)
     {
         var observations = receipt.OrderedObservationIds.Select(id => transientEvent.Observations.Single(item =>
             item.ObservationId == id)).ToArray();
         var expectedObservationIdentities = observations.Select(observation =>
             CaptureContractJson.ComputeCanonicalJsonSha256(new TransientAssessmentObservationV1(
-                transientEvent.EventId, extractionIdentitySha256, observation))).ToArray();
+                transientEvent.EventId,
+                currentObservationIds.Contains(observation.ObservationId)
+                    ? extractionIdentitySha256
+                    : persistedExtractionIdentities.TryGetValue(observation.ObservationId, out var persistedIdentity)
+                        ? persistedIdentity
+                        : string.Empty,
+                observation))).ToArray();
         var priorAssessments = transientEvent.Assessments.TakeWhile(item => item.AssessmentId != receipt.Assessment.AssessmentId)
             .ToArray();
         var expectedPriorIdentities = priorAssessments.Select(assessment =>
@@ -556,15 +773,33 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
         CancellationToken cancellationToken)
     {
         var inputs = selectedInputs.OrderBy(item => item.Ordinal).ToArray();
+        var eventValues = events.ToArray();
         var claims = extraction.OrderedSources.Select(item => item.Source.Locator.Artifact)
-            .Concat(events.SelectMany(item => item.Observations).SelectMany(observation =>
+            .Concat(eventValues.SelectMany(item => item.Observations).SelectMany(observation =>
                 observation.BackgroundArtifacts.Prepend(observation.Source.Locator.Artifact))).ToArray();
         if (inputs.Length != extraction.OrderedSources.Count)
         {
             throw Failure(CentralTransientPersistenceReasonCodes.InvalidArtifactLineage,
                 "Every transient source must resolve to one durable job input.");
         }
-        foreach (var centralId in inputs.Select(item => item.CentralArtifactId).Order())
+        var historicalCentralIds = new HashSet<Guid>();
+        foreach (var transientEvent in eventValues)
+        {
+            var observationIds = transientEvent.Observations.Select(item => item.ObservationId).ToArray();
+            historicalCentralIds.UnionWith(await dbContext.CentralTransientObservations.AsNoTracking()
+                .Where(item => item.Event!.AgentId == agentId && item.Event.EventId == transientEvent.EventId
+                    && observationIds.Contains(item.ObservationId))
+                .Select(item => item.Source!.CentralArtifactId)
+                .ToListAsync(cancellationToken).ConfigureAwait(false));
+            historicalCentralIds.UnionWith(await dbContext.CentralTransientObservationBackgrounds.AsNoTracking()
+                .Where(item => item.Observation!.Event!.AgentId == agentId
+                    && item.Observation.Event.EventId == transientEvent.EventId
+                    && observationIds.Contains(item.ObservationId))
+                .Select(item => item.CentralArtifactId)
+                .ToListAsync(cancellationToken).ConfigureAwait(false));
+        }
+        var centralIds = inputs.Select(item => item.CentralArtifactId).Concat(historicalCentralIds).Distinct().ToArray();
+        foreach (var centralId in centralIds.Order())
         {
             if (await CentralArtifactRetentionLock.AcquireAsync(dbContext, centralId, cancellationToken)
                     .ConfigureAwait(false) != 1)
@@ -573,10 +808,9 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
                     "A referenced artifact disappeared before its retention hold was committed.");
             }
         }
-        var centralIds = inputs.Select(item => item.CentralArtifactId).ToArray();
         var artifacts = await dbContext.CentralArtifacts.Include(item => item.Frame).Include(item => item.Recipe)
             .Where(item => centralIds.Contains(item.Id)).ToListAsync(cancellationToken).ConfigureAwait(false);
-        if (artifacts.Count != inputs.Length)
+        if (artifacts.Count != centralIds.Length)
         {
             throw Failure(CentralTransientPersistenceReasonCodes.InvalidArtifactLineage,
                 "A selected central artifact disappeared before its retention hold was committed.");
@@ -885,4 +1119,9 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
         => new(reasonCode, message);
 
     private sealed record ValidatedPayload<T>(T Value, string Json, string Sha256, int ByteLength);
+    private sealed record PersistedEventEvidence(
+        Guid EventId,
+        Guid EventVersionId,
+        TransientEventState State,
+        string Sha256);
 }

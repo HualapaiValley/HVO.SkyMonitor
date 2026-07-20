@@ -22,6 +22,8 @@ internal static class CentralTransientValidationConfiguration
         ConfigureExtractionReceipt(builder);
         ConfigureExtractionSource(builder);
         ConfigureIdentitySlot(builder);
+        ConfigureContextDependency(builder);
+        ConfigureOutcomeVersion(builder);
     }
 
     private static void ConfigureEvent(ModelBuilder builder)
@@ -284,15 +286,29 @@ internal static class CentralTransientValidationConfiguration
     {
         var entity = builder.Entity<CentralTransientValidationJob>();
         entity.ToTable("CentralTransientValidationJobs", table =>
-            table.HasTrigger("TR_CentralTransientValidationJobs_CommittedImmutable"));
+        {
+            table.HasTrigger("TR_CentralTransientValidationJobs_CommittedImmutable");
+            table.HasCheckConstraint("CK_CentralTransientValidationJobs_ExecutionOptions", "([ExecutionOptionsJson] IS NULL AND [ExecutionOptionsIdentitySha256] IS NULL) OR ([ExecutionOptionsJson] IS NOT NULL AND [ExecutionOptionsIdentitySha256] IS NOT NULL)");
+            table.HasCheckConstraint("CK_CentralTransientValidationJobs_Outcome", "([OutcomeRecordedAtUtc] IS NULL AND [OutcomeState] IS NULL AND [OutcomeReasonCode] IS NULL AND [OutcomeEvidenceJson] IS NULL AND [OutcomeEvidenceIdentitySha256] IS NULL) OR ([OutcomeRecordedAtUtc] IS NOT NULL AND [OutcomeState] IS NOT NULL AND [OutcomeReasonCode] IS NOT NULL AND [OutcomeEvidenceJson] IS NOT NULL AND [OutcomeEvidenceIdentitySha256] IS NOT NULL)");
+            table.HasCheckConstraint("CK_CentralTransientValidationJobs_CommitOutcome", "[CommittedAtUtc] IS NULL OR [OutcomeRecordedAtUtc] IS NOT NULL");
+        });
         entity.HasKey(item => item.CentralDerivativeJobId);
         entity.Property(item => item.AgentId).HasMaxLength(128).UseCollation(BinaryCollation).IsRequired();
         entity.Property(item => item.SubmissionSchemaVersion).HasMaxLength(128).IsRequired();
         Sha256(entity.Property(item => item.SubmissionIdentitySha256));
+        entity.Property(item => item.OutcomeState).HasConversion<string>().HasMaxLength(32);
+        entity.Property(item => item.OutcomeReasonCode).HasMaxLength(256).UseCollation(BinaryCollation);
+        Sha256Optional(entity.Property(item => item.ExecutionOptionsIdentitySha256));
+        Sha256Optional(entity.Property(item => item.OutcomeEvidenceIdentitySha256));
         entity.HasIndex(item => item.SubmissionIdentitySha256).IsUnique();
+        entity.HasIndex(item => item.ProvisionalCentralDerivativeJobId).IsUnique()
+            .HasFilter("[ProvisionalCentralDerivativeJobId] IS NOT NULL");
         entity.HasOne(item => item.Job).WithOne()
             .HasForeignKey<CentralTransientValidationJob>(item => item.CentralDerivativeJobId)
             .OnDelete(DeleteBehavior.Restrict).IsRequired();
+        entity.HasOne(item => item.ProvisionalValidationJob).WithMany()
+            .HasForeignKey(item => item.ProvisionalCentralDerivativeJobId)
+            .OnDelete(DeleteBehavior.NoAction);
     }
 
     private static void ConfigureExtractionReceipt(ModelBuilder builder)
@@ -352,7 +368,8 @@ internal static class CentralTransientValidationConfiguration
         {
             table.HasTrigger("TR_CentralTransientValidationIdentitySlots_TerminalImmutable");
             table.HasCheckConstraint("CK_CentralTransientValidationIdentitySlots_Ordinal", "[Ordinal] >= 0");
-            table.HasCheckConstraint("CK_CentralTransientValidationIdentitySlots_State", "([State] IN ('Reserved', 'Unused') AND [CentralTransientEventId] IS NULL AND [PersistedEventVersionId] IS NULL AND [PersistedObservationId] IS NULL AND [PersistedAssessmentId] IS NULL) OR ([State] = 'Committed' AND [CentralTransientEventId] IS NOT NULL AND [PersistedEventVersionId] IS NOT NULL AND [PersistedObservationId] = [ObservationId] AND [PersistedAssessmentId] = [AssessmentId])");
+            table.HasCheckConstraint("CK_CentralTransientValidationIdentitySlots_State", "([State] IN ('Reserved', 'Unused') AND [CentralTransientEventId] IS NULL AND [PersistedEventId] IS NULL AND [PersistedEventVersionId] IS NULL AND [PersistedObservationId] IS NULL AND [PersistedAssessmentId] IS NULL) OR ([State] = 'Committed' AND [CentralTransientEventId] IS NOT NULL AND [PersistedEventId] = COALESCE([AdoptedEventId], [SubmittedEventId]) AND [PersistedEventVersionId] IS NOT NULL AND [PersistedObservationId] = [ObservationId] AND [PersistedAssessmentId] = [AssessmentId])");
+            table.HasCheckConstraint("CK_CentralTransientValidationIdentitySlots_Association", "([AdoptedEventId] IS NULL AND [AssociationIdentitySha256] IS NULL) OR ([AdoptedEventId] IS NOT NULL AND [AssociationIdentitySha256] IS NOT NULL)");
         });
         entity.HasKey(item => item.Id);
         entity.Property(item => item.State).HasConversion<string>().HasMaxLength(32).IsRequired();
@@ -360,10 +377,13 @@ internal static class CentralTransientValidationConfiguration
         entity.HasIndex(item => item.CandidateId).IsUnique();
         entity.HasIndex(item => item.ObservationId).IsUnique();
         entity.HasIndex(item => item.AssessmentId).IsUnique();
+        Sha256Optional(entity.Property(item => item.AssociationIdentitySha256));
+        entity.HasIndex(item => item.AssociationIdentitySha256).IsUnique()
+            .HasFilter("[AssociationIdentitySha256] IS NOT NULL");
         entity.HasOne(item => item.ValidationJob).WithMany(item => item.IdentitySlots)
             .HasForeignKey(item => item.CentralDerivativeJobId).OnDelete(DeleteBehavior.Restrict).IsRequired();
         entity.HasOne(item => item.Event).WithMany()
-            .HasForeignKey(item => new { item.CentralTransientEventId, item.EventId })
+            .HasForeignKey(item => new { item.CentralTransientEventId, item.PersistedEventId })
             .HasPrincipalKey(item => new { item.Id, item.EventId })
             .OnDelete(DeleteBehavior.NoAction);
         entity.HasOne(item => item.PersistedEventVersion).WithMany()
@@ -380,8 +400,52 @@ internal static class CentralTransientValidationConfiguration
             .OnDelete(DeleteBehavior.NoAction);
     }
 
+    private static void ConfigureContextDependency(ModelBuilder builder)
+    {
+        var entity = builder.Entity<CentralTransientContextDependency>();
+        entity.ToTable("CentralTransientContextDependencies", table =>
+        {
+            table.HasCheckConstraint("CK_CentralTransientContextDependencies_Ordinal", "[Ordinal] >= 0 AND [Ordinal] < 4");
+        });
+        entity.HasKey(item => new { item.CentralDerivativeJobId, item.Ordinal });
+        Sha256(entity.Property(item => item.RequestedRecipeIdentitySha256));
+        Sha256(entity.Property(item => item.ExecutionOptionsIdentitySha256));
+        entity.HasIndex(item => new { item.ContextCentralArtifactId, item.ExecutionOptionsIdentitySha256 });
+        entity.HasIndex(item => item.RequiredCentralDerivativeJobId);
+        entity.HasOne(item => item.ValidationJob).WithMany(item => item.ContextDependencies)
+            .HasForeignKey(item => item.CentralDerivativeJobId).OnDelete(DeleteBehavior.Restrict).IsRequired();
+        entity.HasOne(item => item.ContextArtifact).WithMany()
+            .HasForeignKey(item => item.ContextCentralArtifactId).OnDelete(DeleteBehavior.Restrict).IsRequired();
+        entity.HasOne(item => item.RequiredValidationJob).WithMany()
+            .HasForeignKey(item => item.RequiredCentralDerivativeJobId).OnDelete(DeleteBehavior.NoAction);
+    }
+
+    private static void ConfigureOutcomeVersion(ModelBuilder builder)
+    {
+        var entity = builder.Entity<CentralTransientValidationOutcomeVersion>();
+        entity.ToTable("CentralTransientValidationOutcomeVersions", table =>
+        {
+            table.HasTrigger("TR_CentralTransientValidationOutcomeVersions_Immutable");
+            table.HasCheckConstraint("CK_CentralTransientValidationOutcomeVersions_Version", "[Version] > 0");
+        });
+        entity.HasKey(item => item.Id);
+        entity.Property(item => item.State).HasConversion<string>().HasMaxLength(32).IsRequired();
+        entity.Property(item => item.ReasonCode).HasMaxLength(256).UseCollation(BinaryCollation).IsRequired();
+        entity.Property(item => item.EvidenceJson).IsRequired();
+        Sha256(entity.Property(item => item.EvidenceIdentitySha256));
+        entity.HasIndex(item => new { item.CentralDerivativeJobId, item.Version }).IsUnique();
+        entity.HasIndex(item => new { item.CentralDerivativeJobId, item.EvidenceIdentitySha256 }).IsUnique();
+        entity.HasOne(item => item.ValidationJob).WithMany(item => item.OutcomeVersions)
+            .HasForeignKey(item => item.CentralDerivativeJobId).OnDelete(DeleteBehavior.Restrict).IsRequired();
+    }
+
     private static void Sha256(Microsoft.EntityFrameworkCore.Metadata.Builders.PropertyBuilder<string> property)
     {
         property.HasMaxLength(64).IsUnicode(false).UseCollation(BinaryCollation).IsRequired();
+    }
+
+    private static void Sha256Optional(Microsoft.EntityFrameworkCore.Metadata.Builders.PropertyBuilder<string?> property)
+    {
+        property.HasMaxLength(64).IsUnicode(false).UseCollation(BinaryCollation);
     }
 }

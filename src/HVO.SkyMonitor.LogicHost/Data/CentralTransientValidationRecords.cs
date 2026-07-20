@@ -160,10 +160,48 @@ internal sealed class CentralTransientValidationJob
     public string AgentId { get; set; } = string.Empty;
     public string SubmissionSchemaVersion { get; set; } = string.Empty;
     public string SubmissionIdentitySha256 { get; set; } = string.Empty;
+    public string? ExecutionOptionsJson { get; set; }
+    public string? ExecutionOptionsIdentitySha256 { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset? CommittedAtUtc { get; set; }
+    public TransientEventState? OutcomeState { get; set; }
+    public string? OutcomeReasonCode { get; set; }
+    public string? OutcomeEvidenceJson { get; set; }
+    public string? OutcomeEvidenceIdentitySha256 { get; set; }
+    public DateTimeOffset? OutcomeRecordedAtUtc { get; set; }
+    public Guid? ProvisionalCentralDerivativeJobId { get; set; }
+    public CentralTransientValidationJob? ProvisionalValidationJob { get; set; }
     public CentralTransientExtractionReceipt? ExtractionReceipt { get; set; }
     public ICollection<CentralTransientValidationIdentitySlot> IdentitySlots { get; } = [];
+    public ICollection<CentralTransientContextDependency> ContextDependencies { get; } = [];
+    public ICollection<CentralTransientValidationOutcomeVersion> OutcomeVersions { get; } = [];
+}
+
+internal sealed class CentralTransientContextDependency
+{
+    public Guid CentralDerivativeJobId { get; set; }
+    public CentralTransientValidationJob? ValidationJob { get; set; }
+    public int Ordinal { get; set; }
+    public Guid ContextCentralArtifactId { get; set; }
+    public CentralArtifact? ContextArtifact { get; set; }
+    public Guid? RequiredCentralDerivativeJobId { get; set; }
+    public CentralTransientValidationJob? RequiredValidationJob { get; set; }
+    public string RequestedRecipeIdentitySha256 { get; set; } = string.Empty;
+    public string ExecutionOptionsIdentitySha256 { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAtUtc { get; set; }
+}
+
+internal sealed class CentralTransientValidationOutcomeVersion
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid CentralDerivativeJobId { get; set; }
+    public CentralTransientValidationJob? ValidationJob { get; set; }
+    public int Version { get; set; }
+    public TransientEventState State { get; set; }
+    public string ReasonCode { get; set; } = string.Empty;
+    public string EvidenceJson { get; set; } = string.Empty;
+    public string EvidenceIdentitySha256 { get; set; } = string.Empty;
+    public DateTimeOffset RecordedAtUtc { get; set; }
 }
 
 internal sealed class CentralTransientExtractionReceipt
@@ -211,12 +249,15 @@ internal sealed class CentralTransientValidationIdentitySlot
     public CentralTransientValidationJob? ValidationJob { get; set; }
     public int Ordinal { get; set; }
     public CentralTransientValidationIdentitySlotState State { get; set; }
-    public Guid EventId { get; set; }
+    public Guid SubmittedEventId { get; set; }
+    public Guid? AdoptedEventId { get; set; }
+    public string? AssociationIdentitySha256 { get; set; }
     public Guid CandidateId { get; set; }
     public Guid ObservationId { get; set; }
     public Guid AssessmentId { get; set; }
     public Guid? CentralTransientEventId { get; set; }
     public CentralTransientEventRecord? Event { get; set; }
+    public Guid? PersistedEventId { get; set; }
     public Guid? PersistedEventVersionId { get; set; }
     public CentralTransientEventVersionRecord? PersistedEventVersion { get; set; }
     public Guid? PersistedObservationId { get; set; }

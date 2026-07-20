@@ -48,6 +48,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralTransientExtractionReceipt> CentralTransientExtractionReceipts => Set<CentralTransientExtractionReceipt>();
     internal DbSet<CentralTransientExtractionSourceReference> CentralTransientExtractionSources => Set<CentralTransientExtractionSourceReference>();
     internal DbSet<CentralTransientValidationIdentitySlot> CentralTransientValidationIdentitySlots => Set<CentralTransientValidationIdentitySlot>();
+    internal DbSet<CentralTransientContextDependency> CentralTransientContextDependencies => Set<CentralTransientContextDependency>();
+    internal DbSet<CentralTransientValidationOutcomeVersion> CentralTransientValidationOutcomeVersions => Set<CentralTransientValidationOutcomeVersion>();
     internal DbSet<Observatory> Observatories => Set<Observatory>();
 
     protected override void OnModelCreating(ModelBuilder builder)

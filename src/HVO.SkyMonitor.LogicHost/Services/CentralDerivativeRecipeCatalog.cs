@@ -4,6 +4,7 @@ using HVO.SkyMonitor.Processing;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -17,7 +18,13 @@ internal sealed record CentralDerivativeRecipe(
     ProcessingInputSelector InputSelector,
     string RequestedRecipeIdentitySha256,
     int MaxAttempts,
-    CentralDerivativeWindowDefinition? Window = null);
+    CentralDerivativeWindowDefinition? Window = null,
+    CentralTransientRecipeDefinition? Transient = null);
+
+internal sealed record CentralTransientRecipeDefinition(
+    string ExecutionOptionsJson,
+    string ExecutionOptionsIdentitySha256,
+    int IdentitySlotCount);
 
 internal sealed record CentralDerivativeWindowDefinition(
     IReadOnlyList<CentralDerivativeWindowPosition> Positions,
@@ -88,7 +95,7 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
         PreviewInput).IdentitySha256;
     internal const int DefaultMaxAttempts = 5;
 
-    private static readonly IReadOnlyList<CentralDerivativeRecipe> RawRecipes =
+    private static readonly IReadOnlyList<CentralDerivativeRecipe> BaseRawRecipes =
     [
         new(FrameArtifactRole.Raw, FrameArtifactRole.Preview, PreviewRecipeVersion, PreviewVariant,
             BuiltInProcessingRecipes.EncodedPreview, PreviewOptions, RawInput,
@@ -123,14 +130,79 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
         WeatherCloudOverlayRequestedRecipeIdentity,
         DefaultMaxAttempts);
 
+    private readonly IReadOnlyList<CentralDerivativeRecipe> _rawRecipes;
+    private readonly IReadOnlyList<CentralDerivativeRecipe> _calibratedRecipes;
+
+    public CentralDerivativeRecipeCatalog()
+        : this(new CentralTransientOptions())
+    {
+    }
+
+    public CentralDerivativeRecipeCatalog(IOptions<CentralTransientOptions> options)
+        : this(options?.Value ?? throw new ArgumentNullException(nameof(options)))
+    {
+    }
+
+    internal CentralDerivativeRecipeCatalog(CentralTransientOptions transientOptions)
+    {
+        ArgumentNullException.ThrowIfNull(transientOptions);
+        _rawRecipes = BaseRawRecipes;
+        _calibratedRecipes = [];
+        if (transientOptions.Mode != TransientDetectorExecutionMode.Central)
+        {
+            return;
+        }
+        var executionOptions = transientOptions.CreateExecutionOptions();
+        var execution = CentralTransientExecutionOptionsJson.Serialize(executionOptions);
+        var extractionElement = CaptureContractJson.SerializeToElement(executionOptions.Extraction);
+        var extractionIdentity = TransientCandidateExtractionFactory.ComputeRecipeIdentitySha256(
+            executionOptions.Extraction);
+        var selector = transientOptions.SourceRole == FrameArtifactRole.Raw
+            ? ProcessingInputSelector.Raw()
+            : ProcessingInputSelector.Calibrated();
+        var recipe = new CentralDerivativeRecipe(
+            transientOptions.SourceRole,
+            FrameArtifactRole.Metadata,
+            CentralTransientRuntime.RecipeVersion,
+            CentralTransientRuntime.Variant,
+            CentralTransientRuntime.RecipeName,
+            extractionElement,
+            selector,
+            extractionIdentity,
+            DefaultMaxAttempts,
+            new CentralDerivativeWindowDefinition(
+                new[] { -2, -1, 0, 1, 2 }.Select(offset => new CentralDerivativeWindowPosition(
+                    offset, IsRequired: true, selector)).ToArray(),
+                transientOptions.WindowTimeout,
+                CentralDerivativeWindowOutcome.Skip),
+            new CentralTransientRecipeDefinition(
+                execution.Json,
+                execution.Sha256,
+                executionOptions.Extraction.MaximumCandidates));
+        if (transientOptions.SourceRole == FrameArtifactRole.Raw)
+        {
+            _rawRecipes = BaseRawRecipes.Append(recipe).ToArray();
+        }
+        else
+        {
+            _calibratedRecipes = [recipe];
+        }
+    }
+
     public IReadOnlyList<CentralDerivativeRecipe> GetRequiredRecipes(FrameArtifactRole sourceRole)
-        => sourceRole == FrameArtifactRole.Raw ? RawRecipes : [];
+        => sourceRole switch
+        {
+            FrameArtifactRole.Raw => _rawRecipes,
+            FrameArtifactRole.Calibrated => _calibratedRecipes,
+            _ => []
+        };
 }
 
 internal static class CentralDerivativeJobIdentity
 {
     private const string Schema = "hvo-central-derivative-request-v2";
     private const string WindowSchema = "hvo-central-derivative-window-request-v1";
+    private const string TransientWindowSchema = "hvo-central-transient-window-request-v1";
 
     public static string CreateRequestIdentity(
         Guid sourceDevicePublicId,
@@ -146,17 +218,24 @@ internal static class CentralDerivativeJobIdentity
                 position.IsRequired,
                 position.CompatibilityMode,
                 CreateSelectorIdentity(position.Selector)));
-            var windowValue = string.Join('\n',
-                WindowSchema,
+            var values = new List<string>
+            {
+                recipe.Transient is null ? WindowSchema : TransientWindowSchema,
                 sourceDevicePublicId.ToString("N"),
                 sourceArtifactId.ToString("N"),
                 recipe.TargetRole.ToString(),
                 recipe.TargetVariant,
                 recipe.RecipeVersion,
                 recipe.RequestedRecipeIdentitySha256.ToUpperInvariant(),
-                recipe.Window.Timeout.Ticks,
-                recipe.Window.MissingInputOutcome.ToString(),
-                string.Join('\n', positions));
+                recipe.Window.Timeout.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                recipe.Window.MissingInputOutcome.ToString()
+            };
+            if (recipe.Transient is not null)
+            {
+                values.Add(recipe.Transient.ExecutionOptionsIdentitySha256);
+            }
+            values.Add(string.Join('\n', positions));
+            var windowValue = string.Join('\n', values);
             return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(windowValue)));
         }
         var value = string.Join('\n',

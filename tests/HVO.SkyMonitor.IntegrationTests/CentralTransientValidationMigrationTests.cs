@@ -8,6 +8,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -16,7 +18,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class CentralTransientValidationMigrationTests
 {
-    private const string PreviousMigration = "20260718213753_AddCentralCloudProcessing";
+    private const string PreviousMigration = "20260720165520_AddCentralTransientValidation";
     private const string ShaA = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     private const string ShaB = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
     private const string ShaC = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
@@ -64,6 +66,24 @@ public sealed class CentralTransientValidationMigrationTests
                 ResolvedAtUtc = DateTimeOffset.UnixEpoch
             });
             await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            var slotId = Guid.NewGuid();
+            var submittedEventId = Guid.NewGuid();
+            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO [CentralTransientValidationJobs]
+                    ([CentralDerivativeJobId], [AgentId], [SubmissionSchemaVersion], [SubmissionIdentitySha256],
+                     [CreatedAtUtc], [CommittedAtUtc])
+                VALUES
+                    ({job.Id}, N'upgrade-agent', N'central-transient-submission-v1', {ShaC},
+                     {DateTimeOffset.UnixEpoch}, {DateTimeOffset.UnixEpoch.AddSeconds(1)});
+
+                INSERT INTO [CentralTransientValidationIdentitySlots]
+                    ([Id], [CentralDerivativeJobId], [Ordinal], [State], [EventId], [CandidateId],
+                     [ObservationId], [AssessmentId], [CentralTransientEventId], [PersistedEventVersionId],
+                     [PersistedObservationId], [PersistedAssessmentId])
+                VALUES
+                    ({slotId}, {job.Id}, 0, N'Reserved', {submittedEventId}, {Guid.NewGuid()},
+                     {Guid.NewGuid()}, {Guid.NewGuid()}, NULL, NULL, NULL, NULL);
+                """).ConfigureAwait(false);
 
             await migrator.MigrateAsync().ConfigureAwait(false);
             database.Context.ChangeTracker.Clear();
@@ -73,7 +93,19 @@ public sealed class CentralTransientValidationMigrationTests
             (await database.Context.CentralDerivativeJobInputRequirements
                 .CountAsync(item => item.CentralDerivativeJobId == job.Id).ConfigureAwait(false)).Should().Be(1);
             (await database.Context.CentralTransientEvents.CountAsync().ConfigureAwait(false)).Should().Be(0);
-            (await database.Context.CentralTransientValidationJobs.CountAsync().ConfigureAwait(false)).Should().Be(0);
+            var upgradedValidation = await database.Context.CentralTransientValidationJobs.AsNoTracking()
+                .Include(item => item.IdentitySlots).SingleAsync().ConfigureAwait(false);
+            upgradedValidation.ExecutionOptionsJson.Should().BeNull();
+            upgradedValidation.ExecutionOptionsIdentitySha256.Should().BeNull();
+            upgradedValidation.IdentitySlots.Single().SubmittedEventId.Should().Be(submittedEventId);
+            upgradedValidation.OutcomeState.Should().Be(TransientEventState.NeedsReview);
+            upgradedValidation.OutcomeReasonCode.Should().Be("transient-validation.legacy-committed-output");
+            upgradedValidation.OutcomeEvidenceIdentitySha256.Should().Be(Convert.ToHexString(SHA256.HashData(
+                Encoding.UTF8.GetBytes(upgradedValidation.OutcomeEvidenceJson!))));
+            var upgradedOutcome = await database.Context.CentralTransientValidationOutcomeVersions.AsNoTracking()
+                .SingleAsync(item => item.CentralDerivativeJobId == job.Id).ConfigureAwait(false);
+            upgradedOutcome.EvidenceJson.Should().Be(upgradedValidation.OutcomeEvidenceJson);
+            upgradedOutcome.EvidenceIdentitySha256.Should().Be(upgradedValidation.OutcomeEvidenceIdentitySha256);
             await AssertSchemaAsync(database.Context).ConfigureAwait(false);
         }
         finally
@@ -100,7 +132,7 @@ public sealed class CentralTransientValidationMigrationTests
                 FROM [sys].[tables]
                 WHERE [name] LIKE N'CentralTransient%'
                 """).SingleAsync().ConfigureAwait(false);
-            transientTableCount.Should().Be(0);
+            transientTableCount.Should().Be(13);
             var workerCount = await database.Context.Database.SqlQuery<int>($"""
                 SELECT COUNT(*) AS [Value] FROM [CentralDerivativeJobs] WHERE [Id] = {job.Id}
                 """).SingleAsync().ConfigureAwait(false);
@@ -128,7 +160,7 @@ public sealed class CentralTransientValidationMigrationTests
             var slot = new CentralTransientValidationIdentitySlot
             {
                 Ordinal = 0,
-                EventId = Guid.NewGuid(),
+                SubmittedEventId = Guid.NewGuid(),
                 CandidateId = Guid.NewGuid(),
                 ObservationId = Guid.NewGuid(),
                 AssessmentId = Guid.NewGuid()
@@ -139,6 +171,8 @@ public sealed class CentralTransientValidationMigrationTests
                 AgentId = "job-agent",
                 SubmissionSchemaVersion = "central-transient-validation-submission-v1",
                 SubmissionIdentitySha256 = ShaC,
+                ExecutionOptionsJson = "{}",
+                ExecutionOptionsIdentitySha256 = ShaA,
                 CreatedAtUtc = now
             };
             validationJob.IdentitySlots.Add(slot);
@@ -151,13 +185,42 @@ public sealed class CentralTransientValidationMigrationTests
                 .SingleAsync(item => item.CentralDerivativeJobId == derivativeJob.Id).ConfigureAwait(false);
             persisted.SubmissionIdentitySha256.Should().Be(ShaC);
             persisted.IdentitySlots.Single().Should().Match<CentralTransientValidationIdentitySlot>(item =>
-                item.EventId == slot.EventId
+                item.SubmittedEventId == slot.SubmittedEventId
                 && item.CandidateId == slot.CandidateId
                 && item.ObservationId == slot.ObservationId
                 && item.AssessmentId == slot.AssessmentId);
             (await database.Context.CentralDerivativeJobs.AsNoTracking()
                 .Where(item => item.Id == derivativeJob.Id)
                 .Select(item => item.Status).SingleAsync().ConfigureAwait(false)).Should().Be(CentralDerivativeJobStatus.Waiting);
+
+            await Assert.ThrowsExactlyAsync<SqlException>(async () =>
+                await database.Context.CentralTransientValidationIdentitySlots.Where(item => item.Id == slot.Id)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(
+                        item => item.SubmittedEventId, Guid.NewGuid())).ConfigureAwait(false)).ConfigureAwait(false);
+            var adoptedEventId = Guid.NewGuid();
+            await database.Context.CentralTransientValidationIdentitySlots.Where(item => item.Id == slot.Id)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.AdoptedEventId, adoptedEventId)
+                    .SetProperty(item => item.AssociationIdentitySha256, ShaB)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<SqlException>(async () =>
+                await database.Context.CentralTransientValidationIdentitySlots.Where(item => item.Id == slot.Id)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(
+                        item => item.AdoptedEventId, Guid.NewGuid())).ConfigureAwait(false)).ConfigureAwait(false);
+
+            await database.Context.CentralTransientValidationJobs.Where(item =>
+                    item.CentralDerivativeJobId == derivativeJob.Id)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.OutcomeState, TransientEventState.NeedsReview)
+                    .SetProperty(item => item.OutcomeReasonCode, "transient-validation.test-needs-review")
+                    .SetProperty(item => item.OutcomeEvidenceJson, "{}")
+                    .SetProperty(item => item.OutcomeEvidenceIdentitySha256, ShaB)
+                    .SetProperty(item => item.OutcomeRecordedAtUtc, now)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<SqlException>(async () =>
+                await database.Context.CentralTransientValidationJobs.Where(item =>
+                        item.CentralDerivativeJobId == derivativeJob.Id)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(
+                        item => item.OutcomeReasonCode, "transient-validation.changed"))
+                    .ConfigureAwait(false)).ConfigureAwait(false);
         }
         finally
         {
@@ -405,13 +468,15 @@ public sealed class CentralTransientValidationMigrationTests
                 AgentId = "constraint-agent",
                 SubmissionSchemaVersion = "central-transient-validation-submission-v1",
                 SubmissionIdentitySha256 = ShaA,
+                ExecutionOptionsJson = "{}",
+                ExecutionOptionsIdentitySha256 = ShaB,
                 CreatedAtUtc = now.AddSeconds(5)
             };
             partialValidation.IdentitySlots.Add(new CentralTransientValidationIdentitySlot
             {
                 Ordinal = 0,
                 State = CentralTransientValidationIdentitySlotState.Committed,
-                EventId = Guid.NewGuid(),
+                SubmittedEventId = Guid.NewGuid(),
                 CandidateId = Guid.NewGuid(),
                 ObservationId = Guid.NewGuid(),
                 AssessmentId = Guid.NewGuid()
@@ -624,29 +689,39 @@ public sealed class CentralTransientValidationMigrationTests
                  N'CentralTransientObservationSources', N'CentralTransientObservationBackgrounds',
                  N'CentralTransientAssessments', N'CentralTransientEventVersionObservations',
                  N'CentralTransientEventVersionAssessments', N'CentralTransientAssessmentObservations',
-                 N'CentralTransientValidationJobs', N'CentralTransientValidationIdentitySlots',
-                 N'CentralTransientExtractionReceipts', N'CentralTransientExtractionSources')
+                  N'CentralTransientValidationJobs', N'CentralTransientValidationIdentitySlots',
+                  N'CentralTransientExtractionReceipts', N'CentralTransientExtractionSources',
+                  N'CentralTransientContextDependencies', N'CentralTransientValidationOutcomeVersions')
             """).SingleAsync().ConfigureAwait(false);
-        tableCount.Should().Be(13);
+        tableCount.Should().Be(15);
         var constraints = await db.Database.SqlQuery<string>($"""
             SELECT [name] AS [Value]
             FROM [sys].[check_constraints]
             WHERE [parent_object_id] IN
                 (OBJECT_ID(N'[CentralTransientEventVersions]'), OBJECT_ID(N'[CentralTransientAssessments]'),
-                 OBJECT_ID(N'[CentralTransientValidationJobs]'))
+                  OBJECT_ID(N'[CentralTransientValidationJobs]'),
+                  OBJECT_ID(N'[CentralTransientValidationIdentitySlots]'),
+                  OBJECT_ID(N'[CentralTransientContextDependencies]'),
+                  OBJECT_ID(N'[CentralTransientValidationOutcomeVersions]'))
             """).ToListAsync().ConfigureAwait(false);
         constraints.Should().Contain([
             "CK_CentralTransientEventVersions_Predecessor",
             "CK_CentralTransientEventVersions_ObservedInterval",
             "CK_CentralTransientAssessments_Confidence",
-            "CK_CentralTransientAssessments_Predecessor"
+            "CK_CentralTransientAssessments_Predecessor",
+            "CK_CentralTransientValidationJobs_ExecutionOptions",
+            "CK_CentralTransientValidationJobs_Outcome",
+            "CK_CentralTransientValidationJobs_CommitOutcome",
+            "CK_CentralTransientValidationIdentitySlots_Association",
+            "CK_CentralTransientContextDependencies_Ordinal",
+            "CK_CentralTransientValidationOutcomeVersions_Version"
         ]);
         var triggerCount = await db.Database.SqlQuery<int>($"""
             SELECT COUNT(*) AS [Value]
             FROM [sys].[triggers]
             WHERE [name] LIKE N'TR_CentralTransient%'
             """).SingleAsync().ConfigureAwait(false);
-        triggerCount.Should().Be(13);
+        triggerCount.Should().Be(14);
     }
 
     private static MigrationDatabase CreateDatabase(string scenario)
