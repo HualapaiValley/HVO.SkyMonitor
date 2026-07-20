@@ -1,6 +1,6 @@
 # Virtual Transient Scenario Validation
 
-Status date: 2026-07-19
+Status date: 2026-07-20
 
 This evidence covers deterministic generic sky tracks and sensor charge for
 issue #61. It does not claim physical meteor photometry, detector sensitivity,
@@ -9,9 +9,19 @@ validation.
 
 ## Deterministic Fixtures
 
-`tests/fixtures/virtual-sky/transient-scenarios-v1.json` is the test-only
-semantic oracle. Production configuration and provenance contain only opaque
-primitive identities and rendering parameters.
+`tests/fixtures/virtual-sky/transient-scenarios-v1.json` is the detector-safe
+stimulus manifest. Its SHA-256 is
+`BAC54BEF38A85BD5B07FA9FDA855A3DC5DD316A51B37F21B8D3BC2E6D9F87F81`.
+Expected semantics and output identities live separately in
+`tests/fixtures/virtual-sky/transient-detection-oracle-v1.json`, whose SHA-256
+is `5338022A7EBF0443CAFEF844C5992771FAE692B16B0D6BCAFFF73AAD6A8749DC`.
+Production configuration and provenance contain only opaque primitive
+identities and rendering parameters. Tests execute all rendering and detection
+before loading the oracle, verify the oracle sentinel and labels are absent
+from detector configuration and artifacts, and reject a canonical input
+manifest identity other than
+`133402E913B61C62542FDDE4C578C39257D4EFF87574516D7F43E463A9E0FC93`.
+The canonical identity is independent of checkout line endings.
 
 | Fixture | Raw min | Raw max | Raw mean | First Mono16 SHA-256 |
 | --- | ---: | ---: | ---: | --- |
@@ -30,6 +40,178 @@ adjacent half-open exposures. Other tests cover restart and reversed-order
 determinism, azimuth wrap, aggregate bounds, non-overlap, cloud/optics versus
 sensor-stage separation, Mono16/RGB24/RGGB16 response, saturation, strict
 configuration, manifest integrity, and detector-input isolation.
+
+## Detector Baseline
+
+Issue #119 composes the ordinary VirtualSky captures with the shared temporal
+background, candidate extraction, observation promotion, and deterministic
+assessment factories. Fixture UUIDs are derived from immutable case, offset,
+and slot keys rather than case order. The separate oracle pins raw SHA-256 and
+statistics, every offset-to-extraction receipt mapping, every candidate UUID,
+event UUIDs,
+geometry/features identities, classifications, meteor severity, and assessment
+receipt SHA-256. The cloud row also pins raw statistics/SHA-256, empty geometry
+identity, and its no-candidate extraction receipt.
+
+| Approved case | Primary candidates | Expected/actual result | Disposition |
+| --- | ---: | --- | --- |
+| no event | 0 | none / none | true negative |
+| short track | 1 | meteor / meteor | scored |
+| fragmented saturated flare | 1 | fireball / meteor with fireball severity | scored |
+| adjacent-exposure boundary crossing | 1 per exposure | boundary meteor / meteor | scored |
+| three-observation long shadow track | 1 per observation | satellite / satellite | scored |
+| three-observation blinking track | 1 per observation | aircraft / aircraft | scored |
+| cosmic ray plus persistent hot/stuck pixels | 3 | sensor artifact / sensor artifact | scored |
+| stable 55% cloud, no transient | 0 | none / none | true negative |
+
+The approved matrix therefore has six event cases detected and assessed, two
+no-event/cloud true negatives, zero misses, zero classification mismatches, and
+zero false-positive cases. There is no miss or false positive requiring an
+exception disposition. The three sensor components intentionally produce one
+reviewed scenario assessment from the longest measured component; the receipt
+still pins all three extracted components.
+
+The reviewed range is exactly the versioned 64 x 48 Mono16 fixture definitions,
+one-second exposures, listed capture offsets, and extraction thresholds in
+`VirtualSkyTransientScenarioTests`. Observed primary integrated signal spans 3
+through 699,701 ADU and includes boundary clipping, one fragmented/saturated
+flare, one persistent brightness sequence, one blinking sequence, compact
+sensor charge, and a stable-cloud negative. These observations define a
+deterministic software non-regression matrix, not interpolation outside those
+points, physical photometry, field sensitivity, real-sky false-positive rate,
+or ARM64 performance.
+
+The complete reviewed scope is composed without exposing truth to production
+inputs:
+
+| Concern | Evidence |
+| --- | --- |
+| Star residuals and persistent masks | `TransientStarMaskStrategyTests.W1W2PersistentProjectedStarMaskEvidence` renders full-resolution W1/W2 stars and asserts the persistent projected mask leaves zero extracted components; the focused temporal test separately pins mask composition semantics |
+| Saturation topology | `TransientDetectorInputTests.RggbSaturationMaskPreservesAnyPhotositeClippingHiddenByCellAverage`, temporal saturation-mask exclusion, and the fragmented-flare matrix case |
+| Mask integrity and bounds | temporal tamper, incomplete-mask, non-persistent-mask, and malformed-context tests |
+| Direct/reconstructed conformance | `LogicHostProcessingConformanceTests.EdgeAndCentralAdaptersProduceEquivalentCenteredTransientBackground` compares background pixels/masks/descriptors, extraction receipts/candidates, and assessment bytes |
+| Detector disabled | `TransientTemporalBackgroundTests.OffDoesNotConstructTemporalWindow` warms the call and measures zero current-thread bytes over 1,000 calls while retaining no window |
+| Reprocessing | `TransientAssessmentTests.ReprocessingPreservesHistoryAndOnlySupersedesExplicitSameProducerAssessment` |
+
+Focused reproduction:
+
+```bash
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --configuration Release \
+  --filter "FullyQualifiedName~VirtualSkyTransientScenarioTests"
+
+dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj \
+  --configuration Release \
+  --filter "FullyQualifiedName~TransientTemporalBackgroundTests.OffDoesNotConstructTemporalWindow"
+
+dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj \
+  --configuration Release \
+  --filter "FullyQualifiedName~LogicHostProcessingConformanceTests.EdgeAndCentralAdaptersProduceEquivalentCenteredTransientBackground"
+
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --configuration Release \
+  --filter "FullyQualifiedName~TransientStarMaskStrategyTests.W1W2PersistentProjectedStarMaskEvidence"
+```
+
+## Detection Performance
+
+The issue #119 x64 harness runs five independent steady trials for named
+`W1-T119` and `W2-T119` workloads. These use canonical W1/W2 dimensions and
+formats with a deterministic full-size synthetic elongated residual because
+the canonical no-event sky frames do not provide a stable positive extraction
+and assessment workload. W2 uses a replicated 2 x 2 RGGB cell that preserves
+the controlled detector residual. This is a size/path baseline, not a claim
+that the arithmetic pixels are canonical sky content.
+Each trial uses five warmups followed by 30 measured operations for direct
+extraction, validated extraction, assessment, and a complete source-artifact,
+detector-input conversion, centered-background, extraction, promotion, and
+assessment path. W2 complete-path input is the full 3,096 x 2,080 RGGB source.
+Each p95 is computed from its 30 operation samples; the table reports
+median/minimum/maximum across the five independently computed trial statistics
+and never infers p95 from five samples. The retained-window value is the logical
+five detector-frame production footprint; actual fixture-owned bytes are
+reported separately from logical source/window bytes.
+
+Environment: Ubuntu 24.04.3 LTS, .NET 10.0.0, linux-x64, Intel Core Ultra 9
+285H, 8 logical processors, 16.77 GB available memory, Release, concurrency 1,
+one-second exposure, five-second source cadence, no backlog or external I/O.
+
+| Workload/stage | Median wall ms med/min/max | p95 wall ms med/min/max | Median CPU ms med/min/max | p95 CPU ms med/min/max | Allocated bytes/op med/min/max | ops/s med/min/max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| W1-T119 direct extraction | 5.603/5.534/10.499 | 15.036/13.372/15.180 | 6.042/5.960/12.506 | 17.166/16.919/18.955 | 11,876,312/11,874,793/11,876,706 | 133.99/102.59/141.17 |
+| W1-T119 validated extraction | 19.519/16.491/20.131 | 21.190/20.721/26.232 | 20.275/17.950/25.808 | 27.155/22.177/43.983 | 13,860,997/13,859,746/13,912,983 | 53.98/46.34/60.22 |
+| W1-T119 assessment | 0.179/0.109/0.671 | 0.203/0.132/0.769 | 0.181/0.110/0.672 | 0.203/0.132/1.239 | 262,117/262,096/265,468 | 6,384.47/1,454.14/8,960.04 |
+| W1-T119 complete detector | 88.647/87.527/95.423 | 122.382/117.236/123.676 | 89.907/89.112/120.781 | 123.496/119.822/189.357 | 31,846,678/31,846,372/31,880,974 | 10.46/10.08/10.57 |
+| W2-T119 direct extraction | 3.837/3.779/4.304 | 7.964/7.838/8.431 | 3.839/3.799/4.391 | 7.967/7.891/10.194 | 8,133,356/8,133,342/8,133,513 | 222.37/195.34/225.56 |
+| W2-T119 validated extraction | 9.386/9.340/9.434 | 13.510/13.337/16.984 | 9.443/9.353/9.482 | 13.518/13.340/17.728 | 9,930,429/9,930,129/9,930,437 | 102.23/96.47/103.17 |
+| W2-T119 assessment | 0.110/0.106/0.114 | 0.129/0.127/0.136 | 0.111/0.107/0.115 | 0.130/0.128/0.552 | 262,111/262,096/262,377 | 8,899.44/8,593.77/9,081.55 |
+| W2-T119 complete detector | 112.004/110.754/113.508 | 134.714/134.075/136.728 | 113.820/113.696/115.844 | 137.031/136.657/138.651 | 38,717,285/38,716,737/38,717,371 | 8.49/8.47/8.54 |
+
+W1-T119 logically retains 23,541,760 detector-window bytes, complete-path median
+throughput is 10.46 frames/s, and complete-trial start/post-operation-sampled
+RSS spans 205,074,432 through 281,427,968 bytes; post-GC LOH size is 26,879,712
+bytes. W2-T119 starts
+from the 12,879,360-byte RGGB source, converts five source artifacts, and
+extracts over its 1,548 x 1,040 Mono16 detector representation. It logically
+retains 16,099,200 detector-window bytes, measures 8.49 complete frames/s,
+and spans 271,859,712 through 411,033,600 complete-path start/post-operation
+sampled RSS bytes; post-GC LOH is 75,366,752 bytes. RSS sampling occurs at
+operation boundaries and is not presented as an in-operation native-memory
+peak. W1 borrows two unique source buffers across five positions. W2 owns five
+converted detector buffers per complete operation. Both own one centered
+background plus bounded extraction state/traversal arrays; the raw JSON records
+actual fixture-owned and logical five-source bytes. This source/detector-size
+distinction explains why W2 direct extraction is faster than W1 while its
+complete path is slower.
+
+The pinned source target/background SHA-256 pairs are
+`D07A2314618149F33C067CB9B6B1B5B6F30EC2352431F53F0A94E67771CFFA53` /
+`F048AB98FF1181D3FEF4FCB0E47DC0BF554F731B6450E51A9705594140B79587`
+for W1-T119 and
+`7490F8C076950C70803F9D9F843C4292A6FAE8E93DD8E9ABB7B8B88B155A3F03` /
+`3119269EE5F9AF20038899CFCBC4603DF391BC86117F3F214203FAD5805518A0`
+for W2-T119. Candidate rate is one per complete-path frame. CPU samples use
+process-wide `TotalProcessorTime` deltas and include sampler overhead; they are
+reported as baseline distributions rather than isolated thread CPU.
+
+The complete-path row measures input reconstruction and temporal background;
+issues #113 and #115 remain the detailed stage baselines rather than values
+added to another interval. Persistence is N/A: this host-neutral path performs
+no filesystem, SQLite, SQL Server, MinIO, or network persistence, and zero
+observed I/O is not presented as zero persistence latency. The first complete
+five-trial detector composition has no equivalent before value, so its baseline
+is `N/A`; merged #121 is the nearest production implementation and issue #119
+changes no production algorithm. Raw issue #119 evidence is written to ignored
+`TestResults/issue-119/candidate-extraction-performance.json` and had SHA-256
+`2092BBA38CF9FB1F47E5AC988922B7198CA5DF7992110FB664526F844D04D410`
+for this working-tree run.
+
+Command:
+
+```bash
+dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj \
+  --configuration Release --arch x64 \
+  --filter "FullyQualifiedName~TransientCandidateExtractionPerformanceTests.W1W2CandidateExtractionEvidence"
+
+HVO_PERF_OUTPUT=TestResults/issue-113/local \
+dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj \
+  --configuration Release --arch x64 \
+  --filter "FullyQualifiedName~TransientContractAndInputPerformanceTests.W1W2Evidence"
+
+dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj \
+  --configuration Release --arch x64 \
+  --filter "FullyQualifiedName~TransientTemporalBackgroundPerformanceTests.W1W2TemporalBackgroundEvidence"
+```
+
+The candidate run used branch `feat/transient-baselines-119`, base/HEAD
+`c68cf04c1d70701127764445d622eebabb0655eb`, and the dirty-state/source-checksum
+disposition recorded in raw evidence. The candidate adds no production
+algorithm or host behavior over merged #121. Complete extraction and assessment
+receipt identities were identical across all five trials, all stage p95s remain
+far below the five-second cadence, complete-stage retained managed memory and
+LOH returned to their pre-trial ranges, and no unexplained regression was
+observed. A replacement run from the committed clean candidate head remains the
+final PR evidence step.
 
 ## Performance
 

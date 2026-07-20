@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -15,6 +16,7 @@ public sealed class TransientCandidateExtractionPerformanceTests
 {
     private const int WarmupCount = 5;
     private const int MeasurementCount = 30;
+    private const int TrialCount = 5;
     private static readonly JsonSerializerOptions EvidenceJson = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly Linear16TransientExtractionOptions Options = new(
         50,
@@ -34,21 +36,45 @@ public sealed class TransientCandidateExtractionPerformanceTests
     [TestMethod]
     public async Task W1W2CandidateExtractionEvidence()
     {
+        Assert.AreEqual(Architecture.X64, RuntimeInformation.OSArchitecture, "Issue #119 closure evidence requires an x64 host.");
+        Assert.AreEqual(Architecture.X64, RuntimeInformation.ProcessArchitecture, "Run the evidence command with --arch x64.");
         var results = new List<object>();
         foreach (var workload in new[] { Workload.W1, Workload.W2 })
         {
-            results.Add(Measure(workload));
+            var fixture = CreateFixture(workload);
+            var trials = Enumerable.Range(1, TrialCount)
+                .Select(trial => Measure(workload, fixture, trial))
+                .ToArray();
+            Assert.HasCount(1, trials.Select(static value => value.CompletePath.ExtractionReceiptIdentitySha256)
+                .Distinct(StringComparer.Ordinal).ToArray(), $"{workload.Id} complete extraction receipts");
+            Assert.HasCount(1, trials.Select(static value => value.CompletePath.AssessmentReceiptIdentitySha256)
+                .Distinct(StringComparer.Ordinal).ToArray(), $"{workload.Id} complete assessment receipts");
+            results.Add(new
+            {
+                workload.Id,
+                workload.BaseWorkloadId,
+                TrialCount,
+                FixtureConstructionCount = 1,
+                Trials = trials,
+                AcrossTrialSummary = new
+                {
+                    DirectAlgorithm = Summarize(trials.Select(static value => value.DirectAlgorithm)),
+                    ProcessingExtraction = Summarize(trials.Select(static value => value.Processing.CandidateExtraction)),
+                    Assessment = Summarize(trials.Select(static value => value.Processing.Assessment)),
+                    CompletePath = Summarize(trials.Select(static value => value.CompletePath.Stage))
+                }
+            });
         }
 
         var root = GetRepositoryRoot();
-        var outputDirectory = Path.Combine(root, "TestResults", "issue-121");
+        var outputDirectory = Path.Combine(root, "TestResults", "issue-119");
         Directory.CreateDirectory(outputDirectory);
         var outputPath = Path.Combine(outputDirectory, "candidate-extraction-performance.json");
         var evidence = new
         {
-            SchemaVersion = "issue-121-candidate-extraction-performance-v1",
+            SchemaVersion = "issue-119-transient-detection-performance-v1",
             RecordedUtc = DateTimeOffset.UtcNow,
-            BaselineRevision = "b595e87dbad642646d6cc41bbd7880c6e393a198",
+            BaselineRevision = "c68cf04c1d70701127764445d622eebabb0655eb",
             Candidate = new
             {
                 HeadRevision = ReadGit(root, "rev-parse HEAD"),
@@ -71,7 +97,7 @@ public sealed class TransientCandidateExtractionPerformanceTests
                         FileSha256(root, "tests/HVO.SkyMonitor.Processing.Tests/TransientTestData.cs")
                 }
             },
-            Command = "dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --configuration Release --filter FullyQualifiedName~TransientCandidateExtractionPerformanceTests.W1W2CandidateExtractionEvidence",
+            Command = "dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~TransientCandidateExtractionPerformanceTests.W1W2CandidateExtractionEvidence",
             Environment = new
             {
                 OperatingSystem = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
@@ -87,40 +113,50 @@ public sealed class TransientCandidateExtractionPerformanceTests
                 Storage = "N/A; this measures host-neutral in-memory Imaging and Processing stages.",
                 WarmupCount,
                 MeasurementCount,
+                TrialCount,
                 ExposureDurationSeconds = 1,
                 SourceCadenceSeconds = 5,
-                TemporalContextDurationSeconds = 5,
-                TimingGaps = "None in the synthetic resolved-input stage; temporal resolution is measured by #115.",
+                TemporalContextDurationSeconds = 21,
+                TimingGaps = "Five source starts are separated by five seconds; one-second exposures leave four-second inter-exposure gaps.",
                 Concurrency = 1,
                 InitialBacklog = 0
             },
-            Method = "Measures the borrowed-buffer Imaging primitive, then the validated Processing extraction receipt and deterministic assessment over the same elongated residual. Fixture construction, temporal-background creation, and RGGB detector conversion are excluded.",
+            Method = "Five independent steady trials per workload. Each trial performs five warmups followed by 30 measured operations for the borrowed-buffer Imaging primitive, validated Processing extraction, deterministic assessment, and a complete source-artifact/input-conversion/background/extraction/promotion/assessment path. Per-trial p95 comes from those 30 operation samples; median/minimum/maximum summarize the five trial statistics and are not treated as p95.",
+            WorkloadManifest = "Named W1-T119/W2-T119 full-size deterministic synthetic residuals use the canonical W1/W2 dimensions and formats. A replicated 2x2 RGGB source cell preserves the controlled W2 detector residual. The named derivative is required because canonical no-event sky frames do not provide a stable positive extraction/assessment workload; construction and source checksums are recorded per trial.",
             BufferOwnership = "Target/background are borrowed. Extraction owns state/traversal arrays, foreground-support arrays, bounded component/profile metadata, candidates, and a bounded receipt; no residual frame or retained full-frame output is created.",
             BaselineComparison = new
             {
-                Disposition = "Net-new extraction path",
+                Disposition = "Net-new five-trial composite baseline over the merged #121 extraction implementation",
+                BeforeValue = "N/A; issue #119 adds the first complete five-trial detector composition and changes no production algorithm.",
                 NearestBaseline = "#115 temporal background evidence provides the nearest full-frame Processing/Imaging scan baseline.",
-                Interpretation = "Absolute candidate latency/allocation baseline; no equivalent extraction existed on b595e87. Later #119 locks the full scenario/confusion baseline."
+                Interpretation = "Absolute candidate latency/allocation baseline. Correctness and confusion are locked by the separate #119 oracle matrix; no production algorithm changed in #119."
             },
             Composition = new
             {
                 DetectorStage = "This harness starts from resolved Mono16 detector buffers. W2 source dimensions and bytes describe the canonical Bayer source but are not scanned by this substage.",
-                SourceConversionEvidence = "TestResults/issue-113/transient-contract-input-performance.json",
+                SourceConversionEvidence = "TestResults/issue-113/local/transient-contract-input-performance.json",
                 TemporalWindowEvidence = "TestResults/issue-115/temporal-background-performance.json",
                 Interpretation = "Review source conversion/window evidence together with these detector extraction and assessment measurements; costs are not represented as an end-to-end sum because retained windows overlap."
             },
+            CostAttribution = new
+            {
+                Algorithm = "Measured separately and in the complete path: Linear16 extraction plus Processing validation and receipt creation. Assessment is separately measured without promotion and included with promotion in the complete path.",
+                InputLoadingAndReconstruction = "The complete path measures in-memory source-artifact reconstruction and detector-input conversion. Issue #113 remains the detailed conversion-only baseline at TestResults/issue-113/local/transient-contract-input-performance.json.",
+                TemporalWindow = "The complete path measures centered temporal background construction. Issue #115 remains the detailed causal/centered and persistent-mask baseline.",
+                Persistence = "N/A; host-neutral issue #119 execution performs no filesystem, SQLite, SQL Server, MinIO, or network persistence. Zero observed I/O is not a zero-latency persistence claim."
+            },
+            AlgorithmicComplexity = "Source conversion is O(source pixels); centered background is O(context frames * detector pixels); extraction is O(detector pixels + bounded foreground/component work); deterministic assessment is O(observations and bounded profiles).",
             RuntimeSignals = "N/A; host-neutral extraction adds no queue, worker, health, logging, metric, trace, persistence, or external I/O boundary.",
             Results = results
         };
         await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(evidence, EvidenceJson)).ConfigureAwait(false);
-        TestContext.WriteLine($"Issue #121 performance evidence: {outputPath}");
+        TestContext.WriteLine($"Issue #119 performance evidence: {outputPath}");
     }
 
     public TestContext TestContext { get; set; } = null!;
 
-    private static object Measure(Workload workload)
+    private static TrialMeasurement Measure(Workload workload, Fixture fixture, int trial)
     {
-        var fixture = CreateFixture(workload);
         for (var index = 0; index < WarmupCount; index++)
         {
             AssertResult(Linear16TransientExtraction.Extract(
@@ -128,32 +164,36 @@ public sealed class TransientCandidateExtractionPerformanceTests
         }
 
         GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        var gcStart = GC.GetGCMemoryInfo();
         using var process = Process.GetCurrentProcess();
         process.Refresh();
         var workingSetStart = process.WorkingSet64;
         var liveStart = GC.GetTotalMemory(false);
         var durations = new double[MeasurementCount];
+        var cpuDurations = new double[MeasurementCount];
         var allocationStart = GC.GetTotalAllocatedBytes(true);
-        var cpuStart = process.TotalProcessorTime;
         var peakWorkingSet = workingSetStart;
         var gen0Start = GC.CollectionCount(0);
         var gen1Start = GC.CollectionCount(1);
         var gen2Start = GC.CollectionCount(2);
         for (var index = 0; index < durations.Length; index++)
         {
+            process.Refresh();
+            var cpuStarted = process.TotalProcessorTime;
             var started = Stopwatch.GetTimestamp();
             var result = Linear16TransientExtraction.Extract(
                 fixture.Target, fixture.Background, fixture.HardMask, fixture.SaturationMask, Options);
             durations[index] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-            AssertResult(result);
             process.Refresh();
+            cpuDurations[index] = (process.TotalProcessorTime - cpuStarted).TotalMilliseconds;
             peakWorkingSet = Math.Max(peakWorkingSet, process.WorkingSet64);
+            AssertResult(result);
         }
-        process.Refresh();
-        var cpu = process.TotalProcessorTime - cpuStart;
         var allocated = GC.GetTotalAllocatedBytes(false) - allocationStart;
         Array.Sort(durations);
+        Array.Sort(cpuDurations);
         GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        var gcEnd = GC.GetGCMemoryInfo();
         process.Refresh();
         var workingSetEnd = process.WorkingSet64;
         var liveEnd = GC.GetTotalMemory(false);
@@ -162,6 +202,21 @@ public sealed class TransientCandidateExtractionPerformanceTests
         AssertResult(final);
         var median = durations[durations.Length / 2];
         var p95 = durations[(int)Math.Ceiling(durations.Length * 0.95) - 1];
+        var directMeasurement = new StageMeasurement(
+            median,
+            p95,
+            cpuDurations[cpuDurations.Length / 2],
+            cpuDurations[(int)Math.Ceiling(cpuDurations.Length * 0.95) - 1],
+            cpuDurations.Average(),
+            allocated / (double)MeasurementCount,
+            MeasurementCount / (durations.Sum() / 1000),
+            workingSetStart,
+            workingSetEnd,
+            peakWorkingSet,
+            liveStart,
+            liveEnd,
+            gcStart.GenerationInfo[3].SizeAfterBytes,
+            gcEnd.GenerationInfo[3].SizeAfterBytes);
         var allocatedPerOperation = allocated / (double)MeasurementCount;
         var detectorPixels = (long)workload.DetectorWidth * workload.DetectorHeight;
         Assert.IsLessThan(1_250, p95, $"{workload.Id} extraction p95 exceeded 25% of five-second cadence.");
@@ -182,9 +237,11 @@ public sealed class TransientCandidateExtractionPerformanceTests
         var outputIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(final.Components);
         Assert.AreEqual(workload.ExpectedOutputIdentitySha256, outputIdentity, workload.Id);
         var processing = MeasureProcessing(fixture.Request, workload.Id);
+        var completePath = MeasureCompletePath(workload, fixture);
 
-        return new
+        var detail = new
         {
+            Trial = trial,
             workload.Id,
             Source = new { workload.SourceWidth, workload.SourceHeight, PixelFormat = workload.SourceFormat.ToString(), workload.SourceBytes },
             Detector = new
@@ -193,7 +250,19 @@ public sealed class TransientCandidateExtractionPerformanceTests
                 Height = workload.DetectorHeight,
                 BytesPerFrame = workload.DetectorBytes,
                 BorrowedFrameCount = 2,
-                BorrowedBytes = workload.DetectorBytes * 2L
+                BorrowedBytes = workload.DetectorBytes * 2L,
+                LogicalRetainedWindowFrames = 5,
+                LogicalRetainedWindowBytes = workload.DetectorBytes * 5L
+            },
+            CompletePathSource = new
+            {
+                ActualFixtureOwnedBytes = fixture.SourceTarget.Length + (long)fixture.SourceBackground.Length,
+                LogicalFiveSourceBytes = workload.SourceBytes * 5L,
+                TargetSha256 = Convert.ToHexString(SHA256.HashData(fixture.SourceTarget)),
+                BackgroundSha256 = Convert.ToHexString(SHA256.HashData(fixture.SourceBackground)),
+                FullFrameCopyAccounting = workload.SourceFormat == CameraPixelFormat.Mono16
+                    ? "Two unique borrowed source buffers back five temporal positions; input conversion makes no source-sized copy. One detector-sized background and bounded extraction state/traversal arrays are owned per operation."
+                    : "Two unique RGGB source buffers back five temporal positions. Conversion owns five detector-sized Mono16 arrays; centered background owns one detector-sized output. Extraction owns bounded detector state/traversal arrays."
             },
             Scan = new
             {
@@ -218,17 +287,23 @@ public sealed class TransientCandidateExtractionPerformanceTests
                 final.SaturatedPixelCount
             },
             Latency = new { MedianMilliseconds = median, P95Milliseconds = p95 },
-            CpuMillisecondsPerFrame = cpu.TotalMilliseconds / MeasurementCount,
+            Cpu = new
+            {
+                directMeasurement.MedianCpuMilliseconds,
+                directMeasurement.P95CpuMilliseconds,
+                directMeasurement.MeanCpuMilliseconds,
+                Sampling = "Process.TotalProcessorTime delta per measured operation; process-wide and timer-quantized."
+            },
             AllocatedBytesPerOperation = allocatedPerOperation,
             AllocationRateBytesPerSecond = allocatedPerOperation / (median / 1000),
-            ThroughputFramesPerSecond = 1000 / median,
+            ThroughputFramesPerSecond = MeasurementCount / (durations.Sum() / 1000),
             ThroughputDetectorMiBPerSecond = final.BytesScanned / 1024d / 1024d / (median / 1000),
             CostMillisecondsPerElapsedInputSecond = median / 5,
             Memory = new
             {
                 WorkingSetStartBytes = workingSetStart,
                 WorkingSetEndBytes = workingSetEnd,
-                PeakWorkingSetBytes = peakWorkingSet,
+                MaximumObservedPostOperationWorkingSetBytes = peakWorkingSet,
                 ManagedLiveStartBytes = liveStart,
                 ManagedLiveEndBytes = liveEnd,
                 RetainedDeltaBytes = liveEnd - liveStart,
@@ -236,7 +311,11 @@ public sealed class TransientCandidateExtractionPerformanceTests
                 TemporaryResidualBytes = 0,
                 TemporaryTraversalBytes = detectorPixels * sizeof(int),
                 LohArraysPerOperation = 2,
-                RetainedWindowBytes = 0
+                LogicalRetainedWindowBytes = workload.DetectorBytes * 5L,
+                LohSizeStartAfterGcBytes = gcStart.GenerationInfo[3].SizeAfterBytes,
+                LohSizeEndAfterGcBytes = gcEnd.GenerationInfo[3].SizeAfterBytes,
+                LohFragmentationStartAfterGcBytes = gcStart.GenerationInfo[3].FragmentationAfterBytes,
+                LohFragmentationEndAfterGcBytes = gcEnd.GenerationInfo[3].FragmentationAfterBytes
             },
             Collections = new
             {
@@ -245,11 +324,13 @@ public sealed class TransientCandidateExtractionPerformanceTests
                 Gen2 = GC.CollectionCount(2) - gen2Start
             },
             Processing = processing,
+            CompletePath = completePath,
             Backlog = new { Count = 0, Bytes = 0, OldestAgeSeconds = 0, DrainRate = "N/A; synchronous pure algorithm" }
         };
+        return new TrialMeasurement(trial, directMeasurement, processing, completePath, detail);
     }
 
-    private static object MeasureProcessing(TransientCandidateExtractionRequest request, string workloadId)
+    private static ProcessingMeasurement MeasureProcessing(TransientCandidateExtractionRequest request, string workloadId)
     {
         for (var index = 0; index < WarmupCount; index++)
         {
@@ -287,39 +368,127 @@ public sealed class TransientCandidateExtractionPerformanceTests
         var assessment = TransientAssessmentFactory.Create(assessmentRequest);
         AssertAssessment(assessment);
         var assessmentReceipt = TransientAssessmentJson.Serialize(assessment.Descriptor!);
-        return new
+        return new ProcessingMeasurement(
+            extractionMeasurement,
+            extractionReceipt.Length,
+            Convert.ToHexString(SHA256.HashData(extractionReceipt)),
+            assessmentMeasurement,
+            assessmentReceipt.Length,
+            Convert.ToHexString(SHA256.HashData(assessmentReceipt)));
+    }
+
+    private static CompletePathMeasurement MeasureCompletePath(Workload workload, Fixture fixture)
+    {
+        for (var index = 0; index < WarmupCount; index++)
         {
-            CandidateExtraction = extractionMeasurement,
-            ExtractionReceiptBytes = extractionReceipt.Length,
-            ExtractionReceiptIdentitySha256 = Convert.ToHexString(SHA256.HashData(extractionReceipt)),
-            Assessment = assessmentMeasurement,
-            AssessmentReceiptBytes = assessmentReceipt.Length,
-            AssessmentReceiptIdentitySha256 = Convert.ToHexString(SHA256.HashData(assessmentReceipt))
-        };
+            AssertCompletePath(ExecuteCompletePath(workload, fixture));
+        }
+        var stage = MeasureStage(() => AssertCompletePath(ExecuteCompletePath(workload, fixture)));
+        Assert.IsLessThan(1_250, stage.P95Milliseconds,
+            $"{workload.Id} complete detector p95 exceeded 25% of five-second cadence.");
+        var final = ExecuteCompletePath(workload, fixture);
+        AssertCompletePath(final);
+        var extractionReceipt = TransientCandidateExtractionJson.Serialize(final.Extraction.Descriptor!);
+        var assessmentReceipt = TransientAssessmentJson.Serialize(final.Assessment.Descriptor!);
+        return new CompletePathMeasurement(
+            stage,
+            Convert.ToHexString(SHA256.HashData(extractionReceipt)),
+            Convert.ToHexString(SHA256.HashData(assessmentReceipt)),
+            final.Extraction.Candidates.Count,
+            stage.MedianMilliseconds / 5,
+            stage.ThroughputOperationsPerSecond);
+    }
+
+    private static CompletePathOutcome ExecuteCompletePath(Workload workload, Fixture fixture)
+    {
+        var request = CreateProcessingRequest(
+            workload,
+            fixture.SourceTarget,
+            fixture.SourceBackground,
+            sourceResolution: true);
+        var extraction = TransientCandidateExtractionFactory.Create(request);
+        if (extraction.Status != TransientCandidateExtractionStatus.Produced || extraction.Candidates.Count == 0)
+        {
+            return new CompletePathOutcome(extraction, null!);
+        }
+        var observation = TransientObservationFactory.CreateAssessmentObservation(new TransientObservationPromotionRequest(
+            extraction.Candidates[0].CandidateId,
+            Guid.Parse("f1000000-0000-0000-0000-000000000001"),
+            0,
+            extraction.Descriptor!));
+        var assessment = TransientAssessmentFactory.Create(new TransientAssessmentExecutionRequest(
+            extraction.Candidates[0].EventId,
+            Guid.Parse("f2000000-0000-0000-0000-000000000001"),
+            request.CreatedUtc.AddSeconds(1),
+            TransientAssessmentAuthority.Provisional,
+            [observation],
+            AssessmentOptions,
+            []));
+        return new CompletePathOutcome(extraction, assessment);
+    }
+
+    private static void AssertCompletePath(CompletePathOutcome outcome)
+    {
+        AssertExtraction(outcome.Extraction);
+        AssertAssessment(outcome.Assessment);
     }
 
     private static StageMeasurement MeasureStage(Action action)
     {
         GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        var gcStart = GC.GetGCMemoryInfo();
         using var process = Process.GetCurrentProcess();
+        process.Refresh();
+        var workingSetStart = process.WorkingSet64;
+        var peakWorkingSet = workingSetStart;
+        var liveStart = GC.GetTotalMemory(false);
         var durations = new double[MeasurementCount];
+        var cpuDurations = new double[MeasurementCount];
         var allocationStart = GC.GetTotalAllocatedBytes(true);
-        var cpuStart = process.TotalProcessorTime;
         for (var index = 0; index < durations.Length; index++)
         {
+            process.Refresh();
+            var cpuStarted = process.TotalProcessorTime;
             var started = Stopwatch.GetTimestamp();
             action();
             durations[index] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            process.Refresh();
+            cpuDurations[index] = (process.TotalProcessorTime - cpuStarted).TotalMilliseconds;
+            peakWorkingSet = Math.Max(peakWorkingSet, process.WorkingSet64);
         }
-        process.Refresh();
-        var cpu = process.TotalProcessorTime - cpuStart;
         var allocated = GC.GetTotalAllocatedBytes(false) - allocationStart;
         Array.Sort(durations);
+        Array.Sort(cpuDurations);
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        var gcEnd = GC.GetGCMemoryInfo();
+        process.Refresh();
         return new StageMeasurement(
             durations[durations.Length / 2],
             durations[(int)Math.Ceiling(durations.Length * 0.95) - 1],
-            cpu.TotalMilliseconds / MeasurementCount,
-            allocated / (double)MeasurementCount);
+            cpuDurations[cpuDurations.Length / 2],
+            cpuDurations[(int)Math.Ceiling(cpuDurations.Length * 0.95) - 1],
+            cpuDurations.Average(),
+            allocated / (double)MeasurementCount,
+            MeasurementCount / (durations.Sum() / 1000),
+            workingSetStart,
+            process.WorkingSet64,
+            peakWorkingSet,
+            liveStart,
+            GC.GetTotalMemory(false),
+            gcStart.GenerationInfo[3].SizeAfterBytes,
+            gcEnd.GenerationInfo[3].SizeAfterBytes);
+    }
+
+    private static StageSummary Summarize(IEnumerable<StageMeasurement> values)
+    {
+        var samples = values.ToArray();
+        return new StageSummary(
+            Distribution.Create(samples.Select(static value => value.MedianMilliseconds)),
+            Distribution.Create(samples.Select(static value => value.P95Milliseconds)),
+            Distribution.Create(samples.Select(static value => value.MedianCpuMilliseconds)),
+            Distribution.Create(samples.Select(static value => value.P95CpuMilliseconds)),
+            Distribution.Create(samples.Select(static value => value.AllocatedBytesPerOperation)),
+            Distribution.Create(samples.Select(static value => value.ThroughputOperationsPerSecond)));
     }
 
     private static Fixture CreateFixture(Workload workload)
@@ -348,18 +517,27 @@ public sealed class TransientCandidateExtractionPerformanceTests
         }
         var stride = workload.DetectorWidth * 2;
         var request = CreateProcessingRequest(workload, targetBytes, backgroundBytes);
+        var sourceTarget = workload.SourceFormat == CameraPixelFormat.Mono16
+            ? targetBytes
+            : ExpandDetectorToRggb(workload, targetBytes);
+        var sourceBackground = workload.SourceFormat == CameraPixelFormat.Mono16
+            ? backgroundBytes
+            : ExpandDetectorToRggb(workload, backgroundBytes);
         return new Fixture(
             new Linear16Frame(workload.DetectorWidth, workload.DetectorHeight, stride, CameraPixelFormat.Mono16, targetBytes),
             new Linear16Frame(workload.DetectorWidth, workload.DetectorHeight, stride, CameraPixelFormat.Mono16, backgroundBytes),
             Linear16MaskOperations.Empty(workload.DetectorWidth, workload.DetectorHeight),
             Linear16MaskOperations.Empty(workload.DetectorWidth, workload.DetectorHeight),
-            request);
+            request,
+            sourceTarget,
+            sourceBackground);
     }
 
     private static TransientCandidateExtractionRequest CreateProcessingRequest(
         Workload workload,
         byte[] targetBytes,
-        byte[] backgroundBytes)
+        byte[] backgroundBytes,
+        bool sourceResolution = false)
     {
         var positions = new[]
         {
@@ -374,7 +552,8 @@ public sealed class TransientCandidateExtractionPerformanceTests
             position => CreateSource(
                 workload,
                 position,
-                position == TransientTemporalPosition.N ? targetBytes : backgroundBytes));
+                position == TransientTemporalPosition.N ? targetBytes : backgroundBytes,
+                sourceResolution));
         var background = TransientTemporalBackgroundFactory.Create(new TransientTemporalBackgroundRequest(
             TransientTemporalBackgroundKind.CenteredFinal,
             window[TransientTemporalPosition.N],
@@ -402,7 +581,8 @@ public sealed class TransientCandidateExtractionPerformanceTests
     private static TransientTemporalSource CreateSource(
         Workload workload,
         TransientTemporalPosition position,
-        byte[] payload)
+        byte[] payload,
+        bool sourceResolution)
     {
         var sequence = 100 + (int)position;
         var started = TransientTestData.Epoch.AddSeconds((int)position * 5 + 20);
@@ -410,6 +590,9 @@ public sealed class TransientCandidateExtractionPerformanceTests
         var artifactId = Guid.Parse($"f5000000-0000-0000-0000-{sequence:D12}");
         var evidenceId = Guid.Parse($"f6000000-0000-0000-0000-{sequence:D12}");
         var template = TransientTestData.CreateDetectorSource(CameraPixelFormat.Mono16);
+        var width = sourceResolution ? workload.SourceWidth : workload.DetectorWidth;
+        var height = sourceResolution ? workload.SourceHeight : workload.DetectorHeight;
+        var pixelFormat = sourceResolution ? workload.SourceFormat : CameraPixelFormat.Mono16;
         var artifact = template.Artifact with
         {
             ArtifactId = artifactId,
@@ -420,9 +603,13 @@ public sealed class TransientCandidateExtractionPerformanceTests
             ObservationEndedUtc = ended,
             Layout = template.Artifact.Layout! with
             {
-                Width = workload.DetectorWidth,
-                Height = workload.DetectorHeight,
-                StrideBytes = workload.DetectorWidth * 2,
+                Width = width,
+                Height = height,
+                StrideBytes = width * 2,
+                PixelFormat = pixelFormat,
+                CfaPattern = pixelFormat == CameraPixelFormat.BayerRggb16
+                    ? ColorFilterArrayPattern.Rggb
+                    : ColorFilterArrayPattern.None,
                 ByteLength = payload.Length
             }
         };
@@ -442,6 +629,8 @@ public sealed class TransientCandidateExtractionPerformanceTests
         };
         var input = TransientDetectorInputFactory.Create(artifact, source, template.Levels);
         Assert.IsTrue(input.Validation.IsValid, input.Validation.ReasonCode);
+        var detectorWidth = input.Input!.Descriptor.Layout.Width;
+        var detectorHeight = input.Input.Descriptor.Layout.Height;
         var masks = new[]
         {
             TransientDetectorMaskKind.Sky,
@@ -453,13 +642,35 @@ public sealed class TransientCandidateExtractionPerformanceTests
         }.Select(kind => TransientDetectorMask.Create(
             kind,
             new ProcessingAlgorithmIdentity($"performance-{kind}-mask", "v1"),
-            Linear16MaskOperations.Empty(workload.DetectorWidth, workload.DetectorHeight))).ToArray();
+            Linear16MaskOperations.Empty(detectorWidth, detectorHeight))).ToArray();
         return new TransientTemporalSource(
             position,
             sequence,
             input.Input!,
             new TransientSensitivityV1("performance-response-v1", 1, 1),
             masks);
+    }
+
+    private static byte[] ExpandDetectorToRggb(Workload workload, byte[] detector)
+    {
+        var source = new byte[workload.SourceBytes];
+        for (var y = 0; y < workload.DetectorHeight; y++)
+        {
+            for (var x = 0; x < workload.DetectorWidth; x++)
+            {
+                var detectorOffset = (y * workload.DetectorWidth + x) * 2;
+                for (var sourceY = y * 2; sourceY < y * 2 + 2; sourceY++)
+                {
+                    for (var sourceX = x * 2; sourceX < x * 2 + 2; sourceX++)
+                    {
+                        var sourceOffset = (sourceY * workload.SourceWidth + sourceX) * 2;
+                        source[sourceOffset] = detector[detectorOffset];
+                        source[sourceOffset + 1] = detector[detectorOffset + 1];
+                    }
+                }
+            }
+        }
+        return source;
     }
 
     private static void AssertResult(Linear16TransientExtractionResult result)
@@ -525,16 +736,73 @@ public sealed class TransientCandidateExtractionPerformanceTests
         Linear16Frame Background,
         Linear16PixelMask HardMask,
         Linear16PixelMask SaturationMask,
-        TransientCandidateExtractionRequest Request);
+        TransientCandidateExtractionRequest Request,
+        byte[] SourceTarget,
+        byte[] SourceBackground);
 
     private sealed record StageMeasurement(
         double MedianMilliseconds,
         double P95Milliseconds,
-        double CpuMillisecondsPerOperation,
-        double AllocatedBytesPerOperation);
+        double MedianCpuMilliseconds,
+        double P95CpuMilliseconds,
+        double MeanCpuMilliseconds,
+        double AllocatedBytesPerOperation,
+        double ThroughputOperationsPerSecond,
+        long WorkingSetStartBytes,
+        long WorkingSetEndBytes,
+        long MaximumObservedPostOperationWorkingSetBytes,
+        long ManagedLiveStartBytes,
+        long ManagedLiveEndBytes,
+        long LohSizeStartAfterGcBytes,
+        long LohSizeEndAfterGcBytes);
+
+    private sealed record ProcessingMeasurement(
+        StageMeasurement CandidateExtraction,
+        int ExtractionReceiptBytes,
+        string ExtractionReceiptIdentitySha256,
+        StageMeasurement Assessment,
+        int AssessmentReceiptBytes,
+        string AssessmentReceiptIdentitySha256);
+
+    private sealed record TrialMeasurement(
+        int Trial,
+        StageMeasurement DirectAlgorithm,
+        ProcessingMeasurement Processing,
+        CompletePathMeasurement CompletePath,
+        object Detail);
+
+    private sealed record CompletePathMeasurement(
+        StageMeasurement Stage,
+        string ExtractionReceiptIdentitySha256,
+        string AssessmentReceiptIdentitySha256,
+        int CandidateCount,
+        double CostMillisecondsPerElapsedInputSecond,
+        double FramesPerSecond);
+
+    private sealed record CompletePathOutcome(
+        TransientCandidateExtractionOutcome Extraction,
+        TransientAssessmentExecutionOutcome Assessment);
+
+    private sealed record StageSummary(
+        Distribution MedianWallMilliseconds,
+        Distribution P95WallMilliseconds,
+        Distribution MedianCpuMilliseconds,
+        Distribution P95CpuMilliseconds,
+        Distribution AllocatedBytesPerOperation,
+        Distribution ThroughputOperationsPerSecond);
+
+    private sealed record Distribution(int Count, double Median, double Minimum, double Maximum)
+    {
+        public static Distribution Create(IEnumerable<double> values)
+        {
+            var ordered = values.Order().ToArray();
+            return new Distribution(ordered.Length, ordered[ordered.Length / 2], ordered[0], ordered[^1]);
+        }
+    }
 
     private sealed record Workload(
         string Id,
+        string BaseWorkloadId,
         int SourceWidth,
         int SourceHeight,
         CameraPixelFormat SourceFormat,
@@ -543,10 +811,10 @@ public sealed class TransientCandidateExtractionPerformanceTests
         string ExpectedOutputIdentitySha256)
     {
         public static Workload W1 { get; } = new(
-            "W1", 1936, 1216, CameraPixelFormat.Mono16, 1936, 1216,
+            "W1-T119", "W1", 1936, 1216, CameraPixelFormat.Mono16, 1936, 1216,
             "0F571F5488EF7881FF61D41F7212110F665FA9F678146DF03F16CE791859F8EE");
         public static Workload W2 { get; } = new(
-            "W2", 3096, 2080, CameraPixelFormat.BayerRggb16, 1548, 1040,
+            "W2-T119", "W2", 3096, 2080, CameraPixelFormat.BayerRggb16, 1548, 1040,
             "8679D6D589E0DD706B91826B6F843CB368C7232A3359C9AE22B02453FECB2CCF");
         public int SourceBytes => checked(SourceWidth * SourceHeight * 2);
         public int DetectorBytes => checked(DetectorWidth * DetectorHeight * 2);

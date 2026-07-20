@@ -5,12 +5,9 @@
   "cases": [
     {
       "id": "no-event",
-      "oracleLabel": "none",
       "captureOffsetSeconds": 0,
-      "expectedRawMinimum": 0,
-      "expectedRawMaximum": 1,
-      "expectedRawMean": 0.5416666666666666,
-      "expectedMono16Sha256": "D9438A1E5E3B6CC7D74EF56B4C6054C74D7FDC3F06E22845D9398483CB8211CC",
+      "rawCaptureOffsetsSeconds": [0],
+      "assessmentOffsetsSeconds": [],
       "definition": {
         "schemaVersion": "virtual-transient-scenario-v1",
         "scenarioId": "fixture-61-00",
@@ -24,12 +21,9 @@
     },
     {
       "id": "short-track",
-      "oracleLabel": "meteor",
       "captureOffsetSeconds": 0,
-      "expectedRawMinimum": 0,
-      "expectedRawMaximum": 836,
-      "expectedRawMean": 5.259765625,
-      "expectedMono16Sha256": "C6D59E2BBCF44F6820A9E77E5E9A926BDBC0A9CEAB376544FF32F0D1037E6206",
+      "rawCaptureOffsetsSeconds": [0],
+      "assessmentOffsetsSeconds": [0],
       "definition": {
         "schemaVersion": "virtual-transient-scenario-v1",
         "scenarioId": "fixture-61-01",
@@ -51,12 +45,9 @@
     },
     {
       "id": "fragmented-flare",
-      "oracleLabel": "fireball",
       "captureOffsetSeconds": 0,
-      "expectedRawMinimum": 0,
-      "expectedRawMaximum": 65535,
-      "expectedRawMean": 420.3030598958333,
-      "expectedMono16Sha256": "BE4C2467147DDE396598AC78FB1D5F32004F0A443FD2D3DDB2B04C4BB32A0D52",
+      "rawCaptureOffsetsSeconds": [0],
+      "assessmentOffsetsSeconds": [0],
       "definition": {
         "schemaVersion": "virtual-transient-scenario-v1",
         "scenarioId": "fixture-61-02",
@@ -88,13 +79,9 @@
     },
     {
       "id": "boundary-crossing",
-      "oracleLabel": "boundary meteor",
       "captureOffsetSeconds": 0,
-      "expectedRawMinimum": 0,
-      "expectedRawMaximum": 746,
-      "expectedRawMean": 3.7766927083333335,
-      "expectedMono16Sha256": "7034977C6C7273EE207FF930B0803213A1BCDAFB7724E1C842A45134CA4381A7",
-      "expectedSecondMono16Sha256": "B13D64D6E20EF8867AD2DC7374B1F2753E7ACAABC4D206630E27A3F0458463BA",
+      "rawCaptureOffsetsSeconds": [0, 1],
+      "assessmentOffsetsSeconds": [0, 1],
       "definition": {
         "schemaVersion": "virtual-transient-scenario-v1",
         "scenarioId": "fixture-61-03",
@@ -113,12 +100,9 @@
     },
     {
       "id": "long-shadow-track",
-      "oracleLabel": "satellite",
       "captureOffsetSeconds": 13.5,
-      "expectedRawMinimum": 0,
-      "expectedRawMaximum": 16,
-      "expectedRawMean": 0.5729166666666666,
-      "expectedMono16Sha256": "138BC7259C0B7530C63FA3A86DD4E6FD754045357E195622187CE988FA62D514",
+      "rawCaptureOffsetsSeconds": [13.5],
+      "assessmentOffsetsSeconds": [11.5, 12.5, 13.5],
       "definition": {
         "schemaVersion": "virtual-transient-scenario-v1",
         "scenarioId": "fixture-61-04",
@@ -140,12 +124,9 @@
     },
     {
       "id": "blinking-track",
-      "oracleLabel": "aircraft",
       "captureOffsetSeconds": 0,
-      "expectedRawMinimum": 0,
-      "expectedRawMaximum": 180,
-      "expectedRawMean": 1.7174479166666667,
-      "expectedMono16Sha256": "2B45C8EAD0B20364D0F990C1725BB03E42ED20AB05C93F80959B6C1314AB4378",
+      "rawCaptureOffsetsSeconds": [0],
+      "assessmentOffsetsSeconds": [0, 0.5, 1],
       "definition": {
         "schemaVersion": "virtual-transient-scenario-v1",
         "scenarioId": "fixture-61-05",
@@ -172,12 +153,9 @@
     },
     {
       "id": "sensor-artifacts",
-      "oracleLabel": "cosmic ray and hot pixels",
       "captureOffsetSeconds": 0,
-      "expectedRawMinimum": 0,
-      "expectedRawMaximum": 19973,
-      "expectedRawMean": 42.858723958333336,
-      "expectedMono16Sha256": "DCECBCCB97C5869632E3C54A60C0DF2BCA7A422E1E0DAEE693802BC5A870212B",
+      "rawCaptureOffsetsSeconds": [0],
+      "assessmentOffsetsSeconds": [0],
       "definition": {
         "schemaVersion": "virtual-transient-scenario-v1",
         "scenarioId": "fixture-61-06",

@@ -31,6 +31,9 @@
     <None Include="..\fixtures\virtual-sky\transient-scenarios-v1.json" Link="Fixtures\transient-scenarios-v1.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\fixtures\virtual-sky\transient-detection-oracle-v1.json" Link="Fixtures\transient-detection-oracle-v1.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.sample.json" Link="cameraagent.sample.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

@@ -231,7 +231,11 @@ algorithm identity, seed/epoch, logical integration interval, sample count, and
 sky/sensor primitive counts. Manifest v1/v2 parsing verifies those values and
 the canonical parameter hash. Processing recipes receive the normal image
 artifact, not simulator provenance as a detector feature. Semantic oracle labels
-exist only in `tests/fixtures/virtual-sky/transient-scenarios-v1.json`.
+exist only in the separate test-owned
+`tests/fixtures/virtual-sky/transient-detection-oracle-v1.json`. The stimulus
+manifest contains rendering inputs and capture offsets but no expected label,
+raw checksum, geometry, candidate, assessment, or event identity. Matrix tests
+complete detector execution from that manifest before loading the oracle.
 
 For example, one generic sensor-stage fixture can be configured as:
 
