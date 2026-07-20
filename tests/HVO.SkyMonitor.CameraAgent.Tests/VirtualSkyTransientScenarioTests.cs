@@ -1,6 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -15,7 +17,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed class VirtualSkyTransientScenarioTests
 {
     private static readonly DateTimeOffset FixtureUtc = new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
-    private static readonly JsonSerializerOptions FixtureSerializerOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions FixtureSerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+    };
     private static readonly Dictionary<CameraPixelFormat, (string First, string Later)> ExpectedChecksums =
         new Dictionary<CameraPixelFormat, (string First, string Later)>
         {
@@ -29,81 +34,66 @@ public sealed class VirtualSkyTransientScenarioTests
                 "32DCB2000A7B01EC85D92C33B2FA70AE1DA74BA6365522282DA8035C080140F6",
                 "D9D898DFC347F9C8272C6B31338AD76ED2900E288A3A761FC1C0DCBB55FEFEAB")
         };
-    private static readonly Dictionary<string, string> ExpectedComponentIdentities = new(StringComparer.Ordinal)
-    {
-        ["no-event"] = "4F53CDA18C2BAA0C0354BB5F9A3ECBE5ED12AB4D8E11BA873C2F11161202B945",
-        ["short-track"] = "B560555D29A89A08C2F0CDDD3BE4061E677FAB84DB1E701E803EE427195436C8",
-        ["fragmented-flare"] = "54F7DB647708134A68908FBFC3FB5CBFCB3BBF02E3526FF35674B4F5C918E43C",
-        ["boundary-crossing"] = "963EB61991EC5D053EDCD6278CB82ABC79600728BE8C40D8BD8045093FB74CD5",
-        ["long-shadow-track"] = "6548D195C6544BB40262C552E5E5BC1B927D9C67C7E3051EBE6E6A7B96075664",
-        ["blinking-track"] = "FD222CC77C931A8ADB6FE90071EB480B427359DDB7FA7F70FD2F148D73B83792",
-        ["sensor-artifacts"] = "60DA335E06DC1D8E2B9CD9DB0EA7F89BFF1FB4DC608DFF17FEBB17323B80A1B6"
-    };
-    private const string BoundarySecondComponentIdentity = "6216EB6FE3C5EDCDE44709EB01EF7B651343A142414ACDE4836AB992BFFDC392";
-    private static readonly Dictionary<string, (TransientClassification Classification, TransientMeteorSeverity? Severity)>
-        ExpectedAssessments = new(StringComparer.Ordinal)
-        {
-            ["short-track"] = (TransientClassification.Meteor, TransientMeteorSeverity.Meteor),
-            ["fragmented-flare"] = (TransientClassification.Meteor, TransientMeteorSeverity.Fireball),
-            ["boundary-crossing"] = (TransientClassification.Meteor, TransientMeteorSeverity.Meteor),
-            ["long-shadow-track"] = (TransientClassification.Satellite, null),
-            ["blinking-track"] = (TransientClassification.Aircraft, null),
-            ["sensor-artifacts"] = (TransientClassification.SensorArtifact, null)
-        };
+    private const string FixtureFileName = "transient-scenarios-v1.json";
+    private const string OracleFileName = "transient-detection-oracle-v1.json";
+    private static readonly string[] ExpectedSupplementalCoverage =
+        ["stable-cloud", "persistent-star-residual", "persistent-mask-kinds"];
 
     [TestMethod]
     public async Task FixtureMatrix_HasStableOpaqueRawEvidence()
     {
-        var manifest = JsonSerializer.Deserialize<TransientFixtureManifest>(
-            await File.ReadAllTextAsync(
-                Path.Combine(AppContext.BaseDirectory, "Fixtures", "transient-scenarios-v1.json"))
-                .ConfigureAwait(false),
-            FixtureSerializerOptions)!;
+        var (manifestBytes, manifest) = await LoadManifestAsync().ConfigureAwait(false);
         Assert.AreEqual("virtual-transient-fixture-v1", manifest.SchemaVersion);
-        for (var scenarioIndex = 0; scenarioIndex < manifest.Cases.Count; scenarioIndex++)
+        var actualByCase = new Dictionary<string, IReadOnlyList<RawEvidence>>(StringComparer.Ordinal);
+        foreach (var scenario in manifest.Cases)
         {
-            var scenario = manifest.Cases[scenarioIndex];
-            var serializedDefinition = JsonSerializer.Serialize(scenario.Definition);
-            Assert.IsFalse(serializedDefinition.Contains(scenario.OracleLabel, StringComparison.OrdinalIgnoreCase));
             var module = Module();
             await module.InitializeAsync(
                 Config(CameraPixelFormat.Mono16, scenario.Definition), CancellationToken.None).ConfigureAwait(false);
-            var capture = await module.CaptureAsync(
-                new CaptureRequest(
-                    manifest.Utc.AddSeconds(scenario.CaptureOffsetSeconds),
-                    TimeSpan.FromSeconds(5),
-                    CaptureMode.Still,
-                    new CaptureSetpoint(TimeSpan.FromSeconds(manifest.ExposureSeconds), 1, null, null)),
-                CancellationToken.None).ConfigureAwait(false);
-            var checksum = Convert.ToHexString(SHA256.HashData(capture.Frame!.PixelData.Span));
-            var statistics = RawStatistics(capture.Frame.PixelData.Span);
-            var parameters = capture.Frame.Metadata.Scene!.TransientScenario!.Parameters.GetRawText();
-            Assert.IsFalse(parameters.Contains(scenario.OracleLabel, StringComparison.OrdinalIgnoreCase));
-            TestContext.WriteLine(
-                $"{scenario.Id}: min={statistics.Minimum}, max={statistics.Maximum}, " +
-                $"mean={statistics.Mean:R}, sha256={checksum}");
-            if (scenario.ExpectedMono16Sha256.Length > 0)
+            var captures = new List<RawEvidence>();
+            foreach (var offset in scenario.RawCaptureOffsetsSeconds)
             {
-                Assert.AreEqual(scenario.ExpectedMono16Sha256, checksum, scenario.Id);
-                Assert.AreEqual(scenario.ExpectedRawMinimum, statistics.Minimum, scenario.Id);
-                Assert.AreEqual(scenario.ExpectedRawMaximum, statistics.Maximum, scenario.Id);
-                Assert.AreEqual(scenario.ExpectedRawMean, statistics.Mean, 1e-12, scenario.Id);
-            }
-            if (scenario.ExpectedSecondMono16Sha256 is not null)
-            {
-                var second = await module.CaptureAsync(
+                var capture = await module.CaptureAsync(
                     new CaptureRequest(
-                        manifest.Utc.AddSeconds(scenario.CaptureOffsetSeconds + manifest.ExposureSeconds),
+                        manifest.Utc.AddSeconds(offset),
                         TimeSpan.FromSeconds(5),
                         CaptureMode.Still,
                         new CaptureSetpoint(TimeSpan.FromSeconds(manifest.ExposureSeconds), 1, null, null)),
                     CancellationToken.None).ConfigureAwait(false);
-                var secondChecksum = Convert.ToHexString(SHA256.HashData(second.Frame!.PixelData.Span));
-                TestContext.WriteLine($"{scenario.Id}: second-sha256={secondChecksum}");
-                if (scenario.ExpectedSecondMono16Sha256.Length > 0)
-                {
-                    Assert.AreEqual(scenario.ExpectedSecondMono16Sha256, secondChecksum, scenario.Id);
-                }
+                var checksum = Convert.ToHexString(SHA256.HashData(capture.Frame!.PixelData.Span));
+                var statistics = RawStatistics(capture.Frame.PixelData.Span);
+                captures.Add(new RawEvidence(offset, statistics.Minimum, statistics.Maximum, statistics.Mean, checksum));
+                TestContext.WriteLine(
+                    $"{scenario.Id}@{offset:R}: min={statistics.Minimum}, max={statistics.Maximum}, " +
+                    $"mean={statistics.Mean:R}, sha256={checksum}");
+            }
+            actualByCase.Add(scenario.Id, captures);
+        }
+
+        var oracle = await LoadOracleAsync().ConfigureAwait(false);
+        Assert.AreEqual("virtual-transient-detection-oracle-v1", oracle.SchemaVersion);
+        Assert.IsTrue(oracle.VirtualOnly);
+        Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(manifest), oracle.InputManifestSha256);
+        var manifestJson = Encoding.UTF8.GetString(manifestBytes);
+        Assert.IsFalse(manifestJson.Contains(oracle.OracleSentinel, StringComparison.Ordinal));
+        CollectionAssert.AreEquivalent(
+            manifest.Cases.Select(static value => value.Id).ToArray(),
+            oracle.Cases.Select(static value => value.Id).ToArray());
+        foreach (var expected in oracle.Cases)
+        {
+            var scenario = manifest.Cases.Single(value => value.Id == expected.Id);
+            var detectorConfiguration = JsonSerializer.Serialize(scenario.Definition);
+            Assert.IsFalse(detectorConfiguration.Contains(oracle.OracleSentinel, StringComparison.Ordinal));
+            Assert.IsFalse(detectorConfiguration.Contains(expected.Label, StringComparison.OrdinalIgnoreCase));
+            var actual = actualByCase[expected.Id];
+            Assert.HasCount(expected.Raw.Count, actual, expected.Id);
+            for (var index = 0; index < expected.Raw.Count; index++)
+            {
+                Assert.AreEqual(expected.Raw[index].OffsetSeconds, actual[index].OffsetSeconds, 1e-12, expected.Id);
+                Assert.AreEqual(expected.Raw[index].MinimumAdu, actual[index].MinimumAdu, expected.Id);
+                Assert.AreEqual(expected.Raw[index].MaximumAdu, actual[index].MaximumAdu, expected.Id);
+                Assert.AreEqual(expected.Raw[index].MeanAdu, actual[index].MeanAdu, 1e-12, expected.Id);
+                Assert.AreEqual(expected.Raw[index].Sha256, actual[index].Sha256, expected.Id);
             }
         }
     }
@@ -111,11 +101,7 @@ public sealed class VirtualSkyTransientScenarioTests
     [TestMethod]
     public async Task FixtureMatrix_ProducesMeasuredResidualGeometryWithoutOracleInputs()
     {
-        var manifest = JsonSerializer.Deserialize<TransientFixtureManifest>(
-            await File.ReadAllTextAsync(
-                Path.Combine(AppContext.BaseDirectory, "Fixtures", "transient-scenarios-v1.json"))
-                .ConfigureAwait(false),
-            FixtureSerializerOptions)!;
+        var (_, manifest) = await LoadManifestAsync().ConfigureAwait(false);
         var options = new TransientCandidateExtractionOptionsV1(
             MinimumResidualAdu: 1,
             MinimumComponentPixels: 2,
@@ -126,122 +112,97 @@ public sealed class VirtualSkyTransientScenarioTests
             MaximumForegroundPixels: 100_000,
             MaximumFragmentGapPixels: 3,
             MinimumFragmentAlignmentCosine: 0.85);
-        var confusion = new Dictionary<string, int>(StringComparer.Ordinal);
-        var extractedEventCases = 0;
-        var falsePositiveCases = 0;
-        for (var scenarioIndex = 0; scenarioIndex < manifest.Cases.Count; scenarioIndex++)
+        var actualCases = new List<ScenarioEvidence>();
+        foreach (var scenario in manifest.Cases)
         {
-            var scenario = manifest.Cases[scenarioIndex];
             var module = Module();
             var config = Config(CameraPixelFormat.Mono16, scenario.Definition);
             await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
-            var targetOffset = scenario.CaptureOffsetSeconds;
-            var result = await ExtractAtAsync(module, config, manifest, scenarioIndex, targetOffset, options)
-                .ConfigureAwait(false);
-            var componentIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(result.Candidates.Select(
-                static candidate => new { candidate.Geometry, candidate.Features }));
-            TestContext.WriteLine(
-                $"{scenario.Id}: identity={componentIdentity}, components={result.Candidates.Count}; " +
-                string.Join(';', result.Candidates.Select(static candidate =>
-                    $"length={candidate.Features!.LengthPixels:F2},width={candidate.Features.MeanWidthPixels:F2}," +
-                    $"signal={candidate.Features.IntegratedSignalAdu},sat={candidate.Features.SaturatedSampleCount}," +
-                    $"fragments={candidate.Features.FragmentCount}")));
-            Assert.AreEqual(ExpectedComponentIdentities[scenario.Id], componentIdentity, scenario.Id);
-
-            if (scenario.Id == "no-event")
+            var offsets = scenario.AssessmentOffsetsSeconds.Append(scenario.CaptureOffsetSeconds).Distinct().ToArray();
+            var extractions = new Dictionary<double, ScenarioExtraction>();
+            foreach (var offset in offsets)
             {
-                Assert.IsEmpty(result.Candidates, scenario.Id);
-                falsePositiveCases += result.Candidates.Count > 0 ? 1 : 0;
+                var extraction = await ExtractAtAsync(module, config, manifest, scenario.Id, offset, options)
+                    .ConfigureAwait(false);
+                extractions.Add(offset, extraction);
+                TestContext.WriteLine(
+                    $"{scenario.Id}@{offset:R}: components={extraction.Candidates.Count}; " +
+                    string.Join(';', extraction.Candidates.Select(static candidate =>
+                        $"length={candidate.Features!.LengthPixels:F2},width={candidate.Features.MeanWidthPixels:F2}," +
+                        $"signal={candidate.Features.IntegratedSignalAdu},sat={candidate.Features.SaturatedSampleCount}," +
+                        $"fragments={candidate.Features.FragmentCount}")));
+            }
+            var primary = extractions[scenario.CaptureOffsetSeconds];
+            var geometryIdentities = offsets.ToDictionary(
+                static offset => offset,
+                offset => CaptureContractJson.ComputeCanonicalJsonSha256(extractions[offset].Candidates.Select(
+                    static candidate => new { candidate.Geometry, candidate.Features })));
+            var extractionReceiptIdentities = offsets.ToDictionary(
+                static offset => offset,
+                offset => Convert.ToHexString(SHA256.HashData(
+                    TransientCandidateExtractionJson.Serialize(extractions[offset].Descriptor))));
+            if (scenario.AssessmentOffsetsSeconds.Count == 0)
+            {
+                actualCases.Add(new ScenarioEvidence(
+                    scenario.Id,
+                    primary.Candidates.Count,
+                    geometryIdentities,
+                    extractionReceiptIdentities,
+                    extractions.ToDictionary(
+                        static value => value.Key,
+                        static value => value.Value.Candidates.Select(candidate => candidate.CandidateId).ToArray()),
+                    extractions.ToDictionary(
+                        static value => value.Key,
+                        static value => value.Value.DetectorBoundaryJson),
+                    null,
+                    null,
+                    null,
+                    null));
                 continue;
             }
-            Assert.IsNotEmpty(result.Candidates, scenario.Id);
-            extractedEventCases++;
-            if (scenario.Id is "short-track" or "long-shadow-track" or "blinking-track")
+            var assessmentCandidates = scenario.AssessmentOffsetsSeconds.Select(offset =>
             {
-                Assert.IsTrue(result.Candidates.Any(static candidate =>
-                    candidate.Features!.LengthPixels / candidate.Features.MeanWidthPixels >= 2), scenario.Id);
-            }
-            else if (scenario.Id == "fragmented-flare")
-            {
-                var features = result.Candidates[0].Features!;
-                var endpoint = (features.BrightnessProfile[0].Value + features.BrightnessProfile[^1].Value) / 2;
-                Assert.IsGreaterThan(0, features.SaturatedSampleCount, scenario.Id);
-                Assert.HasCount(options.ProfileSampleCount, features.BrightnessProfile, scenario.Id);
-                Assert.IsGreaterThanOrEqualTo(
-                    3,
-                    features.BrightnessProfile.Max(static sample => sample.Value) / Math.Max(endpoint, 1),
-                    scenario.Id);
-            }
-            else if (scenario.Id == "sensor-artifacts")
-            {
-                Assert.IsTrue(result.Candidates.Any(static candidate => candidate.Features!.LengthPixels <= 4), scenario.Id);
-            }
-            var assessmentCandidates = new List<(ScenarioExtraction Extraction, TransientCandidateV1 Candidate)>();
-            if (scenario.Id == "long-shadow-track")
-            {
-                foreach (var relative in new[] { -2d, -1d })
-                {
-                    var prior = await ExtractAtAsync(
-                        module, config, manifest, scenarioIndex, targetOffset + relative, options).ConfigureAwait(false);
-                    TestContext.WriteLine($"{scenario.Id}: relative={relative}, components={prior.Candidates.Count}; " +
-                        string.Join(';', prior.Candidates.Select(static candidate =>
-                            $"x={candidate.Geometry!.Bounds.X:F1},y={candidate.Geometry.Bounds.Y:F1}," +
-                            $"length={candidate.Features!.LengthPixels:F2},width={candidate.Features.MeanWidthPixels:F2}," +
-                            $"signal={candidate.Features.IntegratedSignalAdu}")));
-                    assessmentCandidates.Add((prior, prior.Candidates.Single()));
-                }
-            }
-            assessmentCandidates.Add((result, scenario.Id == "sensor-artifacts"
-                ? result.Candidates.OrderByDescending(static candidate => candidate.Features!.LengthPixels).First()
-                : result.Candidates[0]));
-            if (scenario.Id == "blinking-track")
-            {
-                foreach (var relative in new[] { 0.5d, 1d })
-                {
-                    var later = await ExtractAtAsync(
-                        module, config, manifest, scenarioIndex, targetOffset + relative, options).ConfigureAwait(false);
-                    TestContext.WriteLine($"{scenario.Id}: relative={relative}, components={later.Candidates.Count}; " +
-                        string.Join(';', later.Candidates.Select(static candidate =>
-                            $"x={candidate.Geometry!.Bounds.X:F1},y={candidate.Geometry.Bounds.Y:F1}," +
-                            $"length={candidate.Features!.LengthPixels:F2},width={candidate.Features.MeanWidthPixels:F2}," +
-                            $"signal={candidate.Features.IntegratedSignalAdu}")));
-                    assessmentCandidates.Add((later, later.Candidates.Single()));
-                }
-            }
-            if (scenario.ExpectedSecondMono16Sha256 is not null)
-            {
-                var second = await ExtractAtAsync(module, config, manifest, scenarioIndex, targetOffset + 1, options)
-                    .ConfigureAwait(false);
-                var secondIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(second.Candidates.Select(
-                    static candidate => new { candidate.Geometry, candidate.Features }));
-                TestContext.WriteLine($"{scenario.Id}: second-identity={secondIdentity}");
-                Assert.AreEqual(BoundarySecondComponentIdentity, secondIdentity, $"{scenario.Id} second observation");
-                Assert.IsNotEmpty(second.Candidates, $"{scenario.Id} second observation");
-                assessmentCandidates.Add((second, second.Candidates[0]));
-            }
-
+                var extraction = extractions[offset];
+                Assert.IsNotEmpty(extraction.Candidates, $"{scenario.Id}@{offset:R}");
+                return (Extraction: extraction, Candidate: extraction.Candidates
+                    .OrderByDescending(static candidate => candidate.Features!.LengthPixels)
+                    .First());
+            }).ToArray();
             var observations = assessmentCandidates.Select((value, ordinal) =>
                 TransientObservationFactory.CreateAssessmentObservation(new TransientObservationPromotionRequest(
                     value.Candidate.CandidateId,
-                    Guid.Parse($"a4000000-0000-0000-0000-{scenarioIndex * 10 + ordinal + 1:D12}"),
+                    FixtureGuid(
+                        "observation",
+                        scenario.Id,
+                        scenario.AssessmentOffsetsSeconds[ordinal].ToString("R", System.Globalization.CultureInfo.InvariantCulture)),
                     ordinal,
                     value.Extraction.Descriptor))).ToArray();
             var eventId = observations[0].EventId;
             Assert.IsTrue(observations.All(observation => observation.EventId == eventId), scenario.Id);
             var assessment = TransientAssessmentFactory.Create(new TransientAssessmentExecutionRequest(
                 eventId,
-                Guid.Parse($"a2000000-0000-0000-0000-{scenarioIndex + 1:D12}"),
+                FixtureGuid("assessment", scenario.Id),
                 manifest.Utc.AddMinutes(10),
                 TransientAssessmentAuthority.Provisional,
                 observations,
                 AssessmentOptions(),
                 []));
             Assert.AreEqual(TransientAssessmentExecutionStatus.Produced, assessment.Status, assessment.ReasonCode);
-            var expected = ExpectedAssessments[scenario.Id];
-            Assert.AreEqual(expected.Classification, assessment.Descriptor!.Assessment.Classification, scenario.Id);
-            Assert.AreEqual(expected.Severity, assessment.Descriptor.Assessment.MeteorSeverity, scenario.Id);
-            var key = $"{expected.Classification}/{assessment.Descriptor.Assessment.Classification}";
-            confusion[key] = confusion.GetValueOrDefault(key) + 1;
+            actualCases.Add(new ScenarioEvidence(
+                scenario.Id,
+                primary.Candidates.Count,
+                geometryIdentities,
+                extractionReceiptIdentities,
+                extractions.ToDictionary(
+                    static value => value.Key,
+                    static value => value.Value.Candidates.Select(candidate => candidate.CandidateId).ToArray()),
+                extractions.ToDictionary(
+                    static value => value.Key,
+                    static value => value.Value.DetectorBoundaryJson),
+                eventId,
+                assessment.Descriptor!.Assessment.Classification.ToString(),
+                assessment.Descriptor.Assessment.MeteorSeverity?.ToString(),
+                Convert.ToHexString(SHA256.HashData(TransientAssessmentJson.Serialize(assessment.Descriptor)))));
         }
         var cloudConfig = Config(CameraPixelFormat.Mono16, null, cloud: StableCloud());
         var cloudModule = Module();
@@ -250,21 +211,102 @@ public sealed class VirtualSkyTransientScenarioTests
             cloudModule,
             cloudConfig,
             manifest,
-            manifest.Cases.Count,
+            "stable-cloud",
             0,
             options).ConfigureAwait(false);
         Assert.IsEmpty(cloudResult.Candidates, "stable-cloud");
+        var cloudFrame = await CaptureAtAsync(cloudModule, manifest, 0).ConfigureAwait(false);
+        var cloudRawStatistics = RawStatistics(cloudFrame.PixelData.Span);
+        var cloudRaw = new RawEvidence(
+            0,
+            cloudRawStatistics.Minimum,
+            cloudRawStatistics.Maximum,
+            cloudRawStatistics.Mean,
+            Convert.ToHexString(SHA256.HashData(cloudFrame.PixelData.Span)));
+        var cloudGeometryIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(cloudResult.Candidates.Select(
+            static candidate => new { candidate.Geometry, candidate.Features }));
+        var cloudExtractionIdentity = Convert.ToHexString(SHA256.HashData(
+            TransientCandidateExtractionJson.Serialize(cloudResult.Descriptor)));
+
+        var oracle = await LoadOracleAsync().ConfigureAwait(false);
+        Assert.IsTrue(oracle.VirtualOnly);
+        var manifestIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(manifest);
+        TestContext.WriteLine($"input-manifest-identity={manifestIdentity}");
+        Assert.AreEqual(manifestIdentity, oracle.InputManifestSha256);
+        CollectionAssert.AreEquivalent(
+            ExpectedSupplementalCoverage,
+            oracle.SupplementalCoverage.Select(static value => value.Id).ToArray());
+        var cloudExpectation = oracle.SupplementalCoverage.Single(static value => value.Id == "stable-cloud");
+        Assert.AreEqual("TrueNegative", cloudExpectation.ExpectedDisposition);
+        Assert.AreEqual(cloudExpectation.ExpectedCandidateCount, cloudResult.Candidates.Count);
+        TestContext.WriteLine("cloud-evidence=" + JsonSerializer.Serialize(new
+        {
+            Raw = cloudRaw,
+            GeometryFeaturesIdentitySha256 = cloudGeometryIdentity,
+            ExtractionReceiptSha256 = cloudExtractionIdentity
+        }));
+        Assert.IsNotNull(cloudExpectation.Raw);
+        Assert.IsNotNull(cloudExpectation.GeometryFeaturesIdentitySha256);
+        Assert.IsNotNull(cloudExpectation.ExtractionReceiptSha256);
+        Assert.AreEqual(cloudExpectation.Raw, cloudRaw);
+        Assert.AreEqual(cloudExpectation.GeometryFeaturesIdentitySha256, cloudGeometryIdentity);
+        Assert.AreEqual(cloudExpectation.ExtractionReceiptSha256, cloudExtractionIdentity);
+        var starExpectation = oracle.SupplementalCoverage.Single(static value => value.Id == "persistent-star-residual");
+        Assert.AreEqual("StarResidual", starExpectation.Category);
+        Assert.AreEqual("SuppressedByPersistentMask", starExpectation.ExpectedDisposition);
+        Assert.AreEqual(0, starExpectation.ExpectedCandidateCount);
         Assert.AreEqual(
-            ExpectedComponentIdentities["no-event"],
-            CaptureContractJson.ComputeCanonicalJsonSha256(cloudResult.Candidates.Select(
-                static candidate => new { candidate.Geometry, candidate.Features })),
-            "stable-cloud");
-        Assert.AreEqual(6, extractedEventCases);
-        Assert.AreEqual(0, falsePositiveCases);
-        Assert.AreEqual(6, confusion.Values.Sum());
-        TestContext.WriteLine(
-            "virtual-confusion=" + JsonSerializer.Serialize(confusion) +
-            $"; attribution=background/extraction:6/6 events,0/2 no-event/cloud false positives; assessment:{confusion.Values.Sum()}/6");
+            "TransientStarMaskStrategyTests.W1W2PersistentProjectedStarMaskEvidence",
+            starExpectation.Evidence);
+        var maskExpectation = oracle.SupplementalCoverage.Single(static value => value.Id == "persistent-mask-kinds");
+        Assert.AreEqual("Masks", maskExpectation.Category);
+        Assert.AreEqual("SuppressedByPersistentMask", maskExpectation.ExpectedDisposition);
+        Assert.AreEqual(0, maskExpectation.ExpectedCandidateCount);
+        Assert.AreEqual(
+            "TransientCandidateExtractionTests.CausalExtractionIsProvisionalAndNoEventReturnsAuditableNoCandidate",
+            maskExpectation.Evidence);
+        var forbiddenOracleValues = oracle.Cases
+            .Where(static value => value.Label != "None")
+            .Select(static value => value.Label)
+            .Append(oracle.OracleSentinel)
+            .ToArray();
+        foreach (var actual in actualCases)
+        {
+            foreach (var detectorBoundary in actual.DetectorBoundaryJsonByOffset.Values)
+            {
+                foreach (var forbidden in forbiddenOracleValues)
+                {
+                    Assert.IsFalse(
+                        detectorBoundary.Contains(forbidden, StringComparison.OrdinalIgnoreCase),
+                        $"{actual.Id} detector boundary exposed {forbidden}.");
+                }
+            }
+        }
+        TestContext.WriteLine("matrix-evidence=" + JsonSerializer.Serialize(actualCases));
+        var confusion = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var expected in oracle.Cases)
+        {
+            var actual = actualCases.Single(value => value.Id == expected.Id);
+            Assert.AreEqual(expected.CandidateCount, actual.CandidateCount, expected.Id);
+            AssertOffsetMap(expected.GeometryFeaturesIdentitySha256s, actual.GeometryFeaturesIdentities, expected.Id);
+            AssertOffsetMap(expected.ExtractionReceiptSha256s, actual.ExtractionReceiptIdentities, expected.Id);
+            AssertCandidateMap(expected.CandidateIdsByOffset, actual.CandidateIdsByOffset, expected.Id);
+            Assert.AreEqual(expected.Classification, actual.Classification, expected.Id);
+            Assert.AreEqual(expected.MeteorSeverity, actual.MeteorSeverity, expected.Id);
+            Assert.AreEqual(expected.EventId, actual.EventId, expected.Id);
+            Assert.AreEqual(expected.AssessmentReceiptSha256, actual.AssessmentReceiptSha256, expected.Id);
+            var actualLabel = actual.Classification ?? "None";
+            var key = $"{expected.Label}/{actualLabel}";
+            confusion[key] = confusion.GetValueOrDefault(key) + 1;
+            var disposition = string.Equals(expected.Label, actualLabel, StringComparison.Ordinal)
+                || expected.Label is "Fireball" or "BoundaryMeteor" && actualLabel == "Meteor"
+                    ? expected.CandidateCount == 0 ? "TrueNegative" : "Scored"
+                    : actual.CandidateCount == 0 ? "Miss" : "Mismatch";
+            Assert.AreEqual(expected.ScoringDisposition, disposition, expected.Id);
+        }
+        Assert.AreEqual(7, confusion.Values.Sum());
+        TestContext.WriteLine("virtual-confusion=" + JsonSerializer.Serialize(confusion) +
+            "; stable-cloud=None/None; limitations=virtual deterministic matrix, no physical sensitivity claim");
     }
 
     [TestMethod]
@@ -424,7 +466,7 @@ public sealed class VirtualSkyTransientScenarioTests
         VirtualSkyCameraModule module,
         CameraModuleConfig config,
         TransientFixtureManifest manifest,
-        int scenarioIndex,
+        string scenarioId,
         double targetOffset,
         TransientCandidateExtractionOptionsV1 options)
     {
@@ -437,13 +479,14 @@ public sealed class VirtualSkyTransientScenarioTests
             TransientTemporalPosition.NPlus2
         };
         var window = new Dictionary<TransientTemporalPosition, TransientTemporalSource>();
-        var sequenceBase = scenarioIndex * 100_000 + (int)Math.Round((targetOffset + 100) * 10);
+        var offsetKey = targetOffset.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        var sequenceBase = FixtureSequence("sequence", scenarioId, offsetKey);
         foreach (var position in positions)
         {
             var offset = targetOffset + (int)position;
             var frame = await CaptureAtAsync(module, manifest, offset).ConfigureAwait(false);
             window[position] = CreateTemporalSource(
-                config, frame, position, scenarioIndex, offset, sequenceBase + (int)position);
+                config, frame, position, scenarioId, offsetKey, sequenceBase + (int)position);
         }
         var target = window[TransientTemporalPosition.N];
         var background = TransientTemporalBackgroundFactory.Create(new TransientTemporalBackgroundRequest(
@@ -456,11 +499,10 @@ public sealed class VirtualSkyTransientScenarioTests
         Assert.AreEqual(TransientTemporalBackgroundStatus.Produced, background.Status, background.ReasonCode);
         var byEvidence = window.Values.ToDictionary(static source => source.Input.Descriptor.Source.EvidenceId);
         var orderedSources = background.Product!.Descriptor.Sources.Select(source => byEvidence[source.EvidenceId]).ToArray();
-        var identityBase = scenarioIndex * 100_000 + ((int)Math.Round(targetOffset) + 100) * 100;
         var identitySlots = Enumerable.Range(1, options.MaximumCandidates).Select(index =>
             new TransientCandidateIdentitySlot(
-                Guid.Parse($"b3000000-0000-0000-0000-{identityBase + index:D12}"),
-                Guid.Parse($"b4000000-0000-0000-0000-{(index == 1 ? scenarioIndex + 1 : identityBase + index):D12}"))).ToArray();
+                FixtureGuid("candidate", scenarioId, offsetKey, index.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                FixtureGuid("event", scenarioId, index.ToString(System.Globalization.CultureInfo.InvariantCulture)))).ToArray();
         var extraction = TransientCandidateExtractionFactory.Create(new TransientCandidateExtractionRequest(
             "virtual-sky-scenario-agent",
             manifest.Utc.AddMinutes(10),
@@ -474,19 +516,26 @@ public sealed class VirtualSkyTransientScenarioTests
             extraction.Status is TransientCandidateExtractionStatus.Produced or TransientCandidateExtractionStatus.NoCandidate,
             extraction.ReasonCode);
         Assert.IsNotNull(extraction.Descriptor);
-        return new ScenarioExtraction(extraction.Descriptor, extraction.Candidates);
+        var detectorBoundaryJson = JsonSerializer.Serialize(new
+        {
+            Target = target.Input.Descriptor,
+            Background = background.Product.Descriptor,
+            Extraction = extraction.Descriptor,
+            extraction.Candidates
+        });
+        return new ScenarioExtraction(extraction.Descriptor, extraction.Candidates, detectorBoundaryJson);
     }
 
     private static TransientTemporalSource CreateTemporalSource(
         CameraModuleConfig config,
         CameraFrame frame,
         TransientTemporalPosition position,
-        int scenarioIndex,
-        double offset,
+        string scenarioId,
+        string targetOffsetKey,
         int captureSequence)
     {
-        var suffix = scenarioIndex * 100_000 + (int)Math.Round((offset + 100) * 10);
-        var artifactId = Guid.Parse($"b1000000-0000-0000-0000-{suffix:D12}");
+        var positionKey = ((int)position).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var artifactId = FixtureGuid("artifact", scenarioId, targetOffsetKey, positionKey);
         var artifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(
             config,
             new FrameArtifact(artifactId, FrameArtifactRole.Raw, frame),
@@ -502,7 +551,7 @@ public sealed class VirtualSkyTransientScenarioTests
         };
         var source = new TransientSourceEvidenceReferenceV1(
             TransientSourceEvidenceReferenceV1.CurrentSchemaVersion,
-            Guid.Parse($"b2000000-0000-0000-0000-{suffix:D12}"),
+            FixtureGuid("evidence", scenarioId, targetOffsetKey, positionKey),
             new TransientWholeArtifactLocatorV1(
                 TransientWholeArtifactLocatorV1.CurrentSchemaVersion,
                 TransientSourceLocatorKind.WholeArtifact,
@@ -697,6 +746,59 @@ public sealed class VirtualSkyTransientScenarioTests
         return (minimum, maximum, sum / (pixels.Length / (double)sizeof(ushort)));
     }
 
+    private static async Task<(byte[] Bytes, TransientFixtureManifest Manifest)> LoadManifestAsync()
+    {
+        var bytes = await File.ReadAllBytesAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", FixtureFileName))
+            .ConfigureAwait(false);
+        return (bytes, JsonSerializer.Deserialize<TransientFixtureManifest>(bytes, FixtureSerializerOptions)!);
+    }
+
+    private static async Task<TransientDetectionOracle> LoadOracleAsync()
+        => JsonSerializer.Deserialize<TransientDetectionOracle>(
+            await File.ReadAllBytesAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", OracleFileName))
+                .ConfigureAwait(false),
+            FixtureSerializerOptions)!;
+
+    private static Guid FixtureGuid(params string[] parts)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\u001f', parts)));
+        return new Guid(hash.AsSpan(0, 16));
+    }
+
+    private static int FixtureSequence(params string[] parts)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\u001f', parts)));
+        return (System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(hash) & 0x3fffffff) + 10;
+    }
+
+    private static void AssertOffsetMap(
+        Dictionary<string, string> expected,
+        IReadOnlyDictionary<double, string> actual,
+        string scenarioId)
+    {
+        Assert.HasCount(expected.Count, actual, scenarioId);
+        foreach (var pair in expected)
+        {
+            var offset = double.Parse(pair.Key, System.Globalization.CultureInfo.InvariantCulture);
+            Assert.IsTrue(actual.TryGetValue(offset, out var identity), $"{scenarioId}@{pair.Key}");
+            Assert.AreEqual(pair.Value, identity, $"{scenarioId}@{pair.Key}");
+        }
+    }
+
+    private static void AssertCandidateMap(
+        Dictionary<string, Guid[]> expected,
+        IReadOnlyDictionary<double, Guid[]> actual,
+        string scenarioId)
+    {
+        Assert.HasCount(expected.Count, actual, scenarioId);
+        foreach (var pair in expected)
+        {
+            var offset = double.Parse(pair.Key, System.Globalization.CultureInfo.InvariantCulture);
+            Assert.IsTrue(actual.TryGetValue(offset, out var candidateIds), $"{scenarioId}@{pair.Key}");
+            CollectionAssert.AreEqual(pair.Value, candidateIds, $"{scenarioId}@{pair.Key}");
+        }
+    }
+
     [SuppressMessage("Performance", "CA1812", Justification = "Instantiated by System.Text.Json fixture deserialization.")]
     private sealed record TransientFixtureManifest(
         string SchemaVersion,
@@ -707,16 +809,67 @@ public sealed class VirtualSkyTransientScenarioTests
     [SuppressMessage("Performance", "CA1812", Justification = "Instantiated by System.Text.Json fixture deserialization.")]
     private sealed record TransientFixtureCase(
         string Id,
-        string OracleLabel,
         double CaptureOffsetSeconds,
-        ushort ExpectedRawMinimum,
-        ushort ExpectedRawMaximum,
-        double ExpectedRawMean,
-        string ExpectedMono16Sha256,
-        string? ExpectedSecondMono16Sha256,
+        IReadOnlyList<double> RawCaptureOffsetsSeconds,
+        IReadOnlyList<double> AssessmentOffsetsSeconds,
         VirtualTransientScenarioDefinition Definition);
+
+    [SuppressMessage("Performance", "CA1812", Justification = "Instantiated by System.Text.Json fixture deserialization.")]
+    private sealed record TransientDetectionOracle(
+        string SchemaVersion,
+        string OracleSentinel,
+        string InputManifestSha256,
+        bool VirtualOnly,
+        IReadOnlyList<SupplementalOracleCase> SupplementalCoverage,
+        IReadOnlyList<TransientOracleCase> Cases);
+
+    [SuppressMessage("Performance", "CA1812", Justification = "Instantiated by System.Text.Json fixture deserialization.")]
+    private sealed record SupplementalOracleCase(
+        string Id,
+        string Category,
+        string ExpectedDisposition,
+        int ExpectedCandidateCount,
+        string Evidence,
+        RawEvidence? Raw,
+        string? GeometryFeaturesIdentitySha256,
+        string? ExtractionReceiptSha256);
+
+    [SuppressMessage("Performance", "CA1812", Justification = "Instantiated by System.Text.Json fixture deserialization.")]
+    private sealed record TransientOracleCase(
+        string Id,
+        string Label,
+        IReadOnlyList<RawEvidence> Raw,
+        int CandidateCount,
+        Dictionary<string, string> GeometryFeaturesIdentitySha256s,
+        string? Classification,
+        string? MeteorSeverity,
+        string ScoringDisposition,
+        Dictionary<string, Guid[]> CandidateIdsByOffset,
+        Guid? EventId,
+        Dictionary<string, string> ExtractionReceiptSha256s,
+        string? AssessmentReceiptSha256);
+
+    private sealed record RawEvidence(
+        double OffsetSeconds,
+        ushort MinimumAdu,
+        ushort MaximumAdu,
+        double MeanAdu,
+        string Sha256);
 
     private sealed record ScenarioExtraction(
         TransientCandidateExtractionDescriptorV1 Descriptor,
-        IReadOnlyList<TransientCandidateV1> Candidates);
+        IReadOnlyList<TransientCandidateV1> Candidates,
+        string DetectorBoundaryJson);
+
+    private sealed record ScenarioEvidence(
+        string Id,
+        int CandidateCount,
+        IReadOnlyDictionary<double, string> GeometryFeaturesIdentities,
+        IReadOnlyDictionary<double, string> ExtractionReceiptIdentities,
+        IReadOnlyDictionary<double, Guid[]> CandidateIdsByOffset,
+        IReadOnlyDictionary<double, string> DetectorBoundaryJsonByOffset,
+        Guid? EventId,
+        string? Classification,
+        string? MeteorSeverity,
+        string? AssessmentReceiptSha256);
 }

@@ -1,0 +1,186 @@
+{
+  "schemaVersion": "virtual-transient-detection-oracle-v1",
+  "oracleSentinel": "oracle-only-119-v1",
+  "inputManifestSha256": "133402E913B61C62542FDDE4C578C39257D4EFF87574516D7F43E463A9E0FC93",
+  "virtualOnly": true,
+  "supplementalCoverage": [
+    {
+      "id": "stable-cloud",
+      "category": "Cloud",
+      "expectedDisposition": "TrueNegative",
+      "expectedCandidateCount": 0,
+      "evidence": "VirtualSkyTransientScenarioTests.FixtureMatrix_ProducesMeasuredResidualGeometryWithoutOracleInputs",
+      "raw": { "offsetSeconds": 0, "minimumAdu": 0, "maximumAdu": 1, "meanAdu": 0.3102213541666667, "sha256": "E78C024AFCA3EAE7D0518CFA2E27D8B0CF2AC564728D49106A15C44D6AD8BFAA" },
+      "geometryFeaturesIdentitySha256": "4F53CDA18C2BAA0C0354BB5F9A3ECBE5ED12AB4D8E11BA873C2F11161202B945",
+      "extractionReceiptSha256": "488DE84300767FF8FEAE83018EC476644D032C6C7D0A7F9B569925F3468A2EAD"
+    },
+    {
+      "id": "persistent-star-residual",
+      "category": "StarResidual",
+      "expectedDisposition": "SuppressedByPersistentMask",
+      "expectedCandidateCount": 0,
+      "evidence": "TransientStarMaskStrategyTests.W1W2PersistentProjectedStarMaskEvidence"
+    },
+    {
+      "id": "persistent-mask-kinds",
+      "category": "Masks",
+      "expectedDisposition": "SuppressedByPersistentMask",
+      "expectedCandidateCount": 0,
+      "evidence": "TransientCandidateExtractionTests.CausalExtractionIsProvisionalAndNoEventReturnsAuditableNoCandidate"
+    }
+  ],
+  "cases": [
+    {
+      "id": "no-event",
+      "label": "None",
+      "raw": [
+        { "offsetSeconds": 0, "minimumAdu": 0, "maximumAdu": 1, "meanAdu": 0.5416666666666666, "sha256": "D9438A1E5E3B6CC7D74EF56B4C6054C74D7FDC3F06E22845D9398483CB8211CC" }
+      ],
+      "candidateCount": 0,
+      "geometryFeaturesIdentitySha256s": { "0": "4F53CDA18C2BAA0C0354BB5F9A3ECBE5ED12AB4D8E11BA873C2F11161202B945" },
+      "classification": null,
+      "meteorSeverity": null,
+      "scoringDisposition": "TrueNegative",
+      "candidateIdsByOffset": { "0": [] },
+      "eventId": null,
+      "extractionReceiptSha256s": { "0": "90D53660DE2A7668ADE14FB134080EF8DCE1F8691A1D23A58EBBD434E41F04ED" },
+      "assessmentReceiptSha256": null
+    },
+    {
+      "id": "short-track",
+      "label": "Meteor",
+      "raw": [
+        { "offsetSeconds": 0, "minimumAdu": 0, "maximumAdu": 836, "meanAdu": 5.259765625, "sha256": "C6D59E2BBCF44F6820A9E77E5E9A926BDBC0A9CEAB376544FF32F0D1037E6206" }
+      ],
+      "candidateCount": 1,
+      "geometryFeaturesIdentitySha256s": { "0": "E6797F9C606D072BC97048E7247CBF9025D54007AD7B3FB5F2E65559597AED18" },
+      "classification": "Meteor",
+      "meteorSeverity": "Meteor",
+      "scoringDisposition": "Scored",
+      "candidateIdsByOffset": { "0": ["d53bf123-ebcc-2313-1f47-d2ae32e83b4c"] },
+      "eventId": "0e76aef6-c0af-b58d-4f52-5d00780c2389",
+      "extractionReceiptSha256s": { "0": "260A6CC66FF8676B5EF2D8C17AD0C4BCAFB05FCC84F3FE2AC565B16A0AB75E5B" },
+      "assessmentReceiptSha256": "84284A9EEA3F0B79F8CBB07A81CFBECA64444245E2AE789E4A0656CBE4D5B37F"
+    },
+    {
+      "id": "fragmented-flare",
+      "label": "Fireball",
+      "raw": [
+        { "offsetSeconds": 0, "minimumAdu": 0, "maximumAdu": 65535, "meanAdu": 420.3030598958333, "sha256": "BE4C2467147DDE396598AC78FB1D5F32004F0A443FD2D3DDB2B04C4BB32A0D52" }
+      ],
+      "candidateCount": 1,
+      "geometryFeaturesIdentitySha256s": { "0": "7A8E1097E946BF2F5EB4C6C5E7BF8A1DFDD5892DBB502D9797C9E22E015ED44A" },
+      "classification": "Meteor",
+      "meteorSeverity": "Fireball",
+      "scoringDisposition": "Scored",
+      "candidateIdsByOffset": { "0": ["33e23451-8a48-5434-181b-7a3c51a4af8e"] },
+      "eventId": "686ef776-7cbd-116c-98a3-0ee9e1e6259d",
+      "extractionReceiptSha256s": { "0": "8A90E30C14C2BD375C10FD1615979E9D6DF78DE2F54960A5A81FE8652B0EE06D" },
+      "assessmentReceiptSha256": "8E919CA5F5BF81ED2EEB54A9C1DDCAFBE8D5E5DC41348A1F8C395052508CA40E"
+    },
+    {
+      "id": "boundary-crossing",
+      "label": "BoundaryMeteor",
+      "raw": [
+        { "offsetSeconds": 0, "minimumAdu": 0, "maximumAdu": 746, "meanAdu": 3.7766927083333335, "sha256": "7034977C6C7273EE207FF930B0803213A1BCDAFB7724E1C842A45134CA4381A7" },
+        { "offsetSeconds": 1, "minimumAdu": 0, "maximumAdu": 689, "meanAdu": 3.7705078125, "sha256": "B13D64D6E20EF8867AD2DC7374B1F2753E7ACAABC4D206630E27A3F0458463BA" }
+      ],
+      "candidateCount": 1,
+      "geometryFeaturesIdentitySha256s": {
+        "0": "05C3D580DD2155C14CF51A71336813B95F5347B663852D216D1629F6391ACFAD",
+        "1": "9BA238BDB6BBB44701CFE90385ACC7B18AB8F8418967BAFD71E1E6DD1E0E39B2"
+      },
+      "classification": "Meteor",
+      "meteorSeverity": "Meteor",
+      "scoringDisposition": "Scored",
+      "candidateIdsByOffset": {
+        "0": ["60655035-19ac-5e96-9a35-c3bd44cf8ccb"],
+        "1": ["a3eb9b1b-c14b-c211-a2c1-d3d610d34c8c"]
+      },
+      "eventId": "0a620e86-0c3f-e34f-4331-ef4b218f14af",
+      "extractionReceiptSha256s": {
+        "0": "3C62D8E97F5BC1B518A3B743447601C9DCF10AC27C6A4D79092127F3C0D8FEF0",
+        "1": "2653A935717EDD9D019F9DD6FFEA82527B672464783DCFDB9D9138A64B4F749F"
+      },
+      "assessmentReceiptSha256": "BF4FC2E590E0122F122F660BECF847D6AA50BDE75D0EB43FF349D8617E7E274C"
+    },
+    {
+      "id": "long-shadow-track",
+      "label": "Satellite",
+      "raw": [
+        { "offsetSeconds": 13.5, "minimumAdu": 0, "maximumAdu": 16, "meanAdu": 0.5729166666666666, "sha256": "138BC7259C0B7530C63FA3A86DD4E6FD754045357E195622187CE988FA62D514" }
+      ],
+      "candidateCount": 1,
+      "geometryFeaturesIdentitySha256s": {
+        "11.5": "631DC804FCB48762E73ECF4C715D050B347D36D3BA4E92281DAA791C3713BEB3",
+        "12.5": "272892ACCD766B674C526A3F8770DA9B69B661262A7AE827F05297109A96F366",
+        "13.5": "5AB8C1128EAE841B6CBD2F3AD905F7440B8977F62EEAA88814072323BC0D37E5"
+      },
+      "classification": "Satellite",
+      "meteorSeverity": null,
+      "scoringDisposition": "Scored",
+      "candidateIdsByOffset": {
+        "11.5": ["37d0bb08-9a1b-afa5-9ee2-4a648198d2ba"],
+        "12.5": ["e054bcd0-2c78-b6f3-4c7e-a4f449fc1a43"],
+        "13.5": ["e5bf19ff-7829-d7d9-3acb-93ad22b4cb49"]
+      },
+      "eventId": "11145d0b-abbc-26e3-0546-3eeccf509da2",
+      "extractionReceiptSha256s": {
+        "11.5": "043ED749B21C758C8A233FB60E27BB76365F300F3E948B384A2BB5E9A80EFC72",
+        "12.5": "876C455E4313567E24997D4C98DE425514B858AAFCCE46E85763C0CC22BC1DF1",
+        "13.5": "04389E2049F0267479E54F15B9B25CDB99656CEBBF2515497F7F27DC3E24BDB2"
+      },
+      "assessmentReceiptSha256": "9E9CE2FA9375B81F378D47DF377C267911FB0B77C1A5EE8C477B42B71346408F"
+    },
+    {
+      "id": "blinking-track",
+      "label": "Aircraft",
+      "raw": [
+        { "offsetSeconds": 0, "minimumAdu": 0, "maximumAdu": 180, "meanAdu": 1.7174479166666667, "sha256": "2B45C8EAD0B20364D0F990C1725BB03E42ED20AB05C93F80959B6C1314AB4378" }
+      ],
+      "candidateCount": 1,
+      "geometryFeaturesIdentitySha256s": {
+        "0": "F020D66C0F612F23A5BFCC86C46BF2E9C3E3DA472DD07D57514C9F271EBF6A88",
+        "0.5": "52DD29AD4BB72D125A171028AA6D295F7DE0D9DED9BC8F27B182443D3D6AC2A4",
+        "1": "C6BE6E4D7F299E3C1341FC169F078548253791354A9BDA8D6CD58F28A2B7C2DD"
+      },
+      "classification": "Aircraft",
+      "meteorSeverity": null,
+      "scoringDisposition": "Scored",
+      "candidateIdsByOffset": {
+        "0": ["5872b81c-e786-844f-93b0-edeca45b6909"],
+        "0.5": ["567d62bd-b12f-4b2f-390e-ff80708a6eb2"],
+        "1": ["33341a84-bb28-92c4-48ed-3b0966546767"]
+      },
+      "eventId": "16ff60d2-27d5-f4cc-b022-e4505865a7f8",
+      "extractionReceiptSha256s": {
+        "0": "728BB144FDB1CC87534F05261CBDAA1DD9C41BE42E57C1709FE3BCAEF0544A24",
+        "0.5": "CD602CA920D95188F890BA06752BC849A5AE0C670E03AD54E967D802516C7D3D",
+        "1": "9F98362EC18B6E395AF59AA0EE4ABFF3CCB9CF51500E22C70A9E33D26A48B10B"
+      },
+      "assessmentReceiptSha256": "5BE32F8F6C4EA8E90C3AED6594153EFF9E4948AA01C06D7C828E5641C946D8B0"
+    },
+    {
+      "id": "sensor-artifacts",
+      "label": "SensorArtifact",
+      "raw": [
+        { "offsetSeconds": 0, "minimumAdu": 0, "maximumAdu": 19973, "meanAdu": 42.858723958333336, "sha256": "DCECBCCB97C5869632E3C54A60C0DF2BCA7A422E1E0DAEE693802BC5A870212B" }
+      ],
+      "candidateCount": 3,
+      "geometryFeaturesIdentitySha256s": { "0": "940B56267867454C84E8949A890322FA71E05D526879A485131CB44299CE047C" },
+      "classification": "SensorArtifact",
+      "meteorSeverity": null,
+      "scoringDisposition": "Scored",
+      "candidateIdsByOffset": {
+        "0": [
+          "1a44715c-39b0-6ef6-6278-09c82a710142",
+          "780574c5-f76b-4daa-dca0-6ef0f2c3276a",
+          "e972c61f-8694-be2e-bae9-4a51ee3c1b54"
+        ]
+      },
+      "eventId": "ca6ef1ec-3519-e555-2b3e-5ea343f6b4de",
+      "extractionReceiptSha256s": { "0": "C5B39A577F77A8E9FB9EA0C5E0C4B86D58A1347EA9E924FB8FB9B15856693C0A" },
+      "assessmentReceiptSha256": "74C50C2CBF93382070A55B9F02B330185408BDC9FC5EACA5C13208F5BC5645AA"
+    }
+  ]
+}

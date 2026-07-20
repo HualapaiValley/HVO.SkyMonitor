@@ -13,20 +13,31 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class TransientTemporalBackgroundTests
 {
+    private static readonly Func<object> UnexpectedWindowFactory = static () =>
+        throw new AssertFailedException("Off must not invoke the detector-window factory.");
+
     [TestMethod]
     public void OffDoesNotConstructTemporalWindow()
     {
-        var invoked = false;
-        var window = TransientTemporalWindowActivation.CreateWhenEnabled(
-            TransientDetectorExecutionMode.Off,
-            () =>
-            {
-                invoked = true;
-                return new object();
-            });
+        for (var index = 0; index < 100; index++)
+        {
+            Assert.IsNull(TransientTemporalWindowActivation.CreateWhenEnabled(
+                TransientDetectorExecutionMode.Off,
+                UnexpectedWindowFactory));
+        }
+
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+        object? window = null;
+        for (var index = 0; index < 1_000; index++)
+        {
+            window = TransientTemporalWindowActivation.CreateWhenEnabled(
+                TransientDetectorExecutionMode.Off,
+                UnexpectedWindowFactory);
+        }
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
 
         Assert.IsNull(window);
-        Assert.IsFalse(invoked);
+        Assert.AreEqual(0, allocatedBytes, "Off must retain no window and allocate no detector-window state.");
     }
 
     [TestMethod]
