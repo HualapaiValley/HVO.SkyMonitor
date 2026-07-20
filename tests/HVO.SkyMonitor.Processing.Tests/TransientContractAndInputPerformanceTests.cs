@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.Processing.Tests;
@@ -121,7 +122,10 @@ public sealed class TransientContractAndInputPerformanceTests
                 workload.Format == CameraPixelFormat.Mono16
                     ? workload.Artifact.Payload.Length
                     : workload.Artifact.Payload.Length * 2L,
-                workload.Format == CameraPixelFormat.Mono16 ? 0 : workload.Artifact.Payload.Length / 4,
+                (workload.Format == CameraPixelFormat.Mono16 ? 0 : workload.Artifact.Payload.Length / 4) +
+                    Linear16MaskOperations.RequiredByteLength(
+                        workload.Format == CameraPixelFormat.Mono16 ? workload.Width : workload.Width / 2,
+                        workload.Format == CameraPixelFormat.Mono16 ? workload.Height : workload.Height / 2),
                 workload.Format == CameraPixelFormat.Mono16 ? 0 : 1,
                 workload.Format == CameraPixelFormat.Mono16 ? 1 : 2,
                 workload.ExpectedDetectorChecksum)

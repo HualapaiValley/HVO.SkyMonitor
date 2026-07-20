@@ -97,6 +97,7 @@ internal sealed class CaptureProcessingPersistence(
                 restored.CreatedUtc,
                 restored.Product.TotalIntegration,
                 restored.Product.Compatibility,
+                CaptureSequence: output.CaptureSequence,
                 ObservationStartedUtc: observationStartedUtc,
                 ObservationEndedUtc: observationEndedUtc));
         }
@@ -144,7 +145,8 @@ internal sealed class CaptureProcessingPersistence(
                 payload,
                 entry.Descriptor.Artifact.CreatedUtc,
                 entry.Descriptor.Controls.EffectiveExposure,
-                current.Compatibility,
+                CameraAgentRecipeExecutionAdapter.CreateCompatibility(entry.Descriptor),
+                CaptureSequence: entry.Descriptor.Capture.CaptureSequence,
                 ObservationStartedUtc: entry.Descriptor.Timing.ExposureStartedUtc,
                 ObservationEndedUtc: ProcessingArtifact.ResolveObservationEndedUtc(
                     entry.Descriptor.Timing.ExposureStartedUtc,

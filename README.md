@@ -124,8 +124,8 @@ The devcontainer configuration includes:
 - **.NET 10 SDK** - Latest .NET SDK for building and running applications
 - **Docker CLI** - Manage host and remote Docker contexts from the dev container
 - **.NET local tools** - Pinned Entity Framework Core and ReportGenerator tooling restored automatically
-- **OpenCode CLI** - Checksum-verified, pinned CLI started automatically on loopback
-- **Tailscale CLI** - Signature-verified, pinned client started with accepted tailnet routes
+- **OpenCode CLI** - Checksum-verified, pinned CLI available for host-owned persistent sessions on port 4096
+- **Tailscale CLI** - Signature-verified, pinned client available in the container image
 - **Command-line tools** - `jq`, `rg`, `shellcheck`, and `sqlite3` are installed in the container image
 - **C# Dev Kit** - Complete C# development experience with IntelliSense, debugging, and more
 - **GitHub Copilot** - AI-powered code completion and chat
@@ -137,25 +137,56 @@ The devcontainer configuration includes:
 - **Shared diagnostics/security library** - Cross-cutting middleware (correlation IDs, exception handling, antiforgery helpers) and API-key primitives live in `src/HVO.SkyMonitor.Common`, consumed by the main site and reusable by future services.
 - **Camera-agent independence** - Projects under `HVO.SkyMonitor.CameraAgent.*` keep acquisition and local processing independent from LogicHost while registering their own diagnostics and security components.
 
-### OpenCode over Tailscale
+### OpenCode from the Docker host
 
-OpenCode and Tailscale are installed and started automatically. Their credentials and runtime identity are retained under the ignored `.devcontainer/state/` directory, so rebuilding the same workspace does not require authentication again.
+OpenCode is installed in the devcontainer but is not started automatically. Its credentials are retained under the ignored `.devcontainer/state/` directory, so rebuilding the same workspace does not require authentication again.
 
-For first-time enrollment in a new clone, set a one-time `TAILSCALE_AUTHKEY` in `.env` or `.devcontainer/devcontainer.local.env` and keep that file mode `0600`. Remove the key after successful enrollment; the persisted node state replaces it. The startup script connects as `vscode-skymonitor`, accepts advertised routes, binds OpenCode to the container loopback interface, and exposes it through tailnet-only HTTPS. Set `TAILSCALE_ACCEPT_ROUTES=false` only when advertised routes would conflict with another local network. Authenticate OpenCode providers once with `opencode auth login`; provider credentials then persist across rebuilds in the ignored state directory.
+The devcontainer publishes port `4096` only on the Docker host's loopback interface. From the host workspace, `scripts/opencode:enable` discovers the running devcontainer and starts its interactive OpenCode process inside a detached host `tmux` session. The tmux-owned terminal and OpenCode server survive SSH disconnects. Authenticate providers once with `opencode auth login`; provider credentials then persist across rebuilds in the ignored state directory.
 
-The HTTPS endpoint also requires OpenCode Basic Auth. Its username is `opencode`; the post-create setup generates a random password at `.devcontainer/state/opencode-data/server-password` and retains it across rebuilds. Read that ignored file locally when authenticating.
+The endpoint requires OpenCode Basic Auth. Its username is `opencode`; the post-create setup generates a random password at `.devcontainer/state/opencode-data/server-password` and retains it across rebuilds. Read that ignored file locally when authenticating.
 
-To start or repair the services manually:
+Install `tmux`, Docker, `curl`, and `flock` on the Docker host. After the devcontainer is running, start OpenCode from an SSH shell on that host:
 
 ```bash
 ./scripts/opencode:enable
 ```
 
-The script starts OpenCode on container loopback and uses `tailscale serve` to provide a tailnet-only HTTPS endpoint. These scripts own the dedicated devcontainer node's complete Tailscale Serve configuration; do not add unrelated Serve or Funnel handlers to this node. Set `OPENCODE_PORT` to use a different local port. To remove the tailnet endpoint and stop the OpenCode process started by the script:
+An existing devcontainer created before the loopback mapping was added must be rebuilt first. The enable script refuses legacy all-interface port publishing and never stops an existing OpenCode process implicitly.
+
+Reattach a host terminal to the persistent TUI with the repository-owned connection command:
+
+```bash
+./scripts/opencode:connect
+```
+
+From another machine, allocate an SSH terminal and run that same host command:
+
+```bash
+ssh -t hvo-dev-01 'cd /home/roys/development/HVO.SkyMonitor && ./scripts/opencode:connect'
+```
+
+If SSH disconnects, OpenCode continues inside host `tmux`; rerun the command to reconnect. To disconnect intentionally without stopping OpenCode, press `Ctrl-b` and then `d` to detach tmux. The OpenCode `/exit` command stops the managed process instead. Running `opencode:connect` inside the devcontainer is rejected because the tmux session belongs to the Docker host.
+
+The loopback-only HTTP endpoint remains protected by Basic Auth for OpenCode's internal client/server communication; remote operators use the SSH TUI command above rather than connecting to that endpoint directly. Set `HVO_OPENCODE_CONTAINER` only if automatic devcontainer discovery is ambiguous. The non-secret `.devcontainer/opencode-host.conf` keeps the tmux session, container port, and Docker-host port consistent across all lifecycle commands. Keep its host/container ports aligned with the loopback-only `appPort` mapping in `.devcontainer/devcontainer.json`.
+
+Another repository can use the same scripts without colliding by choosing its own host port and tmux session while retaining OpenCode's container port:
+
+```bash
+OPENCODE_TMUX_SESSION=hvo-website-opencode
+OPENCODE_CONTAINER_PORT=4096
+OPENCODE_HOST_PORT=4097
+```
+
+Its devcontainer would publish `127.0.0.1:4097:4096`. Host ports and tmux session names must be unique for concurrently running repositories.
+Stop the repository's managed session before changing these values.
+
+To stop both the tmux session and its validated in-container OpenCode process, run this from the Docker host:
 
 ```bash
 ./scripts/opencode:disable
 ```
+
+If the devcontainer was rebuilt before this command ran, `opencode:disable` also clears stale lifecycle state after proving that the recorded process no longer exists. Restart a stopped devcontainer before running the command.
 
 ### Extensions
 
@@ -181,7 +212,7 @@ The following ports are automatically forwarded and accessible from your host ma
 
 - Copy `.env.template` to `.env` for Docker Compose. Only non-secret defaults live in version control.
 - Place per-developer overrides in `.devcontainer/devcontainer.local.env` (gitignored) and map them via the `remoteEnv` block in `.devcontainer/devcontainer.json`.
-- Treat `.devcontainer/state/` as secret local data. It survives rebuilds but not a fresh clone; restore it securely or re-enroll Tailscale and OpenCode after cloning.
+- Treat `.devcontainer/state/` as secret local data. OpenCode credentials survive rebuilds but not a fresh clone; restore them securely or reauthenticate OpenCode after cloning. Legacy Tailscale state is intentionally not mounted into the container.
 - Use `.NET` [user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets?view=aspnetcore-8.0&tabs=linux) for local debugging outside containers. The devcontainer mounts your host secrets folder automatically.
 - See `docs/security/secrets.md` for detailed workflows covering Testcontainers, Docker Compose, and production deployments.
 

@@ -13,8 +13,9 @@ public sealed class TransientContractTests
 {
     private const string EventSha256 = "33EAB7513A13B19E7584AA8B20666D7757AF85BC8235F172DCDD33DF908924D2";
     private const string CandidateSha256 = "3D7FFA7395EEFF64093AC8B97B9D90666E2A13E0FC3EA96A32C71C89EEBD75DA";
-    private const string MonoDescriptorSha256 = "3786D3175008C7C02020401F0956D58B1238592C965CE523BCAF2D484E27AF2A";
-    private const string RggbDescriptorSha256 = "3D2C1DB10D6C010FCD20BBE6C6F1C87CD40A396489C8B7DA2D1C7FCC9D64DBAC";
+    private const string MonoDescriptorSha256 = "DAA86B5D5B0F74A3DC01FCDAAA4B5B2B23C2B2EE2D20854620F0C4C1CB754FDA";
+    private const string RggbDescriptorSha256 = "EF5B610A77E14E0156B0BC4D0A1B1BBD0FF1C49FCDE4B0B8167ADDF5F5601509";
+    private const string LegacyMonoInputIdentitySha256 = "D10574443D2F8109827AFAE454A8965D35145D755D14267F21AC9B065CFCE213";
 
     [TestMethod]
     public async Task GoldenContractsRoundTripExactCanonicalBytesAndPinnedHashes()
@@ -602,6 +603,26 @@ public sealed class TransientContractTests
                 TransientContractReasonCodes.InvalidDetectorInput,
                 TransientContractJson.Validate(RebindIdentity(invalid)).ReasonCode);
         }
+    }
+
+    [TestMethod]
+    public void LegacyV1DetectorDescriptorWithoutSaturationChecksumRetainsIdentityAndParses()
+    {
+        var descriptor = RebindIdentity(TransientTestData.CreateDetectorDescriptor(CameraPixelFormat.Mono16) with
+        {
+            SaturationMaskChecksumSha256 = null
+        });
+
+        Assert.AreEqual(LegacyMonoInputIdentitySha256, descriptor.InputIdentitySha256);
+        var json = TransientContractJson.Serialize(descriptor);
+        Assert.IsFalse(Encoding.UTF8.GetString(json).Contains("saturationMaskChecksumSha256", StringComparison.Ordinal));
+
+        var parsed = TransientContractJson.ParseDetectorInputDescriptor(json);
+
+        Assert.IsTrue(parsed.Validation.IsValid, parsed.Validation.ReasonCode);
+        Assert.IsNotNull(parsed.Value);
+        Assert.IsNull(parsed.Value.SaturationMaskChecksumSha256);
+        Assert.AreEqual(LegacyMonoInputIdentitySha256, parsed.Value.InputIdentitySha256);
     }
 
     [TestMethod]

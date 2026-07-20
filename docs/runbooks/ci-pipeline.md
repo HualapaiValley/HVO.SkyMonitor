@@ -9,7 +9,7 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
 | **Quality** | Pinned local tools, formatting, vulnerability audit, and exact reviewed deprecation allowlist. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. Skipped only in classified reduced mode. |
-| **Unit Tests** | 862 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
+| **Unit Tests** | 911 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
 | **Integration Tests** | 282 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. Skipped only in classified reduced mode. |
 | **Architecture & Publish** | The remaining six Integration-category repository graph/MSBuild/publish cases plus retained host publish manifests. |
 | **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
@@ -20,7 +20,7 @@ Each test invocation owns a category/project-specific result directory and TRX n
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=862`, `Integration=288`, `Manual=29`, `Soak=1`, `External=0`, and `Hardware=0`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=911`, `Integration=288`, `Manual=32`, `Soak=1`, `External=0`, and `Hardware=0`.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. No Hardware check is published until real device tests and a suitable runner exist.
 
@@ -100,7 +100,7 @@ The workflow always triggers for pull requests. A lightweight classifier uses th
 - `deploy/hvo-docker/README.md` and `tools/asi-capture/README.md`
 - one-level `src/*/README.md` and `tests/*/README.md`
 - `tests/fixtures/catalog/SOURCE.md` and `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
-- `scripts/opencode:enable`, `scripts/opencode:disable`, and `scripts/test:opencode`
+- `scripts/opencode:enable`, `scripts/opencode:disable`, `scripts/opencode:connect`, and `scripts/test:opencode`
 
 Reduced mode still runs **Quality** and **Required CI**. It intentionally skips Build, Unit Tests, Integration Tests, Architecture & Publish, Migrations, and Coverage. `Required CI` accepts those skipped results only when classification succeeded in reduced pull-request mode. This preserves the stable protected check while avoiding approximately 25 of the 30.4 aggregate runner-minutes observed in baseline run `29673206708`.
 

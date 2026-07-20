@@ -66,6 +66,8 @@ public sealed class LogicHostProcessingConformanceTests
         Assert.AreEqual(descriptor.Timing.ExposureEndedUtc, edge.ObservationEndedUtc);
         Assert.AreEqual(edge.ObservationStartedUtc, central.ObservationStartedUtc);
         Assert.AreEqual(edge.ObservationEndedUtc, central.ObservationEndedUtc);
+        Assert.AreEqual(descriptor.Capture.CaptureSequence, edge.CaptureSequence);
+        Assert.AreEqual(edge.CaptureSequence, central.CaptureSequence);
         var source = new TransientSourceEvidenceReferenceV1(
             TransientSourceEvidenceReferenceV1.CurrentSchemaVersion,
             Guid.Parse("93000000-0000-0000-0000-000000000099"),
@@ -90,6 +92,9 @@ public sealed class LogicHostProcessingConformanceTests
         Assert.AreEqual(
             edgeInput.Input!.Descriptor.InputIdentitySha256,
             centralInput.Input!.Descriptor.InputIdentitySha256);
+        CollectionAssert.AreEqual(
+            edgeInput.Input.SaturationMask.Bits.ToArray(),
+            centralInput.Input.SaturationMask.Bits.ToArray());
 
         var acceleratedDescriptor = descriptor with
         {
@@ -123,6 +128,145 @@ public sealed class LogicHostProcessingConformanceTests
             acceleratedEdge.ObservationEndedUtc);
         Assert.AreEqual(acceleratedEdge.ObservationStartedUtc, acceleratedCentral.ObservationStartedUtc);
         Assert.AreEqual(acceleratedEdge.ObservationEndedUtc, acceleratedCentral.ObservationEndedUtc);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task EdgeAndCentralAdaptersProduceEquivalentCenteredTransientBackground()
+    {
+        var baseline = ProcessingConformanceFixture.CreateDescriptor();
+        var edgeWindow = new Dictionary<TransientTemporalPosition, TransientTemporalSource>();
+        var centralWindow = new Dictionary<TransientTemporalPosition, TransientTemporalSource>();
+        foreach (var position in new[]
+        {
+            TransientTemporalPosition.NMinus2, TransientTemporalPosition.NMinus1, TransientTemporalPosition.N,
+            TransientTemporalPosition.NPlus1, TransientTemporalPosition.NPlus2
+        })
+        {
+            var sequence = 100 + (int)position;
+            var offset = TimeSpan.FromSeconds((int)position * 25);
+            var payload = new byte[]
+            {
+                (byte)(10 + sequence), 0, (byte)(20 + sequence), 0,
+                (byte)(30 + sequence), 0, (byte)(40 + sequence), 0
+            };
+            var started = baseline.Timing.ExposureStartedUtc.Add(offset);
+            var ended = started.Add(baseline.Controls.EffectiveExposure);
+            var descriptor = baseline with
+            {
+                Capture = baseline.Capture with
+                {
+                    CaptureId = new Guid($"96000000-0000-0000-0000-{sequence:D12}"),
+                    CaptureSequence = sequence
+                },
+                Timing = baseline.Timing with
+                {
+                    RequestedStartUtc = baseline.Timing.RequestedStartUtc.Add(offset),
+                    ExposureStartedUtc = started,
+                    ExposureEndedUtc = ended,
+                    ReadoutCompletedUtc = baseline.Timing.ReadoutCompletedUtc.Add(offset),
+                    DurableIngressUtc = baseline.Timing.DurableIngressUtc.Add(offset),
+                    SetpointAppliedUtc = baseline.Timing.SetpointAppliedUtc?.Add(offset)
+                },
+                Artifact = baseline.Artifact with
+                {
+                    ArtifactId = new Guid($"97000000-0000-0000-0000-{sequence:D12}"),
+                    CreatedUtc = baseline.Artifact.CreatedUtc.Add(offset),
+                    ChecksumSha256 = PayloadChecksum.ComputeSha256(payload)
+                }
+            };
+            var frame = new CameraFrame(
+                started,
+                descriptor.Layout.Width,
+                descriptor.Layout.Height,
+                descriptor.Layout.PixelFormat,
+                payload,
+                new FrameMetadata(
+                    descriptor.Controls.EffectiveExposure,
+                    descriptor.Controls.EffectiveGain,
+                    descriptor.Controls.EffectiveOffset ?? 0,
+                    Extra: new Dictionary<string, string>
+                    {
+                        ["blackLevelAdu"] = "0",
+                        ["whiteLevelAdu"] = ushort.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    }));
+            var frameArtifact = new FrameArtifact(
+                descriptor.Artifact.ArtifactId,
+                descriptor.Artifact.Role,
+                frame,
+                descriptor.Artifact.SourceArtifactIds,
+                ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256);
+            var edgeArtifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+                ProcessingConformanceFixture.CameraConfig,
+                frameArtifact,
+                descriptor.Artifact.Variant,
+                new CaptureAcquisitionTiming(started, ended, descriptor.Timing.ReadoutCompletedUtc),
+                descriptor);
+            var recorder = new RecordingExecutor();
+            var adapterOutcome = await new LogicHostRecipeExecutionAdapter(recorder).ExecuteAsync(
+                descriptor,
+                payload,
+                BuiltInProcessingRecipes.EncodedPreview,
+                JsonSerializer.SerializeToElement(new EncodedPreviewOptions(OutputEncoding: "Packed")),
+                ProcessingInputSelector.Raw(descriptor.Artifact.Variant),
+                "transient-conformance").ConfigureAwait(false);
+            Assert.AreEqual(ProcessingOutcomeStatus.Skipped, adapterOutcome.Status,
+                $"{adapterOutcome.ReasonCode}:{adapterOutcome.Field}");
+            var centralArtifact = recorder.Request!.Inputs.Single();
+            var evidence = new TransientSourceEvidenceReferenceV1(
+                TransientSourceEvidenceReferenceV1.CurrentSchemaVersion,
+                new Guid($"98000000-0000-0000-0000-{sequence:D12}"),
+                new TransientWholeArtifactLocatorV1(
+                    TransientWholeArtifactLocatorV1.CurrentSchemaVersion,
+                    TransientSourceLocatorKind.WholeArtifact,
+                    new TransientArtifactReferenceV1(
+                        descriptor.Artifact.ArtifactId,
+                        descriptor.Artifact.Role,
+                        descriptor.Artifact.Variant,
+                        edgeArtifact.RecipeIdentitySha256,
+                        PayloadChecksum.ComputeSha256(payload))),
+                started,
+                ended,
+                TransientTimingQuality.Reported,
+                new TransientTimingProvenanceV1("conformance", "v1"));
+            var levels = new TransientLinearLevelsV1(0, ushort.MaxValue, ushort.MaxValue);
+            var edgeInput = TransientDetectorInputFactory.Create(edgeArtifact, evidence, levels);
+            var centralInput = TransientDetectorInputFactory.Create(centralArtifact, evidence, levels);
+            Assert.IsTrue(edgeInput.Validation.IsValid, edgeInput.Validation.ReasonCode);
+            Assert.IsTrue(centralInput.Validation.IsValid, centralInput.Validation.ReasonCode);
+            var masks = CreateTransientMasks(descriptor.Layout.Width, descriptor.Layout.Height);
+            var sensitivity = new TransientSensitivityV1("conformance-response-v1", 1, 1);
+            edgeWindow[position] = new TransientTemporalSource(position, sequence, edgeInput.Input!, sensitivity, masks);
+            centralWindow[position] = new TransientTemporalSource(position, sequence, centralInput.Input!, sensitivity, masks);
+        }
+
+        var contextPositions = new[]
+        {
+            TransientTemporalPosition.NMinus2, TransientTemporalPosition.NMinus1,
+            TransientTemporalPosition.NPlus1, TransientTemporalPosition.NPlus2
+        };
+        var edgeOutcome = TransientTemporalBackgroundFactory.Create(new TransientTemporalBackgroundRequest(
+            TransientTemporalBackgroundKind.CenteredFinal,
+            edgeWindow[TransientTemporalPosition.N],
+            contextPositions.Select(position => edgeWindow[position]).ToArray(),
+            [],
+            TimeSpan.FromSeconds(30)));
+        var centralOutcome = TransientTemporalBackgroundFactory.Create(new TransientTemporalBackgroundRequest(
+            TransientTemporalBackgroundKind.CenteredFinal,
+            centralWindow[TransientTemporalPosition.N],
+            contextPositions.Select(position => centralWindow[position]).ToArray(),
+            [],
+            TimeSpan.FromSeconds(30)));
+
+        Assert.AreEqual(TransientTemporalBackgroundStatus.Produced, edgeOutcome.Status, edgeOutcome.ReasonCode);
+        Assert.AreEqual(TransientTemporalBackgroundStatus.Produced, centralOutcome.Status, centralOutcome.ReasonCode);
+        CollectionAssert.AreEqual(edgeOutcome.Product!.Pixels.ToArray(), centralOutcome.Product!.Pixels.ToArray());
+        CollectionAssert.AreEqual(
+            edgeOutcome.Product.EffectiveMask.Bits.ToArray(),
+            centralOutcome.Product.EffectiveMask.Bits.ToArray());
+        CollectionAssert.AreEqual(
+            JsonSerializer.SerializeToUtf8Bytes(edgeOutcome.Product.Descriptor),
+            JsonSerializer.SerializeToUtf8Bytes(centralOutcome.Product.Descriptor));
     }
 
     [TestMethod]
@@ -484,6 +628,23 @@ public sealed class LogicHostProcessingConformanceTests
                 ChecksumSha256 = HVO.SkyMonitor.AgentCore.PayloadChecksum.ComputeSha256(payload)
             }
         };
+    }
+
+    private static TransientDetectorMask[] CreateTransientMasks(int width, int height)
+    {
+        var empty = Linear16MaskOperations.Empty(width, height);
+        return new[]
+        {
+            TransientDetectorMaskKind.Sky,
+            TransientDetectorMaskKind.ImageCircle,
+            TransientDetectorMaskKind.Horizon,
+            TransientDetectorMaskKind.Obstruction,
+            TransientDetectorMaskKind.BadPixel,
+            TransientDetectorMaskKind.Star
+        }.Select(kind => TransientDetectorMask.Create(
+            kind,
+            new ProcessingAlgorithmIdentity($"conformance-{kind.ToString().ToUpperInvariant()}-mask", "v1"),
+            empty)).ToArray();
     }
 
     private sealed class RecordingExecutor : IProcessingRecipeExecutor

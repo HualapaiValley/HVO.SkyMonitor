@@ -123,6 +123,22 @@ public static class TransientContractJson
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         var normalized = Normalize(descriptor);
+        // Descriptors persisted before saturation binding must retain their original V1 identity.
+        if (normalized.SaturationMaskChecksumSha256 is null)
+        {
+            return CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                schema = "hvo-transient-detector-input-identity-v1",
+                normalized.SchemaVersion,
+                normalized.Source,
+                normalized.Representation,
+                normalized.Layout,
+                normalized.Levels,
+                normalized.Compatibility,
+                normalized.Conversion,
+                normalized.SourceToDetectorTransform
+            });
+        }
         return CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
             schema = "hvo-transient-detector-input-identity-v1",
@@ -131,6 +147,7 @@ public static class TransientContractJson
             normalized.Representation,
             normalized.Layout,
             normalized.Levels,
+            normalized.SaturationMaskChecksumSha256,
             normalized.Compatibility,
             normalized.Conversion,
             normalized.SourceToDetectorTransform
@@ -468,7 +485,8 @@ public static class TransientContractJson
         {
             return Failure(TransientContractReasonCodes.InvalidDetectorInput, "levels");
         }
-        if (!ValidCompatibility(descriptor.Compatibility) || !ValidDetectorProvenance(descriptor))
+        if ((descriptor.SaturationMaskChecksumSha256 is not null && !Sha256(descriptor.SaturationMaskChecksumSha256)) ||
+            !ValidCompatibility(descriptor.Compatibility) || !ValidDetectorProvenance(descriptor))
         {
             return Failure(TransientContractReasonCodes.InvalidDetectorInput, "provenance");
         }
@@ -904,6 +922,7 @@ public static class TransientContractJson
         => value with
         {
             InputIdentitySha256 = value.InputIdentitySha256.ToUpperInvariant(),
+            SaturationMaskChecksumSha256 = value.SaturationMaskChecksumSha256?.ToUpperInvariant(),
             Source = NormalizeSourceEvidence(value.Source),
             Layout = value.Layout with
             {

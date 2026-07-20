@@ -1,50 +1,289 @@
 #!/usr/bin/env bash
-# opencode:disable - Disable the Tailscale proxy and stop the OpenCode server.
+# opencode:disable - Stop the host tmux session and its managed devcontainer OpenCode process.
 # Usage: ./scripts/opencode:disable
 
 set -euo pipefail
 
-readonly OPENCODE_PID_FILE="${HVO_OPENCODE_PID_FILE:-/tmp/skymonitor-opencode.pid}"
-readonly OPENCODE_PID_METADATA_FILE="${HVO_OPENCODE_PID_METADATA_FILE:-/tmp/skymonitor-opencode.pid.meta}"
-readonly OPENCODE_PROCESS_METADATA_VERSION="1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+readonly REPO_ROOT
+readonly HOST_CONFIG_FILE="$REPO_ROOT/.devcontainer/opencode-host.conf"
+# shellcheck source=.devcontainer/opencode-host.conf
+source "$HOST_CONFIG_FILE"
+TMUX_SESSION="${OPENCODE_TMUX_SESSION:?OPENCODE_TMUX_SESSION is required}"
+readonly TMUX_SESSION
+CONTAINER_PORT="${OPENCODE_CONTAINER_PORT:?OPENCODE_CONTAINER_PORT is required}"
+readonly CONTAINER_PORT
+readonly CONTAINER_USER="vscode"
+CONTAINER_WORKSPACE="/workspaces/$(basename "$REPO_ROOT")"
+readonly CONTAINER_WORKSPACE
+readonly CONTAINER_METADATA_FILE="/tmp/hvo-opencode-tmux.meta"
+readonly HOST_LOCK_FILE="$REPO_ROOT/.devcontainer/state/opencode-lifecycle-v2.lock"
+readonly HOST_GENERATION_FILE="$REPO_ROOT/.devcontainer/state/opencode-generation"
 
-if ! command -v tailscale >/dev/null 2>&1; then
-    echo "Could not disable the Tailscale proxy because the CLI is unavailable; leaving authenticated OpenCode running." >&2
-    exit 1
-fi
-if ! pgrep -x tailscaled >/dev/null 2>&1; then
-    echo "Could not disable the Tailscale proxy because the daemon is stopped; leaving authenticated OpenCode running." >&2
-    exit 1
-fi
-
-# This dedicated devcontainer node reserves its Serve config for OpenCode.
-if ! sudo tailscale serve reset; then
-    echo "Could not disable the Tailscale proxy; leaving authenticated OpenCode running." >&2
-    exit 1
-fi
-echo "Disabled the Tailscale OpenCode proxy."
-
-if [[ -f "$OPENCODE_PID_FILE" ]]; then
-    opencode_pid="$(<"$OPENCODE_PID_FILE")"
-    if [[ "$opencode_pid" =~ ^[0-9]+$ ]] && [[ -f "$OPENCODE_PID_METADATA_FILE" ]]; then
-        opencode_command="$(ps -p "$opencode_pid" -o args= 2>/dev/null || true)"
-        opencode_start_time="$(ps -p "$opencode_pid" -o lstart= 2>/dev/null || true)"
-        mapfile -t opencode_metadata < "$OPENCODE_PID_METADATA_FILE"
-        if kill -0 "$opencode_pid" 2>/dev/null \
-            && [[ "${opencode_metadata[0]:-}" == "$OPENCODE_PROCESS_METADATA_VERSION" ]] \
-            && [[ "${opencode_metadata[1]:-}" == "$opencode_start_time" ]] \
-            && [[ "$opencode_command" == *"opencode serve"* ]]; then
-            kill "$opencode_pid"
-            echo "Stopped OpenCode (PID $opencode_pid)."
-        elif kill -0 "$opencode_pid" 2>/dev/null; then
-            echo "PID $opencode_pid is not OpenCode; leaving that process running." >&2
-        fi
-    else
-        echo "Ignoring invalid OpenCode PID file." >&2
+validate_container() {
+    local container="$1"
+    local actual_label
+    if [[ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)" != true ]]; then
+        echo "Devcontainer '$container' is not running; leaving tmux and container state unchanged." >&2
+        exit 1
     fi
-    rm -f "$OPENCODE_PID_FILE" "$OPENCODE_PID_METADATA_FILE"
-else
-    echo "No OpenCode process was started by ./scripts/opencode:enable."
+    actual_label="$(docker inspect \
+        --format '{{index .Config.Labels "devcontainer.local_folder"}}' \
+        "$container" 2>/dev/null || true)"
+    if [[ "$actual_label" != "$REPO_ROOT" ]]; then
+        echo "Container '$container' belongs to '$actual_label', not '$REPO_ROOT'." >&2
+        exit 1
+    fi
+}
+
+canonical_container() {
+    validate_container "$1"
+    docker inspect --format '{{.Id}}' "$1"
+}
+
+discover_container() {
+    if [[ -n "${HVO_OPENCODE_CONTAINER:-}" ]]; then
+        canonical_container "$HVO_OPENCODE_CONTAINER"
+        return
+    fi
+    mapfile -t containers < <(docker ps \
+        --filter "label=devcontainer.local_folder=$REPO_ROOT" \
+        --format '{{.ID}}')
+    if (( ${#containers[@]} != 1 )); then
+        echo "Expected one running devcontainer for '$REPO_ROOT'; found ${#containers[@]}." >&2
+        echo "Leaving tmux and container state unchanged." >&2
+        exit 1
+    fi
+    canonical_container "${containers[0]}"
+}
+
+tmux_option() {
+    tmux show-options -v -t "$TMUX_SESSION" "$1" 2>/dev/null || true
+}
+
+tmux_pane_dead() {
+    [[ "$(tmux display-message -p -t "$TMUX_SESSION" '#{pane_dead}' 2>/dev/null || true)" == 1 ]]
+}
+
+container_port_in_use() {
+    local listeners
+    if ! listeners="$(docker exec --user "$CONTAINER_USER" "$CONTAINER" \
+        ss -H -ltn "sport = :${CONTAINER_PORT}" 2>/dev/null)"; then
+        echo "Could not inspect TCP listeners in devcontainer '$CONTAINER'." >&2
+        exit 1
+    fi
+    [[ -n "$listeners" ]]
+}
+
+validate_local_docker() {
+    local context
+    local endpoint
+    if [[ -n "${DOCKER_HOST:-}" && "$DOCKER_HOST" != unix://* ]]; then
+        echo "DOCKER_HOST must use a local Unix socket, not '$DOCKER_HOST'." >&2
+        exit 1
+    fi
+    context="$(docker context show)"
+    endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' "$context")"
+    if [[ "$endpoint" != unix://* ]]; then
+        echo "Docker context '$context' is remote ($endpoint); run this script on its Docker host." >&2
+        exit 1
+    fi
+}
+
+managed_signal() {
+    local signal="$1"
+    local validation_command
+    # PID start ticks survive exec and identify the exact launched process. Do not
+    # require mutable argv/cwd/executable values while OpenCode is shutting down.
+    # shellcheck disable=SC2016 # The generated command expands inside the devcontainer.
+    printf -v validation_command \
+        'set -euo pipefail; metadata_file=%q; expected_port=%q; expected_workspace=%q; expected_generation=%q; [[ -s "$metadata_file" ]]; mapfile -t metadata < "$metadata_file"; [[ "${metadata[0]:-}" == 1 ]]; pid="${metadata[1]:-}"; [[ "$pid" =~ ^[0-9]+$ ]]; expected_uid="$(id -u)"; [[ "${metadata[2]:-}" == "$(cut -d " " -f 22 "/proc/$pid/stat" 2>/dev/null)" ]]; [[ "${metadata[3]:-}" == "$expected_uid" && "$(stat -c %%u "/proc/$pid")" == "$expected_uid" ]]; [[ "${metadata[4]:-}" == "$(hostname)" ]]; [[ "${metadata[5]:-}" == "$expected_port" ]]; [[ "${metadata[6]:-}" == "$expected_workspace" ]]; [[ "${metadata[7]:-}" == "$expected_generation" ]]; kill -%q "$pid"' \
+        "$CONTAINER_METADATA_FILE" \
+        "$CONTAINER_PORT" \
+        "$CONTAINER_WORKSPACE" \
+        "$GENERATION" \
+        "$signal"
+    docker exec --user "$CONTAINER_USER" "$CONTAINER" bash -lc "$validation_command"
+}
+
+managed_identity_exists() {
+    local identity_command
+    # shellcheck disable=SC2016 # The generated command expands inside the devcontainer.
+    printf -v identity_command \
+        'set -euo pipefail; metadata_file=%q; expected_generation=%q; [[ -s "$metadata_file" ]]; mapfile -t metadata < "$metadata_file"; [[ "${metadata[0]:-}" == 1 ]]; pid="${metadata[1]:-}"; [[ "$pid" =~ ^[0-9]+$ ]]; expected_uid="$(id -u)"; [[ "${metadata[2]:-}" == "$(cut -d " " -f 22 "/proc/$pid/stat" 2>/dev/null)" ]]; [[ "${metadata[3]:-}" == "$expected_uid" && "$(stat -c %%u "/proc/$pid")" == "$expected_uid" ]]; [[ "${metadata[4]:-}" == "$(hostname)" ]]; [[ "${metadata[7]:-}" == "$expected_generation" ]]; kill -0 "$pid"' \
+        "$CONTAINER_METADATA_FILE" \
+        "$GENERATION"
+    docker exec --user "$CONTAINER_USER" "$CONTAINER" bash -lc "$identity_command"
+}
+
+managed_process_absent() {
+    local absence_command
+    # Success means ownership evidence conclusively points to no remaining process.
+    # shellcheck disable=SC2016 # The generated command expands inside the devcontainer.
+    printf -v absence_command \
+        'set -euo pipefail; metadata_file=%q; expected_generation=%q; [[ -e "$metadata_file" ]] || exit 2; mapfile -t metadata < "$metadata_file"; [[ "${metadata[0]:-}" == 1 && "${metadata[4]:-}" == "$(hostname)" && "${metadata[7]:-}" == "$expected_generation" ]]; pid="${metadata[1]:-}"; [[ "$pid" =~ ^[0-9]+$ ]]; [[ -e "/proc/$pid" ]] || exit 0; process_state="$(cut -d " " -f 3 "/proc/$pid/stat" 2>/dev/null)"; if [[ "$process_state" == Z || "$process_state" == X ]]; then exit 0; fi; current_ticks="$(cut -d " " -f 22 "/proc/$pid/stat" 2>/dev/null)"; [[ -n "$current_ticks" && "$current_ticks" != "${metadata[2]:-}" ]]' \
+        "$CONTAINER_METADATA_FILE" \
+        "$GENERATION"
+    docker exec --user "$CONTAINER_USER" "$CONTAINER" bash -lc "$absence_command"
+}
+
+clear_stale_state() {
+    docker exec --user "$CONTAINER_USER" "$CONTAINER" \
+        rm -f "$CONTAINER_METADATA_FILE" 2>/dev/null || true
+    rm -f "$HOST_GENERATION_FILE"
+}
+
+if [[ -f /.dockerenv ]]; then
+    echo "Run this script on the Docker host, not inside the devcontainer." >&2
+    exit 1
+fi
+for command_name in docker tmux flock; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        echo "Required host command '$command_name' is not installed." >&2
+        exit 1
+    fi
+done
+if [[ ! "$TMUX_SESSION" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    echo "OPENCODE_TMUX_SESSION contains unsupported characters: '$TMUX_SESSION'." >&2
+    exit 1
+fi
+if [[ ! "$CONTAINER_PORT" =~ ^[0-9]+$ ]] || (( CONTAINER_PORT < 1 || CONTAINER_PORT > 65535 )); then
+    echo "OPENCODE_CONTAINER_PORT must be an integer from 1 through 65535." >&2
+    exit 1
+fi
+validate_local_docker
+if [[ ! -d "$(dirname "$HOST_LOCK_FILE")" ]]; then
+    echo "OpenCode state directory is missing; run the devcontainer initialize setup first." >&2
+    exit 1
+fi
+exec 9>"$HOST_LOCK_FILE"
+if ! flock -n 9; then
+    echo "Another OpenCode lifecycle operation is already running for '$REPO_ROOT'." >&2
+    exit 1
 fi
 
-echo "Tailscale remains connected. Run 'sudo tailscale down' to disconnect it."
+CONTAINER="$(discover_container)"
+readonly CONTAINER
+if [[ ! -s "$HOST_GENERATION_FILE" ]]; then
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        echo "tmux session '$TMUX_SESSION' exists without host generation metadata; leaving it running." >&2
+        exit 1
+    fi
+    echo "No host-owned OpenCode lifecycle state exists for '$REPO_ROOT'."
+    exit 0
+fi
+GENERATION="$(<"$HOST_GENERATION_FILE")"
+readonly GENERATION
+if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    SESSION_REPO="$(tmux_option @hvo-opencode-repo)"
+    SESSION_CONTAINER="$(tmux_option @hvo-opencode-container)"
+    SESSION_GENERATION="$(tmux_option @hvo-opencode-generation)"
+    readonly SESSION_REPO SESSION_CONTAINER SESSION_GENERATION
+    if [[ "$SESSION_REPO" != "$REPO_ROOT" ]]; then
+        echo "tmux session '$TMUX_SESSION' is not managed for this workspace." >&2
+        exit 1
+    fi
+    if [[ "$SESSION_GENERATION" != "$GENERATION" ]]; then
+        echo "tmux session '$TMUX_SESSION' does not match the host generation metadata." >&2
+        exit 1
+    fi
+    if [[ "$SESSION_CONTAINER" != "$CONTAINER" ]]; then
+        if tmux_pane_dead \
+            && [[ "$(docker inspect --format '{{.State.Running}}' "$SESSION_CONTAINER" 2>/dev/null || true)" != true ]]; then
+            tmux kill-session -t "$TMUX_SESSION"
+            rm -f "$HOST_GENERATION_FILE"
+            echo "Cleared exited tmux state for replaced devcontainer '$SESSION_CONTAINER'."
+            exit 0
+        fi
+        echo "tmux session '$TMUX_SESSION' is not managed for devcontainer '$CONTAINER'." >&2
+        exit 1
+    fi
+fi
+
+PROCESS_STOPPED=false
+if managed_process_absent 2>/dev/null; then
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux kill-session -t "$TMUX_SESSION"
+    fi
+    clear_stale_state
+    echo "Cleared stale OpenCode lifecycle state; no managed process remains."
+    exit 0
+elif managed_signal TERM 2>/dev/null; then
+    for _ in {1..40}; do
+        if managed_process_absent 2>/dev/null; then
+            break
+        fi
+        if ! managed_signal 0 2>/dev/null; then
+            if managed_identity_exists 2>/dev/null; then
+                echo "The managed process changed identity during graceful shutdown." >&2
+                exit 1
+            fi
+            break
+        fi
+        sleep 0.1
+    done
+    if ! managed_process_absent 2>/dev/null && managed_signal 0 2>/dev/null; then
+        if ! managed_signal KILL 2>/dev/null; then
+            if managed_identity_exists 2>/dev/null; then
+                echo "The managed process changed identity before forced shutdown." >&2
+                exit 1
+            fi
+        fi
+        for _ in {1..20}; do
+            if managed_process_absent 2>/dev/null; then
+                break
+            fi
+            if ! managed_signal 0 2>/dev/null; then
+                if managed_identity_exists 2>/dev/null; then
+                    echo "The managed process changed identity after forced shutdown." >&2
+                    exit 1
+                fi
+                break
+            fi
+            sleep 0.1
+        done
+        if ! managed_process_absent 2>/dev/null && managed_signal 0 2>/dev/null; then
+            echo "The validated OpenCode process did not stop after SIGKILL." >&2
+            exit 1
+        fi
+    fi
+    PROCESS_STOPPED=true
+    echo "Stopped the validated OpenCode process in devcontainer '$CONTAINER'."
+elif tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    if tmux_pane_dead && ! container_port_in_use; then
+        tmux kill-session -t "$TMUX_SESSION"
+        clear_stale_state
+        echo "Cleared exited tmux session '$TMUX_SESSION'; no server listener remains."
+        exit 0
+    fi
+    echo "Managed tmux session '$TMUX_SESSION' exists, but its OpenCode process metadata is invalid." >&2
+    echo "Leaving the session intact for inspection." >&2
+    exit 1
+else
+    if ! container_port_in_use; then
+        clear_stale_state
+        echo "Cleared stale OpenCode lifecycle state; no tmux session or server listener remains."
+        exit 0
+    fi
+    echo "OpenCode lifecycle metadata is invalid, but its recorded process may still exist." >&2
+    echo "Leaving ownership evidence unchanged for inspection." >&2
+    exit 1
+fi
+
+if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    if [[ "$(tmux_option @hvo-opencode-repo)" != "$REPO_ROOT" ]] \
+        || [[ "$(tmux_option @hvo-opencode-container)" != "$CONTAINER" ]] \
+        || [[ "$(tmux_option @hvo-opencode-generation)" != "$GENERATION" ]]; then
+        echo "tmux session '$TMUX_SESSION' changed identity during shutdown; leaving it running." >&2
+        exit 1
+    fi
+    tmux kill-session -t "$TMUX_SESSION"
+    echo "Stopped tmux session '$TMUX_SESSION'."
+fi
+if [[ "$PROCESS_STOPPED" == true ]]; then
+    docker exec --user "$CONTAINER_USER" "$CONTAINER" \
+        rm -f "$CONTAINER_METADATA_FILE" 2>/dev/null || true
+    rm -f "$HOST_GENERATION_FILE"
+fi
