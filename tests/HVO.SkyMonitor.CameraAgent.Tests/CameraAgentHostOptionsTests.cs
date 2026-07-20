@@ -1,5 +1,10 @@
 using System.ComponentModel.DataAnnotations;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -78,6 +83,99 @@ public sealed class CameraAgentHostOptionsTests
 
         Assert.IsFalse(valid);
         Assert.IsGreaterThanOrEqualTo(3, results.Count);
+    }
+
+    [TestMethod]
+    public void Validate_WhenTransientModeOrPolicyIsInvalid_ReturnsValidationErrors()
+    {
+        var options = new CameraAgentHostOptions
+        {
+            RawIngressRoot = "raw-ingress",
+            TransientDetection = new TransientDetectionOptions
+            {
+                Mode = (TransientOperatingMode)99,
+                Required = true
+            },
+            CaptureDistribution = new CaptureDistributionOptions
+            {
+                SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "transient", Enabled = true }]
+            }
+        };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(TransientDetectionOptions.Mode))));
+        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(CaptureDistributionOptions.SecondaryLanes))));
+    }
+
+    [TestMethod]
+    public void Validate_WhenDisabledTransientLaneIsRequired_ReturnsValidationError()
+    {
+        var options = new CameraAgentHostOptions
+        {
+            RawIngressRoot = "raw-ingress",
+            TransientDetection = new TransientDetectionOptions
+            {
+                Mode = TransientOperatingMode.Off,
+                Required = true
+            }
+        };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(TransientDetectionOptions.Required))));
+    }
+
+    [TestMethod]
+    [DataRow(TransientOperatingMode.Off, false)]
+    [DataRow(TransientOperatingMode.Central, false)]
+    [DataRow(TransientOperatingMode.Edge, true)]
+    [DataRow(TransientOperatingMode.Hybrid, true)]
+    public void CaptureLanePolicy_RegistersTransientLaneOnlyForEdgeModes(
+        TransientOperatingMode mode,
+        bool expected)
+    {
+        var policy = new CaptureLanePolicy(Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = "raw-ingress",
+            TransientDetection = new TransientDetectionOptions { Mode = mode, Required = expected }
+        }));
+
+        var transient = policy.Definitions.SingleOrDefault(static lane => lane.Name == "transient");
+
+        Assert.AreEqual(expected, transient is not null);
+        if (expected)
+        {
+            Assert.IsTrue(transient!.Enabled);
+            Assert.IsTrue(transient.Required);
+            Assert.IsTrue(transient.Ordered);
+        }
+    }
+
+    [TestMethod]
+    public void AddCameraAgentInfrastructure_EdgeModeRegistersRunnableTransientHandler()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = "raw-ingress",
+                ["CameraAgent:TransientDetection:Mode"] = "Edge"
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(configuration);
+        using var provider = services.BuildServiceProvider();
+
+        var policy = provider.GetRequiredService<CaptureLanePolicy>();
+        var handlers = provider.GetServices<ICaptureLaneHandler>().ToArray();
+
+        Assert.IsTrue(policy.Definitions.Any(static lane => lane.Name == "transient" && lane.Enabled && lane.Ordered));
+        Assert.IsTrue(handlers.Any(static handler => handler.Lane == "transient"));
     }
 
     [TestMethod]

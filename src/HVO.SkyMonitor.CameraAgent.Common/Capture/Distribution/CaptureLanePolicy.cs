@@ -15,6 +15,11 @@ internal sealed class CaptureLanePolicy
             Create("standard", enabled: true, required: true, ordered: true)
         };
         definitions.Add(Create("upload", configured.UploadEnabled, required: true, ordered: false));
+        var transient = options.Value.TransientDetection;
+        if (transient.Mode is TransientOperatingMode.Edge or TransientOperatingMode.Hybrid)
+        {
+            definitions.Add(Create("transient", enabled: true, transient.Required, ordered: true));
+        }
         definitions.AddRange(configured.SecondaryLanes.Select(static lane =>
             Create(lane.Name, lane.Enabled, lane.Required, ordered: true)));
         Definitions = definitions;

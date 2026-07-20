@@ -23,6 +23,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public CaptureDistributionOptions CaptureDistribution { get; init; } = new();
 
     [Required]
+    public TransientDetectionOptions TransientDetection { get; init; } = new();
+
+    [Required]
     public EnvironmentalObservationDeliveryOptions EnvironmentalDelivery { get; init; } = new();
 
     public string? AgentId { get; init; }
@@ -84,6 +87,17 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             yield return result;
         }
 
+        var transientResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            TransientDetection,
+            new ValidationContext(TransientDetection),
+            transientResults,
+            validateAllProperties: true);
+        foreach (var result in transientResults)
+        {
+            yield return result;
+        }
+
         var environmentalResults = new List<ValidationResult>();
         Validator.TryValidateObject(
             EnvironmentalDelivery,
@@ -93,6 +107,41 @@ public sealed class CameraAgentHostOptions : IValidatableObject
         foreach (var result in environmentalResults)
         {
             yield return result;
+        }
+    }
+}
+
+public enum TransientOperatingMode
+{
+    Off,
+    Edge,
+    Central,
+    Hybrid
+}
+
+public sealed class TransientDetectionOptions : IValidatableObject
+{
+    [EnumDataType(typeof(TransientOperatingMode))]
+    public TransientOperatingMode Mode { get; init; }
+
+    public bool Required { get; init; }
+
+    [Range(1, 10_080)]
+    public int CandidateTimeoutMinutes { get; init; } = 10;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (!Enum.IsDefined(Mode))
+        {
+            yield return new ValidationResult(
+                "Transient detection mode is not supported.",
+                [nameof(Mode)]);
+        }
+        if (Required && Mode is not (TransientOperatingMode.Edge or TransientOperatingMode.Hybrid))
+        {
+            yield return new ValidationResult(
+                "Transient detection can be required only in Edge or Hybrid mode.",
+                [nameof(Required), nameof(Mode)]);
         }
     }
 }
@@ -219,7 +268,7 @@ public sealed class CaptureDistributionOptions : IValidatableObject
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var lane in SecondaryLanes)
         {
-            if (!CaptureLaneName.IsValid(lane.Name) || lane.Name is "standard" or "upload")
+            if (!CaptureLaneName.IsValid(lane.Name) || lane.Name is "standard" or "upload" or "transient")
             {
                 yield return new ValidationResult(
                     "Secondary lane names must be lowercase, begin with a letter, contain only letters, digits, or hyphens, and must not use a reserved name.",

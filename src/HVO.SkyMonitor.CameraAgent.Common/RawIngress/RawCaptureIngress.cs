@@ -72,7 +72,8 @@ internal sealed class RawCaptureIngress :
             telemetry.RecordCheckpoint,
             _options.CaptureDistribution,
             resolvedLaneFaultInjector,
-            timeProvider.GetUtcNow);
+            timeProvider.GetUtcNow,
+            _options.TransientDetection);
         _files = new RawIngressFileStore(
             root,
             faultInjector,

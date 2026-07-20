@@ -15,9 +15,10 @@ internal sealed class SqliteRawCaptureJournal(
     Action<bool>? checkpointRecorder = null,
     CaptureDistributionOptions? distributionOptions = null,
     ICaptureLaneFaultInjector? laneFaultInjector = null,
-    Func<DateTimeOffset>? utcNow = null)
+    Func<DateTimeOffset>? utcNow = null,
+    TransientDetectionOptions? transientOptions = null)
 {
-    internal const int CurrentSchemaVersion = 3;
+    internal const int CurrentSchemaVersion = 4;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly int _busyTimeoutSeconds = busyTimeoutSeconds;
     private readonly Action<TimeSpan>? _lockWaitRecorder = lockWaitRecorder;
@@ -27,6 +28,7 @@ internal sealed class SqliteRawCaptureJournal(
     private readonly CaptureDistributionOptions _distributionOptions = distributionOptions ?? new CaptureDistributionOptions();
     private readonly ICaptureLaneFaultInjector _laneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();
     private readonly Func<DateTimeOffset> _utcNow = utcNow ?? SystemUtcNow;
+    private readonly TransientDetectionOptions _transientOptions = transientOptions ?? new TransientDetectionOptions();
 
     internal string DatabasePath => _databasePath;
 
@@ -59,6 +61,7 @@ internal sealed class SqliteRawCaptureJournal(
                 if (version == 0)
                 {
                     await ExecuteNonQueryAsync(connection, transaction, SchemaSql, cancellationToken).ConfigureAwait(false);
+                    await ExecuteNonQueryAsync(connection, transaction, TransientSchemaSql, cancellationToken).ConfigureAwait(false);
                 }
                 else if (version == 1)
                 {
@@ -66,6 +69,22 @@ internal sealed class SqliteRawCaptureJournal(
                     await UpsertLaneDefinitionsAsync(connection, transaction, laneDefinitions, cancellationToken).ConfigureAwait(false);
                     await BackfillLaneWorkAsync(
                         connection, transaction, laneDefinitions, _distributionOptions, cancellationToken).ConfigureAwait(false);
+                }
+                if (version is 2 or 3 &&
+                    await HasActiveLegacyTransientLaneAsync(
+                        connection, transaction, cancellationToken).ConfigureAwait(false))
+                {
+                    throw new InvalidOperationException(
+                        "Legacy custom 'transient' lane has unfinished work and cannot be adopted automatically.");
+                }
+                if (version is > 0 and < 4)
+                {
+                    await ExecuteNonQueryAsync(connection, transaction, TransientSchemaSql, cancellationToken).ConfigureAwait(false);
+                }
+                if (version == 1)
+                {
+                    await UpsertTransientPolicyMarkerAsync(
+                        connection, transaction, cancellationToken).ConfigureAwait(false);
                 }
                 if (version is 1 or 2)
                 {
@@ -83,6 +102,7 @@ internal sealed class SqliteRawCaptureJournal(
             }
         }
 
+        await SynchronizeTransientPolicyAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
         await SynchronizeLaneDefinitionsAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
 
         var integrity = await ExecuteScalarStringAsync(connection, "PRAGMA integrity_check;", cancellationToken).ConfigureAwait(false);
@@ -97,9 +117,14 @@ internal sealed class SqliteRawCaptureJournal(
                 'ix_raw_captures_discovery', 'ix_raw_captures_backlog', 'ix_raw_captures_retention',
                 'capture_lane_definitions', 'capture_lane_contexts', 'capture_lane_work',
                 'ix_capture_lane_work_claim', 'ix_capture_lane_work_lease',
-                'ix_capture_lane_work_backlog', 'ix_capture_lane_work_raw', 'ix_capture_lane_work_ordered');
+                'ix_capture_lane_work_backlog', 'ix_capture_lane_work_raw', 'ix_capture_lane_work_ordered',
+                'transient_event_identities', 'transient_candidates', 'transient_candidate_sources',
+                'ix_transient_candidates_backlog', 'ix_transient_candidate_sources_raw',
+                'transient_runtime_policy', 'transient_capture_work', 'transient_candidate_conflicts',
+                'ix_transient_capture_work_backlog', 'ix_transient_candidate_conflicts_observed',
+                'ix_transient_candidate_conflicts_candidate');
             """, cancellationToken).ConfigureAwait(false);
-        if (schemaObjectCount != 15)
+        if (schemaObjectCount != 26)
         {
             throw new InvalidDataException("Raw ingress SQLite schema is incomplete or drifted.");
         }
@@ -107,11 +132,22 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyColumnsAsync(connection, "capture_lane_definitions", LaneDefinitionColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_lane_contexts", LaneContextColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_lane_work", LaneWorkColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "transient_event_identities", TransientEventIdentityColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "transient_candidates", TransientCandidateColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "transient_candidate_sources", TransientCandidateSourceColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "transient_runtime_policy", TransientRuntimePolicyColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "transient_capture_work", TransientCaptureWorkColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "transient_candidate_conflicts", TransientCandidateConflictColumns, cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_claim", "lane_name,state,available_unix_ms,work_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_lease", "state,lease_expires_unix_ms", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_backlog", "lane_name,state,created_unix_ms", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_raw", "raw_capture_row_id,required,state", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_ordered", "lane_name,agent_id,capture_sequence", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_transient_candidates_backlog", "state,created_unix_ms,candidate_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_transient_candidate_sources_raw", "raw_capture_row_id,candidate_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_transient_capture_work_backlog", "state,created_unix_ms,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_transient_candidate_conflicts_observed", "observed_unix_ms,conflict_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_transient_candidate_conflicts_candidate", "candidate_id,conflict_id", cancellationToken).ConfigureAwait(false);
         await VerifyConnectionSettingsAsync(connection, cancellationToken).ConfigureAwait(false);
     }
 
@@ -160,6 +196,24 @@ internal sealed class SqliteRawCaptureJournal(
             command.Parameters.AddWithValue("$raw", manifest.RawRowId);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private static async Task<bool> HasActiveLegacyTransientLaneAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT EXISTS(
+                SELECT 1
+                FROM capture_lane_work
+                WHERE lane_name = 'transient' AND state NOT IN ('completed', 'abandoned'));
+            """;
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
     internal Task<RawCaptureIdentity> ReserveIdentityAsync(
@@ -415,11 +469,22 @@ internal sealed class SqliteRawCaptureJournal(
                 transaction,
                 """
                 UPDATE raw_captures
-                SET retention_hold = CASE WHEN EXISTS (
-                    SELECT 1 FROM capture_lane_work
-                    WHERE capture_lane_work.raw_capture_row_id = raw_captures.raw_capture_row_id
-                      AND ((required = 1 AND state != 'completed') OR state = 'leased')
-                ) THEN 1 ELSE 0 END;
+                SET retention_hold = CASE WHEN
+                    EXISTS (
+                        SELECT 1 FROM capture_lane_work
+                        WHERE capture_lane_work.raw_capture_row_id = raw_captures.raw_capture_row_id
+                          AND ((required = 1 AND state != 'completed') OR state = 'leased'))
+                    OR EXISTS (
+                        SELECT 1
+                        FROM transient_candidate_sources s
+                        JOIN transient_candidates c ON c.candidate_id = s.candidate_id
+                        WHERE s.raw_capture_row_id = raw_captures.raw_capture_row_id
+                          AND c.source_hold_released = 0)
+                    OR EXISTS (
+                        SELECT 1 FROM transient_capture_work
+                        WHERE raw_capture_row_id = raw_captures.raw_capture_row_id
+                          AND state = 'pending')
+                    THEN 1 ELSE 0 END;
                 """,
                 cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -430,6 +495,123 @@ internal sealed class SqliteRawCaptureJournal(
             _transactionRecorder?.Invoke("lane-policy", false);
             throw;
         }
+    }
+
+    private async Task SynchronizeTransientPolicyAsync(
+        SqliteConnection connection,
+        IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
+        CancellationToken cancellationToken)
+    {
+        using var transaction = BeginImmediate(connection);
+        string? persistedMode = null;
+        bool persistedRequired = false;
+        int persistedTimeoutMinutes = 0;
+        using (var policy = connection.CreateCommand())
+        {
+            policy.Transaction = transaction;
+            policy.CommandText = "SELECT mode, required, candidate_timeout_minutes FROM transient_runtime_policy WHERE policy_key = 1;";
+            using var reader = await policy.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                persistedMode = reader.GetString(0);
+                persistedRequired = reader.GetBoolean(1);
+                persistedTimeoutMinutes = reader.GetInt32(2);
+            }
+        }
+        var desiredLane = laneDefinitions.SingleOrDefault(static lane => lane.Name == "transient");
+        var desiredMode = _transientOptions.Mode switch
+        {
+            TransientOperatingMode.Off => "off",
+            TransientOperatingMode.Edge => "edge",
+            TransientOperatingMode.Central => "central",
+            TransientOperatingMode.Hybrid => "hybrid",
+            _ => throw new InvalidOperationException("Transient operating mode is invalid.")
+        };
+        var legacyLaneExists = false;
+        using (var legacy = connection.CreateCommand())
+        {
+            legacy.Transaction = transaction;
+            legacy.CommandText = "SELECT EXISTS(SELECT 1 FROM capture_lane_definitions WHERE lane_name = 'transient');";
+            legacyLaneExists = Convert.ToInt64(
+                await legacy.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture) == 1;
+        }
+        long active;
+        using (var activeCommand = connection.CreateCommand())
+        {
+            activeCommand.Transaction = transaction;
+            activeCommand.CommandText = """
+                SELECT
+                    (SELECT COUNT(*) FROM capture_lane_work
+                     WHERE lane_name = 'transient' AND state NOT IN ('completed', 'abandoned')) +
+                    (SELECT COUNT(*) FROM transient_capture_work WHERE state IN ('pending', 'quarantined')) +
+                    (SELECT COUNT(*) FROM transient_candidates WHERE source_hold_released = 0) +
+                    (SELECT COUNT(*) FROM transient_candidate_conflicts);
+                """;
+            active = Convert.ToInt64(
+                await activeCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
+        }
+        if (persistedMode is null && legacyLaneExists && active > 0)
+        {
+            throw new InvalidOperationException(
+                "Legacy custom 'transient' lane has unfinished work and cannot be adopted automatically.");
+        }
+        if (active > 0 &&
+            (desiredLane is null || persistedMode is not null &&
+                (!string.Equals(persistedMode, desiredMode, StringComparison.Ordinal) ||
+                 persistedRequired != _transientOptions.Required ||
+                 persistedTimeoutMinutes != _transientOptions.CandidateTimeoutMinutes)))
+        {
+            throw new InvalidOperationException(
+                "Transient operating mode or required policy cannot change while durable transient state is active.");
+        }
+        using var upsert = connection.CreateCommand();
+        upsert.Transaction = transaction;
+        upsert.CommandText = """
+            INSERT INTO transient_runtime_policy(
+                policy_key, mode, required, candidate_timeout_minutes, updated_unix_ms)
+            VALUES (1, $mode, $required, $timeout, $now)
+            ON CONFLICT(policy_key) DO UPDATE SET
+                mode = excluded.mode,
+                required = excluded.required,
+                candidate_timeout_minutes = excluded.candidate_timeout_minutes,
+                updated_unix_ms = excluded.updated_unix_ms;
+            """;
+        upsert.Parameters.AddWithValue("$mode", desiredMode);
+        upsert.Parameters.AddWithValue("$required", _transientOptions.Required ? 1 : 0);
+        upsert.Parameters.AddWithValue("$timeout", _transientOptions.CandidateTimeoutMinutes);
+        upsert.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
+        await upsert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task UpsertTransientPolicyMarkerAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var mode = _transientOptions.Mode switch
+        {
+            TransientOperatingMode.Off => "off",
+            TransientOperatingMode.Edge => "edge",
+            TransientOperatingMode.Central => "central",
+            TransientOperatingMode.Hybrid => "hybrid",
+            _ => throw new InvalidOperationException("Transient operating mode is invalid.")
+        };
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO transient_runtime_policy(
+                policy_key, mode, required, candidate_timeout_minutes, updated_unix_ms)
+            VALUES (1, $mode, $required, $timeout, $now)
+            ON CONFLICT(policy_key) DO NOTHING;
+            """;
+        command.Parameters.AddWithValue("$mode", mode);
+        command.Parameters.AddWithValue("$required", _transientOptions.Required ? 1 : 0);
+        command.Parameters.AddWithValue("$timeout", _transientOptions.CandidateTimeoutMinutes);
+        command.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task UpsertLaneDefinitionsAsync(
@@ -699,6 +881,7 @@ internal sealed class SqliteRawCaptureJournal(
         return outcomes;
     }
 
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query is selected from internal constant statements; lane values remain parameterized.")]
     private async Task<bool> IsOptionalAtHardLimitAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -709,12 +892,39 @@ internal sealed class SqliteRawCaptureJournal(
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
-            SELECT COUNT(*), COALESCE(SUM(r.payload_length), 0), MIN(r.durable_ingress_unix_ms)
-            FROM capture_lane_work w
-            JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
-            WHERE w.lane_name = $lane AND w.state IN ('pending', 'leased', 'retry_wait', 'quarantined');
-            """;
+        command.CommandText = string.Equals(lane, "transient", StringComparison.Ordinal)
+            ? """
+              SELECT
+                  (SELECT COUNT(*) FROM capture_lane_work
+                   WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')) +
+                      (SELECT COUNT(*) FROM transient_capture_work WHERE state = 'pending') +
+                      (SELECT COUNT(*) FROM transient_candidates WHERE source_hold_released = 0),
+                  (SELECT COALESCE(SUM(payload_length), 0) FROM raw_captures WHERE raw_capture_row_id IN (
+                      SELECT raw_capture_row_id FROM capture_lane_work
+                      WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
+                      UNION
+                      SELECT raw_capture_row_id FROM transient_capture_work WHERE state = 'pending'
+                      UNION
+                      SELECT s.raw_capture_row_id FROM transient_candidate_sources s
+                      JOIN transient_candidates c ON c.candidate_id = s.candidate_id
+                      WHERE c.source_hold_released = 0)),
+                  (SELECT MIN(created_unix_ms) FROM (
+                      SELECT created_unix_ms FROM capture_lane_work
+                      WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
+                      UNION ALL
+                      SELECT created_unix_ms FROM transient_capture_work WHERE state = 'pending'
+                      UNION ALL
+                      SELECT created_unix_ms FROM transient_candidates WHERE source_hold_released = 0)),
+                  (SELECT COUNT(*) FROM transient_capture_work WHERE state = 'quarantined') +
+                      (SELECT COUNT(*) FROM transient_candidates WHERE phase = 'quarantined') +
+                      (SELECT COUNT(*) FROM transient_candidate_conflicts);
+              """
+            : """
+              SELECT COUNT(*), COALESCE(SUM(r.payload_length), 0), MIN(r.durable_ingress_unix_ms), 0
+              FROM capture_lane_work w
+              JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
+              WHERE w.lane_name = $lane AND w.state IN ('pending', 'leased', 'retry_wait', 'quarantined');
+              """;
         command.Parameters.AddWithValue("$lane", lane);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
@@ -723,8 +933,9 @@ internal sealed class SqliteRawCaptureJournal(
         var oldest = await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false)
             ? durableIngressUtc
             : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2));
+        var quarantined = reader.GetInt64(3);
         var age = _utcNow() - oldest;
-        var hard = count + 1 > _distributionOptions.OptionalMaximumPendingCount ||
+        var hard = quarantined > 0 || count + 1 > _distributionOptions.OptionalMaximumPendingCount ||
                    CaptureLanePressureMath.ExceedsAfterAdding(
                        bytes, payloadLength, _distributionOptions.OptionalMaximumPendingBytes) ||
                    age >= TimeSpan.FromMinutes(_distributionOptions.OptionalMaximumOldestAgeMinutes);
@@ -735,7 +946,8 @@ internal sealed class SqliteRawCaptureJournal(
         var prior = Convert.ToInt32(
             await readPressure.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture);
-        var recovered = count * 100 < _distributionOptions.OptionalMaximumPendingCount * _distributionOptions.PressureRecoveryPercent &&
+        var recovered = quarantined == 0 &&
+                        count * 100 < _distributionOptions.OptionalMaximumPendingCount * _distributionOptions.PressureRecoveryPercent &&
                         !CaptureLanePressureMath.IsAtOrAbovePercentage(
                             bytes,
                             _distributionOptions.OptionalMaximumPendingBytes,
@@ -1297,6 +1509,18 @@ internal sealed class SqliteRawCaptureJournal(
         "raw_capture_row_id,context_json,context_sha256,context_source";
     private const string LaneWorkColumns =
         "work_id,raw_capture_row_id,lane_name,agent_id,capture_sequence,required,ordered,state,attempt_count,available_unix_ms,lease_token,lease_owner,lease_expires_unix_ms,completion_token,completed_unix_ms,failure_reason,created_unix_ms,updated_unix_ms";
+    private const string TransientEventIdentityColumns =
+        "event_id,agent_id,created_unix_ms";
+    private const string TransientCandidateColumns =
+        "candidate_id,event_id,agent_id,mode,required,reservation_identity_sha256,state,phase,candidate_payload,candidate_payload_sha256,finalization_payload,finalization_receipt_identity_sha256,submission_payload,submission_identity_sha256,acknowledgement_payload,acknowledgement_payload_sha256,source_hold_released,quarantine_reason,timeout_unix_ms,created_unix_ms,updated_unix_ms";
+    private const string TransientCandidateSourceColumns =
+        "candidate_id,source_ordinal,evidence_id,raw_capture_row_id,source_schema,locator_schema,locator_kind,artifact_id,artifact_role,artifact_variant,recipe_identity_sha256,checksum_sha256,observation_started_utc_ticks,observation_ended_utc_ticks,timing_quality,timing_source,timing_version";
+    private const string TransientRuntimePolicyColumns =
+        "policy_key,mode,required,candidate_timeout_minutes,updated_unix_ms";
+    private const string TransientCaptureWorkColumns =
+        "raw_capture_row_id,lane_work_id,mode,required,state,artifact_id,manifest_sha256,created_unix_ms,updated_unix_ms";
+    private const string TransientCandidateConflictColumns =
+        "conflict_id,candidate_id,event_id,reason,observed_unix_ms";
 
     private const string SchemaSql = """
         CREATE TABLE IF NOT EXISTS raw_capture_sequences (
@@ -1453,6 +1677,98 @@ internal sealed class SqliteRawCaptureJournal(
         CREATE INDEX IF NOT EXISTS ix_capture_lane_work_ordered
             ON capture_lane_work(lane_name, agent_id, capture_sequence)
             WHERE state NOT IN ('completed', 'abandoned');
+        """;
+
+    private const string TransientSchemaSql = """
+        CREATE TABLE IF NOT EXISTS transient_runtime_policy (
+            policy_key INTEGER PRIMARY KEY CHECK (policy_key = 1),
+            mode TEXT NOT NULL CHECK (mode IN ('off', 'edge', 'central', 'hybrid')),
+            required INTEGER NOT NULL CHECK (required IN (0, 1)),
+            candidate_timeout_minutes INTEGER NOT NULL CHECK (candidate_timeout_minutes > 0),
+            updated_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS transient_event_identities (
+            event_id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            created_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS transient_candidates (
+            candidate_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('edge', 'hybrid')),
+            required INTEGER NOT NULL CHECK (required IN (0, 1)),
+            reservation_identity_sha256 TEXT NOT NULL CHECK (length(reservation_identity_sha256) = 64),
+            state TEXT NOT NULL CHECK (state IN ('pending', 'provisional', 'validated', 'rejected', 'needs_review')),
+            phase TEXT NOT NULL CHECK (phase IN ('reserved', 'candidate_persisted', 'finalized', 'handoff_pending', 'acknowledged', 'quarantined')),
+            candidate_payload BLOB,
+            candidate_payload_sha256 TEXT CHECK (candidate_payload_sha256 IS NULL OR length(candidate_payload_sha256) = 64),
+            finalization_payload BLOB,
+            finalization_receipt_identity_sha256 TEXT CHECK (finalization_receipt_identity_sha256 IS NULL OR length(finalization_receipt_identity_sha256) = 64),
+            submission_payload BLOB,
+            submission_identity_sha256 TEXT CHECK (submission_identity_sha256 IS NULL OR length(submission_identity_sha256) = 64),
+            acknowledgement_payload BLOB,
+            acknowledgement_payload_sha256 TEXT CHECK (acknowledgement_payload_sha256 IS NULL OR length(acknowledgement_payload_sha256) = 64),
+            source_hold_released INTEGER NOT NULL DEFAULT 0 CHECK (source_hold_released IN (0, 1)),
+            quarantine_reason TEXT,
+            timeout_unix_ms INTEGER NOT NULL,
+            created_unix_ms INTEGER NOT NULL,
+            updated_unix_ms INTEGER NOT NULL,
+            FOREIGN KEY (event_id) REFERENCES transient_event_identities(event_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS transient_candidate_sources (
+            candidate_id TEXT NOT NULL,
+            source_ordinal INTEGER NOT NULL CHECK (source_ordinal >= 0),
+            evidence_id TEXT NOT NULL,
+            raw_capture_row_id INTEGER NOT NULL,
+            source_schema TEXT NOT NULL,
+            locator_schema TEXT NOT NULL,
+            locator_kind INTEGER NOT NULL,
+            artifact_id TEXT NOT NULL,
+            artifact_role INTEGER NOT NULL,
+            artifact_variant TEXT NOT NULL,
+            recipe_identity_sha256 TEXT NOT NULL CHECK (length(recipe_identity_sha256) = 64),
+            checksum_sha256 TEXT NOT NULL CHECK (length(checksum_sha256) = 64),
+            observation_started_utc_ticks INTEGER NOT NULL,
+            observation_ended_utc_ticks INTEGER NOT NULL,
+            timing_quality INTEGER NOT NULL,
+            timing_source TEXT NOT NULL,
+            timing_version TEXT NOT NULL,
+            PRIMARY KEY (candidate_id, source_ordinal),
+            UNIQUE (candidate_id, evidence_id),
+            FOREIGN KEY (candidate_id) REFERENCES transient_candidates(candidate_id) ON DELETE CASCADE,
+            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS transient_capture_work (
+            raw_capture_row_id INTEGER PRIMARY KEY,
+            lane_work_id INTEGER NOT NULL UNIQUE,
+            mode TEXT NOT NULL CHECK (mode IN ('edge', 'hybrid')),
+            required INTEGER NOT NULL CHECK (required IN (0, 1)),
+            state TEXT NOT NULL CHECK (state IN ('pending', 'candidate_persisted', 'completed', 'quarantined')),
+            artifact_id TEXT NOT NULL UNIQUE,
+            manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+            created_unix_ms INTEGER NOT NULL,
+            updated_unix_ms INTEGER NOT NULL,
+            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id),
+            FOREIGN KEY (lane_work_id) REFERENCES capture_lane_work(work_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS transient_candidate_conflicts (
+            conflict_id INTEGER PRIMARY KEY,
+            candidate_id TEXT,
+            event_id TEXT,
+            reason TEXT NOT NULL,
+            observed_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS ix_transient_candidates_backlog
+            ON transient_candidates(state, created_unix_ms, candidate_id);
+        CREATE INDEX IF NOT EXISTS ix_transient_candidate_sources_raw
+            ON transient_candidate_sources(raw_capture_row_id, candidate_id);
+        CREATE INDEX IF NOT EXISTS ix_transient_capture_work_backlog
+            ON transient_capture_work(state, created_unix_ms, raw_capture_row_id);
+        CREATE INDEX IF NOT EXISTS ix_transient_candidate_conflicts_observed
+            ON transient_candidate_conflicts(observed_unix_ms, conflict_id);
+        CREATE INDEX IF NOT EXISTS ix_transient_candidate_conflicts_candidate
+            ON transient_candidate_conflicts(candidate_id, conflict_id);
         """;
 
     private const string InsertCaptureSql = """
