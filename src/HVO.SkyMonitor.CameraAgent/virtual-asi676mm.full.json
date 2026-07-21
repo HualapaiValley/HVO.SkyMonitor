@@ -1,0 +1,59 @@
+{
+  "agentId": "replace-with-registered-device-id",
+  "module": {
+    "type": "VirtualSky",
+    "options": {
+      "seed": 2025,
+      "rigProfileVersion": "virtual-asi676mm-supplied-lens-provisional-v1",
+      "maximumMagnitude": 6.5,
+      "maximumResults": 300,
+      "magnitudeZeroElectronsPerSecond": 1000.0,
+      "bortleClass": 3,
+      "asi676Sensor": {
+        "enabled": true,
+        "blackLevelAdu": 64.0
+      }
+    }
+  },
+  "rig": {
+    "sensor": {
+      "name": "VirtualAsi676MmRaw16",
+      "widthPixels": 3552,
+      "heightPixels": 3552,
+      "pixelSizeMicrons": 2.0,
+      "colorMode": "Mono",
+      "pixelFormat": "Mono16",
+      "responseMode": "Monochrome",
+      "strideBytes": 7104,
+      "byteOrder": "LittleEndian",
+      "sensorRecipeVersion": "virtual-asi676mm-mono12-in-raw16-provisional-v1"
+    },
+    "optics": {
+      "projectionModel": "EquidistantFisheye",
+      "focalLengthMillimeters": 2.5,
+      "fieldOfViewDegrees": 170.0,
+      "rollDegrees": 0.0,
+      "lensKind": "Fisheye",
+      "principalPointX": 1776.0,
+      "principalPointY": 1776.0,
+      "imageCircleRadiusPixels": 1627.5,
+      "focalLengthXPixels": 1097.0456,
+      "focalLengthYPixels": 1097.0456,
+      "horizontalFlip": false,
+      "calibrationVersion": "asi676-supplied-2p5mm-equidistant-placeholder-v1"
+    },
+    "orientation": {
+      "boresightAltitudeDegrees": 90.0,
+      "boresightAzimuthDegrees": 0.0,
+      "rollAdjustmentDegrees": 0.0
+    },
+    "pipeline": {
+      "captureInterval": "00:00:01",
+      "dayExposure": "00:00:00.0320000",
+      "nightExposure": "00:00:00.0320000",
+      "dayGain": 82.0,
+      "nightGain": 82.0
+    },
+    "profileVersion": "virtual-asi676mm-supplied-lens-provisional-v1"
+  }
+}

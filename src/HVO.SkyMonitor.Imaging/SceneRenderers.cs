@@ -99,6 +99,7 @@ public sealed record MonoSensorResponse
     public double ElectronsPerAdu { get; init; } = 7.9;
     public double ReadNoiseElectrons { get; init; } = 5.9;
     public double BlackLevelAdu { get; init; }
+    public string? CompatibilityLabel { get; init; }
 
     internal int MaximumAdu => (1 << AdcBitDepth) - 1;
 
@@ -196,6 +197,63 @@ public static class Asi178McSensorModel
         }
         return ReadNoisePoints[^1].ReadNoise;
     }
+}
+
+/// <summary>Provisional ASI676 response derived from published full-well, noise, gain, and HCG values.</summary>
+public static class Asi676SensorModel
+{
+    private const double GainExample = 82;
+    private const double HcgGain = 180;
+    private const double MaximumModeledGain = HcgGain;
+    private const double PublishedFullWellElectrons = 10_550;
+    private const double PublishedMaximumReadNoiseElectrons = 2.9;
+    private const double PublishedExampleReadNoiseElectrons = 1.8;
+    private const double ProvisionalHcgReadNoiseElectrons = 0.65;
+    private const int NativeMaximumAdu = 4095;
+
+    public const string Version = "zwo-asi676-12bit-published-envelope-v1";
+
+    /// <summary>
+    /// Resolves the published response envelope through HCG activation. Values above gain 180 require
+    /// hardware characterization and are intentionally rejected.
+    /// </summary>
+    public static MonoSensorResponse Resolve(double gainControl, double blackLevelAdu = 64)
+    {
+        if (!double.IsFinite(gainControl) || gainControl is < 0 or > MaximumModeledGain)
+        {
+            throw new ArgumentOutOfRangeException(nameof(gainControl));
+        }
+        if (!double.IsFinite(blackLevelAdu) || blackLevelAdu is < 0 or >= NativeMaximumAdu)
+        {
+            throw new ArgumentOutOfRangeException(nameof(blackLevelAdu));
+        }
+
+        var zeroGainElectronsPerAdu = PublishedFullWellElectrons / NativeMaximumAdu;
+        var electronsPerAdu = zeroGainElectronsPerAdu / Math.Pow(10, gainControl / 200);
+        var usableSignalCodes = NativeMaximumAdu - blackLevelAdu;
+        var fullWellElectrons = Math.Min(PublishedFullWellElectrons, usableSignalCodes * electronsPerAdu);
+        var readNoiseElectrons = gainControl <= GainExample
+            ? Interpolate(
+                gainControl / GainExample,
+                PublishedMaximumReadNoiseElectrons,
+                PublishedExampleReadNoiseElectrons)
+            : gainControl < HcgGain
+                ? PublishedExampleReadNoiseElectrons
+                : ProvisionalHcgReadNoiseElectrons;
+
+        return new MonoSensorResponse
+        {
+            AdcBitDepth = 12,
+            FullWellElectrons = fullWellElectrons,
+            ElectronsPerAdu = electronsPerAdu,
+            ReadNoiseElectrons = readNoiseElectrons,
+            BlackLevelAdu = blackLevelAdu,
+            CompatibilityLabel = "ASI676 native 12-bit ADU in Mono16 container"
+        };
+    }
+
+    private static double Interpolate(double fraction, double lower, double upper)
+        => lower + fraction * (upper - lower);
 }
 
 /// <summary>Linear RGB channel response and white-balance multipliers.</summary>
@@ -310,7 +368,9 @@ public static class Mono16SceneRenderer
         return new SceneRenderResult(
             pixels,
             AppendScenarioVersions(algorithmVersion, options),
-            options.SensorResponse is null ? "Mono16 linear sensor" : "ASI174MM native 12-bit ADU in Mono16",
+            options.SensorResponse is null
+                ? "Mono16 linear sensor"
+                : options.SensorResponse.CompatibilityLabel ?? "ASI174MM native 12-bit ADU in Mono16",
             statistics,
             geometry);
     }

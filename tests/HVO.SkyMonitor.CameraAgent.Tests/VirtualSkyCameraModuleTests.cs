@@ -90,6 +90,39 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
+    public async Task FullAsi676ProfilesLoadProvisionalSharedGeometry()
+    {
+        var profiles = new[]
+        {
+            (FileName: "virtual-asi676mm.full.json", Name: "VirtualAsi676MmRaw16",
+                Format: CameraPixelFormat.Mono16, Exposure: TimeSpan.FromMilliseconds(32)),
+            (FileName: "virtual-asi676mc.full.json", Name: "VirtualAsi676McRggbRaw16Provisional",
+                Format: CameraPixelFormat.BayerRggb16, Exposure: TimeSpan.FromSeconds(20))
+        };
+
+        foreach (var expected in profiles)
+        {
+            var config = await LoadProfileAsync(expected.FileName).ConfigureAwait(false);
+            var module = CreateModule(FixtureUtc);
+
+            await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(expected.Name, config.Rig.Sensor.Name);
+            Assert.AreEqual(3552, config.Rig.Sensor.WidthPixels);
+            Assert.AreEqual(3552, config.Rig.Sensor.HeightPixels);
+            Assert.AreEqual(2.0, config.Rig.Sensor.PixelSizeMicrons, 1e-12);
+            Assert.AreEqual(expected.Format, config.Rig.Sensor.PixelFormat);
+            Assert.AreEqual(7104, config.Rig.Sensor.StrideBytes);
+            Assert.AreEqual(2.5, config.Rig.Optics.FocalLengthMillimeters, 1e-12);
+            Assert.AreEqual(170, config.Rig.Optics.FieldOfViewDegrees, 1e-12);
+            Assert.AreEqual(1627.5, config.Rig.Optics.ImageCircleRadiusPixels);
+            Assert.AreEqual(1097.0456, config.Rig.Optics.FocalLengthXPixels);
+            Assert.AreEqual(expected.Exposure, config.Rig.Pipeline.NightExposure);
+            Assert.AreEqual(82, config.Rig.Pipeline.NightGain, 1e-12);
+        }
+    }
+
+    [TestMethod]
     public async Task FullAsi174McTelescopeProfileBuildsRgbCompatibleGraph()
     {
         var config = await LoadProfileAsync("virtual-asi174mc-telescope.full.json").ConfigureAwait(false);
@@ -259,6 +292,74 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(Asi178McSensorModel.Version, result.Frame.Metadata.Extra["sensorModel"]);
         Assert.AreEqual("14", result.Frame.Metadata.Extra["sensorAdcBitDepth"]);
         Assert.AreEqual("65535", result.Frame.Metadata.Extra["whiteLevelAdu"]);
+    }
+
+    [TestMethod]
+    public async Task CaptureAsyncWithAsi676ModelsProducesNative12BitSamplesInRaw16Containers()
+    {
+        foreach (var fileName in new[] { "virtual-asi676mm.full.json", "virtual-asi676mc.full.json" })
+        {
+            var profile = await LoadProfileAsync(fileName).ConfigureAwait(false);
+            var config = profile with
+            {
+                Rig = profile.Rig with
+                {
+                    Sensor = profile.Rig.Sensor with
+                    {
+                        WidthPixels = 64,
+                        HeightPixels = 64,
+                        StrideBytes = 128
+                    },
+                    Optics = profile.Rig.Optics with
+                    {
+                        PrincipalPointX = 32,
+                        PrincipalPointY = 32,
+                        ImageCircleRadiusPixels = 30,
+                        FocalLengthXPixels = 20,
+                        FocalLengthYPixels = 20
+                    }
+                }
+            };
+            var module = CreateModule(FixtureUtc);
+            var repeatedModule = CreateModule(FixtureUtc);
+            await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+            await repeatedModule.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+            var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+                new CaptureSetpoint(TimeSpan.FromSeconds(1), 82, null, null));
+            var result = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+            var repeated = await repeatedModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(64 * 64 * 2, result.Frame!.PixelData.Length);
+            CollectionAssert.AreEqual(result.Frame.PixelData.ToArray(), repeated.Frame!.PixelData.ToArray());
+            Assert.AreEqual(Asi676SensorModel.Version, result.Frame.Metadata.Extra!["sensorModel"]);
+            Assert.AreEqual("12", result.Frame.Metadata.Extra["sensorAdcBitDepth"]);
+            Assert.AreEqual("16", result.Frame.Metadata.Extra["containerBitDepth"]);
+            Assert.AreEqual("4095", result.Frame.Metadata.Extra["whiteLevelAdu"]);
+            Assert.AreEqual("provisional-published-envelope",
+                result.Frame.Metadata.Extra["responseCalibrationStatus"]);
+            Assert.IsTrue(MaximumSample(result.Frame.PixelData.Span) <= 4095);
+            Assert.AreEqual(profile.Rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16,
+                result.Frame.Metadata.Extra.ContainsKey("cfaPattern"));
+            Assert.AreEqual(config.Rig.ProfileVersion, result.Frame.Metadata.Scene!.RigProfileVersion);
+            Assert.AreEqual(config.Rig.Sensor.SensorRecipeVersion,
+                result.Frame.Metadata.Scene.SensorRecipeVersion);
+            Assert.AreEqual(config.Rig.Optics.CalibrationVersion,
+                result.Frame.Metadata.Scene.ProjectionCalibrationVersion);
+            Assert.AreEqual(RigProjectionContextFactory.CreateProfileHashSha256(config.Rig),
+                result.Frame.Metadata.Scene.RigProfileHashSha256);
+            Assert.AreEqual(result.Frame.Metadata.Scene.SceneId, repeated.Frame.Metadata.Scene!.SceneId);
+            if (profile.Rig.Sensor.PixelFormat == CameraPixelFormat.Mono16)
+            {
+                Assert.AreEqual("ASI676 native 12-bit ADU in Mono16 container",
+                    result.Frame.Metadata.Extra["compatibilityLabel"]);
+            }
+            else
+            {
+                Assert.AreEqual("neutral-uncharacterized",
+                    result.Frame.Metadata.Extra["channelResponseModel"]);
+            }
+        }
     }
 
     [TestMethod]
@@ -432,6 +533,8 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual("12", first.Frame.Metadata.Extra["adcBitDepth"]);
         Assert.AreEqual("ZWO 0.1 dB", first.Frame.Metadata.Extra["gainUnits"]);
         Assert.AreEqual("4095", first.Frame.Metadata.Extra["whiteLevelAdu"]);
+        Assert.AreEqual("ASI174MM native 12-bit ADU in Mono16",
+            first.Frame.Metadata.Extra["compatibilityLabel"]);
         Assert.IsTrue(MaximumSample(first.Frame.PixelData.Span) <= 4095);
     }
 

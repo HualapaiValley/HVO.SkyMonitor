@@ -65,8 +65,12 @@ public sealed class VirtualSkyCameraModule(
         _transientScenario = _options.TransientScenario is null
             ? null
             : new VirtualTransientScenario(_options.TransientScenario);
-        if (_options.Asi178Sensor.Enabled != (config.Rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16) ||
-            _options.Asi174Sensor.Enabled && config.Rig.Sensor.PixelFormat != CameraPixelFormat.Mono16)
+        var pixelFormat = config.Rig.Sensor.PixelFormat;
+        if (_options.Asi174Sensor.Enabled && pixelFormat != CameraPixelFormat.Mono16 ||
+            _options.Asi178Sensor.Enabled && pixelFormat != CameraPixelFormat.BayerRggb16 ||
+            _options.Asi676Enabled && pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
+            pixelFormat == CameraPixelFormat.BayerRggb16 &&
+            !_options.Asi178Sensor.Enabled && !_options.Asi676Enabled)
         {
             throw new ArgumentException("The configured physical sensor model must match the raw pixel format.", nameof(config));
         }
@@ -239,6 +243,26 @@ public sealed class VirtualSkyCameraModule(
             extra["whiteLevelAdu"] = ushort.MaxValue.ToString(CultureInfo.InvariantCulture);
             extra["captureSequence"] = captureSequence.ToString(CultureInfo.InvariantCulture);
         }
+        else if (_options.Asi676Enabled)
+        {
+            var response = Asi676SensorModel.Resolve(setpoint.Gain, _options.Asi676Sensor!.BlackLevelAdu);
+            extra["sensorModel"] = Asi676SensorModel.Version;
+            extra["gainUnits"] = "ZWO 0.1 dB";
+            extra["electronsPerAdu"] = response.ElectronsPerAdu.ToString("R", CultureInfo.InvariantCulture);
+            extra["readNoiseElectrons"] = response.ReadNoiseElectrons.ToString("R", CultureInfo.InvariantCulture);
+            extra["fullWellElectrons"] = response.FullWellElectrons.ToString("R", CultureInfo.InvariantCulture);
+            extra["sensorAdcBitDepth"] = "12";
+            extra["containerBitDepth"] = "16";
+            extra["blackLevelAdu"] = response.BlackLevelAdu.ToString("R", CultureInfo.InvariantCulture);
+            extra["whiteLevelAdu"] = "4095";
+            extra["responseCalibrationStatus"] = "provisional-published-envelope";
+            extra["captureSequence"] = captureSequence.ToString(CultureInfo.InvariantCulture);
+            if (sensor.PixelFormat == CameraPixelFormat.BayerRggb16)
+            {
+                extra["cfaPattern"] = "RGGB";
+                extra["channelResponseModel"] = "neutral-uncharacterized";
+            }
+        }
         var frame = new CameraFrame(
             request.RequestedStartUtc.ToUniversalTime(), sensor.WidthPixels, sensor.HeightPixels, sensor.PixelFormat,
             render.Pixels,
@@ -270,19 +294,24 @@ public sealed class VirtualSkyCameraModule(
             PsfSigmaPixels = _options.PsfSigmaPixels,
             PsfRadiusPixels = _options.PsfRadiusPixels,
             VignettingStrength = _options.VignettingStrength,
-            Bias = _options.Asi174Sensor.Enabled ? 0 : _options.Bias,
-            ReadNoiseStandardDeviation = _options.Asi174Sensor.Enabled ? 0 : _options.ReadNoiseStandardDeviation,
-            ShotNoiseEnabled = _options.Asi174Sensor.Enabled || _options.ShotNoiseEnabled,
+            Bias = _options.Asi174Sensor.Enabled || _options.Asi676Enabled ? 0 : _options.Bias,
+            ReadNoiseStandardDeviation = _options.Asi174Sensor.Enabled || _options.Asi676Enabled
+                ? 0
+                : _options.ReadNoiseStandardDeviation,
+            ShotNoiseEnabled = _options.Asi174Sensor.Enabled || _options.Asi676Enabled || _options.ShotNoiseEnabled,
             DarkCurrentElectronsPerSecond = _options.DarkCurrentElectronsPerSecond,
-            DarkNoiseEnabled = _options.Asi174Sensor.Enabled && _options.DarkCurrentElectronsPerSecond > 0,
-            Seed = _options.Asi174Sensor.Enabled
+            DarkNoiseEnabled = (_options.Asi174Sensor.Enabled || _options.Asi676Enabled) &&
+                _options.DarkCurrentElectronsPerSecond > 0,
+            Seed = _options.Asi174Sensor.Enabled || _options.Asi676Enabled
                 ? unchecked(_options.Seed + (int)(captureSequence * 104729))
                 : _options.Seed,
             Cloud = cloud,
             Transient = transient,
             SensorResponse = _options.Asi174Sensor.Enabled
                 ? Asi174MmSensorModel.Resolve(setpoint.Gain, _options.Asi174Sensor.BlackLevelAdu)
-                : null
+                : _options.Asi676Enabled
+                    ? Asi676SensorModel.Resolve(setpoint.Gain, _options.Asi676Sensor!.BlackLevelAdu)
+                    : null
         };
 
     private Rgb24CompatibilityRenderOptions CreateRgbOptions(
@@ -326,8 +355,12 @@ public sealed class VirtualSkyCameraModule(
             Seed = unchecked(_options.Seed + (int)(captureSequence * 104729)),
             Cloud = cloud,
             Transient = transient,
-            SensorResponse = Asi178McSensorModel.Resolve(
-                setpoint.Gain, _options.Asi178Sensor.BlackLevelContainerAdu)
+            ChannelResponse = _options.Asi676Enabled
+                ? new RgbChannelSettings(1, 1, 1)
+                : new RgbChannelSettings(0.94, 1, 0.8),
+            SensorResponse = _options.Asi178Sensor.Enabled
+                ? Asi178McSensorModel.Resolve(setpoint.Gain, _options.Asi178Sensor.BlackLevelContainerAdu)
+                : Asi676SensorModel.Resolve(setpoint.Gain, _options.Asi676Sensor!.BlackLevelAdu)
         };
 
     private static void ValidateRig(CameraRigConfig rig)
@@ -483,6 +516,9 @@ public sealed class VirtualSkyCameraModuleOptions
     public double DarkCurrentElectronsPerSecond { get; init; }
     public Asi174MmSensorOptions Asi174Sensor { get; init; } = new();
     public Asi178McSensorOptions Asi178Sensor { get; init; } = new();
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Asi676SensorOptions? Asi676Sensor { get; init; }
+    internal bool Asi676Enabled => Asi676Sensor?.Enabled == true;
     public VirtualCloudScenarioDefinition? CloudScenario { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public VirtualTransientScenarioDefinition? TransientScenario { get; set; }
@@ -503,7 +539,9 @@ public sealed class VirtualSkyCameraModuleOptions
             BackgroundElectronsPerSecond is { } background && (!double.IsFinite(background) || background < 0) ||
             !double.IsFinite(BortleThreeBackgroundElectronsPerSecond) || BortleThreeBackgroundElectronsPerSecond < 0 ||
             CatalogSourceUrl is null || !CatalogSourceUrl.IsAbsoluteUri || CatalogChecksumSha256.Length != 64 ||
-            Asi174Sensor is null || Asi178Sensor is null || Asi174Sensor.Enabled && Asi178Sensor.Enabled ||
+            Asi174Sensor is null || Asi178Sensor is null ||
+            (Asi174Sensor.Enabled ? 1 : 0) + (Asi178Sensor.Enabled ? 1 : 0) +
+            (Asi676Enabled ? 1 : 0) > 1 ||
             ConstellationIds is null || ConstellationIds.Any(string.IsNullOrWhiteSpace) ||
             SolarSystemBodies is null || SolarSystemBodies.Any(name =>
                 string.IsNullOrWhiteSpace(name) || !Enum.TryParse<SolarSystemBody>(name, true, out var body) || !Enum.IsDefined(body)))
@@ -524,6 +562,11 @@ public sealed class VirtualSkyCameraModuleOptions
             _ = Asi178McSensorModel.Resolve(0, Asi178Sensor.BlackLevelContainerAdu);
             _ = Asi178McSensorModel.Resolve(400, Asi178Sensor.BlackLevelContainerAdu);
         }
+        if (Asi676Enabled)
+        {
+            _ = Asi676SensorModel.Resolve(0, Asi676Sensor!.BlackLevelAdu);
+            _ = Asi676SensorModel.Resolve(180, Asi676Sensor.BlackLevelAdu);
+        }
 
         new Mono16SceneRenderOptions
         {
@@ -543,7 +586,7 @@ public sealed class VirtualSkyCameraModuleOptions
             BortleClass, BortleThreeBackgroundElectronsPerSecond);
 
     internal double ResolveBackgroundElectronsPerSecond(ProjectionContext projection)
-        => BackgroundElectronsPerSecond ?? (Asi174Sensor.Enabled || Asi178Sensor.Enabled
+        => BackgroundElectronsPerSecond ?? (Asi174Sensor.Enabled || Asi178Sensor.Enabled || Asi676Enabled
             ? SkyBrightnessModel.PhotometricBackgroundElectronsPerSecond(
                 BortleClass, MagnitudeZeroElectronsPerSecond,
                 projection.FocalLengthXPixels, projection.FocalLengthYPixels)
@@ -566,4 +609,13 @@ public sealed class Asi178McSensorOptions
 
     /// <summary>Provisional RAW16 pedestal pending controlled bias characterization.</summary>
     public double BlackLevelContainerAdu { get; init; } = 64;
+}
+
+/// <summary>Configures the provisional shared ASI676MM/MC 12-bit response in a RAW16 container.</summary>
+public sealed class Asi676SensorOptions
+{
+    public bool Enabled { get; init; }
+
+    /// <summary>Provisional native 12-bit pedestal pending controlled bias characterization.</summary>
+    public double BlackLevelAdu { get; init; } = 64;
 }

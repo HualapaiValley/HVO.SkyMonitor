@@ -277,6 +277,32 @@ public sealed class Mono16SceneRendererTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void Asi676SensorModel_UsesPublishedEnvelopeAndBoundsUncharacterizedGain()
+    {
+        var gainZero = Asi676SensorModel.Resolve(0);
+        var gainZeroWithoutPedestal = Asi676SensorModel.Resolve(0, 0);
+        var publishedExample = Asi676SensorModel.Resolve(82);
+        var hcgActivation = Asi676SensorModel.Resolve(180);
+
+        Assert.AreEqual(10_550, gainZeroWithoutPedestal.FullWellElectrons, 1e-12);
+        Assert.AreEqual(10_550d / 4095, gainZero.ElectronsPerAdu, 1e-12);
+        Assert.AreEqual(2.9, gainZero.ReadNoiseElectrons, 1e-12);
+        Assert.AreEqual(1.8, publishedExample.ReadNoiseElectrons, 1e-12);
+        Assert.AreEqual(1.8, Asi676SensorModel.Resolve(179).ReadNoiseElectrons, 1e-12);
+        Assert.AreEqual(0.65, hcgActivation.ReadNoiseElectrons, 1e-12);
+        var hcgDynamicRangeStops = Math.Log2(hcgActivation.FullWellElectrons / hcgActivation.ReadNoiseElectrons);
+        Assert.IsGreaterThan(10.9, hcgDynamicRangeStops);
+        Assert.IsLessThan(11.1, hcgDynamicRangeStops);
+        Assert.IsLessThan(10_550, gainZero.FullWellElectrons);
+        Assert.AreEqual(12, hcgActivation.AdcBitDepth);
+        Assert.Throws<ArgumentOutOfRangeException>(() => Asi676SensorModel.Resolve(181));
+        var invalidBlackLevel = Assert.Throws<ArgumentOutOfRangeException>(
+            () => Asi676SensorModel.Resolve(82, 4095));
+        Assert.AreEqual("blackLevelAdu", invalidBlackLevel.ParamName);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task Render_PhysicalResponseScalesExposureAndClipsAtNativeAdcMaximum()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(3, 3, 2).ConfigureAwait(false);
