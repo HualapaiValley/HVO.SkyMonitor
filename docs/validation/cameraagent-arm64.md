@@ -205,3 +205,58 @@ evidence, performance workloads, and run-scoped teardown.
 This was a VirtualSky functional validation with a fixture catalog. It is not
 production-catalog acceptance, sustained performance evidence, or physical
 camera and thermal acceptance on `allskycamera01`.
+
+### 2026-07-21 `allsky01` NVMe Storage Preflight
+
+The replacement Raspberry Pi 5 host `allsky01` is available through the
+non-default Docker context of the same name. Docker 29.6.2 reported native
+`linux/aarch64`, four CPUs, and approximately 16 GB RAM. The OS and `/home`
+remain on the 128 GB microSD card, while Docker root is correctly isolated on a
+Samsung SSD 980 1 TB NVMe:
+
+```text
+/var/lib/docker -> /dev/nvme0n1p1, XFS, rw,noatime
+capacity 932 GB, 18 GB used, 914 GB available
+```
+
+No image, container, or volume was created. Native fio 3.39 wrote only to a
+run-specific directory beneath `/var/lib/docker`, unlinked every generated
+file, and removed the empty directory afterward. The local Docker context
+remained `default`. Normalized environment, executable workload, latency, and
+cleanup evidence is retained in
+[`allsky01-nvme-preflight-20260721.json`](allsky01-nvme-preflight-20260721.json).
+
+The storage-only workload used one process, one open file at a time, synchronous
+buffered writes (`O_SYNC`), and fsync on close. Large-frame cases used one write
+per payload, matching the CameraAgent `WriteAsync(content)` boundary more
+closely than a synthetic flush after every 64 KiB block.
+
+| Workload | Files and bytes | Result | Mean / p95 write latency |
+| --- | ---: | ---: | ---: |
+| 64 KiB direct sequential control | 1,284,505,600 bytes | 570.9 MB/s | 0.108 / 0.110 ms per block |
+| 64 KiB `O_SYNC` conservative control | 1,284,505,600 bytes | 59.3 MB/s | 1.100 / 1.106 ms per block |
+| Exact W3P ASI178 RAW16 payload | 100 x 12,879,360 = 1,287,936,000 bytes | 616.5 MB/s; 47.87 frames/s | 19.75 / 21.89 ms per frame |
+| ASI676MM 1664-square RAW8 | 300 x 2,768,896 = 830,668,800 bytes | 520.1 MB/s; 187.85 frames/s | 5.08 / 5.14 ms per frame |
+| ASI676MM 1664-square RAW16 | 300 x 5,537,792 = 1,661,337,600 bytes | 568.6 MB/s; 102.67 frames/s | 9.24 / 9.90 ms per frame |
+
+At 30 fps, the proposed 1664-square MM mode requires 83.07 MB/s for RAW8 or
+166.13 MB/s for RAW16 before metadata and derivatives. The measured whole-frame
+write rates provide 6.26x and 3.42x short-burst storage-only throughput margins,
+respectively. The MC full-frame RAW16 payload is 25,233,408 bytes, approximately
+1.26 MB/s at one 20-second exposure, so its expected still cadence is not close
+to the measured payload limit.
+
+Temperature was 37.3-37.8 C. The recorded endpoint samples had no current
+throttle bits, while `vcgencmd get_throttled` remained `0x50000`, which records
+historical undervoltage and throttling. Because those bits were already latched,
+the endpoint samples cannot exclude another transient event during measurement.
+This prevents clean power/thermal acceptance.
+
+This preflight shows substantial short-burst NVMe headroom for isolated
+large-payload writes. The 1.6-2.9 second payload runs do not establish sustained
+throughput beyond controller or media caches. The evidence does not include
+SQLite/WAL transactions, temporary file rename and directory fsync, raw
+ingress/lane/outbox fan-out, processing, USB acquisition, memory pressure, or
+sustained thermal behavior. Final evidence must run the canonical CameraAgent
+W3P path in an isolated ARM64 container, followed by the physical ASI676MM SDK
+mode at the intended ROI/bin/rate after a reboot with `get_throttled=0x0`.
