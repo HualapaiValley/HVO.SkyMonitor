@@ -1,0 +1,79 @@
+{
+  "schema": "hvo-runtime-signal-manifest-v1",
+  "issue": 116,
+  "component": "LogicHost Central transient validation",
+  "meter": "HVO.SkyMonitor.LogicHost.DerivativeWorker",
+  "activitySource": "HVO.SkyMonitor.LogicHost.DerivativeWorker",
+  "logs": [
+    { "eventId": 2130, "level": "Information", "fields": ["State", "Concurrency"] },
+    { "eventId": 2131, "level": "Information", "fields": ["JobId", "Attempt", "Recipe", "Slot"] },
+    { "eventId": 2132, "level": "Information", "fields": ["JobId", "Attempt", "Worker", "Recipe", "Outcome", "Reason"] },
+    { "eventId": 2133, "level": "Warning", "fields": ["JobId", "Attempt"] },
+    { "eventId": 2136, "level": "Error", "fields": ["JobId", "Attempt"] },
+    { "eventId": 2139, "level": "Warning", "fields": ["JobId", "Attempt"] },
+    { "eventId": 2140, "level": "Information", "fields": ["JobId", "Recipe", "From", "To", "SelectedCount", "Reason"] },
+    { "eventId": 2160, "level": "Information", "fields": ["ArtifactCount"] },
+    { "eventId": 2161, "level": "Information", "fields": ["JobId", "CandidateCount", "Outcome"] }
+  ],
+  "metrics": [
+    { "name": "skymonitor.central.derivative.claims", "unit": "{claim}", "labels": { "outcome": ["claimed", "empty", "failed"] } },
+    { "name": "skymonitor.central.derivative.lease.renewals", "unit": "{renewal}", "labels": { "outcome": ["renewed", "failed"] } },
+    { "name": "skymonitor.central.derivative.attempts", "unit": "{attempt}", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["produced", "skipped", "retryable", "terminal", "lease-lost", "quarantined"], "cause": ["none", "recipe", "input", "lease", "source-missing", "storage", "source-integrity", "output-integrity", "database", "execution"] } },
+    { "name": "skymonitor.central.derivative.recoveries", "unit": "{recovery}", "labels": { "outcome": ["adopted"] } },
+    { "name": "skymonitor.central.derivative.operations", "unit": "{operation}", "labels": { "operation": ["cancel", "requeue", "reprocess", "supersede", "transient-schedule"], "outcome": ["completed", "existing", "scheduled"] } },
+    { "name": "skymonitor.central.derivative.dependency.failures", "unit": "{failure}", "labels": { "dependency": ["database", "storage"] } },
+    { "name": "skymonitor.central.transient.outcomes", "unit": "{outcome}", "labels": { "outcome": ["persisted", "no-candidate", "adopted", "other"] } },
+    { "name": "skymonitor.central.transient.classifications", "unit": "{classification}", "labels": { "classification": ["unknown", "meteor", "satellite", "aircraft", "sensorartifact", "environmentalartifact"] } },
+    { "name": "skymonitor.central.transient.candidates", "unit": "{candidate}", "labels": { "outcome": ["persisted", "no-candidate", "adopted", "other"] } },
+    { "name": "skymonitor.central.derivative.duration", "unit": "ms", "labels": { "stage": ["claim", "recover", "verify", "load", "execute", "publish", "complete", "detect", "converge", "persist", "window-resolution"], "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["claimed", "empty", "failed", "adopted", "completed", "missing", "integrity", "produced", "skipped", "retryable", "terminal", "other", "nocandidate", "invalid", "limitexceeded", "transient-extraction.no-candidate", "transient-validation.persisted", "waiting", "pending", "quarantined", "terminalfailure"] } },
+    { "name": "skymonitor.central.derivative.bytes", "unit": "By", "labels": { "direction": ["input", "output"], "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"] } },
+    { "name": "skymonitor.central.derivative.queue", "unit": "{job}", "labels": { "status": ["pending", "leased", "retryable", "waiting", "other"], "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"] } },
+    { "name": "skymonitor.central.derivative.queue.oldest_age", "unit": "s", "labels": {} },
+    { "name": "skymonitor.central.derivative.active", "unit": "{worker}", "labels": {} },
+    { "name": "skymonitor.central.derivative.window.resolutions", "unit": "{resolution}", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["waiting", "pending", "skipped", "quarantined", "terminalfailure"] } },
+    { "name": "skymonitor.central.derivative.window.notifications", "unit": "{notification}", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "disposition": ["affected", "ignored", "other"] } },
+    { "name": "skymonitor.central.derivative.window.compatibility_rejections", "unit": "{rejection}", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "axis": ["layout", "profile", "other"], "outcome": ["run", "skip", "quarantine", "fail"] } },
+    { "name": "skymonitor.central.derivative.window.deadlines", "unit": "{deadline}", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["pending", "skipped", "quarantined", "terminalfailure"] } },
+    { "name": "skymonitor.central.derivative.window.selected_inputs", "unit": "{artifact}", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["waiting", "pending", "skipped", "quarantined", "terminalfailure"] } },
+    { "name": "skymonitor.central.derivative.window.expected_inputs", "unit": "{requirement}", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["waiting", "pending", "skipped", "quarantined", "terminalfailure"] } },
+    { "name": "skymonitor.central.derivative.window.missing_inputs", "unit": "{requirement}", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["waiting", "pending", "skipped", "quarantined", "terminalfailure"] } },
+    { "name": "skymonitor.central.derivative.window.completeness", "unit": "1", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["waiting", "pending", "skipped", "quarantined", "terminalfailure"] } },
+    { "name": "skymonitor.central.derivative.window.processing_lag", "unit": "ms", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["waiting", "pending", "skipped", "quarantined", "terminalfailure"] } },
+    { "name": "skymonitor.central.derivative.window.pin_duration", "unit": "ms", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["pending", "leased", "retryable", "waiting", "other"] } },
+    { "name": "skymonitor.central.derivative.window.selected_bytes", "unit": "By", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["waiting", "pending", "skipped", "quarantined", "terminalfailure"] } },
+    { "name": "skymonitor.central.derivative.window.waiting", "unit": "{job}", "labels": {} },
+    { "name": "skymonitor.central.derivative.window.waiting.oldest_age", "unit": "s", "labels": {} },
+    { "name": "skymonitor.central.derivative.window.pins.active", "unit": "{artifact}", "labels": {} },
+    { "name": "skymonitor.central.derivative.window.pins.bytes", "unit": "By", "labels": {} },
+    { "name": "skymonitor.central.derivative.window.pins.oldest_age", "unit": "s", "labels": {} }
+  ],
+  "spans": [
+    { "name": "central-derivative.execute", "kind": "Consumer", "tags": ["recipe", "job.id", "attempt"] },
+    { "name": "central-derivative.window.resolve", "kind": "Internal", "tags": ["recipe", "job.id"] },
+    { "name": "central-derivative.claim", "kind": "Internal", "tags": ["stage", "recipe"] },
+    { "name": "central-derivative.load", "kind": "Internal", "tags": ["stage", "recipe"] },
+    { "name": "central-derivative.verify", "kind": "Internal", "tags": ["stage", "recipe"] },
+    { "name": "central-derivative.detect", "kind": "Internal", "tags": ["stage", "recipe"] },
+    { "name": "central-derivative.converge", "kind": "Internal", "tags": ["stage", "recipe"] },
+    { "name": "central-derivative.persist", "kind": "Internal", "tags": ["stage", "recipe"] }
+  ],
+  "health": {
+    "check": "central-derivative-worker",
+    "healthy": ["disabled", "healthy"],
+    "degraded": ["renewal-failure", "dependency-failure", "window-overdue", "backlog"],
+    "unhealthy": ["inconsistent-window", "stale"],
+    "fields": ["Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds", "WaitingCount", "OldestWaitAgeSeconds", "OverdueWaitingCount", "OldestPinAgeSeconds"]
+  },
+  "privacy": {
+    "forbidden": ["lease token", "object credentials", "payload bytes", "storage path", "user identity"],
+    "identifiers": "JobId and attempt are operational opaque identifiers; candidate/event identifiers are retained only in durable SQL evidence, not metric labels."
+  },
+  "collection": {
+    "testCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~CentralDerivativeWindowIntegrationTests",
+    "cameraAgentIsolationCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~VirtualSkyPipelineTests.CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance",
+    "performanceCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~CentralDerivativeWindowPerformanceTests.Issue116CentralTransientW2W3MW4_RecordsAcceptanceEvidence",
+    "detectorPerformanceCommand": "dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~TransientCandidateExtractionPerformanceTests.Issue116W2CandidateExtractionRecordsAcceptanceEvidence",
+    "retainedArtifactPath": "TestResults/issue-116/<revision>/",
+    "uiBoundary": "N/A: issue 116 does not add a UI boundary."
+  }
+}

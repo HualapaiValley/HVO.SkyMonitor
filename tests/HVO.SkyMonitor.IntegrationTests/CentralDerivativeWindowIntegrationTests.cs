@@ -5,12 +5,18 @@ using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Minio;
 using Minio.DataModel.Args;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
+using System.Globalization;
 using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -666,6 +672,200 @@ public sealed class CentralDerivativeWindowIntegrationTests
             outcome.OutcomeReasonCode.Should().Be(CentralTransientRuntimeReasonCodes.MaskEvidenceUnavailable);
             (await db.CentralTransientExtractionReceipts.AnyAsync(item =>
                 item.CentralDerivativeJobId == jobId).ConfigureAwait(false)).Should().BeFalse();
+        }
+    }
+
+    [TestMethod]
+    public async Task ConcurrentTransientScheduling_ConvergesToOneJobWindowAndIdentitySet()
+    {
+        var scenario = $"transient-concurrent-scheduling-{Guid.NewGuid():N}";
+        var devicePublicId = Guid.NewGuid();
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var sources = new Dictionary<long, Guid>();
+        foreach (var sequence in new long[] { 98, 99, 100, 101, 102 })
+        {
+            sources[sequence] = await SeedAndScheduleSourceAsync(
+                scenario, devicePublicId, sequence, capturedBase, CreatePayload(100), "concurrent-compatible")
+                .ConfigureAwait(false);
+        }
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            StarMaximumMagnitude = -30
+        };
+
+        const int contenders = 16;
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readyCount = 0;
+        var schedules = Enumerable.Range(0, contenders).Select(async _ =>
+        {
+            if (Interlocked.Increment(ref readyCount) == contenders)
+            {
+                ready.SetResult();
+            }
+            await release.Task.ConfigureAwait(false);
+            await ScheduleTransientAsync(sources[100], options).ConfigureAwait(false);
+        }).ToArray();
+        await ready.Task.ConfigureAwait(false);
+        release.SetResult();
+        await Task.WhenAll(schedules).ConfigureAwait(false);
+
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var jobs = await db.CentralDerivativeJobs.AsNoTracking()
+            .Where(item => item.SourceCentralArtifactId == sources[100]
+                && item.RecipeName == CentralTransientRuntime.RecipeName)
+            .Select(item => item.Id).ToArrayAsync().ConfigureAwait(false);
+        jobs.Should().ContainSingle();
+        (await db.CentralDerivativeJobInputs.CountAsync(item =>
+            item.CentralDerivativeJobId == jobs[0]).ConfigureAwait(false)).Should().Be(5);
+        (await db.CentralTransientValidationIdentitySlots.CountAsync(item =>
+            item.CentralDerivativeJobId == jobs[0]).ConfigureAwait(false)).Should().Be(32);
+    }
+
+    [TestMethod]
+    public async Task CentralTransientRuntime_EmitsBoundedConnectedPrivateOperationalSignals()
+    {
+        var scenario = $"transient-runtime-signals-{Guid.NewGuid():N}";
+        var devicePublicId = Guid.NewGuid();
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            StarMaximumMagnitude = -30
+        };
+        using var collector = new TransientRuntimeCollector();
+        using var logs = new TransientLogProvider();
+        AssemblyHooks.Fixture.Factory.Services.GetRequiredService<ILoggerFactory>().AddProvider(logs);
+        var sources = new Dictionary<long, Guid>();
+        foreach (var sequence in new long[] { 98, 99, 100, 101, 102 })
+        {
+            var payload = sequence == 100
+                ? CreatePayload([100, 1_000, 1_000, 100])
+                : CreatePayload(100);
+            sources[sequence] = await SeedAndScheduleSourceAsync(
+                scenario, devicePublicId, sequence, capturedBase, payload, "runtime-signals-compatible")
+                .ConfigureAwait(false);
+        }
+        await ScheduleTransientAsync(sources[100], options).ConfigureAwait(false);
+        Guid jobId;
+        string sourceChecksum;
+        string storageReference;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            jobId = await db.CentralDerivativeJobs.AsNoTracking()
+                .Where(job => job.SourceCentralArtifactId == sources[100]
+                    && job.RecipeName == CentralTransientRuntime.RecipeName)
+                .Select(job => job.Id).SingleAsync().ConfigureAwait(false);
+            var source = await db.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == sources[100])
+                .ConfigureAwait(false);
+            sourceChecksum = source.ChecksumSha256;
+            storageReference = source.StorageReference;
+        }
+        await DisableOtherActiveJobsAsync(jobId).ConfigureAwait(false);
+
+        var telemetry = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<CentralDerivativeWorkerTelemetry>();
+        var workerOptions = Options.Create(new CentralDerivativeWorkerOptions
+        {
+            Enabled = true,
+            WorkerId = "issue-116-runtime-signals",
+            Concurrency = 1,
+            PollInterval = TimeSpan.FromMilliseconds(10),
+            QueueSampleInterval = TimeSpan.FromHours(1),
+            LeaseDuration = TimeSpan.FromMinutes(2),
+            RenewalInterval = TimeSpan.FromSeconds(30),
+            ShutdownTimeout = TimeSpan.FromSeconds(10),
+            BacklogDegradedAfter = TimeSpan.FromMinutes(10)
+        });
+        using var worker = new CentralDerivativeWorker(
+            AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
+            workerOptions,
+            telemetry,
+            TimeProvider.System,
+            AssemblyHooks.Fixture.Factory.Services.GetRequiredService<ILogger<CentralDerivativeWorker>>());
+        await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            await WaitUntilAsync(async () =>
+            {
+                await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+                return await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                    .CentralDerivativeJobs.AsNoTracking().AnyAsync(job =>
+                        job.Id == jobId && job.Status == CentralDerivativeJobStatus.Completed)
+                    .ConfigureAwait(false);
+            }, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        collector.RecordObservableInstruments();
+        logs.Entries.Select(entry => entry.EventId.Id).Should().Contain([2130, 2131, 2132, 2140, 2161]);
+        var metrics = collector.Metrics.ToArray();
+        metrics.Select(metric => metric.Name).Should().Contain([
+            "skymonitor.central.transient.outcomes",
+            "skymonitor.central.transient.classifications",
+            "skymonitor.central.transient.candidates",
+            "skymonitor.central.derivative.attempts",
+            "skymonitor.central.derivative.duration",
+            "skymonitor.central.derivative.bytes",
+            "skymonitor.central.derivative.window.resolutions"
+        ]);
+        AssertBoundedTransientMetricTags(metrics, ReadRuntimeMetricAllowlists());
+        var activities = collector.Activities.ToArray();
+        var execution = activities.Single(activity =>
+            activity.Name == "central-derivative.execute" && activity.Kind == ActivityKind.Consumer);
+        foreach (var stage in new[] { "verify", "load", "detect", "converge", "persist" })
+        {
+            var activity = activities.FirstOrDefault(item =>
+                item.Name == $"central-derivative.{stage}" && item.Kind == ActivityKind.Internal);
+            Assert.IsNotNull(activity,
+                $"Missing production activity for stage '{stage}'. Observed: {string.Join(',', activities.Select(item => $"{item.Name}:{item.Kind}"))}");
+            Assert.AreEqual(execution.TraceId, activity.TraceId);
+            Assert.IsTrue(IsDescendantOf(activity, execution, activities),
+                $"Activity '{activity.Name}' was not connected to the production execute span.");
+        }
+
+        await using (var healthScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var health = new HVO.SkyMonitor.LogicHost.HealthChecks.CentralDerivativeWorkerHealthCheck(
+                healthScope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+                workerOptions,
+                telemetry,
+                TimeProvider.System);
+            (await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false)).Status
+                .Should().Be(HealthStatus.Healthy);
+            telemetry.RecordDependencyFailure("storage", DateTimeOffset.UtcNow);
+            (await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false)).Status
+                .Should().Be(HealthStatus.Degraded);
+            telemetry.RecordDependencyFailure("storage", DateTimeOffset.UtcNow.Subtract(TimeSpan.FromHours(1)));
+        }
+
+        Guid[] privateEventIds;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            privateEventIds = await db.CentralTransientValidationIdentitySlots.AsNoTracking()
+                .Where(slot => slot.CentralDerivativeJobId == jobId)
+                .Select(slot => slot.SubmittedEventId).ToArrayAsync().ConfigureAwait(false);
+        }
+        var signalText = string.Join('\n',
+            logs.Entries.Select(entry => entry.Message)
+                .Concat(metrics.SelectMany(metric => metric.Tags.Select(tag => $"{tag.Key}={tag.Value}")))
+                .Concat(activities.SelectMany(activity => activity.Tags.Select(tag => $"{tag.Key}={tag.Value}"))));
+        foreach (var forbidden in new[]
+        {
+            sourceChecksum,
+            storageReference,
+            devicePublicId.ToString("D"),
+            IntegrationTestFixture.MinioAccessKey
+        }.Concat(privateEventIds.Select(value => value.ToString("D"))))
+        {
+            Assert.IsFalse(signalText.Contains(forbidden, StringComparison.OrdinalIgnoreCase),
+                $"Central transient runtime signals leaked private value '{forbidden}'.");
         }
     }
 
@@ -1340,34 +1540,41 @@ public sealed class CentralDerivativeWindowIntegrationTests
         }
     }
 
-    private static async Task<Guid> SeedAndScheduleSourceAsync(
+    internal static async Task<Guid> SeedAndScheduleSourceAsync(
         string scenario,
         Guid devicePublicId,
         long sequence,
         DateTimeOffset capturedBase,
         byte[] payload,
         string profileSeed,
-        DateTimeOffset? receivedAtUtc = null)
+        DateTimeOffset? receivedAtUtc = null,
+        int width = 2,
+        int height = 2,
+        CameraPixelFormat pixelFormat = CameraPixelFormat.Mono16,
+        string? objectKeyOverride = null,
+        bool publishPayload = true)
     {
         var capturedAtUtc = capturedBase.AddSeconds(sequence);
-        var objectKey = $"integration/{scenario}/{sequence:D8}.raw";
+        var objectKey = objectKeyOverride ?? $"integration/{scenario}/{sequence:D8}.raw";
         var checksum = Convert.ToHexString(SHA256.HashData(payload));
         await using var uploadScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var minio = uploadScope.ServiceProvider.GetRequiredService<IMinioClient>();
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(Bucket), CancellationToken.None)
-            .ConfigureAwait(false))
+        if (publishPayload)
         {
-            await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(Bucket), CancellationToken.None)
-                .ConfigureAwait(false);
-        }
-        await using (var stream = new MemoryStream(payload, writable: false))
-        {
+            if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(Bucket), CancellationToken.None)
+                .ConfigureAwait(false))
+            {
+                await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(Bucket), CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            await using var stream = new MemoryStream(payload, writable: false);
             await minio.PutObjectAsync(new PutObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(objectKey)
-                .WithStreamData(stream)
-                .WithObjectSize(payload.Length)
-                .WithContentType("application/x-hvo-linear-frame"), CancellationToken.None).ConfigureAwait(false);
+                    .WithBucket(Bucket)
+                    .WithObject(objectKey)
+                    .WithStreamData(stream)
+                    .WithObjectSize(payload.Length)
+                    .WithContentType("application/x-hvo-linear-frame"), CancellationToken.None)
+                .ConfigureAwait(false);
         }
 
         var db = uploadScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -1405,8 +1612,17 @@ public sealed class CentralDerivativeWindowIntegrationTests
             };
             db.DeviceRegistrations.Add(registration);
         }
+        var isBayer = pixelFormat == CameraPixelFormat.BayerRggb16;
         var rig = new CameraRigConfig(
-            new SensorProfile("window-sensor", 2, 2, 5, SensorColorMode.Mono, CameraPixelFormat.Mono16,
+            new SensorProfile(
+                "window-sensor",
+                width,
+                height,
+                5,
+                isBayer ? SensorColorMode.Color : SensorColorMode.Mono,
+                pixelFormat,
+                isBayer ? SensorResponseMode.BayerRaw : SensorResponseMode.Monochrome,
+                checked(width * 2),
                 SensorRecipeVersion: "window-sensor-v1"),
             new OpticsProfile("Perspective", 0, 120, 0, LensKind.Rectilinear,
                 CalibrationVersion: "window-calibration-v1"),
@@ -1524,17 +1740,17 @@ public sealed class CentralDerivativeWindowIntegrationTests
             ReconciledAtUtc = receivedAtUtc ?? DateTimeOffset.UtcNow,
             Layout = new CentralArtifactLayout
             {
-                Width = 2,
-                Height = 2,
-                StrideBytes = 4,
-                PixelFormat = CameraPixelFormat.Mono16.ToString(),
+                Width = width,
+                Height = height,
+                StrideBytes = checked(width * 2),
+                PixelFormat = pixelFormat.ToString(),
                 ByteOrder = FrameByteOrder.LittleEndian.ToString(),
                 SampleDepthBits = 16,
                 ContainerDepthBits = 16,
                 Packing = FrameSamplePacking.ByteAligned.ToString(),
-                CfaPattern = ColorFilterArrayPattern.None.ToString(),
-                BlackLevel = 0,
-                WhiteLevel = ushort.MaxValue,
+                CfaPattern = (isBayer ? ColorFilterArrayPattern.Rggb : ColorFilterArrayPattern.None).ToString(),
+                BlackLevel = isBayer ? 64 : 0,
+                WhiteLevel = isBayer ? 16383 : ushort.MaxValue,
                 ByteLength = payload.Length
             },
             Recipe = new CentralArtifactRecipe
@@ -1559,7 +1775,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
             .SingleAsync(artifact => artifact.Id == sourceId).ConfigureAwait(false);
 
-    private static async Task ScheduleTransientAsync(Guid sourceId, CentralTransientOptions options)
+    internal static async Task ScheduleTransientAsync(Guid sourceId, CentralTransientOptions options)
     {
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -1618,6 +1834,93 @@ public sealed class CentralDerivativeWindowIntegrationTests
         await action(scope.ServiceProvider.GetRequiredService<ApplicationDbContext>()).ConfigureAwait(false);
     }
 
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!await condition().ConfigureAwait(false))
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                Assert.Fail("Timed out waiting for the Central transient runtime condition.");
+            }
+            await Task.Delay(25).ConfigureAwait(false);
+        }
+    }
+
+    private static void AssertBoundedTransientMetricTags(
+        IReadOnlyCollection<RuntimeMetric> metrics,
+        Dictionary<string, IReadOnlyDictionary<string, IReadOnlySet<string>>> declaredMetrics)
+    {
+        foreach (var metric in metrics)
+        {
+            declaredMetrics.Should().ContainKey(metric.Name,
+                $"every observed production metric must have finite labels in the runtime manifest");
+            var declaredLabels = declaredMetrics[metric.Name];
+            metric.Tags.Keys.Should().OnlyContain(key => declaredLabels.ContainsKey(key));
+            foreach (var tag in metric.Tags)
+            {
+                declaredLabels[tag.Key].Should().Contain(tag.Value,
+                    $"observed {metric.Name} tag {tag.Key}={tag.Value} must be declared by the runtime manifest");
+            }
+            metric.Tags.Values.Should().OnlyContain(value => value.Length <= 64);
+        }
+
+        foreach (var requiredLabel in new[] { "stage", "outcome", "cause", "classification", "direction" })
+        {
+            foreach (var metric in metrics.Where(metric => metric.Tags.ContainsKey(requiredLabel)))
+            {
+                declaredMetrics[metric.Name][requiredLabel].Should().Contain(metric.Tags[requiredLabel]);
+            }
+        }
+        metrics.SelectMany(metric => metric.Tags.Select(tag => $"{tag.Key}={tag.Value}"))
+            .Distinct(StringComparer.Ordinal).Count().Should().BeLessThanOrEqualTo(32);
+    }
+
+    private static Dictionary<string, IReadOnlyDictionary<string, IReadOnlySet<string>>>
+        ReadRuntimeMetricAllowlists()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx")))
+        {
+            directory = directory.Parent;
+        }
+        var root = directory?.FullName ?? throw new DirectoryNotFoundException("Repository root was not found.");
+        using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+            root, "docs", "validation", "central-transient-runtime-signals.json")));
+        return document.RootElement.GetProperty("metrics").EnumerateArray().ToDictionary(
+            metric => metric.GetProperty("name").GetString()!,
+            metric => (IReadOnlyDictionary<string, IReadOnlySet<string>>)metric.GetProperty("labels")
+                .EnumerateObject().ToDictionary(
+                    label => label.Name,
+                    label => (IReadOnlySet<string>)label.Value.EnumerateArray()
+                        .Select(value => value.GetString()!).ToHashSet(StringComparer.Ordinal),
+                    StringComparer.Ordinal),
+            StringComparer.Ordinal);
+    }
+
+    private static bool IsDescendantOf(
+        RuntimeActivity candidate,
+        RuntimeActivity ancestor,
+        IReadOnlyCollection<RuntimeActivity> activities)
+    {
+        var current = candidate;
+        while (current.ParentSpanId != default)
+        {
+            if (current.ParentSpanId == ancestor.SpanId)
+            {
+                return true;
+            }
+            var parent = activities.FirstOrDefault(activity =>
+                activity.TraceId == current.TraceId && activity.SpanId == current.ParentSpanId);
+            if (parent is null)
+            {
+                return false;
+            }
+            current = parent;
+        }
+        return false;
+    }
+
     private static byte[] CreatePayload(ushort value)
     {
         var payload = new byte[8];
@@ -1641,4 +1944,117 @@ public sealed class CentralDerivativeWindowIntegrationTests
 
     private static string HashText(string value)
         => Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value)));
+
+    private sealed class TransientRuntimeCollector : IDisposable
+    {
+        private readonly MeterListener meter = new();
+        private readonly ActivityListener activity;
+        public ConcurrentQueue<RuntimeMetric> Metrics { get; } = new();
+        public ConcurrentQueue<RuntimeActivity> Activities { get; } = new();
+
+        public TransientRuntimeCollector()
+        {
+            meter.InstrumentPublished = (instrument, listener) =>
+            {
+                if (instrument.Meter.Name == CentralDerivativeWorkerTelemetry.MeterName)
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            meter.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
+                Metrics.Enqueue(new RuntimeMetric(instrument.Name, value, ToTags(tags))));
+            meter.SetMeasurementEventCallback<double>((instrument, value, tags, _) =>
+                Metrics.Enqueue(new RuntimeMetric(instrument.Name, value, ToTags(tags))));
+            meter.Start();
+            activity = new ActivityListener
+            {
+                ShouldListenTo = source => source.Name == CentralDerivativeWorkerTelemetry.ActivitySourceName,
+                Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+                ActivityStopped = item => Activities.Enqueue(new RuntimeActivity(
+                    item.OperationName,
+                    item.Kind,
+                    item.TraceId,
+                    item.SpanId,
+                    item.ParentSpanId,
+                    item.TagObjects.ToDictionary(
+                        tag => tag.Key,
+                        tag => Convert.ToString(tag.Value, CultureInfo.InvariantCulture) ?? string.Empty,
+                        StringComparer.Ordinal)))
+            };
+            ActivitySource.AddActivityListener(activity);
+        }
+
+        public void RecordObservableInstruments() => meter.RecordObservableInstruments();
+
+        public void Dispose()
+        {
+            activity.Dispose();
+            meter.Dispose();
+        }
+
+        private static Dictionary<string, string> ToTags(
+            ReadOnlySpan<KeyValuePair<string, object?>> tags)
+        {
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var tag in tags)
+            {
+                result[tag.Key] = Convert.ToString(tag.Value, CultureInfo.InvariantCulture) ?? string.Empty;
+            }
+            return result;
+        }
+    }
+
+    private sealed class TransientLogProvider : ILoggerProvider
+    {
+        public ConcurrentQueue<RuntimeLog> Entries { get; } = new();
+
+        public ILogger CreateLogger(string categoryName) => new TransientLogger(categoryName, Entries);
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class TransientLogger(
+        string category,
+        ConcurrentQueue<RuntimeLog> entries) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel)
+            => category.Contains("CentralDerivative", StringComparison.Ordinal)
+                || category.Contains("CentralTransient", StringComparison.Ordinal);
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel))
+            {
+                entries.Enqueue(new RuntimeLog(category, logLevel, eventId, formatter(state, exception)));
+            }
+        }
+    }
+
+    private sealed record RuntimeMetric(
+        string Name,
+        double Value,
+        IReadOnlyDictionary<string, string> Tags);
+
+    private sealed record RuntimeActivity(
+        string Name,
+        ActivityKind Kind,
+        ActivityTraceId TraceId,
+        ActivitySpanId SpanId,
+        ActivitySpanId ParentSpanId,
+        IReadOnlyDictionary<string, string> Tags);
+
+    private sealed record RuntimeLog(
+        string Category,
+        LogLevel Level,
+        EventId EventId,
+        string Message);
 }
