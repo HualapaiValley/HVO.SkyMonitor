@@ -226,10 +226,12 @@ remained `default`. Normalized environment, executable workload, latency, and
 cleanup evidence is retained in
 [`allsky01-nvme-preflight-20260721.json`](allsky01-nvme-preflight-20260721.json).
 
-The storage-only workload used one process, one open file at a time, synchronous
-buffered writes (`O_SYNC`), and fsync on close. Large-frame cases used one write
-per payload, matching the CameraAgent `WriteAsync(content)` boundary more
-closely than a synthetic flush after every 64 KiB block.
+Every storage-only workload used one process and one open file at a time. The
+first 64 KiB media control used direct I/O (`O_DIRECT`); the conservative and
+large-payload cases used synchronous buffered writes (`O_SYNC`) and fsync on
+close. Large-frame cases used one write per payload, matching the CameraAgent
+`WriteAsync(content)` boundary more closely than a synthetic flush after every
+64 KiB block.
 
 | Workload | Files and bytes | Result | Mean / p95 write latency |
 | --- | ---: | ---: | ---: |
