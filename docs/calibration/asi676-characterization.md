@@ -132,12 +132,13 @@ evidence until those contracts and the physical ASI module exist.
 The x64 Release acceptance workload uses an empty deterministic catalog, five
 warmups, and 30 measured full-resolution captures per shipped profile. This
 measures virtual projection/rendering and buffer behavior, not USB acquisition,
-physical sensitivity, or Raspberry Pi performance.
+physical sensitivity, or Raspberry Pi performance. The clean candidate was
+`5805a04489ff628421b7dd0aa469201527c0480f` with an empty working-tree status.
 
 | Profile | Median / p95 | Throughput | Allocated/frame | Maximum sampled process RSS | Final SHA-256 |
 | --- | ---: | ---: | ---: | ---: | --- |
-| ASI676MM Mono16 | 273.116 / 310.405 ms | 3.596 frames/s | 126.2 MB | 917.0 MB | `3FC06CC08F58E148CA03A14ADDC17FDF28E52FE5ADC14380AC04C09E9FA901E8` |
-| ASI676MC RGGB16 | 1140.901 / 1153.280 ms | 0.875 frames/s | 328.1 MB | 1155.0 MB | `B126CB15DA8FCD21D6F0F77EC47BDA0F925D9AFC0F6158055D57F3180F532C69` |
+| ASI676MM Mono16 | 280.427 / 299.806 ms | 3.550 frames/s | 126.2 MB | 915.6 MB | `3FC06CC08F58E148CA03A14ADDC17FDF28E52FE5ADC14380AC04C09E9FA901E8` |
+| ASI676MC RGGB16 | 1145.433 / 1156.078 ms | 0.873 frames/s | 328.1 MB | 1153.1 MB | `B126CB15DA8FCD21D6F0F77EC47BDA0F925D9AFC0F6158055D57F3180F532C69` |
 
 Both outputs are exactly 25,233,408 bytes and remain bounded to native 12-bit
 samples. The MC renderer retains three full color planes and is intentionally
