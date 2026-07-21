@@ -11,6 +11,8 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Transients;
 
+internal sealed record TransientAssociationDecision(Guid? ExistingEventId, bool Ambiguous);
+
 internal sealed class TransientWorkerService(
     IRawCaptureIngress rawIngress,
     ICameraAgentConfigurationAccessor configurationAccessor,
@@ -40,13 +42,16 @@ internal sealed class TransientWorkerService(
             state.Set(TransientWorkerAvailability.Disabled, "mode-disabled", 0, 0);
             return;
         }
-        await InitializeAsync(stoppingToken).ConfigureAwait(false);
-        state.Set(TransientWorkerAvailability.Healthy, "ready", 0, 0);
         while (!stoppingToken.IsCancellationRequested)
         {
             var worked = false;
             try
             {
+                await InitializeAsync(stoppingToken).ConfigureAwait(false);
+                if (state.Snapshot.Availability == TransientWorkerAvailability.Starting)
+                {
+                    state.Set(TransientWorkerAvailability.Healthy, "ready", 0, 0);
+                }
                 _storageUnavailable = false;
                 worked = await ProcessCandidateAsync(stoppingToken).ConfigureAwait(false);
                 if (!worked && !_storageUnavailable)
@@ -500,34 +505,22 @@ internal sealed class TransientWorkerService(
             ? await store.ReadAdjacentCandidatesAsync(
                 frame.AgentId, frame.CaptureSequence - 1, cancellationToken).ConfigureAwait(false)
             : [];
-        var matchesByProbe = probes
-            .Select(probe => previous
-                .Select((candidate, index) => (candidate, index))
-                .Where(value => AssociationMatches(value.candidate, probe, _options.Association))
-                .ToArray())
-            .ToArray();
-        var previousDegrees = Enumerable.Range(0, previous.Count)
-            .Select(previousIndex => matchesByProbe.Count(matches =>
-                matches.Any(value => value.index == previousIndex)))
-            .ToArray();
+        var decisions = ResolveAssociations(previous, probes, _options.Association);
         var allocatedUtc = timeProvider.GetUtcNow();
         var output = new List<TransientRuntimeCandidate>(probes.Count);
         for (var index = 0; index < probes.Count; index++)
         {
-            var matches = matchesByProbe[index];
-            var uniqueMatch = matches.Length == 1 && previousDegrees[matches[0].index] == 1;
-            var ambiguous = matches.Length > 1 || matches.Length == 1 && !uniqueMatch;
-            var eventId = uniqueMatch ? matches[0].candidate.EventId : Guid.NewGuid();
+            var decision = decisions[index];
             var allocation = new TransientRuntimeCandidate(
                 Guid.NewGuid(),
-                eventId,
+                decision.ExistingEventId ?? Guid.NewGuid(),
                 frame.RawCaptureRowId,
                 index,
                 Guid.NewGuid(),
                 Guid.NewGuid(),
                 Guid.NewGuid(),
                 allocatedUtc,
-                ambiguous,
+                decision.Ambiguous,
                 0,
                 allocatedUtc,
                 null,
@@ -536,6 +529,37 @@ internal sealed class TransientWorkerService(
             output.Add(allocation);
         }
         return await store.AllocateBatchAsync(frame.RawCaptureRowId, output, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static IReadOnlyList<TransientAssociationDecision> ResolveAssociations(
+        IReadOnlyList<TransientCandidateV1> previous,
+        IReadOnlyList<TransientCandidateV1> probes,
+        TransientCandidateAssociationOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(previous);
+        ArgumentNullException.ThrowIfNull(probes);
+        ArgumentNullException.ThrowIfNull(options);
+        var matchesByProbe = probes
+            .Select(probe => previous
+                .Select((candidate, index) => (candidate, index))
+                .Where(value => AssociationMatches(value.candidate, probe, options))
+                .ToArray())
+            .ToArray();
+        var previousDegrees = Enumerable.Range(0, previous.Count)
+            .Select(previousIndex => matchesByProbe.Count(matches =>
+                matches.Any(value => value.index == previousIndex)))
+            .ToArray();
+        var output = new TransientAssociationDecision[probes.Count];
+        for (var index = 0; index < probes.Count; index++)
+        {
+            var matches = matchesByProbe[index];
+            var uniqueMatch = matches.Length == 1 && previousDegrees[matches[0].index] == 1;
+            var ambiguous = matches.Length > 1 || matches.Length == 1 && !uniqueMatch;
+            output[index] = new TransientAssociationDecision(
+                uniqueMatch ? matches[0].candidate.EventId : null,
+                ambiguous);
+        }
+        return output;
     }
 
     private async ValueTask PersistHybridSubmissionAsync(
@@ -575,7 +599,10 @@ internal sealed class TransientWorkerService(
         => exception.SqliteErrorCode is 5 or 6 or 9 or 10 or 13 or 14 or 15;
 
     internal static bool IsIntegrityFailure(SqliteException exception)
-        => exception.SqliteErrorCode is 11 or 19 or 20 or 24 or 26;
+        => exception.SqliteErrorCode is 19 or 20 or 24;
+
+    internal static bool IsDatabaseCorruption(SqliteException exception)
+        => exception.SqliteErrorCode is 11 or 26;
 
     private static string SqliteStorageReason(SqliteException exception)
         => IsRetryableStorageFailure(exception)
@@ -687,8 +714,9 @@ internal sealed class TransientWorkerService(
             if (_configuration is null)
             {
                 await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
-                _configuration = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+                var configuration = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
                 await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                _configuration = configuration;
             }
         }
         finally

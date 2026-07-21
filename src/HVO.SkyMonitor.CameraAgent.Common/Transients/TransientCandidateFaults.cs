@@ -34,10 +34,21 @@ internal enum TransientRuntimeFaultPoint
 {
     BeforeIdentityBatchCommit,
     AfterIdentityBatchCommit,
+    BeforeCausalExtractionCommit,
+    AfterCausalExtractionCommit,
     AfterCandidateJournalCommit,
+    BeforeObservationExtractionCommit,
+    AfterObservationExtractionCommit,
+    BeforeAssessmentCommit,
+    AfterAssessmentCommit,
     AfterFinalizationJournalCommit,
     AfterHandoffJournalCommit,
-    BeforeRuntimeCompletionCommit
+    BeforeFrameHistoryCommit,
+    AfterFrameHistoryCommit,
+    BeforeRuntimeCompletionCommit,
+    AfterRuntimeCompletionCommit,
+    BeforeRetirementCommit,
+    AfterRetirementCommit
 }
 
 internal interface ITransientRuntimeFaultInjector

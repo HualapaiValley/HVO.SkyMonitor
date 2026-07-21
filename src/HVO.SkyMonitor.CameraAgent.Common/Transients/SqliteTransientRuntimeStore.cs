@@ -63,12 +63,14 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
     private readonly int _busyTimeoutSeconds;
     private readonly TimeProvider _timeProvider;
     private readonly ITransientRuntimeFaultInjector _faultInjector;
+    private readonly TransientWorkerTelemetry _telemetry;
     private readonly CaptureDistributionOptions _limits;
     private readonly bool _required;
 
     public SqliteTransientRuntimeStore(
         IOptions<CameraAgentHostOptions> options,
         TimeProvider timeProvider,
+        TransientWorkerTelemetry telemetry,
         ITransientRuntimeFaultInjector? faultInjector = null)
     {
         var configured = options.Value;
@@ -76,6 +78,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
         _busyTimeoutSeconds = configured.RawIngressSqliteBusyTimeoutSeconds;
         _timeProvider = timeProvider;
+        _telemetry = telemetry;
         _faultInjector = faultInjector ?? NullTransientRuntimeFaultInjector.Instance;
         _limits = configured.CaptureDistribution;
         _required = configured.TransientDetection.Required;
@@ -278,6 +281,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
                     snapshot.PayloadStream, checked((int)snapshot.PayloadLength), cancellationToken).ConfigureAwait(false);
                 var sidecar = await ReadExactlyAsync(
                     snapshot.SidecarStream, checked((int)snapshot.SidecarStream.Length), cancellationToken).ConfigureAwait(false);
+                _telemetry.RecordEvidenceRead(snapshot.PayloadLength, sidecar.LongLength);
                 if (!sidecar.AsSpan().SequenceEqual(snapshot.ManifestJson) ||
                     !string.Equals(
                         Convert.ToHexString(SHA256.HashData(payload)),
@@ -577,10 +581,12 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         command.Parameters.AddWithValue("$sha", Convert.ToHexString(SHA256.HashData(payload)));
         command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$candidate", candidateId.ToString("N"));
+        _faultInjector.Inject(TransientRuntimeFaultPoint.BeforeCausalExtractionCommit);
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
         {
             throw new TransientCandidateIdentityConflictException("Transient causal extraction identity conflicts with durable runtime state.");
         }
+        _faultInjector.Inject(TransientRuntimeFaultPoint.AfterCausalExtractionCommit);
     }
 
     internal ValueTask PersistObservationExtractionAsync(
@@ -592,6 +598,8 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
             "observation_extraction_json",
             "observation_extraction_sha256",
             TransientCandidateExtractionJson.Serialize(extraction),
+            TransientRuntimeFaultPoint.BeforeObservationExtractionCommit,
+            TransientRuntimeFaultPoint.AfterObservationExtractionCommit,
             cancellationToken);
 
     internal ValueTask PersistAssessmentExecutionAsync(
@@ -603,6 +611,8 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
             "assessment_execution_json",
             "assessment_execution_sha256",
             TransientAssessmentJson.Serialize(assessment),
+            TransientRuntimeFaultPoint.BeforeAssessmentCommit,
+            TransientRuntimeFaultPoint.AfterAssessmentCommit,
             cancellationToken);
 
     internal async ValueTask<IReadOnlyList<TransientRuntimeCandidate>> ReadEventCandidatesAsync(
@@ -630,7 +640,15 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         string reason,
         bool succeeded,
         CancellationToken cancellationToken)
-        => SetFrameStateAsync(rawCaptureRowId, "history", reason, null, succeeded, cancellationToken);
+        => SetFrameStateAsync(
+            rawCaptureRowId,
+            "history",
+            reason,
+            null,
+            succeeded,
+            cancellationToken,
+            TransientRuntimeFaultPoint.BeforeFrameHistoryCommit,
+            TransientRuntimeFaultPoint.AfterFrameHistoryCommit);
 
     internal ValueTask MarkRetryAsync(
         long rawCaptureRowId,
@@ -689,7 +707,15 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
             await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await UpdatePressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (rows.Count > 0)
+        {
+            _faultInjector.Inject(TransientRuntimeFaultPoint.BeforeRetirementCommit);
+        }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (rows.Count > 0)
+        {
+            _faultInjector.Inject(TransientRuntimeFaultPoint.AfterRetirementCommit);
+        }
     }
 
     internal async ValueTask MarkCandidateCompletedAsync(Guid candidateId, CancellationToken cancellationToken)
@@ -704,6 +730,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         command.Parameters.AddWithValue("$candidate", candidateId.ToString("N"));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        _faultInjector.Inject(TransientRuntimeFaultPoint.AfterRuntimeCompletionCommit);
     }
 
     public async ValueTask<TransientQuarantineReleaseDisposition> AbandonQuarantinedCaptureAsync(
@@ -840,7 +867,9 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         string reason,
         (int Attempt, DateTimeOffset Available)? retry,
         bool? causalSucceeded,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TransientRuntimeFaultPoint? beforeCommit = null,
+        TransientRuntimeFaultPoint? afterCommit = null)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
@@ -876,7 +905,15 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
             await quarantine.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await UpdatePressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (beforeCommit.HasValue)
+        {
+            _faultInjector.Inject(beforeCommit.Value);
+        }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (afterCommit.HasValue)
+        {
+            _faultInjector.Inject(afterCommit.Value);
+        }
     }
 
     private async ValueTask UpdatePressureAsync(
@@ -952,6 +989,8 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         string payloadColumn,
         string hashColumn,
         byte[] payload,
+        TransientRuntimeFaultPoint beforeCommit,
+        TransientRuntimeFaultPoint afterCommit,
         CancellationToken cancellationToken)
     {
         var hash = Convert.ToHexString(SHA256.HashData(payload));
@@ -966,11 +1005,13 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         command.Parameters.AddWithValue("$hash", hash);
         command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$candidate", candidateId.ToString("N"));
+        _faultInjector.Inject(beforeCommit);
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
         {
             throw new TransientCandidateIdentityConflictException(
                 "Transient runtime canonical payload conflicts with durable state.");
         }
+        _faultInjector.Inject(afterCommit);
     }
 
     private async ValueTask ReconcileAsync(SqliteConnection connection, CancellationToken cancellationToken)

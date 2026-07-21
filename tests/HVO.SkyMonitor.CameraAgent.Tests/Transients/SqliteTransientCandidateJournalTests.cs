@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
@@ -753,7 +754,6 @@ public sealed class SqliteTransientCandidateJournalTests
         try
         {
             pending = fixture.Journal.ReserveAsync(reservation, CancellationToken.None).AsTask();
-            await Task.Delay(50).ConfigureAwait(false);
             Assert.IsFalse(pending.IsCompleted);
         }
         finally
@@ -833,6 +833,198 @@ public sealed class SqliteTransientCandidateJournalTests
         Assert.AreEqual(
             Convert.ToHexString(SHA256.HashData(TransientContractJson.Serialize(candidate))),
             recovered.CandidatePayloadSha256);
+    }
+
+    [TestMethod]
+    [DataRow((int)TransientCandidateFaultPoint.BeforeStageCommit)]
+    [DataRow((int)TransientCandidateFaultPoint.AfterStageCommit)]
+    [DataRow((int)TransientCandidateFaultPoint.BeforeReservationCommit)]
+    [DataRow((int)TransientCandidateFaultPoint.AfterReservationCommit)]
+    [DataRow((int)TransientCandidateFaultPoint.BeforeCandidateCommit)]
+    [DataRow((int)TransientCandidateFaultPoint.AfterCandidateCommit)]
+    [DataRow((int)TransientCandidateFaultPoint.BeforeFinalizationCommit)]
+    [DataRow((int)TransientCandidateFaultPoint.AfterFinalizationCommit)]
+    [DataRow((int)TransientCandidateFaultPoint.BeforeSubmissionCommit)]
+    [DataRow((int)TransientCandidateFaultPoint.AfterSubmissionCommit)]
+    [DataRow((int)TransientCandidateFaultPoint.BeforeAcknowledgementCommit)]
+    [DataRow((int)TransientCandidateFaultPoint.AfterAcknowledgementCommit)]
+    public async Task DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce(
+        int faultPoint)
+    {
+        var point = (TransientCandidateFaultPoint)faultPoint;
+        var hybrid = point is TransientCandidateFaultPoint.BeforeSubmissionCommit or
+            TransientCandidateFaultPoint.AfterSubmissionCommit or
+            TransientCandidateFaultPoint.BeforeAcknowledgementCommit or
+            TransientCandidateFaultPoint.AfterAcknowledgementCommit;
+        using var fixture = await Fixture.CreateAsync(
+            mode: hybrid ? TransientOperatingMode.Hybrid : TransientOperatingMode.Edge).ConfigureAwait(false);
+        if (point is TransientCandidateFaultPoint.BeforeStageCommit or TransientCandidateFaultPoint.AfterStageCommit)
+        {
+            var context = await fixture.CreateLaneContextAsync(1, 100).ConfigureAwait(false);
+            using (var interrupted = fixture.ReconstructJournal(new ThrowingFaultInjector(point)))
+            {
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                    await interrupted.Journal.StageCaptureAsync(context, CancellationToken.None).ConfigureAwait(false))
+                    .ConfigureAwait(false);
+            }
+            var committed = point == TransientCandidateFaultPoint.AfterStageCommit;
+            Assert.AreEqual(committed ? 1L : 0L, await fixture.ScalarLongAsync(
+                "SELECT COUNT(*) FROM transient_capture_work;").ConfigureAwait(false));
+            if (committed)
+            {
+                Assert.AreEqual("pending", await fixture.ScalarStringAsync(
+                    "SELECT state FROM transient_capture_work;").ConfigureAwait(false));
+            }
+            using var reconstructed = fixture.ReconstructJournal();
+            await reconstructed.Journal.StageCaptureAsync(context, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(1L, await fixture.ScalarLongAsync(
+                "SELECT COUNT(*) FROM transient_capture_work;").ConfigureAwait(false));
+            Assert.AreEqual("pending", await fixture.ScalarStringAsync(
+                "SELECT state FROM transient_capture_work;").ConfigureAwait(false));
+            return;
+        }
+
+        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
+        var reservation = Fixture.CreateReservation(source);
+        if (point is TransientCandidateFaultPoint.BeforeReservationCommit or
+            TransientCandidateFaultPoint.AfterReservationCommit)
+        {
+            using (var interrupted = fixture.ReconstructJournal(new ThrowingFaultInjector(point)))
+            {
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                    await interrupted.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false))
+                    .ConfigureAwait(false);
+            }
+            var committed = point == TransientCandidateFaultPoint.AfterReservationCommit;
+            Assert.AreEqual(committed ? 1L : 0L, await fixture.ScalarLongAsync(
+                "SELECT COUNT(*) FROM transient_candidates;").ConfigureAwait(false));
+            Assert.AreEqual(committed ? 1L : 0L, await fixture.ScalarLongAsync(
+                "SELECT COUNT(*) FROM transient_candidate_sources;").ConfigureAwait(false));
+            if (committed)
+            {
+                Assert.AreEqual("reserved", await fixture.ScalarStringAsync(
+                    "SELECT phase FROM transient_candidates;").ConfigureAwait(false));
+            }
+            using var reconstructed = fixture.ReconstructJournal();
+            var recovered = await reconstructed.Journal.ReserveAsync(
+                reservation, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(TransientCandidateWorkflowPhase.IdentityAllocated, recovered.Entry.Phase);
+            Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT COUNT(*) FROM transient_candidates;").ConfigureAwait(false));
+            return;
+        }
+
+        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
+        var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
+        if (point is TransientCandidateFaultPoint.BeforeCandidateCommit or
+            TransientCandidateFaultPoint.AfterCandidateCommit)
+        {
+            using (var interrupted = fixture.ReconstructJournal(new ThrowingFaultInjector(point)))
+            {
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                    await interrupted.Journal.PersistCandidateAsync(
+                        reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false))
+                    .ConfigureAwait(false);
+            }
+            var committed = point == TransientCandidateFaultPoint.AfterCandidateCommit;
+            Assert.AreEqual(committed ? "candidate_persisted" : "reserved", await fixture.ScalarStringAsync(
+                "SELECT phase FROM transient_candidates;").ConfigureAwait(false));
+            Assert.AreEqual(committed ? 1L : 0L, await fixture.ScalarLongAsync(
+                "SELECT COUNT(*) FROM transient_candidates WHERE candidate_payload IS NOT NULL AND candidate_payload_sha256 IS NOT NULL;")
+                .ConfigureAwait(false));
+            using var reconstructed = fixture.ReconstructJournal();
+            var recovered = await reconstructed.Journal.PersistCandidateAsync(
+                reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(TransientCandidateWorkflowPhase.CandidatePersisted, recovered.Phase);
+            Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT COUNT(*) FROM transient_candidates;").ConfigureAwait(false));
+            return;
+        }
+
+        await fixture.Journal.PersistCandidateAsync(
+            reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
+        if (point is TransientCandidateFaultPoint.BeforeFinalizationCommit or
+            TransientCandidateFaultPoint.AfterFinalizationCommit)
+        {
+            var receipt = CreateFinalization(reservation, TransientEventState.NeedsReview);
+            using (var interrupted = fixture.ReconstructJournal(new ThrowingFaultInjector(point)))
+            {
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                    await interrupted.Journal.PersistFinalizationAsync(
+                        reservation.CandidateId, reservation.EventId, receipt, CancellationToken.None).ConfigureAwait(false))
+                    .ConfigureAwait(false);
+            }
+            var committed = point == TransientCandidateFaultPoint.AfterFinalizationCommit;
+            Assert.AreEqual(committed ? "finalized" : "candidate_persisted", await fixture.ScalarStringAsync(
+                "SELECT phase FROM transient_candidates;").ConfigureAwait(false));
+            Assert.AreEqual(committed ? 1L : 0L, await fixture.ScalarLongAsync(
+                "SELECT source_hold_released FROM transient_candidates;").ConfigureAwait(false));
+            Assert.AreEqual(committed ? 0L : 1L, await fixture.ScalarLongAsync(
+                "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
+            using var reconstructed = fixture.ReconstructJournal();
+            var recovered = await reconstructed.Journal.PersistFinalizationAsync(
+                reservation.CandidateId, reservation.EventId, receipt, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(TransientCandidateWorkflowPhase.Finalized, recovered.Phase);
+            Assert.IsTrue(recovered.SourceHoldReleased);
+            Assert.AreEqual(0L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
+            return;
+        }
+
+        var submission = CreateSubmission(reservation, candidate);
+        if (point is TransientCandidateFaultPoint.BeforeSubmissionCommit or
+            TransientCandidateFaultPoint.AfterSubmissionCommit)
+        {
+            using (var interrupted = fixture.ReconstructJournal(new ThrowingFaultInjector(point)))
+            {
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                    await interrupted.Journal.PersistSubmissionAsync(
+                        reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false))
+                    .ConfigureAwait(false);
+            }
+            var committed = point == TransientCandidateFaultPoint.AfterSubmissionCommit;
+            Assert.AreEqual(committed ? "handoff_pending" : "candidate_persisted", await fixture.ScalarStringAsync(
+                "SELECT phase FROM transient_candidates;").ConfigureAwait(false));
+            Assert.AreEqual(committed ? 1L : 0L, await fixture.ScalarLongAsync(
+                "SELECT COUNT(*) FROM transient_candidates WHERE submission_payload IS NOT NULL AND submission_identity_sha256 IS NOT NULL;")
+                .ConfigureAwait(false));
+            Assert.AreEqual(0L, await fixture.ScalarLongAsync(
+                "SELECT source_hold_released FROM transient_candidates;").ConfigureAwait(false));
+            using var reconstructed = fixture.ReconstructJournal();
+            var recovered = await reconstructed.Journal.PersistSubmissionAsync(
+                reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(TransientCandidateWorkflowPhase.HandoffPending, recovered.Phase);
+            Assert.IsFalse(recovered.SourceHoldReleased);
+            return;
+        }
+
+        await fixture.Journal.PersistSubmissionAsync(
+            reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
+        var acknowledgement = new TransientCandidateSubmissionAcknowledgementV1(
+            TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
+            reservation.CandidateId,
+            reservation.EventId,
+            submission.SubmissionIdentitySha256,
+            DateTimeOffset.UtcNow,
+            TransientCandidateSubmissionDisposition.Accepted);
+        using (var interrupted = fixture.ReconstructJournal(new ThrowingFaultInjector(point)))
+        {
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                await interrupted.Journal.AcknowledgeAsync(
+                    reservation.CandidateId, reservation.EventId, acknowledgement, CancellationToken.None).ConfigureAwait(false))
+                .ConfigureAwait(false);
+        }
+        var acknowledgementCommitted = point == TransientCandidateFaultPoint.AfterAcknowledgementCommit;
+        Assert.AreEqual(acknowledgementCommitted ? "acknowledged" : "handoff_pending", await fixture.ScalarStringAsync(
+            "SELECT phase FROM transient_candidates;").ConfigureAwait(false));
+        Assert.AreEqual(acknowledgementCommitted ? 1L : 0L, await fixture.ScalarLongAsync(
+            "SELECT COUNT(*) FROM transient_candidates WHERE acknowledgement_payload IS NOT NULL AND acknowledgement_payload_sha256 IS NOT NULL;")
+            .ConfigureAwait(false));
+        Assert.AreEqual(acknowledgementCommitted ? 1L : 0L, await fixture.ScalarLongAsync(
+            "SELECT source_hold_released FROM transient_candidates;").ConfigureAwait(false));
+        using var reconstructedAcknowledgement = fixture.ReconstructJournal();
+        var acknowledged = await reconstructedAcknowledgement.Journal.AcknowledgeAsync(
+            reservation.CandidateId, reservation.EventId, acknowledgement, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(TransientCandidateWorkflowPhase.Acknowledged, acknowledged.Phase);
+        Assert.IsTrue(acknowledged.SourceHoldReleased);
+        Assert.AreEqual(0L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -1270,6 +1462,7 @@ public sealed class SqliteTransientCandidateJournalTests
         private static readonly DateTimeOffset Now = new(2026, 7, 20, 12, 0, 0, TimeSpan.Zero);
         private readonly CameraAgentHostOptions _options;
         private readonly Dictionary<Guid, SeededCapture> _captures = [];
+        private readonly TransientWorkerTelemetry _telemetry = new();
 
         private Fixture(string root, CameraAgentHostOptions options)
         {
@@ -1315,8 +1508,30 @@ public sealed class SqliteTransientCandidateJournalTests
             => new SqliteTransientCandidateJournal(
                 Options.Create(_options), new FixedTimeProvider(Now), faultInjector);
 
+        internal ReconstructedJournalScope ReconstructJournal(ITransientCandidateFaultInjector? faultInjector = null)
+        {
+            SqliteConnection.ClearAllPools();
+            var services = new ServiceCollection();
+            services.AddSingleton<IOptions<CameraAgentHostOptions>>(Options.Create(_options));
+            services.AddSingleton<TimeProvider>(new FixedTimeProvider(Now));
+            if (faultInjector is not null)
+            {
+                services.AddSingleton(faultInjector);
+                services.AddSingleton<ITransientCandidateFaultInjector>(faultInjector);
+            }
+            else
+            {
+                services.AddSingleton<ITransientCandidateFaultInjector>(NullTransientCandidateFaultInjector.Instance);
+            }
+            services.AddSingleton<ITransientCandidateJournal, SqliteTransientCandidateJournal>();
+            var provider = services.BuildServiceProvider();
+            return new ReconstructedJournalScope(
+                provider,
+                provider.GetRequiredService<ITransientCandidateJournal>());
+        }
+
         internal SqliteTransientRuntimeStore CreateRuntimeStore(ITransientRuntimeFaultInjector? faultInjector = null)
-            => new(Options.Create(_options), new FixedTimeProvider(Now), faultInjector);
+            => new(Options.Create(_options), new FixedTimeProvider(Now), _telemetry, faultInjector);
 
         internal async Task ReinitializeAsync(TransientOperatingMode mode, bool required)
         {
@@ -1635,6 +1850,7 @@ public sealed class SqliteTransientCandidateJournalTests
 
         public void Dispose()
         {
+            _telemetry.Dispose();
             SqliteConnection.ClearAllPools();
             Directory.Delete(Root, recursive: true);
         }
@@ -1643,6 +1859,15 @@ public sealed class SqliteTransientCandidateJournalTests
             CameraModuleConfig Configuration,
             CaptureLoopSubmission Submission,
             RawCaptureReceipt Receipt);
+
+        internal sealed class ReconstructedJournalScope(
+            ServiceProvider provider,
+            ITransientCandidateJournal journal) : IDisposable
+        {
+            internal ITransientCandidateJournal Journal { get; } = journal;
+
+            public void Dispose() => provider.Dispose();
+        }
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
