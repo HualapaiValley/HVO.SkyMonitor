@@ -138,6 +138,45 @@ public sealed class DurableCaptureDistributionTests
     }
 
     [TestMethod]
+    public async Task OptionalBlockedTransientLaneDoesNotBlockStandardIngress()
+    {
+        using var fixture = CreateFixture(
+            new CaptureDistributionOptions { OptionalMaximumPendingCount = 1 },
+            transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = false });
+
+        await fixture.AcceptAsync(0).ConfigureAwait(false);
+        await fixture.AcceptAsync(1).ConfigureAwait(false);
+
+        using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual(2L, await ScalarLongAsync(connection,
+            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'standard' AND state = 'pending';").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarLongAsync(connection,
+            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'pending';").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarLongAsync(connection,
+            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'abandoned' AND failure_reason = 'optional-pressure';")
+            .ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RequiredBlockedTransientLaneRefusesNextIngressWithoutLosingStandardWork()
+    {
+        using var fixture = CreateFixture(
+            new CaptureDistributionOptions { RequiredMaximumPendingCount = 1 },
+            transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
+        await fixture.AcceptAsync(0).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<CaptureLaneBackpressureException>(async () =>
+            await fixture.AcceptAsync(1).ConfigureAwait(false)).ConfigureAwait(false);
+
+        using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarLongAsync(connection,
+            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'standard' AND state = 'pending';").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarLongAsync(connection,
+            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'pending';").ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task DuplicateAccept_DoesNotDuplicateLaneWorkOrContext()
     {
         using var fixture = CreateFixture(new CaptureDistributionOptions { UploadEnabled = true });
@@ -481,7 +520,7 @@ public sealed class DurableCaptureDistributionTests
                 laneFaultInjector: new NullCaptureLaneFaultInjector());
             await retry.InitializeAsync(policy.Definitions, CancellationToken.None).ConfigureAwait(false);
             using var verify = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(3L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(5L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(6L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM capture_lane_work;").ConfigureAwait(false));
             Assert.AreEqual(3L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM capture_lane_contexts;").ConfigureAwait(false));
@@ -903,7 +942,8 @@ public sealed class DurableCaptureDistributionTests
         CaptureDistributionOptions distribution,
         ICaptureLaneFaultInjector? laneFaultInjector = null,
         IRawIngressFaultInjector? rawFaultInjector = null,
-        CameraModuleConfig? configuration = null)
+        CameraModuleConfig? configuration = null,
+        TransientDetectionOptions? transient = null)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-lanes-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -914,7 +954,8 @@ public sealed class DurableCaptureDistributionTests
         {
             RawIngressRoot = root,
             RawIngressReserveBytes = 0,
-            CaptureDistribution = distribution
+            CaptureDistribution = distribution,
+            TransientDetection = transient ?? new TransientDetectionOptions()
         });
         var policy = new CaptureLanePolicy(hostOptions);
         var laneState = new CaptureLaneState(time, hostOptions);
