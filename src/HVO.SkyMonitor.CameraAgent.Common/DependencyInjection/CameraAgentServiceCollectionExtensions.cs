@@ -17,6 +17,7 @@ using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -49,11 +50,23 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureLaneTelemetry>();
         services.AddSingleton<IRawIngressFaultInjector, NullRawIngressFaultInjector>();
         services.AddSingleton<ICaptureLaneFaultInjector, NullCaptureLaneFaultInjector>();
+        services.AddSingleton<ITransientCandidateFaultInjector>(NullTransientCandidateFaultInjector.Instance);
+        services.AddSingleton<ITransientRuntimeFaultInjector>(NullTransientRuntimeFaultInjector.Instance);
         services.AddSingleton<CaptureLanePolicy>();
         services.AddSingleton<RawCaptureIngress>();
         services.AddSingleton<IRawCaptureIngress>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<ICaptureLaneStore>(provider => provider.GetRequiredService<RawCaptureIngress>());
+        services.AddSingleton<SqliteTransientCandidateJournal>();
+        services.AddSingleton<ITransientCandidateJournal>(provider =>
+            provider.GetRequiredService<SqliteTransientCandidateJournal>());
+        services.AddSingleton<SqliteTransientRuntimeStore>();
+        services.AddSingleton<ITransientRuntimeManagement>(provider =>
+            provider.GetRequiredService<SqliteTransientRuntimeStore>());
+        services.AddSingleton<TransientDetectorRuntime>();
+        services.AddSingleton<TransientWorkerWakeup>();
+        services.AddSingleton<TransientWorkerState>();
+        services.AddSingleton<TransientWorkerTelemetry>();
         services.AddSingleton<ICameraModuleFactory, CameraModuleFactory>();
         services.AddSingleton<IProjectedSceneStore, ProjectedSceneStore>();
         services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());
@@ -104,8 +117,10 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IArtifactOutbox, SqliteArtifactOutbox>();
         services.AddSingleton<StandardCaptureLaneHandler>();
         services.AddSingleton<UploadCaptureLaneHandler>();
+        services.AddSingleton<TransientCaptureLaneHandler>();
         services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<StandardCaptureLaneHandler>());
         services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<UploadCaptureLaneHandler>());
+        services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<TransientCaptureLaneHandler>());
         services.AddSingleton<CaptureDistributionService>();
         services.AddSingleton<ICaptureDistributor>(provider => provider.GetRequiredService<CaptureDistributionService>());
         services.AddTransient<ArtifactUploadClient>();
@@ -131,6 +146,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService<ArtifactOutboxDrainService>();
         services.AddHostedService<FleetHeartbeatService>();
         services.AddHostedService<EnvironmentalObservationDeliveryService>();
+        services.AddSingleton<TransientWorkerService>();
+        services.AddHostedService(provider => provider.GetRequiredService<TransientWorkerService>());
 
         return services;
     }

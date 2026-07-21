@@ -113,6 +113,116 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
   --filter "FullyQualifiedName~TransientStarMaskStrategyTests.W1W2PersistentProjectedStarMaskEvidence"
 ```
 
+## CameraAgent Runtime Acceptance
+
+Issue #63 composes durable CameraAgent ingress, the optional transient lane, the
+shared detector, candidate persistence, centered finalization, and Hybrid
+handoff. Deterministic acceptance tests cover the stable-cloud and no-event
+controls, centered timeout to `needs_review`, adjacent-capture time-gap reset,
+one-to-many split and many-to-one merge ambiguity, optional and required lane
+pressure, retryable SQLite storage failures including `SQLITE_LOCKED`, malformed
+record quarantine, and actual database corruption. Database corruption is
+reported as unavailable/unhealthy storage; the test restores known-good durable
+bytes and reconstructs the provider before proving recovery. It is not treated
+as work-level quarantine because writing quarantine state to a corrupt database
+is not a credible recovery action. The association checks execute the same
+complete bipartite decision helper used by the worker; ambiguous evidence
+remains separate and is never guessed into an event.
+
+The candidate-journal matrix injects before and after stage, identity
+reservation, candidate, finalization, submission, and acknowledgement commits.
+The hosted-worker matrix injects before and after runtime identity allocation,
+causal extraction, centered observation extraction, assessment persistence,
+successful and unsuccessful frame-history completion, runtime completion, and
+retirement, plus the existing candidate, finalization, and handoff journal
+boundaries. Each case disposes the interrupted provider and reconstructs the
+store and worker. It compares pre/post identity tuples, retention holds,
+backlog count/bytes/oldest time, frame and candidate state, workflow phase,
+event version links, and canonical candidate, finalization, or submission
+payload identities before proving bounded eventual recovery. Focused
+reproduction:
+
+```bash
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --configuration Release \
+  --filter "FullyQualifiedName~TransientWorkerRuntimeTests|FullyQualifiedName~SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce|FullyQualifiedName~DurableCaptureDistributionTests.OptionalBlockedTransientLaneDoesNotBlockStandardIngress|FullyQualifiedName~DurableCaptureDistributionTests.RequiredBlockedTransientLaneRefusesNextIngressWithoutLosingStandardWork"
+```
+
+### Runtime Performance
+
+The issue #63 x64 Release harness uses canonical W1 1,936 x 1,216 Mono16 and W2
+3,096 x 2,080 RGGB16 payloads. Each no-event steady workload has five independent
+trials with five warmups and 30 measured operations at concurrency one.
+Nearest-rank p95 is calculated within each trial, then
+median/minimum/maximum are reported across trials. W3M inserts and recovers
+10,000 indexed durable metadata records over shared payload references; W3P
+pre-stages and drains 100 W2 payloads containing 1,287,936,000 raw bytes.
+Process CPU, approximate process-wide managed allocation, operation-boundary
+RSS, post-operation LOH, process I/O, SQLite size, retained bytes, backlog,
+health, and durable identities are retained in the raw JSON. Runtime counters
+measure evidence loads, opened files, and bytes; `.bin` files are enumerated for
+stored-copy counts. Copy counts are not inferred from expected control flow.
+
+Dirty-development values are intentionally not retained here as a baseline or
+project claim. The ignored JSON records the complete environment and all trial
+distributions. Every accepted development run must exceed the pinned W3P drain
+floor, drain to zero, retain zero W3M payload copies, and report measured stored
+and reloaded payload counts. Only a clean committed replacement run may supply
+citable latency, throughput, CPU, allocation, RSS/LOH, I/O, and checksum values.
+
+Blocked-lane evidence uses five independent interleaved Off/blocked trials and
+alternates execution order. The predeclared gate compares the median of each
+trial's median and p95 with `min(baseline * 2, baseline + max(35%, 2 ms))`; the
+hard ratio cap prevents a greater-than-100% regression for small latencies.
+The Off and blocked values are same-run controls rather than a historical main
+baseline; exact distributions remain in the fingerprinted ignored JSON.
+
+Five full-resolution positive W1 Edge trials each persisted and centered
+candidate components, created version-1 final receipts, and measured evidence
+loads/bytes/files. Five full-resolution W2 Hybrid trials each persisted and
+handed off candidate components under the same measurement scheme. Every exact candidate, event,
+observation, assessment, event-version, candidate-payload, and delivery identity
+is validated within its trial; opaque IDs are expected to be unique across
+independent trials, while raw payload, normalized durable state, candidate count,
+and canonical outcome identities must be stable. A `SQLITE_LOCKED` transition
+records unhealthy state and then finalized, zero-backlog recovery in a
+reconstructed provider.
+
+Off mode creates zero transient lane definitions, lane rows, or worker tables.
+Rendered and structured transient logs, metrics, spans, and health are collected
+for Edge, Hybrid, and failure/recovery transitions. The harness allows only
+bounded metric/activity/log keys and cardinality, and rejects paths, exact IDs,
+payload references, and secret-like values from emitted tags or log bodies.
+
+Command:
+
+```bash
+dotnet build \
+  tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --configuration Release --arch x64 -warnaserror &&
+DOTNET_gcServer=1 dotnet test \
+  tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --no-build --configuration Release --arch x64 \
+  --filter "FullyQualifiedName~TransientWorkerAcceptancePerformanceTests.W1W2W3MAndW3PTransientWorkerEvidence"
+```
+
+The harness records actual branch, revision, configuration, architecture, a
+canonical fingerprint over the complete tracked diff plus every untracked path
+and content hash, and SHA-256/MVID evidence for both the test and production
+assemblies. It also records each assembly's SDK-generated informational version
+and embedded full repository revision at run start and end. A clean candidate
+is accepted only when both embedded revisions equal the recorded full HEAD;
+start/end Git, source, and binary equality is recorded separately as run-input
+stability. A dirty run is skipped unless
+`HVO_PERF_ALLOW_DIRTY_DEVELOPMENT=1`; an allowed dirty run is explicitly marked
+`dirty-development-not-claimable` and `cleanCommittedReplacementRequired=true`.
+There is no clean historical baseline for the composed positive worker path, so
+its before value is `N/A`; the five-trial ranges are the recorded noise evidence,
+not a regression claim. A clean committed replacement run remains required
+before citing an evidence checksum. This is deterministic synthetic runtime and
+durability evidence, not a physical sensitivity, real-sky false-positive,
+physical-camera, or ARM64 claim.
+
 ## Detection Performance
 
 The issue #119 x64 harness runs five independent steady trials for named

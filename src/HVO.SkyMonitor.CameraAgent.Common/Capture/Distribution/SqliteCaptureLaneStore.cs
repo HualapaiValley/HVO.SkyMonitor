@@ -463,6 +463,11 @@ internal sealed class SqliteCaptureLaneStore(
         SqliteTransaction? transaction,
         CancellationToken cancellationToken)
     {
+        if (string.Equals(lane.Name, "transient", StringComparison.Ordinal))
+        {
+            return await ReadTransientBacklogAsync(
+                connection, lane, transaction, cancellationToken).ConfigureAwait(false);
+        }
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
@@ -505,6 +510,59 @@ internal sealed class SqliteCaptureLaneStore(
                 await pressure.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
                 System.Globalization.CultureInfo.InvariantCulture)
         };
+    }
+
+    private static async Task<CaptureLaneBacklog> ReadTransientBacklogAsync(
+        SqliteConnection connection,
+        CaptureLaneDefinition lane,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT
+                (SELECT COUNT(*) FROM capture_lane_work
+                 WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')) +
+                    (SELECT COUNT(*) FROM transient_capture_work WHERE state IN ('pending', 'quarantined')) +
+                    (SELECT COUNT(*) FROM transient_candidates WHERE source_hold_released = 0),
+                (SELECT COALESCE(SUM(payload_length), 0) FROM raw_captures WHERE raw_capture_row_id IN (
+                    SELECT raw_capture_row_id FROM capture_lane_work
+                    WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
+                    UNION
+                    SELECT raw_capture_row_id FROM transient_capture_work WHERE state IN ('pending', 'quarantined')
+                    UNION
+                    SELECT s.raw_capture_row_id
+                    FROM transient_candidate_sources s
+                    JOIN transient_candidates c ON c.candidate_id = s.candidate_id
+                    WHERE c.source_hold_released = 0)),
+                (SELECT MIN(created_unix_ms) FROM (
+                    SELECT created_unix_ms FROM capture_lane_work
+                    WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
+                    UNION ALL
+                    SELECT created_unix_ms FROM transient_capture_work WHERE state IN ('pending', 'quarantined')
+                    UNION ALL
+                    SELECT created_unix_ms FROM transient_candidates WHERE source_hold_released = 0)),
+                (SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'leased'),
+                (SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'quarantined') +
+                    (SELECT COUNT(*) FROM transient_capture_work WHERE state = 'quarantined') +
+                    (SELECT COUNT(*) FROM transient_candidates WHERE phase = 'quarantined') +
+                    (SELECT COUNT(*) FROM transient_candidate_conflicts),
+                (SELECT pressure_state FROM capture_lane_definitions WHERE lane_name = 'transient');
+            """;
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        return new CaptureLaneBacklog(
+            lane.Name,
+            lane.Required,
+            reader.GetInt64(0),
+            reader.GetInt64(1),
+            await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false)
+                ? null
+                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
+            reader.GetInt64(3),
+            reader.GetInt64(4),
+            reader.GetInt32(5));
     }
 
     private static async Task<bool> ReadHasRequiredAsync(
@@ -598,11 +656,20 @@ internal sealed class SqliteCaptureLaneStore(
         command.Transaction = transaction;
         command.CommandText = """
             UPDATE raw_captures
-            SET retention_hold = CASE WHEN EXISTS (
-                SELECT 1 FROM capture_lane_work
-                WHERE raw_capture_row_id = $raw
-                  AND ((required = 1 AND state != 'completed') OR state = 'leased')
-            ) THEN 1 ELSE 0 END
+            SET retention_hold = CASE WHEN
+                EXISTS (
+                    SELECT 1 FROM capture_lane_work
+                    WHERE raw_capture_row_id = $raw
+                      AND ((required = 1 AND state != 'completed') OR state = 'leased'))
+                OR EXISTS (
+                    SELECT 1
+                    FROM transient_candidate_sources s
+                    JOIN transient_candidates c ON c.candidate_id = s.candidate_id
+                    WHERE s.raw_capture_row_id = $raw AND c.source_hold_released = 0)
+                OR EXISTS (
+                    SELECT 1 FROM transient_capture_work
+                    WHERE raw_capture_row_id = $raw AND state = 'pending')
+                THEN 1 ELSE 0 END
             WHERE raw_capture_row_id = $raw;
             """;
         command.Parameters.AddWithValue("$raw", rawRowId);

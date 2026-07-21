@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Extensions;
 using HVO.SkyMonitor.CameraAgent.Components;
 using HVO.SkyMonitor.CameraAgent.Components.Account;
@@ -160,7 +161,9 @@ public class Program
                 metrics.AddPrometheusExporter();
                 metrics.AddMeter(FleetHeartbeatTelemetry.MeterName);
                 metrics.AddMeter(EnvironmentalObservationDeliveryTelemetry.MeterName);
-            });
+                metrics.AddMeter(TransientWorkerTelemetry.MeterName);
+            })
+            .WithTracing(tracing => tracing.AddSource(TransientWorkerTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
@@ -220,6 +223,7 @@ public class Program
         healthChecks.AddCheck<ArtifactOutboxHealthCheck>("artifact-outbox", tags: ["dependency"]);
         healthChecks.AddCheck<FleetHeartbeatHealthCheck>("fleet-heartbeat", tags: ["dependency"]);
         healthChecks.AddCheck<EnvironmentalObservationDeliveryHealthCheck>("environmental-delivery", tags: ["dependency"]);
+        healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
         builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
         builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
 
