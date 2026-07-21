@@ -43,8 +43,8 @@ These behaviors are requirements input, not code to copy unchanged.
 
 Implement one `VirtualSkyCameraModule` selected through the ordinary
 `ICameraModuleFactory`. A validated sensor profile controls whether it behaves
-as a monochrome or color camera. Named presets provide convenient ASI174-family
-fixtures without hard-coding the renderer to one model.
+as a monochrome or color camera. Named presets provide convenient physical
+camera fixtures without hard-coding the renderer to one model.
 
 Initial named profiles are:
 
@@ -54,6 +54,8 @@ Initial named profiles are:
 | `VirtualAsi174McRgb` | 1936 × 1216, 5.86 µm | Color scene compatibility | `Rgb24` |
 | `VirtualAsi174McBayer` | 1936 × 1216, 5.86 µm | RGGB CFA sensor emulation | `BayerRggb16` |
 | `VirtualAsi178McRaw16` | 3096 × 2080, 2.4 µm | RGGB CFA sensor emulation | `BayerRggb16` |
+| `VirtualAsi676MmRaw16` | 3552 × 3552, 2.0 µm | Provisional 12-bit monochrome response | `Mono16` |
+| `VirtualAsi676McRggbRaw16Provisional` | 3552 × 3552, 2.0 µm | Provisional 12-bit RGGB response | `BayerRggb16` |
 
 `VirtualAsi174McBayer` is complete only after the shared frame contract can
 describe CFA pattern, sample bit depth, packing, stride, endianness, black
@@ -64,6 +66,13 @@ color rendering but must not be described as raw ASI174MC emulation.
 phase, RAW16 length, byte order, ADC depth, gain units, and initial response
 curve are evidence-backed. Its lens and absolute system throughput remain
 provisional; see `docs/calibration/asi178mc-characterization.md`.
+
+The ASI676 profiles preserve the published sensor geometry and a provisional
+response envelope while clearly separating sample-derived lens coverage from
+assumed virtual projection and CFA phase. They are not physical calibrations;
+see `docs/calibration/asi676-characterization.md`. The intended MM ROI, 2x2
+binning, and video rate are hardware acquisition modes that the current rig
+profile cannot encode.
 
 The full comparison host profile is
 [`src/HVO.SkyMonitor.CameraAgent/cameraagent.asi178mc-comparison.json`](../src/HVO.SkyMonitor.CameraAgent/cameraagent.asi178mc-comparison.json). It
