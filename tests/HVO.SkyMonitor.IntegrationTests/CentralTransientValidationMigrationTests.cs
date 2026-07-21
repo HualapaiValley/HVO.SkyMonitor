@@ -19,6 +19,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class CentralTransientValidationMigrationTests
 {
     private const string PreviousMigration = "20260720165520_AddCentralTransientValidation";
+    private const string HybridPredecessorMigration = "20260720222315_AddCentralTransientRuntime";
     private const string ShaA = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     private const string ShaB = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
     private const string ShaC = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
@@ -34,6 +35,74 @@ public sealed class CentralTransientValidationMigrationTests
 
             (await database.Context.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
             await AssertSchemaAsync(database.Context).ConfigureAwait(false);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task HybridPredecessorUpgradePreservesAcceptedValidationStateAndAddsAuditTable()
+    {
+        await using var database = CreateDatabase("HybridUpgrade");
+        try
+        {
+            var migrator = database.Context.GetService<IMigrator>();
+            await migrator.MigrateAsync(HybridPredecessorMigration).ConfigureAwait(false);
+            var now = DateTimeOffset.UnixEpoch.AddDays(1);
+            var source = AddSourceArtifact(database.Context, "hybrid-upgrade-agent", now);
+            var job = AddDerivativeJob(database.Context, source, now);
+            await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            var slotId = Guid.NewGuid();
+            var submittedEventId = Guid.NewGuid();
+            var candidateId = Guid.NewGuid();
+            var observationId = Guid.NewGuid();
+            var assessmentId = Guid.NewGuid();
+            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO [CentralTransientValidationJobs]
+                    ([CentralDerivativeJobId], [AgentId], [SubmissionSchemaVersion], [SubmissionIdentitySha256],
+                     [ExecutionOptionsJson], [ExecutionOptionsIdentitySha256], [CreatedAtUtc])
+                VALUES ({job.Id}, {"hybrid-upgrade-agent"},
+                        {TransientCandidateSubmissionEnvelopeV1.CurrentSchemaVersion}, {ShaC}, {"{}"}, {ShaA}, {now});
+                INSERT INTO [CentralTransientValidationIdentitySlots]
+                    ([Id], [CentralDerivativeJobId], [Ordinal], [State], [SubmittedEventId], [CandidateId],
+                     [ObservationId], [AssessmentId])
+                VALUES ({slotId}, {job.Id}, {0}, {CentralTransientValidationIdentitySlotState.Reserved.ToString()},
+                        {submittedEventId}, {candidateId}, {observationId}, {assessmentId});
+                """).ConfigureAwait(false);
+
+            await migrator.MigrateAsync().ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+
+            (await database.Context.CentralTransientValidationJobs.AsNoTracking()
+                .CountAsync(item => item.CentralDerivativeJobId == job.Id
+                    && item.SubmissionIdentitySha256 == ShaC).ConfigureAwait(false)).Should().Be(1);
+            await Assert.ThrowsExactlyAsync<SqlException>(async () =>
+                await database.Context.CentralTransientValidationJobs.Where(item => item.CentralDerivativeJobId == job.Id)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(
+                        item => item.SubmittedCandidateJson, string.Empty))
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+            (await database.Context.CentralTransientValidationIdentitySlots.AsNoTracking()
+                .SingleAsync(item => item.Id == slotId).ConfigureAwait(false)).AgentId.Should().Be("hybrid-upgrade-agent");
+            database.Context.CentralTransientSubmissionAudits.Add(new CentralTransientSubmissionAudit
+            {
+                DevicePublicId = Guid.NewGuid(),
+                AgentId = "hybrid-upgrade-agent",
+                CandidateId = candidateId,
+                EventId = submittedEventId,
+                ClaimedSubmissionIdentitySha256 = ShaC,
+                PayloadSha256 = ShaB,
+                ReasonCode = CentralTransientSubmissionReasonCodes.IdentityConflict,
+                ExistingCentralDerivativeJobId = job.Id,
+                RecordedAtUtc = now.AddSeconds(1)
+            });
+            await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            (await database.Context.CentralTransientSubmissionAudits.CountAsync().ConfigureAwait(false)).Should().Be(1);
+            await Assert.ThrowsExactlyAsync<SqlException>(async () =>
+                await database.Context.CentralTransientSubmissionAudits.ExecuteDeleteAsync().ConfigureAwait(false))
+                .ConfigureAwait(false);
+            (await database.Context.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
         }
         finally
         {
@@ -160,6 +229,7 @@ public sealed class CentralTransientValidationMigrationTests
             var slot = new CentralTransientValidationIdentitySlot
             {
                 Ordinal = 0,
+                AgentId = "job-agent",
                 SubmittedEventId = Guid.NewGuid(),
                 CandidateId = Guid.NewGuid(),
                 ObservationId = Guid.NewGuid(),
@@ -475,6 +545,7 @@ public sealed class CentralTransientValidationMigrationTests
             partialValidation.IdentitySlots.Add(new CentralTransientValidationIdentitySlot
             {
                 Ordinal = 0,
+                AgentId = "constraint-agent",
                 State = CentralTransientValidationIdentitySlotState.Committed,
                 SubmittedEventId = Guid.NewGuid(),
                 CandidateId = Guid.NewGuid(),
@@ -690,10 +761,11 @@ public sealed class CentralTransientValidationMigrationTests
                  N'CentralTransientAssessments', N'CentralTransientEventVersionObservations',
                  N'CentralTransientEventVersionAssessments', N'CentralTransientAssessmentObservations',
                   N'CentralTransientValidationJobs', N'CentralTransientValidationIdentitySlots',
-                  N'CentralTransientExtractionReceipts', N'CentralTransientExtractionSources',
-                  N'CentralTransientContextDependencies', N'CentralTransientValidationOutcomeVersions')
+                   N'CentralTransientExtractionReceipts', N'CentralTransientExtractionSources',
+                   N'CentralTransientContextDependencies', N'CentralTransientValidationOutcomeVersions',
+                   N'CentralTransientSubmissionAudits')
             """).SingleAsync().ConfigureAwait(false);
-        tableCount.Should().Be(15);
+        tableCount.Should().Be(16);
         var constraints = await db.Database.SqlQuery<string>($"""
             SELECT [name] AS [Value]
             FROM [sys].[check_constraints]
@@ -721,7 +793,7 @@ public sealed class CentralTransientValidationMigrationTests
             FROM [sys].[triggers]
             WHERE [name] LIKE N'TR_CentralTransient%'
             """).SingleAsync().ConfigureAwait(false);
-        triggerCount.Should().Be(14);
+        triggerCount.Should().Be(15);
     }
 
     private static MigrationDatabase CreateDatabase(string scenario)

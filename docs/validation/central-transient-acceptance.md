@@ -1,8 +1,9 @@
 # Central Transient Acceptance Evidence
 
-Issue #116 closes the Central-only transient validation path. The runtime remains
-opt-in through `CentralTransient:Mode`; the default is `Off`. This evidence does
-not claim edge execution, hybrid execution, physical sensitivity, or a UI.
+Issue #116 closes the Central transient validation path and its final Hybrid
+submission boundary. The runtime remains opt-in through `CentralTransient:Mode`;
+the default is `Off`. This evidence does not claim a CameraAgent HTTP drain
+worker, physical sensitivity, or a UI.
 
 ## Acceptance Boundaries
 
@@ -19,7 +20,10 @@ dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj \
   --filter "FullyQualifiedName~CentralTransientAcceptanceManifestTests"
 ```
 
-The matrix covers CameraAgent isolation from a failed Central artifact transport,
+The matrix covers authenticated canonical Hybrid handoff, exact and concurrent
+retry convergence, conflicting identity quarantine, unavailable/corrupt/timeout
+source evidence, CameraAgent acknowledgement hold release and reopen, CameraAgent
+isolation from a failed Central artifact transport,
 delayed and out-of-order `N-2..N+2` arrival, deadlines,
 incompatibility, missing and corrupt evidence, duplicate scheduling, lease and
 max-attempt adoption, the SQL-commit/generic-completion crash boundary, atomic
@@ -36,8 +40,30 @@ dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTest
 
 dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj \
   --no-build --configuration Release \
-  --filter "FullyQualifiedName~VirtualSkyPipelineTests.CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance"
+  --filter "FullyQualifiedName~VirtualSkyPipelineTests.CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance|FullyQualifiedName~HybridTransientSubmissionTests"
 ```
+
+## Hybrid Boundary
+
+`POST /api/device/transient-candidates` requires the existing `ArtifactIngest`
+system bearer policy plus `X-HVO-Device-Id` and `X-HVO-Device-Key`. The request
+body is the unmodified canonical `TransientCandidateSubmissionEnvelopeV1`, and
+`Idempotency-Key` must equal its submission identity. The candidate Agent ID
+must exactly equal the authenticated registration ID. LogicHost verifies the
+causal `N-2,N-1,N` evidence under that authenticated device/Agent identity,
+resolves and verifies `N+1,N+2` from Central state, freezes the resulting exact
+five-input window, and commits acceptance atomically. Validation retains the
+full canonical centered extraction receipt for audit, but only the unique
+centered match for the submitted candidate is promoted, assessed, and persisted;
+all unrelated candidate identity slots become unused.
+
+Hybrid mode exposes the shared CameraAgent edge extraction recipe but does not
+schedule transient jobs during ordinary artifact ingest. Exact retries return a
+durable duplicate acknowledgement with the original receipt timestamp.
+Candidate/Event identity conflicts and rejected source evidence are retained in
+an additive hash-only audit table; credentials, payload bytes, and storage paths
+are excluded. CameraAgent remains responsible for local durable handoff under
+issue #63; this change intentionally adds no hosted HTTP drain worker.
 
 ## Performance Method
 
@@ -110,6 +136,8 @@ path; `verify`, `load`, `detect`, `converge`, and `persist` are asserted as
 connected descendants of the consumer execution span. The collector also asserts actual event IDs, metric names and bounded tag
 sets, healthy-to-degraded health behavior, and absence of checksums, storage
 references, device IDs, credentials, and opaque event IDs from signal values.
+Hybrid submission records bounded `transient-submit` operation outcomes:
+`accepted`, `duplicate`, and `rejected`.
 
 ## CameraAgent Isolation Scope
 
@@ -141,5 +169,6 @@ standard Debug/Release warning-as-error builds, format verification, package
 audit, Docker-free Unit selection, Docker-backed Integration selection, and the
 pending-model/migration gates from [`ci-pipeline.md`](../runbooks/ci-pipeline.md).
 The migration evidence must retain upgrade and rollback coverage for
-`20260720222315_AddCentralTransientRuntime` and the canonical legacy outcome
+`20260720222315_AddCentralTransientRuntime`, its additive upgrade into
+`20260721042731_AddHybridTransientSubmissions`, and the canonical legacy outcome
 identity asserted by `CentralTransientValidationMigrationTests`.

@@ -35,6 +35,7 @@ using Program = HVO.SkyMonitor.LogicHost.Program;
 public sealed class IntegrationTestFixture : IDisposable
 {
     private const string SqlServerPassword = "SkyMonitor_test_password1!";
+    private readonly IReadOnlyDictionary<string, string?> _configurationOverrides;
     private readonly int _minioHostPort = GetFreeTcpPort();
     private MsSqlContainer? _sqlServerContainer;
     private RedisContainer? _redisContainer;
@@ -82,6 +83,11 @@ public sealed class IntegrationTestFixture : IDisposable
     /// Gets the MinIO secret key.
     /// </summary>
     public const string MinioSecretKey = "minioadmin";
+
+    public IntegrationTestFixture(IReadOnlyDictionary<string, string?>? configurationOverrides = null)
+    {
+        _configurationOverrides = configurationOverrides ?? new Dictionary<string, string?>();
+    }
 
     public async Task SeedActiveDeviceAsync(string deviceId)
     {
@@ -285,6 +291,10 @@ public sealed class IntegrationTestFixture : IDisposable
                         overrides);
 
                     AddDatabaseSeedOverrides(overrides);
+                    foreach (var pair in _configurationOverrides)
+                    {
+                        overrides[pair.Key] = pair.Value;
+                    }
 
                     config.AddInMemoryCollection(overrides!);
                 });

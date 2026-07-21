@@ -40,6 +40,9 @@ internal sealed record CentralDerivativeWindowPosition(
 internal interface ICentralDerivativeRecipeCatalog
 {
     IReadOnlyList<CentralDerivativeRecipe> GetRequiredRecipes(FrameArtifactRole sourceRole);
+
+    CentralDerivativeRecipe? GetTransientRecipe(FrameArtifactRole sourceRole)
+        => GetRequiredRecipes(sourceRole).SingleOrDefault(recipe => recipe.Transient is not null);
 }
 
 internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeCatalog
@@ -132,6 +135,7 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
 
     private readonly IReadOnlyList<CentralDerivativeRecipe> _rawRecipes;
     private readonly IReadOnlyList<CentralDerivativeRecipe> _calibratedRecipes;
+    private readonly CentralDerivativeRecipe? _transientRecipe;
 
     public CentralDerivativeRecipeCatalog()
         : this(new CentralTransientOptions())
@@ -148,11 +152,14 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
         ArgumentNullException.ThrowIfNull(transientOptions);
         _rawRecipes = BaseRawRecipes;
         _calibratedRecipes = [];
-        if (transientOptions.Mode != TransientDetectorExecutionMode.Central)
+        if (transientOptions.Mode is not (TransientDetectorExecutionMode.Central or TransientDetectorExecutionMode.Hybrid))
         {
             return;
         }
-        var executionOptions = transientOptions.CreateExecutionOptions();
+        var executionOptions = transientOptions.CreateExecutionOptions(
+            transientOptions.Mode == TransientDetectorExecutionMode.Hybrid
+                ? TransientCandidateExtractionProfiles.EdgeV1
+                : null);
         var execution = CentralTransientExecutionOptionsJson.Serialize(executionOptions);
         var extractionElement = CaptureContractJson.SerializeToElement(executionOptions.Extraction);
         var extractionIdentity = TransientCandidateExtractionFactory.ComputeRecipeIdentitySha256(
@@ -179,6 +186,11 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
                 execution.Json,
                 execution.Sha256,
                 executionOptions.Extraction.MaximumCandidates));
+        _transientRecipe = recipe;
+        if (transientOptions.Mode == TransientDetectorExecutionMode.Hybrid)
+        {
+            return;
+        }
         if (transientOptions.SourceRole == FrameArtifactRole.Raw)
         {
             _rawRecipes = BaseRawRecipes.Append(recipe).ToArray();
@@ -196,6 +208,9 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
             FrameArtifactRole.Calibrated => _calibratedRecipes,
             _ => []
         };
+
+    public CentralDerivativeRecipe? GetTransientRecipe(FrameArtifactRole sourceRole)
+        => _transientRecipe?.SourceRole == sourceRole ? _transientRecipe : null;
 }
 
 internal static class CentralDerivativeJobIdentity
@@ -272,6 +287,23 @@ internal static class CentralDerivativeJobIdentity
             sourceArtifactId.ToString("N"),
             recipe.TargetRole.ToString(),
             recipe.TargetVariant,
+            recipe.RequestedRecipeIdentitySha256.ToUpperInvariant());
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+
+    public static string CreateHybridSubmissionRequestIdentity(
+        Guid sourceDevicePublicId,
+        Guid sourceArtifactId,
+        string submissionIdentitySha256,
+        CentralDerivativeRecipe recipe)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(submissionIdentitySha256);
+        ArgumentNullException.ThrowIfNull(recipe);
+        var value = string.Join('\n',
+            "hvo-central-transient-hybrid-request-v1",
+            sourceDevicePublicId.ToString("N"),
+            sourceArtifactId.ToString("N"),
+            submissionIdentitySha256.ToUpperInvariant(),
             recipe.RequestedRecipeIdentitySha256.ToUpperInvariant());
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }

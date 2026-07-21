@@ -282,7 +282,13 @@ public sealed class VirtualSkyPipelineTests
         Assert.IsGreaterThanOrEqualTo(5L, Convert.ToInt64(
             await processingCommand.ExecuteScalarAsync().ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture));
-        var processingState = services.GetRequiredService<CaptureProcessingState>().Snapshot;
+        var processingStateService = services.GetRequiredService<CaptureProcessingState>();
+        await WaitUntilAsync(() =>
+        {
+            var state = processingStateService.Snapshot;
+            return state.PendingCount == 0 && state.RetryCount == 0 && state.TerminalCount == 0;
+        }, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        var processingState = processingStateService.Snapshot;
         Assert.AreEqual(CaptureProcessingAvailability.Healthy, processingState.Availability);
         Assert.AreEqual(0L, processingState.PendingCount);
         Assert.AreEqual(0L, processingState.RetryCount);

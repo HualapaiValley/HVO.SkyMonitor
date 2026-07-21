@@ -50,6 +50,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralTransientValidationIdentitySlot> CentralTransientValidationIdentitySlots => Set<CentralTransientValidationIdentitySlot>();
     internal DbSet<CentralTransientContextDependency> CentralTransientContextDependencies => Set<CentralTransientContextDependency>();
     internal DbSet<CentralTransientValidationOutcomeVersion> CentralTransientValidationOutcomeVersions => Set<CentralTransientValidationOutcomeVersion>();
+    internal DbSet<CentralTransientSubmissionAudit> CentralTransientSubmissionAudits => Set<CentralTransientSubmissionAudit>();
     internal DbSet<Observatory> Observatories => Set<Observatory>();
 
     protected override void OnModelCreating(ModelBuilder builder)

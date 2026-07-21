@@ -685,6 +685,7 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
             validationJob.IdentitySlots.Add(new CentralTransientValidationIdentitySlot
             {
                 Ordinal = slot.Ordinal,
+                AgentId = fixture.AgentId,
                 State = CentralTransientValidationIdentitySlotState.Reserved,
                 SubmittedEventId = slot.EventId,
                 CandidateId = slot.CandidateId,

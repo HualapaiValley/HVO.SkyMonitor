@@ -1,7 +1,7 @@
 {
   "schema": "hvo-central-transient-fault-matrix-v1",
   "issue": 116,
-  "boundary": "LogicHost Central transient scheduling, N-2..N+2 resolution, extraction, validation, persistence, completion, recovery, and invalidation",
+  "boundary": "LogicHost Central and Hybrid transient submission, N-2..N+2 resolution, extraction, validation, persistence, completion, recovery, and invalidation",
   "defaultMode": "Off",
   "rows": [
     {
@@ -11,6 +11,42 @@
       "control": "A failing HTTP handler is injected only at the CameraAgent-to-Central artifact transport boundary",
       "expectedDurableState": "Acquisition, raw SQLite/filesystem durability, transient-scenario provenance, and local preview outputs continue while upload records remain pending/retry. Central-only mode has no local provisional event classifier, so none is claimed.",
       "test": "HVO.SkyMonitor.CameraAgent.IntegrationTests.VirtualSkyPipelineTests.CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance",
+      "dockerRequired": true
+    },
+    {
+      "id": "cameraagent-hybrid-durable-handoff",
+      "workload": "W0",
+      "fault": "CameraAgent reopens and retries a durably acknowledged Hybrid submission",
+      "control": "Five production raw captures, production artifact drain, canonical HTTP body, device credentials, and reopened CameraAgent journal scope",
+      "expectedDurableState": "Accepted then duplicate acknowledgement with one Central job, five exact inputs, and source-hold release only after acknowledgement persistence",
+      "test": "HVO.SkyMonitor.CameraAgent.IntegrationTests.HybridTransientSubmissionTests.CameraAgentDurableSubmissionAcknowledgesAndRetriesAgainstOneCentralJob",
+      "dockerRequired": true
+    },
+    {
+      "id": "hybrid-concurrent-duplicate-convergence",
+      "workload": "W4",
+      "fault": "Concurrent exact retries target one accepted submission",
+      "control": "Canonical payload identity plus SQL application locks for submission, candidate, and event identities",
+      "expectedDurableState": "Exact retries return one stable duplicate acknowledgement and converge to one authoritative Central event",
+      "test": "HVO.SkyMonitor.IntegrationTests.HybridTransientSubmissionIntegrationTests.CanonicalSubmission_ConvergesDuplicatesAndPersistsAuthoritativeEvent",
+      "dockerRequired": true
+    },
+    {
+      "id": "hybrid-identity-conflict-quarantine",
+      "workload": "W4",
+      "fault": "Conflicting candidate/event identity reuse and cross-device source access target one accepted submission",
+      "control": "Canonical payload identity, device/Agent-scoped source lookup, and SQL application locks",
+      "expectedDurableState": "Conflict requests create one hash-only audit row, cross-device access is non-enumerating, and neither mutates acceptance",
+      "test": "HVO.SkyMonitor.IntegrationTests.HybridTransientSubmissionIntegrationTests.RejectedSubmissions_AreBoundedQuarantinedAndDoNotMutateAcceptance",
+      "dockerRequired": true
+    },
+    {
+      "id": "hybrid-source-failure-evidence",
+      "workload": "W0",
+      "fault": "Hybrid source is unavailable, checksum-corrupt, or storage verification times out",
+      "control": "Deterministic SQL state, same-length MinIO corruption, and injected object-reader storage failure",
+      "expectedDurableState": "Bounded 425/422/503 responses, hash-only durable reason evidence, corrupt source quarantine, and no credential/path/payload leakage",
+      "test": "HVO.SkyMonitor.IntegrationTests.HybridTransientSubmissionIntegrationTests.UnavailableCorruptAndTimedOutEvidence_ReturnBoundedDurableReasons",
       "dockerRequired": true
     },
     {

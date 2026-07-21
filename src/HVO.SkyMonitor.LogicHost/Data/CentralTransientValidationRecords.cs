@@ -160,6 +160,7 @@ internal sealed class CentralTransientValidationJob
     public string AgentId { get; set; } = string.Empty;
     public string SubmissionSchemaVersion { get; set; } = string.Empty;
     public string SubmissionIdentitySha256 { get; set; } = string.Empty;
+    public string? SubmittedCandidateJson { get; set; }
     public string? ExecutionOptionsJson { get; set; }
     public string? ExecutionOptionsIdentitySha256 { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
@@ -175,6 +176,20 @@ internal sealed class CentralTransientValidationJob
     public ICollection<CentralTransientValidationIdentitySlot> IdentitySlots { get; } = [];
     public ICollection<CentralTransientContextDependency> ContextDependencies { get; } = [];
     public ICollection<CentralTransientValidationOutcomeVersion> OutcomeVersions { get; } = [];
+}
+
+internal sealed class CentralTransientSubmissionAudit
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid DevicePublicId { get; set; }
+    public string AgentId { get; set; } = string.Empty;
+    public Guid? CandidateId { get; set; }
+    public Guid? EventId { get; set; }
+    public string? ClaimedSubmissionIdentitySha256 { get; set; }
+    public string PayloadSha256 { get; set; } = string.Empty;
+    public string ReasonCode { get; set; } = string.Empty;
+    public Guid? ExistingCentralDerivativeJobId { get; set; }
+    public DateTimeOffset RecordedAtUtc { get; set; }
 }
 
 internal sealed class CentralTransientContextDependency
@@ -247,6 +262,7 @@ internal sealed class CentralTransientValidationIdentitySlot
     public Guid Id { get; init; } = Guid.NewGuid();
     public Guid CentralDerivativeJobId { get; set; }
     public CentralTransientValidationJob? ValidationJob { get; set; }
+    public string AgentId { get; set; } = string.Empty;
     public int Ordinal { get; set; }
     public CentralTransientValidationIdentitySlotState State { get; set; }
     public Guid SubmittedEventId { get; set; }

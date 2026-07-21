@@ -14,6 +14,12 @@ internal interface ICentralArtifactRetrievalService
         CentralArtifactWorkerAccess? workerAccess,
         CancellationToken cancellationToken);
 
+    Task<CentralArtifactLookup> FindForDeviceSubmissionAsync(
+        Guid devicePublicId,
+        string agentId,
+        Guid artifactId,
+        CancellationToken cancellationToken);
+
     Task MarkUnavailableAsync(
         CentralArtifact artifact,
         string reasonCode,
@@ -64,6 +70,33 @@ internal sealed partial class CentralArtifactRetrievalService(
         telemetry.RecordAuthorization(callerKind, status == CentralArtifactLookupStatus.Found ? "allowed" : "unavailable");
         Log.AccessDecision(logger, callerKind, devicePublicId, artifactId, status.ToString(), artifact.StateReasonCode);
         return new CentralArtifactLookup(status, artifact, callerKind);
+    }
+
+    public async Task<CentralArtifactLookup> FindForDeviceSubmissionAsync(
+        Guid devicePublicId,
+        string agentId,
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(agentId);
+        var artifact = await dbContext.CentralArtifacts
+            .Include(candidate => candidate.Layout)
+            .Include(candidate => candidate.Recipe)
+            .Include(candidate => candidate.Sources)
+            .Include(candidate => candidate.Frame)!.ThenInclude(frame => frame!.Timing)
+            .Include(candidate => candidate.Frame)!.ThenInclude(frame => frame!.Control)
+            .Include(candidate => candidate.Frame)!.ThenInclude(frame => frame!.Profiles)
+            .SingleOrDefaultAsync(candidate => candidate.DevicePublicId == devicePublicId
+                && candidate.ArtifactId == artifactId
+                && candidate.Frame!.AgentId == agentId, cancellationToken).ConfigureAwait(false);
+        if (artifact?.Frame is null)
+        {
+            return Denied("device", "not-found", devicePublicId, artifactId);
+        }
+        var status = GetAvailability(artifact);
+        telemetry.RecordAuthorization("device", status == CentralArtifactLookupStatus.Found ? "allowed" : "unavailable");
+        Log.AccessDecision(logger, "device", devicePublicId, artifactId, status.ToString(), artifact.StateReasonCode);
+        return new CentralArtifactLookup(status, artifact, "device");
     }
 
     public async Task MarkUnavailableAsync(

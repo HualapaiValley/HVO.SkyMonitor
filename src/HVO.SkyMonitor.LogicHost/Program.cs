@@ -637,6 +637,7 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralArtifactObjectReader, CentralArtifactObjectReader>();
         builder.Services.AddScoped<ICentralArtifactRetentionReferences, CentralArtifactRetentionReferences>();
         builder.Services.AddScoped<ICentralTransientEventPersistence, CentralTransientEventPersistence>();
+        builder.Services.AddScoped<ICentralTransientSubmissionService, CentralTransientSubmissionService>();
         builder.Services.AddScoped<ICentralTransientValidationExecutor, CentralTransientValidationExecutor>();
         builder.Services.AddScoped<ICentralTransientRetrospectiveScheduler, CentralTransientRetrospectiveScheduler>();
         builder.Services.AddScoped<ICentralArtifactRetentionService, CentralArtifactRetentionService>();

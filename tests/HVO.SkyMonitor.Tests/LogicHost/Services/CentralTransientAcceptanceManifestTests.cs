@@ -12,6 +12,10 @@ public sealed class CentralTransientAcceptanceManifestTests
     private static readonly string[] RequiredFaultRows =
     [
         "cameraagent-central-outage-isolation",
+        "cameraagent-hybrid-durable-handoff",
+        "hybrid-concurrent-duplicate-convergence",
+        "hybrid-identity-conflict-quarantine",
+        "hybrid-source-failure-evidence",
         "out-of-order-window",
         "deadline-before-late-arrival",
         "incompatible-required-position",
@@ -113,6 +117,12 @@ public sealed class CentralTransientAcceptanceManifestTests
                 "none", "recipe", "input", "lease", "source-missing", "storage",
                 "source-integrity", "output-integrity", "database", "execution"
             ]);
+        var submissionOperations = metrics.Single(metric => metric.GetProperty("name").ValueEquals(
+            "skymonitor.central.derivative.operations")).GetProperty("labels");
+        submissionOperations.GetProperty("operation").EnumerateArray()
+            .Select(value => value.GetString()).Should().Contain("transient-submit");
+        submissionOperations.GetProperty("outcome").EnumerateArray()
+            .Select(value => value.GetString()).Should().Contain(["accepted", "duplicate", "rejected"]);
         var expectedWindowStatuses = new[]
         {
             "waiting", "pending", "skipped", "quarantined", "terminalfailure"

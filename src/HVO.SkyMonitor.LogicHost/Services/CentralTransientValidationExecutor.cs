@@ -165,14 +165,17 @@ internal sealed partial class CentralTransientValidationExecutor(
         var createdUtc = sources.Values.Max(source => source.Input.Descriptor.Source.ObservationEndedUtc).AddTicks(1);
         var orderedSources = background.Product.Descriptor.Sources.Select(lineage => sources.Values.Single(source =>
             source.Input.Descriptor.Source.EvidenceId == lineage.EvidenceId)).ToArray();
+        var extractionIdentities = validation.SubmittedCandidateJson is null
+            ? slots.Select(slot => new TransientCandidateIdentitySlot(
+                slot.CandidateId, slot.AdoptedEventId ?? slot.SubmittedEventId)).ToArray()
+            : slots.Select(_ => new TransientCandidateIdentitySlot(Guid.NewGuid(), Guid.NewGuid())).ToArray();
         var extraction = TransientCandidateExtractionFactory.Create(new TransientCandidateExtractionRequest(
             validation.AgentId,
             createdUtc,
             target,
             background.Product,
             orderedSources,
-            slots.Select(slot => new TransientCandidateIdentitySlot(
-                slot.CandidateId, slot.AdoptedEventId ?? slot.SubmittedEventId)).ToArray(),
+            extractionIdentities,
             executionOptions.Extraction,
             CenteredContextConverged: contextState.Converged), cancellationToken);
         telemetry.RecordStage("detect", CentralTransientRuntime.RecipeName,
@@ -183,6 +186,18 @@ internal sealed partial class CentralTransientValidationExecutor(
             return await FailAsync(
                 lease, extraction.ReasonCode ?? CentralTransientRuntimeReasonCodes.InvalidExtraction,
                 cancellationToken).ConfigureAwait(false);
+        }
+        if (validation.SubmittedCandidateJson is not null)
+        {
+            var binding = BindHybridSubmittedCandidate(
+                validation, extraction, executionOptions, target, background.Product, orderedSources, slots,
+                createdUtc, contextState.Converged, cancellationToken);
+            if (binding.Outcome is null)
+            {
+                return await CompleteNeedsReviewAsync(lease, binding.ReasonCode!, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            extraction = binding.Outcome;
         }
 
         var convergenceStarted = timeProvider.GetTimestamp();
@@ -204,7 +219,7 @@ internal sealed partial class CentralTransientValidationExecutor(
         for (var ordinal = 0; ordinal < extraction.Candidates.Count; ordinal++)
         {
             var candidate = extraction.Candidates[ordinal];
-            var slot = slots[ordinal];
+            var slot = slots.Single(item => item.CandidateId == candidate.CandidateId);
             var prior = associated.PriorEvents.GetValueOrDefault(candidate.CandidateId);
             var currentObservation = TransientObservationFactory.CreateAssessmentObservation(
                 new TransientObservationPromotionRequest(
@@ -309,7 +324,7 @@ internal sealed partial class CentralTransientValidationExecutor(
         ReconstructionDescriptor targetDescriptor,
         TransientTemporalBackgroundProduct background,
         IReadOnlyList<TransientTemporalSource> orderedSources,
-        IReadOnlyList<CentralTransientValidationIdentitySlot> slots,
+        CentralTransientValidationIdentitySlot[] slots,
         DateTimeOffset createdUtc,
         CancellationToken cancellationToken)
     {
@@ -463,26 +478,141 @@ internal sealed partial class CentralTransientValidationExecutor(
             }
         }
         dbContext.ChangeTracker.Clear();
+        var activeCandidateIds = extraction.Candidates.Select(candidate => candidate.CandidateId).ToHashSet();
+        var fullCandidates = extraction.Descriptor?.Candidates
+            ?? throw new CentralDerivativeJobStateException("Transient association lost its full extraction receipt.");
         var rerun = TransientCandidateExtractionFactory.Create(new TransientCandidateExtractionRequest(
             validation.AgentId,
             createdUtc,
             target,
             background,
             orderedSources,
-            slots.Select(slot => new TransientCandidateIdentitySlot(
-                slot.CandidateId,
-                candidates.TryGetValue(slot.CandidateId, out var prior)
-                    ? prior.Event.EventId
-                    : slot.AdoptedEventId ?? slot.SubmittedEventId)).ToArray(),
+            fullCandidates.Select(candidate =>
+            {
+                var slot = slots.Single(item => item.CandidateId == candidate.CandidateId);
+                return new TransientCandidateIdentitySlot(
+                    slot.CandidateId,
+                    candidates.TryGetValue(slot.CandidateId, out var prior)
+                        ? prior.Event.EventId
+                        : slot.AdoptedEventId ?? slot.SubmittedEventId);
+            }).Concat(slots.Where(slot => fullCandidates.All(candidate => candidate.CandidateId != slot.CandidateId))
+                .Select(slot => new TransientCandidateIdentitySlot(
+                    slot.CandidateId, slot.AdoptedEventId ?? slot.SubmittedEventId))).ToArray(),
             options.Extraction,
             CenteredContextConverged: extraction.Descriptor?.CenteredContextConverged ?? false), cancellationToken);
-        if (rerun.Status != extraction.Status || rerun.Candidates.Count != extraction.Candidates.Count ||
-            rerun.Descriptor is null)
+        var activeCandidates = rerun.Candidates.Where(candidate => activeCandidateIds.Contains(candidate.CandidateId)).ToArray();
+        if (rerun.Status != extraction.Status || rerun.Candidates.Count != fullCandidates.Count ||
+            activeCandidates.Length != extraction.Candidates.Count || rerun.Descriptor is null)
         {
             throw new CentralDerivativeJobStateException(
                 "Transient association probe and retained-identity extraction did not converge.");
         }
-        return new AssociationResult(rerun, candidates, ambiguousCandidateIds);
+        return new AssociationResult(rerun with { Candidates = activeCandidates }, candidates, ambiguousCandidateIds);
+    }
+
+    private static HybridCandidateBinding BindHybridSubmittedCandidate(
+        CentralTransientValidationJob validation,
+        TransientCandidateExtractionOutcome probe,
+        CentralTransientExecutionOptionsV1 options,
+        TransientTemporalSource target,
+        TransientTemporalBackgroundProduct background,
+        IReadOnlyList<TransientTemporalSource> orderedSources,
+        CentralTransientValidationIdentitySlot[] slots,
+        DateTimeOffset createdUtc,
+        bool contextConverged,
+        CancellationToken cancellationToken)
+    {
+        var parsed = TransientContractJson.ParseCandidate(
+            System.Text.Encoding.UTF8.GetBytes(validation.SubmittedCandidateJson!));
+        var submitted = parsed.Value ?? throw new CentralDerivativeJobStateException(
+            $"The durable Hybrid candidate is invalid: {parsed.Validation.ReasonCode}.");
+        var matches = probe.Candidates.Select((candidate, ordinal) => (candidate, ordinal))
+            .Where(item => HybridCandidateMatches(submitted, item.candidate)).ToArray();
+        if (matches.Length != 1)
+        {
+            return new HybridCandidateBinding(
+                null,
+                matches.Length == 0
+                    ? CentralTransientRuntimeReasonCodes.HybridCandidateNotFound
+                    : CentralTransientRuntimeReasonCodes.HybridCandidateAmbiguous);
+        }
+        var submittedSlot = slots.SingleOrDefault(slot =>
+            slot.CandidateId == submitted.CandidateId && slot.SubmittedEventId == submitted.EventId);
+        if (submittedSlot is null)
+        {
+            throw new CentralDerivativeJobStateException(
+                "The durable Hybrid candidate does not have one reserved submitted identity slot.");
+        }
+        var remainingSlots = new Queue<CentralTransientValidationIdentitySlot>(
+            slots.Where(slot => slot.Id != submittedSlot.Id).OrderBy(slot => slot.Ordinal));
+        var identities = new List<TransientCandidateIdentitySlot>(slots.Length);
+        for (var ordinal = 0; ordinal < slots.Length; ordinal++)
+        {
+            var slot = ordinal == matches[0].ordinal ? submittedSlot : remainingSlots.Dequeue();
+            identities.Add(new TransientCandidateIdentitySlot(
+                slot.CandidateId, slot.AdoptedEventId ?? slot.SubmittedEventId));
+        }
+        var bound = TransientCandidateExtractionFactory.Create(new TransientCandidateExtractionRequest(
+            validation.AgentId,
+            createdUtc,
+            target,
+            background,
+            orderedSources,
+            identities,
+            options.Extraction,
+            CenteredContextConverged: contextConverged), cancellationToken);
+        if (bound.Status != probe.Status || bound.Descriptor is null ||
+            bound.Candidates.Count != probe.Candidates.Count ||
+            matches[0].ordinal >= bound.Candidates.Count ||
+            bound.Candidates[matches[0].ordinal].CandidateId != submitted.CandidateId ||
+            bound.Candidates[matches[0].ordinal].EventId != submitted.EventId ||
+            !HybridCandidateMatches(submitted, bound.Candidates[matches[0].ordinal]))
+        {
+            throw new CentralDerivativeJobStateException(
+                "The centered Hybrid extraction did not preserve its exact submitted candidate binding.");
+        }
+        return new HybridCandidateBinding(bound with { Candidates = [bound.Candidates[matches[0].ordinal]] }, null);
+    }
+
+    private static bool HybridCandidateMatches(TransientCandidateV1 submitted, TransientCandidateV1 centered)
+    {
+        if (submitted.Geometry is null || centered.Geometry is null)
+        {
+            return false;
+        }
+        var submittedCenter = submitted.ContextSources.SingleOrDefault(source =>
+            source.EvidenceId == submitted.CenterEvidenceId)?.Locator.Artifact;
+        var centeredCenter = centered.ContextSources.SingleOrDefault(source =>
+            source.EvidenceId == centered.CenterEvidenceId)?.Locator.Artifact;
+        if (submittedCenter is null || centeredCenter is null || submittedCenter != centeredCenter)
+        {
+            return false;
+        }
+        // Detector-input and mask identities include host-local evidence; the artifact plus these profile/producer
+        // identities are the stable cross-host provenance for the same measured geometry.
+        var submittedIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            submitted.Geometry.CoordinateWidth,
+            submitted.Geometry.CoordinateHeight,
+            submitted.Geometry.Bounds,
+            submitted.Geometry.Polyline,
+            submitted.Provenance.CalibrationIdentity,
+            submitted.Provenance.ProcessingProfileIdentity,
+            submitted.Extraction.Producer,
+            submitted.Extraction.RecipeIdentitySha256
+        });
+        var centeredIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            centered.Geometry.CoordinateWidth,
+            centered.Geometry.CoordinateHeight,
+            centered.Geometry.Bounds,
+            centered.Geometry.Polyline,
+            centered.Provenance.CalibrationIdentity,
+            centered.Provenance.ProcessingProfileIdentity,
+            centered.Extraction.Producer,
+            centered.Extraction.RecipeIdentitySha256
+        });
+        return string.Equals(submittedIdentity, centeredIdentity, StringComparison.Ordinal);
     }
 
     private static bool IsAssociationMatch(
@@ -941,6 +1071,10 @@ internal sealed partial class CentralTransientValidationExecutor(
         IReadOnlyDictionary<Guid, PriorEvent> PriorEvents,
         IReadOnlySet<Guid> AmbiguousCandidateIds);
 
+    private sealed record HybridCandidateBinding(
+        TransientCandidateExtractionOutcome? Outcome,
+        string? ReasonCode);
+
     private sealed record DetectorSource(
         TransientTemporalPosition Position,
         long CaptureSequence,
@@ -971,5 +1105,7 @@ internal static class CentralTransientRuntimeReasonCodes
     public const string InvalidAssessment = "transient-validation.invalid-assessment";
     public const string InvalidExecutionPolicy = "transient-validation.invalid-execution-policy";
     public const string MaskEvidenceUnavailable = "transient-validation.mask-evidence-unavailable";
+    public const string HybridCandidateNotFound = "transient-validation.hybrid-candidate-not-found";
+    public const string HybridCandidateAmbiguous = "transient-validation.hybrid-candidate-ambiguous";
     public const string AttemptsExhausted = "transient-validation.attempts-exhausted";
 }

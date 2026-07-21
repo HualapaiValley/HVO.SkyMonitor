@@ -100,7 +100,28 @@ public sealed class CentralDerivativeJobServiceTests
     }
 
     [TestMethod]
-    public void CentralTransientOptions_RejectHybridAndUnsupportedSourceRole()
+    public void CentralTransientOptions_HybridExposesEdgeRecipeWithoutAutomaticScheduling()
+    {
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Hybrid
+        };
+
+        options.Validate(new System.ComponentModel.DataAnnotations.ValidationContext(options)).Should().BeEmpty();
+        var catalog = new CentralDerivativeRecipeCatalog(options);
+
+        catalog.GetRequiredRecipes(FrameArtifactRole.Raw).Should().HaveCount(5);
+        var recipe = catalog.GetTransientRecipe(FrameArtifactRole.Raw);
+        recipe.Should().NotBeNull();
+        recipe!.RequestedRecipeIdentitySha256.Should().Be(
+            TransientCandidateExtractionFactory.ComputeRecipeIdentitySha256(
+                TransientCandidateExtractionProfiles.EdgeV1));
+        CentralTransientExecutionOptionsJson.Deserialize(recipe.Transient!.ExecutionOptionsJson).Extraction
+            .Should().Be(TransientCandidateExtractionProfiles.EdgeV1);
+    }
+
+    [TestMethod]
+    public void CentralTransientOptions_RejectUnsupportedSourceRole()
     {
         var options = new CentralTransientOptions
         {
@@ -108,7 +129,7 @@ public sealed class CentralDerivativeJobServiceTests
             SourceRole = FrameArtifactRole.Preview
         };
 
-        options.Validate(new System.ComponentModel.DataAnnotations.ValidationContext(options)).Should().HaveCount(2);
+        options.Validate(new System.ComponentModel.DataAnnotations.ValidationContext(options)).Should().ContainSingle();
     }
 
     [TestMethod]

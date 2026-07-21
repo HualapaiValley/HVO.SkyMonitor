@@ -19,6 +19,7 @@ internal static class CentralTransientValidationConfiguration
         ConfigureEventVersionAssessment(builder);
         ConfigureAssessmentObservation(builder);
         ConfigureValidationJob(builder);
+        ConfigureSubmissionAudit(builder);
         ConfigureExtractionReceipt(builder);
         ConfigureExtractionSource(builder);
         ConfigureIdentitySlot(builder);
@@ -296,6 +297,7 @@ internal static class CentralTransientValidationConfiguration
         entity.Property(item => item.AgentId).HasMaxLength(128).UseCollation(BinaryCollation).IsRequired();
         entity.Property(item => item.SubmissionSchemaVersion).HasMaxLength(128).IsRequired();
         Sha256(entity.Property(item => item.SubmissionIdentitySha256));
+        entity.Property(item => item.SubmittedCandidateJson);
         entity.Property(item => item.OutcomeState).HasConversion<string>().HasMaxLength(32);
         entity.Property(item => item.OutcomeReasonCode).HasMaxLength(256).UseCollation(BinaryCollation);
         Sha256Optional(entity.Property(item => item.ExecutionOptionsIdentitySha256));
@@ -308,6 +310,26 @@ internal static class CentralTransientValidationConfiguration
             .OnDelete(DeleteBehavior.Restrict).IsRequired();
         entity.HasOne(item => item.ProvisionalValidationJob).WithMany()
             .HasForeignKey(item => item.ProvisionalCentralDerivativeJobId)
+            .OnDelete(DeleteBehavior.NoAction);
+    }
+
+    private static void ConfigureSubmissionAudit(ModelBuilder builder)
+    {
+        var entity = builder.Entity<CentralTransientSubmissionAudit>();
+        entity.ToTable("CentralTransientSubmissionAudits", table =>
+            table.HasTrigger("TR_CentralTransientSubmissionAudits_Immutable"));
+        entity.HasKey(item => item.Id);
+        entity.Property(item => item.AgentId).HasMaxLength(128).UseCollation(BinaryCollation).IsRequired();
+        Sha256Optional(entity.Property(item => item.ClaimedSubmissionIdentitySha256));
+        Sha256(entity.Property(item => item.PayloadSha256));
+        entity.Property(item => item.ReasonCode).HasMaxLength(128).UseCollation(BinaryCollation).IsRequired();
+        entity.HasIndex(item => new { item.DevicePublicId, item.PayloadSha256, item.ReasonCode }).IsUnique();
+        entity.HasIndex(item => item.CandidateId);
+        entity.HasIndex(item => item.EventId);
+        entity.HasIndex(item => item.ExistingCentralDerivativeJobId);
+        entity.HasOne<CentralDerivativeJob>()
+            .WithMany()
+            .HasForeignKey(item => item.ExistingCentralDerivativeJobId)
             .OnDelete(DeleteBehavior.NoAction);
     }
 
@@ -373,8 +395,10 @@ internal static class CentralTransientValidationConfiguration
         });
         entity.HasKey(item => item.Id);
         entity.Property(item => item.State).HasConversion<string>().HasMaxLength(32).IsRequired();
+        entity.Property(item => item.AgentId).HasMaxLength(128).UseCollation(BinaryCollation).IsRequired();
         entity.HasIndex(item => new { item.CentralDerivativeJobId, item.Ordinal }).IsUnique();
         entity.HasIndex(item => item.CandidateId).IsUnique();
+        entity.HasIndex(item => new { item.AgentId, item.SubmittedEventId }).IsUnique();
         entity.HasIndex(item => item.ObservationId).IsUnique();
         entity.HasIndex(item => item.AssessmentId).IsUnique();
         Sha256Optional(entity.Property(item => item.AssociationIdentitySha256));

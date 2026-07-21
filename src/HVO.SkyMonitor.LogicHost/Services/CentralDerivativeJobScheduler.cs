@@ -25,6 +25,14 @@ internal interface ICentralDerivativeJobScheduler
         Guid provisionalJobId,
         DateTimeOffset now,
         CancellationToken cancellationToken) => Task.FromResult<Guid?>(null);
+
+    CentralDerivativeJob CreateHybridTransientJob(
+        CentralDerivativeRecipe recipe,
+        IReadOnlyList<CentralArtifact> orderedSources,
+        TransientCandidateSubmissionEnvelopeV1 envelope,
+        string authenticatedAgentId,
+        DateTimeOffset now) => throw new NotSupportedException(
+            "This scheduler does not support Hybrid transient submissions.");
 }
 
 internal sealed class CentralDerivativeJobScheduler(
@@ -52,6 +60,76 @@ internal sealed class CentralDerivativeJobScheduler(
             .SingleAsync(item => item.DevicePublicId == devicePublicId && item.ArtifactId == artifactId,
                 cancellationToken).ConfigureAwait(false);
         await EnsureRequiredJobsAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+    }
+
+    public CentralDerivativeJob CreateHybridTransientJob(
+        CentralDerivativeRecipe recipe,
+        IReadOnlyList<CentralArtifact> orderedSources,
+        TransientCandidateSubmissionEnvelopeV1 envelope,
+        string authenticatedAgentId,
+        DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(recipe);
+        ArgumentNullException.ThrowIfNull(orderedSources);
+        ArgumentNullException.ThrowIfNull(envelope);
+        ArgumentException.ThrowIfNullOrWhiteSpace(authenticatedAgentId);
+        if (recipe.Transient is null || recipe.Window?.Positions.Count != 5 || orderedSources.Count != 5)
+        {
+            throw new CentralDerivativeJobStateException("A Hybrid transient submission requires one exact five-source recipe window.");
+        }
+        var center = orderedSources[2];
+        var job = CreateJob(center, recipe, result: null, now);
+        job.RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateHybridSubmissionRequestIdentity(
+            center.DevicePublicId ?? throw new CentralDerivativeJobStateException(
+                "The Hybrid transient center source has no device identity."),
+            center.ArtifactId,
+            envelope.SubmissionIdentitySha256,
+            recipe);
+        job.Status = CentralDerivativeJobStatus.Pending;
+        job.AvailableAtUtc = now;
+        job.ResolutionCompletedAtUtc = now;
+        job.StateReasonCode = null;
+        job.LastError = null;
+
+        var requirements = job.InputRequirements.OrderBy(requirement => requirement.Ordinal).ToArray();
+        for (var ordinal = 0; ordinal < orderedSources.Count; ordinal++)
+        {
+            var artifact = orderedSources[ordinal];
+            var requirement = requirements[ordinal];
+            var compatibility = CentralDerivativeWindowCompatibility.CreateSnapshot(artifact);
+            requirement.ExpectedCentralArtifactId = artifact.Id;
+            requirement.ResolutionState = CentralDerivativeInputResolutionState.Resolved;
+            requirement.ResolutionReasonCode = null;
+            requirement.ResolvedAtUtc = now;
+            job.Inputs.Add(new CentralDerivativeJobInput
+            {
+                Job = job,
+                CentralDerivativeJobId = job.Id,
+                Requirement = requirement,
+                CentralDerivativeJobInputRequirementId = requirement.Id,
+                Ordinal = ordinal,
+                CentralArtifactId = artifact.Id,
+                Artifact = artifact,
+                CaptureSequence = artifact.Frame!.CaptureSequence,
+                CompatibilityJson = compatibility.Json,
+                CompatibilitySha256 = compatibility.Sha256,
+                ByteLength = artifact.ByteLength,
+                SelectedAtUtc = now
+            });
+        }
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        var validation = dbContext.CentralTransientValidationJobs.Local.Single(candidate =>
+            candidate.CentralDerivativeJobId == job.Id);
+        validation.AgentId = authenticatedAgentId;
+        validation.SubmissionSchemaVersion = envelope.SchemaVersion;
+        validation.SubmissionIdentitySha256 = envelope.SubmissionIdentitySha256;
+        validation.SubmittedCandidateJson = System.Text.Encoding.UTF8.GetString(
+            TransientContractJson.Serialize(envelope.Candidate));
+        var submittedSlot = validation.IdentitySlots.Single(slot => slot.Ordinal == 0);
+        submittedSlot.SubmittedEventId = envelope.EventId;
+        submittedSlot.CandidateId = envelope.CandidateId;
+        dbContext.CentralDerivativeJobs.Add(job);
+        return job;
     }
 
     public async Task<Guid?> EnsureTransientContextConvergenceAsync(
@@ -468,6 +546,7 @@ internal sealed class CentralDerivativeJobScheduler(
                 ValidationJob = validation,
                 Ordinal = ordinal,
                 State = CentralTransientValidationIdentitySlotState.Reserved,
+                AgentId = frame.AgentId,
                 SubmittedEventId = Guid.NewGuid(),
                 CandidateId = Guid.NewGuid(),
                 ObservationId = Guid.NewGuid(),

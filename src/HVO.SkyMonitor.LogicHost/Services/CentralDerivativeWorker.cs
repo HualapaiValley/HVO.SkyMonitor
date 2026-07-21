@@ -401,6 +401,10 @@ internal sealed partial class CentralDerivativeWorker(
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+        catch (Exception) when (cancellationToken.IsCancellationRequested)
+        {
+            // Database providers can surface command cancellation as their own exception type during shutdown.
+        }
         catch (Exception exception)
         {
             telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());

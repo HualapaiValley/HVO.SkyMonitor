@@ -26,9 +26,10 @@ internal sealed class CentralTransientOptions : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        if (Mode is not (TransientDetectorExecutionMode.Off or TransientDetectorExecutionMode.Central))
+        if (Mode is not (TransientDetectorExecutionMode.Off or TransientDetectorExecutionMode.Central
+            or TransientDetectorExecutionMode.Hybrid))
         {
-            yield return new ValidationResult("LogicHost transient mode must be Off or Central.", [nameof(Mode)]);
+            yield return new ValidationResult("LogicHost transient mode must be Off, Central, or Hybrid.", [nameof(Mode)]);
         }
         if (SourceRole is not (FrameArtifactRole.Raw or FrameArtifactRole.Calibrated))
         {
@@ -55,10 +56,11 @@ internal sealed class CentralTransientOptions : IValidatableObject
         }
     }
 
-    public CentralTransientExecutionOptionsV1 CreateExecutionOptions()
+    public CentralTransientExecutionOptionsV1 CreateExecutionOptions(
+        TransientCandidateExtractionOptionsV1? extraction = null)
         => new(
             CentralTransientExecutionOptionsV1.CurrentSchemaVersion,
-            Extraction.ToContract(),
+            extraction ?? Extraction.ToContract(),
             Assessment.ToContract(),
             WindowTimeout.Ticks,
             MaximumAdjacentStartInterval.Ticks,
