@@ -42,12 +42,14 @@ internal sealed class CentralTransientSubmissionRejectedException : Exception
         : base(message)
     {
         ReasonCode = CentralTransientSubmissionReasonCodes.InvalidContract;
+        Kind = CentralTransientSubmissionRejectionKind.Conflict;
     }
 
     public CentralTransientSubmissionRejectedException(string message, Exception innerException)
         : base(message, innerException)
     {
         ReasonCode = CentralTransientSubmissionReasonCodes.InvalidContract;
+        Kind = CentralTransientSubmissionRejectionKind.Conflict;
     }
 
     public CentralTransientSubmissionRejectedException(
