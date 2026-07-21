@@ -4,6 +4,7 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260720165520_AddCentralTransientValidation")]
+    partial class AddCentralTransientValidation
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1448,49 +1451,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
-            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientContextDependency", b =>
-                {
-                    b.Property<Guid>("CentralDerivativeJobId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("Ordinal")
-                        .HasColumnType("int");
-
-                    b.Property<Guid>("ContextCentralArtifactId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("ExecutionOptionsIdentitySha256")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .IsUnicode(false)
-                        .HasColumnType("varchar(64)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<string>("RequestedRecipeIdentitySha256")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .IsUnicode(false)
-                        .HasColumnType("varchar(64)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<Guid?>("RequiredCentralDerivativeJobId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.HasKey("CentralDerivativeJobId", "Ordinal");
-
-                    b.HasIndex("RequiredCentralDerivativeJobId");
-
-                    b.HasIndex("ContextCentralArtifactId", "ExecutionOptionsIdentitySha256");
-
-                    b.ToTable("CentralTransientContextDependencies", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_CentralTransientContextDependencies_Ordinal", "[Ordinal] >= 0 AND [Ordinal] < 4");
-                        });
-                });
-
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientEventRecord", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2094,94 +2054,14 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
-            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientSubmissionAudit", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("AgentId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<Guid?>("CandidateId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("ClaimedSubmissionIdentitySha256")
-                        .HasMaxLength(64)
-                        .IsUnicode(false)
-                        .HasColumnType("varchar(64)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<Guid>("DevicePublicId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid?>("EventId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid?>("ExistingCentralDerivativeJobId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("PayloadSha256")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .IsUnicode(false)
-                        .HasColumnType("varchar(64)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<string>("ReasonCode")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<DateTimeOffset>("RecordedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CandidateId");
-
-                    b.HasIndex("EventId");
-
-                    b.HasIndex("ExistingCentralDerivativeJobId");
-
-                    b.HasIndex("DevicePublicId", "PayloadSha256", "ReasonCode")
-                        .IsUnique();
-
-                    b.ToTable("CentralTransientSubmissionAudits", null, t =>
-                        {
-                            t.HasTrigger("TR_CentralTransientSubmissionAudits_Immutable");
-                        });
-
-                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
-                });
-
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientValidationIdentitySlot", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<Guid?>("AdoptedEventId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("AgentId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
                     b.Property<Guid>("AssessmentId")
                         .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("AssociationIdentitySha256")
-                        .HasMaxLength(64)
-                        .IsUnicode(false)
-                        .HasColumnType("varchar(64)")
-                        .UseCollation("Latin1_General_100_BIN2");
 
                     b.Property<Guid>("CandidateId")
                         .HasColumnType("uniqueidentifier");
@@ -2192,6 +2072,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<Guid?>("CentralTransientEventId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<Guid>("ObservationId")
                         .HasColumnType("uniqueidentifier");
 
@@ -2199,9 +2082,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasColumnType("int");
 
                     b.Property<Guid?>("PersistedAssessmentId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid?>("PersistedEventId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<Guid?>("PersistedEventVersionId")
@@ -2215,17 +2095,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
 
-                    b.Property<Guid>("SubmittedEventId")
-                        .HasColumnType("uniqueidentifier");
-
                     b.HasKey("Id");
 
                     b.HasIndex("AssessmentId")
                         .IsUnique();
-
-                    b.HasIndex("AssociationIdentitySha256")
-                        .IsUnique()
-                        .HasFilter("[AssociationIdentitySha256] IS NOT NULL");
 
                     b.HasIndex("CandidateId")
                         .IsUnique();
@@ -2233,15 +2106,12 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasIndex("ObservationId")
                         .IsUnique();
 
-                    b.HasIndex("AgentId", "SubmittedEventId")
-                        .IsUnique();
-
                     b.HasIndex("CentralDerivativeJobId", "Ordinal")
                         .IsUnique();
 
-                    b.HasIndex("CentralTransientEventId", "PersistedAssessmentId");
+                    b.HasIndex("CentralTransientEventId", "EventId");
 
-                    b.HasIndex("CentralTransientEventId", "PersistedEventId");
+                    b.HasIndex("CentralTransientEventId", "PersistedAssessmentId");
 
                     b.HasIndex("CentralTransientEventId", "PersistedEventVersionId");
 
@@ -2251,11 +2121,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         {
                             t.HasTrigger("TR_CentralTransientValidationIdentitySlots_TerminalImmutable");
 
-                            t.HasCheckConstraint("CK_CentralTransientValidationIdentitySlots_Association", "([AdoptedEventId] IS NULL AND [AssociationIdentitySha256] IS NULL) OR ([AdoptedEventId] IS NOT NULL AND [AssociationIdentitySha256] IS NOT NULL)");
-
                             t.HasCheckConstraint("CK_CentralTransientValidationIdentitySlots_Ordinal", "[Ordinal] >= 0");
 
-                            t.HasCheckConstraint("CK_CentralTransientValidationIdentitySlots_State", "([State] IN ('Reserved', 'Unused') AND [CentralTransientEventId] IS NULL AND [PersistedEventId] IS NULL AND [PersistedEventVersionId] IS NULL AND [PersistedObservationId] IS NULL AND [PersistedAssessmentId] IS NULL) OR ([State] = 'Committed' AND [CentralTransientEventId] IS NOT NULL AND [PersistedEventId] = COALESCE([AdoptedEventId], [SubmittedEventId]) AND [PersistedEventVersionId] IS NOT NULL AND [PersistedObservationId] = [ObservationId] AND [PersistedAssessmentId] = [AssessmentId])");
+                            t.HasCheckConstraint("CK_CentralTransientValidationIdentitySlots_State", "([State] IN ('Reserved', 'Unused') AND [CentralTransientEventId] IS NULL AND [PersistedEventVersionId] IS NULL AND [PersistedObservationId] IS NULL AND [PersistedAssessmentId] IS NULL) OR ([State] = 'Committed' AND [CentralTransientEventId] IS NOT NULL AND [PersistedEventVersionId] IS NOT NULL AND [PersistedObservationId] = [ObservationId] AND [PersistedAssessmentId] = [AssessmentId])");
                         });
 
                     b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
@@ -2278,39 +2146,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("datetimeoffset");
 
-                    b.Property<string>("ExecutionOptionsIdentitySha256")
-                        .HasMaxLength(64)
-                        .IsUnicode(false)
-                        .HasColumnType("varchar(64)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<string>("ExecutionOptionsJson")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("OutcomeEvidenceIdentitySha256")
-                        .HasMaxLength(64)
-                        .IsUnicode(false)
-                        .HasColumnType("varchar(64)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<string>("OutcomeEvidenceJson")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("OutcomeReasonCode")
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<DateTimeOffset?>("OutcomeRecordedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("OutcomeState")
-                        .HasMaxLength(32)
-                        .HasColumnType("nvarchar(32)");
-
-                    b.Property<Guid?>("ProvisionalCentralDerivativeJobId")
-                        .HasColumnType("uniqueidentifier");
-
                     b.Property<string>("SubmissionIdentitySha256")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -2323,14 +2158,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
 
-                    b.Property<string>("SubmittedCandidateJson")
-                        .HasColumnType("nvarchar(max)");
-
                     b.HasKey("CentralDerivativeJobId");
-
-                    b.HasIndex("ProvisionalCentralDerivativeJobId")
-                        .IsUnique()
-                        .HasFilter("[ProvisionalCentralDerivativeJobId] IS NOT NULL");
 
                     b.HasIndex("SubmissionIdentitySha256")
                         .IsUnique();
@@ -2338,67 +2166,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.ToTable("CentralTransientValidationJobs", null, t =>
                         {
                             t.HasTrigger("TR_CentralTransientValidationJobs_CommittedImmutable");
-
-                            t.HasCheckConstraint("CK_CentralTransientValidationJobs_CommitOutcome", "[CommittedAtUtc] IS NULL OR [OutcomeRecordedAtUtc] IS NOT NULL");
-
-                            t.HasCheckConstraint("CK_CentralTransientValidationJobs_ExecutionOptions", "([ExecutionOptionsJson] IS NULL AND [ExecutionOptionsIdentitySha256] IS NULL) OR ([ExecutionOptionsJson] IS NOT NULL AND [ExecutionOptionsIdentitySha256] IS NOT NULL)");
-
-                            t.HasCheckConstraint("CK_CentralTransientValidationJobs_Outcome", "([OutcomeRecordedAtUtc] IS NULL AND [OutcomeState] IS NULL AND [OutcomeReasonCode] IS NULL AND [OutcomeEvidenceJson] IS NULL AND [OutcomeEvidenceIdentitySha256] IS NULL) OR ([OutcomeRecordedAtUtc] IS NOT NULL AND [OutcomeState] IS NOT NULL AND [OutcomeReasonCode] IS NOT NULL AND [OutcomeEvidenceJson] IS NOT NULL AND [OutcomeEvidenceIdentitySha256] IS NOT NULL)");
-                        });
-
-                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
-                });
-
-            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientValidationOutcomeVersion", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid>("CentralDerivativeJobId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("EvidenceIdentitySha256")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .IsUnicode(false)
-                        .HasColumnType("varchar(64)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<string>("EvidenceJson")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("ReasonCode")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<DateTimeOffset>("RecordedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("State")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("nvarchar(32)");
-
-                    b.Property<int>("Version")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CentralDerivativeJobId", "EvidenceIdentitySha256")
-                        .IsUnique();
-
-                    b.HasIndex("CentralDerivativeJobId", "Version")
-                        .IsUnique();
-
-                    b.ToTable("CentralTransientValidationOutcomeVersions", null, t =>
-                        {
-                            t.HasTrigger("TR_CentralTransientValidationOutcomeVersions_Immutable");
-
-                            t.HasCheckConstraint("CK_CentralTransientValidationOutcomeVersions_Version", "[Version] > 0");
                         });
 
                     b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
@@ -3859,32 +3626,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("SupersedesAssessment");
                 });
 
-            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientContextDependency", b =>
-                {
-                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientValidationJob", "ValidationJob")
-                        .WithMany("ContextDependencies")
-                        .HasForeignKey("CentralDerivativeJobId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralArtifact", "ContextArtifact")
-                        .WithMany()
-                        .HasForeignKey("ContextCentralArtifactId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientValidationJob", "RequiredValidationJob")
-                        .WithMany()
-                        .HasForeignKey("RequiredCentralDerivativeJobId")
-                        .OnDelete(DeleteBehavior.NoAction);
-
-                    b.Navigation("ContextArtifact");
-
-                    b.Navigation("RequiredValidationJob");
-
-                    b.Navigation("ValidationJob");
-                });
-
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientEventVersionAssessment", b =>
                 {
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentRecord", "Assessment")
@@ -4025,14 +3766,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Artifact");
                 });
 
-            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientSubmissionAudit", b =>
-                {
-                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJob", null)
-                        .WithMany()
-                        .HasForeignKey("ExistingCentralDerivativeJobId")
-                        .OnDelete(DeleteBehavior.NoAction);
-                });
-
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientValidationIdentitySlot", b =>
                 {
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientValidationJob", "ValidationJob")
@@ -4041,16 +3774,16 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientEventRecord", "Event")
+                        .WithMany()
+                        .HasForeignKey("CentralTransientEventId", "EventId")
+                        .HasPrincipalKey("Id", "EventId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentRecord", "PersistedAssessment")
                         .WithMany()
                         .HasForeignKey("CentralTransientEventId", "PersistedAssessmentId")
                         .HasPrincipalKey("CentralTransientEventId", "AssessmentId")
-                        .OnDelete(DeleteBehavior.NoAction);
-
-                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientEventRecord", "Event")
-                        .WithMany()
-                        .HasForeignKey("CentralTransientEventId", "PersistedEventId")
-                        .HasPrincipalKey("Id", "EventId")
                         .OnDelete(DeleteBehavior.NoAction);
 
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientEventVersionRecord", "PersistedEventVersion")
@@ -4084,25 +3817,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientValidationJob", "ProvisionalValidationJob")
-                        .WithMany()
-                        .HasForeignKey("ProvisionalCentralDerivativeJobId")
-                        .OnDelete(DeleteBehavior.NoAction);
-
                     b.Navigation("Job");
-
-                    b.Navigation("ProvisionalValidationJob");
-                });
-
-            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientValidationOutcomeVersion", b =>
-                {
-                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientValidationJob", "ValidationJob")
-                        .WithMany("OutcomeVersions")
-                        .HasForeignKey("CentralDerivativeJobId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("ValidationJob");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.DeviceFleetState", b =>
@@ -4399,13 +4114,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientValidationJob", b =>
                 {
-                    b.Navigation("ContextDependencies");
-
                     b.Navigation("ExtractionReceipt");
 
                     b.Navigation("IdentitySlots");
-
-                    b.Navigation("OutcomeVersions");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.EnvironmentalObservationRecord", b =>

@@ -9,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.IntegrationTests;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.Common.Identity;
@@ -29,7 +30,12 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 /// </summary>
 internal sealed class CameraAgentIntegrationFixture : IDisposable
 {
-    private readonly IntegrationTestFixture _hostFixture = new();
+    private readonly bool _hybridTransientMode;
+    private readonly IntegrationTestFixture _hostFixture = new(new Dictionary<string, string?>
+    {
+        ["CentralTransient:Mode"] = "Hybrid",
+        ["CentralTransient:SourceRole"] = "Raw"
+    });
     private WebApplicationFactory<Program>? _agentFactory;
     private WebApplicationFactory<Program>? _agentBaseFactory;
     private Uri? _centralIdentityBaseUri;
@@ -38,6 +44,11 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     private string? _configurationPath;
     private string? _storageRoot;
     private CatalogFixtureInstallation? _catalogFixture;
+
+    public CameraAgentIntegrationFixture(bool hybridTransientMode = false)
+    {
+        _hybridTransientMode = hybridTransientMode;
+    }
 
     /// <summary>
     /// Initializes the host and camera agent factories.
@@ -48,12 +59,36 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         await _hostFixture.SeedActiveDeviceAsync("cameraagent-integration-test").ConfigureAwait(false);
         _storageRoot = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-integration-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_storageRoot);
+        if (_hybridTransientMode)
+        {
+            var provisioningRoot = Path.Combine(_storageRoot, "provisioning");
+            Directory.CreateDirectory(provisioningRoot);
+            await File.WriteAllTextAsync(
+                Path.Combine(provisioningRoot, "device-identity.json"),
+                JsonSerializer.Serialize(new
+                {
+                    deviceId = "cameraagent-integration-test",
+                    verificationCode = "INTEG2TEST",
+                    createdUtc = DateTimeOffset.UtcNow
+                })).ConfigureAwait(false);
+        }
         _catalogFixture = CatalogFixtureInstallation.Create(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"));
         _configurationPath = Path.Combine(_storageRoot, "cameraagent.integration.json");
         var template = await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.integration.json")).ConfigureAwait(false);
-        TransientEpochUtc = DateTimeOffset.UtcNow.AddMinutes(-1).ToUniversalTime();
+        TransientEpochUtc = (_hybridTransientMode
+            ? DateTimeOffset.UtcNow.AddSeconds(2)
+            : DateTimeOffset.UtcNow.AddMinutes(-1)).ToUniversalTime();
+        if (_hybridTransientMode)
+        {
+            template = template
+                .Replace("3600.0", "20.0", StringComparison.Ordinal)
+                .Replace("\"angularWidthDegrees\": 0.2", "\"angularWidthDegrees\": 2.0", StringComparison.Ordinal)
+                .Replace("\"pixelX\": 1.5,\n                \"pixelY\": 1.5", "\"pixelX\": 20.0,\n                \"pixelY\": 24.0", StringComparison.Ordinal)
+                .Replace("\"pixelX\": 20.0,\n                \"pixelY\": 24.0,\n                \"electronsPerSecond\": 1000000000.0,\n                \"sigmaPixels\": 0.25\n              }\n            ]", "\"pixelX\": 44.0,\n                \"pixelY\": 24.0,\n                \"electronsPerSecond\": 1000000000.0,\n                \"sigmaPixels\": 2.0\n              }\n            ]", StringComparison.Ordinal)
+                .Replace("\"sigmaPixels\": 0.25", "\"sigmaPixels\": 2.0", StringComparison.Ordinal);
+        }
         await File.WriteAllTextAsync(_configurationPath,
             template
                 .Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(_storageRoot), StringComparison.Ordinal)
@@ -244,6 +279,13 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["CameraAgent:RawIngressRoot"] = _storageRoot,
             ["DeviceProvisioning:StateDirectory"] = Path.Combine(_storageRoot!, "provisioning")
         };
+        if (_hybridTransientMode)
+        {
+            overrides["CameraAgent:TransientDetection:Mode"] = TransientOperatingMode.Hybrid.ToString();
+            overrides["CameraAgent:TransientDetection:Required"] = "true";
+            overrides["CameraAgent:TransientDetection:WorkerPollIntervalMilliseconds"] = "100";
+            overrides["CameraAgent:TransientDetection:StarMaximumMagnitude"] = "-30";
+        }
 
         var scopePrefix = "CentralIdentity:ClientCredentials:Scopes";
         for (var i = 0; i < TestClients.SystemCameraAgent.Scopes.Length; i++)

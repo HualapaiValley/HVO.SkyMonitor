@@ -43,6 +43,86 @@ public sealed class VirtualSkyPipelineTests
     private static CameraAgentIntegrationFixture Fixture => AssemblyHooks.Fixture;
 
     [TestMethod]
+    public async Task CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance()
+    {
+        using var scope = Fixture.CreateCameraAgentScope();
+        var services = scope.ServiceProvider;
+        var telemetry = services.GetRequiredService<ICaptureTelemetryProvider>();
+        var latest = services.GetRequiredService<ILatestFrameAccessor>();
+        await WaitUntilAsync(
+            () => telemetry.Latest is { FrameStored: true }
+                && latest.TryGetSnapshot(FrameArtifactRole.Raw, out _),
+            TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        Assert.IsTrue(latest.TryGetSnapshot(FrameArtifactRole.Raw, out var before));
+        var beforeTimestamp = before.TimestampUtc;
+        var beforeStored = services.GetRequiredService<IFrameStorageService>().List(
+            Fixture.StorageRoot, DateOnly.FromDateTime(before.TimestampUtc.UtcDateTime), null, 10_000).Count;
+
+        var configured = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;
+        var outageOptions = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = configured.RawIngressRoot,
+            CaptureDistribution = configured.CaptureDistribution,
+            UploadBatchSize = 1,
+            UploadPollIntervalSeconds = 1,
+            UploadRetryInitialDelaySeconds = 1,
+            UploadRetryMaximumDelaySeconds = 1
+        });
+        using var outageFactory = new OutageHttpClientFactory();
+        var outageClient = new ArtifactUploadClient(outageFactory, outageOptions, TimeProvider.System);
+        var drain = ActivatorUtilities.CreateInstance<ArtifactOutboxDrainService>(
+            services, outageClient, outageOptions);
+        await drain.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            await WaitUntilAsync(
+                HasTransportFailureRetry,
+                TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+            await WaitUntilAsync(
+                () => latest.TryGetSnapshot(FrameArtifactRole.Raw, out var current)
+                    && current.TimestampUtc > beforeTimestamp,
+                TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        }
+        finally
+        {
+            await drain.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            drain.Dispose();
+            ResetTransportFailureRetries();
+        }
+
+        Assert.IsTrue(latest.TryGetSnapshot(FrameArtifactRole.Raw, out var after));
+        Assert.IsGreaterThan(beforeTimestamp, after.TimestampUtc);
+        Assert.IsNotNull(after.Metadata?.Scene?.TransientScenario);
+        var transient = after.Metadata.Scene.TransientScenario;
+        var stored = services.GetRequiredService<IFrameStorageService>().List(
+            Fixture.StorageRoot, DateOnly.FromDateTime(after.TimestampUtc.UtcDateTime), null, 10_000);
+        Assert.IsGreaterThan(beforeStored, stored.Count);
+        var currentFrameManifests = stored.Select(item => new
+        {
+            Stored = item,
+            Parsed = CaptureContractJson.ParseManifest(
+                File.ReadAllBytes(Path.ChangeExtension(item.AbsolutePath, ".json")))
+        })
+            .Where(item => item.Parsed.IsValid
+                && item.Stored.TimestampUtc > beforeTimestamp)
+            .ToArray();
+        Assert.IsNotEmpty(currentFrameManifests);
+        Assert.IsTrue(currentFrameManifests.All(item => File.Exists(item.Stored.AbsolutePath)));
+        Assert.IsTrue(currentFrameManifests.Any(item =>
+            item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Raw));
+        Assert.IsTrue(currentFrameManifests.Any(item =>
+            item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Preview));
+        Assert.IsTrue(currentFrameManifests.All(item =>
+            item.Parsed.Document!.Manifest!.Scene?.TransientScenario?.ParametersSha256
+                == transient.ParametersSha256));
+        Assert.IsTrue(HasPendingOrRetryOutboxRecord());
+        Assert.AreEqual(RawIngressAvailability.Accepting,
+            services.GetRequiredService<RawIngressState>().Snapshot.Availability);
+        Assert.AreEqual(CaptureProcessingAvailability.Healthy,
+            services.GetRequiredService<CaptureProcessingState>().Snapshot.Availability);
+    }
+
+    [TestMethod]
     public async Task ConfiguredPipelinePublishesPersistsReportsAndQueuesVirtualFrame()
     {
         using var scope = Fixture.CreateCameraAgentScope();
@@ -202,7 +282,13 @@ public sealed class VirtualSkyPipelineTests
         Assert.IsGreaterThanOrEqualTo(5L, Convert.ToInt64(
             await processingCommand.ExecuteScalarAsync().ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture));
-        var processingState = services.GetRequiredService<CaptureProcessingState>().Snapshot;
+        var processingStateService = services.GetRequiredService<CaptureProcessingState>();
+        await WaitUntilAsync(() =>
+        {
+            var state = processingStateService.Snapshot;
+            return state.PendingCount == 0 && state.RetryCount == 0 && state.TerminalCount == 0;
+        }, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        var processingState = processingStateService.Snapshot;
         Assert.AreEqual(CaptureProcessingAvailability.Healthy, processingState.Availability);
         Assert.AreEqual(0L, processingState.PendingCount);
         Assert.AreEqual(0L, processingState.RetryCount);
@@ -599,6 +685,39 @@ public sealed class VirtualSkyPipelineTests
         return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    private static bool HasTransportFailureRetry()
+    {
+        using var connection = OpenOutboxReadConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE status = 'retry' AND last_reason = 'transport-failure';";
+        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) > 0;
+    }
+
+    private static void ResetTransportFailureRetries()
+    {
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db")}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE artifact_outbox_records
+            SET status = 'pending', attempt_count = 0, next_attempt_unix_ms = updated_unix_ms,
+                lease_owner = NULL, lease_token = NULL, lease_expires_unix_ms = NULL,
+                last_reason = NULL
+            WHERE status = 'retry' AND last_reason = 'transport-failure';
+            """;
+        Assert.IsGreaterThan(0, command.ExecuteNonQuery(),
+            "The injected transport-failure retry must be restored for the shared integration fixture.");
+    }
+
+    private static bool HasPendingOrRetryOutboxRecord()
+    {
+        using var connection = OpenOutboxReadConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE status IN ('pending', 'retry');";
+        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) > 0;
+    }
+
     private static bool HasNoEnvironmentalOutboxRecord(Guid observationId)
     {
         var path = Path.Combine(Fixture.StorageRoot, ".environment", "environmental-observation-outbox.db");
@@ -746,6 +865,27 @@ public sealed class VirtualSkyPipelineTests
         Guid ArtifactId,
         string ChecksumSha256,
         long ByteLength);
+
+    private sealed class OutageHttpClientFactory : IHttpClientFactory, IDisposable
+    {
+        private readonly HttpClient client = new(new OutageHttpMessageHandler())
+        {
+            BaseAddress = new Uri("http://central-outage.invalid/", UriKind.Absolute),
+            Timeout = TimeSpan.FromSeconds(1)
+        };
+
+        public HttpClient CreateClient(string name) => client;
+
+        public void Dispose() => client.Dispose();
+    }
+
+    private sealed class OutageHttpMessageHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => throw new HttpRequestException("Injected Central transport outage.");
+    }
 
     private sealed class RecordingLoggerProvider : ILoggerProvider
     {

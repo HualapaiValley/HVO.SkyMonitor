@@ -41,18 +41,25 @@ internal sealed partial class CentralDerivativeWindowResolver(
         {
             return;
         }
-        var jobIds = await dbContext.CentralDerivativeJobInputRequirements.AsNoTracking()
+        var jobs = await dbContext.CentralDerivativeJobInputRequirements.AsNoTracking()
             .Where(requirement => requirement.Job!.Status == CentralDerivativeJobStatus.Waiting
                 && requirement.ExpectedAgentId == frame.AgentId
                 && requirement.ExpectedCaptureSequence == captureSequence)
-            .Select(requirement => requirement.CentralDerivativeJobId)
+            .Select(requirement => new
+            {
+                requirement.CentralDerivativeJobId,
+                requirement.Job!.RecipeName
+            })
             .Distinct()
             .ToListAsync(cancellationToken).ConfigureAwait(false);
-        telemetry.RecordWindowNotification(
-            BuiltInProcessingRecipes.RollingMean, jobIds.Count == 0 ? "ignored" : "affected");
-        foreach (var jobId in jobIds)
+        if (jobs.Count == 0)
         {
-            await ResolveJobAsync(jobId, now, cancellationToken).ConfigureAwait(false);
+            telemetry.RecordWindowNotification("other", "ignored");
+        }
+        foreach (var job in jobs)
+        {
+            telemetry.RecordWindowNotification(job.RecipeName, "affected");
+            await ResolveJobAsync(job.CentralDerivativeJobId, now, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -113,6 +120,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 .Include(item => item.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)
                 .Include(item => item.InputRequirements)
                 .Include(item => item.Inputs)
+                .Include(item => item.CanonicalInputs)
                 .AsSplitQuery()
                 .SingleOrDefaultAsync(item => item.Id == jobId, cancellationToken).ConfigureAwait(false);
             if (job is null || job.Status != CentralDerivativeJobStatus.Waiting)
@@ -132,6 +140,14 @@ internal sealed partial class CentralDerivativeWindowResolver(
             {
                 if (requirement.SourceKind != CentralDerivativeInputSourceKind.Artifact)
                 {
+                    if (requirement.SourceKind == CentralDerivativeInputSourceKind.Canonical &&
+                        job.CanonicalInputs.Any(input =>
+                            input.CentralDerivativeJobInputRequirementId == requirement.Id))
+                    {
+                        requirement.ResolutionState = CentralDerivativeInputResolutionState.Resolved;
+                        requirement.ResolutionReasonCode = null;
+                        continue;
+                    }
                     requirement.ResolutionState = CentralDerivativeInputResolutionState.Waiting;
                     requirement.ResolutionReasonCode = CentralDerivativeWindowReasonCodes.EnvironmentUnavailable;
                     continue;
@@ -164,6 +180,10 @@ internal sealed partial class CentralDerivativeWindowResolver(
             var incompatibleRequired = false;
             foreach (var requirement in job.InputRequirements.OrderBy(item => item.Ordinal))
             {
+                if (requirement.SourceKind != CentralDerivativeInputSourceKind.Artifact)
+                {
+                    continue;
+                }
                 if (!candidates.TryGetValue(requirement.Id, out var candidate))
                 {
                     if (requirement.ResolutionState == CentralDerivativeInputResolutionState.Incompatible)
@@ -208,6 +228,10 @@ internal sealed partial class CentralDerivativeWindowResolver(
             else if (incompatibleRequired)
             {
                 CompleteWithoutExecution(job, now, CentralDerivativeWindowReasonCodes.IncompatibleInput);
+                await FinalizeTransientSlotsAsync(job, cancellationToken).ConfigureAwait(false);
+                await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                    dbContext, job, CentralDerivativeWindowReasonCodes.IncompatibleInput, now, cancellationToken)
+                    .ConfigureAwait(false);
             }
             else if (missingRequired || unresolvedOptional)
             {
@@ -231,6 +255,15 @@ internal sealed partial class CentralDerivativeWindowResolver(
                     else
                     {
                         ApplyDeadlineOutcome(job, now, missingRequired);
+                        await FinalizeTransientSlotsAsync(job, cancellationToken).ConfigureAwait(false);
+                        await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                            dbContext,
+                            job,
+                            missingRequired
+                                ? CentralDerivativeWindowReasonCodes.RequiredInputTimeout
+                                : CentralDerivativeWindowReasonCodes.OptionalInputTimeout,
+                            now,
+                            cancellationToken).ConfigureAwait(false);
                     }
                     telemetry.RecordWindowDeadline(
                         job.RecipeName, job.Status.ToString().ToLowerInvariant());
@@ -447,7 +480,8 @@ internal sealed partial class CentralDerivativeWindowResolver(
             }
         }
         var selected = job.InputRequirements
-            .Where(item => item.ResolutionState == CentralDerivativeInputResolutionState.Resolved)
+            .Where(item => item.SourceKind == CentralDerivativeInputSourceKind.Artifact
+                && item.ResolutionState == CentralDerivativeInputResolutionState.Resolved)
             .OrderBy(item => item.Ordinal)
             .Select(item => (Requirement: item, Candidate: candidates[item.Id]))
             .ToArray();
@@ -514,6 +548,17 @@ internal sealed partial class CentralDerivativeWindowResolver(
         job.LastError = reasonCode;
         job.UpdatedAtUtc = now;
     }
+
+    private Task<int> FinalizeTransientSlotsAsync(
+        CentralDerivativeJob job,
+        CancellationToken cancellationToken)
+        => !string.Equals(job.RecipeName, CentralTransientRuntime.RecipeName, StringComparison.Ordinal)
+            ? Task.FromResult(0)
+            : dbContext.CentralTransientValidationIdentitySlots
+                .Where(slot => slot.CentralDerivativeJobId == job.Id
+                    && slot.State == CentralTransientValidationIdentitySlotState.Reserved)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    slot => slot.State, CentralTransientValidationIdentitySlotState.Unused), cancellationToken);
 
     private static JsonSerializerOptions CreateSerializerOptions()
     {

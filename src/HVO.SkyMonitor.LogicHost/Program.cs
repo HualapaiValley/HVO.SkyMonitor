@@ -102,6 +102,10 @@ public sealed partial class Program
                     && options.BacklogDegradedAfter > TimeSpan.Zero,
                 "CentralDerivativeWorker timing values are invalid.")
             .ValidateOnStart();
+        builder.Services.AddOptions<CentralTransientOptions>()
+            .Bind(builder.Configuration.GetSection(CentralTransientOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
         builder.Services.Configure<HostOptions>(options =>
             options.ShutdownTimeout = builder.Configuration.GetValue(
                 $"{CentralDerivativeWorkerOptions.SectionName}:ShutdownTimeout",
@@ -632,6 +636,10 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralArtifactRetrievalService, CentralArtifactRetrievalService>();
         builder.Services.AddScoped<ICentralArtifactObjectReader, CentralArtifactObjectReader>();
         builder.Services.AddScoped<ICentralArtifactRetentionReferences, CentralArtifactRetentionReferences>();
+        builder.Services.AddScoped<ICentralTransientEventPersistence, CentralTransientEventPersistence>();
+        builder.Services.AddScoped<ICentralTransientSubmissionService, CentralTransientSubmissionService>();
+        builder.Services.AddScoped<ICentralTransientValidationExecutor, CentralTransientValidationExecutor>();
+        builder.Services.AddScoped<ICentralTransientRetrospectiveScheduler, CentralTransientRetrospectiveScheduler>();
         builder.Services.AddScoped<ICentralArtifactRetentionService, CentralArtifactRetentionService>();
         builder.Services.AddSingleton<CentralArtifactRetrievalTelemetry>();
         builder.Services.AddHostedService<CentralArtifactReconciliationService>();

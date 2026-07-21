@@ -25,6 +25,12 @@ public sealed record TransientCandidateExtractionOptionsV1(
     [property: JsonRequired] double MaximumFragmentGapPixels,
     [property: JsonRequired] double MinimumFragmentAlignmentCosine);
 
+public static class TransientCandidateExtractionProfiles
+{
+    public static TransientCandidateExtractionOptionsV1 EdgeV1 { get; } = new(
+        50, 4, 500, 32, 16, 4_096, 100_000, 4, 0.9);
+}
+
 public sealed record TransientCandidateIdentitySlot(Guid CandidateId, Guid EventId);
 
 public sealed record TransientCandidateExtractionSourceV1(

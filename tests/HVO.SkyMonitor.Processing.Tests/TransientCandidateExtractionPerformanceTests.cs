@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Imaging;
@@ -36,11 +38,17 @@ public sealed class TransientCandidateExtractionPerformanceTests
     [TestMethod]
     public async Task W1W2CandidateExtractionEvidence()
     {
-        if (RuntimeInformation.OSArchitecture != Architecture.X64 ||
-            RuntimeInformation.ProcessArchitecture != Architecture.X64)
-        {
-            Assert.Inconclusive("Issue #119 closure evidence requires an x64 host and process; run with --arch x64.");
-        }
+        Assert.AreEqual(Architecture.X64, RuntimeInformation.OSArchitecture,
+            "Transient performance evidence requires an x64 host.");
+        Assert.AreEqual(Architecture.X64, RuntimeInformation.ProcessArchitecture,
+            "Transient performance evidence requires an x64 process; run with --arch x64.");
+        Assert.AreEqual("Release", GetType().Assembly.GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration,
+            "Transient performance evidence requires a Release assembly identity.");
+        Assert.Contains(
+            $"{Path.DirectorySeparatorChar}Release{Path.DirectorySeparatorChar}",
+            AppContext.BaseDirectory,
+            StringComparison.Ordinal,
+            "Transient performance evidence must be collected from a Release build.");
         var results = new List<object>();
         foreach (var workload in new[] { Workload.W1, Workload.W2 })
         {
@@ -154,6 +162,57 @@ public sealed class TransientCandidateExtractionPerformanceTests
         };
         await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(evidence, EvidenceJson)).ConfigureAwait(false);
         TestContext.WriteLine($"Issue #119 performance evidence: {outputPath}");
+    }
+
+    [TestMethod]
+    public async Task Issue116W2CandidateExtractionRecordsAcceptanceEvidence()
+    {
+        await W1W2CandidateExtractionEvidence().ConfigureAwait(false);
+
+        var root = GetRepositoryRoot();
+        var sourcePath = Path.Combine(root, "TestResults", "issue-119", "candidate-extraction-performance.json");
+        using var source = JsonDocument.Parse(await File.ReadAllTextAsync(sourcePath).ConfigureAwait(false));
+        var w2 = source.RootElement.GetProperty("results").EnumerateArray()
+            .Single(result => result.GetProperty("id").GetString()!.StartsWith("W2", StringComparison.Ordinal))
+            .Clone();
+        var revision = ReadGit(root, "rev-parse HEAD");
+        var dirtyState = ReadGit(root, "status --short");
+        var evidenceRevision = string.IsNullOrWhiteSpace(dirtyState) ? revision : "local-dirty";
+        var boundedRevision = evidenceRevision.Length > 12 ? evidenceRevision[..12] : evidenceRevision;
+        var outputDirectory = Path.Combine(root, "TestResults", "issue-116", boundedRevision);
+        Directory.CreateDirectory(outputDirectory);
+        var outputPath = Path.Combine(outputDirectory, "transient-detector-w2.json");
+        var evidence = new
+        {
+            Schema = "hvo-central-transient-detector-component-v1",
+            Issue = 116,
+            RecordedAtUtc = DateTimeOffset.UtcNow,
+            Revision = new
+            {
+                Candidate = revision,
+                Branch = ReadGit(root, "branch --show-current"),
+                Dirty = !string.IsNullOrWhiteSpace(dirtyState),
+                DirtyState = dirtyState,
+                DirtyFingerprintSha256 = CreateDirtyFingerprint(root)
+            },
+            Command = "dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~TransientCandidateExtractionPerformanceTests.Issue116W2CandidateExtractionRecordsAcceptanceEvidence",
+            Boundary = "Isolated host-neutral W2 source conversion, centered temporal background, candidate extraction, promotion, and deterministic assessment. Central SQL/MinIO/window metrics are in central-w2-w3m-w4.json from the same revision.",
+            SourceEvidence = new
+            {
+                Path = "TestResults/issue-119/candidate-extraction-performance.json",
+                Sha256 = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(sourcePath).ConfigureAwait(false)))
+            },
+            TestedAssemblies = new[]
+            {
+                CreateAssemblyEvidence(GetType().Assembly),
+                CreateAssemblyEvidence(typeof(TransientCandidateExtractionFactory).Assembly)
+            },
+            FixtureDisclosure = "W2-T119 is a deterministic synthetic replicated detector residual shaped to canonical W2 dimensions and RGGB bytes. It is not a VirtualSky render, production capture, or physical sensitivity claim.",
+            Workload = w2,
+            Interpretation = "The W2 component reports phase median/p95, CPU, allocations, LOH/RSS, live and retained buffers, throughput, candidate rate, exact source/output identities, and zero host I/O. It is isolated so process-wide resource counters are not contaminated by SQL Server or MinIO fixture work."
+        };
+        await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(evidence, EvidenceJson)).ConfigureAwait(false);
+        TestContext.WriteLine($"Issue #116 W2 detector evidence: {outputPath}");
     }
 
     public TestContext TestContext { get; set; } = null!;
@@ -720,6 +779,27 @@ public sealed class TransientCandidateExtractionPerformanceTests
     private static string FileSha256(string root, string relativePath)
         => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(root, relativePath))));
 
+    private static string CreateDirtyFingerprint(string root)
+    {
+        var value = new StringBuilder(ReadGit(root, "diff --binary HEAD"));
+        var untracked = ReadGit(root, "ls-files --others --exclude-standard -z")
+            .Split('\0', StringSplitOptions.RemoveEmptyEntries)
+            .Order(StringComparer.Ordinal);
+        foreach (var relativePath in untracked)
+        {
+            value.Append('\n').Append(relativePath).Append(':')
+                .Append(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(root, relativePath)))));
+        }
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value.ToString())));
+    }
+
+    private static AssemblyEvidence CreateAssemblyEvidence(Assembly assembly)
+        => new(
+            assembly.GetName().Name ?? "unknown",
+            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))),
+            assembly.ManifestModule.ModuleVersionId,
+            assembly.GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration ?? "unknown");
+
     private static string ReadCpuDescription()
     {
         if (!File.Exists("/proc/cpuinfo"))
@@ -739,6 +819,12 @@ public sealed class TransientCandidateExtractionPerformanceTests
         TransientCandidateExtractionRequest Request,
         byte[] SourceTarget,
         byte[] SourceBackground);
+
+    private sealed record AssemblyEvidence(
+        string Name,
+        string Sha256,
+        Guid ModuleVersionId,
+        string Configuration);
 
     private sealed record StageMeasurement(
         double MedianMilliseconds,

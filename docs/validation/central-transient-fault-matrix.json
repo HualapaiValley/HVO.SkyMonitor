@@ -1,0 +1,233 @@
+{
+  "schema": "hvo-central-transient-fault-matrix-v1",
+  "issue": 116,
+  "boundary": "LogicHost Central and Hybrid transient submission, N-2..N+2 resolution, extraction, validation, persistence, completion, recovery, and invalidation",
+  "defaultMode": "Off",
+  "rows": [
+    {
+      "id": "cameraagent-central-outage-isolation",
+      "workload": "W0",
+      "fault": "The production CameraAgent artifact uploader receives deterministic Central transport failures while the two-host fixture remains active",
+      "control": "A failing HTTP handler is injected only at the CameraAgent-to-Central artifact transport boundary",
+      "expectedDurableState": "Acquisition, raw SQLite/filesystem durability, transient-scenario provenance, and local preview outputs continue while upload records remain pending/retry. Central-only mode has no local provisional event classifier, so none is claimed.",
+      "test": "HVO.SkyMonitor.CameraAgent.IntegrationTests.VirtualSkyPipelineTests.CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance",
+      "dockerRequired": true
+    },
+    {
+      "id": "cameraagent-hybrid-durable-handoff",
+      "workload": "W0",
+      "fault": "CameraAgent reopens and retries a durably acknowledged Hybrid submission",
+      "control": "Five production raw captures, production artifact drain, canonical HTTP body, device credentials, and reopened CameraAgent journal scope",
+      "expectedDurableState": "Accepted then duplicate acknowledgement with one Central job, five exact inputs, and source-hold release only after acknowledgement persistence",
+      "test": "HVO.SkyMonitor.CameraAgent.IntegrationTests.HybridTransientSubmissionTests.CameraAgentDurableSubmissionAcknowledgesAndRetriesAgainstOneCentralJob",
+      "dockerRequired": true
+    },
+    {
+      "id": "hybrid-concurrent-duplicate-convergence",
+      "workload": "W4",
+      "fault": "Concurrent exact retries target one accepted submission",
+      "control": "Canonical payload identity plus SQL application locks for submission, candidate, and event identities",
+      "expectedDurableState": "Exact retries return one stable duplicate acknowledgement and converge to one authoritative Central event",
+      "test": "HVO.SkyMonitor.IntegrationTests.HybridTransientSubmissionIntegrationTests.CanonicalSubmission_ConvergesDuplicatesAndPersistsAuthoritativeEvent",
+      "dockerRequired": true
+    },
+    {
+      "id": "hybrid-identity-conflict-quarantine",
+      "workload": "W4",
+      "fault": "Conflicting candidate/event identity reuse and cross-device source access target one accepted submission",
+      "control": "Canonical payload identity, device/Agent-scoped source lookup, and SQL application locks",
+      "expectedDurableState": "Conflict requests create one hash-only audit row, cross-device access is non-enumerating, and neither mutates acceptance",
+      "test": "HVO.SkyMonitor.IntegrationTests.HybridTransientSubmissionIntegrationTests.RejectedSubmissions_AreBoundedQuarantinedAndDoNotMutateAcceptance",
+      "dockerRequired": true
+    },
+    {
+      "id": "hybrid-source-failure-evidence",
+      "workload": "W0",
+      "fault": "Hybrid source is unavailable, checksum-corrupt, or storage verification times out",
+      "control": "Deterministic SQL state, same-length MinIO corruption, and injected object-reader storage failure",
+      "expectedDurableState": "Bounded 425/422/503 responses, hash-only durable reason evidence, corrupt source quarantine, and no credential/path/payload leakage",
+      "test": "HVO.SkyMonitor.IntegrationTests.HybridTransientSubmissionIntegrationTests.UnavailableCorruptAndTimedOutEvidence_ReturnBoundedDurableReasons",
+      "dockerRequired": true
+    },
+    {
+      "id": "out-of-order-window",
+      "workload": "W0",
+      "fault": "N-2..N+2 arrive in the deterministic order N,N+2,N-2,N+1,N-1",
+      "control": "Fixed capture sequence and explicit resolver invocation",
+      "expectedDurableState": "One pending job with ordered frozen inputs 98,99,100,101,102 and one canonical outcome",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.CentralTransientRuntime_UsesDelayedExactWindowAndPersistsCanonicalOutcome",
+      "dockerRequired": true
+    },
+    {
+      "id": "deadline-before-late-arrival",
+      "workload": "W0",
+      "fault": "Required sources arrive after the persisted deadline",
+      "control": "Injected durable UTC deadline; no wall-clock wait",
+      "expectedDurableState": "Skipped with required-input-timeout; late sources cannot reopen the window",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.SourcesReceivedAfterDeadline_CannotMakeWindowRunnable",
+      "dockerRequired": true
+    },
+    {
+      "id": "incompatible-required-position",
+      "workload": "W0",
+      "fault": "One required temporal position has incompatible layout/profile identity",
+      "control": "Fixed incompatible profile seed",
+      "expectedDurableState": "Bounded terminal reason without quarantining a valid source",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.IncompatibleRequiredPosition_FinishesWithBoundedReasonWithoutQuarantiningSource",
+      "dockerRequired": true
+    },
+    {
+      "id": "missing-required-input",
+      "workload": "W0",
+      "fault": "One required source remains absent",
+      "control": "Injected durable UTC deadline",
+      "expectedDurableState": "Configured deadline outcome and released transient window pins",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.MissingRequiredInput_UsesConfiguredDeadlineOutcome",
+      "dockerRequired": true
+    },
+    {
+      "id": "missing-mask-evidence",
+      "workload": "W0",
+      "fault": "Immutable projected-star mask evidence is unavailable",
+      "control": "Fixed mask profile without matching immutable evidence",
+      "expectedDurableState": "Completed NeedsReview outcome with mask-evidence-unavailable and no extraction receipt",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.MissingImmutableMaskEvidence_CompletesAsPersistedNeedsReview",
+      "dockerRequired": true
+    },
+    {
+      "id": "corrupt-source-object",
+      "workload": "W0",
+      "fault": "A frozen MinIO source is replaced with same-length corrupt bytes after lease",
+      "control": "Deterministic payload and expected SHA-256",
+      "expectedDurableState": "Job and source quarantine; all opaque identity slots finalized unused",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.CorruptTransientInput_QuarantinesJobAndFinalizesOpaqueSlots",
+      "dockerRequired": true
+    },
+    {
+      "id": "duplicate-concurrent-scheduling",
+      "workload": "W4",
+      "fault": "Sixteen concurrent notifications target the same source/window",
+      "control": "Task barrier over one immutable source identity",
+      "expectedDurableState": "One Central transient job, one ordered five-row input set, and one 32-slot identity allocation",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.ConcurrentTransientScheduling_ConvergesToOneJobWindowAndIdentitySet",
+      "dockerRequired": true
+    },
+    {
+      "id": "expired-lease-adoption",
+      "workload": "W0",
+      "fault": "Lease expires after canonical SQL output exists",
+      "control": "Injected expired lease timestamps and fresh service scope",
+      "expectedDurableState": "Existing canonical output adopted without a second event version",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.CentralTransientRuntime_UsesDelayedExactWindowAndPersistsCanonicalOutcome",
+      "dockerRequired": true
+    },
+    {
+      "id": "max-attempt-adoption",
+      "workload": "W0",
+      "fault": "Final allowed attempt expires after canonical SQL output exists",
+      "control": "AttemptCount equals MaxAttempts with injected expired lease",
+      "expectedDurableState": "Job completes by adoption rather than attempts-exhausted; no duplicate output",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.CentralTransientRuntime_UsesDelayedExactWindowAndPersistsCanonicalOutcome",
+      "dockerRequired": true
+    },
+    {
+      "id": "crash-after-sql-before-generic-completion",
+      "workload": "W0",
+      "fault": "Canonical transient SQL commit survives while generic job completion is replayed",
+      "control": "Job is returned to Pending after the first committed execution",
+      "expectedDurableState": "Replay reports output-adopted and retains exactly one canonical event version",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.CentralTransientRuntime_UsesDelayedExactWindowAndPersistsCanonicalOutcome",
+      "dockerRequired": true
+    },
+    {
+      "id": "sql-transaction-rollback",
+      "workload": "W0",
+      "fault": "Canonical payload, slot, recipe, options, input-set, canonical-input, agent, or role identity is invalid",
+      "control": "Data-driven single-field mutation before append",
+      "expectedDurableState": "Atomic rejection with zero event and receipt rows; reserved slots remain unchanged",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralTransientEventPersistenceIntegrationTests.AppendRejectsUnverifiedPayloadIdentityOrArtifactLineageAtomically",
+      "dockerRequired": true
+    },
+    {
+      "id": "minio-missing",
+      "workload": "W0",
+      "fault": "Referenced object is absent before response headers",
+      "control": "Deterministic missing object key",
+      "expectedDurableState": "Unavailable response and retryable durable object state",
+      "test": "HVO.SkyMonitor.IntegrationTests.ArtifactRetrievalTests.Retrieval_MissingObjectReturnsUnavailableAndPreservesRetryableState",
+      "dockerRequired": true
+    },
+    {
+      "id": "minio-unavailable",
+      "workload": "W0",
+      "fault": "Storage fails before or after response headers",
+      "control": "Injected failing object stream",
+      "expectedDurableState": "Unavailable before headers or aborted stream after headers without false success",
+      "test": "HVO.SkyMonitor.IntegrationTests.ArtifactRetrievalTests.Retrieval_StorageFailuresReturnUnavailableBeforeHeadersAndAbortAfterHeaders",
+      "dockerRequired": true
+    },
+    {
+      "id": "minio-corrupt-concurrent",
+      "workload": "W4",
+      "fault": "Concurrent readers observe a checksum mismatch",
+      "control": "Fixed corrupt payload and parallel retrieval calls",
+      "expectedDurableState": "One converged quarantine state and no corrupt bytes returned as valid",
+      "test": "HVO.SkyMonitor.IntegrationTests.ArtifactRetrievalTests.Retrieval_ConcurrentCorruptionRequestsConvergeOnQuarantine",
+      "dockerRequired": true
+    },
+    {
+      "id": "no-candidate",
+      "workload": "W0",
+      "fault": "Deterministic extraction finds no candidate",
+      "control": "Uniform fixed source payload",
+      "expectedDurableState": "Completed no-candidate outcome with a policy-bound extraction receipt and no event",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.CentralTransientRuntime_UsesDelayedExactWindowAndPersistsCanonicalOutcome",
+      "dockerRequired": true
+    },
+    {
+      "id": "limitation-needs-review",
+      "workload": "W0",
+      "fault": "An otherwise classified assessment contains a limitation reason",
+      "control": "Canonical assessment fixture with saturated-brightness limitation",
+      "expectedDurableState": "Event state is NeedsReview rather than an authoritative accepted state",
+      "test": "HVO.SkyMonitor.Tests.LogicHost.Services.CentralTransientValidationExecutorTests.StateFor_CompleteClassifiedAssessmentWithLimitationNeedsReview",
+      "dockerRequired": false
+    },
+    {
+      "id": "post-commit-invalidation",
+      "workload": "W4",
+      "fault": "Two concurrent retrieval invalidations target a committed source",
+      "control": "Same checksum-mismatch reason and per-agent serialization lock",
+      "expectedDurableState": "Exactly one appended NeedsReview version with preserved predecessor and outcome history",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.CentralTransientRuntime_UsesDelayedExactWindowAndPersistsCanonicalOutcome",
+      "dockerRequired": true
+    },
+    {
+      "id": "version-preserving-reprocessing",
+      "workload": "W0",
+      "fault": "Adjacent measured candidates execute in forward and reverse order",
+      "control": "Data-driven execution order over fixed candidate identities",
+      "expectedDurableState": "Association appends immutable versions and preserves PreviousEventVersionId",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.AdjacentMeasuredCandidates_AssociateAndPreservePreviousEventVersion",
+      "dockerRequired": true
+    },
+    {
+      "id": "retrospective-version-selection",
+      "workload": "W3M",
+      "fault": "An obsolete transient recipe job exists for an old source",
+      "control": "Fixed old ReceivedAtUtc and obsolete execution identity",
+      "expectedDurableState": "Current recipe identity receives a distinct durable job and 32 slots without replacing history",
+      "test": "HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.RetrospectiveScheduler_UsesGenericCatalogAndAllocatesDurableSlots",
+      "dockerRequired": true
+    },
+    {
+      "id": "retrospective-null-device-starvation-guard",
+      "workload": "W3M",
+      "fault": "Old rows with null device identity precede schedulable rows",
+      "control": "Generated SQL inspection",
+      "expectedDurableState": "Unschedulable rows are filtered before ordering and Take so they cannot consume the batch",
+      "test": "HVO.SkyMonitor.Tests.LogicHost.Services.CentralTransientValidationExecutorTests.RetrospectiveCandidateQuery_FiltersNullDeviceIdentityBeforeBatching",
+      "dockerRequired": false
+    }
+  ]
+}

@@ -322,6 +322,12 @@ public sealed class CentralDerivativeWorkerTests
             Guid resultArtifactId,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
+        public Task CompleteWithoutArtifactAsync(
+            Guid jobId,
+            Guid leaseToken,
+            string reasonCode,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
         public Task SkipAsync(
             Guid jobId,
             Guid leaseToken,

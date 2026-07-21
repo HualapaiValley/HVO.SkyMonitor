@@ -27,6 +27,7 @@ internal sealed class CentralDerivativeJobExecutor(
     ICentralDerivativeOutputWriter outputWriter,
     ICentralDerivativeJobService jobService,
     ICentralDerivativeJobScheduler jobScheduler,
+    ICentralTransientValidationExecutor transientExecutor,
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider) : ICentralDerivativeJobExecutor
 {
@@ -38,6 +39,10 @@ internal sealed class CentralDerivativeJobExecutor(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
+        if (string.Equals(lease.RecipeName, CentralTransientRuntime.RecipeName, StringComparison.Ordinal))
+        {
+            return await transientExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
+        }
         using var optionsDocument = JsonDocument.Parse(lease.RecipeOptionsJson);
         var selector = JsonSerializer.Deserialize<ProcessingInputSelector>(lease.InputSelectorJson, SerializerOptions)
             ?? throw new CentralDerivativeJobStateException("The derivative input selector is invalid.");

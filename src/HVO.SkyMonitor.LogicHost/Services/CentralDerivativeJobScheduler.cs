@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
@@ -18,6 +20,19 @@ internal interface ICentralDerivativeJobScheduler
         Guid artifactId,
         DateTimeOffset now,
         CancellationToken cancellationToken) => Task.CompletedTask;
+
+    Task<Guid?> EnsureTransientContextConvergenceAsync(
+        Guid provisionalJobId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken) => Task.FromResult<Guid?>(null);
+
+    CentralDerivativeJob CreateHybridTransientJob(
+        CentralDerivativeRecipe recipe,
+        IReadOnlyList<CentralArtifact> orderedSources,
+        TransientCandidateSubmissionEnvelopeV1 envelope,
+        string authenticatedAgentId,
+        DateTimeOffset now) => throw new NotSupportedException(
+            "This scheduler does not support Hybrid transient submissions.");
 }
 
 internal sealed class CentralDerivativeJobScheduler(
@@ -45,6 +60,157 @@ internal sealed class CentralDerivativeJobScheduler(
             .SingleAsync(item => item.DevicePublicId == devicePublicId && item.ArtifactId == artifactId,
                 cancellationToken).ConfigureAwait(false);
         await EnsureRequiredJobsAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+    }
+
+    public CentralDerivativeJob CreateHybridTransientJob(
+        CentralDerivativeRecipe recipe,
+        IReadOnlyList<CentralArtifact> orderedSources,
+        TransientCandidateSubmissionEnvelopeV1 envelope,
+        string authenticatedAgentId,
+        DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(recipe);
+        ArgumentNullException.ThrowIfNull(orderedSources);
+        ArgumentNullException.ThrowIfNull(envelope);
+        ArgumentException.ThrowIfNullOrWhiteSpace(authenticatedAgentId);
+        if (recipe.Transient is null || recipe.Window?.Positions.Count != 5 || orderedSources.Count != 5)
+        {
+            throw new CentralDerivativeJobStateException("A Hybrid transient submission requires one exact five-source recipe window.");
+        }
+        var center = orderedSources[2];
+        var job = CreateJob(center, recipe, result: null, now);
+        job.RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateHybridSubmissionRequestIdentity(
+            center.DevicePublicId ?? throw new CentralDerivativeJobStateException(
+                "The Hybrid transient center source has no device identity."),
+            center.ArtifactId,
+            envelope.SubmissionIdentitySha256,
+            recipe);
+        job.Status = CentralDerivativeJobStatus.Pending;
+        job.AvailableAtUtc = now;
+        job.ResolutionCompletedAtUtc = now;
+        job.StateReasonCode = null;
+        job.LastError = null;
+
+        var requirements = job.InputRequirements.OrderBy(requirement => requirement.Ordinal).ToArray();
+        for (var ordinal = 0; ordinal < orderedSources.Count; ordinal++)
+        {
+            var artifact = orderedSources[ordinal];
+            var requirement = requirements[ordinal];
+            var compatibility = CentralDerivativeWindowCompatibility.CreateSnapshot(artifact);
+            requirement.ExpectedCentralArtifactId = artifact.Id;
+            requirement.ResolutionState = CentralDerivativeInputResolutionState.Resolved;
+            requirement.ResolutionReasonCode = null;
+            requirement.ResolvedAtUtc = now;
+            job.Inputs.Add(new CentralDerivativeJobInput
+            {
+                Job = job,
+                CentralDerivativeJobId = job.Id,
+                Requirement = requirement,
+                CentralDerivativeJobInputRequirementId = requirement.Id,
+                Ordinal = ordinal,
+                CentralArtifactId = artifact.Id,
+                Artifact = artifact,
+                CaptureSequence = artifact.Frame!.CaptureSequence,
+                CompatibilityJson = compatibility.Json,
+                CompatibilitySha256 = compatibility.Sha256,
+                ByteLength = artifact.ByteLength,
+                SelectedAtUtc = now
+            });
+        }
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        var validation = dbContext.CentralTransientValidationJobs.Local.Single(candidate =>
+            candidate.CentralDerivativeJobId == job.Id);
+        validation.AgentId = authenticatedAgentId;
+        validation.SubmissionSchemaVersion = envelope.SchemaVersion;
+        validation.SubmissionIdentitySha256 = envelope.SubmissionIdentitySha256;
+        validation.SubmittedCandidateJson = System.Text.Encoding.UTF8.GetString(
+            TransientContractJson.Serialize(envelope.Candidate));
+        var submittedSlot = validation.IdentitySlots.Single(slot => slot.Ordinal == 0);
+        submittedSlot.SubmittedEventId = envelope.EventId;
+        submittedSlot.CandidateId = envelope.CandidateId;
+        dbContext.CentralDerivativeJobs.Add(job);
+        return job;
+    }
+
+    public async Task<Guid?> EnsureTransientContextConvergenceAsync(
+        Guid provisionalJobId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        _ = await CentralDerivativeJobLock.AcquireAsync(dbContext, provisionalJobId, cancellationToken)
+            .ConfigureAwait(false);
+        dbContext.ChangeTracker.Clear();
+        var provisional = await dbContext.CentralTransientValidationJobs
+            .Include(item => item.ContextDependencies)
+            .Include(item => item.Job)!.ThenInclude(item => item!.SourceArtifact)!.ThenInclude(item => item!.Frame)
+            .SingleOrDefaultAsync(item => item.CentralDerivativeJobId == provisionalJobId, cancellationToken)
+            .ConfigureAwait(false);
+        if (provisional?.Job?.SourceArtifact is not { } source || provisional.OutcomeRecordedAtUtc is null ||
+            provisional.ContextDependencies.Count == 0 ||
+            await dbContext.CentralTransientValidationJobs.AnyAsync(item =>
+                item.ProvisionalCentralDerivativeJobId == provisionalJobId, cancellationToken).ConfigureAwait(false))
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+
+        foreach (var dependency in provisional.ContextDependencies.Where(item =>
+                     item.RequiredCentralDerivativeJobId == null))
+        {
+            dependency.RequiredCentralDerivativeJobId = await dbContext.CentralDerivativeJobs
+                .Where(job => job.SourceCentralArtifactId == dependency.ContextCentralArtifactId &&
+                    job.RecipeName == CentralTransientRuntime.RecipeName &&
+                    job.RequestedRecipeIdentitySha256 == dependency.RequestedRecipeIdentitySha256 &&
+                    dbContext.CentralTransientValidationJobs.Any(validation =>
+                        validation.CentralDerivativeJobId == job.Id &&
+                        validation.ProvisionalCentralDerivativeJobId == null &&
+                        validation.ExecutionOptionsIdentitySha256 == dependency.ExecutionOptionsIdentitySha256))
+                .Select(job => (Guid?)job.Id)
+                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        }
+        var requiredJobIds = provisional.ContextDependencies
+            .Where(item => item.RequiredCentralDerivativeJobId.HasValue)
+            .Select(item => item.RequiredCentralDerivativeJobId!.Value)
+            .ToArray();
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        var settledDependencyCount = await dbContext.CentralTransientContextDependencies.AsNoTracking()
+            .CountAsync(item => item.CentralDerivativeJobId == provisionalJobId &&
+                item.RequiredCentralDerivativeJobId != null &&
+                item.RequiredValidationJob!.CommittedAtUtc != null &&
+                item.RequiredValidationJob.ExtractionReceipt != null &&
+                item.RequiredValidationJob.ExecutionOptionsIdentitySha256 == item.ExecutionOptionsIdentitySha256,
+                cancellationToken).ConfigureAwait(false);
+        if (requiredJobIds.Length != provisional.ContextDependencies.Count ||
+            settledDependencyCount != provisional.ContextDependencies.Count)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+
+        var recipe = recipeCatalog.GetRequiredRecipes(source.Role).Single(item =>
+            string.Equals(item.RecipeName, CentralTransientRuntime.RecipeName, StringComparison.Ordinal) &&
+            string.Equals(item.RequestedRecipeIdentitySha256, provisional.Job.RequestedRecipeIdentitySha256,
+                StringComparison.Ordinal));
+        var successor = CreateJob(source, recipe, result: null, now)
+            ?? throw new CentralDerivativeJobStateException("The transient convergence job could not be created.");
+        successor.RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateReprocessRequestIdentity(
+            provisionalJobId,
+            source.DevicePublicId ?? throw new CentralDerivativeJobStateException(
+                "The transient convergence source has no device identity."),
+            source.ArtifactId,
+            recipe);
+        var successorValidation = dbContext.CentralTransientValidationJobs.Local.Single(item =>
+            item.CentralDerivativeJobId == successor.Id);
+        successorValidation.ProvisionalCentralDerivativeJobId = provisionalJobId;
+        successorValidation.SubmissionIdentitySha256 = CreateTransientSubmissionIdentity(successor, successorValidation);
+        dbContext.CentralDerivativeJobs.Add(successor);
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        dbContext.ChangeTracker.Clear();
+        await windowResolver.ResolveAsync(successor.Id, now, cancellationToken).ConfigureAwait(false);
+        return successor.Id;
     }
 
     public async Task EnsureRequiredJobsAsync(
@@ -117,9 +283,11 @@ internal sealed class CentralDerivativeJobScheduler(
         {
             return;
         }
-        if (artifact.Role == FrameArtifactRole.Raw)
+        var sourceRecipes = recipeCatalog.GetRequiredRecipes(artifact.Role);
+        if (artifact.Role == FrameArtifactRole.Raw ||
+            artifact.Role == FrameArtifactRole.Calibrated && sourceRecipes.Count > 0)
         {
-            foreach (var recipe in recipeCatalog.GetRequiredRecipes(artifact.Role))
+            foreach (var recipe in sourceRecipes)
             {
                 if (recipe.Window is not null && frame.CaptureSequence is null)
                 {
@@ -164,7 +332,10 @@ internal sealed class CentralDerivativeJobScheduler(
                     Restore(existing, artifact, now);
                 }
             }
-            await EnsureWeatherCloudOverlayJobAsync(frame, now, cancellationToken).ConfigureAwait(false);
+            if (artifact.Role == FrameArtifactRole.Raw)
+            {
+                await EnsureWeatherCloudOverlayJobAsync(frame, now, cancellationToken).ConfigureAwait(false);
+            }
             return;
         }
 
@@ -211,7 +382,7 @@ internal sealed class CentralDerivativeJobScheduler(
         }
     }
 
-    private static CentralDerivativeJob CreateJob(
+    private CentralDerivativeJob CreateJob(
         CentralArtifact source,
         CentralDerivativeRecipe recipe,
         CentralArtifact? result,
@@ -299,11 +470,108 @@ internal sealed class CentralDerivativeJobScheduler(
                 });
             }
         }
+        if (recipe.Transient is { } transient)
+        {
+            AddTransientRuntimeState(job, recipe, transient, frame, now);
+        }
         if (recipe.Window is null)
         {
             job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
         }
         return job;
+    }
+
+    private void AddTransientRuntimeState(
+        CentralDerivativeJob job,
+        CentralDerivativeRecipe recipe,
+        CentralTransientRecipeDefinition transient,
+        CentralFrame frame,
+        DateTimeOffset now)
+    {
+        var extractionOptions = CentralTransientExecutionOptionsJson.Deserialize(transient.ExecutionOptionsJson).Extraction;
+        var canonicalElement = CaptureContractJson.SerializeToElement(new
+        {
+            schema = CentralTransientRuntime.ExtractionOptionsSchemaVersion,
+            options = extractionOptions
+        });
+        var canonicalJson = CaptureContractJson.Canonicalize(canonicalElement).GetRawText();
+        var canonicalBytes = Encoding.UTF8.GetBytes(canonicalJson);
+        var canonicalIdentity = ProcessingIdentity.ComputePayloadSha256(canonicalBytes);
+        var requirement = new CentralDerivativeJobInputRequirement
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Ordinal = job.InputRequirements.Count,
+            BindingName = "transient-extraction-options",
+            SourceKind = CentralDerivativeInputSourceKind.Canonical,
+            IsRequired = true,
+            SelectorJson = "{}",
+            CompatibilityMode = CentralDerivativeCompatibilityMode.None,
+            ExpectedAgentId = frame.AgentId,
+            ExpectedRigId = frame.RigId,
+            ExpectedCaptureSequence = frame.CaptureSequence,
+            ResolutionState = CentralDerivativeInputResolutionState.Resolved,
+            ResolvedAtUtc = now
+        };
+        job.InputRequirements.Add(requirement);
+        job.CanonicalInputs.Add(new CentralDerivativeJobCanonicalInput
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Requirement = requirement,
+            CentralDerivativeJobInputRequirementId = requirement.Id,
+            Ordinal = requirement.Ordinal,
+            SchemaVersion = CentralTransientRuntime.ExtractionOptionsSchemaVersion,
+            IdentitySha256 = canonicalIdentity,
+            CanonicalJson = canonicalJson,
+            ByteLength = canonicalBytes.Length,
+            SelectedAtUtc = now
+        });
+
+        var validation = new CentralTransientValidationJob
+        {
+            CentralDerivativeJobId = job.Id,
+            Job = job,
+            AgentId = frame.AgentId,
+            SubmissionSchemaVersion = CentralTransientRuntime.SubmissionSchemaVersion,
+            ExecutionOptionsJson = transient.ExecutionOptionsJson,
+            ExecutionOptionsIdentitySha256 = transient.ExecutionOptionsIdentitySha256,
+            CreatedAtUtc = now
+        };
+        for (var ordinal = 0; ordinal < transient.IdentitySlotCount; ordinal++)
+        {
+            validation.IdentitySlots.Add(new CentralTransientValidationIdentitySlot
+            {
+                CentralDerivativeJobId = job.Id,
+                ValidationJob = validation,
+                Ordinal = ordinal,
+                State = CentralTransientValidationIdentitySlotState.Reserved,
+                AgentId = frame.AgentId,
+                SubmittedEventId = Guid.NewGuid(),
+                CandidateId = Guid.NewGuid(),
+                ObservationId = Guid.NewGuid(),
+                AssessmentId = Guid.NewGuid()
+            });
+        }
+        validation.SubmissionIdentitySha256 = CreateTransientSubmissionIdentity(job, validation);
+        dbContext.CentralTransientValidationJobs.Add(validation);
+    }
+
+    private static string CreateTransientSubmissionIdentity(
+        CentralDerivativeJob job,
+        CentralTransientValidationJob validation)
+    {
+        var value = string.Join('\n',
+            validation.SubmissionSchemaVersion,
+            job.RequestIdentitySha256,
+            validation.ExecutionOptionsIdentitySha256,
+            string.Join('\n', validation.IdentitySlots.OrderBy(item => item.Ordinal).Select(item => string.Join(':',
+                item.Ordinal,
+                item.SubmittedEventId.ToString("N"),
+                item.CandidateId.ToString("N"),
+                item.ObservationId.ToString("N"),
+                item.AssessmentId.ToString("N")))));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
     private async Task<CentralDerivativeJob?> CreateCloudAssessmentJobAsync(

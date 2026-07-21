@@ -11,8 +11,6 @@ internal sealed class TransientDetectorRuntime(
     IConstellationTopology? constellationTopology = null,
     IPlanetEphemeris? planetEphemeris = null)
 {
-    private static readonly TransientCandidateExtractionOptionsV1 ExtractionOptions = new(
-        50, 4, 500, 32, 16, 4_096, 100_000, 4, 0.9);
     internal static readonly TransientDeterministicAssessmentOptionsV1 AssessmentOptions = new(
         5, 3, 8, 3, 1.8, 0.5, 10, 100_000, 3, 3, 3, 1_000, 30, 2);
 
@@ -140,7 +138,7 @@ internal sealed class TransientDetectorRuntime(
             background,
             ordered,
             slots,
-            ExtractionOptions,
+            TransientCandidateExtractionProfiles.EdgeV1,
             centered), cancellationToken);
     }
 

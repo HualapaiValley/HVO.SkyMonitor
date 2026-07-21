@@ -13,6 +13,12 @@ internal interface ICentralDerivativeJobService
 
     Task CompleteAsync(Guid jobId, Guid leaseToken, Guid resultArtifactId, CancellationToken cancellationToken);
 
+    Task CompleteWithoutArtifactAsync(
+        Guid jobId,
+        Guid leaseToken,
+        string reasonCode,
+        CancellationToken cancellationToken);
+
     Task FailAsync(Guid jobId, Guid leaseToken, string error, bool retryable, CancellationToken cancellationToken);
 
     Task SkipAsync(Guid jobId, Guid leaseToken, string reasonCode, CancellationToken cancellationToken);
@@ -144,6 +150,62 @@ internal sealed class CentralDerivativeJobService(
             var attemptNumber = candidate.AttemptCount + 1;
             if (candidate.Status == CentralDerivativeJobStatus.Leased)
             {
+                var durableTransientOutcome = await dbContext.CentralTransientValidationJobs.AsNoTracking()
+                    .Where(validation => validation.CentralDerivativeJobId == candidate.Id &&
+                        validation.OutcomeRecordedAtUtc != null &&
+                        !validation.IdentitySlots.Any(slot =>
+                            slot.State == CentralTransientValidationIdentitySlotState.Reserved))
+                    .Select(validation => new
+                    {
+                        validation.CommittedAtUtc,
+                        validation.OutcomeReasonCode,
+                        HasExtractionReceipt = validation.ExtractionReceipt != null
+                    })
+                    .SingleOrDefaultAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                if (durableTransientOutcome is not null &&
+                    (!durableTransientOutcome.CommittedAtUtc.HasValue || durableTransientOutcome.HasExtractionReceipt))
+                {
+                    var adoptedReason = durableTransientOutcome.CommittedAtUtc.HasValue
+                        ? CentralTransientRuntimeReasonCodes.OutputAdopted
+                        : durableTransientOutcome.OutcomeReasonCode ?? CentralTransientRuntimeReasonCodes.OutputAdopted;
+                    var adoptedAttempt = await dbContext.CentralDerivativeJobAttempts.Where(attempt =>
+                            attempt.CentralDerivativeJobId == candidate.Id &&
+                            attempt.AttemptNumber == candidate.AttemptCount &&
+                            attempt.Outcome == CentralDerivativeAttemptOutcome.Leased)
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(attempt => attempt.Outcome, CentralDerivativeAttemptOutcome.Completed)
+                            .SetProperty(attempt => attempt.EndedAtUtc, now)
+                            .SetProperty(attempt => attempt.ReasonCode, adoptedReason), cancellationToken)
+                        .ConfigureAwait(false);
+                    var adoptedJob = adoptedAttempt == 1
+                        ? await dbContext.CentralDerivativeJobs.Where(job =>
+                                job.Id == candidate.Id && job.Status == CentralDerivativeJobStatus.Leased &&
+                                job.AttemptCount == candidate.AttemptCount && job.LeaseToken == candidate.LeaseToken &&
+                                job.LeaseExpiresAtUtc <= now)
+                            .ExecuteUpdateAsync(setters => setters
+                                .SetProperty(job => job.Status, CentralDerivativeJobStatus.Completed)
+                                .SetProperty(job => job.StateReasonCode, adoptedReason)
+                                .SetProperty(job => job.CompletedAtUtc, now)
+                                .SetProperty(job => job.UpdatedAtUtc, now)
+                                .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)
+                                .SetProperty(job => job.LeaseOwner, (string?)null)
+                                .SetProperty(job => job.LeaseToken, (Guid?)null)
+                                .SetProperty(job => job.LeaseAcquiredAtUtc, (DateTimeOffset?)null)
+                                .SetProperty(job => job.LeaseExpiresAtUtc, (DateTimeOffset?)null), cancellationToken)
+                            .ConfigureAwait(false)
+                        : 0;
+                    if (adoptedJob == 1)
+                    {
+                        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                        dbContext.ChangeTracker.Clear();
+                        collision--;
+                        continue;
+                    }
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    dbContext.ChangeTracker.Clear();
+                    continue;
+                }
                 var expiredAttempt = await dbContext.CentralDerivativeJobAttempts.Where(attempt =>
                         attempt.CentralDerivativeJobId == candidate.Id
                         && attempt.AttemptNumber == candidate.AttemptCount
@@ -176,6 +238,13 @@ internal sealed class CentralDerivativeJobService(
                     if (inconsistent == 1)
                     {
                         await QuarantineAbandonedOutputAsync(candidate.Id, now, cancellationToken).ConfigureAwait(false);
+                        await FinalizeTransientSlotsAsync(candidate.Id, cancellationToken).ConfigureAwait(false);
+                        await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                            dbContext,
+                            candidate.Id,
+                            CentralTransientRuntimeReasonCodes.InconsistentCommittedOutput,
+                            now,
+                            cancellationToken).ConfigureAwait(false);
                         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                         dbContext.ChangeTracker.Clear();
                         collision--;
@@ -216,6 +285,13 @@ internal sealed class CentralDerivativeJobService(
                         continue;
                     }
                     await QuarantineAbandonedOutputAsync(candidate.Id, now, cancellationToken).ConfigureAwait(false);
+                    await FinalizeTransientSlotsAsync(candidate.Id, cancellationToken).ConfigureAwait(false);
+                    await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                        dbContext,
+                        candidate.Id,
+                        CentralTransientRuntimeReasonCodes.AttemptsExhausted,
+                        now,
+                        cancellationToken).ConfigureAwait(false);
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                     if (selectedAtUtc.HasValue)
                     {
@@ -422,6 +498,62 @@ internal sealed class CentralDerivativeJobService(
         throw new CentralDerivativeJobStateException("The derivative job lease is stale or invalid.");
     }
 
+    public async Task CompleteWithoutArtifactAsync(
+        Guid jobId,
+        Guid leaseToken,
+        string reasonCode,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reasonCode);
+        var job = await LoadJobAsync(jobId, cancellationToken).ConfigureAwait(false);
+        if (job.Status == CentralDerivativeJobStatus.Completed && job.ResultCentralArtifactId is null)
+        {
+            return;
+        }
+        var boundedReason = reasonCode.Length <= 256 ? reasonCode : reasonCode[..256];
+        var now = timeProvider.GetUtcNow();
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var affected = await dbContext.CentralDerivativeJobs.Where(candidate =>
+                candidate.Id == jobId
+                && candidate.Status == CentralDerivativeJobStatus.Leased
+                && candidate.LeaseToken == leaseToken
+                && candidate.LeaseExpiresAtUtc > now
+                && candidate.ResultCentralArtifactId == null
+                && candidate.Inputs.Any()
+                && !candidate.Inputs.Any(input => input.Artifact!.ObjectState != CentralArtifactObjectState.Available
+                    || input.Artifact.ReconstructionState != CentralReconstructionState.Complete))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(candidate => candidate.Status, CentralDerivativeJobStatus.Completed)
+                .SetProperty(candidate => candidate.StateReasonCode, boundedReason)
+                .SetProperty(candidate => candidate.CompletedAtUtc, now)
+                .SetProperty(candidate => candidate.UpdatedAtUtc, now)
+                .SetProperty(candidate => candidate.AvailableAtUtc, (DateTimeOffset?)null)
+                .SetProperty(candidate => candidate.LastError, (string?)null)
+                .SetProperty(candidate => candidate.LeaseOwner, (string?)null)
+                .SetProperty(candidate => candidate.LeaseToken, (Guid?)null)
+                .SetProperty(candidate => candidate.LeaseAcquiredAtUtc, (DateTimeOffset?)null)
+                .SetProperty(candidate => candidate.LeaseExpiresAtUtc, (DateTimeOffset?)null),
+                cancellationToken).ConfigureAwait(false);
+        if (affected == 1)
+        {
+            await CompleteAttemptAsync(
+                jobId, job.AttemptCount, CentralDerivativeAttemptOutcome.Completed,
+                boundedReason, now, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            dbContext.ChangeTracker.Clear();
+            return;
+        }
+        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+        dbContext.ChangeTracker.Clear();
+        var completed = await dbContext.CentralDerivativeJobs.AsNoTracking()
+            .SingleOrDefaultAsync(candidate => candidate.Id == jobId, cancellationToken).ConfigureAwait(false);
+        if (completed?.Status == CentralDerivativeJobStatus.Completed && completed.ResultCentralArtifactId is null)
+        {
+            return;
+        }
+        throw new CentralDerivativeJobStateException("The derivative job lease is stale or invalid.");
+    }
+
     public async Task FailAsync(
         Guid jobId,
         Guid leaseToken,
@@ -463,6 +595,12 @@ internal sealed class CentralDerivativeJobService(
         if (terminal)
         {
             await QuarantineAbandonedOutputAsync(jobId, now, cancellationToken).ConfigureAwait(false);
+            await FinalizeTransientSlotsAsync(jobId, cancellationToken).ConfigureAwait(false);
+            var terminalReason = retryable
+                ? CentralTransientRuntimeReasonCodes.AttemptsExhausted
+                : error.Length <= 256 ? error : error[..256];
+            await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                dbContext, jobId, terminalReason, now, cancellationToken).ConfigureAwait(false);
         }
         await CompleteAttemptAsync(
             jobId,
@@ -542,6 +680,20 @@ internal sealed class CentralDerivativeJobService(
             throw new CentralDerivativeJobStateException(
                 "The derivative source changed after object verification.");
         }
+        var activeStatuses = new[]
+        {
+            CentralDerivativeJobStatus.Waiting,
+            CentralDerivativeJobStatus.Pending,
+            CentralDerivativeJobStatus.Leased,
+            CentralDerivativeJobStatus.RetryableFailure,
+            CentralDerivativeJobStatus.Completed
+        };
+        var affectedJobIds = await dbContext.CentralDerivativeJobs.AsNoTracking()
+            .Where(candidate => (candidate.SourceCentralArtifactId == source.Id
+                    || candidate.Inputs.Any(input => input.CentralArtifactId == source.Id))
+                && activeStatuses.Contains(candidate.Status))
+            .Select(candidate => candidate.Id)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
         source.ObjectState = quarantine
             ? CentralArtifactObjectState.Quarantined
             : CentralArtifactObjectState.Pending;
@@ -553,24 +705,14 @@ internal sealed class CentralDerivativeJobService(
         await ArtifactIngestService.InvalidateDependentsAsync(dbContext, source, cancellationToken)
             .ConfigureAwait(false);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        var activeStatuses = new[]
-        {
-            CentralDerivativeJobStatus.Pending,
-            CentralDerivativeJobStatus.Leased,
-            CentralDerivativeJobStatus.RetryableFailure,
-            CentralDerivativeJobStatus.Completed
-        };
-        var affectedJobIds = await dbContext.CentralDerivativeJobs
-            .Where(candidate => (candidate.SourceCentralArtifactId == source.Id
-                    || candidate.Inputs.Any(input => input.CentralArtifactId == source.Id))
-                && activeStatuses.Contains(candidate.Status))
-            .Select(candidate => candidate.Id)
-            .ToListAsync(cancellationToken).ConfigureAwait(false);
         await dbContext.CentralDerivativeJobs.Where(candidate => affectedJobIds.Contains(candidate.Id))
             .ExecuteUpdateAsync(setters => setters
-                .SetProperty(candidate => candidate.Status, quarantine
-                    ? CentralDerivativeJobStatus.Quarantined
-                    : CentralDerivativeJobStatus.RetryableFailure)
+                .SetProperty(candidate => candidate.Status, candidate =>
+                    !quarantine && candidate.Status == CentralDerivativeJobStatus.Waiting
+                        ? CentralDerivativeJobStatus.Waiting
+                        : quarantine
+                            ? CentralDerivativeJobStatus.Quarantined
+                            : CentralDerivativeJobStatus.RetryableFailure)
                 .SetProperty(candidate => candidate.LastFailedAtUtc, now)
                 .SetProperty(candidate => candidate.LastError, quarantine
                     ? reasonCode
@@ -591,6 +733,15 @@ internal sealed class CentralDerivativeJobService(
                 .SetProperty(attempt => attempt.ReasonCode, reasonCode)
                 .SetProperty(attempt => attempt.EndedAtUtc, now), cancellationToken)
             .ConfigureAwait(false);
+        if (quarantine)
+        {
+            foreach (var affectedJobId in affectedJobIds)
+            {
+                await FinalizeTransientSlotsAsync(affectedJobId, cancellationToken).ConfigureAwait(false);
+                await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                    dbContext, affectedJobId, reasonCode, now, cancellationToken).ConfigureAwait(false);
+            }
+        }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         if (quarantine && job.Inputs.Count > 1)
         {
@@ -661,6 +812,13 @@ internal sealed class CentralDerivativeJobService(
                 .SetProperty(artifact => artifact.ReconstructionState, CentralReconstructionState.Quarantined)
                 .SetProperty(artifact => artifact.StateReasonCode, "derivative.output-abandoned")
                 .SetProperty(artifact => artifact.ReconciledAtUtc, now), cancellationToken);
+
+    private Task<int> FinalizeTransientSlotsAsync(Guid jobId, CancellationToken cancellationToken)
+        => dbContext.CentralTransientValidationIdentitySlots.Where(slot =>
+                slot.CentralDerivativeJobId == jobId
+                && slot.State == CentralTransientValidationIdentitySlotState.Reserved)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(
+                slot => slot.State, CentralTransientValidationIdentitySlotState.Unused), cancellationToken);
 
     private static void ValidateLeaseDuration(TimeSpan leaseDuration)
     {

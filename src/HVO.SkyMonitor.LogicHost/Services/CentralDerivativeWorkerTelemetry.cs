@@ -22,6 +22,9 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
     private readonly Counter<long> _windowNotifications;
     private readonly Counter<long> _windowRejections;
     private readonly Counter<long> _windowDeadlines;
+    private readonly Counter<long> _transientOutcomes;
+    private readonly Counter<long> _transientClassifications;
+    private readonly Histogram<long> _transientCandidates;
     private readonly Histogram<double> _duration;
     private readonly Histogram<long> _windowSelectedInputs;
     private readonly Histogram<long> _windowExpectedInputs;
@@ -61,6 +64,12 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
             "skymonitor.central.derivative.window.compatibility_rejections", "{rejection}");
         _windowDeadlines = _meter.CreateCounter<long>(
             "skymonitor.central.derivative.window.deadlines", "{deadline}");
+        _transientOutcomes = _meter.CreateCounter<long>(
+            "skymonitor.central.transient.outcomes", "{outcome}");
+        _transientClassifications = _meter.CreateCounter<long>(
+            "skymonitor.central.transient.classifications", "{classification}");
+        _transientCandidates = _meter.CreateHistogram<long>(
+            "skymonitor.central.transient.candidates", "{candidate}");
         _duration = _meter.CreateHistogram<double>("skymonitor.central.derivative.duration", "ms");
         _windowSelectedInputs = _meter.CreateHistogram<long>(
             "skymonitor.central.derivative.window.selected_inputs", "{artifact}");
@@ -236,6 +245,30 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
             { "outcome", outcome }
         });
 
+    public void RecordTransientValidation(
+        string outcome,
+        int candidateCount,
+        IEnumerable<TransientClassification> classifications)
+    {
+        ArgumentNullException.ThrowIfNull(classifications);
+        var normalizedOutcome = outcome switch
+        {
+            "persisted" => "persisted",
+            "no-candidate" => "no-candidate",
+            "adopted" => "adopted",
+            _ => "other"
+        };
+        _transientOutcomes.Add(1, new TagList { { "outcome", normalizedOutcome } });
+        _transientCandidates.Record(Math.Max(0, candidateCount), new TagList { { "outcome", normalizedOutcome } });
+        foreach (var classification in classifications)
+        {
+            _transientClassifications.Add(1, new TagList
+            {
+                { "classification", classification.ToString().ToLowerInvariant() }
+            });
+        }
+    }
+
     public void RecordClaim(string outcome, TimeSpan duration)
     {
         _claims.Add(1, new TagList { { "outcome", outcome } });
@@ -329,6 +362,7 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
         BuiltInProcessingRecipes.Annotation => BuiltInProcessingRecipes.Annotation,
         BuiltInProcessingRecipes.ImageQuality => BuiltInProcessingRecipes.ImageQuality,
         BuiltInProcessingRecipes.RollingMean => BuiltInProcessingRecipes.RollingMean,
+        CentralTransientRuntime.RecipeName => CentralTransientRuntime.RecipeName,
         _ => "other"
     };
 

@@ -1,18 +1,23 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Minio;
 using Minio.DataModel.Args;
 using System.Collections.Concurrent;
 using System.Data.Common;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -26,6 +31,14 @@ public sealed class CentralDerivativeWindowPerformanceTests
 {
     private const string ArtifactBucket = "skymonitor-artifacts";
     private static readonly JsonSerializerOptions EvidenceJsonOptions = new() { WriteIndented = true };
+    private static readonly TransientTemporalPosition[] OrderedTransientPositions =
+    [
+        TransientTemporalPosition.NMinus2,
+        TransientTemporalPosition.NMinus1,
+        TransientTemporalPosition.N,
+        TransientTemporalPosition.NPlus1,
+        TransientTemporalPosition.NPlus2
+    ];
 
     [TestMethod]
     [TestCategory("Manual")]
@@ -220,7 +233,413 @@ public sealed class CentralDerivativeWindowPerformanceTests
             "The canonical P1-P4 harness must remain under five minutes.");
     }
 
+    [TestMethod]
+    [TestCategory("Manual")]
+    public async Task Issue116CentralTransientW2W3MW4_RecordsAcceptanceEvidence()
+    {
+        var testAssembly = typeof(CentralDerivativeWindowPerformanceTests).Assembly;
+        Assert.AreEqual(Architecture.X64, RuntimeInformation.OSArchitecture,
+            "Issue #116 acceptance evidence requires an x64 host.");
+        Assert.AreEqual(Architecture.X64, RuntimeInformation.ProcessArchitecture,
+            "Issue #116 acceptance evidence requires an x64 process; run with --arch x64.");
+        Assert.Contains(
+            $"{Path.DirectorySeparatorChar}Release{Path.DirectorySeparatorChar}",
+            AppContext.BaseDirectory,
+            StringComparison.Ordinal,
+            "Issue #116 acceptance evidence must be collected from a Release build.");
+        Assert.AreEqual("Release", testAssembly.GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration,
+            "Issue #116 acceptance evidence requires a Release assembly identity.");
+
+        var fixture = AssemblyHooks.Fixture;
+        _ = fixture.Factory.Services;
+        var runId = Guid.NewGuid().ToString("N");
+        var harnessStarted = Stopwatch.GetTimestamp();
+        var centralIoW2 = await MeasureRollingExecutionAsync(
+            fixture, runId, "W2", 3096, 2080, CameraPixelFormat.BayerRggb16).ConfigureAwait(false);
+        var transientW2 = await MeasureCentralTransientExecutionAsync(fixture, runId).ConfigureAwait(false);
+
+        var w3m = await MeasureTransientMetadataScalingAsync(fixture.SqlServerConnectionString)
+            .ConfigureAwait(false);
+
+        var w4 = new List<TransientSchedulingResult>();
+        foreach (var concurrency in new[] { 1, 4, 8 })
+        {
+            w4.Add(await MeasureTransientDuplicateSchedulingAsync(
+                fixture, runId, concurrency, warmups: 20, measurements: 200).ConfigureAwait(false));
+        }
+        var recovery = await MeasureLeaseAndRetentionRecoveryAsync(fixture, runId).ConfigureAwait(false);
+
+        var repositoryRoot = FindRepositoryRoot();
+        var commit = RunGit(repositoryRoot, "rev-parse", "HEAD");
+        var dirty = !string.IsNullOrWhiteSpace(RunGit(repositoryRoot, "status", "--porcelain"));
+        var evidenceRevision = dirty
+            ? "local-dirty"
+            : Environment.GetEnvironmentVariable("GITHUB_SHA") ?? commit;
+        var evidence = new
+        {
+            Schema = "hvo-central-transient-acceptance-performance-v1",
+            Issue = 116,
+            Revision = new
+            {
+                EvidenceDirectoryRevision = evidenceRevision,
+                Base = RunGit(repositoryRoot, "merge-base", "HEAD", "main"),
+                Candidate = commit,
+                Branch = RunGit(repositoryRoot, "branch", "--show-current"),
+                Dirty = dirty,
+                DirtyFingerprintSha256 = CreateDirtyFingerprint(repositoryRoot)
+            },
+            RecordedAtUtc = DateTimeOffset.UtcNow,
+            Command = "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~CentralDerivativeWindowPerformanceTests.Issue116CentralTransientW2W3MW4_RecordsAcceptanceEvidence",
+            Environment = new
+            {
+                Framework = RuntimeInformation.FrameworkDescription,
+                OperatingSystem = RuntimeInformation.OSDescription,
+                Architecture = RuntimeInformation.ProcessArchitecture.ToString(),
+                Configuration = "Release",
+                Environment.ProcessorCount,
+                ProcessorModel = ReadProcessorModel(),
+                AvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
+                Storage = "Docker-backed SQL Server and MinIO Testcontainers",
+                SqlServerVersion = await ReadSqlVersionAsync(fixture.SqlServerConnectionString).ConfigureAwait(false),
+                MinioVersion = "RELEASE.2025-09-07T16-13-09Z",
+                TestedAssemblies = new[]
+                {
+                    CreateAssemblyEvidence(testAssembly),
+                    CreateAssemblyEvidence(typeof(CentralTransientValidationExecutor).Assembly)
+                }
+            },
+            Boundary = new
+            {
+                Central = "Production SQL claim, frozen five-input window, verified MinIO reads, recipe execution, ordered lineage persistence, generic completion, duplicate scheduling, and lease recovery.",
+                Detector = "The isolated candidate extraction/assessment component is emitted by TransientCandidateExtractionPerformanceTests.Issue116W2CandidateExtractionRecordsAcceptanceEvidence. Review both files; process-wide CPU/allocation measurements are intentionally not combined.",
+                Baseline = "Net-new Central transient composition; before is N/A. These absolute candidate measurements establish the non-regression baseline."
+            },
+            Workloads = new
+            {
+                W2 = new
+                {
+                    Definition = "ASI178 3096x2080 RGGB16, 12,879,360 bytes; five warmups and 30 measurements.",
+                    CentralTransientExecution = transientW2,
+                    CentralIoControl = centralIoW2,
+                    CandidateRate = transientW2.CandidatesPerFrame,
+                    LiveBuffers = "Five frozen logical source inputs; production input reader verifies and transfers each object without retaining an unbounded queue."
+                },
+                W3M = new
+                {
+                    Definition = "10,000 metadata-only retrospective Central transient candidates; one bounded production batch schedules 100 jobs, 3,200 identity slots, resolves windows, and creates 100 claim attempts.",
+                    TransientMetadata = w3m,
+                    Complexity = "Retrospective selection is bounded to 100 and uses indexed artifact/job predicates; claim selection uses the durable status/availability index. Durable row counts and both plan hashes are recorded."
+                },
+                W4 = new
+                {
+                    Definition = "Concurrency 1/4/8; 20 warmups and 200 measured duplicate scheduling operations per level.",
+                    Measurements = w4,
+                    QueueInvariant = "Each level converges to one Central transient job, five ordered frozen inputs, and 32 durable opaque identity slots."
+                }
+            },
+            Recovery = recovery,
+            IoAccounting = new
+            {
+                Sql = "W3M records commands, selected rows, logical reads, plan SHA-256, and index use. W4 records deadlocks and uniqueness collisions.",
+                TransientProtocol = transientW2.Protocol,
+                TransientSelectedInputBytes = transientW2.SelectedInputBytes,
+                TransientAttemptInputBytes = transientW2.AttemptInputBytes,
+                TransientObjectReadDisposition = "Counts and bytes are observed at the production ICentralArtifactObjectReader boundary. Each verification reads and hashes the complete MinIO object, and each payload read transfers the complete object into the production input buffer; HTTP framing bytes are excluded.",
+                RollingControl = new
+                {
+                    centralIoW2.LogicalInputObjectRequests,
+                    centralIoW2.InputStatRequests,
+                    centralIoW2.InputChecksumGetRequests,
+                    centralIoW2.InputPayloadGetRequests,
+                    centralIoW2.PhysicalInputTransferredBytes,
+                    centralIoW2.InputBytes,
+                    centralIoW2.OutputBytes
+                },
+                Filesystem = "N/A; the Central path uses SQL Server and MinIO, not host filesystem artifacts."
+            },
+            Correctness = new
+            {
+                Transient = new
+                {
+                    transientW2.InputChecksumSha256,
+                    transientW2.TargetChecksumSha256,
+                    transientW2.ExtractionReceiptChecksumsSha256,
+                    transientW2.ExtractionReceiptCount,
+                    transientW2.EventVersionCount,
+                    transientW2.OrderedTemporalLineageVerified
+                },
+                RollingIoControl = new
+                {
+                    centralIoW2.InputChecksumSha256,
+                    centralIoW2.OutputChecksumsSha256,
+                    centralIoW2.OrderedLineageVerified,
+                    centralIoW2.VerifiedOutputObjects
+                },
+                W3MRetrospectiveIndexUsed = w3m.RetrospectivePlan.IndexUsed,
+                W3MClaimIndexUsed = w3m.ClaimPlan.IndexUsed,
+                W4Converged = w4.All(item => item.FinalJobs == 1 && item.FinalInputRows == 5
+                    && item.FinalIdentitySlots == 32),
+                RecoveryTrials = recovery.Trials
+            },
+            HarnessElapsedMilliseconds = Stopwatch.GetElapsedTime(harnessStarted).TotalMilliseconds
+        };
+        var boundedRevision = evidenceRevision.Length > 12 ? evidenceRevision[..12] : evidenceRevision;
+        var outputDirectory = Path.Combine(repositoryRoot, "TestResults", "issue-116", boundedRevision);
+        Directory.CreateDirectory(outputDirectory);
+        var outputPath = Path.Combine(outputDirectory, "central-w2-w3m-w4.json");
+        await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(evidence, EvidenceJsonOptions))
+            .ConfigureAwait(false);
+        TestContext.WriteLine($"Issue #116 Central performance evidence: {outputPath}");
+
+        Assert.AreEqual(12_879_360, transientW2.InputArtifactBytes);
+        Assert.AreEqual(30, transientW2.MeasuredJobs);
+        Assert.IsTrue(transientW2.OrderedTemporalLineageVerified);
+        Assert.AreEqual(150, transientW2.Protocol.ObjectVerifications);
+        Assert.AreEqual(150, transientW2.Protocol.ObjectPayloadReads);
+        Assert.AreEqual(transientW2.SelectedInputBytes, transientW2.Protocol.ChecksumVerificationBytes);
+        Assert.AreEqual(transientW2.SelectedInputBytes, transientW2.Protocol.PayloadReadBytes);
+        Assert.AreEqual(0, transientW2.AttemptInputBytes,
+            "Transient attempt input-byte accounting is a disclosed residual gap, not inferred evidence.");
+        Assert.AreEqual(10_000, w3m.CandidateArtifacts);
+        Assert.AreEqual(100, w3m.ScheduledJobs);
+        Assert.AreEqual(3_200, w3m.IdentitySlots);
+        Assert.IsTrue(w3m.RetrospectivePlan.IndexUsed);
+        Assert.IsTrue(w3m.ClaimPlan.IndexUsed);
+        Assert.AreEqual("1,4,8", string.Join(',', w4.Select(item => item.Concurrency)));
+        Assert.IsTrue(evidence.Correctness.W4Converged);
+        Assert.AreEqual(5, recovery.Trials);
+    }
+
     public TestContext TestContext { get; set; } = null!;
+
+    private static async Task<TransientMetadataScalingResult> MeasureTransientMetadataScalingAsync(
+        string connectionString)
+    {
+        const int candidateArtifacts = 10_000;
+        const int batchSize = 100;
+        const int claimWarmups = 20;
+        var builder = new SqlConnectionStringBuilder(connectionString)
+        {
+            InitialCatalog = $"SkyMonitorIssue116TransientMetadata_{Guid.NewGuid():N}"
+        };
+        var counter = new CountingCommandInterceptor();
+        var dbOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .AddInterceptors(counter)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var db = new ApplicationDbContext(dbOptions);
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        try
+        {
+            await db.Database.MigrateAsync().ConfigureAwait(false);
+            var agentId = $"issue-116-w3m-{Guid.NewGuid():N}";
+            var rigId = $"{agentId}-rig";
+            var devicePublicId = Guid.NewGuid();
+            _ = await SeedHistoryAsync(db, candidateArtifacts, agentId, rigId, devicePublicId)
+                .ConfigureAwait(false);
+            _ = await db.Database.ExecuteSqlInterpolatedAsync($$"""
+                UPDATE artifact
+                SET [ReceivedAtUtc] = DATEADD(millisecond,
+                    CASE WHEN frame.[CaptureSequence] <= 2 THEN frame.[CaptureSequence] + 20000
+                         ELSE frame.[CaptureSequence] END,
+                    CAST('2026-01-01T00:00:00+00:00' AS datetimeoffset))
+                FROM [CentralArtifacts] AS artifact
+                INNER JOIN [CentralFrames] AS frame ON frame.[Id] = artifact.[CentralFrameId]
+                WHERE frame.[AgentId] = {{agentId}};
+                """).ConfigureAwait(false);
+            await EnrichSelectedFramesAsync(db, agentId, Enumerable.Range(3, batchSize).Select(value => (long)value))
+                .ConfigureAwait(false);
+            _ = await db.Database.ExecuteSqlRawAsync(
+                "UPDATE STATISTICS [CentralArtifacts] WITH FULLSCAN; UPDATE STATISTICS [CentralDerivativeJobs] WITH FULLSCAN;")
+                .ConfigureAwait(false);
+
+            var transientOptions = new CentralTransientOptions
+            {
+                Mode = TransientDetectorExecutionMode.Central,
+                StarMaximumMagnitude = -30
+            };
+            var catalog = new TransientOnlyRecipeCatalog(transientOptions);
+            var recipe = catalog.GetRequiredRecipes(FrameArtifactRole.Raw).Single();
+            var retrospectiveSql = CentralTransientRetrospectiveScheduler.CreateRetrospectiveCandidateQuery(
+                    db, FrameArtifactRole.Raw, recipe, recipe.Transient!.ExecutionOptionsIdentitySha256)
+                .OrderBy(artifact => artifact.ReceivedAtUtc)
+                .ThenBy(artifact => artifact.Id)
+                .Select(artifact => new { artifact.DevicePublicId, artifact.ArtifactId })
+                .Take(batchSize)
+                .ToQueryString();
+            var retrospectivePlan = await MeasureSqlTextEvidenceAsync(
+                builder.ConnectionString,
+                retrospectiveSql,
+                "IX_CentralArtifacts_ObjectState_ReconstructionState_ReceivedAtUtc")
+                .ConfigureAwait(false);
+            var resolver = new CentralDerivativeWindowResolver(
+                db, telemetry, TimeProvider.System, NullLogger<CentralDerivativeWindowResolver>.Instance);
+            var scheduler = new CentralDerivativeJobScheduler(db, catalog, resolver);
+            var retrospective = new CentralTransientRetrospectiveScheduler(
+                db,
+                scheduler,
+                catalog,
+                Options.Create(transientOptions),
+                telemetry,
+                NullLogger<CentralTransientRetrospectiveScheduler>.Instance);
+
+            counter.Reset();
+            using var process = Process.GetCurrentProcess();
+            process.Refresh();
+            var scheduleCpuBefore = process.TotalProcessorTime;
+            var scheduleAllocationsBefore = GC.GetTotalAllocatedBytes(true);
+            var scheduleStarted = Stopwatch.GetTimestamp();
+            await retrospective.ScheduleBatchAsync(DateTimeOffset.UtcNow, CancellationToken.None)
+                .ConfigureAwait(false);
+            var scheduleElapsed = Stopwatch.GetElapsedTime(scheduleStarted);
+            process.Refresh();
+            var scheduleCpu = process.TotalProcessorTime - scheduleCpuBefore;
+            var scheduleAllocations = GC.GetTotalAllocatedBytes(true) - scheduleAllocationsBefore;
+            var scheduleStatements = counter.Count;
+            db.ChangeTracker.Clear();
+
+            var jobIds = await db.CentralDerivativeJobs.AsNoTracking()
+                .Where(job => job.RecipeName == CentralTransientRuntime.RecipeName
+                    && job.SourceArtifact!.Frame!.AgentId == agentId)
+                .Select(job => job.Id).ToArrayAsync().ConfigureAwait(false);
+            var scheduledJobs = jobIds.Length;
+            var identitySlots = await db.CentralTransientValidationIdentitySlots.CountAsync(slot =>
+                jobIds.Contains(slot.CentralDerivativeJobId)).ConfigureAwait(false);
+            var inputRows = await db.CentralDerivativeJobInputs.CountAsync(input =>
+                jobIds.Contains(input.CentralDerivativeJobId)).ConfigureAwait(false);
+            var canonicalRows = await db.CentralDerivativeJobCanonicalInputs.CountAsync(input =>
+                jobIds.Contains(input.CentralDerivativeJobId)).ConfigureAwait(false);
+            var requirementRows = await db.CentralDerivativeJobInputRequirements.CountAsync(requirement =>
+                jobIds.Contains(requirement.CentralDerivativeJobId)).ConfigureAwait(false);
+            var pendingJobs = await db.CentralDerivativeJobs.CountAsync(job =>
+                jobIds.Contains(job.Id) && job.Status == CentralDerivativeJobStatus.Pending).ConfigureAwait(false);
+            Assert.AreEqual(batchSize, scheduledJobs);
+            Assert.AreEqual(batchSize * 32, identitySlots);
+            Assert.AreEqual(batchSize * 5, inputRows);
+            Assert.AreEqual(batchSize, canonicalRows);
+            Assert.AreEqual(batchSize * 6, requirementRows);
+            Assert.AreEqual(batchSize, pendingJobs);
+
+            var claimSql = $$"""
+                DECLARE @now datetimeoffset = '{{DateTimeOffset.UtcNow:O}}';
+                SELECT TOP(1) job.[Id]
+                FROM [CentralDerivativeJobs] AS job
+                WHERE job.[Status] = N'Pending'
+                  AND job.[AttemptCount] < job.[MaxAttempts]
+                  AND job.[InputSetIdentitySha256] IS NOT NULL
+                  AND job.[AvailableAtUtc] <= @now
+                  AND EXISTS (SELECT 1 FROM [CentralDerivativeJobInputs] AS input
+                              WHERE input.[CentralDerivativeJobId] = job.[Id])
+                ORDER BY job.[AvailableAtUtc], job.[CreatedAtUtc], job.[Id];
+                """;
+            var claimPlan = await MeasureSqlTextEvidenceAsync(
+                builder.ConnectionString,
+                claimSql,
+                "IX_CentralDerivativeJobs_Status_AvailableAtUtc_CreatedAtUtc_Id")
+                .ConfigureAwait(false);
+
+            counter.Reset();
+            var claimSamples = new double[batchSize];
+            process.Refresh();
+            var claimCpuBefore = process.TotalProcessorTime;
+            var claimAllocationsBefore = GC.GetTotalAllocatedBytes(true);
+            for (var index = 0; index < batchSize; index++)
+            {
+                var claimStarted = Stopwatch.GetTimestamp();
+                var lease = await new CentralDerivativeJobService(db, TimeProvider.System, telemetry)
+                    .ClaimNextAsync($"issue-116-w3m-{index:D3}", TimeSpan.FromMinutes(10), CancellationToken.None)
+                    .ConfigureAwait(false);
+                claimSamples[index] = Stopwatch.GetElapsedTime(claimStarted).TotalMilliseconds;
+                Assert.IsNotNull(lease);
+                Assert.AreEqual(CentralTransientRuntime.RecipeName, lease.RecipeName);
+                Assert.AreEqual(5, lease.Inputs!.Count);
+                db.ChangeTracker.Clear();
+            }
+            process.Refresh();
+            var claimCpu = process.TotalProcessorTime - claimCpuBefore;
+            var claimAllocations = GC.GetTotalAllocatedBytes(true) - claimAllocationsBefore;
+            var claimStatements = counter.Count;
+            var attempts = await db.CentralDerivativeJobAttempts.CountAsync(attempt =>
+                jobIds.Contains(attempt.CentralDerivativeJobId)).ConfigureAwait(false);
+            var leased = await db.CentralDerivativeJobs.CountAsync(job =>
+                jobIds.Contains(job.Id) && job.Status == CentralDerivativeJobStatus.Leased).ConfigureAwait(false);
+            Assert.AreEqual(batchSize, attempts);
+            Assert.AreEqual(batchSize, leased);
+            var measuredClaimSamples = claimSamples.Skip(claimWarmups).Order().ToArray();
+            return new TransientMetadataScalingResult(
+                candidateArtifacts,
+                batchSize,
+                scheduledJobs,
+                identitySlots,
+                requirementRows,
+                inputRows,
+                canonicalRows,
+                attempts,
+                scheduleElapsed.TotalMilliseconds,
+                scheduleCpu.TotalMilliseconds,
+                scheduleAllocations,
+                scheduleStatements,
+                claimWarmups,
+                measuredClaimSamples.Length,
+                Percentile(measuredClaimSamples, 0.5),
+                Percentile(measuredClaimSamples, 0.95),
+                measuredClaimSamples[^1],
+                measuredClaimSamples.Length / (measuredClaimSamples.Sum() / 1000),
+                claimCpu.TotalMilliseconds,
+                claimAllocations,
+                claimStatements,
+                retrospectivePlan,
+                claimPlan,
+                pendingJobs,
+                leased);
+        }
+        finally
+        {
+            await db.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Security",
+        "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "The performance harness passes only test-owned EF-generated or constant SQL text.")]
+    private static async Task<SqlTextEvidence> MeasureSqlTextEvidenceAsync(
+        string connectionString,
+        string query,
+        string expectedIndex)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync().ConfigureAwait(false);
+        var messages = new StringBuilder();
+        connection.InfoMessage += (_, args) => messages.AppendLine(args.Message);
+        var plan = string.Empty;
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = 120;
+        command.CommandText = $"SET STATISTICS XML ON; SET STATISTICS IO ON; {query} SET STATISTICS IO OFF; SET STATISTICS XML OFF;";
+        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        do
+        {
+            while (await reader.ReadAsync().ConfigureAwait(false))
+            {
+                if (reader.FieldCount == 1 && !await reader.IsDBNullAsync(0).ConfigureAwait(false)
+                    && reader.GetValue(0) is string value && value.Contains("ShowPlanXML", StringComparison.Ordinal))
+                {
+                    plan = value;
+                }
+            }
+        }
+        while (await reader.NextResultAsync().ConfigureAwait(false));
+        var logicalReads = Regex.Matches(messages.ToString(), @"logical reads (?<value>\d+)", RegexOptions.IgnoreCase)
+            .Sum(match => int.Parse(match.Groups["value"].Value, System.Globalization.CultureInfo.InvariantCulture));
+        Assert.IsFalse(string.IsNullOrWhiteSpace(plan));
+        return new SqlTextEvidence(
+            expectedIndex,
+            plan.Contains(expectedIndex, StringComparison.Ordinal),
+            logicalReads,
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(plan))),
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(query))));
+    }
 
     private static async Task<WindowScalingResult> MeasureHistoryAsync(
         ApplicationDbContext db,
@@ -738,9 +1157,10 @@ public sealed class CentralDerivativeWindowPerformanceTests
         IntegrationTestFixture fixture,
         CentralDerivativeWorkerTelemetry telemetry,
         string runId,
-        int concurrency)
+        int concurrency,
+        int warmups = 0,
+        int notificationCount = 1_000)
     {
-        const int notificationCount = 1_000;
         var options = CreateOptions(fixture.SqlServerConnectionString);
         var agentId = $"issue-101-p2-c{concurrency}-{runId}";
         var payload = new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 };
@@ -786,6 +1206,19 @@ public sealed class CentralDerivativeWindowPerformanceTests
         var deadlocks = 0;
         var uniquenessCollisions = 0;
         var latencies = new ConcurrentBag<double>();
+        for (var index = 0; index < warmups; index++)
+        {
+            await using var warmupDb = new ApplicationDbContext(options);
+            var warmupArtifact = await warmupDb.CentralArtifacts.Include(item => item.Frame)!
+                .ThenInclude(frame => frame!.Artifacts)
+                .SingleAsync(item => item.Id == notificationSourceId).ConfigureAwait(false);
+            await new CentralDerivativeJobScheduler(
+                    warmupDb,
+                    new CentralDerivativeRecipeCatalog(),
+                    CreateResolver(warmupDb, telemetry))
+                .EnsureRequiredJobsAsync(warmupArtifact, DateTimeOffset.UtcNow, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
         var started = Stopwatch.GetTimestamp();
         await Parallel.ForEachAsync(
             Enumerable.Range(0, notificationCount),
@@ -868,6 +1301,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
         await DisableSourceJobsAsync(assertionDb, sourceId).ConfigureAwait(false);
         return new SchedulerNotificationResult(
             concurrency,
+            warmups,
             notificationCount,
             elapsed.TotalMilliseconds,
             notificationCount / elapsed.TotalSeconds,
@@ -1043,6 +1477,472 @@ public sealed class CentralDerivativeWindowPerformanceTests
             verifiedOutputs,
             processingEvidence.Select(item => item.CompatibilityJson).Distinct().Count(),
             orderedLineage);
+    }
+
+    private static async Task<TransientExecutionPerformanceResult> MeasureCentralTransientExecutionAsync(
+        IntegrationTestFixture fixture,
+        string runId)
+    {
+        const int width = 3096;
+        const int height = 2080;
+        const int warmups = 5;
+        const int measurements = 30;
+        var backgroundPayload = CreateUniformPayload(width, height, 100);
+        var targetPayload = CreatePositiveTransientPayload(backgroundPayload, width, height);
+        var backgroundChecksum = Convert.ToHexString(SHA256.HashData(backgroundPayload));
+        var targetChecksum = Convert.ToHexString(SHA256.HashData(targetPayload));
+        var backgroundObjectKey = $"performance/issue-116/{runId}/w2-synthetic-background.raw";
+        var targetObjectKey = $"performance/issue-116/{runId}/w2-synthetic-target.raw";
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-20);
+        var jobIds = new List<Guid>(warmups + measurements);
+        for (var operation = 0; operation < warmups + measurements; operation++)
+        {
+            var scenario = $"issue-116-w2-transient-{operation:D2}-{runId}";
+            var devicePublicId = Guid.NewGuid();
+            var sources = new Dictionary<long, Guid>();
+            for (var sequence = 1L; sequence <= 5; sequence++)
+            {
+                var isTarget = sequence == 3;
+                sources[sequence] = await CentralDerivativeWindowIntegrationTests.SeedAndScheduleSourceAsync(
+                    scenario,
+                    devicePublicId,
+                    sequence,
+                    capturedBase.AddMinutes(operation),
+                    isTarget ? targetPayload : backgroundPayload,
+                    "issue-116-w2-synthetic-compatible",
+                    width: width,
+                    height: height,
+                    pixelFormat: CameraPixelFormat.BayerRggb16,
+                    objectKeyOverride: isTarget ? targetObjectKey : backgroundObjectKey,
+                    publishPayload: operation == 0 && sequence is 1 or 3).ConfigureAwait(false);
+            }
+            var options = new CentralTransientOptions
+            {
+                Mode = TransientDetectorExecutionMode.Central,
+                StarMaximumMagnitude = -30
+            };
+            await CentralDerivativeWindowIntegrationTests.ScheduleTransientAsync(sources[3], options)
+                .ConfigureAwait(false);
+            await using var jobScope = fixture.Factory.Services.CreateAsyncScope();
+            var jobDb = jobScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            jobIds.Add(await jobDb.CentralDerivativeJobs.AsNoTracking()
+                .Where(job => job.SourceCentralArtifactId == sources[3]
+                    && job.RecipeName == CentralTransientRuntime.RecipeName)
+                .Select(job => job.Id).SingleAsync().ConfigureAwait(false));
+        }
+
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            Assert.AreEqual(warmups + measurements, jobIds.Count);
+            Assert.AreEqual(jobIds.Count, await db.CentralDerivativeJobs.CountAsync(job =>
+                jobIds.Contains(job.Id) && job.Status == CentralDerivativeJobStatus.Pending).ConfigureAwait(false));
+            await DisableOtherActiveJobsAsync(db, jobIds.ToArray()).ConfigureAwait(false);
+        }
+
+        var warmupJobIds = await ExecuteTransientJobsAsync(fixture, warmups, latencies: null).ConfigureAwait(false);
+        var adoption = await MeasureTransientAdoptionRecoveryAsync(fixture, warmupJobIds[0]).ConfigureAwait(false);
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        var gcBefore = GC.GetGCMemoryInfo();
+        using var process = Process.GetCurrentProcess();
+        process.Refresh();
+        var cpuBefore = process.TotalProcessorTime;
+        var allocationsBefore = GC.GetTotalAllocatedBytes(true);
+        var rssBefore = process.WorkingSet64;
+        var liveBefore = GC.GetTotalMemory(false);
+        var latencies = new ConcurrentBag<double>();
+        using var protocol = new TransientProtocolCounter();
+        protocol.Start();
+        var started = Stopwatch.GetTimestamp();
+        var measuredJobIds = await ExecuteTransientJobsAsync(fixture, measurements, latencies, protocol)
+            .ConfigureAwait(false);
+        var elapsed = Stopwatch.GetElapsedTime(started);
+        var protocolSnapshot = protocol.Stop();
+        process.Refresh();
+        var cpu = process.TotalProcessorTime - cpuBefore;
+        var allocations = GC.GetTotalAllocatedBytes(true) - allocationsBefore;
+        var rssAfter = process.WorkingSet64;
+        var peakRss = process.PeakWorkingSet64;
+        var liveAfter = GC.GetTotalMemory(false);
+        var gcAfter = GC.GetGCMemoryInfo();
+
+        int receiptCount;
+        int sourceRows;
+        int eventVersions;
+        int completedJobs;
+        int persistedJobs;
+        int candidateCount;
+        long inputBytes;
+        long attemptInputBytes;
+        bool orderedTemporalLineage;
+        string[] receiptIdentities;
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var jobs = await db.CentralDerivativeJobs.AsNoTracking()
+                .Include(job => job.Attempts)
+                .Where(job => measuredJobIds.Contains(job.Id))
+                .ToListAsync().ConfigureAwait(false);
+            var receipts = await db.CentralTransientExtractionReceipts.AsNoTracking()
+                .Include(receipt => receipt.Sources)
+                .Where(receipt => measuredJobIds.Contains(receipt.CentralDerivativeJobId))
+                .ToListAsync().ConfigureAwait(false);
+            receiptCount = receipts.Count;
+            sourceRows = receipts.Sum(receipt => receipt.Sources.Count);
+            completedJobs = jobs.Count(job => job.Status == CentralDerivativeJobStatus.Completed);
+            persistedJobs = jobs.Count(job => job.StateReasonCode == CentralTransientRuntimeReasonCodes.Persisted);
+            inputBytes = await db.CentralDerivativeJobInputs.AsNoTracking()
+                .Where(input => measuredJobIds.Contains(input.CentralDerivativeJobId))
+                .SumAsync(input => input.ByteLength).ConfigureAwait(false);
+            attemptInputBytes = jobs.Sum(job => job.Attempts.Single().InputBytes);
+            var committedSlots = await db.CentralTransientValidationIdentitySlots.AsNoTracking()
+                .Where(slot => measuredJobIds.Contains(slot.CentralDerivativeJobId)
+                    && slot.State == CentralTransientValidationIdentitySlotState.Committed)
+                .ToArrayAsync().ConfigureAwait(false);
+            candidateCount = committedSlots.Length;
+            eventVersions = committedSlots.Select(slot => slot.PersistedEventVersionId).Distinct().Count();
+            orderedTemporalLineage = receipts.All(receipt => receipt.Sources.OrderBy(source => source.Ordinal)
+                .Select(source => source.Position).SequenceEqual(OrderedTransientPositions));
+            receiptIdentities = receipts.Select(receipt => receipt.CanonicalReceiptSha256)
+                .Order(StringComparer.Ordinal).ToArray();
+        }
+        Assert.AreEqual(measurements, completedJobs);
+        Assert.AreEqual(measurements, persistedJobs);
+        Assert.AreEqual(measurements, receiptCount);
+        Assert.AreEqual(measurements * 5, sourceRows);
+        Assert.AreEqual(measurements, candidateCount);
+        Assert.AreEqual(measurements, eventVersions);
+        Assert.IsTrue(orderedTemporalLineage);
+        Assert.IsTrue(receiptIdentities.All(identity => identity.Length == 64));
+        Assert.AreEqual(checked(backgroundPayload.LongLength * 5 * measurements), inputBytes);
+        var orderedLatencies = latencies.Order().ToArray();
+        return new TransientExecutionPerformanceResult(
+            width,
+            height,
+            CameraPixelFormat.BayerRggb16.ToString(),
+            backgroundPayload.LongLength,
+            backgroundChecksum,
+            targetChecksum,
+            "Deterministic synthetic RGGB residual: uniform 100-DN context and a 200x6-pixel 10,000-DN target streak; not a VirtualSky render or physical sensitivity claim.",
+            warmups,
+            measurements,
+            elapsed.TotalMilliseconds,
+            Percentile(orderedLatencies, 0.5),
+            Percentile(orderedLatencies, 0.95),
+            orderedLatencies[^1],
+            measurements / elapsed.TotalSeconds,
+            cpu.TotalMilliseconds,
+            allocations,
+            rssBefore,
+            rssAfter,
+            peakRss,
+            liveBefore,
+            liveAfter,
+            gcBefore.GenerationInfo[3].SizeAfterBytes,
+            gcAfter.GenerationInfo[3].SizeAfterBytes,
+            checked(backgroundPayload.LongLength * 5),
+            5,
+            inputBytes,
+            attemptInputBytes,
+            receiptCount,
+            sourceRows,
+            eventVersions,
+            candidateCount / (double)measurements,
+            receiptIdentities,
+            orderedTemporalLineage,
+            adoption,
+            protocolSnapshot);
+    }
+
+    private static async Task<Guid[]> ExecuteTransientJobsAsync(
+        IntegrationTestFixture fixture,
+        int count,
+        ConcurrentBag<double>? latencies,
+        TransientProtocolCounter? protocol = null)
+    {
+        var jobIds = new Guid[count];
+        for (var index = 0; index < count; index++)
+        {
+            var started = Stopwatch.GetTimestamp();
+            CentralDerivativeJobLease lease;
+            await using (var claimScope = fixture.Factory.Services.CreateAsyncScope())
+            {
+                lease = (await claimScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                    .ClaimNextAsync("issue-116-transient-performance", TimeSpan.FromMinutes(10), CancellationToken.None)
+                    .ConfigureAwait(false))!;
+            }
+            Assert.IsNotNull(lease);
+            Assert.AreEqual(CentralTransientRuntime.RecipeName, lease.RecipeName);
+            Assert.AreEqual(5, lease.Inputs!.Count);
+            await using (var executionScope = fixture.Factory.Services.CreateAsyncScope())
+            {
+                var services = executionScope.ServiceProvider;
+                var executor = protocol is null
+                    ? services.GetRequiredService<ICentralDerivativeJobExecutor>()
+                    : CreateObservedTransientExecutor(services, protocol);
+                var result = await executor.ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(ProcessingOutcomeStatus.Produced, result.Status, result.ReasonCode);
+                Assert.IsNull(result.ReasonCode);
+            }
+            jobIds[index] = lease.JobId;
+            latencies?.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        }
+        return jobIds;
+    }
+
+    private static CentralDerivativeJobExecutor CreateObservedTransientExecutor(
+        IServiceProvider services,
+        TransientProtocolCounter protocol)
+    {
+        var db = services.GetRequiredService<ApplicationDbContext>();
+        var jobService = services.GetRequiredService<ICentralDerivativeJobService>();
+        var telemetry = services.GetRequiredService<CentralDerivativeWorkerTelemetry>();
+        var timeProvider = services.GetRequiredService<TimeProvider>();
+        var observedObjectReader = new ObservedCentralArtifactObjectReader(
+            services.GetRequiredService<ICentralArtifactObjectReader>(), protocol);
+        var inputReader = new CentralDerivativeJobInputReader(
+            db, observedObjectReader, jobService, telemetry, timeProvider);
+        var transientExecutor = new CentralTransientValidationExecutor(
+            db,
+            inputReader,
+            services.GetRequiredService<ICentralTransientEventPersistence>(),
+            jobService,
+            telemetry,
+            services.GetRequiredService<ICelestialCatalog>(),
+            services.GetRequiredService<ICelestialCatalogMetadataSource>(),
+            timeProvider,
+            services.GetRequiredService<ILogger<CentralTransientValidationExecutor>>());
+        return new CentralDerivativeJobExecutor(
+            inputReader,
+            services.GetRequiredService<LogicHostRecipeExecutionAdapter>(),
+            services.GetRequiredService<ICentralDerivativeOutputWriter>(),
+            jobService,
+            services.GetRequiredService<ICentralDerivativeJobScheduler>(),
+            transientExecutor,
+            telemetry,
+            timeProvider);
+    }
+
+    private static async Task<TransientAdoptionRecoveryResult> MeasureTransientAdoptionRecoveryAsync(
+        IntegrationTestFixture fixture,
+        Guid jobId)
+    {
+        Guid eventVersionId;
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            eventVersionId = await db.CentralTransientValidationIdentitySlots.AsNoTracking()
+                .Where(slot => slot.CentralDerivativeJobId == jobId
+                    && slot.State == CentralTransientValidationIdentitySlotState.Committed)
+                .Select(slot => slot.PersistedEventVersionId!.Value)
+                .SingleAsync().ConfigureAwait(false);
+            await db.CentralDerivativeJobs.Where(job => job.Id == jobId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(job => job.Status, CentralDerivativeJobStatus.Pending)
+                    .SetProperty(job => job.AvailableAtUtc, DateTimeOffset.UnixEpoch)
+                    .SetProperty(job => job.CompletedAtUtc, (DateTimeOffset?)null)
+                    .SetProperty(job => job.StateReasonCode, (string?)null))
+                .ConfigureAwait(false);
+        }
+
+        var started = Stopwatch.GetTimestamp();
+        CentralDerivativeJobLease lease;
+        await using (var claimScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            lease = (await claimScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                .ClaimNextAsync("issue-116-transient-adoption", TimeSpan.FromMinutes(2), CancellationToken.None)
+                .ConfigureAwait(false))!;
+            Assert.AreEqual(jobId, lease.JobId);
+        }
+        CentralDerivativeExecutionResult result;
+        await using (var executionScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            result = await executionScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+        }
+        var elapsed = Stopwatch.GetElapsedTime(started);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, result.Status);
+        Assert.AreEqual(CentralTransientRuntimeReasonCodes.OutputAdopted, result.ReasonCode);
+
+        await using var verifyScope = fixture.Factory.Services.CreateAsyncScope();
+        var verify = verifyScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var persistedVersionIds = await verify.CentralTransientValidationIdentitySlots.AsNoTracking()
+            .Where(slot => slot.CentralDerivativeJobId == jobId
+                && slot.State == CentralTransientValidationIdentitySlotState.Committed)
+            .Select(slot => slot.PersistedEventVersionId!.Value)
+            .ToArrayAsync().ConfigureAwait(false);
+        Assert.HasCount(1, persistedVersionIds);
+        Assert.AreEqual(eventVersionId, persistedVersionIds[0]);
+        Assert.AreEqual(1, await verify.CentralTransientEventVersions.CountAsync(version =>
+            version.EventVersionId == eventVersionId).ConfigureAwait(false));
+        return new TransientAdoptionRecoveryResult(
+            elapsed.TotalMilliseconds,
+            jobId,
+            eventVersionId,
+            result.ReasonCode!,
+            1,
+            true);
+    }
+
+    private static async Task<TransientSchedulingResult> MeasureTransientDuplicateSchedulingAsync(
+        IntegrationTestFixture fixture,
+        string runId,
+        int concurrency,
+        int warmups,
+        int measurements)
+    {
+        const int width = 3096;
+        const int height = 2080;
+        var payload = CreatePayload(width, height, CameraPixelFormat.BayerRggb16, seed: 116);
+        var scenario = $"issue-116-w4-c{concurrency}-{runId}";
+        var devicePublicId = Guid.NewGuid();
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-20);
+        var sources = new List<Guid>(5);
+        for (var sequence = 1L; sequence <= 5; sequence++)
+        {
+            sources.Add(await CentralDerivativeWindowIntegrationTests.SeedAndScheduleSourceAsync(
+                scenario,
+                devicePublicId,
+                sequence,
+                capturedBase,
+                payload,
+                "issue-116-w4-compatible",
+                width: width,
+                height: height,
+                pixelFormat: CameraPixelFormat.BayerRggb16).ConfigureAwait(false));
+        }
+        var options = new CentralTransientOptions
+        {
+            Mode = TransientDetectorExecutionMode.Central,
+            StarMaximumMagnitude = -30
+        };
+        var centerSourceId = sources[2];
+        var deadlocks = 0;
+        var uniquenessCollisions = 0;
+        var firstCreateLatencies = new ConcurrentBag<double>();
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readyCount = 0;
+        var firstCreateStarted = Stopwatch.GetTimestamp();
+        var firstCreateTasks = Enumerable.Range(0, concurrency).Select(async _ =>
+        {
+            if (Interlocked.Increment(ref readyCount) == concurrency)
+            {
+                ready.SetResult();
+            }
+            await release.Task.ConfigureAwait(false);
+            var operationStarted = Stopwatch.GetTimestamp();
+            for (var retry = 0; ; retry++)
+            {
+                try
+                {
+                    await CentralDerivativeWindowIntegrationTests.ScheduleTransientAsync(centerSourceId, options)
+                        .ConfigureAwait(false);
+                    break;
+                }
+                catch (Exception exception) when (
+                    TryGetSqlNumber(exception) is 1205 or 2601 or 2627 && retry < 20)
+                {
+                    if (TryGetSqlNumber(exception) == 1205)
+                    {
+                        Interlocked.Increment(ref deadlocks);
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref uniquenessCollisions);
+                    }
+                    await Task.Delay(TimeSpan.FromMilliseconds(retry + 1)).ConfigureAwait(false);
+                }
+            }
+            firstCreateLatencies.Add(Stopwatch.GetElapsedTime(operationStarted).TotalMilliseconds);
+        }).ToArray();
+        await ready.Task.ConfigureAwait(false);
+        release.SetResult();
+        await Task.WhenAll(firstCreateTasks).ConfigureAwait(false);
+        var firstCreateElapsed = Stopwatch.GetElapsedTime(firstCreateStarted);
+        for (var index = 0; index < warmups; index++)
+        {
+            await CentralDerivativeWindowIntegrationTests.ScheduleTransientAsync(centerSourceId, options)
+                .ConfigureAwait(false);
+        }
+
+        var latencies = new ConcurrentBag<double>();
+        var started = Stopwatch.GetTimestamp();
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, measurements),
+            new ParallelOptions { MaxDegreeOfParallelism = concurrency },
+            async (_, cancellationToken) =>
+            {
+                var operationStarted = Stopwatch.GetTimestamp();
+                for (var retry = 0; ; retry++)
+                {
+                    try
+                    {
+                        await CentralDerivativeWindowIntegrationTests.ScheduleTransientAsync(centerSourceId, options)
+                            .ConfigureAwait(false);
+                        break;
+                    }
+                    catch (Exception exception) when (
+                        TryGetSqlNumber(exception) is 1205 or 2601 or 2627 && retry < 20)
+                    {
+                        if (TryGetSqlNumber(exception) == 1205)
+                        {
+                            Interlocked.Increment(ref deadlocks);
+                        }
+                        else
+                        {
+                            Interlocked.Increment(ref uniquenessCollisions);
+                        }
+                        await Task.Delay(TimeSpan.FromMilliseconds(retry + 1), cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                }
+                latencies.Add(Stopwatch.GetElapsedTime(operationStarted).TotalMilliseconds);
+            }).ConfigureAwait(false);
+        var elapsed = Stopwatch.GetElapsedTime(started);
+
+        int jobs;
+        int inputRows;
+        int identitySlots;
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var jobIds = await db.CentralDerivativeJobs.AsNoTracking()
+                .Where(job => job.SourceCentralArtifactId == centerSourceId
+                    && job.RecipeName == CentralTransientRuntime.RecipeName)
+                .Select(job => job.Id).ToArrayAsync().ConfigureAwait(false);
+            jobs = jobIds.Length;
+            inputRows = await db.CentralDerivativeJobInputs.CountAsync(input =>
+                jobIds.Contains(input.CentralDerivativeJobId)).ConfigureAwait(false);
+            identitySlots = await db.CentralTransientValidationIdentitySlots.CountAsync(slot =>
+                jobIds.Contains(slot.CentralDerivativeJobId)).ConfigureAwait(false);
+            foreach (var sourceId in sources)
+            {
+                await DisableSourceJobsAsync(db, sourceId).ConfigureAwait(false);
+            }
+        }
+        Assert.AreEqual(1, jobs);
+        Assert.AreEqual(5, inputRows);
+        Assert.AreEqual(32, identitySlots);
+        var orderedFirstCreateLatencies = firstCreateLatencies.Order().ToArray();
+        var orderedLatencies = latencies.Order().ToArray();
+        return new TransientSchedulingResult(
+            concurrency,
+            concurrency,
+            firstCreateElapsed.TotalMilliseconds,
+            orderedFirstCreateLatencies,
+            warmups,
+            measurements,
+            elapsed.TotalMilliseconds,
+            measurements / elapsed.TotalSeconds,
+            Percentile(orderedLatencies, 0.5),
+            Percentile(orderedLatencies, 0.95),
+            orderedLatencies[^1],
+            deadlocks,
+            uniquenessCollisions,
+            jobs,
+            inputRows,
+            identitySlots);
     }
 
     private static async Task<LeaseRetentionEvidence> MeasureLeaseAndRetentionRecoveryAsync(
@@ -1485,6 +2385,35 @@ public sealed class CentralDerivativeWindowPerformanceTests
         return payload;
     }
 
+    private static byte[] CreateUniformPayload(int width, int height, ushort value)
+    {
+        var payload = GC.AllocateUninitializedArray<byte>(checked(width * height * sizeof(ushort)));
+        for (var offset = 0; offset < payload.Length; offset += sizeof(ushort))
+        {
+            payload[offset] = (byte)value;
+            payload[offset + 1] = (byte)(value >> 8);
+        }
+        return payload;
+    }
+
+    private static byte[] CreatePositiveTransientPayload(byte[] background, int width, int height)
+    {
+        var payload = background.ToArray();
+        const ushort signal = 10_000;
+        var startX = width / 3;
+        var startY = height / 2;
+        for (var y = startY; y < Math.Min(height, startY + 6); y++)
+        {
+            for (var x = startX; x < Math.Min(width, startX + 200); x++)
+            {
+                var offset = checked((y * width + x) * sizeof(ushort));
+                payload[offset] = (byte)(signal & 0xFF);
+                payload[offset + 1] = (byte)(signal >> 8);
+            }
+        }
+        return payload;
+    }
+
     private static async Task<CentralArtifactRetentionResult> ReleaseArtifactAsync(
         IntegrationTestFixture fixture,
         Guid sourceId)
@@ -1630,6 +2559,14 @@ public sealed class CentralDerivativeWindowPerformanceTests
         return HashText(value.ToString());
     }
 
+    private static TestedAssemblyEvidence CreateAssemblyEvidence(Assembly assembly)
+        => new(
+            assembly.GetName().Name ?? "unknown",
+            assembly.Location,
+            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))),
+            assembly.ManifestModule.ModuleVersionId,
+            assembly.GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration ?? "unknown");
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -1683,6 +2620,13 @@ public sealed class CentralDerivativeWindowPerformanceTests
         IReadOnlyList<WindowScalingResult> Results,
         string Interpretation);
 
+    private sealed record TestedAssemblyEvidence(
+        string Name,
+        string Path,
+        string Sha256,
+        Guid ModuleVersionId,
+        string Configuration);
+
     private sealed record WindowRevision(
         string EvidenceDirectoryRevision,
         string Base,
@@ -1724,6 +2668,40 @@ public sealed class CentralDerivativeWindowPerformanceTests
 
     private sealed record SqlSelectionEvidence(bool UsesSequenceIndex, int LogicalReads, string PlanSha256);
 
+    private sealed record SqlTextEvidence(
+        string ExpectedIndex,
+        bool IndexUsed,
+        int LogicalReads,
+        string PlanSha256,
+        string QuerySha256);
+
+    private sealed record TransientMetadataScalingResult(
+        int CandidateArtifacts,
+        int BatchLimit,
+        int ScheduledJobs,
+        int IdentitySlots,
+        int InputRequirements,
+        int ArtifactInputs,
+        int CanonicalInputs,
+        int ClaimAttempts,
+        double ScheduleElapsedMilliseconds,
+        double ScheduleCpuMilliseconds,
+        long ScheduleAllocatedBytes,
+        int ScheduleSqlStatements,
+        int ClaimWarmups,
+        int MeasuredClaims,
+        double ClaimMedianMilliseconds,
+        double ClaimP95Milliseconds,
+        double ClaimMaximumMilliseconds,
+        double ClaimsPerSecond,
+        double ClaimCpuMilliseconds,
+        long ClaimAllocatedBytes,
+        int ClaimSqlStatements,
+        SqlTextEvidence RetrospectivePlan,
+        SqlTextEvidence ClaimPlan,
+        int PendingBeforeClaims,
+        int LeasedAfterClaims);
+
     private sealed record TransitionEvidence(
         TransitionResult PartialArrival,
         TransitionResult DelayedArrivalAfterRestart,
@@ -1743,6 +2721,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
 
     private sealed record SchedulerNotificationResult(
         int Concurrency,
+        int Warmups,
         int Notifications,
         double ElapsedMilliseconds,
         double NotificationsPerSecond,
@@ -1794,6 +2773,80 @@ public sealed class CentralDerivativeWindowPerformanceTests
         int DistinctCompatibilitySnapshots,
         bool OrderedLineageVerified);
 
+    private sealed record TransientExecutionPerformanceResult(
+        int Width,
+        int Height,
+        string PixelFormat,
+        long InputArtifactBytes,
+        string InputChecksumSha256,
+        string TargetChecksumSha256,
+        string FixtureDisclosure,
+        int Warmups,
+        int MeasuredJobs,
+        double ElapsedMilliseconds,
+        double EndToEndMedianMilliseconds,
+        double EndToEndP95Milliseconds,
+        double EndToEndMaximumMilliseconds,
+        double JobsPerSecond,
+        double CpuMilliseconds,
+        long AllocatedBytes,
+        long WorkingSetBeforeBytes,
+        long WorkingSetAfterBytes,
+        long PeakWorkingSetBytes,
+        long ManagedLiveBeforeBytes,
+        long ManagedLiveAfterBytes,
+        long LohBeforeBytes,
+        long LohAfterBytes,
+        long LogicalLiveInputBytes,
+        int LogicalLiveInputBuffers,
+        long SelectedInputBytes,
+        long AttemptInputBytes,
+        int ExtractionReceiptCount,
+        int ExtractionSourceRows,
+        int EventVersionCount,
+        double CandidatesPerFrame,
+        IReadOnlyList<string> ExtractionReceiptChecksumsSha256,
+        bool OrderedTemporalLineageVerified,
+        TransientAdoptionRecoveryResult AdoptionRecovery,
+        TransientProtocolSnapshot Protocol);
+
+    private sealed record TransientAdoptionRecoveryResult(
+        double ElapsedMilliseconds,
+        Guid JobId,
+        Guid EventVersionId,
+        string ReasonCode,
+        int EventVersionCount,
+        bool ExactVersionPreserved);
+
+    private sealed record TransientProtocolSnapshot(
+        long SqlCommands,
+        long TransactionsStarted,
+        long TransactionsCommitted,
+        long TransactionsRolledBack,
+        long ObjectVerifications,
+        long ObjectPayloadReads,
+        long ChecksumVerificationBytes,
+        long PayloadReadBytes,
+        long PhysicalInputReadBytes);
+
+    private sealed record TransientSchedulingResult(
+        int Concurrency,
+        int FirstCreateContenders,
+        double FirstCreateElapsedMilliseconds,
+        IReadOnlyList<double> FirstCreateLatenciesMilliseconds,
+        int Warmups,
+        int Measurements,
+        double ElapsedMilliseconds,
+        double OperationsPerSecond,
+        double MedianMilliseconds,
+        double P95Milliseconds,
+        double MaximumMilliseconds,
+        int SqlDeadlocks,
+        int UniqueConstraintCollisions,
+        int FinalJobs,
+        int FinalInputRows,
+        int FinalIdentitySlots);
+
     private sealed record LeaseRetentionEvidence(
         int Trials,
         int SourcesPerTrial,
@@ -1827,4 +2880,156 @@ public sealed class CentralDerivativeWindowPerformanceTests
         bool PredecessorArtifactAvailable,
         bool PredecessorObjectAvailableAfterReplacementAndRetention,
         bool ReplacementOutputUnique);
+
+    private sealed class TransientOnlyRecipeCatalog : ICentralDerivativeRecipeCatalog
+    {
+        private readonly CentralDerivativeRecipe recipe;
+
+        public TransientOnlyRecipeCatalog(CentralTransientOptions options)
+        {
+            recipe = new CentralDerivativeRecipeCatalog(options).GetRequiredRecipes(options.SourceRole)
+                .Single(item => item.RecipeName == CentralTransientRuntime.RecipeName);
+        }
+
+        public IReadOnlyList<CentralDerivativeRecipe> GetRequiredRecipes(FrameArtifactRole sourceRole)
+            => sourceRole == recipe.SourceRole ? [recipe] : [];
+    }
+
+    private sealed class TransientProtocolCounter :
+        IObserver<DiagnosticListener>,
+        IObserver<KeyValuePair<string, object?>>,
+        IDisposable
+    {
+        private const string CommandExecuted = "Microsoft.EntityFrameworkCore.Database.Command.CommandExecuted";
+        private const string TransactionStarted = "Microsoft.EntityFrameworkCore.Database.Transaction.TransactionStarted";
+        private const string TransactionCommitted = "Microsoft.EntityFrameworkCore.Database.Transaction.TransactionCommitted";
+        private const string TransactionRolledBack = "Microsoft.EntityFrameworkCore.Database.Transaction.TransactionRolledBack";
+        private readonly ConcurrentBag<IDisposable> subscriptions = [];
+        private readonly IDisposable allListeners;
+        private long sqlCommands;
+        private long transactionsStarted;
+        private long transactionsCommitted;
+        private long transactionsRolledBack;
+        private long objectVerifications;
+        private long objectPayloadReads;
+        private long checksumVerificationBytes;
+        private long payloadReadBytes;
+        private int active;
+
+        public TransientProtocolCounter()
+        {
+            allListeners = DiagnosticListener.AllListeners.Subscribe(this);
+        }
+
+        public void Start() => Volatile.Write(ref active, 1);
+
+        public TransientProtocolSnapshot Stop()
+        {
+            Volatile.Write(ref active, 0);
+            return new(
+                Interlocked.Read(ref sqlCommands),
+                Interlocked.Read(ref transactionsStarted),
+                Interlocked.Read(ref transactionsCommitted),
+                Interlocked.Read(ref transactionsRolledBack),
+                Interlocked.Read(ref objectVerifications),
+                Interlocked.Read(ref objectPayloadReads),
+                Interlocked.Read(ref checksumVerificationBytes),
+                Interlocked.Read(ref payloadReadBytes),
+                checked(Interlocked.Read(ref checksumVerificationBytes)
+                    + Interlocked.Read(ref payloadReadBytes)));
+        }
+
+        public void RecordVerification(long bytes)
+        {
+            if (Volatile.Read(ref active) != 1) return;
+            Interlocked.Increment(ref objectVerifications);
+            Interlocked.Add(ref checksumVerificationBytes, bytes);
+        }
+
+        public void RecordPayloadRead(long bytes)
+        {
+            if (Volatile.Read(ref active) != 1) return;
+            Interlocked.Increment(ref objectPayloadReads);
+            Interlocked.Add(ref payloadReadBytes, bytes);
+        }
+
+        public void OnNext(DiagnosticListener value)
+        {
+            if (value.Name == "Microsoft.EntityFrameworkCore")
+            {
+                subscriptions.Add(value.Subscribe(this, static eventName => eventName is
+                    CommandExecuted or TransactionStarted or TransactionCommitted or TransactionRolledBack));
+            }
+        }
+
+        public void OnNext(KeyValuePair<string, object?> value)
+        {
+            if (Volatile.Read(ref active) != 1)
+            {
+                return;
+            }
+            switch (value.Key)
+            {
+                case CommandExecuted:
+                    Interlocked.Increment(ref sqlCommands);
+                    return;
+                case TransactionStarted:
+                    Interlocked.Increment(ref transactionsStarted);
+                    return;
+                case TransactionCommitted:
+                    Interlocked.Increment(ref transactionsCommitted);
+                    return;
+                case TransactionRolledBack:
+                    Interlocked.Increment(ref transactionsRolledBack);
+                    return;
+            }
+        }
+
+        public void OnCompleted()
+        {
+        }
+
+        public void OnError(Exception error)
+        {
+        }
+
+        public void Dispose()
+        {
+            allListeners.Dispose();
+            foreach (var subscription in subscriptions)
+            {
+                subscription.Dispose();
+            }
+        }
+    }
+
+    private sealed class ObservedCentralArtifactObjectReader(
+        ICentralArtifactObjectReader inner,
+        TransientProtocolCounter protocol) : ICentralArtifactObjectReader
+    {
+        public async Task<CentralArtifactObjectSnapshot> VerifyAsync(
+            CentralArtifact artifact,
+            CancellationToken cancellationToken)
+        {
+            var snapshot = await inner.VerifyAsync(artifact, cancellationToken).ConfigureAwait(false);
+            protocol.RecordVerification(snapshot.ByteLength);
+            return snapshot;
+        }
+
+        public Task<bool> IsCurrentGenerationAsync(
+            CentralArtifact artifact,
+            string storageETag,
+            CancellationToken cancellationToken)
+            => inner.IsCurrentGenerationAsync(artifact, storageETag, cancellationToken);
+
+        public async Task CopyToAsync(
+            CentralArtifactObjectSnapshot snapshot,
+            Stream destination,
+            CentralArtifactByteRange? range,
+            CancellationToken cancellationToken)
+        {
+            await inner.CopyToAsync(snapshot, destination, range, cancellationToken).ConfigureAwait(false);
+            protocol.RecordPayloadRead(range?.Length ?? snapshot.ByteLength);
+        }
+    }
 }

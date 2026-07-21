@@ -235,6 +235,37 @@ public sealed class DerivativeJobIntegrationTests
     }
 
     [TestMethod]
+    public async Task ArtifactlessCompletion_FinalizesAttemptAndIsIdempotent()
+    {
+        await DisableClaimableJobsAsync().ConfigureAwait(false);
+        var now = new DateTimeOffset(2026, 7, 20, 20, 0, 0, TimeSpan.Zero);
+        var clock = new MutableTimeProvider(now);
+        var (jobId, _, _) = await SeedJobAsync(availableAtUtc: now).ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var service = new CentralDerivativeJobService(db, clock);
+        var lease = (await service.ClaimNextAsync("artifactless-worker", TimeSpan.FromMinutes(1), CancellationToken.None)
+            .ConfigureAwait(false))!;
+
+        await service.CompleteWithoutArtifactAsync(
+            jobId, lease.LeaseToken, CentralTransientRuntimeReasonCodes.Persisted, CancellationToken.None)
+            .ConfigureAwait(false);
+        await service.CompleteWithoutArtifactAsync(
+            jobId, lease.LeaseToken, CentralTransientRuntimeReasonCodes.Persisted, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var job = await db.CentralDerivativeJobs.AsNoTracking().SingleAsync(item => item.Id == jobId)
+            .ConfigureAwait(false);
+        job.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+        job.ResultCentralArtifactId.Should().BeNull();
+        job.StateReasonCode.Should().Be(CentralTransientRuntimeReasonCodes.Persisted);
+        var attempt = await db.CentralDerivativeJobAttempts.AsNoTracking()
+            .SingleAsync(item => item.CentralDerivativeJobId == jobId).ConfigureAwait(false);
+        attempt.Outcome.Should().Be(CentralDerivativeAttemptOutcome.Completed);
+        attempt.ReasonCode.Should().Be(CentralTransientRuntimeReasonCodes.Persisted);
+    }
+
+    [TestMethod]
     public async Task ConcurrentIdenticalCompletion_IsIdempotent()
     {
         await DisableClaimableJobsAsync().ConfigureAwait(false);
