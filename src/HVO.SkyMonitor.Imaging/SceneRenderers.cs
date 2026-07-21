@@ -99,7 +99,7 @@ public sealed record MonoSensorResponse
     public double ElectronsPerAdu { get; init; } = 7.9;
     public double ReadNoiseElectrons { get; init; } = 5.9;
     public double BlackLevelAdu { get; init; }
-    public string? CompatibilityLabel { get; init; }
+    public string CompatibilityLabel { get; init; } = "Native ADC samples in Mono16 container";
 
     internal int MaximumAdu => (1 << AdcBitDepth) - 1;
 
@@ -137,7 +137,8 @@ public static class Asi174MmSensorModel
             FullWellElectrons = 32_400,
             ElectronsPerAdu = 7.9 / Math.Pow(10, gainControl / 200),
             ReadNoiseElectrons = InterpolateReadNoise(gainControl),
-            BlackLevelAdu = blackLevelAdu
+            BlackLevelAdu = blackLevelAdu,
+            CompatibilityLabel = "ASI174MM native 12-bit ADU in Mono16"
         };
     }
 
@@ -368,9 +369,7 @@ public static class Mono16SceneRenderer
         return new SceneRenderResult(
             pixels,
             AppendScenarioVersions(algorithmVersion, options),
-            options.SensorResponse is null
-                ? "Mono16 linear sensor"
-                : options.SensorResponse.CompatibilityLabel ?? "ASI174MM native 12-bit ADU in Mono16",
+            options.SensorResponse is null ? "Mono16 linear sensor" : options.SensorResponse.CompatibilityLabel,
             statistics,
             geometry);
     }

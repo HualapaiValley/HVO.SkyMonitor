@@ -336,6 +336,7 @@ public sealed class Mono16SceneRendererTests
         Assert.AreEqual((ushort)210, Read(twoSeconds.Pixels, 3, 1, 1));
         Assert.AreEqual((ushort)4095, Read(saturated.Pixels, 3, 1, 1));
         Assert.AreEqual(Mono16SceneRenderer.ElectronDomainAlgorithmVersion, oneSecond.AlgorithmVersion);
+        Assert.AreEqual("Native ADC samples in Mono16 container", oneSecond.CompatibilityLabel);
     }
 
     [TestMethod]
