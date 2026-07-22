@@ -642,12 +642,13 @@ public sealed partial class Program
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context =>
                 {
-                    if (!CentralArtifactCredentialAccess.HasSingleCredentialIdentity(context.User) ||
-                        CentralArtifactCredentialAccess.IsSystem(context.User))
+                    var identity = CentralArtifactCredentialAccess.GetSingleCredentialIdentity(context.User);
+                    if (identity is null ||
+                        string.Equals(identity.FindFirst("account_type")?.Value, "System", StringComparison.Ordinal))
                     {
                         return false;
                     }
-                    var apiKeyAccess = context.User.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
+                    var apiKeyAccess = identity.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
                     return apiKeyAccess is null || apiKeyAccess == nameof(ApiKeyAccessLevel.ReadWrite);
                 });
             });

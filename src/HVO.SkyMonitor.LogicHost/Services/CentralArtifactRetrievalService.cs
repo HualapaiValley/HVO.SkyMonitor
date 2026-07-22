@@ -284,7 +284,7 @@ internal enum CentralArtifactLookupStatus
 internal static class CentralArtifactCredentialAccess
 {
     public static bool HasSingleCredentialIdentity(ClaimsPrincipal principal)
-        => GetCredentialIdentity(principal) is not null;
+        => GetSingleCredentialIdentity(principal) is not null;
 
     public static bool HasOwnerCredential(ClaimsPrincipal principal)
     {
@@ -293,7 +293,7 @@ internal static class CentralArtifactCredentialAccess
         {
             return false;
         }
-        var identity = GetCredentialIdentity(principal);
+        var identity = GetSingleCredentialIdentity(principal);
         if (identity is null)
         {
             return false;
@@ -310,7 +310,7 @@ internal static class CentralArtifactCredentialAccess
 
     public static string? GetOwnerId(ClaimsPrincipal principal)
     {
-        var identity = GetCredentialIdentity(principal);
+        var identity = GetSingleCredentialIdentity(principal);
         return identity?.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? identity?.FindFirst("sub")?.Value
             ?? identity?.Name;
@@ -318,20 +318,20 @@ internal static class CentralArtifactCredentialAccess
 
     public static string? GetSubject(ClaimsPrincipal principal)
     {
-        var identity = GetCredentialIdentity(principal);
+        var identity = GetSingleCredentialIdentity(principal);
         return identity?.FindFirst("sub")?.Value ?? identity?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
     }
 
     public static bool IsSystem(ClaimsPrincipal principal)
-        => string.Equals(GetCredentialIdentity(principal)?.FindFirst("account_type")?.Value,
+        => string.Equals(GetSingleCredentialIdentity(principal)?.FindFirst("account_type")?.Value,
             "System", StringComparison.Ordinal);
 
     public static bool HasScope(ClaimsPrincipal principal, string scope)
-        => GetCredentialIdentity(principal)?.Claims.Where(claim => claim.Type == "scope")
+        => GetSingleCredentialIdentity(principal)?.Claims.Where(claim => claim.Type == "scope")
             .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
             .Contains(scope, StringComparer.Ordinal) == true;
 
-    private static ClaimsIdentity? GetCredentialIdentity(ClaimsPrincipal principal)
+    public static ClaimsIdentity? GetSingleCredentialIdentity(ClaimsPrincipal principal)
     {
         ArgumentNullException.ThrowIfNull(principal);
         var identities = principal.Identities.Where(identity => identity.IsAuthenticated).Take(2).ToArray();

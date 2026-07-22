@@ -10,7 +10,7 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | **Quality** | Pinned local tools, formatting, vulnerability audit, and exact reviewed deprecation allowlist. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. Skipped only in classified reduced mode. |
 | **Unit Tests** | 1087 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
-| **Integration Tests** | 342 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. Skipped only in classified reduced mode. |
+| **Integration Tests** | 348 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. Skipped only in classified reduced mode. |
 | **Architecture & Publish** | The remaining six Integration-category repository graph/MSBuild/publish cases plus retained host publish manifests. |
 | **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
 | **Coverage** | Exact source-path and branch merge of ten expected reports, checked-in aggregate non-regression, and risk-file floors. |
