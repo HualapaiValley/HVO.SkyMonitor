@@ -191,6 +191,50 @@ public sealed class DeviceRegistrationServiceTests
         (await context.DeviceRegistrations.CountAsync().ConfigureAwait(false)).Should().Be(1);
     }
 
+    [TestMethod]
+    public async Task CreatePendingAsync_WithMissingOrForeignObservatory_UsesNotFoundReason()
+    {
+        await using var context = CreateContext();
+        var foreignObservatory = new Observatory
+        {
+            OwnerUserId = "owner-2",
+            Name = "Foreign Ridge",
+            LatitudeDegrees = 19.7,
+            LongitudeDegrees = -155.1,
+            ElevationMeters = 1200,
+            TimeZoneId = "Pacific/Honolulu",
+            IsActive = true
+        };
+        context.Observatories.Add(foreignObservatory);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var service = new DeviceRegistrationService(context, new TestTimeProvider(DateTimeOffset.UtcNow));
+
+        Func<Task> foreign = () => service.CreatePendingAsync(CreateRequest(foreignObservatory.Id));
+        Func<Task> missing = () => service.CreatePendingAsync(CreateRequest(Guid.NewGuid()));
+
+        var foreignException = await foreign.Should().ThrowAsync<DeviceRegistrationException>()
+            .ConfigureAwait(false);
+        foreignException.Which.ReasonCode.Should().Be(DeviceRegistrationException.NotFoundReasonCode);
+        var missingException = await missing.Should().ThrowAsync<DeviceRegistrationException>()
+            .ConfigureAwait(false);
+        missingException.Which.ReasonCode.Should().Be(DeviceRegistrationException.NotFoundReasonCode);
+        context.DeviceRegistrations.Should().BeEmpty();
+    }
+
+    private static DeviceRegistrationCreateRequest CreateRequest(Guid observatoryId)
+    {
+        return new DeviceRegistrationCreateRequest(
+            "camera-alpha",
+            "verify-code",
+            observatoryId,
+            "Camera Alpha",
+            "owner-1",
+            "Owner One",
+            null,
+            "SelfAttested",
+            null);
+    }
+
     private static ApplicationDbContext CreateContext()
     {
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()

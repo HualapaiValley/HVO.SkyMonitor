@@ -35,6 +35,30 @@ public sealed class DeviceRegistrationsControllerTests
     }
 
     [TestMethod]
+    public async Task VerifyDeviceAsync_ForeignObservatoryDenialReturnsNotFound()
+    {
+        var registrationService = new CapturingRegistrationService
+        {
+            Exception = new DeviceRegistrationException(
+                "Device registration not found or access denied.",
+                DeviceRegistrationException.NotFoundReasonCode)
+        };
+        var controller = CreateController(registrationService, new CapturingEnvelopeService(), "owner-1");
+
+        var result = await controller.VerifyDeviceAsync(
+            new DeviceRegistrationsController.DeviceRegistrationRequest(
+                "camera-1",
+                "VERIFY",
+                Guid.NewGuid(),
+                "Camera One"),
+            CancellationToken.None).ConfigureAwait(false);
+
+        result.Result.Should().BeOfType<NotFoundResult>();
+        registrationService.Request.Should().NotBeNull();
+        registrationService.Request!.OwnerUserId.Should().Be("owner-1");
+    }
+
+    [TestMethod]
     public async Task CreateEnvelopeAsync_CrossOwnerDenialUsesAuthenticatedOwnerAndReturnsNotFound()
     {
         var envelopeService = new CapturingEnvelopeService
@@ -84,11 +108,18 @@ public sealed class DeviceRegistrationsControllerTests
     {
         public DeviceRegistrationCreateRequest? Request { get; private set; }
 
+        public DeviceRegistrationException? Exception { get; init; }
+
         public Task<DeviceRegistration> CreatePendingAsync(
             DeviceRegistrationCreateRequest request,
             CancellationToken cancellationToken = default)
         {
             Request = request;
+            if (Exception is not null)
+            {
+                throw Exception;
+            }
+
             return Task.FromResult(new DeviceRegistration
             {
                 DeviceId = request.DeviceId,
