@@ -20,6 +20,7 @@ public sealed class CentralTransientValidationMigrationTests
 {
     private const string PreviousMigration = "20260720165520_AddCentralTransientValidation";
     private const string HybridPredecessorMigration = "20260720222315_AddCentralTransientRuntime";
+    private const string ReviewPredecessorMigration = "20260721042731_AddHybridTransientSubmissions";
     private const string ShaA = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     private const string ShaB = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
     private const string ShaC = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
@@ -103,6 +104,63 @@ public sealed class CentralTransientValidationMigrationTests
                 await database.Context.CentralTransientSubmissionAudits.ExecuteDeleteAsync().ConfigureAwait(false))
                 .ConfigureAwait(false);
             (await database.Context.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReviewUpgradeBackfillsNeedsReviewCurrentProjectionAndSurvivesDownUp()
+    {
+        await using var database = CreateDatabase("ReviewUpgrade");
+        try
+        {
+            var migrator = database.Context.GetService<IMigrator>();
+            await migrator.MigrateAsync(ReviewPredecessorMigration).ConfigureAwait(false);
+            var now = DateTimeOffset.UnixEpoch.AddDays(2);
+            var source = AddSourceArtifact(database.Context, "review-upgrade-agent", now);
+            var background = AddSourceArtifact(database.Context, "review-upgrade-agent", now.AddSeconds(-1));
+            var eventRecord = CreateEvent("review-upgrade-agent", now, source, background);
+            var version = CreateVersion(eventRecord, 1, now.AddSeconds(1));
+            var assessment = CreateAssessment(eventRecord, now, Guid.NewGuid(), ShaA, null);
+            eventRecord.Versions.Add(version);
+            eventRecord.Assessments.Add(assessment);
+            database.Context.CentralTransientEvents.Add(eventRecord);
+            await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            database.Context.AddRange(
+                new CentralTransientEventVersionObservation
+                {
+                    CentralTransientEventId = eventRecord.Id,
+                    EventVersionId = version.EventVersionId,
+                    ObservationId = eventRecord.Observations.Single().ObservationId,
+                    Ordinal = 0
+                },
+                new CentralTransientEventVersionAssessment
+                {
+                    CentralTransientEventId = eventRecord.Id,
+                    EventVersionId = version.EventVersionId,
+                    AssessmentId = assessment.AssessmentId,
+                    Ordinal = 0
+                });
+            await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+
+            await migrator.MigrateAsync().ConfigureAwait(false);
+            var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            current.LatestEventVersionId.Should().Be(version.EventVersionId);
+            current.ActiveAssessmentId.Should().Be(assessment.AssessmentId);
+            current.ReviewState.Should().Be(CentralTransientReviewState.NeedsReview);
+            current.EffectiveClassification.Should().Be(assessment.Classification);
+            current.RowVersion.Should().HaveCount(8);
+
+            await migrator.MigrateAsync(ReviewPredecessorMigration).ConfigureAwait(false);
+            await migrator.MigrateAsync().ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            (await database.Context.CentralTransientEventCurrent.AsNoTracking().CountAsync(item =>
+                item.CentralTransientEventId == eventRecord.Id).ConfigureAwait(false)).Should().Be(1);
         }
         finally
         {
@@ -762,19 +820,41 @@ public sealed class CentralTransientValidationMigrationTests
                  N'CentralTransientEventVersionAssessments', N'CentralTransientAssessmentObservations',
                   N'CentralTransientValidationJobs', N'CentralTransientValidationIdentitySlots',
                    N'CentralTransientExtractionReceipts', N'CentralTransientExtractionSources',
-                   N'CentralTransientContextDependencies', N'CentralTransientValidationOutcomeVersions',
-                   N'CentralTransientSubmissionAudits')
+                    N'CentralTransientContextDependencies', N'CentralTransientValidationOutcomeVersions',
+                    N'CentralTransientSubmissionAudits', N'CentralTransientReviews',
+                    N'CentralTransientEventVersionReviews', N'CentralTransientEventCurrent',
+                    N'CentralTransientReviewMutations', N'CentralTransientDerivativeJobs',
+                    N'CentralTransientDerivativeOutputIntents', N'CentralTransientDerivatives',
+                    N'CentralTransientDerivativeSources', N'CentralTransientDerivativeBackgrounds',
+                    N'CentralTransientEventVersionDerivatives', N'CentralTransientNotifications',
+                    N'CentralTransientEventVersionNotifications', N'CentralTransientNotificationDispatches')
+                    OR [name] IN (N'CentralTransientReprocessingJobs', N'CentralTransientReprocessingRequests')
+                    OR [name] IN (N'CentralTransientPayloadReleases', N'CentralTransientPayloadReleaseItems')
             """).SingleAsync().ConfigureAwait(false);
-        tableCount.Should().Be(16);
+        tableCount.Should().Be(33);
         var constraints = await db.Database.SqlQuery<string>($"""
             SELECT [name] AS [Value]
             FROM [sys].[check_constraints]
             WHERE [parent_object_id] IN
                 (OBJECT_ID(N'[CentralTransientEventVersions]'), OBJECT_ID(N'[CentralTransientAssessments]'),
                   OBJECT_ID(N'[CentralTransientValidationJobs]'),
-                  OBJECT_ID(N'[CentralTransientValidationIdentitySlots]'),
-                  OBJECT_ID(N'[CentralTransientContextDependencies]'),
-                  OBJECT_ID(N'[CentralTransientValidationOutcomeVersions]'))
+                   OBJECT_ID(N'[CentralTransientValidationIdentitySlots]'),
+                   OBJECT_ID(N'[CentralTransientContextDependencies]'),
+                   OBJECT_ID(N'[CentralTransientValidationOutcomeVersions]'),
+                   OBJECT_ID(N'[CentralTransientReviews]'),
+                   OBJECT_ID(N'[CentralTransientEventVersionReviews]'),
+                   OBJECT_ID(N'[CentralTransientDerivativeJobs]'),
+                   OBJECT_ID(N'[CentralTransientDerivativeOutputIntents]'),
+                   OBJECT_ID(N'[CentralTransientDerivatives]'),
+                   OBJECT_ID(N'[CentralTransientDerivativeSources]'),
+                    OBJECT_ID(N'[CentralTransientDerivativeBackgrounds]'),
+                    OBJECT_ID(N'[CentralTransientEventVersionDerivatives]'),
+                    OBJECT_ID(N'[CentralTransientNotifications]'),
+                    OBJECT_ID(N'[CentralTransientEventVersionNotifications]'),
+                    OBJECT_ID(N'[CentralTransientNotificationDispatches]'))
+                    OR [parent_object_id] = OBJECT_ID(N'[CentralTransientReprocessingJobs]')
+                    OR [parent_object_id] IN (OBJECT_ID(N'[CentralTransientPayloadReleases]'),
+                                              OBJECT_ID(N'[CentralTransientPayloadReleaseItems]'))
             """).ToListAsync().ConfigureAwait(false);
         constraints.Should().Contain([
             "CK_CentralTransientEventVersions_Predecessor",
@@ -786,14 +866,33 @@ public sealed class CentralTransientValidationMigrationTests
             "CK_CentralTransientValidationJobs_CommitOutcome",
             "CK_CentralTransientValidationIdentitySlots_Association",
             "CK_CentralTransientContextDependencies_Ordinal",
-            "CK_CentralTransientValidationOutcomeVersions_Version"
+            "CK_CentralTransientValidationOutcomeVersions_Version",
+            "CK_CentralTransientReviews_Override",
+            "CK_CentralTransientReviews_Predecessor",
+            "CK_CentralTransientEventVersionReviews_Ordinal",
+            "CK_CentralTransientDerivativeJobs_RequestLength",
+            "CK_CentralTransientDerivativeJobs_OutputCount",
+            "CK_CentralTransientDerivativeOutputIntents_Commit",
+            "CK_CentralTransientDerivatives_ByteLength",
+            "CK_CentralTransientDerivativeSources_Ordinal",
+            "CK_CentralTransientDerivativeBackgrounds_Ordinals",
+            "CK_CentralTransientEventVersionDerivatives_Ordinal",
+            "CK_CentralTransientNotifications_Predecessor",
+            "CK_CentralTransientEventVersionNotifications_Ordinal",
+            "CK_CentralTransientNotificationDispatches_Timestamps",
+            "CK_CentralTransientNotificationDispatches_State",
+            "CK_CentralTransientReprocessingJobs_RequestLength",
+            "CK_CentralTransientReprocessingJobs_Commit",
+            "CK_CentralTransientPayloadReleases_Completion",
+            "CK_CentralTransientPayloadReleaseItems_Ordinal",
+            "CK_CentralTransientPayloadReleaseItems_Outcome"
         ]);
         var triggerCount = await db.Database.SqlQuery<int>($"""
             SELECT COUNT(*) AS [Value]
             FROM [sys].[triggers]
             WHERE [name] LIKE N'TR_CentralTransient%'
             """).SingleAsync().ConfigureAwait(false);
-        triggerCount.Should().Be(15);
+        triggerCount.Should().Be(38);
     }
 
     private static MigrationDatabase CreateDatabase(string scenario)

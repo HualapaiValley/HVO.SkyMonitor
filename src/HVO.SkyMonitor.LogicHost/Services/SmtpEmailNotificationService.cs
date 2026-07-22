@@ -50,15 +50,8 @@ internal sealed class SmtpEmailNotificationService : IEmailNotificationService
 
         message.To.Add(recipient);
 
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Sending SMTP test email to {Recipient} via {Host}:{Port}",
-                recipient,
-                _options.Host,
-                _options.Port);
-        }
+        _logger.LogInformation("Sending SMTP email");
 
-        await client.SendMailAsync(message).ConfigureAwait(false);
+        await client.SendMailAsync(message, cancellationToken).ConfigureAwait(false);
     }
 }

@@ -16,6 +16,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Security.Claims;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.IntegrationTests;
@@ -150,12 +151,136 @@ public sealed class CentralDerivativeWindowIntegrationTests
             await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var derivativeJobId = await db.CentralDerivativeJobs.AsNoTracking()
+                    .Where(item => item.RecipeName == CentralTransientDerivativeRuntime.RecipeName &&
+                        item.SourceArtifact!.Frame!.AgentId == scenario)
+                    .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
+                await db.CentralDerivativeJobs.Where(item => item.Status == CentralDerivativeJobStatus.Pending &&
+                        item.Id != derivativeJobId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.AvailableAtUtc, DateTimeOffset.UtcNow.AddHours(1)))
+                    .ConfigureAwait(false);
+                await db.CentralDerivativeJobs.Where(item => item.Id == derivativeJobId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.AvailableAtUtc, DateTimeOffset.UtcNow))
+                    .ConfigureAwait(false);
+            }
+            CentralDerivativeJobLease derivativeLease;
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                derivativeLease = (await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                    .ClaimNextAsync("transient-derivative-worker", TimeSpan.FromMinutes(2), CancellationToken.None)
+                    .ConfigureAwait(false))!;
+                derivativeLease.RecipeName.Should().Be(CentralTransientDerivativeRuntime.RecipeName);
+            }
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var produced = await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                    .ExecuteAsync(derivativeLease, CancellationToken.None).ConfigureAwait(false);
+                produced.Status.Should().Be(ProcessingOutcomeStatus.Produced);
+                produced.ReasonCode.Should().Be("transient-derivative.persisted");
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var intents = await db.CentralTransientDerivativeOutputIntents.AsNoTracking()
+                    .Where(item => item.CentralDerivativeJobId == derivativeLease.JobId)
+                    .ToArrayAsync().ConfigureAwait(false);
+                intents.Should().HaveCount(5).And.OnlyContain(item =>
+                    item.CommittedAtUtc != null && item.ObjectState == CentralArtifactObjectState.Available);
+                intents.Select(item => item.Kind).Should().BeEquivalentTo(Enum.GetValues<TransientDerivativeKind>());
+                (await db.CentralTransientDerivatives.CountAsync(item =>
+                    item.CentralDerivativeJobId == derivativeLease.JobId).ConfigureAwait(false)).Should().Be(5);
+                var eventId = await db.CentralTransientDerivativeJobs.AsNoTracking()
+                    .Where(item => item.CentralDerivativeJobId == derivativeLease.JobId)
+                    .Select(item => item.CentralTransientEventId).SingleAsync().ConfigureAwait(false);
+                var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                    new Claim(ClaimTypes.NameIdentifier, "derivative-test-admin"),
+                    new Claim("scope", "api.admin")
+                ], "test"));
+                var retrieval = scope.ServiceProvider.GetRequiredService<ICentralTransientDerivativeRetrievalService>();
+                foreach (var intent in intents)
+                {
+                    byte[] derivativeBytes;
+                    await using (var content = await retrieval.GetAsync(
+                                     principal, eventId, intent.DerivativeId, CancellationToken.None)
+                                     .ConfigureAwait(false))
+                    {
+                        content.Status.Should().Be(CentralTransientDerivativeLookupStatus.Found);
+                        await using var derivativePayload = new MemoryStream();
+                        await retrieval.CopyToAsync(content, derivativePayload, null, CancellationToken.None)
+                            .ConfigureAwait(false);
+                        derivativeBytes = derivativePayload.ToArray();
+                        Convert.ToHexString(SHA256.HashData(derivativeBytes)).Should()
+                            .Be(intent.ChecksumSha256);
+                        var rangeLength = Math.Min(3, derivativeBytes.Length - 1);
+                        await using var rangePayload = new MemoryStream();
+                        await retrieval.CopyToAsync(
+                            content,
+                            rangePayload,
+                            new CentralArtifactByteRange(1, rangeLength),
+                            CancellationToken.None).ConfigureAwait(false);
+                        rangePayload.ToArray().Should().Equal(derivativeBytes.AsSpan(1, rangeLength).ToArray());
+                    }
+                    if (intent.Id == intents[0].Id)
+                    {
+                        var objectKey = intent.StorageReference[$"minio://{Bucket}/".Length..];
+                        var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
+                        await using (var corrupt = new MemoryStream(new byte[derivativeBytes.Length], writable: false))
+                        {
+                            await minio.PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(objectKey)
+                                .WithStreamData(corrupt).WithObjectSize(corrupt.Length)
+                                .WithContentType(intent.MediaType), CancellationToken.None).ConfigureAwait(false);
+                        }
+                        (await retrieval.GetAsync(principal, eventId, intent.DerivativeId, CancellationToken.None)
+                            .ConfigureAwait(false)).Status.Should().Be(CentralTransientDerivativeLookupStatus.IntegrityFailure);
+                        await using var restore = new MemoryStream(derivativeBytes, writable: false);
+                        await minio.PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(objectKey)
+                            .WithStreamData(restore).WithObjectSize(restore.Length)
+                            .WithContentType(intent.MediaType), CancellationToken.None).ConfigureAwait(false);
+                    }
+                }
+                (await retrieval.GetAsync(
+                    new ClaimsPrincipal(), eventId, intents[0].DerivativeId, CancellationToken.None)
+                    .ConfigureAwait(false)).Status.Should().Be(CentralTransientDerivativeLookupStatus.NotFound);
+                (await db.CentralTransientEventVersions.CountAsync(version =>
+                    version.Event!.AgentId == scenario).ConfigureAwait(false)).Should().Be(2);
+                await db.CentralDerivativeJobs.Where(item => item.Id == derivativeLease.JobId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.Status, CentralDerivativeJobStatus.Pending)
+                        .SetProperty(item => item.AvailableAtUtc, DateTimeOffset.UtcNow)
+                        .SetProperty(item => item.CompletedAtUtc, (DateTimeOffset?)null)
+                        .SetProperty(item => item.StateReasonCode, (string?)null))
+                    .ConfigureAwait(false);
+            }
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var retry = (await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                    .ClaimNextAsync("transient-derivative-restart", TimeSpan.FromMinutes(2), CancellationToken.None)
+                    .ConfigureAwait(false))!;
+                retry.JobId.Should().Be(derivativeLease.JobId);
+                var adopted = await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                    .ExecuteAsync(retry, CancellationToken.None).ConfigureAwait(false);
+                adopted.ReasonCode.Should().Be("transient-derivative.output-adopted");
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                (await db.CentralTransientDerivatives.CountAsync(item =>
+                    item.CentralDerivativeJobId == derivativeLease.JobId).ConfigureAwait(false)).Should().Be(5);
+                (await db.CentralTransientEventVersions.CountAsync(version =>
+                    version.Event!.AgentId == scenario).ConfigureAwait(false)).Should().Be(2);
+            }
+
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 await db.CentralDerivativeJobs.Where(item => item.Id == jobId)
                     .ExecuteUpdateAsync(setters => setters
                         .SetProperty(item => item.Status, CentralDerivativeJobStatus.Pending)
                         .SetProperty(item => item.AvailableAtUtc, DateTimeOffset.UtcNow)
                         .SetProperty(item => item.CompletedAtUtc, (DateTimeOffset?)null)
                         .SetProperty(item => item.StateReasonCode, (string?)null))
+                    .ConfigureAwait(false);
+                await db.CentralDerivativeJobs.Where(item =>
+                        item.RecipeName == CentralTransientDerivativeRuntime.RecipeName &&
+                        item.SourceArtifact!.Frame!.AgentId == scenario)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.AvailableAtUtc, DateTimeOffset.UtcNow.AddHours(1)))
                     .ConfigureAwait(false);
             }
             CentralDerivativeJobLease retryLease;
@@ -178,7 +303,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                 job.Attempts.OrderBy(item => item.AttemptNumber).Select(item => item.Outcome)
                     .Should().Equal(CentralDerivativeAttemptOutcome.Completed, CentralDerivativeAttemptOutcome.Completed);
                 (await db.CentralTransientEventVersions.CountAsync(version => version.Event!.AgentId == scenario)
-                    .ConfigureAwait(false)).Should().Be(1);
+                    .ConfigureAwait(false)).Should().Be(2);
             }
 
             var expiredAt = DateTimeOffset.UtcNow.AddMinutes(-1);
@@ -256,7 +381,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                     .Where(item => item.Event!.AgentId == scenario)
                     .OrderBy(item => item.Version)
                     .ToListAsync().ConfigureAwait(false);
-                versions.Select(item => item.Version).Should().Equal(1, 2);
+                versions.Select(item => item.Version).Should().Equal(1, 2, 3);
                 versions[^1].State.Should().Be(TransientEventState.NeedsReview);
                 (await db.CentralTransientValidationOutcomeVersions.AsNoTracking()
                     .Where(item => item.CentralDerivativeJobId == jobId)
@@ -331,6 +456,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                     .SetProperty(item => item.LastError, (string?)null))
                 .ConfigureAwait(false);
         }
+        await DisableOtherActiveJobsAsync(followingJobId).ConfigureAwait(false);
         await ExecuteClaimedTransientAsync(followingJobId, "boundary-second").ConfigureAwait(false);
 
         await using var verifyScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
@@ -362,6 +488,82 @@ public sealed class CentralDerivativeWindowIntegrationTests
             .Where(item => item.State == CentralTransientValidationIdentitySlotState.Committed)
             .Select(item => item.PersistedEventId).ToListAsync().ConfigureAwait(false);
         eventIds.Should().HaveCount(2).And.OnlyContain(item => item == transientEvent.EventId);
+
+        var twoObservationVersionId = transientEvent.Versions.Single(item => item.Version == 2).EventVersionId;
+        var derivativeJobId = await verify.CentralTransientDerivativeJobs.AsNoTracking()
+            .Where(item => item.SourceEventVersionId == twoObservationVersionId)
+            .Select(item => item.CentralDerivativeJobId).SingleAsync().ConfigureAwait(false);
+        await DisableOtherActiveJobsAsync(derivativeJobId).ConfigureAwait(false);
+        var derivativeResult = await ExecuteClaimedTransientAsync(
+            derivativeJobId, "boundary-derivative", ProcessingOutcomeStatus.Produced).ConfigureAwait(false);
+        derivativeResult.ReasonCode.Should().Be("transient-derivative.persisted");
+        await using var derivativeScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var derivativeDb = derivativeScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await derivativeDb.CentralTransientDerivatives.CountAsync(item =>
+            item.CentralDerivativeJobId == derivativeJobId).ConfigureAwait(false)).Should().Be(5);
+        (await derivativeDb.CentralTransientDerivativeSources.CountAsync(item =>
+            item.Derivative!.CentralDerivativeJobId == derivativeJobId).ConfigureAwait(false)).Should().Be(10);
+        var latest = await derivativeDb.CentralTransientEventVersions.AsNoTracking()
+            .Where(item => item.CentralTransientEventId == transientEvent.Id)
+            .OrderByDescending(item => item.Version).FirstAsync().ConfigureAwait(false);
+        var derivativeEvent = TransientContractJson.ParseEvent(System.Text.Encoding.UTF8.GetBytes(
+            latest.CanonicalEventJson));
+        derivativeEvent.Validation.IsValid.Should().BeTrue();
+        derivativeEvent.Value!.Observations.Should().HaveCount(2);
+        derivativeEvent.Value.Derivatives.Should().HaveCount(5);
+
+        var current = await derivativeDb.CentralTransientEventCurrent.AsNoTracking()
+            .SingleAsync(item => item.CentralTransientEventId == transientEvent.Id).ConfigureAwait(false);
+        var admin = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim(ClaimTypes.NameIdentifier, "boundary-release-admin"),
+            new Claim("sub", "boundary-release-admin"),
+            new Claim("scope", "api.admin"),
+            new Claim("account_type", "User")
+        ], "test"));
+        var review = await new CentralTransientReviewService(
+                derivativeDb,
+                new CentralTransientEventVersionAppender(derivativeDb),
+                TimeProvider.System)
+            .ReviewAsync(
+                admin,
+                transientEvent.Id,
+                current.RowVersion,
+                $"boundary-release-review-{Guid.NewGuid():N}",
+                new CentralTransientReviewRequest(
+                    current.ActiveAssessmentId,
+                    TransientReviewDisposition.Rejected,
+                    null,
+                    ["human.retention-approved"]),
+                CancellationToken.None).ConfigureAwait(false);
+        review.Status.Should().Be(CentralTransientReviewMutationStatus.Applied);
+        await derivativeDb.CentralDerivativeJobs.Where(item =>
+                item.Status == CentralDerivativeJobStatus.Waiting ||
+                item.Status == CentralDerivativeJobStatus.Pending ||
+                item.Status == CentralDerivativeJobStatus.RetryableFailure)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Status, CentralDerivativeJobStatus.TerminalFailure)
+                .SetProperty(item => item.AvailableAtUtc, (DateTimeOffset?)null))
+            .ConfigureAwait(false);
+        derivativeDb.ChangeTracker.Clear();
+        var releaseCurrent = await derivativeDb.CentralTransientEventCurrent.AsNoTracking()
+            .SingleAsync(item => item.CentralTransientEventId == transientEvent.Id).ConfigureAwait(false);
+        var releaseService = new CentralTransientPayloadReleaseService(
+            derivativeDb,
+            new CentralArtifactRetentionReferences(derivativeDb),
+            derivativeScope.ServiceProvider.GetRequiredService<IMinioClient>(),
+            Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions { Enabled = true }),
+            TimeProvider.System);
+        var release = await releaseService.ReleaseAsync(
+            admin,
+            transientEvent.Id,
+            releaseCurrent.RowVersion,
+            $"boundary-release-{Guid.NewGuid():N}",
+            CancellationToken.None).ConfigureAwait(false);
+        release.Status.Should().Be(CentralTransientPayloadReleaseStatus.Released);
+        var releasedDerivative = derivativeEvent.Value.Derivatives[0];
+        (await derivativeScope.ServiceProvider.GetRequiredService<ICentralTransientDerivativeRetrievalService>()
+            .GetAsync(admin, transientEvent.Id, releasedDerivative.DerivativeId, CancellationToken.None)
+            .ConfigureAwait(false)).Status.Should().Be(CentralTransientDerivativeLookupStatus.Gone);
     }
 
     [TestMethod]

@@ -151,6 +151,31 @@ public sealed class CentralTransientAcceptanceManifestTests
     }
 
     [TestMethod]
+    public void ReviewRuntimeSignals_ReserveBoundedPrivateLifecycleEvidence()
+    {
+        using var document = ReadManifest("transient-review-runtime-signals.json");
+        var root = document.RootElement;
+        root.GetProperty("schema").GetString().Should().Be("hvo-runtime-signal-manifest-v1");
+        root.GetProperty("issue").GetInt32().Should().Be(118);
+        root.GetProperty("logs").EnumerateArray()
+            .Select(log => log.GetProperty("eventId").GetInt32()).Should().Equal([2162, 2163, 2164, 2165, 2166]);
+        var metrics = root.GetProperty("metrics").EnumerateArray().ToArray();
+        metrics.Select(metric => metric.GetProperty("name").GetString()).Should().OnlyHaveUniqueItems();
+        metrics.Should().OnlyContain(metric => metric.GetProperty("labels").EnumerateObject()
+            .All(label => new[] { "operation", "outcome", "kind" }
+                .Contains(label.Name, StringComparer.Ordinal)));
+        var forbidden = root.GetProperty("privacy").GetProperty("forbidden").EnumerateArray()
+            .Select(value => value.GetString()).ToArray();
+        forbidden.Should().Contain([
+            "actor identity", "recipient", "payload bytes", "storage path", "object credentials",
+            "idempotency key", "checksum", "lease token"
+        ]);
+        root.GetProperty("health").GetProperty("check").GetString().Should().Be("central-transient-lifecycle");
+        root.GetProperty("collection").GetProperty("retainedArtifactPath").GetString().Should()
+            .Contain("TestResults/issue-118");
+    }
+
+    [TestMethod]
     public async Task FaultMatrix_ReferencesTestsDiscoveredByMSTest()
     {
         using var document = ReadManifest("central-transient-fault-matrix.json");

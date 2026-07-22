@@ -21,6 +21,16 @@ public sealed class CentralTransientValidationModelTests
         var observationLink = model.FindEntityType(typeof(CentralTransientEventVersionObservation))!;
         var background = model.FindEntityType(typeof(CentralTransientObservationBackgroundReference))!;
         var assessment = model.FindEntityType(typeof(CentralTransientAssessmentRecord))!;
+        var review = model.FindEntityType(typeof(CentralTransientReviewRecord))!;
+        var reviewLink = model.FindEntityType(typeof(CentralTransientEventVersionReview))!;
+        var current = model.FindEntityType(typeof(CentralTransientEventCurrent))!;
+        var reviewMutation = model.FindEntityType(typeof(CentralTransientReviewMutationRecord))!;
+        var derivativeJob = model.FindEntityType(typeof(CentralTransientDerivativeJob))!;
+        var derivativeIntent = model.FindEntityType(typeof(CentralTransientDerivativeOutputIntent))!;
+        var derivative = model.FindEntityType(typeof(CentralTransientDerivativeRecord))!;
+        var derivativeSource = model.FindEntityType(typeof(CentralTransientDerivativeSourceReference))!;
+        var derivativeBackground = model.FindEntityType(typeof(CentralTransientDerivativeBackgroundReference))!;
+        var derivativeLink = model.FindEntityType(typeof(CentralTransientEventVersionDerivative))!;
         var validationJob = model.FindEntityType(typeof(CentralTransientValidationJob))!;
         var identitySlot = model.FindEntityType(typeof(CentralTransientValidationIdentitySlot))!;
         var contextDependency = model.FindEntityType(typeof(CentralTransientContextDependency))!;
@@ -69,6 +79,49 @@ public sealed class CentralTransientValidationModelTests
                 nameof(CentralTransientAssessmentRecord.CentralTransientEventId),
                 nameof(CentralTransientAssessmentRecord.SupersedesAssessmentId),
                 nameof(CentralTransientAssessmentRecord.SupersedesAssessmentCreatedUtc)])));
+        AssertUniqueIndex(review,
+            nameof(CentralTransientReviewRecord.CentralTransientEventId),
+            nameof(CentralTransientReviewRecord.SupersedesReviewId));
+        Assert.IsTrue(review.GetForeignKeys().Any(foreignKey =>
+            foreignKey.PrincipalEntityType.ClrType == typeof(CentralTransientAssessmentRecord)
+            && foreignKey.Properties.Select(property => property.Name).SequenceEqual([
+                nameof(CentralTransientReviewRecord.CentralTransientEventId),
+                nameof(CentralTransientReviewRecord.AssessmentId)])));
+        AssertUniqueIndex(reviewLink,
+            nameof(CentralTransientEventVersionReview.EventVersionId),
+            nameof(CentralTransientEventVersionReview.ReviewId));
+        Assert.IsTrue(current.FindProperty(nameof(CentralTransientEventCurrent.RowVersion))!.IsConcurrencyToken);
+        Assert.IsTrue(current.FindProperty(nameof(CentralTransientEventCurrent.RowVersion))!.ValueGenerated
+            == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAddOrUpdate);
+        AssertUniqueIndex(reviewMutation,
+            nameof(CentralTransientReviewMutationRecord.CentralTransientEventId),
+            nameof(CentralTransientReviewMutationRecord.ActorIdentity),
+            nameof(CentralTransientReviewMutationRecord.IdempotencyKey));
+        AssertUniqueIndex(derivativeJob,
+            nameof(CentralTransientDerivativeJob.CentralTransientEventId),
+            nameof(CentralTransientDerivativeJob.SourceEventVersionId),
+            nameof(CentralTransientDerivativeJob.RecipeIdentitySha256),
+            nameof(CentralTransientDerivativeJob.OptionsIdentitySha256));
+        AssertUniqueIndex(derivativeIntent, nameof(CentralTransientDerivativeOutputIntent.ArtifactId));
+        Assert.AreEqual(
+            "CONVERT(binary(32), HASHBYTES('SHA2_256', [StorageReference]))",
+            derivativeIntent.FindProperty("StorageReferenceSha256")!.GetComputedColumnSql());
+        Assert.IsTrue(derivativeIntent.GetIndexes().Any(index =>
+            index.Properties.Select(property => property.Name).SequenceEqual(["StorageReferenceSha256"])));
+        Assert.IsTrue(derivativeIntent.FindProperty(nameof(CentralTransientDerivativeOutputIntent.RowVersion))!
+            .IsConcurrencyToken);
+        AssertUniqueIndex(derivative,
+            nameof(CentralTransientDerivativeRecord.CentralTransientEventId),
+            nameof(CentralTransientDerivativeRecord.OutputIdentitySha256));
+        Assert.IsTrue(derivativeSource.GetForeignKeys().Any(foreignKey =>
+            foreignKey.PrincipalEntityType.ClrType == typeof(CentralTransientObservationSourceReference)
+            && foreignKey.DeleteBehavior == DeleteBehavior.Restrict));
+        Assert.IsTrue(derivativeBackground.GetForeignKeys().Any(foreignKey =>
+            foreignKey.PrincipalEntityType.ClrType == typeof(CentralTransientObservationBackgroundReference)
+            && foreignKey.DeleteBehavior == DeleteBehavior.Restrict));
+        AssertUniqueIndex(derivativeLink,
+            nameof(CentralTransientEventVersionDerivative.EventVersionId),
+            nameof(CentralTransientEventVersionDerivative.DerivativeId));
         AssertUniqueIndex(validationJob, nameof(CentralTransientValidationJob.SubmissionIdentitySha256));
         AssertUniqueIndex(identitySlot, nameof(CentralTransientValidationIdentitySlot.CentralDerivativeJobId),
             nameof(CentralTransientValidationIdentitySlot.Ordinal));

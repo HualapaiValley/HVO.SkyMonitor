@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
@@ -11,6 +12,8 @@ using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using Minio;
 using Minio.DataModel.Args;
@@ -62,6 +65,12 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
             storedAssessment.ExecutionIdentitySha256.Should().Be(fixture.Assessment.ExecutionIdentitySha256);
             storedAssessment.RecipeIdentitySha256.Should().Be(fixture.Assessment.Assessment.RecipeIdentitySha256);
             storedAssessment.ProducerName.Should().Be(fixture.Assessment.Assessment.Producer.Name);
+            var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            current.LatestEventVersionId.Should().Be(fixture.Event.EventVersionId);
+            current.ActiveAssessmentId.Should().Be(fixture.Assessment.Assessment.AssessmentId);
+            current.ReviewState.Should().Be(CentralTransientReviewState.NeedsReview);
+            current.RowVersion.Should().HaveCount(8);
             var storedExtraction = await database.Context.CentralTransientExtractionReceipts.AsNoTracking().SingleAsync()
                 .ConfigureAwait(false);
             storedExtraction.CanonicalReceiptSha256.Should().Be(fixture.Request.ExtractionReceipt.Sha256);
@@ -101,6 +110,1274 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
                 WHERE [CentralDerivativeJobId] = {seeded.JobId} AND [Ordinal] = 0;
                 """).ConfigureAwait(false);
             await mutateSlot.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReviewMutation_AppendsAuditAndVersionWithReplayBeforeEtag()
+    {
+        await using var database = CreateDatabase("ReviewMutation");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            var persistence = new CentralTransientEventPersistence(database.Context);
+            _ = await persistence.AppendAsync(fixture.Request with
+            {
+                CentralDerivativeJobId = seeded.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+
+            var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(ClaimTypes.NameIdentifier, "reviewer-1"),
+                new Claim("sub", "reviewer-1"),
+                new Claim("account_type", "User"),
+                new Claim("scope", "api.admin")
+            ], "Test"));
+            var reviewService = new CentralTransientReviewService(
+                database.Context,
+                new CentralTransientEventVersionAppender(database.Context),
+                TimeProvider.System);
+            var request = new CentralTransientReviewRequest(
+                fixture.Assessment.Assessment.AssessmentId,
+                TransientReviewDisposition.Confirmed,
+                null,
+                ["human.confirmed"]);
+
+            var applied = await reviewService.ReviewAsync(
+                principal,
+                current.CentralTransientEventId,
+                current.RowVersion,
+                "review-key-1",
+                request,
+                CancellationToken.None).ConfigureAwait(false);
+            applied.Status.Should().Be(CentralTransientReviewMutationStatus.Applied);
+            applied.Response!.Replayed.Should().BeFalse();
+            applied.Response.ReviewState.Should().Be(CentralTransientReviewState.Reviewed);
+            database.Context.ChangeTracker.Clear();
+
+            var replayed = await reviewService.ReviewAsync(
+                principal,
+                current.CentralTransientEventId,
+                current.RowVersion,
+                "review-key-1",
+                request,
+                CancellationToken.None).ConfigureAwait(false);
+            replayed.Status.Should().Be(CentralTransientReviewMutationStatus.Applied);
+            replayed.Response.Should().Be(applied.Response with { Replayed = true });
+
+            var conflict = await reviewService.ReviewAsync(
+                principal,
+                current.CentralTransientEventId,
+                current.RowVersion,
+                "review-key-1",
+                request with { ReasonCodes = ["human.changed"] },
+                CancellationToken.None).ConfigureAwait(false);
+            conflict.Status.Should().Be(CentralTransientReviewMutationStatus.IdempotencyConflict);
+
+            var stale = await reviewService.ReviewAsync(
+                principal,
+                current.CentralTransientEventId,
+                current.RowVersion,
+                "review-key-2",
+                request,
+                CancellationToken.None).ConfigureAwait(false);
+            stale.Status.Should().Be(CentralTransientReviewMutationStatus.PreconditionFailed);
+
+            (await database.Context.CentralTransientReviews.AsNoTracking().CountAsync().ConfigureAwait(false))
+                .Should().Be(1);
+            (await database.Context.CentralTransientReviewMutations.AsNoTracking().CountAsync().ConfigureAwait(false))
+                .Should().Be(1);
+            (await database.Context.CentralTransientEventVersions.AsNoTracking().CountAsync().ConfigureAwait(false))
+                .Should().Be(2);
+            var latest = await database.Context.CentralTransientEventVersions.AsNoTracking()
+                .OrderByDescending(item => item.Version).FirstAsync().ConfigureAwait(false);
+            var parsed = TransientContractJson.ParseEvent(Encoding.UTF8.GetBytes(latest.CanonicalEventJson));
+            parsed.Validation.IsValid.Should().BeTrue();
+            parsed.Value!.Assessments.Should().BeEquivalentTo(fixture.Event.Assessments);
+            parsed.Value.Reviews.Should().ContainSingle(item => item.ReviewId == applied.Response.ReviewId);
+
+            await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                database.Context,
+                seeded.JobId,
+                "transient-review.source-invalidated",
+                latest.VersionCreatedUtc.AddSeconds(1),
+                CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var invalidated = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            invalidated.ReviewState.Should().Be(CentralTransientReviewState.NeedsReview);
+            invalidated.LatestReviewId.Should().BeNull();
+            invalidated.EffectiveClassification.Should().Be(fixture.Assessment.Assessment.Classification);
+            (await database.Context.CentralTransientReviews.CountAsync().ConfigureAwait(false)).Should().Be(1);
+            (await database.Context.CentralTransientEventVersions.CountAsync().ConfigureAwait(false)).Should().Be(3);
+
+            var downgrade = async () => await database.Context.GetService<IMigrator>()
+                .MigrateAsync("20260721042731_AddHybridTransientSubmissions").ConfigureAwait(false);
+            await downgrade.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
+
+            var mutateReview = async () => await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE [CentralTransientReviews]
+                SET [ReviewerIdentity] = {"mutated"}
+                WHERE [ReviewId] = {applied.Response.ReviewId};
+                """).ConfigureAwait(false);
+            await mutateReview.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task NotificationRetry_AppendsPendingAttemptWithReplayBeforeEtag()
+    {
+        await using var database = CreateDatabase("NotificationRetry");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            var persistence = new CentralTransientEventPersistence(database.Context);
+            _ = await persistence.AppendAsync(fixture.Request with
+            {
+                CentralDerivativeJobId = seeded.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var seededCurrent = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+
+            var reviewId = Guid.NewGuid();
+            var failedNotificationId = Guid.NewGuid();
+            var failedDispatchId = Guid.NewGuid();
+            await using (var transaction = await database.Context.Database.BeginTransactionAsync().ConfigureAwait(false))
+            {
+                var appender = new CentralTransientEventVersionAppender(database.Context);
+                var appended = await appender.AppendGeneratedAsync(seededCurrent.CentralTransientEventId, previous =>
+                {
+                    var createdUtc = previous.VersionCreatedUtc.AddTicks(1);
+                    return previous with
+                    {
+                        EventVersionId = Guid.NewGuid(),
+                        Version = previous.Version + 1,
+                        PreviousEventVersionId = previous.EventVersionId,
+                        PreviousVersionCreatedUtc = previous.VersionCreatedUtc,
+                        VersionCreatedUtc = createdUtc,
+                        Reviews = previous.Reviews.Append(new TransientReviewV1(
+                            reviewId,
+                            createdUtc,
+                            "reviewer-1",
+                            TransientReviewDisposition.Confirmed,
+                            fixture.Assessment.Assessment.AssessmentId,
+                            null,
+                            ["human.confirmed"],
+                            null)).ToArray(),
+                        Notifications = previous.Notifications.Append(new TransientNotificationV1(
+                            failedNotificationId,
+                            createdUtc,
+                            "email",
+                            TransientNotificationState.Failed,
+                            fixture.Assessment.Assessment.AssessmentId,
+                            "notification.dispatch-failed",
+                            null)).ToArray()
+                    };
+                }, resetReviewState: false, CancellationToken.None).ConfigureAwait(false);
+                database.Context.CentralTransientNotificationDispatches.Add(new()
+                {
+                    DispatchId = failedDispatchId,
+                    CentralTransientEventId = appended.Current.CentralTransientEventId,
+                    AssessmentId = fixture.Assessment.Assessment.AssessmentId,
+                    ReviewId = reviewId,
+                    InitialNotificationId = failedNotificationId,
+                    LatestNotificationId = failedNotificationId,
+                    Channel = "email",
+                    Recipient = "retry@example.test",
+                    RecipientIdentitySha256 = Convert.ToHexString(SHA256.HashData(
+                        Encoding.UTF8.GetBytes("RETRY@EXAMPLE.TEST"))),
+                    State = CentralTransientNotificationDispatchState.Failed,
+                    CreatedUtc = appended.Event.VersionCreatedUtc,
+                    CompletedUtc = appended.Event.VersionCreatedUtc,
+                    ReasonCode = "notification.dispatch-failed"
+                });
+                await database.Context.SaveChangesAsync().ConfigureAwait(false);
+                await transaction.CommitAsync().ConfigureAwait(false);
+            }
+            database.Context.ChangeTracker.Clear();
+
+            var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            var service = new CentralTransientNotificationRetryService(
+                database.Context,
+                new CentralTransientEventVersionAppender(database.Context),
+                TimeProvider.System);
+            var principal = CreateOwnerPrincipal("notification-admin", admin: true);
+            var scheduled = await service.RetryAsync(
+                principal,
+                current.CentralTransientEventId,
+                failedNotificationId,
+                current.RowVersion,
+                "notification-retry-1",
+                CancellationToken.None).ConfigureAwait(false);
+
+            scheduled.Status.Should().Be(CentralTransientNotificationRetryStatus.Scheduled);
+            scheduled.Response!.Replayed.Should().BeFalse();
+            database.Context.ChangeTracker.Clear();
+            var retry = await database.Context.CentralTransientNotificationDispatches.AsNoTracking().SingleAsync(item =>
+                item.DispatchId == scheduled.Response.DispatchId).ConfigureAwait(false);
+            retry.State.Should().Be(CentralTransientNotificationDispatchState.Pending);
+            retry.SupersedesDispatchId.Should().Be(failedDispatchId);
+            retry.Recipient.Should().Be("retry@example.test");
+            var pending = await database.Context.CentralTransientNotifications.AsNoTracking().SingleAsync(item =>
+                item.NotificationId == scheduled.Response.NotificationId).ConfigureAwait(false);
+            pending.State.Should().Be(TransientNotificationState.Pending);
+            pending.SupersedesNotificationId.Should().Be(failedNotificationId);
+
+            var replayed = await service.RetryAsync(
+                principal,
+                current.CentralTransientEventId,
+                failedNotificationId,
+                current.RowVersion,
+                "notification-retry-1",
+                CancellationToken.None).ConfigureAwait(false);
+            replayed.Status.Should().Be(CentralTransientNotificationRetryStatus.Scheduled);
+            replayed.Response.Should().Be(scheduled.Response with { Replayed = true });
+
+            var conflict = await service.RetryAsync(
+                principal,
+                current.CentralTransientEventId,
+                retry.LatestNotificationId,
+                current.RowVersion,
+                "notification-retry-1",
+                CancellationToken.None).ConfigureAwait(false);
+            conflict.Status.Should().Be(CentralTransientNotificationRetryStatus.IdempotencyConflict);
+
+            var retryCurrent = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            var duplicateSuccessor = await service.RetryAsync(
+                principal,
+                current.CentralTransientEventId,
+                failedNotificationId,
+                retryCurrent.RowVersion,
+                $"notification-retry-{Guid.NewGuid():N}",
+                CancellationToken.None).ConfigureAwait(false);
+            duplicateSuccessor.Status.Should().Be(CentralTransientNotificationRetryStatus.Ineligible);
+
+            database.Context.ChangeTracker.Clear();
+            var fenced = await database.Context.CentralTransientNotificationDispatches.SingleAsync(item =>
+                item.DispatchId == retry.DispatchId).ConfigureAwait(false);
+            var clock = new MutableTimeProvider(
+                DateTimeOffset.UtcNow > fenced.CreatedUtc ? DateTimeOffset.UtcNow : fenced.CreatedUtc.AddTicks(1));
+            fenced.State = CentralTransientNotificationDispatchState.Fenced;
+            fenced.FencedUtc = clock.GetUtcNow();
+            await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var email = new RecordingEmailNotificationService();
+            var notificationOptions = Microsoft.Extensions.Options.Options.Create(
+                new CentralTransientNotificationOptions
+                {
+                    PollInterval = TimeSpan.FromMilliseconds(1),
+                    FenceTimeout = TimeSpan.FromMinutes(1)
+                });
+            var processor = new CentralTransientNotificationProcessor(
+                database.Context,
+                new CentralTransientEventVersionAppender(database.Context),
+                email,
+                clock,
+                notificationOptions);
+            (await processor.ProcessNextAsync(CancellationToken.None).ConfigureAwait(false)).Should().BeFalse();
+            email.SendCount.Should().Be(0);
+
+            clock.Advance(TimeSpan.FromMinutes(2));
+            (await processor.ProcessNextAsync(CancellationToken.None).ConfigureAwait(false)).Should().BeTrue();
+            email.SendCount.Should().Be(0);
+            database.Context.ChangeTracker.Clear();
+            var recovered = await database.Context.CentralTransientNotificationDispatches.AsNoTracking().SingleAsync(
+                item => item.DispatchId == retry.DispatchId).ConfigureAwait(false);
+            recovered.State.Should().Be(CentralTransientNotificationDispatchState.Failed);
+            recovered.ReasonCode.Should().Be("notification.ambiguous-post-fence");
+            var recoveredCurrent = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            var ambiguousRetry = await service.RetryAsync(
+                principal,
+                recovered.CentralTransientEventId,
+                recovered.LatestNotificationId,
+                recoveredCurrent.RowVersion,
+                $"ambiguous-retry-{Guid.NewGuid():N}",
+                CancellationToken.None).ConfigureAwait(false);
+            ambiguousRetry.Status.Should().Be(CentralTransientNotificationRetryStatus.Ineligible);
+            var insertFenced = async () => await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO [CentralTransientNotificationDispatches]
+                    ([DispatchId], [CentralTransientEventId], [AssessmentId], [ReviewId],
+                     [InitialNotificationId], [LatestNotificationId], [Channel], [Recipient],
+                     [RecipientIdentitySha256], [State], [CreatedUtc], [FencedUtc])
+                VALUES
+                    ({Guid.NewGuid()}, {current.CentralTransientEventId}, {retry.AssessmentId}, {retry.ReviewId},
+                     {retry.InitialNotificationId}, {retry.LatestNotificationId}, N'email', {"invalid@example.test"},
+                     {new string('F', 64)}, N'Fenced', {retry.CreatedUtc}, {clock.GetUtcNow()});
+                """).ConfigureAwait(false);
+            await insertFenced.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task ValidationWorker_CannotAppendForgedHumanReview()
+    {
+        await using var database = CreateDatabase("ForgedReview");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            var forgedReview = new TransientReviewV1(
+                Guid.NewGuid(),
+                fixture.Event.VersionCreatedUtc,
+                "forged-reviewer",
+                TransientReviewDisposition.Confirmed,
+                fixture.Assessment.Assessment.AssessmentId,
+                null,
+                ["human.forged"],
+                null);
+            var forgedEvent = fixture.Event with { Reviews = [forgedReview] };
+            var forgedBytes = TransientContractJson.Serialize(forgedEvent);
+
+            var exception = await CaptureAppendAsync(
+                new CentralTransientEventPersistence(database.Context),
+                fixture.Request with
+                {
+                    CentralDerivativeJobId = seeded.JobId,
+                    Events = [CentralTransientPersistenceFixture.CanonicalPayload(forgedBytes)]
+                }).ConfigureAwait(false);
+
+            exception.Should().NotBeNull();
+            exception!.ReasonCode.Should().Be(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding);
+            (await database.Context.CentralTransientEvents.CountAsync().ConfigureAwait(false)).Should().Be(0);
+            (await database.Context.CentralTransientReviews.CountAsync().ConfigureAwait(false)).Should().Be(0);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task ValidationWorker_CannotAppendForgedEventDerivative()
+    {
+        await using var database = CreateDatabase("ForgedDerivative");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            var source = fixture.Event.Observations.Single().Source;
+            var forgedDerivative = new TransientDerivativeV1(
+                Guid.NewGuid(),
+                fixture.Event.VersionCreatedUtc,
+                TransientDerivativeKind.Reconstruction,
+                new TransientArtifactReferenceV1(
+                    Guid.NewGuid(),
+                    FrameArtifactRole.Combined,
+                    "event-reconstruction",
+                    new string('A', 64),
+                    new string('B', 64)),
+                new string('A', 64),
+                [source.EvidenceId],
+                [
+                    TransientDerivativeLimitation.IntraExposureTimingUnavailable,
+                    TransientDerivativeLimitation.SaturatedPhotometryUnrecoverable
+                ]);
+            var forgedEvent = fixture.Event with { Derivatives = [forgedDerivative] };
+            var forgedBytes = TransientContractJson.Serialize(forgedEvent);
+
+            var exception = await CaptureAppendAsync(
+                new CentralTransientEventPersistence(database.Context),
+                fixture.Request with
+                {
+                    CentralDerivativeJobId = seeded.JobId,
+                    Events = [CentralTransientPersistenceFixture.CanonicalPayload(forgedBytes)]
+                }).ConfigureAwait(false);
+
+            exception.Should().NotBeNull();
+            exception!.ReasonCode.Should().Be(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding);
+            (await database.Context.CentralTransientEvents.CountAsync().ConfigureAwait(false)).Should().Be(0);
+            (await database.Context.CentralTransientDerivatives.CountAsync().ConfigureAwait(false)).Should().Be(0);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task UncommittedEventDerivative_CannotAppendCanonicalVersion()
+    {
+        await using var database = CreateDatabase("CommittedDerivative");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            _ = await new CentralTransientEventPersistence(database.Context).AppendAsync(fixture.Request with
+            {
+                CentralDerivativeJobId = seeded.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+
+            var eventRecord = await database.Context.CentralTransientEvents.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            var sourceVersion = await database.Context.CentralTransientEventVersions.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            var observation = fixture.Event.Observations.Single();
+            var sourceArtifact = seeded.Artifacts.Single(item =>
+                item.ArtifactId == observation.Source.Locator.Artifact.ArtifactId);
+            var now = sourceVersion.VersionCreatedUtc.AddSeconds(1);
+            var bundleJob = new CentralDerivativeJob
+            {
+                SourceCentralArtifactId = sourceArtifact.Id,
+                TargetRole = FrameArtifactRole.Combined,
+                TargetRecipeVersion = "event-reconstruction-v1",
+                TargetVariant = "event-reconstruction",
+                RecipeName = "central-transient-derivative-bundle",
+                RecipeOptionsJson = "{}",
+                InputSelectorJson = "{}",
+                RequestedRecipeIdentitySha256 = new string('C', 64),
+                ExpectedRecipeIdentitySha256 = new string('C', 64),
+                RequestIdentitySha256 = new string('D', 64),
+                Status = CentralDerivativeJobStatus.Completed,
+                MaxAttempts = 3,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                CompletedAtUtc = now
+            };
+            var derivativeJob = new CentralTransientDerivativeJob
+            {
+                CentralDerivativeJobId = bundleJob.Id,
+                Job = bundleJob,
+                CentralTransientEventId = eventRecord.Id,
+                SourceEventVersionId = sourceVersion.EventVersionId,
+                RequestIdentitySha256 = bundleJob.RequestIdentitySha256,
+                ProducerSchemaVersion = "transient-derivative-producer-v1",
+                ProducerName = "hvo.linear16-transient-reconstruction",
+                ProducerVersion = Linear16TransientReconstruction.AlgorithmVersion,
+                RecipeIdentitySha256 = bundleJob.RequestedRecipeIdentitySha256,
+                OptionsIdentitySha256 = new string('E', 64),
+                CanonicalRequestJson = "{}",
+                CanonicalRequestSha256 = ProcessingIdentity.ComputePayloadSha256(Encoding.UTF8.GetBytes("{}")),
+                CanonicalRequestByteLength = 2,
+                ExpectedOutputCount = 5,
+                CreatedAtUtc = now,
+                CommittedAtUtc = null
+            };
+            var derivativeId = Guid.NewGuid();
+            var artifactId = Guid.NewGuid();
+            var outputIdentity = new string('F', 64);
+            var checksum = new string('A', 64);
+            var intent = new CentralTransientDerivativeOutputIntent
+            {
+                CentralDerivativeJobId = bundleJob.Id,
+                DerivativeJob = derivativeJob,
+                CentralTransientEventId = eventRecord.Id,
+                Kind = TransientDerivativeKind.Reconstruction,
+                DerivativeId = derivativeId,
+                ArtifactId = artifactId,
+                ArtifactRole = FrameArtifactRole.Combined,
+                ArtifactVariant = "event-reconstruction",
+                MediaType = "application/x-hvo-frame",
+                ByteLength = 2,
+                ChecksumSha256 = checksum,
+                OutputIdentitySha256 = outputIdentity,
+                StorageReference = $"minio://skymonitor-artifacts/events/{outputIdentity}.bin",
+                StorageETag = "fixture-etag",
+                ObjectState = CentralArtifactObjectState.Available,
+                CreatedAtUtc = now,
+                ObjectVerifiedAtUtc = now,
+                CommittedAtUtc = null
+            };
+            derivativeJob.OutputIntents.Add(intent);
+            var limitations = new[]
+            {
+                TransientDerivativeLimitation.IntraExposureTimingUnavailable,
+                TransientDerivativeLimitation.SaturatedPhotometryUnrecoverable
+            };
+            var derivative = new CentralTransientDerivativeRecord
+            {
+                DerivativeId = derivativeId,
+                CentralTransientEventId = eventRecord.Id,
+                SourceEventVersionId = sourceVersion.EventVersionId,
+                CentralDerivativeJobId = bundleJob.Id,
+                DerivativeJob = derivativeJob,
+                OutputIntentId = intent.Id,
+                OutputIntent = intent,
+                CreatedUtc = now,
+                Kind = intent.Kind,
+                ArtifactId = artifactId,
+                ArtifactRole = intent.ArtifactRole,
+                ArtifactVariant = intent.ArtifactVariant,
+                MediaType = intent.MediaType,
+                ByteLength = intent.ByteLength,
+                ArtifactChecksumSha256 = checksum,
+                RecipeIdentitySha256 = derivativeJob.RecipeIdentitySha256,
+                OptionsIdentitySha256 = derivativeJob.OptionsIdentitySha256,
+                OutputIdentitySha256 = outputIdentity,
+                LimitationsJson = CaptureContractJson.Canonicalize(
+                    CaptureContractJson.SerializeToElement(limitations)).GetRawText(),
+                AssessmentId = fixture.Assessment.Assessment.AssessmentId
+            };
+            derivative.Sources.Add(new CentralTransientDerivativeSourceReference
+            {
+                DerivativeId = derivativeId,
+                CentralTransientEventId = eventRecord.Id,
+                Ordinal = 0,
+                ObservationId = observation.ObservationId,
+                EvidenceId = observation.Source.EvidenceId,
+                CentralArtifactId = sourceArtifact.Id,
+                ArtifactId = sourceArtifact.ArtifactId,
+                ArtifactChecksumSha256 = sourceArtifact.ChecksumSha256,
+                ObservationStartedUtc = observation.Source.ObservationStartedUtc,
+                ObservationEndedUtc = observation.Source.ObservationEndedUtc
+            });
+            for (var ordinal = 0; ordinal < observation.BackgroundArtifacts.Count; ordinal++)
+            {
+                var background = observation.BackgroundArtifacts[ordinal];
+                var centralBackground = seeded.Artifacts.Single(item => item.ArtifactId == background.ArtifactId);
+                derivative.Backgrounds.Add(new CentralTransientDerivativeBackgroundReference
+                {
+                    DerivativeId = derivativeId,
+                    CentralTransientEventId = eventRecord.Id,
+                    ObservationOrdinal = 0,
+                    BackgroundOrdinal = ordinal,
+                    ObservationId = observation.ObservationId,
+                    CentralArtifactId = centralBackground.Id,
+                    ArtifactId = background.ArtifactId,
+                    ArtifactChecksumSha256 = background.ChecksumSha256
+                });
+            }
+            database.Context.CentralDerivativeJobs.Add(bundleJob);
+            database.Context.CentralTransientDerivativeJobs.Add(derivativeJob);
+            database.Context.CentralTransientDerivatives.Add(derivative);
+            await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+
+            await using var transaction = await database.Context.Database.BeginTransactionAsync().ConfigureAwait(false);
+            var appender = new CentralTransientEventVersionAppender(database.Context);
+            var append = async () => await appender.AppendGeneratedAsync(eventRecord.Id, previous => previous with
+            {
+                EventVersionId = Guid.NewGuid(),
+                Version = previous.Version + 1,
+                PreviousEventVersionId = previous.EventVersionId,
+                PreviousVersionCreatedUtc = previous.VersionCreatedUtc,
+                VersionCreatedUtc = now,
+                Derivatives = previous.Derivatives.Append(new TransientDerivativeV1(
+                        derivativeId,
+                        now,
+                        TransientDerivativeKind.Reconstruction,
+                        new TransientArtifactReferenceV1(
+                            artifactId,
+                            intent.ArtifactRole,
+                            intent.ArtifactVariant,
+                            derivativeJob.RecipeIdentitySha256,
+                            checksum),
+                        derivativeJob.RecipeIdentitySha256,
+                        [observation.Source.EvidenceId],
+                        limitations)).ToArray()
+            }, resetReviewState: false, CancellationToken.None).ConfigureAwait(false);
+            await append.Should().ThrowAsync<CentralTransientPersistenceException>().ConfigureAwait(false);
+            await transaction.RollbackAsync().ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+
+            (await database.Context.Set<CentralTransientEventVersionDerivative>().CountAsync().ConfigureAwait(false))
+                .Should().Be(0);
+            var persistedIntent = await database.Context.CentralTransientDerivativeOutputIntents.SingleAsync()
+                .ConfigureAwait(false);
+            persistedIntent.CommittedAtUtc = now;
+            await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var persistedJob = await database.Context.CentralTransientDerivativeJobs.SingleAsync()
+                .ConfigureAwait(false);
+            persistedJob.CommittedAtUtc = now;
+            var incompleteCommit = async () => await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            await incompleteCommit.Should().ThrowAsync<DbUpdateException>().ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var mutate = async () => await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE [CentralTransientDerivatives]
+                SET [ArtifactChecksumSha256] = {new string('0', 64)}
+                WHERE [DerivativeId] = {derivativeId};
+                """).ConfigureAwait(false);
+            await mutate.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task EventDerivativeScheduler_FreezesExactInputsAndConvergesRetries()
+    {
+        await using var database = CreateDatabase("DerivativeSchedule");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            var scheduler = new CentralTransientDerivativeScheduler(database.Context);
+            var persistence = new CentralTransientEventPersistence(
+                database.Context,
+                new CentralTransientEventVersionAppender(database.Context),
+                scheduler);
+            _ = await persistence.AppendAsync(fixture.Request with
+            {
+                CentralDerivativeJobId = seeded.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var eventVersionId = await database.Context.CentralTransientEventVersions.AsNoTracking()
+                .Select(item => item.EventVersionId).SingleAsync().ConfigureAwait(false);
+
+            await scheduler.EnsureScheduledAsync([eventVersionId], CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+
+            var derivativeJob = await database.Context.CentralTransientDerivativeJobs.AsNoTracking()
+                .Include(item => item.Job)!.ThenInclude(item => item!.Inputs)
+                .Include(item => item.Job)!.ThenInclude(item => item!.CanonicalInputs)
+                .SingleAsync().ConfigureAwait(false);
+            derivativeJob.SourceEventVersionId.Should().Be(eventVersionId);
+            derivativeJob.Job!.Status.Should().Be(CentralDerivativeJobStatus.Pending);
+            derivativeJob.Job.AvailableAtUtc.Should().Be(derivativeJob.CreatedAtUtc);
+            derivativeJob.Job.RecipeName.Should().Be(CentralTransientDerivativeRuntime.RecipeName);
+            derivativeJob.Job.Inputs.Should().HaveCount(fixture.Extraction.OrderedSources.Count);
+            derivativeJob.Job.CanonicalInputs.Should().ContainSingle(item =>
+                item.SchemaVersion == CentralTransientDerivativeRuntime.RequestSchemaVersion &&
+                item.IdentitySha256 == derivativeJob.CanonicalRequestSha256);
+            derivativeJob.CanonicalRequestJson.Should().NotContain("minio://");
+            derivativeJob.CanonicalRequestJson.Should().NotContain("StorageReference");
+            derivativeJob.CanonicalRequestJson.Should()
+                .Contain(fixture.Event.Observations.Single().Provenance.MaskIdentity);
+            derivativeJob.CanonicalRequestJson.Should()
+                .Contain(fixture.Extraction.ExtractionIdentitySha256);
+            using (var telemetry = new CentralDerivativeWorkerTelemetry())
+            {
+                var resolver = new CentralDerivativeWindowResolver(
+                    database.Context,
+                    telemetry,
+                    TimeProvider.System,
+                    Microsoft.Extensions.Logging.Abstractions.NullLogger<CentralDerivativeWindowResolver>.Instance);
+                await resolver.ResolveWaitingAsync(DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+            }
+            database.Context.ChangeTracker.Clear();
+            (await database.Context.CentralDerivativeJobs.AsNoTracking().SingleAsync(item =>
+                item.RecipeName == CentralTransientDerivativeRuntime.RecipeName).ConfigureAwait(false)).Status
+                .Should().Be(CentralDerivativeJobStatus.Pending);
+            (await database.Context.CentralTransientDerivativeJobs.CountAsync().ConfigureAwait(false)).Should().Be(1);
+
+            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
+                DISABLE TRIGGER [TR_CentralTransientDerivativeJobs_CommittedImmutable]
+                    ON [CentralTransientDerivativeJobs];
+                UPDATE [CentralTransientDerivativeJobs]
+                SET [CommittedAtUtc] = {DateTimeOffset.UtcNow}
+                WHERE [CentralDerivativeJobId] = {derivativeJob.CentralDerivativeJobId};
+                ENABLE TRIGGER [TR_CentralTransientDerivativeJobs_CommittedImmutable]
+                    ON [CentralTransientDerivativeJobs];
+                """).ConfigureAwait(false);
+            var insertAfterCommit = async () => await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO [CentralTransientDerivativeOutputIntents]
+                    ([Id], [CentralDerivativeJobId], [CentralTransientEventId], [Kind], [DerivativeId],
+                     [ArtifactId], [ArtifactRole], [ArtifactVariant], [MediaType], [ByteLength],
+                     [ChecksumSha256], [OutputIdentitySha256], [StorageReference], [ObjectState],
+                     [CreatedAtUtc])
+                VALUES
+                    ({Guid.NewGuid()}, {derivativeJob.CentralDerivativeJobId}, {derivativeJob.CentralTransientEventId},
+                     N'Reconstruction', {Guid.NewGuid()}, {Guid.NewGuid()}, N'Combined', N'event-reconstruction',
+                     N'application/x-hvo-frame', 2, {new string('A', 64)}, {new string('B', 64)},
+                     N'minio://skymonitor-artifacts/events/closed.bin', N'Pending', {DateTimeOffset.UtcNow});
+                """).ConfigureAwait(false);
+            await insertAfterCommit.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task ConcurrentEventDerivativeScheduling_ConvergesToOneFrozenJob()
+    {
+        await using var database = CreateDatabase("DerivativeScheduleConcurrent");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            _ = await new CentralTransientEventPersistence(database.Context).AppendAsync(fixture.Request with
+            {
+                CentralDerivativeJobId = seeded.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var eventVersionId = await database.Context.CentralTransientEventVersions.AsNoTracking()
+                .Select(item => item.EventVersionId).SingleAsync().ConfigureAwait(false);
+
+            await using var firstContext = CreateContext(database.ConnectionString);
+            await using var secondContext = CreateContext(database.ConnectionString);
+            await Task.WhenAll(
+                new CentralTransientDerivativeScheduler(firstContext)
+                    .EnsureScheduledAsync([eventVersionId], CancellationToken.None),
+                new CentralTransientDerivativeScheduler(secondContext)
+                    .EnsureScheduledAsync([eventVersionId], CancellationToken.None)).ConfigureAwait(false);
+
+            database.Context.ChangeTracker.Clear();
+            (await database.Context.CentralTransientDerivativeJobs.CountAsync().ConfigureAwait(false)).Should().Be(1);
+            (await database.Context.CentralDerivativeJobs.CountAsync(item =>
+                item.RecipeName == CentralTransientDerivativeRuntime.RecipeName).ConfigureAwait(false)).Should().Be(1);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task EventDerivativeOutputIntent_CannotCrossEventOwnership()
+    {
+        await using var database = CreateDatabase("DerivativeIntentOwnership");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.CreateMultiCandidate();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            _ = await new CentralTransientEventPersistence(database.Context).AppendAsync(fixture.Request with
+            {
+                CentralDerivativeJobId = seeded.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var eventVersions = await database.Context.CentralTransientEventVersions.AsNoTracking()
+                .OrderBy(item => item.CentralTransientEventId)
+                .Select(item => new { item.CentralTransientEventId, item.EventVersionId })
+                .ToArrayAsync().ConfigureAwait(false);
+            await new CentralTransientDerivativeScheduler(database.Context)
+                .EnsureScheduledAsync(eventVersions.Select(item => item.EventVersionId).ToArray(), CancellationToken.None)
+                .ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+
+            var firstJob = await database.Context.CentralTransientDerivativeJobs.AsNoTracking()
+                .OrderBy(item => item.CentralTransientEventId).FirstAsync().ConfigureAwait(false);
+            var otherEventId = eventVersions.Single(item =>
+                item.CentralTransientEventId != firstJob.CentralTransientEventId).CentralTransientEventId;
+            database.Context.CentralTransientDerivativeOutputIntents.Add(new CentralTransientDerivativeOutputIntent
+            {
+                CentralDerivativeJobId = firstJob.CentralDerivativeJobId,
+                CentralTransientEventId = otherEventId,
+                Kind = TransientDerivativeKind.Reconstruction,
+                DerivativeId = Guid.NewGuid(),
+                ArtifactId = Guid.NewGuid(),
+                ArtifactRole = FrameArtifactRole.Combined,
+                ArtifactVariant = "event-reconstruction",
+                MediaType = "application/x-hvo-frame",
+                ByteLength = 2,
+                ChecksumSha256 = new string('A', 64),
+                OutputIdentitySha256 = new string('B', 64),
+                StorageReference = "minio://skymonitor-artifacts/events/cross-owner.bin",
+                ObjectState = CentralArtifactObjectState.Pending,
+                CreatedAtUtc = DateTimeOffset.UtcNow
+            });
+
+            var save = async () => await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            await save.Should().ThrowAsync<DbUpdateException>().ConfigureAwait(false);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task EventReprocessing_AppendsAssessmentResetsReviewAndReplaysBeforeEtag()
+    {
+        await using var database = CreateDatabase("EventReprocessing");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            _ = await new CentralTransientEventPersistence(database.Context).AppendAsync(fixture.Request with
+            {
+                CentralDerivativeJobId = seeded.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            var principal = CreateOwnerPrincipal("reprocessing-admin", admin: true);
+            var options = fixture.AssessmentOptions with { FireballMinimumIntegratedSignalAdu = 1 };
+            var request = new CentralTransientReprocessingRequest(options);
+            var idempotencyKey = $"reprocess-{Guid.NewGuid():N}";
+            var service = new CentralTransientReprocessingService(database.Context, TimeProvider.System);
+
+            var scheduled = await service.ScheduleAsync(
+                principal,
+                current.CentralTransientEventId,
+                current.RowVersion,
+                idempotencyKey,
+                request,
+                CancellationToken.None).ConfigureAwait(false);
+            scheduled.Status.Should().Be(CentralTransientReprocessingStatus.Scheduled);
+            scheduled.Response!.Replayed.Should().BeFalse();
+            database.Context.ChangeTracker.Clear();
+            var equivalentPrincipal = CreateOwnerPrincipal("other-reprocessing-admin", admin: true);
+            var equivalentKey = $"equivalent-{Guid.NewGuid():N}";
+            var converged = await service.ScheduleAsync(
+                equivalentPrincipal,
+                current.CentralTransientEventId,
+                current.RowVersion,
+                equivalentKey,
+                request,
+                CancellationToken.None).ConfigureAwait(false);
+            converged.Status.Should().Be(CentralTransientReprocessingStatus.Scheduled);
+            converged.Response!.Replayed.Should().BeTrue();
+            converged.Response.JobId.Should().Be(scheduled.Response.JobId);
+            (await database.Context.CentralTransientReprocessingJobs.CountAsync().ConfigureAwait(false)).Should().Be(1);
+            (await database.Context.CentralTransientReprocessingRequests.CountAsync().ConfigureAwait(false)).Should().Be(2);
+            var overlapping = await service.ScheduleAsync(
+                principal,
+                current.CentralTransientEventId,
+                current.RowVersion,
+                $"overlap-{Guid.NewGuid():N}",
+                request with { Options = options with { FireballMinimumIntegratedSignalAdu = 2 } },
+                CancellationToken.None).ConfigureAwait(false);
+            overlapping.Status.Should().Be(CentralTransientReprocessingStatus.Ineligible);
+            database.Context.ChangeTracker.Clear();
+            var lease = await new CentralDerivativeJobService(database.Context, TimeProvider.System)
+                .ClaimNextAsync("reprocessing-worker", TimeSpan.FromMinutes(2), CancellationToken.None)
+                .ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            lease!.RecipeName.Should().Be(CentralTransientReprocessingRuntime.RecipeName);
+            database.Context.ChangeTracker.Clear();
+            var objectReader = new RecordingArtifactObjectReader();
+            var scheduler = new ThrowOnceTransientDerivativeScheduler(
+                new CentralTransientDerivativeScheduler(database.Context));
+            var executor = new CentralTransientReprocessingExecutor(
+                database.Context,
+                new CentralTransientEventVersionAppender(database.Context),
+                scheduler,
+                new CentralDerivativeJobService(database.Context, TimeProvider.System),
+                objectReader,
+                TimeProvider.System);
+            var staleLease = async () => await executor.ExecuteAsync(
+                lease with { LeaseToken = Guid.NewGuid() }, CancellationToken.None).ConfigureAwait(false);
+            await staleLease.Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
+            (await database.Context.CentralTransientAssessments.CountAsync().ConfigureAwait(false)).Should().Be(1);
+            objectReader.VerifiedArtifactIds.Clear();
+            var interrupted = async () => await executor.ExecuteAsync(lease, CancellationToken.None)
+                .ConfigureAwait(false);
+            await interrupted.Should().ThrowAsync<InvalidOperationException>().ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var result = await executor.ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+            result.Status.Should().Be(ProcessingOutcomeStatus.Produced);
+            result.ReasonCode.Should().Be("transient-reprocessing.output-adopted");
+            objectReader.VerifiedArtifactIds.Should().BeEquivalentTo(seeded.Artifacts.Select(item => item.Id));
+            database.Context.ChangeTracker.Clear();
+
+            (await database.Context.CentralTransientAssessments.CountAsync().ConfigureAwait(false)).Should().Be(2);
+            (await database.Context.CentralTransientEventVersions.CountAsync().ConfigureAwait(false)).Should().Be(2);
+            var updated = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            updated.ActiveAssessmentId.Should().NotBe(current.ActiveAssessmentId);
+            updated.ReviewState.Should().Be(CentralTransientReviewState.NeedsReview);
+            (await database.Context.CentralTransientDerivativeJobs.CountAsync(item =>
+                item.SourceEventVersionId == updated.LatestEventVersionId).ConfigureAwait(false)).Should().Be(1);
+
+            var replay = await service.ScheduleAsync(
+                principal,
+                current.CentralTransientEventId,
+                current.RowVersion,
+                idempotencyKey,
+                request,
+                CancellationToken.None).ConfigureAwait(false);
+            replay.Status.Should().Be(CentralTransientReprocessingStatus.Scheduled);
+            replay.Response!.Replayed.Should().BeTrue();
+            replay.Response.JobId.Should().Be(scheduled.Response.JobId);
+            var convergedReplay = await service.ScheduleAsync(
+                equivalentPrincipal,
+                current.CentralTransientEventId,
+                current.RowVersion,
+                equivalentKey,
+                request,
+                CancellationToken.None).ConfigureAwait(false);
+            convergedReplay.Status.Should().Be(CentralTransientReprocessingStatus.Scheduled);
+            convergedReplay.Response!.JobId.Should().Be(scheduled.Response.JobId);
+            convergedReplay.Response.Replayed.Should().BeTrue();
+            var conflict = await service.ScheduleAsync(
+                principal,
+                current.CentralTransientEventId,
+                current.RowVersion,
+                idempotencyKey,
+                request with { Options = options with { FireballMinimumIntegratedSignalAdu = 2 } },
+                CancellationToken.None).ConfigureAwait(false);
+            conflict.Status.Should().Be(CentralTransientReprocessingStatus.IdempotencyConflict);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task EventPayloadRelease_IsOptInTerminalAndIdempotent()
+    {
+        await using var database = CreateDatabase("EventPayloadRelease");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            _ = await new CentralTransientEventPersistence(database.Context).AppendAsync(fixture.Request with
+            {
+                CentralDerivativeJobId = seeded.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            await database.Context.CentralDerivativeJobs.Where(item => item.Id == seeded.JobId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Status, CentralDerivativeJobStatus.Completed)
+                    .SetProperty(item => item.CompletedAtUtc, DateTimeOffset.UtcNow)
+                    .SetProperty(item => item.AvailableAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            var principal = CreateOwnerPrincipal("release-admin", admin: true);
+            var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+            var disabled = new CentralTransientPayloadReleaseService(
+                database.Context,
+                new CentralArtifactRetentionReferences(database.Context),
+                minio,
+                Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions()),
+                TimeProvider.System);
+            (await disabled.ReleaseAsync(
+                principal, current.CentralTransientEventId, current.RowVersion, "disabled", CancellationToken.None)
+                .ConfigureAwait(false)).Status.Should().Be(CentralTransientPayloadReleaseStatus.Disabled);
+
+            var reviewed = await new CentralTransientReviewService(
+                    database.Context,
+                    new CentralTransientEventVersionAppender(database.Context),
+                    TimeProvider.System)
+                .ReviewAsync(
+                    principal,
+                    current.CentralTransientEventId,
+                    current.RowVersion,
+                    $"release-review-{Guid.NewGuid():N}",
+                    new CentralTransientReviewRequest(
+                        current.ActiveAssessmentId,
+                        TransientReviewDisposition.Confirmed,
+                        null,
+                        ["human.release-approved"]),
+                    CancellationToken.None).ConfigureAwait(false);
+            reviewed.Status.Should().Be(CentralTransientReviewMutationStatus.Applied);
+            var sharedArtifactId = await database.Context.CentralTransientObservationSources.AsNoTracking()
+                .Select(item => item.CentralArtifactId).FirstAsync().ConfigureAwait(false);
+            var sharedEventId = Guid.NewGuid();
+            var sharedObservationId = Guid.NewGuid();
+            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO [CentralTransientEvents] ([Id], [AgentId], [EventId], [EventCreatedUtc])
+                VALUES ({sharedEventId}, {"shared-evidence-agent"}, {Guid.NewGuid()}, {DateTimeOffset.UtcNow});
+
+                INSERT INTO [CentralTransientObservationSources]
+                    ([ObservationId], [CentralArtifactId], [EvidenceSchemaVersion], [EvidenceId],
+                     [LocatorSchemaVersion], [LocatorKind], [ArtifactId], [ArtifactRole], [ArtifactVariant],
+                     [ArtifactRecipeIdentitySha256], [ArtifactChecksumSha256], [ObservationStartedUtc],
+                     [ObservationEndedUtc], [TimingQuality], [TimingProvenanceSource], [TimingProvenanceVersion])
+                SELECT TOP(1) {sharedObservationId}, [CentralArtifactId], [EvidenceSchemaVersion], [EvidenceId],
+                     [LocatorSchemaVersion], [LocatorKind], [ArtifactId], [ArtifactRole], [ArtifactVariant],
+                     [ArtifactRecipeIdentitySha256], [ArtifactChecksumSha256], [ObservationStartedUtc],
+                     [ObservationEndedUtc], [TimingQuality], [TimingProvenanceSource], [TimingProvenanceVersion]
+                FROM [CentralTransientObservationSources]
+                WHERE [CentralArtifactId] = {sharedArtifactId};
+
+                INSERT INTO [CentralTransientObservations]
+                    ([ObservationId], [CentralTransientEventId], [DetectorInputIdentitySha256],
+                     [CalibrationIdentity], [MaskIdentity], [ProcessingProfileIdentity], [OriginatingCandidateId],
+                     [ExtractionProducerSchemaVersion], [ExtractionProducerKind], [ExtractionProducerName],
+                     [ExtractionProducerVersion], [ExtractionRecipeIdentitySha256], [ExtractionReceiptIdentitySha256],
+                     [GeometryJson], [FeaturesJson], [SourceReferenceId])
+                SELECT TOP(1) {sharedObservationId}, {sharedEventId}, [DetectorInputIdentitySha256],
+                     [CalibrationIdentity], [MaskIdentity], [ProcessingProfileIdentity], NULL,
+                     [ExtractionProducerSchemaVersion], [ExtractionProducerKind], [ExtractionProducerName],
+                     [ExtractionProducerVersion], [ExtractionRecipeIdentitySha256], [ExtractionReceiptIdentitySha256],
+                     [GeometryJson], [FeaturesJson], {sharedObservationId}
+                FROM [CentralTransientObservations] AS observation
+                WHERE EXISTS (
+                    SELECT 1 FROM [CentralTransientObservationSources] AS source
+                    WHERE source.[ObservationId] = observation.[ObservationId]
+                      AND source.[CentralArtifactId] = {sharedArtifactId});
+                """).ConfigureAwait(false);
+            var recoveryRelease = new CentralTransientPayloadRelease
+            {
+                CentralTransientEventId = sharedEventId,
+                ActorIdentity = "release-recovery",
+                IdempotencyKey = $"release-recovery-{Guid.NewGuid():N}",
+                CanonicalRequestSha256 = new string('A', 64),
+                State = CentralTransientPayloadReleaseState.Pending,
+                CreatedUtc = DateTimeOffset.UtcNow
+            };
+            recoveryRelease.Items.Add(new CentralTransientPayloadReleaseItem
+            {
+                ReleaseId = recoveryRelease.ReleaseId,
+                Ordinal = 0,
+                Kind = CentralTransientPayloadReleaseItemKind.SourceArtifact,
+                RecordId = sharedArtifactId
+            });
+            database.Context.CentralTransientPayloadReleases.Add(recoveryRelease);
+            await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            await database.Context.CentralDerivativeJobs.Where(item =>
+                    item.RecipeName == CentralTransientDerivativeRuntime.RecipeName)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(item => item.AvailableAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var reviewedCurrent = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            var enabled = new CentralTransientPayloadReleaseService(
+                database.Context,
+                new CentralArtifactRetentionReferences(database.Context),
+                minio,
+                Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions { Enabled = true }),
+                TimeProvider.System);
+            (await enabled.ProcessNextAsync(CancellationToken.None).ConfigureAwait(false)).Should().BeTrue();
+            var preservedLateHold = await database.Context.CentralTransientPayloadReleaseItems.AsNoTracking()
+                .SingleAsync(item => item.ReleaseId == recoveryRelease.ReleaseId).ConfigureAwait(false);
+            preservedLateHold.Outcome.Should().Be(CentralTransientPayloadReleaseItemOutcome.PreservedHeld);
+            preservedLateHold.ReleasedUtc.Should().NotBeNull();
+            var key = $"release-{Guid.NewGuid():N}";
+            var released = await enabled.ReleaseAsync(
+                principal,
+                current.CentralTransientEventId,
+                reviewedCurrent.RowVersion,
+                key,
+                CancellationToken.None).ConfigureAwait(false);
+            released.Status.Should().Be(CentralTransientPayloadReleaseStatus.Released);
+            released.Response!.State.Should().Be(CentralTransientPayloadReleaseState.Completed);
+            released.Response.ETag.Should().NotBe(reviewed.Response!.ETag);
+            released.Response.ReleasedPayloadCount.Should().Be(seeded.Artifacts.Count - 1);
+            (await database.Context.CentralArtifacts.CountAsync(item =>
+                item.ObjectState == CentralArtifactObjectState.Expired).ConfigureAwait(false))
+                .Should().Be(seeded.Artifacts.Count - 1);
+            (await database.Context.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == sharedArtifactId)
+                .ConfigureAwait(false)).ObjectState.Should().Be(CentralArtifactObjectState.Available);
+            (await database.Context.CentralTransientEvents.CountAsync().ConfigureAwait(false)).Should().Be(2);
+            (await database.Context.CentralTransientEventVersions.CountAsync().ConfigureAwait(false)).Should().Be(2);
+
+            var replay = await enabled.ReleaseAsync(
+                principal,
+                current.CentralTransientEventId,
+                current.RowVersion,
+                key,
+                CancellationToken.None).ConfigureAwait(false);
+            replay.Status.Should().Be(CentralTransientPayloadReleaseStatus.Released);
+            replay.Response!.Replayed.Should().BeTrue();
+            replay.Response.ReleaseId.Should().Be(released.Response.ReleaseId);
+            CentralTransientEventEtag.TryParse(released.Response.ETag, out var releasedRowVersion).Should().BeTrue();
+            var secondRelease = await enabled.ReleaseAsync(
+                principal,
+                current.CentralTransientEventId,
+                releasedRowVersion,
+                $"second-release-{Guid.NewGuid():N}",
+                CancellationToken.None).ConfigureAwait(false);
+            secondRelease.Status.Should().Be(CentralTransientPayloadReleaseStatus.Ineligible);
+            var blockedReprocessing = await new CentralTransientReprocessingService(
+                    database.Context, TimeProvider.System)
+                .ScheduleAsync(
+                    principal,
+                    current.CentralTransientEventId,
+                    releasedRowVersion,
+                    $"released-reprocess-{Guid.NewGuid():N}",
+                    new CentralTransientReprocessingRequest(fixture.AssessmentOptions),
+                    CancellationToken.None).ConfigureAwait(false);
+            blockedReprocessing.Status.Should().Be(CentralTransientReprocessingStatus.Ineligible);
+            var appendReleaseItem = async () => await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO [CentralTransientPayloadReleaseItems]
+                    ([ReleaseId], [Ordinal], [Kind], [RecordId], [Outcome], [ReleasedUtc])
+                VALUES ({released.Response.ReleaseId}, {999}, N'SourceArtifact', {Guid.NewGuid()}, N'Pending', NULL);
+                """).ConfigureAwait(false);
+            await appendReleaseItem.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task PayloadReleaseProcessor_ResumesDurablePendingRelease()
+    {
+        await using var database = CreateDatabase("PendingPayloadRelease");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            _ = await new CentralTransientEventPersistence(database.Context).AppendAsync(fixture.Request with
+            {
+                CentralDerivativeJobId = seeded.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            var source = seeded.Artifacts[0];
+            var release = new CentralTransientPayloadRelease
+            {
+                CentralTransientEventId = current.CentralTransientEventId,
+                ActorIdentity = "release-recovery-admin",
+                IdempotencyKey = $"recovery-{Guid.NewGuid():N}",
+                CanonicalRequestSha256 = new string('A', 64),
+                State = CentralTransientPayloadReleaseState.Pending,
+                CreatedUtc = DateTimeOffset.UtcNow
+            };
+            release.Items.Add(new CentralTransientPayloadReleaseItem
+            {
+                ReleaseId = release.ReleaseId,
+                Ordinal = 0,
+                Kind = CentralTransientPayloadReleaseItemKind.SourceArtifact,
+                RecordId = source.Id
+            });
+            database.Context.CentralTransientPayloadReleases.Add(release);
+            await database.Context.SaveChangesAsync().ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+
+            var processor = new CentralTransientPayloadReleaseService(
+                database.Context,
+                new CentralArtifactRetentionReferences(database.Context),
+                AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>(),
+                Microsoft.Extensions.Options.Options.Create(
+                    new CentralTransientPayloadReleaseOptions { Enabled = true }),
+                TimeProvider.System);
+            (await processor.ProcessNextAsync(CancellationToken.None).ConfigureAwait(false)).Should().BeTrue();
+            database.Context.ChangeTracker.Clear();
+
+            var completed = await database.Context.CentralTransientPayloadReleases.AsNoTracking()
+                .Include(item => item.Items).SingleAsync(item => item.ReleaseId == release.ReleaseId)
+                .ConfigureAwait(false);
+            completed.State.Should().Be(CentralTransientPayloadReleaseState.Completed);
+            completed.Items.Should().ContainSingle(item => item.ReleasedUtc.HasValue);
+            (await database.Context.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == source.Id)
+                .ConfigureAwait(false)).ObjectState.Should().Be(CentralArtifactObjectState.Expired);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task ConcurrentReviews_FromOnePredecessorCommitExactlyOneSuccessor()
+    {
+        await using var database = CreateDatabase("ConcurrentReview");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var seeded = await SeedAsync(database.Context, fixture).ConfigureAwait(false);
+            _ = await new CentralTransientEventPersistence(database.Context).AppendAsync(fixture.Request with
+            {
+                CentralDerivativeJobId = seeded.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
+                .ConfigureAwait(false);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(ClaimTypes.NameIdentifier, "reviewer-concurrent"),
+                new Claim("sub", "reviewer-concurrent"),
+                new Claim("account_type", "User"),
+                new Claim("scope", "api.admin")
+            ], "Test"));
+            var request = new CentralTransientReviewRequest(
+                current.ActiveAssessmentId,
+                TransientReviewDisposition.Confirmed,
+                null,
+                ["human.confirmed"]);
+
+            await using var firstContext = CreateContext(database.ConnectionString);
+            await using var secondContext = CreateContext(database.ConnectionString);
+            var firstService = new CentralTransientReviewService(
+                firstContext, new CentralTransientEventVersionAppender(firstContext), TimeProvider.System);
+            var secondService = new CentralTransientReviewService(
+                secondContext, new CentralTransientEventVersionAppender(secondContext), TimeProvider.System);
+            var results = await Task.WhenAll(
+                firstService.ReviewAsync(principal, current.CentralTransientEventId, current.RowVersion,
+                    "concurrent-1", request, CancellationToken.None),
+                secondService.ReviewAsync(principal, current.CentralTransientEventId, current.RowVersion,
+                    "concurrent-2", request, CancellationToken.None)).ConfigureAwait(false);
+
+            results.Select(item => item.Status).Should().BeEquivalentTo([
+                CentralTransientReviewMutationStatus.Applied,
+                CentralTransientReviewMutationStatus.PreconditionFailed
+            ]);
+            database.Context.ChangeTracker.Clear();
+            (await database.Context.CentralTransientReviews.CountAsync().ConfigureAwait(false)).Should().Be(1);
+            (await database.Context.CentralTransientEventVersions.CountAsync().ConfigureAwait(false)).Should().Be(2);
+            (await database.Context.CentralTransientReviewMutations.CountAsync().ConfigureAwait(false)).Should().Be(1);
+        }
+        finally
+        {
+            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task MixedOwnerEvidence_IsHiddenFromEveryIndividualOwner()
+    {
+        await using var database = CreateDatabase("MixedOwner");
+        try
+        {
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var firstObservatory = new Observatory
+            {
+                OwnerUserId = "owner-1",
+                Name = "Owner one",
+                TimeZoneId = "UTC",
+                CreatedAtUtc = now,
+                IsActive = true
+            };
+            var secondObservatory = new Observatory
+            {
+                OwnerUserId = "owner-2",
+                Name = "Owner two",
+                TimeZoneId = "UTC",
+                CreatedAtUtc = now,
+                IsActive = true
+            };
+            var firstRegistration = CreateRegistration(firstObservatory, "owner-1", now);
+            var secondRegistration = CreateRegistration(secondObservatory, "owner-2", now);
+            database.Context.DeviceRegistrations.AddRange(firstRegistration, secondRegistration);
+            await database.Context.SaveChangesAsync().ConfigureAwait(false);
+
+            var fixture = CentralTransientPersistenceFixture.Create();
+            var registrationIds = Enumerable.Range(0, fixture.Extraction.OrderedSources.Count)
+                .Select(index => index % 2 == 0 ? firstRegistration.Id : secondRegistration.Id)
+                .ToArray();
+            var seeded = await SeedAsync(database.Context, fixture, registrationIds: registrationIds)
+                .ConfigureAwait(false);
+            _ = await new CentralTransientEventPersistence(database.Context).AppendAsync(fixture.Request with
+            {
+                CentralDerivativeJobId = seeded.JobId
+            }, CancellationToken.None).ConfigureAwait(false);
+            database.Context.ChangeTracker.Clear();
+            var eventId = await database.Context.CentralTransientEventCurrent.AsNoTracking()
+                .Select(item => item.CentralTransientEventId).SingleAsync().ConfigureAwait(false);
+            var readService = new CentralTransientEventReadService(database.Context);
+
+            (await readService.GetAsync(CreateOwnerPrincipal("owner-1"), eventId, CancellationToken.None)
+                .ConfigureAwait(false)).Should().BeNull();
+            (await readService.GetAsync(CreateOwnerPrincipal("owner-2"), eventId, CancellationToken.None)
+                .ConfigureAwait(false)).Should().BeNull();
+            (await readService.GetAsync(CreateOwnerPrincipal("admin", admin: true), eventId, CancellationToken.None)
+                .ConfigureAwait(false)).Should().NotBeNull();
         }
         finally
         {
@@ -506,11 +1783,44 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
         }
     }
 
-    private static async Task<SeededDatabase> SeedAsync(
+    private static DeviceRegistration CreateRegistration(
+        Observatory observatory,
+        string ownerId,
+        DateTimeOffset now)
+        => new()
+        {
+            DeviceId = $"mixed-owner-{Guid.NewGuid():N}",
+            ObservatoryId = observatory.Id,
+            Observatory = observatory,
+            FriendlyName = "Mixed owner fixture",
+            ObservatoryName = observatory.Name,
+            ObservatoryTimeZoneId = observatory.TimeZoneId,
+            OwnerUserId = ownerId,
+            OwnerDisplayName = ownerId,
+            OwnerConfirmationMethod = "SelfAttested",
+            OwnerConfirmedAtUtc = now,
+            Status = DeviceRegistrationStatus.Active,
+            VerificationCodeHash = DeviceRegistrationService.ComputeSha256("ABCDE"),
+            DevicePublicId = Guid.NewGuid(),
+            IssuedAtUtc = now,
+            ActivatedAtUtc = now
+        };
+
+    private static ClaimsPrincipal CreateOwnerPrincipal(string ownerId, bool admin = false)
+        => new(new ClaimsIdentity([
+            new Claim(ClaimTypes.NameIdentifier, ownerId),
+            new Claim("sub", ownerId),
+            new Claim("account_type", "User"),
+            new Claim("scope", admin ? "api.viewer api.admin" : "api.viewer")
+        ], "Test"));
+
+    internal static async Task<SeededDatabase> SeedAsync(
         ApplicationDbContext db,
         CentralTransientPersistenceFixture fixture,
         bool mismatchFirstObservation = false,
-        Guid? provisionalJobId = null)
+        Guid? provisionalJobId = null,
+        Guid? registrationId = null,
+        IReadOnlyList<Guid>? registrationIds = null)
     {
         var artifacts = new List<CentralArtifact>();
         var sourceOrdinal = 0;
@@ -522,7 +1832,9 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
             var reference = source.Source.Locator.Artifact;
             var frame = new CentralFrame
             {
-                RegistrationId = Guid.NewGuid(),
+                RegistrationId = registrationIds is not null
+                    ? registrationIds[sourceOrdinal]
+                    : registrationId ?? Guid.NewGuid(),
                 DevicePublicId = Guid.NewGuid(),
                 ObservatoryId = Guid.NewGuid(),
                 AgentId = fixture.AgentId,
@@ -714,7 +2026,74 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
             .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
             .Options);
 
-    private sealed record SeededDatabase(Guid JobId, IReadOnlyList<CentralArtifact> Artifacts);
+    internal sealed record SeededDatabase(Guid JobId, IReadOnlyList<CentralArtifact> Artifacts);
+
+    private sealed class RecordingArtifactObjectReader : ICentralArtifactObjectReader
+    {
+        public List<Guid> VerifiedArtifactIds { get; } = [];
+
+        public Task<CentralArtifactObjectSnapshot> VerifyAsync(
+            CentralArtifact artifact,
+            CancellationToken cancellationToken)
+        {
+            VerifiedArtifactIds.Add(artifact.Id);
+            return Task.FromResult(new CentralArtifactObjectSnapshot(
+                artifact.StorageReference,
+                "test-etag",
+                artifact.ByteLength));
+        }
+
+        public Task<bool> IsCurrentGenerationAsync(
+            CentralArtifact artifact,
+            string storageETag,
+            CancellationToken cancellationToken) => Task.FromResult(true);
+
+        public Task CopyToAsync(
+            CentralArtifactObjectSnapshot snapshot,
+            Stream destination,
+            CentralArtifactByteRange? range,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class ThrowOnceTransientDerivativeScheduler(ICentralTransientDerivativeScheduler inner)
+        : ICentralTransientDerivativeScheduler
+    {
+        private bool thrown;
+
+        public Task EnsureScheduledAsync(
+            IReadOnlyList<Guid> eventVersionIds,
+            CancellationToken cancellationToken)
+        {
+            if (!thrown)
+            {
+                thrown = true;
+                throw new InvalidOperationException("Injected post-commit scheduling interruption.");
+            }
+            return inner.EnsureScheduledAsync(eventVersionIds, cancellationToken);
+        }
+    }
+
+    private sealed class RecordingEmailNotificationService : IEmailNotificationService
+    {
+        public int SendCount { get; private set; }
+
+        public Task SendAsync(
+            string recipient,
+            string subject,
+            string body,
+            CancellationToken cancellationToken = default)
+        {
+            SendCount++;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class MutableTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+
+        public void Advance(TimeSpan duration) => utcNow += duration;
+    }
 
     private sealed class MigrationDatabase(ApplicationDbContext context, string connectionString) : IAsyncDisposable
     {

@@ -12,6 +12,8 @@ internal sealed class CentralTransientEventRecord
     public ICollection<CentralTransientEventVersionRecord> Versions { get; } = [];
     public ICollection<CentralTransientObservationRecord> Observations { get; } = [];
     public ICollection<CentralTransientAssessmentRecord> Assessments { get; } = [];
+    public ICollection<CentralTransientReviewRecord> Reviews { get; } = [];
+    public CentralTransientEventCurrent? Current { get; set; }
 }
 
 internal sealed class CentralTransientEventVersionRecord
@@ -34,6 +36,8 @@ internal sealed class CentralTransientEventVersionRecord
     public int CanonicalEventByteLength { get; set; }
     public ICollection<CentralTransientEventVersionObservation> Observations { get; } = [];
     public ICollection<CentralTransientEventVersionAssessment> Assessments { get; } = [];
+    public ICollection<CentralTransientEventVersionReview> Reviews { get; } = [];
+    public ICollection<CentralTransientEventVersionDerivative> Derivatives { get; } = [];
 }
 
 internal sealed class CentralTransientObservationRecord
@@ -151,6 +155,78 @@ internal sealed class CentralTransientAssessmentObservation
     public int Ordinal { get; set; }
     public Guid ObservationId { get; set; }
     public CentralTransientObservationRecord? Observation { get; set; }
+}
+
+internal sealed class CentralTransientReviewRecord
+{
+    public Guid ReviewId { get; set; }
+    public Guid CentralTransientEventId { get; set; }
+    public CentralTransientEventRecord? Event { get; set; }
+    public DateTimeOffset CreatedUtc { get; set; }
+    public string ReviewerIdentity { get; set; } = string.Empty;
+    public TransientReviewDisposition Disposition { get; set; }
+    public Guid AssessmentId { get; set; }
+    public CentralTransientAssessmentRecord? Assessment { get; set; }
+    public TransientClassification? OverrideClassification { get; set; }
+    public TransientMeteorSeverity? OverrideMeteorSeverity { get; set; }
+    public int? OverrideConfidenceMillionths { get; set; }
+    public string ReasonCodesJson { get; set; } = string.Empty;
+    public Guid? SupersedesReviewId { get; set; }
+    public DateTimeOffset? SupersedesReviewCreatedUtc { get; set; }
+    public CentralTransientReviewRecord? SupersedesReview { get; set; }
+}
+
+internal sealed class CentralTransientEventVersionReview
+{
+    public Guid CentralTransientEventId { get; set; }
+    public Guid EventVersionId { get; set; }
+    public CentralTransientEventVersionRecord? EventVersion { get; set; }
+    public int Ordinal { get; set; }
+    public Guid ReviewId { get; set; }
+    public CentralTransientReviewRecord? Review { get; set; }
+}
+
+internal sealed class CentralTransientEventCurrent
+{
+    public Guid CentralTransientEventId { get; set; }
+    public CentralTransientEventRecord? Event { get; set; }
+    public Guid LatestEventVersionId { get; set; }
+    public CentralTransientEventVersionRecord? LatestEventVersion { get; set; }
+    public int LatestVersion { get; set; }
+    public Guid ActiveAssessmentId { get; set; }
+    public CentralTransientAssessmentRecord? ActiveAssessment { get; set; }
+    public Guid? LatestReviewId { get; set; }
+    public CentralTransientReviewRecord? LatestReview { get; set; }
+    public CentralTransientReviewState ReviewState { get; set; }
+    public TransientClassification EffectiveClassification { get; set; }
+    public TransientMeteorSeverity? EffectiveMeteorSeverity { get; set; }
+    public int EffectiveConfidenceMillionths { get; set; }
+    public DateTimeOffset UpdatedUtc { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}
+
+internal sealed class CentralTransientReviewMutationRecord
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid CentralTransientEventId { get; set; }
+    public CentralTransientEventRecord? Event { get; set; }
+    public string ActorIdentity { get; set; } = string.Empty;
+    public string IdempotencyKey { get; set; } = string.Empty;
+    public string CanonicalRequestSha256 { get; set; } = string.Empty;
+    public Guid PreviousEventVersionId { get; set; }
+    public Guid? PreviousReviewId { get; set; }
+    public Guid ResultEventVersionId { get; set; }
+    public Guid ResultReviewId { get; set; }
+    public byte[] ResultRowVersion { get; set; } = [];
+    public DateTimeOffset RecordedAtUtc { get; set; }
+}
+
+internal enum CentralTransientReviewState
+{
+    NeedsReview,
+    Reviewed,
+    Overridden,
+    Rejected
 }
 
 internal sealed class CentralTransientValidationJob

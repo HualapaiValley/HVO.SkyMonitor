@@ -182,6 +182,7 @@ internal static class CentralTransientValidationOutcome
         DateTimeOffset recordedAtUtc,
         CancellationToken cancellationToken)
     {
+        var versionAppender = new CentralTransientEventVersionAppender(dbContext);
         var eventRecordIds = validation.IdentitySlots
             .Where(item => item.State == CentralTransientValidationIdentitySlotState.Committed &&
                 item.CentralTransientEventId.HasValue)
@@ -190,60 +191,17 @@ internal static class CentralTransientValidationOutcome
             .ToArray();
         foreach (var eventRecordId in eventRecordIds)
         {
-            var latest = await dbContext.CentralTransientEventVersions.AsNoTracking()
-                .Where(item => item.CentralTransientEventId == eventRecordId)
-                .OrderByDescending(item => item.Version)
-                .FirstAsync(cancellationToken).ConfigureAwait(false);
-            var parsed = TransientContractJson.ParseEvent(Encoding.UTF8.GetBytes(latest.CanonicalEventJson));
-            var prior = parsed.Value ?? throw new CentralDerivativeJobStateException(
-                $"Persisted transient event failed canonical parsing: {parsed.Validation.ReasonCode}.");
-            var createdUtc = recordedAtUtc > prior.VersionCreatedUtc
-                ? recordedAtUtc
-                : prior.VersionCreatedUtc.AddTicks(1);
-            var next = prior with
+            _ = await versionAppender.AppendGeneratedAsync(eventRecordId, prior => prior with
             {
                 EventVersionId = Guid.NewGuid(),
                 Version = prior.Version + 1,
                 PreviousEventVersionId = prior.EventVersionId,
                 PreviousVersionCreatedUtc = prior.VersionCreatedUtc,
                 State = TransientEventState.NeedsReview,
-                VersionCreatedUtc = createdUtc
-            };
-            var canonical = TransientContractJson.Serialize(next);
-            var version = new CentralTransientEventVersionRecord
-            {
-                EventVersionId = next.EventVersionId,
-                CentralTransientEventId = eventRecordId,
-                Version = next.Version,
-                PreviousVersionNumber = prior.Version,
-                PreviousEventVersionId = prior.EventVersionId,
-                PreviousVersionCreatedUtc = prior.VersionCreatedUtc,
-                State = next.State,
-                VersionCreatedUtc = next.VersionCreatedUtc,
-                FirstObservedUtc = next.FirstObservedUtc,
-                LastObservedUtc = next.LastObservedUtc,
-                SchemaVersion = next.SchemaVersion,
-                CanonicalEventJson = Encoding.UTF8.GetString(canonical),
-                CanonicalEventSha256 = Convert.ToHexString(SHA256.HashData(canonical)),
-                CanonicalEventByteLength = canonical.Length
-            };
-            dbContext.CentralTransientEventVersions.Add(version);
-            dbContext.AddRange(next.Observations.Select(observation =>
-                new CentralTransientEventVersionObservation
-                {
-                    CentralTransientEventId = eventRecordId,
-                    EventVersionId = next.EventVersionId,
-                    Ordinal = observation.Ordinal,
-                    ObservationId = observation.ObservationId
-                }));
-            dbContext.AddRange(next.Assessments.Select((assessment, ordinal) =>
-                new CentralTransientEventVersionAssessment
-                {
-                    CentralTransientEventId = eventRecordId,
-                    EventVersionId = next.EventVersionId,
-                    Ordinal = ordinal,
-                    AssessmentId = assessment.AssessmentId
-                }));
+                VersionCreatedUtc = recordedAtUtc > prior.VersionCreatedUtc
+                    ? recordedAtUtc
+                    : prior.VersionCreatedUtc.AddTicks(1)
+            }, resetReviewState: true, cancellationToken).ConfigureAwait(false);
         }
     }
 }

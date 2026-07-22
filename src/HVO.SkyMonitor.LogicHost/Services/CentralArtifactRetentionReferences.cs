@@ -10,6 +10,11 @@ namespace HVO.SkyMonitor.LogicHost.Services;
 internal interface ICentralArtifactRetentionReferences
 {
     Task<bool> IsHeldAsync(Guid centralArtifactId, CancellationToken cancellationToken);
+
+    Task<bool> IsHeldOutsideTransientEventAsync(
+        Guid centralArtifactId,
+        Guid centralTransientEventId,
+        CancellationToken cancellationToken);
 }
 
 internal interface ICentralArtifactRetentionService
@@ -32,6 +37,10 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
             || await dbContext.CentralTransientObservationBackgrounds.AnyAsync(reference =>
                 reference.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false)
             || await dbContext.CentralTransientExtractionSources.AnyAsync(reference =>
+                reference.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false)
+            || await dbContext.CentralTransientDerivativeSources.AnyAsync(reference =>
+                reference.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false)
+            || await dbContext.CentralTransientDerivativeBackgrounds.AnyAsync(reference =>
                 reference.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false))
         {
             return true;
@@ -46,6 +55,65 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
                 || dbContext.CentralArtifactProcessingEvidence.Any(evidence =>
                     evidence.CentralArtifactId == centralArtifactId
                     && evidence.CentralDerivativeJobId == job.Id))
+            && (job.Status == CentralDerivativeJobStatus.Waiting
+                || job.Status == CentralDerivativeJobStatus.Pending
+                || job.Status == CentralDerivativeJobStatus.Leased
+                || job.Status == CentralDerivativeJobStatus.RetryableFailure
+                || job.Status == CentralDerivativeJobStatus.CancelRequested), cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> IsHeldOutsideTransientEventAsync(
+        Guid centralArtifactId,
+        Guid centralTransientEventId,
+        CancellationToken cancellationToken)
+    {
+        if (await dbContext.CentralClearReferenceDesignations.AnyAsync(designation =>
+                designation.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false))
+        {
+            return true;
+        }
+        if (await dbContext.CentralTransientObservations.AnyAsync(observation =>
+                observation.Source!.CentralArtifactId == centralArtifactId &&
+                observation.CentralTransientEventId != centralTransientEventId, cancellationToken).ConfigureAwait(false)
+            || await dbContext.CentralTransientObservationBackgrounds.AnyAsync(reference =>
+                reference.CentralArtifactId == centralArtifactId &&
+                reference.Observation!.CentralTransientEventId != centralTransientEventId, cancellationToken)
+                .ConfigureAwait(false)
+            || await dbContext.CentralTransientExtractionSources.AnyAsync(reference =>
+                reference.CentralArtifactId == centralArtifactId &&
+                dbContext.CentralTransientValidationIdentitySlots.Any(slot =>
+                    slot.CentralDerivativeJobId == reference.CentralDerivativeJobId &&
+                    slot.CentralTransientEventId != null &&
+                    slot.CentralTransientEventId != centralTransientEventId), cancellationToken).ConfigureAwait(false)
+            || await dbContext.CentralTransientDerivativeSources.AnyAsync(reference =>
+                reference.CentralArtifactId == centralArtifactId &&
+                reference.CentralTransientEventId != centralTransientEventId, cancellationToken).ConfigureAwait(false)
+            || await dbContext.CentralTransientDerivativeBackgrounds.AnyAsync(reference =>
+                reference.CentralArtifactId == centralArtifactId &&
+                reference.CentralTransientEventId != centralTransientEventId, cancellationToken).ConfigureAwait(false))
+        {
+            return true;
+        }
+
+        return await dbContext.CentralDerivativeJobs.AnyAsync(job =>
+            (job.SourceCentralArtifactId == centralArtifactId
+                || job.Inputs.Any(input => input.CentralArtifactId == centralArtifactId)
+                || job.InputRequirements.Any(requirement =>
+                    requirement.ExpectedCentralArtifactId == centralArtifactId)
+                || job.PredecessorJob!.ResultCentralArtifactId == centralArtifactId
+                || job.RetainedResultCentralArtifactId == centralArtifactId
+                || dbContext.CentralArtifactProcessingEvidence.Any(evidence =>
+                    evidence.CentralArtifactId == centralArtifactId
+                    && evidence.CentralDerivativeJobId == job.Id))
+            && !dbContext.CentralTransientValidationIdentitySlots.Any(slot =>
+                slot.CentralDerivativeJobId == job.Id &&
+                slot.CentralTransientEventId == centralTransientEventId)
+            && !dbContext.CentralTransientDerivativeJobs.Any(transientJob =>
+                transientJob.CentralDerivativeJobId == job.Id &&
+                transientJob.CentralTransientEventId == centralTransientEventId)
+            && !dbContext.CentralTransientReprocessingJobs.Any(reprocessingJob =>
+                reprocessingJob.CentralDerivativeJobId == job.Id &&
+                reprocessingJob.CentralTransientEventId == centralTransientEventId)
             && (job.Status == CentralDerivativeJobStatus.Waiting
                 || job.Status == CentralDerivativeJobStatus.Pending
                 || job.Status == CentralDerivativeJobStatus.Leased

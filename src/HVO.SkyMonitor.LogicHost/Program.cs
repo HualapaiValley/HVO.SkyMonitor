@@ -106,6 +106,17 @@ public sealed partial class Program
             .Bind(builder.Configuration.GetSection(CentralTransientOptions.SectionName))
             .ValidateDataAnnotations()
             .ValidateOnStart();
+        builder.Services.AddOptions<CentralTransientPayloadReleaseOptions>()
+            .Bind(builder.Configuration.GetSection(CentralTransientPayloadReleaseOptions.SectionName))
+            .Validate(options => options.PollInterval > TimeSpan.Zero,
+                "TransientPayloadRelease:PollInterval must be positive.")
+            .ValidateOnStart();
+        builder.Services.AddOptions<CentralTransientNotificationOptions>()
+            .Bind(builder.Configuration.GetSection(CentralTransientNotificationOptions.SectionName))
+            .Validate(options => options.PollInterval > TimeSpan.Zero &&
+                    options.FenceTimeout >= TimeSpan.FromSeconds(30),
+                "CentralTransientNotification timing values are invalid.")
+            .ValidateOnStart();
         builder.Services.Configure<HostOptions>(options =>
             options.ShutdownTimeout = builder.Configuration.GetValue(
                 $"{CentralDerivativeWorkerOptions.SectionName}:ShutdownTimeout",
@@ -148,6 +159,7 @@ public sealed partial class Program
             .AddDbContextCheck<ApplicationDbContext>("database", tags: ["dependency"])
             .AddCheck<CentralArtifactConsistencyHealthCheck>("artifact-consistency", tags: ["consistency"])
             .AddCheck<CentralDerivativeWorkerHealthCheck>("central-derivative-worker", tags: ["worker"])
+            .AddCheck<CentralTransientLifecycleHealthCheck>("central-transient-lifecycle", tags: ["worker"])
             .AddCheck<FleetStatusHealthCheck>("fleet-status", tags: ["worker"])
             .AddCheck<EnvironmentalObservationHealthCheck>("environmental-observations", tags: ["worker"]);
         healthChecks.AddInstalledCelestialCatalogHealthCheck();
@@ -198,10 +210,12 @@ public sealed partial class Program
                 metrics.AddMeter(CentralIngestTelemetry.MeterName);
                 metrics.AddMeter(CentralArtifactRetrievalTelemetry.MeterName);
                 metrics.AddMeter(CentralDerivativeWorkerTelemetry.MeterName);
+                metrics.AddMeter(CentralTransientLifecycleTelemetry.MeterName);
                 metrics.AddMeter(FleetStatusTelemetry.MeterName);
                 metrics.AddMeter(EnvironmentalObservationTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
-            });
+            })
+            .WithTracing(tracing => tracing.AddSource(CentralTransientLifecycleTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
@@ -607,6 +621,47 @@ public sealed partial class Program
                     OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
                 policy.RequireAuthenticatedUser();
             });
+            options.AddPolicy("TransientEventsRead", policy =>
+            {
+                policy.AddAuthenticationSchemes(
+                    IdentityConstants.ApplicationScheme,
+                    ApiKeyAuthenticationOptions.AuthenticationScheme,
+                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                    CentralArtifactCredentialAccess.HasSingleCredentialIdentity(context.User) &&
+                    (CentralArtifactCredentialAccess.HasOwnerCredential(context.User) ||
+                     CentralArtifactCredentialAccess.HasScope(context.User, "api.admin")));
+            });
+            options.AddPolicy("TransientReview", policy =>
+            {
+                policy.AddAuthenticationSchemes(
+                    IdentityConstants.ApplicationScheme,
+                    ApiKeyAuthenticationOptions.AuthenticationScheme,
+                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                {
+                    if (!CentralArtifactCredentialAccess.HasSingleCredentialIdentity(context.User) ||
+                        CentralArtifactCredentialAccess.IsSystem(context.User))
+                    {
+                        return false;
+                    }
+                    var apiKeyAccess = context.User.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
+                    return apiKeyAccess is null || apiKeyAccess == nameof(ApiKeyAccessLevel.ReadWrite);
+                });
+            });
+            options.AddPolicy("TransientAdmin", policy =>
+            {
+                policy.AddAuthenticationSchemes(
+                    IdentityConstants.ApplicationScheme,
+                    ApiKeyAuthenticationOptions.AuthenticationScheme,
+                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                    CentralArtifactCredentialAccess.HasSingleCredentialIdentity(context.User) &&
+                    CentralArtifactCredentialAccess.HasScope(context.User, "api.admin"));
+            });
         });
 
         // Application services
@@ -637,11 +692,29 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralArtifactObjectReader, CentralArtifactObjectReader>();
         builder.Services.AddScoped<ICentralArtifactRetentionReferences, CentralArtifactRetentionReferences>();
         builder.Services.AddScoped<ICentralTransientEventPersistence, CentralTransientEventPersistence>();
+        builder.Services.AddScoped<ICentralTransientEventVersionAppender, CentralTransientEventVersionAppender>();
+        builder.Services.AddScoped<ICentralTransientDerivativeScheduler, CentralTransientDerivativeScheduler>();
+        builder.Services.AddScoped<ICentralTransientEventReadService, CentralTransientEventReadService>();
+        builder.Services.AddScoped<ICentralTransientDerivativeRetrievalService, CentralTransientDerivativeRetrievalService>();
+        builder.Services.AddScoped<ICentralTransientReviewService, CentralTransientReviewService>();
+        builder.Services.AddScoped<ICentralTransientNotificationProcessor, CentralTransientNotificationProcessor>();
+        builder.Services.AddScoped<ICentralTransientNotificationRetryService, CentralTransientNotificationRetryService>();
+        builder.Services.AddScoped<ICentralTransientReprocessingService, CentralTransientReprocessingService>();
+        builder.Services.AddScoped<ICentralTransientReprocessingExecutor, CentralTransientReprocessingExecutor>();
+        builder.Services.AddScoped<ICentralTransientPayloadReleaseService, CentralTransientPayloadReleaseService>();
+        builder.Services.AddScoped<ICentralTransientPayloadReleaseProcessor, CentralTransientPayloadReleaseService>();
+        builder.Services.AddHostedService<CentralTransientNotificationWorker>();
+        builder.Services.AddHostedService<CentralTransientPayloadReleaseWorker>();
         builder.Services.AddScoped<ICentralTransientSubmissionService, CentralTransientSubmissionService>();
+        builder.Services.AddScoped<ICentralTransientMaskFactory, CentralTransientMaskFactory>();
+        builder.Services.AddScoped<ICentralTransientDerivativeBundleFactory, CentralTransientDerivativeBundleFactory>();
+        builder.Services.AddScoped<ICentralTransientDerivativeOutputWriter, CentralTransientDerivativeOutputWriter>();
+        builder.Services.AddScoped<ICentralTransientDerivativeExecutor, CentralTransientDerivativeExecutor>();
         builder.Services.AddScoped<ICentralTransientValidationExecutor, CentralTransientValidationExecutor>();
         builder.Services.AddScoped<ICentralTransientRetrospectiveScheduler, CentralTransientRetrospectiveScheduler>();
         builder.Services.AddScoped<ICentralArtifactRetentionService, CentralArtifactRetentionService>();
         builder.Services.AddSingleton<CentralArtifactRetrievalTelemetry>();
+        builder.Services.AddSingleton<CentralTransientLifecycleTelemetry>();
         builder.Services.AddHostedService<CentralArtifactReconciliationService>();
         builder.Services.AddSingleton<ICentralDerivativeRecipeCatalog, CentralDerivativeRecipeCatalog>();
         builder.Services.AddScoped<ICentralClearReferenceService, CentralClearReferenceService>();
