@@ -766,6 +766,8 @@ int main(int argc, char** argv)
             ? ReadControl(info.CameraID, ASI_HARDWARE_BIN) : -1;
         const auto flip = controls.contains(ASI_FLIP)
             ? ReadControl(info.CameraID, ASI_FLIP) : -1;
+        ASI_CAMERA_INFO captureInfo{};
+        Check(ASIGetCameraProperty(&captureInfo, options.cameraIndex), "ASIGetCameraProperty(capture settings)");
 
         std::cout << "Camera: " << info.Name << " " << width << 'x' << height
                   << " RAW16, SDK " << ASIGetSDKVersion() << '\n';
@@ -850,7 +852,7 @@ int main(int argc, char** argv)
             try
             {
                 WriteMetadata(
-                    metadataPath, info, serial, options, width, height, bin,
+                    metadataPath, captureInfo, serial, options, width, height, bin,
                     actualExposure, actualGain, actualOffset, temperature, temperatureAvailable,
                     bandwidth, highSpeedMode, monoBin, hardwareBin, flip,
                     startedUtc, completedUtc, exposureElapsedMilliseconds, downloadElapsedMilliseconds,

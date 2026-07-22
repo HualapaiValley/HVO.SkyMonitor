@@ -7,6 +7,11 @@ ranges. Captures write untouched SDK RAW16 bytes and a JSON sidecar with the
 profile reference, requested and actual controls, layout, timing, temperature,
 and non-destructive sample statistics.
 
+Camera properties that vary with control state are refreshed after the requested
+controls are applied before they are written to a capture sidecar. SDK profiles
+remain point-in-time capability probes and must not be interpreted as calibrated
+response data.
+
 The utility intentionally does not debayer, stretch, stack, compress, or convert
 the camera buffer. The sidecar interprets each two-byte sample as little-endian
 only for statistics; the raw file remains byte-for-byte SDK output so packing can
@@ -89,6 +94,15 @@ Profile documents use `hvo-asi-sdk-profile-v1`; capture sidecars use
 `asi-sdk-profile-v1.schema.json` and `asi-raw16-sidecar-v2.schema.json`. Version
 2 keeps the original numeric `bayerPattern` field and adds
 `bayerPatternName`, requested-versus-applied mode controls, layout, and timing.
+
+Inspect untouched RAW16 packing and bind the result to the source checksum with:
+
+```bash
+python3 analyze_raw16.py captures/frame.raw16
+```
+
+The analyzer reports sample count, distinct container-code count, and all 16
+low-nibble residue counts without modifying the raw input.
 
 Use `docs/calibration/asi174mm-characterization.md` for the full calibration
 matrix. ASI178MC measurements provide useful SDK and sensor-behavior evidence,
