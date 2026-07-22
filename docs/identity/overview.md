@@ -64,9 +64,10 @@ Testing use development certificates. Production signing/encryption certificate
 loading, key overlap, token revocation, and a production TLS topology are not
 implemented.
 
-Device inventory/envelope issuance is not owner-filtered, and most bearer APIs
-do not enforce endpoint-specific scopes. Current LogicHost deployment must be
-treated as trusted and single-tenant until those controls are added.
+Device inventory and envelope issuance require the authenticated owner to match
+both the registration snapshot and its current observatory. Most bearer APIs do
+not yet enforce endpoint-specific scopes, so current LogicHost deployment must
+still be treated as trusted until those controls are added.
 
 ## Security Invariants
 
@@ -80,6 +81,14 @@ treated as trusted and single-tenant until those controls are added.
 - Device-key credentials are separate from local operator identity and can be
   centrally revoked. The fleet OAuth client is shared and requires separate
   rotation if an agent may have disclosed it.
+- A registration is visible and eligible for envelope issuance only when its
+  owner and its linked observatory owner both match the authenticated user.
+  Legacy registrations with a missing observatory or inconsistent ownership
+  fail closed: they are omitted from every owner's inventory, cannot receive a
+  new envelope, and retain their existing durable record for investigation.
+  Remediation requires an approved migration or data-repair procedure that
+  establishes authoritative ownership or revokes the registration; the portal
+  never guesses ownership from denormalized snapshot fields.
 - Data Protection keys and local Identity/provisioning files are persistent
   runtime state and are never committed.
 - SQL Server, Redis, and MinIO ownership is explicit; Redis and MinIO root access

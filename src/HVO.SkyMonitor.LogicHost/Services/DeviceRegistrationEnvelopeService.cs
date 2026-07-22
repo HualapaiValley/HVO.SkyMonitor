@@ -17,6 +17,7 @@ internal sealed record DeviceRegistrationEnvelopeRequest(
     Guid RegistrationId,
     string DeviceId,
     Guid ObservatoryId,
+    string OwnerUserId,
     TimeSpan? EnvelopeLifetime = null);
 
 internal sealed record DeviceRegistrationEnvelopeResponse(
@@ -52,6 +53,7 @@ internal sealed class DeviceRegistrationEnvelopeService : IDeviceRegistrationEnv
     public async Task<DeviceRegistrationEnvelopeResponse> CreateEnvelopeAsync(DeviceRegistrationEnvelopeRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.OwnerUserId);
 
         var isRelational = dbContext.Database.IsRelational();
         await using var transaction = isRelational
@@ -61,50 +63,63 @@ internal sealed class DeviceRegistrationEnvelopeService : IDeviceRegistrationEnv
         IQueryable<Observatory> observatoryQuery = isRelational
             ? dbContext.Observatories.FromSqlInterpolated($"""
                 SELECT * FROM [Observatories] WITH (UPDLOCK, HOLDLOCK)
-                WHERE [Id] = {request.ObservatoryId}
+                WHERE [Id] = {request.ObservatoryId} AND [OwnerUserId] = {request.OwnerUserId}
                 """)
-            : dbContext.Observatories.Where(observatory => observatory.Id == request.ObservatoryId);
-        var observatoryIsActive = await observatoryQuery
-            .AnyAsync(observatory => observatory.IsActive, cancellationToken)
+            : dbContext.Observatories.Where(observatory =>
+                observatory.Id == request.ObservatoryId
+                && observatory.OwnerUserId == request.OwnerUserId);
+        var observatory = await observatoryQuery
+            .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
-        if (!observatoryIsActive)
+        if (observatory is null)
         {
-            throw new InvalidOperationException("Observatory must be active to issue device envelopes.");
+            throw new DeviceRegistrationException(
+                "Device registration not found or access denied.",
+                DeviceRegistrationException.NotFoundReasonCode);
+        }
+
+        if (!observatory.IsActive)
+        {
+            throw new DeviceRegistrationException("Observatory must be active to issue device envelopes.");
         }
         IQueryable<DeviceRegistration> registrationQuery = isRelational
             ? dbContext.DeviceRegistrations.FromSqlInterpolated($"""
                 SELECT * FROM [DeviceRegistrations] WITH (UPDLOCK, HOLDLOCK)
-                WHERE [Id] = {request.RegistrationId}
+                WHERE [Id] = {request.RegistrationId} AND [OwnerUserId] = {request.OwnerUserId}
                 """)
-            : dbContext.DeviceRegistrations.Where(registration => registration.Id == request.RegistrationId);
+            : dbContext.DeviceRegistrations.Where(registration =>
+                registration.Id == request.RegistrationId
+                && registration.OwnerUserId == request.OwnerUserId);
         var registration = await registrationQuery
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (registration is null)
         {
-            throw new InvalidOperationException("Device registration not found.");
+            throw new DeviceRegistrationException(
+                "Device registration not found or access denied.",
+                DeviceRegistrationException.NotFoundReasonCode);
         }
 
         if (!string.Equals(registration.DeviceId, request.DeviceId, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("Device identifier mismatch.");
+            throw new DeviceRegistrationException("Device identifier mismatch.");
         }
 
         if (registration.ObservatoryId != request.ObservatoryId)
         {
-            throw new InvalidOperationException("Observatory mismatch for device registration.");
+            throw new DeviceRegistrationException("Observatory mismatch for device registration.");
         }
 
         if (registration.Status != DeviceRegistrationStatus.Pending)
         {
-            throw new InvalidOperationException("Envelope can only be issued for pending registrations.");
+            throw new DeviceRegistrationException("Envelope can only be issued for pending registrations.");
         }
 
         var now = timeProvider.GetUtcNow();
         if (registration.ExpiresAtUtc is { } pendingExpires && pendingExpires <= now)
         {
-            throw new InvalidOperationException("Verification window has expired. Restart registration.");
+            throw new DeviceRegistrationException("Verification window has expired. Restart registration.");
         }
 
         var lifetime = ClampLifetime(request.EnvelopeLifetime ?? DefaultEnvelopeLifetime);

@@ -35,17 +35,30 @@ internal sealed class DeviceRegistrationsController(
             return Unauthorized();
         }
 
-        var registration = await registrationService.CreatePendingAsync(new DeviceRegistrationCreateRequest(
-            request.DeviceId,
-            request.VerificationCode,
-            request.ObservatoryId,
-            request.FriendlyName,
-            ownerUserId,
-            GetUserDisplayName() ?? ownerUserId,
-            GetUserEmail(),
-            PortalConfirmationMethod,
-            null,
-            TimeSpan.FromMinutes(request.PendingLifetimeMinutes ?? 15)), cancellationToken).ConfigureAwait(false);
+        DeviceRegistration registration;
+        try
+        {
+            registration = await registrationService.CreatePendingAsync(new DeviceRegistrationCreateRequest(
+                request.DeviceId,
+                request.VerificationCode,
+                request.ObservatoryId,
+                request.FriendlyName,
+                ownerUserId,
+                GetUserDisplayName() ?? ownerUserId,
+                GetUserEmail(),
+                PortalConfirmationMethod,
+                null,
+                TimeSpan.FromMinutes(request.PendingLifetimeMinutes ?? 15)), cancellationToken).ConfigureAwait(false);
+        }
+        catch (DeviceRegistrationException ex) when (ex.ReasonCode == DeviceRegistrationException.NotFoundReasonCode)
+        {
+            return NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            ModelState.AddModelError(string.Empty, ex.Message);
+            return ValidationProblem(ModelState);
+        }
 
         var response = new DeviceRegistrationResponse(
             registration.Id,
@@ -83,12 +96,31 @@ internal sealed class DeviceRegistrationsController(
         TimeSpan? lifetime = request.EnvelopeLifetimeMinutes is int minutes
             ? TimeSpan.FromMinutes(minutes)
             : null;
+        var ownerUserId = GetUserIdentifier();
+        if (string.IsNullOrWhiteSpace(ownerUserId))
+        {
+            return Unauthorized();
+        }
 
-        var envelope = await envelopeService.CreateEnvelopeAsync(new DeviceRegistrationEnvelopeRequest(
-            request.RegistrationId,
-            request.DeviceId,
-            request.ObservatoryId,
-            lifetime), cancellationToken).ConfigureAwait(false);
+        DeviceRegistrationEnvelopeResponse envelope;
+        try
+        {
+            envelope = await envelopeService.CreateEnvelopeAsync(new DeviceRegistrationEnvelopeRequest(
+                request.RegistrationId,
+                request.DeviceId,
+                request.ObservatoryId,
+                ownerUserId,
+                lifetime), cancellationToken).ConfigureAwait(false);
+        }
+        catch (DeviceRegistrationException ex) when (ex.ReasonCode == DeviceRegistrationException.NotFoundReasonCode)
+        {
+            return NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            ModelState.AddModelError(string.Empty, ex.Message);
+            return ValidationProblem(ModelState);
+        }
 
         var response = new DeviceRegistrationEnvelopeDto(
             envelope.RegistrationId,

@@ -115,7 +115,8 @@ public partial class DeviceRegistrations : ComponentBase
 
         try
         {
-            var result = await RegistrationReadService.GetRegistrationsAsync().ConfigureAwait(false);
+            var owner = await EnsureOwnerContextAsync().ConfigureAwait(false);
+            var result = await RegistrationReadService.GetRegistrationsAsync(owner.UserId).ConfigureAwait(false);
             registrations.Clear();
             registrations.AddRange(result);
         }
@@ -145,10 +146,12 @@ public partial class DeviceRegistrations : ComponentBase
 
         try
         {
+            var owner = await EnsureOwnerContextAsync().ConfigureAwait(false);
             var response = await EnvelopeService.CreateEnvelopeAsync(new DeviceRegistrationEnvelopeRequest(
                 registration.RegistrationId,
                 registration.DeviceId,
-                registration.ObservatoryId), default).ConfigureAwait(false);
+                registration.ObservatoryId,
+                owner.UserId), default).ConfigureAwait(false);
 
             activeEnvelope = new EnvelopeViewModel(
                 response.RegistrationId,
