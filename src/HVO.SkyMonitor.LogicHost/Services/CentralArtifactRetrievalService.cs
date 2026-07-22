@@ -283,6 +283,9 @@ internal enum CentralArtifactLookupStatus
 
 internal static class CentralArtifactCredentialAccess
 {
+    public static bool HasSingleCredentialIdentity(ClaimsPrincipal principal)
+        => GetSingleCredentialIdentity(principal) is not null;
+
     public static bool HasOwnerCredential(ClaimsPrincipal principal)
     {
         ArgumentNullException.ThrowIfNull(principal);
@@ -290,29 +293,48 @@ internal static class CentralArtifactCredentialAccess
         {
             return false;
         }
-        if (principal.FindFirst(ApiKeyClaims.AuthenticationType) is not null)
+        var identity = GetSingleCredentialIdentity(principal);
+        if (identity is null)
         {
-            var access = principal.FindFirstValue(ApiKeyClaims.AccessLevel);
+            return false;
+        }
+        if (identity.FindFirst(ApiKeyClaims.AuthenticationType) is not null)
+        {
+            var access = identity.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
             return access is nameof(ApiKeyAccessLevel.Read) or nameof(ApiKeyAccessLevel.ReadWrite);
         }
-        return !principal.Claims.Any(claim => claim.Type == "scope")
+        return !identity.Claims.Any(claim => claim.Type == "scope")
             || HasScope(principal, "api.viewer")
             || HasScope(principal, "api.admin");
     }
 
     public static string? GetOwnerId(ClaimsPrincipal principal)
-        => principal.FindFirstValue(ClaimTypes.NameIdentifier)
-            ?? principal.FindFirstValue("sub")
-            ?? principal.Identity?.Name;
+    {
+        var identity = GetSingleCredentialIdentity(principal);
+        return identity?.FindFirst(ClaimTypes.NameIdentifier)?.Value
+            ?? identity?.FindFirst("sub")?.Value
+            ?? identity?.Name;
+    }
 
     public static string? GetSubject(ClaimsPrincipal principal)
-        => principal.FindFirstValue("sub") ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    {
+        var identity = GetSingleCredentialIdentity(principal);
+        return identity?.FindFirst("sub")?.Value ?? identity?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+    }
 
     public static bool IsSystem(ClaimsPrincipal principal)
-        => string.Equals(principal.FindFirstValue("account_type"), "System", StringComparison.Ordinal);
+        => string.Equals(GetSingleCredentialIdentity(principal)?.FindFirst("account_type")?.Value,
+            "System", StringComparison.Ordinal);
 
     public static bool HasScope(ClaimsPrincipal principal, string scope)
-        => principal.Claims.Where(claim => claim.Type == "scope")
+        => GetSingleCredentialIdentity(principal)?.Claims.Where(claim => claim.Type == "scope")
             .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-            .Contains(scope, StringComparer.Ordinal);
+            .Contains(scope, StringComparer.Ordinal) == true;
+
+    public static ClaimsIdentity? GetSingleCredentialIdentity(ClaimsPrincipal principal)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+        var identities = principal.Identities.Where(identity => identity.IsAuthenticated).Take(2).ToArray();
+        return identities.Length == 1 ? identities[0] : null;
+    }
 }

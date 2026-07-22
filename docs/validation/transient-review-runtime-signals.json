@@ -1,0 +1,72 @@
+{
+  "schema": "hvo-runtime-signal-manifest-v1",
+  "issue": 118,
+  "component": "LogicHost transient reconstruction and review lifecycle",
+  "meter": "HVO.SkyMonitor.CentralTransientLifecycle",
+  "activitySource": "HVO.SkyMonitor.CentralTransientLifecycle",
+  "logs": [
+    { "eventId": 2162, "level": "Information", "operation": "review", "fields": ["RuntimeId", "Outcome"] },
+    { "eventId": 2163, "level": "Information", "operation": "reprocessing", "fields": ["RuntimeId", "Outcome"] },
+    { "eventId": 2164, "level": "Information", "operation": "derivative", "fields": ["RuntimeId", "Outcome", "OutputCount"] },
+    { "eventId": 2165, "level": "Information", "operation": "notification", "fields": ["RuntimeId", "Outcome"] },
+    { "eventId": 2166, "level": "Information", "operation": "retention", "fields": ["RuntimeId", "Outcome", "ItemCount"] }
+  ],
+  "metrics": [
+    {
+      "name": "skymonitor.central.transient.lifecycle.operations",
+      "unit": "{operation}",
+      "labels": {
+        "operation": ["review", "reprocess", "derivative", "notification", "retention", "other"],
+        "outcome": ["applied", "scheduled", "replayed", "persisted", "adopted", "sent", "failed", "suppressed", "recovered", "completed", "conflict", "invalid", "other"]
+      }
+    },
+    {
+      "name": "skymonitor.central.transient.lifecycle.duration",
+      "unit": "ms",
+      "labels": {
+        "operation": ["review", "reprocess", "derivative", "notification", "retention", "other"],
+        "outcome": ["applied", "scheduled", "replayed", "persisted", "adopted", "sent", "failed", "suppressed", "recovered", "completed", "conflict", "invalid", "other"]
+      }
+    },
+    {
+      "name": "skymonitor.central.transient.derivative.outputs",
+      "unit": "{artifact}",
+      "labels": {
+        "kind": ["crop", "preview", "mask", "overlay", "reconstruction", "other"],
+        "outcome": ["persisted", "adopted", "other"]
+      }
+    },
+    {
+      "name": "skymonitor.central.transient.derivative.output.bytes",
+      "unit": "By",
+      "labels": {
+        "kind": ["crop", "preview", "mask", "overlay", "reconstruction", "other"]
+      }
+    }
+  ],
+  "spans": [
+    { "name": "central-transient.review", "kind": "Internal", "tags": [] },
+    { "name": "central-transient.reprocess", "kind": "Internal", "tags": [] },
+    { "name": "central-transient.derivative", "kind": "Internal", "tags": [] },
+    { "name": "central-transient.notification", "kind": "Consumer", "tags": [] },
+    { "name": "central-transient.retention", "kind": "Internal", "tags": [] }
+  ],
+  "health": {
+    "check": "central-transient-lifecycle",
+    "healthy": ["queues-within-bounds"],
+    "degraded": ["notification-backlog", "expired-notification-fence", "payload-release-backlog"],
+    "unhealthy": [],
+    "fields": ["PendingNotificationCount", "OldestPendingNotificationAgeSeconds", "FencedNotificationCount", "OldestFencedNotificationAgeSeconds", "PendingPayloadReleaseCount", "OldestPendingPayloadReleaseAgeSeconds"]
+  },
+  "privacy": {
+    "forbidden": ["actor identity", "recipient", "payload bytes", "storage path", "object credentials", "idempotency key", "checksum", "lease token"],
+    "identifiers": "The process-lifetime RuntimeId appears only in logs. Metrics and spans contain bounded categorical fields and no durable entity identifiers."
+  },
+  "collection": {
+    "testCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter \"FullyQualifiedName~CentralTransientEventPersistenceIntegrationTests|FullyQualifiedName~CentralDerivativeWindowIntegrationTests|FullyQualifiedName~TransientEventReviewApiTests\"",
+    "componentPerformanceCommand": "dotnet test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~Linear16TransientReconstructionPerformanceTests.Issue118W1W2_RecordsReconstructionAndProductEvidence",
+    "logicHostPerformanceCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~CentralTransientReviewPerformanceTests.Issue118ReviewHistoryContentionAndReprocessing_RecordsAcceptanceEvidence",
+    "retainedArtifactPath": "TestResults/issue-118/<revision>/",
+    "uiBoundary": "No UI is included; issue #107 consumes these APIs and durable contracts."
+  }
+}

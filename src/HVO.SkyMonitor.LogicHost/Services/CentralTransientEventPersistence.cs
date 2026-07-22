@@ -70,10 +70,18 @@ internal static class CentralTransientPersistenceReasonCodes
     public const string JobNotFound = "transient-persistence.job-not-found";
 }
 
-internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbContext)
+internal sealed class CentralTransientEventPersistence(
+    ApplicationDbContext dbContext,
+    ICentralTransientEventVersionAppender versionAppender,
+    ICentralTransientDerivativeScheduler? derivativeScheduler = null)
     : ICentralTransientEventPersistence
 {
     private const string ExtractionOptionsSchema = "transient-candidate-extraction-options-v1";
+
+    internal CentralTransientEventPersistence(ApplicationDbContext dbContext)
+        : this(dbContext, new CentralTransientEventVersionAppender(dbContext), null)
+    {
+    }
 
     public async Task<CentralTransientPersistenceCommit> AppendAsync(
         CentralTransientPersistenceRequest request,
@@ -90,11 +98,10 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
         var extraction = ParseExtraction(request.ExtractionReceipt);
         var events = request.Events.Select(ParseEvent).ToArray();
         var assessmentReceipts = request.AssessmentReceipts.Select(ParseAssessment).ToArray();
-        if (events.Any(item => item.Value.Reviews.Count != 0 || item.Value.Notifications.Count != 0 ||
-                item.Value.Derivatives.Count != 0))
+        if (events.Any(item => item.Value.Notifications.Count != 0))
         {
             throw Failure(CentralTransientPersistenceReasonCodes.InvalidCanonicalPayload,
-                "Review, notification, and derivative history belongs to the later review boundary.");
+                "Notification history belongs to the later delivery boundary.");
         }
 
         await using var ownedTransaction = dbContext.Database.CurrentTransaction is null
@@ -141,8 +148,6 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
 
         var eventRecords = new Dictionary<Guid, CentralTransientEventRecord>();
         var versionRecords = new List<CentralTransientEventVersionRecord>(events.Length);
-        var pendingVersionObservations = new List<CentralTransientEventVersionObservation>();
-        var pendingVersionAssessments = new List<CentralTransientEventVersionAssessment>();
         var pendingAssessmentObservations = new List<CentralTransientAssessmentObservation>();
         var assessmentPayloadById = assessmentReceipts.ToDictionary(item => item.Value.Assessment.AssessmentId);
         var persistedEventEvidence = new List<PersistedEventEvidence>(events.Length);
@@ -151,9 +156,36 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
         {
             var transientEvent = eventPayload.Value;
             var eventRecord = await PrepareEventAsync(transientEvent, cancellationToken).ConfigureAwait(false);
+            var isNewEvent = dbContext.Entry(eventRecord).State == EntityState.Added;
+            if (!isNewEvent && await dbContext.CentralTransientPayloadReleases.AsNoTracking().AnyAsync(
+                    item => item.CentralTransientEventId == eventRecord.Id, cancellationToken).ConfigureAwait(false))
+            {
+                throw Failure(CentralTransientPersistenceReasonCodes.InvalidHistory,
+                    "Released transient events cannot accept new validation history.");
+            }
             eventRecords.Add(transientEvent.EventId, eventRecord);
-            _ = await LoadPreviousSnapshotAsync(eventRecord, transientEvent, cancellationToken)
-                .ConfigureAwait(false);
+            var committedReviewIds = isNewEvent
+                ? []
+                : await dbContext.CentralTransientReviews.AsNoTracking()
+                    .Where(item => item.CentralTransientEventId == eventRecord.Id)
+                    .Select(item => item.ReviewId)
+                    .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+            if (transientEvent.Reviews.Any(review => !committedReviewIds.Contains(review.ReviewId)))
+            {
+                throw Failure(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding,
+                    "Validation workers cannot author human review history.");
+            }
+            var committedDerivativeIds = isNewEvent
+                ? []
+                : await dbContext.CentralTransientDerivatives.AsNoTracking()
+                    .Where(item => item.CentralTransientEventId == eventRecord.Id)
+                    .Select(item => item.DerivativeId)
+                    .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+            if (transientEvent.Derivatives.Any(derivative => !committedDerivativeIds.Contains(derivative.DerivativeId)))
+            {
+                throw Failure(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding,
+                    "Validation workers cannot author event derivative history.");
+            }
             var existingObservationIds = await dbContext.CentralTransientObservations.AsNoTracking()
                 .Where(item => item.CentralTransientEventId == eventRecord.Id)
                 .Select(item => item.ObservationId).ToHashSetAsync(cancellationToken).ConfigureAwait(false);
@@ -171,13 +203,6 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
                     dbContext.CentralTransientObservationSources.Add(observationRecord.Source!);
                     dbContext.CentralTransientObservations.Add(observationRecord);
                 }
-                pendingVersionObservations.Add(new CentralTransientEventVersionObservation
-                {
-                    CentralTransientEventId = eventRecord.Id,
-                    EventVersionId = transientEvent.EventVersionId,
-                    Ordinal = observation.Ordinal,
-                    ObservationId = observation.ObservationId
-                });
             }
 
             var assessmentCreatedUtc = await dbContext.CentralTransientAssessments.AsNoTracking()
@@ -218,18 +243,16 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
                         });
                     }
                 }
-                pendingVersionAssessments.Add(new CentralTransientEventVersionAssessment
-                {
-                    CentralTransientEventId = eventRecord.Id,
-                    EventVersionId = transientEvent.EventVersionId,
-                    Ordinal = assessmentOrdinal,
-                    AssessmentId = assessment.AssessmentId
-                });
             }
 
-            var versionRecord = CreateVersion(eventRecord.Id, transientEvent, eventPayload);
-            dbContext.CentralTransientEventVersions.Add(versionRecord);
-            versionRecords.Add(versionRecord);
+            var appended = await versionAppender.AppendCanonicalAsync(new CentralTransientEventAppendRequest(
+                eventRecord.Id,
+                transientEvent,
+                eventPayload.Json,
+                eventPayload.Sha256,
+                eventPayload.ByteLength,
+                isNewEvent), cancellationToken).ConfigureAwait(false);
+            versionRecords.Add(appended.Version);
             persistedEventEvidence.Add(new PersistedEventEvidence(
                 transientEvent.EventId,
                 transientEvent.EventVersionId,
@@ -244,8 +267,6 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
                 validationJob,
                 extraction.Value,
                 versionRecords,
-                pendingVersionObservations,
-                pendingVersionAssessments,
                 persistedEventEvidence,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -254,8 +275,6 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
         dbContext.CentralTransientExtractionReceipts.Add(extractionRecord);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        dbContext.AddRange(pendingVersionObservations);
-        dbContext.AddRange(pendingVersionAssessments);
         dbContext.AddRange(pendingAssessmentObservations);
         var candidateCount = persistedCandidates.Count;
         var activeCandidateIds = persistedCandidates.Select(item => item.CandidateId).ToHashSet();
@@ -300,6 +319,11 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
             Encoding.UTF8.GetBytes(outcomeEvidence));
         validationJob.OutcomeRecordedAtUtc = validationJob.CommittedAtUtc;
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (derivativeScheduler is not null)
+        {
+            await derivativeScheduler.EnsureScheduledAsync(
+                versionRecords.Select(item => item.EventVersionId).ToArray(), cancellationToken).ConfigureAwait(false);
+        }
         _ = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO [CentralTransientValidationOutcomeVersions]
                 ([Id], [CentralDerivativeJobId], [Version], [State], [ReasonCode], [EvidenceJson],
@@ -331,8 +355,6 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
         CentralTransientValidationJob validationJob,
         TransientCandidateExtractionDescriptorV1 extraction,
         List<CentralTransientEventVersionRecord> versionRecords,
-        List<CentralTransientEventVersionObservation> pendingVersionObservations,
-        List<CentralTransientEventVersionAssessment> pendingVersionAssessments,
         List<PersistedEventEvidence> persistedEventEvidence,
         CancellationToken cancellationToken)
     {
@@ -346,16 +368,13 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
         var receiptCreatedUtc = extraction.OrderedSources.Max(item => item.Source.ObservationEndedUtc).AddTicks(1);
         foreach (var eventRecordId in eventRecordIds)
         {
-            var latest = await dbContext.CentralTransientEventVersions.AsNoTracking()
-                .Where(item => item.CentralTransientEventId == eventRecordId &&
-                    item.Event!.AgentId == validationJob.AgentId)
-                .OrderByDescending(item => item.Version)
-                .FirstAsync(cancellationToken).ConfigureAwait(false);
-            var parsed = TransientContractJson.ParseEvent(Encoding.UTF8.GetBytes(latest.CanonicalEventJson));
-            var prior = parsed.Value ?? throw Failure(
-                CentralTransientPersistenceReasonCodes.InvalidHistory,
-                $"Persisted transient event failed canonical parsing: {parsed.Validation.ReasonCode}.");
-            var next = prior with
+            if (await dbContext.CentralTransientPayloadReleases.AsNoTracking().AnyAsync(
+                    item => item.CentralTransientEventId == eventRecordId, cancellationToken).ConfigureAwait(false))
+            {
+                throw Failure(CentralTransientPersistenceReasonCodes.InvalidHistory,
+                    "Released transient events cannot accept centered no-candidate history.");
+            }
+            var appended = await versionAppender.AppendGeneratedAsync(eventRecordId, prior => prior with
             {
                 EventVersionId = Guid.NewGuid(),
                 Version = prior.Version + 1,
@@ -365,41 +384,14 @@ internal sealed class CentralTransientEventPersistence(ApplicationDbContext dbCo
                 VersionCreatedUtc = receiptCreatedUtc > prior.VersionCreatedUtc
                     ? receiptCreatedUtc
                     : prior.VersionCreatedUtc.AddTicks(1)
-            };
-            var canonical = TransientContractJson.Serialize(next);
-            var payload = new ValidatedPayload<TransientEventV1>(
-                next,
-                Encoding.UTF8.GetString(canonical),
-                Convert.ToHexString(SHA256.HashData(canonical)),
-                canonical.Length);
-            var version = CreateVersion(eventRecordId, next, payload);
-            dbContext.CentralTransientEventVersions.Add(version);
-            versionRecords.Add(version);
-            foreach (var observation in next.Observations)
-            {
-                pendingVersionObservations.Add(new CentralTransientEventVersionObservation
-                {
-                    CentralTransientEventId = eventRecordId,
-                    EventVersionId = next.EventVersionId,
-                    Ordinal = observation.Ordinal,
-                    ObservationId = observation.ObservationId
-                });
-            }
-            for (var ordinal = 0; ordinal < next.Assessments.Count; ordinal++)
-            {
-                pendingVersionAssessments.Add(new CentralTransientEventVersionAssessment
-                {
-                    CentralTransientEventId = eventRecordId,
-                    EventVersionId = next.EventVersionId,
-                    Ordinal = ordinal,
-                    AssessmentId = next.Assessments[ordinal].AssessmentId
-                });
-            }
+            }, resetReviewState: true, cancellationToken).ConfigureAwait(false);
+            var next = appended.Event;
+            versionRecords.Add(appended.Version);
             persistedEventEvidence.Add(new PersistedEventEvidence(
                 next.EventId,
                 next.EventVersionId,
                 next.State,
-                payload.Sha256));
+                appended.Version.CanonicalEventSha256));
         }
     }
 

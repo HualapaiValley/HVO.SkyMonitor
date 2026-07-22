@@ -17,6 +17,10 @@ internal static class CentralTransientValidationConfiguration
         ConfigureAssessment(builder);
         ConfigureEventVersionObservation(builder);
         ConfigureEventVersionAssessment(builder);
+        ConfigureReview(builder);
+        ConfigureEventVersionReview(builder);
+        ConfigureEventCurrent(builder);
+        ConfigureReviewMutation(builder);
         ConfigureAssessmentObservation(builder);
         ConfigureValidationJob(builder);
         ConfigureSubmissionAudit(builder);
@@ -36,6 +40,7 @@ internal static class CentralTransientValidationConfiguration
         entity.HasAlternateKey(item => new { item.AgentId, item.EventId });
         entity.HasAlternateKey(item => new { item.Id, item.EventId });
         entity.HasIndex(item => new { item.AgentId, item.EventCreatedUtc, item.EventId });
+        entity.HasIndex(item => new { item.EventCreatedUtc, item.Id });
     }
 
     private static void ConfigureEventVersion(ModelBuilder builder)
@@ -124,6 +129,16 @@ internal static class CentralTransientValidationConfiguration
             table.HasCheckConstraint("CK_CentralTransientObservationSources_ObservedInterval", "[ObservationStartedUtc] <= [ObservationEndedUtc]");
         });
         entity.HasKey(item => item.ObservationId);
+        entity.HasAlternateKey(item => new
+        {
+            item.ObservationId,
+            item.EvidenceId,
+            item.CentralArtifactId,
+            item.ArtifactId,
+            item.ArtifactChecksumSha256,
+            item.ObservationStartedUtc,
+            item.ObservationEndedUtc
+        });
         entity.Property(item => item.EvidenceSchemaVersion).HasMaxLength(128).IsRequired();
         entity.Property(item => item.LocatorSchemaVersion).HasMaxLength(128).IsRequired();
         entity.Property(item => item.LocatorKind).HasConversion<string>().HasMaxLength(32).IsRequired();
@@ -149,6 +164,14 @@ internal static class CentralTransientValidationConfiguration
             table.HasCheckConstraint("CK_CentralTransientObservationBackgrounds_Ordinal", "[Ordinal] >= 0");
         });
         entity.HasKey(item => item.Id);
+        entity.HasAlternateKey(item => new
+        {
+            item.ObservationId,
+            item.Ordinal,
+            item.CentralArtifactId,
+            item.ArtifactId,
+            item.ArtifactChecksumSha256
+        });
         entity.Property(item => item.ArtifactRole).HasConversion<string>().HasMaxLength(32).IsRequired();
         entity.Property(item => item.ArtifactVariant).HasMaxLength(128).UseCollation(BinaryCollation).IsRequired();
         Sha256(entity.Property(item => item.ArtifactRecipeIdentitySha256));
@@ -280,6 +303,132 @@ internal static class CentralTransientValidationConfiguration
         entity.HasOne(item => item.Observation).WithMany()
             .HasForeignKey(item => new { item.CentralTransientEventId, item.ObservationId })
             .HasPrincipalKey(item => new { item.CentralTransientEventId, item.ObservationId })
+            .OnDelete(DeleteBehavior.NoAction).IsRequired();
+    }
+
+    private static void ConfigureReview(ModelBuilder builder)
+    {
+        var entity = builder.Entity<CentralTransientReviewRecord>();
+        entity.ToTable("CentralTransientReviews", table =>
+        {
+            table.HasTrigger("TR_CentralTransientReviews_Immutable");
+            table.HasCheckConstraint("CK_CentralTransientReviews_Override", "([Disposition] = 'Overridden' AND [OverrideClassification] IS NOT NULL AND [OverrideConfidenceMillionths] IS NOT NULL) OR ([Disposition] <> 'Overridden' AND [OverrideClassification] IS NULL AND [OverrideMeteorSeverity] IS NULL AND [OverrideConfidenceMillionths] IS NULL)");
+            table.HasCheckConstraint("CK_CentralTransientReviews_OverrideConfidence", "[OverrideConfidenceMillionths] IS NULL OR ([OverrideConfidenceMillionths] >= 0 AND [OverrideConfidenceMillionths] <= 1000000)");
+            table.HasCheckConstraint("CK_CentralTransientReviews_Predecessor", "([SupersedesReviewId] IS NULL AND [SupersedesReviewCreatedUtc] IS NULL) OR ([SupersedesReviewId] IS NOT NULL AND [SupersedesReviewId] <> [ReviewId] AND [SupersedesReviewCreatedUtc] IS NOT NULL AND [SupersedesReviewCreatedUtc] < [CreatedUtc])");
+        });
+        entity.HasKey(item => item.ReviewId);
+        entity.HasAlternateKey(item => new { item.CentralTransientEventId, item.ReviewId });
+        entity.HasAlternateKey(item => new
+        {
+            item.CentralTransientEventId,
+            item.ReviewId,
+            item.AssessmentId
+        });
+        entity.HasAlternateKey(item => new { item.CentralTransientEventId, item.ReviewId, item.CreatedUtc });
+        entity.Property(item => item.ReviewerIdentity).HasMaxLength(256).UseCollation(BinaryCollation).IsRequired();
+        entity.Property(item => item.Disposition).HasConversion<string>().HasMaxLength(32).IsRequired();
+        entity.Property(item => item.OverrideClassification).HasConversion<string>().HasMaxLength(32);
+        entity.Property(item => item.OverrideMeteorSeverity).HasConversion<string>().HasMaxLength(32);
+        entity.Property(item => item.ReasonCodesJson).IsRequired();
+        entity.HasIndex(item => new { item.CentralTransientEventId, item.SupersedesReviewId })
+            .IsUnique().HasFilter("[SupersedesReviewId] IS NOT NULL");
+        entity.HasOne(item => item.Event).WithMany(item => item.Reviews)
+            .HasForeignKey(item => item.CentralTransientEventId).OnDelete(DeleteBehavior.Restrict).IsRequired();
+        entity.HasOne(item => item.Assessment).WithMany()
+            .HasForeignKey(item => new { item.CentralTransientEventId, item.AssessmentId })
+            .HasPrincipalKey(item => new { item.CentralTransientEventId, item.AssessmentId })
+            .OnDelete(DeleteBehavior.NoAction).IsRequired();
+        entity.HasOne(item => item.SupersedesReview).WithMany()
+            .HasForeignKey(item => new
+            {
+                item.CentralTransientEventId,
+                item.SupersedesReviewId,
+                item.SupersedesReviewCreatedUtc
+            })
+            .HasPrincipalKey(item => new
+            {
+                item.CentralTransientEventId,
+                item.ReviewId,
+                item.CreatedUtc
+            })
+            .OnDelete(DeleteBehavior.NoAction);
+    }
+
+    private static void ConfigureEventVersionReview(ModelBuilder builder)
+    {
+        var entity = builder.Entity<CentralTransientEventVersionReview>();
+        entity.ToTable("CentralTransientEventVersionReviews", table =>
+        {
+            table.HasTrigger("TR_CentralTransientEventVersionReviews_Immutable");
+            table.HasCheckConstraint("CK_CentralTransientEventVersionReviews_Ordinal", "[Ordinal] >= 0");
+        });
+        entity.HasKey(item => new { item.EventVersionId, item.Ordinal });
+        entity.HasIndex(item => new { item.EventVersionId, item.ReviewId }).IsUnique();
+        entity.HasOne(item => item.EventVersion).WithMany(item => item.Reviews)
+            .HasForeignKey(item => new { item.CentralTransientEventId, item.EventVersionId })
+            .HasPrincipalKey(item => new { item.CentralTransientEventId, item.EventVersionId })
+            .OnDelete(DeleteBehavior.Restrict).IsRequired();
+        entity.HasOne(item => item.Review).WithMany()
+            .HasForeignKey(item => new { item.CentralTransientEventId, item.ReviewId })
+            .HasPrincipalKey(item => new { item.CentralTransientEventId, item.ReviewId })
+            .OnDelete(DeleteBehavior.NoAction).IsRequired();
+    }
+
+    private static void ConfigureEventCurrent(ModelBuilder builder)
+    {
+        var entity = builder.Entity<CentralTransientEventCurrent>();
+        entity.ToTable("CentralTransientEventCurrent");
+        entity.HasKey(item => item.CentralTransientEventId);
+        entity.Property(item => item.ReviewState).HasConversion<string>().HasMaxLength(32).IsRequired();
+        entity.Property(item => item.EffectiveClassification).HasConversion<string>().HasMaxLength(32).IsRequired();
+        entity.Property(item => item.EffectiveMeteorSeverity).HasConversion<string>().HasMaxLength(32);
+        entity.Property(item => item.RowVersion).IsRowVersion();
+        entity.HasIndex(item => new { item.UpdatedUtc, item.CentralTransientEventId });
+        entity.HasOne(item => item.Event).WithOne(item => item.Current)
+            .HasForeignKey<CentralTransientEventCurrent>(item => item.CentralTransientEventId)
+            .OnDelete(DeleteBehavior.Restrict).IsRequired();
+        entity.HasOne(item => item.LatestEventVersion).WithMany()
+            .HasForeignKey(item => new { item.CentralTransientEventId, item.LatestEventVersionId })
+            .HasPrincipalKey(item => new { item.CentralTransientEventId, item.EventVersionId })
+            .OnDelete(DeleteBehavior.NoAction).IsRequired();
+        entity.HasOne(item => item.ActiveAssessment).WithMany()
+            .HasForeignKey(item => new { item.CentralTransientEventId, item.ActiveAssessmentId })
+            .HasPrincipalKey(item => new { item.CentralTransientEventId, item.AssessmentId })
+            .OnDelete(DeleteBehavior.NoAction).IsRequired();
+        entity.HasOne(item => item.LatestReview).WithMany()
+            .HasForeignKey(item => new { item.CentralTransientEventId, item.LatestReviewId })
+            .HasPrincipalKey(item => new { item.CentralTransientEventId, item.ReviewId })
+            .OnDelete(DeleteBehavior.NoAction);
+    }
+
+    private static void ConfigureReviewMutation(ModelBuilder builder)
+    {
+        var entity = builder.Entity<CentralTransientReviewMutationRecord>();
+        entity.ToTable("CentralTransientReviewMutations", table =>
+            table.HasTrigger("TR_CentralTransientReviewMutations_Immutable"));
+        entity.HasKey(item => item.Id);
+        entity.Property(item => item.ActorIdentity).HasMaxLength(256).UseCollation(BinaryCollation).IsRequired();
+        entity.Property(item => item.IdempotencyKey).HasMaxLength(128).UseCollation(BinaryCollation).IsRequired();
+        Sha256(entity.Property(item => item.CanonicalRequestSha256));
+        entity.Property(item => item.ResultRowVersion).HasMaxLength(8).IsRequired();
+        entity.HasIndex(item => new { item.CentralTransientEventId, item.ActorIdentity, item.IdempotencyKey }).IsUnique();
+        entity.HasOne(item => item.Event).WithMany()
+            .HasForeignKey(item => item.CentralTransientEventId).OnDelete(DeleteBehavior.Restrict).IsRequired();
+        entity.HasOne<CentralTransientEventVersionRecord>().WithMany()
+            .HasForeignKey(item => new { item.CentralTransientEventId, item.PreviousEventVersionId })
+            .HasPrincipalKey(item => new { item.CentralTransientEventId, item.EventVersionId })
+            .OnDelete(DeleteBehavior.NoAction).IsRequired();
+        entity.HasOne<CentralTransientEventVersionRecord>().WithMany()
+            .HasForeignKey(item => new { item.CentralTransientEventId, item.ResultEventVersionId })
+            .HasPrincipalKey(item => new { item.CentralTransientEventId, item.EventVersionId })
+            .OnDelete(DeleteBehavior.NoAction).IsRequired();
+        entity.HasOne<CentralTransientReviewRecord>().WithMany()
+            .HasForeignKey(item => new { item.CentralTransientEventId, item.PreviousReviewId })
+            .HasPrincipalKey(item => new { item.CentralTransientEventId, item.ReviewId })
+            .OnDelete(DeleteBehavior.NoAction);
+        entity.HasOne<CentralTransientReviewRecord>().WithMany()
+            .HasForeignKey(item => new { item.CentralTransientEventId, item.ResultReviewId })
+            .HasPrincipalKey(item => new { item.CentralTransientEventId, item.ReviewId })
             .OnDelete(DeleteBehavior.NoAction).IsRequired();
     }
 

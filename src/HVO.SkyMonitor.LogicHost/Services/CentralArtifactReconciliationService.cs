@@ -957,10 +957,17 @@ internal sealed partial class CentralArtifactReconciliationService(
         {
             return [];
         }
-        return await db.CentralArtifacts.AsNoTracking()
+        var artifactStates = await db.CentralArtifacts.AsNoTracking()
             .Where(artifact => EF.Functions.Collate(artifact.StorageReference, BinaryCollation) == storageReference)
             .Select(artifact => artifact.ObjectState)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var storageReferenceSha256 = SHA256.HashData(Encoding.Unicode.GetBytes(storageReference));
+        var derivativeStates = await db.CentralTransientDerivativeOutputIntents.AsNoTracking()
+            .Where(intent => EF.Property<byte[]>(intent, "StorageReferenceSha256") == storageReferenceSha256 &&
+                EF.Functions.Collate(intent.StorageReference, BinaryCollation) == storageReference)
+            .Select(intent => intent.ObjectState)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        return artifactStates.Concat(derivativeStates).ToArray();
     }
 
     private async Task CleanupStagingObjectsAsync(

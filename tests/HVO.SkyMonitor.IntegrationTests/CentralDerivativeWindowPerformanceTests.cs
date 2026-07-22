@@ -1553,10 +1553,9 @@ public sealed class CentralDerivativeWindowPerformanceTests
         var latencies = new ConcurrentBag<double>();
         using var protocol = new TransientProtocolCounter();
         protocol.Start();
-        var started = Stopwatch.GetTimestamp();
         var measuredJobIds = await ExecuteTransientJobsAsync(fixture, measurements, latencies, protocol)
             .ConfigureAwait(false);
-        var elapsed = Stopwatch.GetElapsedTime(started);
+        var elapsed = TimeSpan.FromMilliseconds(latencies.Sum());
         var protocolSnapshot = protocol.Stop();
         process.Refresh();
         var cpu = process.TotalProcessorTime - cpuBefore;
@@ -1684,32 +1683,45 @@ public sealed class CentralDerivativeWindowPerformanceTests
                 Assert.AreEqual(ProcessingOutcomeStatus.Produced, result.Status, result.ReasonCode);
                 Assert.IsNull(result.ReasonCode);
             }
-            jobIds[index] = lease.JobId;
             latencies?.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            await using (var boundaryScope = fixture.Factory.Services.CreateAsyncScope())
+            {
+                await boundaryScope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralDerivativeJobs
+                    .Where(job => job.RecipeName == CentralTransientDerivativeRuntime.RecipeName &&
+                        job.Status == CentralDerivativeJobStatus.Pending)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                        .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)
+                        .SetProperty(job => job.StateReasonCode, "performance.downstream-boundary"))
+                    .ConfigureAwait(false);
+            }
+            jobIds[index] = lease.JobId;
         }
         return jobIds;
     }
 
     private static CentralDerivativeJobExecutor CreateObservedTransientExecutor(
         IServiceProvider services,
-        TransientProtocolCounter protocol)
+        TransientProtocolCounter? protocol)
     {
         var db = services.GetRequiredService<ApplicationDbContext>();
         var jobService = services.GetRequiredService<ICentralDerivativeJobService>();
         var telemetry = services.GetRequiredService<CentralDerivativeWorkerTelemetry>();
         var timeProvider = services.GetRequiredService<TimeProvider>();
-        var observedObjectReader = new ObservedCentralArtifactObjectReader(
-            services.GetRequiredService<ICentralArtifactObjectReader>(), protocol);
+        var objectReader = services.GetRequiredService<ICentralArtifactObjectReader>();
+        if (protocol is not null)
+        {
+            objectReader = new ObservedCentralArtifactObjectReader(objectReader, protocol);
+        }
         var inputReader = new CentralDerivativeJobInputReader(
-            db, observedObjectReader, jobService, telemetry, timeProvider);
+            db, objectReader, jobService, telemetry, timeProvider);
         var transientExecutor = new CentralTransientValidationExecutor(
             db,
             inputReader,
             services.GetRequiredService<ICentralTransientEventPersistence>(),
             jobService,
+            services.GetRequiredService<ICentralTransientMaskFactory>(),
             telemetry,
-            services.GetRequiredService<ICelestialCatalog>(),
-            services.GetRequiredService<ICelestialCatalogMetadataSource>(),
             timeProvider,
             services.GetRequiredService<ILogger<CentralTransientValidationExecutor>>());
         return new CentralDerivativeJobExecutor(
@@ -1719,6 +1731,8 @@ public sealed class CentralDerivativeWindowPerformanceTests
             jobService,
             services.GetRequiredService<ICentralDerivativeJobScheduler>(),
             transientExecutor,
+            services.GetRequiredService<ICentralTransientDerivativeExecutor>(),
+            services.GetRequiredService<ICentralTransientReprocessingExecutor>(),
             telemetry,
             timeProvider);
     }

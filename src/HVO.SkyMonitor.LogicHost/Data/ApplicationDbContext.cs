@@ -44,6 +44,20 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralTransientObservationSourceReference> CentralTransientObservationSources => Set<CentralTransientObservationSourceReference>();
     internal DbSet<CentralTransientObservationBackgroundReference> CentralTransientObservationBackgrounds => Set<CentralTransientObservationBackgroundReference>();
     internal DbSet<CentralTransientAssessmentRecord> CentralTransientAssessments => Set<CentralTransientAssessmentRecord>();
+    internal DbSet<CentralTransientReviewRecord> CentralTransientReviews => Set<CentralTransientReviewRecord>();
+    internal DbSet<CentralTransientEventCurrent> CentralTransientEventCurrent => Set<CentralTransientEventCurrent>();
+    internal DbSet<CentralTransientReviewMutationRecord> CentralTransientReviewMutations => Set<CentralTransientReviewMutationRecord>();
+    internal DbSet<CentralTransientDerivativeJob> CentralTransientDerivativeJobs => Set<CentralTransientDerivativeJob>();
+    internal DbSet<CentralTransientDerivativeOutputIntent> CentralTransientDerivativeOutputIntents => Set<CentralTransientDerivativeOutputIntent>();
+    internal DbSet<CentralTransientDerivativeRecord> CentralTransientDerivatives => Set<CentralTransientDerivativeRecord>();
+    internal DbSet<CentralTransientDerivativeSourceReference> CentralTransientDerivativeSources => Set<CentralTransientDerivativeSourceReference>();
+    internal DbSet<CentralTransientDerivativeBackgroundReference> CentralTransientDerivativeBackgrounds => Set<CentralTransientDerivativeBackgroundReference>();
+    internal DbSet<CentralTransientNotificationRecord> CentralTransientNotifications => Set<CentralTransientNotificationRecord>();
+    internal DbSet<CentralTransientNotificationDispatch> CentralTransientNotificationDispatches => Set<CentralTransientNotificationDispatch>();
+    internal DbSet<CentralTransientReprocessingJob> CentralTransientReprocessingJobs => Set<CentralTransientReprocessingJob>();
+    internal DbSet<CentralTransientReprocessingRequestRecord> CentralTransientReprocessingRequests => Set<CentralTransientReprocessingRequestRecord>();
+    internal DbSet<CentralTransientPayloadRelease> CentralTransientPayloadReleases => Set<CentralTransientPayloadRelease>();
+    internal DbSet<CentralTransientPayloadReleaseItem> CentralTransientPayloadReleaseItems => Set<CentralTransientPayloadReleaseItem>();
     internal DbSet<CentralTransientValidationJob> CentralTransientValidationJobs => Set<CentralTransientValidationJob>();
     internal DbSet<CentralTransientExtractionReceipt> CentralTransientExtractionReceipts => Set<CentralTransientExtractionReceipt>();
     internal DbSet<CentralTransientExtractionSourceReference> CentralTransientExtractionSources => Set<CentralTransientExtractionSourceReference>();
@@ -73,6 +87,10 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         CentralRecoveryConfiguration.Configure(builder);
         EnvironmentalObservationConfiguration.Configure(builder);
         CentralTransientValidationConfiguration.Configure(builder);
+        CentralTransientDerivativeConfiguration.Configure(builder);
+        CentralTransientNotificationConfiguration.Configure(builder);
+        CentralTransientReprocessingConfiguration.Configure(builder);
+        CentralTransientPayloadReleaseConfiguration.Configure(builder);
         builder.ApplyConfiguration(new ObservatoryConfiguration());
 
         // Configure OpenIddict entities to use the default Entity Framework Core conventions

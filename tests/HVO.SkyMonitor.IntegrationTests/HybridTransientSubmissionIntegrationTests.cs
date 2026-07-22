@@ -207,6 +207,12 @@ public sealed class HybridTransientSubmissionIntegrationTests
             var result = await executionScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
                 .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
             result.Status.Should().Be(ProcessingOutcomeStatus.Produced, result.ReasonCode);
+            await executionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralDerivativeJobs
+                .Where(item => !jobIds.Contains(item.Id) && item.Status == CentralDerivativeJobStatus.Pending)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Status, CentralDerivativeJobStatus.Canceled)
+                    .SetProperty(item => item.StateReasonCode, "integration-test-downstream-isolation"))
+                .ConfigureAwait(false);
         }
         executedJobIds.Should().BeEquivalentTo(jobIds);
 

@@ -28,6 +28,8 @@ internal sealed class CentralDerivativeJobExecutor(
     ICentralDerivativeJobService jobService,
     ICentralDerivativeJobScheduler jobScheduler,
     ICentralTransientValidationExecutor transientExecutor,
+    ICentralTransientDerivativeExecutor transientDerivativeExecutor,
+    ICentralTransientReprocessingExecutor transientReprocessingExecutor,
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider) : ICentralDerivativeJobExecutor
 {
@@ -42,6 +44,14 @@ internal sealed class CentralDerivativeJobExecutor(
         if (string.Equals(lease.RecipeName, CentralTransientRuntime.RecipeName, StringComparison.Ordinal))
         {
             return await transientExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
+        }
+        if (string.Equals(lease.RecipeName, CentralTransientDerivativeRuntime.RecipeName, StringComparison.Ordinal))
+        {
+            return await transientDerivativeExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
+        }
+        if (string.Equals(lease.RecipeName, CentralTransientReprocessingRuntime.RecipeName, StringComparison.Ordinal))
+        {
+            return await transientReprocessingExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
         }
         using var optionsDocument = JsonDocument.Parse(lease.RecipeOptionsJson);
         var selector = JsonSerializer.Deserialize<ProcessingInputSelector>(lease.InputSelectorJson, SerializerOptions)
