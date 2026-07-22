@@ -28,12 +28,12 @@ encryption certificate loader must be implemented and tested before this
 Compose file can be treated as a production identity deployment.
 
 Current authorization also has deployment limits: CameraAgent
-self-registration, its dashboard, and frame endpoints are anonymous; LogicHost
-device listings and envelope issuance are not owner-filtered; and most
-bearer-protected APIs do not enforce a route-specific scope. Treat the current
-topology as a trusted, single-tenant development environment. Do not expose
-either host to an untrusted network or claim multi-tenant least privilege until
-those controls are implemented and tested.
+self-registration, its dashboard, and frame endpoints are anonymous, and most
+LogicHost bearer-protected APIs do not enforce a route-specific scope. Device
+listings and envelope issuance are owner-scoped, but the remaining limits still
+require a trusted development environment. Do not expose either host to an
+untrusted network or claim complete least privilege until those controls are
+implemented and tested.
 
 ## Safety Rules
 
@@ -144,6 +144,14 @@ possession. Successful sequential bootstrap changes the central registration
 from Pending to Active and later replay fails. Concurrent redemption is not
 protected by a SQL concurrency token. Perform bootstrap only on a trusted
 network with one operator until that gap is fixed.
+
+LogicHost lists and issues envelopes only when the authenticated user owns both
+the registration snapshot and its current observatory. A legacy registration
+whose observatory is missing or owned by a different user is hidden from all
+owner inventories and envelope issuance fails before credential fields change.
+Preserve the record for investigation and use only an approved migration or
+data-repair procedure to establish authoritative ownership or revoke it; do not
+reassign it from snapshot display fields or ad hoc portal actions.
 
 The generated device key is unique, but the OAuth client credentials included
 in the current envelope come from shared `DeviceBootstrap:CentralIdentity`

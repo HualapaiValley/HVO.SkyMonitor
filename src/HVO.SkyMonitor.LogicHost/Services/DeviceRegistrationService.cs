@@ -76,11 +76,15 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
                 o.IsActive))
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false)
-            ?? throw new InvalidOperationException("Observatory not found.");
+            ?? throw new DeviceRegistrationException(
+                "Device registration not found or access denied.",
+                DeviceRegistrationException.NotFoundReasonCode);
 
         if (!string.Equals(observatory.OwnerUserId, request.OwnerUserId, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("Access denied for the specified observatory.");
+            throw new DeviceRegistrationException(
+                "Device registration not found or access denied.",
+                DeviceRegistrationException.NotFoundReasonCode);
         }
 
         if (!observatory.IsActive)
@@ -95,9 +99,18 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
                 """)
             : dbContext.DeviceRegistrations.Where(registration =>
                 registration.DeviceId == request.DeviceId && registration.Status == DeviceRegistrationStatus.Pending);
-        var existing = await registrationQuery
-            .FirstOrDefaultAsync(cancellationToken)
+        var existingRegistrations = await registrationQuery
+            .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+        if (existingRegistrations.Any(registration =>
+                !string.Equals(registration.OwnerUserId, request.OwnerUserId, StringComparison.Ordinal)))
+        {
+            throw new DeviceRegistrationException(
+                "Device registration not found or access denied.",
+                DeviceRegistrationException.NotFoundReasonCode);
+        }
+
+        var existing = existingRegistrations.FirstOrDefault();
 
         if (existing is not null)
         {

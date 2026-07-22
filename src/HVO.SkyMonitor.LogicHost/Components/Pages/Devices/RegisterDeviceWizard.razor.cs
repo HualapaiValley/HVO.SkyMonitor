@@ -180,6 +180,7 @@ public partial class RegisterDeviceWizard : ComponentBase
         try
         {
             isIssuingEnvelope = true;
+            var owner = await EnsureOwnerContextAsync();
             TimeSpan? lifetime = FormModel.EnvelopeLifetimeMinutes is int minutes
                 ? TimeSpan.FromMinutes(minutes)
                 : null;
@@ -188,6 +189,7 @@ public partial class RegisterDeviceWizard : ComponentBase
                 registration.RegistrationId,
                 registration.DeviceId,
                 registration.ObservatoryId,
+                owner.UserId,
                 lifetime), default);
 
             activeEnvelope = new EnvelopeViewModel(

@@ -5,7 +5,9 @@ namespace HVO.SkyMonitor.LogicHost.Services;
 
 internal interface IDeviceRegistrationReadService
 {
-    Task<IReadOnlyList<DeviceRegistrationSummary>> GetRegistrationsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<DeviceRegistrationSummary>> GetRegistrationsAsync(
+        string ownerUserId,
+        CancellationToken cancellationToken = default);
 }
 
 internal sealed record DeviceRegistrationSummary(
@@ -34,9 +36,18 @@ internal sealed record DeviceRegistrationSummary(
 
 internal sealed class DeviceRegistrationReadService(ApplicationDbContext dbContext) : IDeviceRegistrationReadService
 {
-    public async Task<IReadOnlyList<DeviceRegistrationSummary>> GetRegistrationsAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<DeviceRegistrationSummary>> GetRegistrationsAsync(
+        string ownerUserId,
+        CancellationToken cancellationToken = default)
     {
-        return await dbContext.DeviceRegistrations
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerUserId);
+
+        return await (from registration in dbContext.DeviceRegistrations
+                      join observatory in dbContext.Observatories
+                          on registration.ObservatoryId equals observatory.Id
+                      where registration.OwnerUserId == ownerUserId
+                          && observatory.OwnerUserId == ownerUserId
+                      select registration)
             .OrderByDescending(registration => registration.IssuedAtUtc)
             .Select(registration => new DeviceRegistrationSummary(
                 registration.Id,

@@ -269,7 +269,8 @@ public sealed class DeviceApiControllerTests
         var envelope = await envelopeService.CreateEnvelopeAsync(new DeviceRegistrationEnvelopeRequest(
             registration.Id,
             deviceId,
-            observatory.Id)).ConfigureAwait(false);
+            observatory.Id,
+            ownerId)).ConfigureAwait(false);
 
         var bootstrap = await bootstrapService.BootstrapAsync(new DeviceBootstrapRequest(
             deviceId,
@@ -298,6 +299,116 @@ public sealed class DeviceApiControllerTests
             bootstrap.DeviceKey,
             CancellationToken.None);
         await validateRevoked.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task OwnerScopedRegistrationServices_SeparateInventoriesAndRejectCrossOwnerEnvelope()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var db = services.GetRequiredService<ApplicationDbContext>();
+        var observatoryService = services.GetRequiredService<IObservatoryService>();
+        var registrationService = services.GetRequiredService<IDeviceRegistrationService>();
+        var registrationReadService = services.GetRequiredService<IDeviceRegistrationReadService>();
+        var envelopeService = services.GetRequiredService<IDeviceRegistrationEnvelopeService>();
+        var marker = Guid.NewGuid().ToString("N");
+        var firstOwnerId = $"owner-1-{marker}";
+        var secondOwnerId = $"owner-2-{marker}";
+        var firstObservatory = new Observatory
+        {
+            OwnerUserId = firstOwnerId,
+            Name = "First Owner Observatory",
+            LatitudeDegrees = 19.7,
+            LongitudeDegrees = -155.1,
+            ElevationMeters = 1200,
+            TimeZoneId = "Pacific/Honolulu",
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            IsActive = true
+        };
+        var secondObservatory = new Observatory
+        {
+            OwnerUserId = secondOwnerId,
+            Name = "Second Owner Observatory",
+            LatitudeDegrees = 20.7,
+            LongitudeDegrees = -156.1,
+            ElevationMeters = 1300,
+            TimeZoneId = "Pacific/Honolulu",
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            IsActive = true
+        };
+        db.Observatories.AddRange(firstObservatory, secondObservatory);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        var firstRegistration = await registrationService.CreatePendingAsync(new DeviceRegistrationCreateRequest(
+            $"device-1-{marker}",
+            "SELFATTEST1",
+            firstObservatory.Id,
+            "First owner device",
+            firstOwnerId,
+            "First owner",
+            null,
+            "SelfAttested",
+            null)).ConfigureAwait(false);
+        Func<Task> crossOwnerPendingTakeover = () => registrationService.CreatePendingAsync(
+            new DeviceRegistrationCreateRequest(
+                firstRegistration.DeviceId,
+                "SELFATTEST2",
+                secondObservatory.Id,
+                "Attempted takeover",
+                secondOwnerId,
+                "Second owner",
+                null,
+                "SelfAttested",
+                null));
+        await crossOwnerPendingTakeover.Should().ThrowAsync<DeviceRegistrationException>()
+            .WithMessage("*access denied*").ConfigureAwait(false);
+        firstRegistration.OwnerUserId.Should().Be(firstOwnerId);
+        firstRegistration.ObservatoryId.Should().Be(firstObservatory.Id);
+
+        var secondRegistration = await registrationService.CreatePendingAsync(new DeviceRegistrationCreateRequest(
+            $"device-2-{marker}",
+            "SELFATTEST2",
+            secondObservatory.Id,
+            "Second owner device",
+            secondOwnerId,
+            "Second owner",
+            null,
+            "SelfAttested",
+            null)).ConfigureAwait(false);
+
+        (await observatoryService.GetObservatoriesAsync(firstOwnerId).ConfigureAwait(false))
+            .Should().ContainSingle(item => item.Id == firstObservatory.Id);
+        (await observatoryService.GetObservatoriesAsync(secondOwnerId).ConfigureAwait(false))
+            .Should().ContainSingle(item => item.Id == secondObservatory.Id);
+        (await registrationReadService.GetRegistrationsAsync(firstOwnerId).ConfigureAwait(false))
+            .Should().ContainSingle(item =>
+                item.RegistrationId == firstRegistration.Id
+                && item.ObservatoryName == firstObservatory.Name);
+        (await registrationReadService.GetRegistrationsAsync(secondOwnerId).ConfigureAwait(false))
+            .Should().ContainSingle(item =>
+                item.RegistrationId == secondRegistration.Id
+                && item.ObservatoryName == secondObservatory.Name);
+
+        Func<Task> crossOwner = () => envelopeService.CreateEnvelopeAsync(new DeviceRegistrationEnvelopeRequest(
+            firstRegistration.Id,
+            firstRegistration.DeviceId,
+            firstObservatory.Id,
+            secondOwnerId));
+
+        await crossOwner.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*access denied*").ConfigureAwait(false);
+        firstRegistration.DevicePublicId.Should().BeNull();
+        firstRegistration.DeviceKeyHash.Should().BeNull();
+        firstRegistration.RegistrationTokenHash.Should().BeNull();
+
+        var envelope = await envelopeService.CreateEnvelopeAsync(new DeviceRegistrationEnvelopeRequest(
+            firstRegistration.Id,
+            firstRegistration.DeviceId,
+            firstObservatory.Id,
+            firstOwnerId)).ConfigureAwait(false);
+        envelope.RegistrationId.Should().Be(firstRegistration.Id);
+        firstRegistration.DeviceKeyHash.Should().NotBeNullOrWhiteSpace();
+        secondRegistration.DeviceKeyHash.Should().BeNull();
     }
 
     private static async Task<(string DeviceId, string DeviceKey, Guid RegistrationId, Guid DevicePublicId, Guid ObservatoryId)>
