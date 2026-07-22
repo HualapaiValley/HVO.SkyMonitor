@@ -1,0 +1,211 @@
+{
+  "schemaVersion": "hvo-asi-characterization-session-v1",
+  "sessionId": "asi676-pair-20260722-operational-v1",
+  "capturedUtcRange": [
+    "2026-07-22T19:50:03.525Z",
+    "2026-07-22T19:54:36.036Z"
+  ],
+  "purpose": "SDK capability, RAW16 layout, gain-boundary, and bin-mode operational evidence",
+  "limitations": [
+    "The scene and illumination were not controlled.",
+    "The cameras were not covered for bias or dark measurements.",
+    "No uniform flat, focus, lens identity, or astrometric evidence was available.",
+    "Standalone SDK still captures are not CameraAgent sustained-throughput evidence.",
+    "The deployed utility read ElecPerADU before applying requested controls, so that retained sidecar field describes prior camera state rather than the recorded gain.",
+    "Raw payloads are checksum-bound only on the capture host, not in a durable shared archive; raw-derived conclusions are operator-verified and cannot be independently reproduced from the repository."
+  ],
+  "publication": {
+    "retainedIdentifiers": "Full camera serials are intentionally retained as stable physical-binding evidence; hostname and relative source path are retained for reproducibility.",
+    "excludedData": "No credentials, tokens, email addresses, private keys, operator usernames, or IP addresses are included."
+  },
+  "host": {
+    "hostname": "allsky01",
+    "operatingSystem": "Debian GNU/Linux 13 (trixie)",
+    "kernel": "6.18.34+rpt-rpi-2712",
+    "architecture": "arm64",
+    "cpu": "4 x ARM Cortex-A76",
+    "memoryBytes": 17006182400,
+    "bootedLocal": "2026-07-22 12:29:11",
+    "rootStorage": "118.9 GiB ext4 on mmcblk0p2",
+    "applicationStorage": "931.5 GiB XFS on Samsung SSD 980 1TB at /var/lib/docker"
+  },
+  "powerAndThermal": {
+    "operatorReportedSupply": "5 V / 6 A",
+    "preRebootThrottled": "0x50000",
+    "preRebootInterpretation": "historical under-voltage and throttling flags latched; current-state bits clear",
+    "postRebootThrottledCheckpoints": ["0x0", "0x0", "0x0"],
+    "hostTemperatureC": { "minimum": 41.7, "maximum": 42.8 },
+    "sensorTemperatureC": { "minimum": 36.0, "maximum": 36.8 },
+    "acceptance": "bounded clean-session evidence only"
+  },
+  "usb": {
+    "asi676mm": {
+      "usbId": "03c3:676c",
+      "speedMbps": 5000,
+      "rootBus": 3
+    },
+    "asi676mc": {
+      "usbId": "03c3:676d",
+      "speedMbps": 5000,
+      "rootBus": 5
+    },
+    "otherObservedCamera": {
+      "model": "ZWO ASI120MM Mini",
+      "serial": "1131070622090900",
+      "usbId": "03c3:120c",
+      "speedMbps": 480,
+      "captured": false
+    }
+  },
+  "software": {
+    "repositoryBaseCommit": "90aeeac4a893ee2dbbcbf8097af55cfec812e451",
+    "sdkVersion": "1, 41, 0, 0",
+    "captureSourceSha256": "da2ab5b4c2562469889d39d8e7dc067862bcd872d517cea4c696d47a002b0bdc",
+    "reviewedSuccessorSourceSha256": "a7924216da89ce3b15d15100f527c4809f02512b7c4f1afe4e482808747a138d",
+    "reviewedSuccessorArm64BinarySha256": "aa2a5d63871ac35d77a843f7f018603e5066e8859fdd6d0c7411bccd5b4ee1e1",
+    "raw16AnalysisToolSha256": "65224d1c9dddc407cacf8d8c64df053c91a45d972fd020799cc64c11ef91ce34",
+    "arm64BinarySha256": "9c263e3fbfd6bb4f9f476771158bb57e4ebf5d7c7a2a8b5d4888d98da1c19872",
+    "sdkHeaderSha256": "af6ab82e66905b3a0f3313e1e82ccb4fedde272eaa64744588a1be8103f9cf0c",
+    "sdkArm64LibrarySha256": "3ecf511979ed571131e7d7f4a467112aba21940b4dc91d63bd109b9683bf67c4",
+    "sdkLicenseSha256": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2",
+    "profileSchemaSha256": "3f1b1dfa389c0988fbc74eea7d0ede08b56f4e3b79b743df0f72ac8c0704816f",
+    "sidecarSchemaSha256": "4d6140c992192617e0144d64dbeeed9772cfdbf22ebde5fb3855143e1575e0b5"
+  },
+  "successorValidation": {
+    "cameraModel": "ZWO ASI676MC",
+    "cameraSerial": "290750012a020900",
+    "capturedUtcRange": ["2026-07-22T20:19:31.841Z", "2026-07-22T20:19:33.513Z"],
+    "gain0ElectronsPerAduReported": 2.5899999141693115,
+    "gain82ElectronsPerAduReported": 1.0076268911361694,
+    "throttledAfter": "0x0",
+    "profiles": 2,
+    "sidecars": 2,
+    "repositoryDirectory": "successor-validation",
+    "rawChecksumManifest": "SHA256SUMS.successor-raw16",
+    "rawSourceRoot": "~/asi-capture-v1.41/captures"
+  },
+  "cameras": [
+    {
+      "model": "ZWO ASI676MC",
+      "serial": "290750012a020900",
+      "sessionCameraIndex": 1,
+      "captureCount": 22,
+      "rawBytes": 452273792,
+      "sampleLayout": "RGGB16 except explicit MonoBin"
+    },
+    {
+      "model": "ZWO ASI676MM",
+      "serial": "1624cd1226020900",
+      "sessionCameraIndex": 2,
+      "captureCount": 21,
+      "rawBytes": 445965440,
+      "sampleLayout": "Mono16"
+    }
+  ],
+  "captureSettings": {
+    "pixelFormat": "RAW16",
+    "exposureMicroseconds": 32,
+    "offset": 1,
+    "flip": 0,
+    "bandwidthOverload": 40,
+    "fullFrameGains": [0, 82, 179, 180],
+    "fullFrameCountPerGainAndCamera": 4,
+    "normalBinsAtGain82": [2, 3, 4],
+    "explicitModesAtGain82Bin2": ["ASI676MC MonoBin", "ASI676MC HardwareBin", "ASI676MM HardwareBin"]
+  },
+  "validation": {
+    "sdkProfiles": 22,
+    "captureSidecars": 43,
+    "profileSchema": "hvo-asi-sdk-profile-v1",
+    "sidecarSchema": "hvo-asi-raw16-sidecar-v2",
+    "schemaValidation": "passed",
+    "rawChecksumEntries": 43
+  },
+  "raw16LowNibbleAnalysis": [
+    {
+      "camera": "ASI676MC",
+      "mode": "bin1 gain0",
+      "source": "mc-full-g0/20260722T195143168Z_exp32_gain0_offset1_bin1_hwbin0_monobin0_seq1.raw16",
+      "sha256": "1a82d839b198cf92117afc08902c1615775d5ce3c0ca6a889b096f0345eb60a2",
+      "sampleCount": 12616704,
+      "distinctContainerCodes": 2134,
+      "occupiedLowNibbleResidues": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    },
+    {
+      "camera": "ASI676MC",
+      "mode": "bin1 gain180",
+      "source": "mc-full-g180/20260722T195154300Z_exp32_gain180_offset1_bin1_hwbin0_monobin0_seq1.raw16",
+      "sha256": "8a93e0c216c74ad34b204b2803ba6c07b3333e533805fd32a0373d02902b36f8",
+      "sampleCount": 12616704,
+      "distinctContainerCodes": 7811,
+      "occupiedLowNibbleResidues": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    },
+    {
+      "camera": "ASI676MM",
+      "mode": "bin1 gain0",
+      "source": "mm-full-g0/20260722T195211444Z_exp32_gain0_offset1_bin1_hwbin0_monobin-1_seq1.raw16",
+      "sha256": "613d46c633453a658c9acdb7317e47f782ffc2b7b462f7153637c4527419e529",
+      "sampleCount": 12616704,
+      "distinctContainerCodes": 896,
+      "occupiedLowNibbleResidues": [0]
+    },
+    {
+      "camera": "ASI676MM",
+      "mode": "bin1 gain180",
+      "source": "mm-full-g180/20260722T195224364Z_exp32_gain180_offset1_bin1_hwbin0_monobin-1_seq1.raw16",
+      "sha256": "efc1f281b6c8d49972765141a7883e06b78d90ca26422eaeee6aba2e5c2e701e",
+      "sampleCount": 12616704,
+      "distinctContainerCodes": 4096,
+      "occupiedLowNibbleResidues": [0]
+    },
+    {
+      "camera": "ASI676MM",
+      "mode": "normal bin2 gain82",
+      "source": "mm-bin2-normal/20260722T195259253Z_exp32_gain82_offset1_bin2_hwbin0_monobin-1_seq1.raw16",
+      "sha256": "91a74a458a4dc21f0527c097302531b7e9d8debb32074346963be7bdd4b56529",
+      "sampleCount": 3154176,
+      "distinctContainerCodes": 8634,
+      "occupiedLowNibbleResidues": [0, 4, 8, 12]
+    },
+    {
+      "camera": "ASI676MM",
+      "mode": "hardware bin2 gain82",
+      "source": "mm-bin2-hwbin/20260722T195436036Z_exp32_gain82_offset1_bin2_hwbin1_monobin-1_seq1.raw16",
+      "sha256": "7e8b2acb64deed7efea1e1b6e4c4c746233b97b3de79dcffed8d5b1c7e01390a",
+      "sampleCount": 3154176,
+      "distinctContainerCodes": 1399,
+      "occupiedLowNibbleResidues": [0]
+    },
+    {
+      "camera": "ASI676MC",
+      "mode": "normal bin2 gain82",
+      "source": "mc-bin2-normal/20260722T195242482Z_exp32_gain82_offset1_bin2_hwbin0_monobin0_seq1.raw16",
+      "sha256": "b0e6a4a5c92d05ee24f5ac11bb0878de8a8194bcd4a6af39410aa3d0351f0315",
+      "sampleCount": 3154176,
+      "distinctContainerCodes": 8224,
+      "occupiedLowNibbleResidues": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    },
+    {
+      "camera": "ASI676MC",
+      "mode": "mono bin2 gain82",
+      "source": "mc-bin2-monobin/20260722T195434241Z_exp32_gain82_offset1_bin2_hwbin0_monobin1_seq1.raw16",
+      "sha256": "e90904c77b541bee57ac5753432ae850571132b41bbfed73bdc6ad8b51f504b9",
+      "sampleCount": 3154176,
+      "distinctContainerCodes": 13661,
+      "occupiedLowNibbleResidues": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    },
+    {
+      "camera": "ASI676MC",
+      "mode": "hardware bin2 gain82",
+      "source": "mc-bin2-hwbin/20260722T195435157Z_exp32_gain82_offset1_bin2_hwbin1_monobin0_seq1.raw16",
+      "sha256": "0be3d920f2d70948d6bf67692ce1dd91e4c300d0b2f882140cee13dfa63254f0",
+      "sampleCount": 3154176,
+      "distinctContainerCodes": 1743,
+      "occupiedLowNibbleResidues": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    }
+  ],
+  "sourceLocation": "~/asi-capture-v1.41/captures/asi676-profile-20260722T194734Z",
+  "rawChecksumManifest": "SHA256SUMS.raw16",
+  "successorRawChecksumManifest": "SHA256SUMS.successor-raw16",
+  "metadataChecksumManifest": "SHA256SUMS.metadata"
+}

@@ -32,9 +32,11 @@ physical-camera calibration.
 The ZWO manuals describe both cameras as uncooled and list the same electronics,
 body, and readout modes. The MM is monochrome with a 21 mm diameter, 1.1 mm thick broadband
 AR-coated window. The MC has a color-filter array and a 21 mm diameter, 1.1 mm
-thick UV/IR-cut window. The installed MC CFA phase must be verified through the
-SDK and a parity capture; the executable V1 virtual profile provisionally uses
-RGGB because that is the raw CFA contract currently supported by the system.
+thick UV/IR-cut window. SDK V1.41 now reports RGGB and uncontrolled captures
+show a four-position parity structure, but assigning parity positions to colors
+still requires a controlled color target. The executable V1 virtual profile
+provisionally uses RGGB because that is the raw CFA contract currently supported
+by the system.
 
 ## Published Frame Rates
 
@@ -181,5 +183,11 @@ Before removing `provisional` from either profile:
    datasets for both cameras and both protective windows.
 5. Fit each installed lens from synchronized star fields rather than assuming a
    nominal fisheye projection.
+
+The bounded [2026-07-22 hardware session](asi676-hardware-session-20260722.md)
+completes the SDK capability probes and verifies RAW16 full-frame dimensions,
+normal bins 1-4, MC mono-bin 2, and hardware-bin 2 on both cameras. It does not
+complete RAW8, ROI alignment, controlled response, sustained throughput, or
+optical calibration.
 
 The native probe workflow is documented in `tools/asi-capture/README.md`.
