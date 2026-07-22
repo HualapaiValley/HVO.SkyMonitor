@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Protected CameraAgent focus-assistant design study">
+    <title>Focus Assistant - CameraAgent Concept</title>
+    <link rel="stylesheet" href="mockups.css">
+</head>
+<body class="window-page focus-page">
+    <a class="skip-link" href="#main">Skip to focus assistant</a>
+    <header class="window-appbar">
+        <div class="window-shell window-appbar__inner focus-appbar__inner">
+            <a class="window-brand" href="settings.html">
+                <span class="window-brand__mark"><img src="assets/all-sky-night.svg" alt=""></span>
+                <span class="window-brand__copy"><strong>Volcano Station</strong><small>System setup</small></span>
+            </a>
+            <nav class="window-view-nav focus-setup-nav" aria-label="System setup sections">
+                <a class="window-view-nav__link" href="settings.html">Overview</a>
+                <a class="window-view-nav__link window-view-nav__link--active" href="configuration.html" aria-current="location">Configuration</a>
+                <a class="window-view-nav__link" href="products-settings.html">Products</a>
+                <a class="window-view-nav__link" href="events-settings.html">Events</a>
+                <a class="window-view-nav__link" href="operations.html">Operations</a>
+                <a class="window-view-nav__link" href="identity.html">Device</a>
+            </nav>
+            <a class="window-operator setup-user" href="account.html"><span>RS</span><strong>Owner</strong></a>
+        </div>
+    </header>
+
+    <main class="window-shell focus-main" id="main">
+        <nav class="focus-breadcrumb" aria-label="Breadcrumb">
+            <a href="settings.html">System setup</a><span>/</span><a href="settings.html#camera">Camera</a><span>/</span><span aria-current="page">Focus</span>
+        </nav>
+
+        <header class="focus-heading">
+            <div>
+                <p class="eyebrow">Camera / protected workflow</p>
+                <h1>Focus assistant</h1>
+                <p>Reserve the camera, inspect a linear raw crop, and compare repeatable measurements while physically adjusting the lens.</p>
+            </div>
+            <div class="focus-heading__badges">
+                <span class="focus-badge focus-badge--protected">Owner only</span>
+                <span class="focus-badge focus-badge--demo">Simulated data</span>
+            </div>
+        </header>
+
+        <section class="focus-session" aria-label="Active focus session status">
+            <div class="focus-session__state">
+                <span class="focus-session__pulse" aria-hidden="true"></span>
+                <div><strong>Focus session active</strong><span>Normal cadence paused at a safe capture boundary</span></div>
+            </div>
+            <dl class="focus-session__facts">
+                <div><dt>Remaining</dt><dd>08:34</dd></div>
+                <div><dt>Previous mode</dt><dd>Automatic night</dd></div>
+                <div><dt>Restore</dt><dd>Exposure + gain + cadence</dd></div>
+            </dl>
+            <button class="focus-button focus-button--restore" type="button">End session and restore</button>
+        </section>
+
+        <p class="focus-study-note" role="note">Static interaction study. Controls and measurements on this page do not execute camera operations.</p>
+        <section class="focus-state-reference" aria-label="Focus session state reference"><span>Idle / capability ready</span><span>Reserving or camera busy</span><strong>Active / shown below</strong><span>Restoring</span><span>Expired</span><span>Failed restore / operator action</span></section>
+
+        <div class="focus-workspace">
+            <section class="focus-preview-card" aria-labelledby="focus-preview-heading">
+                <header class="focus-card-head">
+                    <div>
+                        <p class="eyebrow">Latest focus frame / 0.8 sec old</p>
+                        <h2 id="focus-preview-heading">Linear raw analysis crop</h2>
+                        <span>960 x 630 analysis ROI from 3552 x 3552 Bayer RGGB Mono16 frame</span>
+                    </div>
+                    <div class="focus-view-buttons" role="group" aria-label="Preview display options">
+                        <button class="focus-mini-button focus-mini-button--active" type="button" aria-pressed="true">Fit</button>
+                        <button class="focus-mini-button" type="button" aria-pressed="false">1:1</button>
+                        <button class="focus-mini-button focus-mini-button--active" type="button" aria-pressed="true">Stars</button>
+                        <button class="focus-mini-button" type="button" aria-pressed="false">Freeze</button>
+                    </div>
+                </header>
+                <figure class="focus-frame">
+                    <img src="assets/focus-frame.svg" alt="Simulated linear star-field crop with analysis ROI and measured-star overlays">
+                    <figcaption>Captured 10:46:18.420 PM HST / exposure 250 ms / gain 80 / offset reported 20</figcaption>
+                </figure>
+                <dl class="focus-metrics" aria-label="Focus measurements">
+                    <div><dt>Focus score</dt><dd><strong>82</strong><small>Best 86</small></dd></div>
+                    <div><dt>Median FWHM</dt><dd><strong>2.8 px</strong><small>Lower is better</small></dd></div>
+                    <div><dt>Valid stars</dt><dd><strong>46</strong><small>8 rejected</small></dd></div>
+                    <div><dt>Saturation</dt><dd><strong>0.03%</strong><small>Within range</small></dd></div>
+                </dl>
+            </section>
+
+            <aside class="focus-controls" aria-label="Focus session controls">
+                <section class="focus-control-card">
+                    <header><p class="eyebrow">Focus capture</p><h2>Session setpoint</h2></header>
+                    <div class="focus-mechanism"><span>Focus mechanism</span><strong>Manual lens</strong><small>No motorized focuser detected</small></div>
+                    <div class="focus-field-grid">
+                        <label><span>Exposure</span><div><input type="number" value="250" min="50" max="30000"><small>ms</small></div></label>
+                        <label><span>Gain</span><div><input type="number" value="80" min="0" max="400"><small>units</small></div></label>
+                        <label><span>Refresh</span><div><input type="number" value="2.0" min="1" max="10" step="0.5"><small>sec</small></div></label>
+                        <label><span>Loop limit</span><div><input type="number" value="120" min="1" max="300"><small>frames</small></div></label>
+                    </div>
+                    <div class="focus-action-row">
+                        <button class="focus-button focus-button--primary" type="button">Apply to session</button>
+                        <button class="focus-button" type="button">Capture once</button>
+                    </div>
+                    <p class="focus-control-note">Requested values remain bounded by the configured camera envelope. Actual applied values return with each frame.</p>
+                </section>
+
+                <section class="focus-control-card">
+                    <header><p class="eyebrow">Analysis area</p><h2>Display ROI</h2></header>
+                    <p class="focus-control-note">This selects pixels for focus analysis only. It does not change the hardware sensor ROI.</p>
+                    <div class="focus-field-grid focus-field-grid--compact">
+                        <label><span>X</span><input type="number" value="120"></label>
+                        <label><span>Y</span><input type="number" value="82"></label>
+                        <label><span>Width</span><input type="number" value="960"></label>
+                        <label><span>Height</span><input type="number" value="630"></label>
+                    </div>
+                    <div class="focus-action-row">
+                        <button class="focus-button" type="button">Select on frame</button>
+                        <button class="focus-button focus-button--quiet" type="button">Reset center</button>
+                    </div>
+                </section>
+
+                <section class="focus-control-card">
+                    <header><p class="eyebrow">Preview only</p><h2>Display stretch</h2></header>
+                    <div class="focus-slider"><div class="focus-slider__label"><label for="focus-black-point">Black point</label><output for="focus-black-point">3%</output></div><input id="focus-black-point" type="range" value="3" min="0" max="30"></div>
+                    <div class="focus-slider"><div class="focus-slider__label"><label for="focus-white-point">White point</label><output for="focus-white-point">98%</output></div><input id="focus-white-point" type="range" value="98" min="50" max="100"></div>
+                    <label class="focus-check"><input type="checkbox" checked><span>Measured-star overlay</span></label>
+                    <label class="focus-check"><input type="checkbox"><span>Crosshair and thirds</span></label>
+                    <p class="focus-control-note">Stretch and overlays never change captured pixels or quantitative measurements.</p>
+                </section>
+            </aside>
+        </div>
+
+        <section class="focus-history" aria-labelledby="focus-history-heading">
+            <header class="focus-card-head">
+                <div><p class="eyebrow">Current session</p><h2 id="focus-history-heading">Focus trend</h2><span>Compare only after exposure and gain stabilize</span></div>
+                <button class="focus-button" type="button">Mark current as reference</button>
+            </header>
+            <div class="focus-history__grid">
+                <figure class="focus-chart">
+                    <svg viewBox="0 0 760 220" role="img" aria-label="Focus score improved from 54 to 86 and then settled at 82">
+                        <g class="focus-chart__grid"><path d="M40 25H740M40 75H740M40 125H740M40 175H740"/><path d="M40 25V190M180 25V190M320 25V190M460 25V190M600 25V190M740 25V190"/></g>
+                        <path class="focus-chart__area" d="M40 165L130 143L220 118L310 89L400 54L490 38L580 58L670 50L740 55V190H40Z"/>
+                        <path class="focus-chart__line" d="M40 165L130 143L220 118L310 89L400 54L490 38L580 58L670 50L740 55"/>
+                        <g class="focus-chart__points"><circle cx="40" cy="165" r="4"/><circle cx="130" cy="143" r="4"/><circle cx="220" cy="118" r="4"/><circle cx="310" cy="89" r="4"/><circle cx="400" cy="54" r="4"/><circle cx="490" cy="38" r="6"/><circle cx="580" cy="58" r="4"/><circle cx="670" cy="50" r="4"/><circle cx="740" cy="55" r="5"/></g>
+                    </svg>
+                    <figcaption>Focus score by accepted frame; higher is better. Best score 86 at 10:45:52 PM.</figcaption>
+                </figure>
+                <div class="focus-guide">
+                    <p class="eyebrow">Manual adjustment guide</p>
+                    <ol>
+                        <li>Adjust the lens by a small repeatable amount.</li>
+                        <li>Wait for two accepted frames at the same setpoint.</li>
+                        <li>Seek higher score and lower median FWHM.</li>
+                        <li>Mark the best stable point before ending the session.</li>
+                    </ol>
+                    <div class="focus-unsupported"><strong>Not available</strong><span>Hardware ROI, binning, offset control, focuser movement, and autofocus require future capability contracts.</span></div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="window-footer focus-footer" aria-label="Focus session footer">
+        <div class="window-shell window-footer__inner">
+            <span><span class="window-status-dot"></span>Focus session active</span>
+            <span>Normal capture paused</span>
+            <span>Lease: 08:34 remaining</span>
+            <span>Preview: 0.8 sec old</span>
+            <a href="observatory-window.html">Exit setup</a>
+        </div>
+    </footer>
+</body>
+</html>

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="title description">
+  <title id="title">Synthetic star-trail composite</title>
+  <desc id="description">Concentric star trails arc over a dark volcanic horizon in a night-only sky-day derivative, with north marked in the upper-right.</desc>
+  <defs><radialGradient id="sky" cx="52%" cy="42%" r="72%"><stop stop-color="#18325a"/><stop offset=".65" stop-color="#071126"/><stop offset="1" stop-color="#02050a"/></radialGradient><filter id="glow"><feGaussianBlur stdDeviation="2"/></filter></defs>
+  <rect width="1200" height="800" fill="url(#sky)"/>
+  <g fill="none" stroke-linecap="round" filter="url(#glow)">
+    <path d="M430 115A300 300 0 0 1 930 290" stroke="#dff4ff" stroke-width="4"/><path d="M365 94A370 370 0 0 1 1005 338" stroke="#9fd8f2" stroke-width="3"/><path d="M300 82A440 440 0 0 1 1070 390" stroke="#f1e4bc" stroke-width="4"/><path d="M245 110A500 500 0 0 1 1125 445" stroke="#b5cfff" stroke-width="3"/><path d="M190 160A560 560 0 0 1 1160 520" stroke="#dceeff" stroke-width="2"/>
+    <path d="M520 178A205 205 0 0 1 830 294" stroke="#fff4d0" stroke-width="3"/><path d="M465 220A250 250 0 0 1 840 390" stroke="#8fc9ed" stroke-width="3"/>
+  </g>
+  <path d="M0 650L120 590L210 635L315 552L430 635L550 540L680 625L795 548L900 632L1010 570L1120 630L1200 600V800H0Z" fill="#08131d"/>
+  <path d="M0 700C230 650 410 710 620 665C845 620 1020 705 1200 655V800H0Z" fill="#03080d"/>
+  <g stroke="#9ec3ff" stroke-width="3" fill="none"><path d="M1015 120L1100 65M1100 65L1074 70M1100 65L1090 90"/></g><text x="1000" y="145" fill="#9ec3ff" font-family="ui-monospace, monospace" font-size="22">NORTH</text>
+</svg>

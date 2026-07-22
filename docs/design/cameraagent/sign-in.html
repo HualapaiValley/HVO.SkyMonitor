@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="CameraAgent local operator sign-in design study">
+    <title>Operator Sign In - CameraAgent Concept</title>
+    <link rel="stylesheet" href="mockups.css">
+</head>
+<body class="window-page auth-page">
+    <a class="skip-link" href="#main">Skip to sign in</a>
+    <header class="window-appbar">
+        <div class="window-shell window-appbar__inner auth-appbar__inner">
+            <a class="window-brand" href="observatory-window.html"><span class="window-brand__mark"><img src="assets/all-sky-night.svg" alt=""></span><span class="window-brand__copy"><strong>Volcano Station</strong><small>Local operator access</small></span></a>
+            <span class="auth-boundary">This CameraAgent</span>
+            <a class="window-operator" href="observatory-window.html">Return to public sky</a>
+        </div>
+    </header>
+    <main class="window-shell auth-main" id="main">
+        <section class="auth-card" id="sign-in" aria-labelledby="sign-in-heading">
+            <header><p class="eyebrow">Local operator account</p><h1 id="sign-in-heading">Operator sign in</h1><p>Use the owner account configured for Volcano Station.</p></header>
+            <p class="setup-study-note" role="note">Static sign-in study. Credentials are not submitted or retained.</p>
+            <div class="auth-form" role="form" aria-label="Static operator sign-in form">
+                <label for="sign-in-email"><span>Email</span><input id="sign-in-email" name="email" type="email" autocomplete="username" placeholder="owner@example.test" required></label>
+                <label for="sign-in-password"><span>Password</span><input id="sign-in-password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required></label>
+                <label class="auth-check"><input type="checkbox" name="remember"><span>Keep me signed in on this station</span></label>
+                <button class="setup-button setup-button--primary" type="button">Sign in to setup</button>
+            </div>
+            <div class="auth-help"><a href="register.html">Account access and recovery</a><span>Local cookie / 12-hour sliding session</span></div>
+        </section>
+        <section class="auth-context" aria-labelledby="auth-context-heading">
+            <p class="eyebrow">Protected station controls</p>
+            <h2 id="auth-context-heading">Operate this camera locally.</h2>
+            <p>Sign-in is managed by this CameraAgent. It does not use your LogicHost account and does not grant central access.</p>
+            <div class="auth-scope">
+                <div><span>Public sky</span><strong>No sign-in required</strong></div>
+                <div><span>Setup and Focus</span><strong>Local owner required</strong></div>
+                <div><span>LogicHost</span><strong>Separate account</strong></div>
+            </div>
+            <p class="auth-context__note">You were sent here from <strong>System setup</strong>. After sign-in, return only to a validated local destination.</p>
+        </section>
+    </main>
+    <footer class="window-footer" aria-label="Identity boundary footer"><div class="window-shell window-footer__inner"><span><span class="window-status-dot"></span>CameraAgent online</span><span>Local identity</span><span>TLS required outside localhost</span><span>No central SSO</span><a href="observatory-window.html">Public sky</a></div></footer>
+</body>
+</html>

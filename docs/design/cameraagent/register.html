@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="CameraAgent local account registration boundary design study">
+    <title>Local Account Access - CameraAgent Concept</title>
+    <link rel="stylesheet" href="mockups.css">
+</head>
+<body class="window-page auth-page">
+    <a class="skip-link" href="#main">Skip to account access</a>
+    <header class="window-appbar"><div class="window-shell window-appbar__inner auth-appbar__inner"><a class="window-brand" href="observatory-window.html"><span class="window-brand__mark"><img src="assets/all-sky-night.svg" alt=""></span><span class="window-brand__copy"><strong>Volcano Station</strong><small>Local account access</small></span></a><span class="auth-boundary">Owner managed</span><a class="window-operator" href="sign-in.html">Return to sign in</a></div></header>
+    <main class="window-shell auth-main auth-main--access" id="main">
+        <section class="auth-card auth-card--boundary" aria-labelledby="boundary-heading">
+            <span class="setup-state setup-state--warning">Security boundary</span>
+            <header><p class="eyebrow">Proposed safe behavior</p><h1 id="boundary-heading">No public self-registration</h1><p>The current application exposes a generic registration form. That behavior must be removed or owner-gated before deployment on an untrusted network.</p></header>
+            <div class="registration-disabled" aria-label="Disabled local registration form">
+                <label><span>Email</span><input type="email" value="Registration unavailable" disabled></label>
+                <label><span>Password</span><input type="password" value="not-available" disabled></label>
+                <button class="setup-button" type="button" disabled>Create account</button>
+            </div>
+            <div class="setup-notice setup-notice--amber"><strong>Recovery is deployment-managed</strong><p>This CameraAgent does not currently deliver password-reset email. Restore owner access by correcting protected configuration and restarting the host.</p></div>
+            <p class="setup-study-note" role="note">Target startup reconciliation promotes only the configured owner and removes stale owner privilege from prior accounts.</p>
+            <a class="setup-button setup-button--primary setup-button--link" href="sign-in.html">Return to operator sign in</a>
+        </section>
+        <section class="auth-context" aria-labelledby="access-heading">
+            <p class="eyebrow">Account registration</p>
+            <h2 id="access-heading">Local registration is closed.</h2>
+            <p>The station owner account is created from protected deployment configuration. Visitors cannot create an account from the public CameraAgent.</p>
+            <ol class="access-steps">
+                <li><span>01</span><div><strong>Configure the owner</strong><p>Set the owner email and a strong password through the deployment secret source.</p></div></li>
+                <li><span>02</span><div><strong>Start CameraAgent</strong><p>The host creates or reconciles the owner in its local Identity database.</p></div></li>
+                <li><span>03</span><div><strong>Sign in locally</strong><p>Use that owner account for setup, Focus, and device registration.</p></div></li>
+            </ol>
+        </section>
+    </main>
+    <footer class="window-footer" aria-label="Account boundary footer"><div class="window-shell window-footer__inner"><span>Registration closed</span><span>Owner seeded at startup</span><span>Email delivery unavailable</span><span>Local account only</span><a href="observatory-window.html">Public sky</a></div></footer>
+</body>
+</html>

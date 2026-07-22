@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Night Instrument concept for the CameraAgent public landing page">
+    <title>Night Instrument - CameraAgent Concept</title>
+    <link rel="stylesheet" href="mockups.css">
+</head>
+<body class="instrument-page">
+    <a class="skip-link" href="#main">Skip to latest sky image</a>
+    <div class="instrument-shell">
+        <header class="instrument-nav">
+            <a class="instrument-brand" href="index.html">HVO / VOLCANO STATION</a>
+            <div class="instrument-nav__views" aria-label="Planned public views">
+                <span class="planned-label">Planned:</span>
+                <span>Live</span>
+                <span class="planned">Daily</span>
+                <span class="planned">Time-lapse</span>
+                <span class="planned">Keogram</span>
+                <span class="planned">Events</span>
+            </div>
+            <span>Operator access preview</span>
+        </header>
+
+        <main class="instrument-grid" id="main">
+            <aside class="instrument-rail" aria-label="Station status">
+                <section class="instrument-block">
+                    <span class="instrument-block__label">Local station time</span>
+                    <time class="instrument-clock" datetime="2026-07-21T22:42:00-10:00">22:42:00</time>
+                    <span class="instrument-date">2026-07-21 / HST</span>
+                </section>
+                <section class="instrument-block">
+                    <span class="instrument-block__label">Acquisition state</span>
+                    <span class="instrument-state">CAPTURING</span>
+                </section>
+                <section class="instrument-block">
+                    <span class="instrument-block__label">Capture</span>
+                    <div class="instrument-pair"><span>Exposure</span><span>30.0 s</span></div>
+                    <div class="instrument-pair"><span>Stack</span><span>8 frames</span></div>
+                    <div class="instrument-pair"><span>Integration</span><span>240 s</span></div>
+                    <div class="instrument-pair"><span>Image age</span><span>00:00:28</span></div>
+                    <div class="instrument-pair"><span>Mode</span><span>AUTO-NIGHT</span></div>
+                </section>
+                <section class="instrument-block">
+                    <span class="instrument-block__label">Solar / lunar</span>
+                    <div class="instrument-pair"><span>Moon</span><span>38% / SET</span></div>
+                    <div class="instrument-pair"><span>Astro dawn</span><span>05:11</span></div>
+                    <div class="instrument-pair"><span>Sunrise</span><span>05:54</span></div>
+                </section>
+            </aside>
+
+            <section class="instrument-center" aria-labelledby="latest-instrument-heading">
+                <header class="instrument-titlebar">
+                    <h1 id="latest-instrument-heading">Published sky preview / processed</h1>
+                    <a class="full-view" href="assets/all-sky-night.svg">Full frame</a>
+                </header>
+                <figure class="instrument-preview">
+                    <div class="instrument-frame">
+                        <img src="assets/all-sky-night.svg" alt="Processed all-sky view showing stars, a faint Milky Way, dark horizon, and a meteor-like streak">
+                    </div>
+                    <figcaption class="instrument-caption">
+                        <span>CAPTURED 22:41:32.184 HST</span>
+                        <span>3552 x 3552 / COLOR / FISHEYE</span>
+                        <span>PREVIEW CURRENT</span>
+                    </figcaption>
+                </figure>
+            </section>
+
+            <aside class="instrument-rail" aria-label="Conditions and events">
+                <section class="instrument-block">
+                    <span class="instrument-block__label">Current conditions</span>
+                    <div class="instrument-pair"><span>Cloud</span><span>14% / CLEAR</span></div>
+                    <div class="instrument-pair"><span>Ambient</span><span>11.2 C</span></div>
+                    <div class="instrument-pair"><span>Humidity</span><span>63%</span></div>
+                    <div class="instrument-pair"><span>Wind</span><span>7 km/h NE</span></div>
+                    <div class="instrument-pair"><span>Rain</span><span>NONE</span></div>
+                    <div class="instrument-pair"><span>Data age</span><span>00:02:11</span></div>
+                </section>
+                <section class="instrument-block">
+                    <span class="instrument-block__label">Cloud trend / 6 hours</span>
+                    <div class="spark instrument-trend" role="img" aria-label="Cloud cover rose and then fell over six hours">
+                        <i style="--v:18"></i><i style="--v:22"></i><i style="--v:31"></i><i style="--v:52"></i>
+                        <i style="--v:70"></i><i style="--v:48"></i><i style="--v:28"></i><i style="--v:14"></i>
+                    </div>
+                </section>
+                <section class="instrument-block">
+                    <span class="instrument-block__label">Event channel</span>
+                    <article class="instrument-event">
+                        <strong>22:17:08 / METEOR-LIKE</strong>
+                        Local candidate / preliminary
+                    </article>
+                    <article class="instrument-event">
+                        <strong>20:52:41 / AIRCRAFT-LIKE</strong>
+                        Local provisional / aircraft-like
+                    </article>
+                </section>
+                <section class="instrument-block">
+                    <span class="instrument-block__label">Optical system</span>
+                    <div class="instrument-pair"><span>Sensor</span><span>3552 SQ</span></div>
+                    <div class="instrument-pair"><span>Lens</span><span>2.5 mm</span></div>
+                    <div class="instrument-pair"><span>Field</span><span>180 deg</span></div>
+                    <div class="instrument-pair"><span>Pointing</span><span>ZENITH</span></div>
+                </section>
+            </aside>
+        </main>
+    </div>
+</body>
+</html>

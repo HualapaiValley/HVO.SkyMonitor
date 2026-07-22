@@ -1,0 +1,27 @@
+const dewarpedParameters = new URLSearchParams(window.location.search);
+const dewarpedDate = "2026-07-21";
+const dewarpedTime = dewarpedParameters.get("at") ?? "23:48";
+const requestedCivilDate = dewarpedParameters.get("civil");
+const dewarpedClock = dewarpedTime.length === 5 ? `${dewarpedTime}:00` : dewarpedTime;
+const dewarpedMinutes = Number.parseInt(dewarpedTime.slice(0, 2), 10) * 60 + Number.parseInt(dewarpedTime.slice(3, 5), 10);
+const dewarpedCivilDate = requestedCivilDate === "2026-07-22" || (!requestedCivilDate && dewarpedMinutes < 354) ? "2026-07-22" : "2026-07-21";
+const dewarpedInstant = new Date(`2000-01-${dewarpedCivilDate.endsWith("22") ? "02" : "01"}T${dewarpedClock}Z`);
+const dewarpedPeriod = dewarpedInstant >= new Date("2000-01-01T19:14:00Z") && dewarpedInstant < new Date("2000-01-02T05:55:00Z") ? "night" : "daylight";
+const includeSeconds = dewarpedTime.length > 5 && !dewarpedTime.endsWith(":00");
+const dewarpedDisplayTime = new Intl.DateTimeFormat("en", { hour: "numeric", minute: "2-digit", second: includeSeconds ? "2-digit" : undefined, hour12: true, timeZone: "UTC" }).format(dewarpedInstant);
+const sourceUrl = `frames.html?date=${dewarpedDate}&civil=${dewarpedCivilDate}&at=${dewarpedTime}`;
+
+document.querySelector(".frame-breadcrumb a:nth-of-type(2)").href = sourceUrl;
+document.querySelector(".frame-breadcrumb a:nth-of-type(2)").textContent = `${dewarpedDisplayTime} frame`;
+document.querySelector(".product-tabs--frame a").href = sourceUrl;
+document.querySelector(".product-tabs--frame .product-tab--active").href = `dewarped.html?date=${dewarpedDate}&civil=${dewarpedCivilDate}&at=${dewarpedTime}`;
+document.querySelector(".product-viewer > header a").href = sourceUrl;
+document.querySelector(".product-viewer .eyebrow").textContent = `Published frame / ${dewarpedDisplayTime} HST`;
+const panorama = document.querySelector(".product-media img");
+panorama.src = dewarpedPeriod === "night" ? "assets/dewarped-horizon.svg" : "assets/dewarped-horizon-day.svg";
+panorama.alt = `Dewarped ${dewarpedPeriod} horizon panorama labeled north, east, south, and west`;
+const captured = document.querySelector(".product-context dd time");
+captured.textContent = `${dewarpedCivilDate === "2026-07-22" ? "22" : "21"} Jul 2026 / ${dewarpedDisplayTime} HST`;
+captured.dateTime = `${dewarpedCivilDate}T${dewarpedClock}-10:00`;
+document.querySelectorAll(".window-footer span")[1].textContent = `Frame: ${dewarpedDisplayTime}`;
+document.querySelector(".window-footer a").href = sourceUrl;

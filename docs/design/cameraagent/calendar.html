@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Public CameraAgent sky-day archive and calendar design study">
+    <title>Sky Archive - CameraAgent Concept</title>
+    <link rel="stylesheet" href="mockups.css">
+    <script src="calendar-mock.js" defer></script>
+</head>
+<body class="window-page archive-page">
+    <a class="skip-link" href="#main">Skip to sky archive</a>
+    <header class="window-appbar">
+        <div class="window-shell window-appbar__inner">
+            <a class="window-brand" href="observatory-window.html">
+                <span class="window-brand__mark"><img src="assets/all-sky-night.svg" alt=""></span>
+                <span class="window-brand__copy"><strong>Volcano Station</strong><small>HVO all-sky camera</small></span>
+            </a>
+            <nav class="window-view-nav" aria-label="Public sky views">
+                <a class="window-view-nav__link" href="observatory-window.html">Live</a>
+                <a class="window-view-nav__link window-view-nav__link--active" href="calendar.html" aria-current="page">Calendar</a>
+                <a class="window-view-nav__link" href="time-lapse.html">Time-lapse</a>
+                <a class="window-view-nav__link" href="keogram.html">Keogram</a>
+                <a class="window-view-nav__link" href="dewarped.html">Dewarped</a>
+                <a class="window-view-nav__link" href="events.html">Events</a>
+            </nav>
+            <a class="window-operator" href="sign-in.html">Operator sign in</a>
+        </div>
+    </header>
+
+    <main class="window-shell archive-main" id="main">
+        <header class="archive-heading">
+            <div>
+                <p class="eyebrow">Public sky archive / Volcano Station</p>
+                <h1>Daily sky archive</h1>
+                <p>Browse each sunrise-to-sunrise sky day as one continuous record, with daylight, night, events, and derived views kept together.</p>
+            </div>
+            <span class="archive-data-badge">Demo archive</span>
+        </header>
+
+        <p class="archive-study-note" role="note">Static design study with simulated archive data. Dates and links demonstrate the proposed navigation only.</p>
+
+        <section class="archive-browser" aria-labelledby="archive-month-heading">
+            <header class="archive-browser__head">
+                <div class="archive-month-switch">
+                    <span class="archive-month-placeholder" aria-disabled="true">&larr; June</span>
+                    <div><p class="eyebrow">Selected month</p><h2 id="archive-month-heading">July 2026</h2></div>
+                    <span class="archive-month-placeholder" aria-disabled="true">August &rarr;</span>
+                </div>
+                <div class="archive-legend-block">
+                    <ul class="archive-legend" aria-label="Calendar data legend">
+                        <li><span class="archive-period-key archive-period-key--day" aria-hidden="true">Sun</span>Daylight</li>
+                        <li><span class="archive-period-key archive-period-key--night" aria-hidden="true">Moon</span>Night</li>
+                        <li><span class="archive-event-key" aria-hidden="true"></span>Local candidate</li>
+                        <li><span class="archive-key archive-key--none" aria-hidden="true"></span>No data</li>
+                    </ul>
+                    <p>Each date runs from local sunrise through the following sunrise. Split bars show the daylight and night data present, not acquisition capability.</p>
+                </div>
+            </header>
+
+            <div class="archive-browser__body">
+                <div class="archive-calendar-wrap">
+                    <table class="archive-calendar">
+                        <caption class="visually-hidden">Published sunrise-to-sunrise sky-day data for July 2026</caption>
+                        <thead><tr><th scope="col"><abbr title="Sunday">Sun</abbr></th><th scope="col"><abbr title="Monday">Mon</abbr></th><th scope="col"><abbr title="Tuesday">Tue</abbr></th><th scope="col"><abbr title="Wednesday">Wed</abbr></th><th scope="col"><abbr title="Thursday">Thu</abbr></th><th scope="col"><abbr title="Friday">Fri</abbr></th><th scope="col"><abbr title="Saturday">Sat</abbr></th></tr></thead>
+                        <tbody>
+                            <tr>
+                                <td class="archive-day archive-day--empty"></td><td class="archive-day archive-day--empty"></td><td class="archive-day archive-day--empty"></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 1, 96 percent daylight data, 82 percent night data, no local candidates"><time datetime="2026-07-01">1</time><span class="archive-day__condition">Mostly clear</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 96%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 82%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 2, 100 percent daylight data, 94 percent night data, 1 local candidate"><time datetime="2026-07-02">2</time><span class="archive-day__events" aria-hidden="true">&#9733; 1</span><span class="archive-day__condition">Clear</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 100%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 94%"></i></span></a></td>
+                                <td class="archive-day archive-day--partial"><a href="#selected-day" aria-label="Sky day July 3, 88 percent daylight data, 38 percent night data, no local candidates"><time datetime="2026-07-03">3</time><span class="archive-day__condition">Rain break</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 88%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 38%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 4, 97 percent daylight data, 71 percent night data, no local candidates"><time datetime="2026-07-04">4</time><span class="archive-day__condition">Thin cloud</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 97%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 71%"></i></span></a></td>
+                            </tr>
+                            <tr>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 5, 98 percent daylight data, 92 percent night data, no local candidates"><time datetime="2026-07-05">5</time><span class="archive-day__condition">Clear</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 98%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 92%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 6, 99 percent daylight data, 84 percent night data, no local candidates"><time datetime="2026-07-06">6</time><span class="archive-day__condition">Mostly clear</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 99%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 84%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 7, 94 percent daylight data, 63 percent night data, 3 local candidates"><time datetime="2026-07-07">7</time><span class="archive-day__events" aria-hidden="true">&#9733; 3</span><span class="archive-day__condition">Passing cloud</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 94%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 63%"></i></span></a></td>
+                                <td class="archive-day archive-day--none"><span><time datetime="2026-07-08">8</time><span class="archive-day__condition">No data</span><span class="visually-hidden">Sky day July 8, no published data</span></span></td>
+                                <td class="archive-day archive-day--partial"><a href="#selected-day" aria-label="Sky day July 9, 42 percent daylight data, 57 percent night data, no local candidates"><time datetime="2026-07-09">9</time><span class="archive-day__condition">Partial data</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 42%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 57%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 10, 96 percent daylight data, 86 percent night data, no local candidates"><time datetime="2026-07-10">10</time><span class="archive-day__condition">Mostly clear</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 96%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 86%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 11, 100 percent daylight data, 96 percent night data, 1 local candidate"><time datetime="2026-07-11">11</time><span class="archive-day__events" aria-hidden="true">&#9733; 1</span><span class="archive-day__condition">Clear</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 100%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 96%"></i></span></a></td>
+                            </tr>
+                            <tr>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 12, 92 percent daylight data, 68 percent night data, no local candidates"><time datetime="2026-07-12">12</time><span class="archive-day__condition">High cloud</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 92%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 68%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 13, 98 percent daylight data, 83 percent night data, no local candidates"><time datetime="2026-07-13">13</time><span class="archive-day__condition">Mostly clear</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 98%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 83%"></i></span></a></td>
+                                <td class="archive-day archive-day--partial"><a href="#selected-day" aria-label="Sky day July 14, 74 percent daylight data, 42 percent night data, no local candidates"><time datetime="2026-07-14">14</time><span class="archive-day__condition">Rain gaps</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 74%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 42%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 15, 95 percent daylight data, 74 percent night data, no local candidates"><time datetime="2026-07-15">15</time><span class="archive-day__condition">Clearing</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 95%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 74%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 16, 99 percent daylight data, 95 percent night data, no local candidates"><time datetime="2026-07-16">16</time><span class="archive-day__condition">Clear</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 99%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 95%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 17, 97 percent daylight data, 91 percent night data, 2 local candidates"><time datetime="2026-07-17">17</time><span class="archive-day__events" aria-hidden="true">&#9733; 2</span><span class="archive-day__condition">Clear</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 97%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 91%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 18, 94 percent daylight data, 61 percent night data, no local candidates"><time datetime="2026-07-18">18</time><span class="archive-day__condition">Broken cloud</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 94%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 61%"></i></span></a></td>
+                            </tr>
+                            <tr>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 19, 98 percent daylight data, 81 percent night data, no local candidates"><time datetime="2026-07-19">19</time><span class="archive-day__condition">Mostly clear</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 98%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 81%"></i></span></a></td>
+                                <td class="archive-day"><a href="#selected-day" aria-label="Sky day July 20, 100 percent daylight data, 93 percent night data, no local candidates"><time datetime="2026-07-20">20</time><span class="archive-day__condition">Clear</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 100%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 93%"></i></span></a></td>
+                                <td class="archive-day archive-day--selected"><a href="#selected-day" aria-label="Sky day July 21, selected, 97 percent daylight data, 89 percent night data, 3 local candidates"><time datetime="2026-07-21">21</time><span class="archive-day__events" aria-hidden="true">&#9733; 3</span><span class="archive-day__condition">Day and night</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 97%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 89%"></i></span></a></td>
+                                <td class="archive-day archive-day--active"><a href="calendar.html?date=2026-07-22#selected-day" aria-current="date" aria-label="Sky day July 22, current open sky day, 100 percent daylight data so far, 31 percent night data so far, 1 local candidate"><time datetime="2026-07-22">22</time><span class="archive-day__events" aria-hidden="true">&#9733; 1</span><span class="archive-day__condition">Open</span><span class="archive-day__coverage" aria-hidden="true"><i class="archive-day__period archive-day__period--day" style="--archive-score: 100%"></i><i class="archive-day__period archive-day__period--night" style="--archive-score: 31%"></i></span></a></td>
+                                <td class="archive-day archive-day--future"><span><time datetime="2026-07-23">23</time><span class="visually-hidden">July 23, future date</span></span></td>
+                                <td class="archive-day archive-day--future"><span><time datetime="2026-07-24">24</time><span class="visually-hidden">July 24, future date</span></span></td>
+                                <td class="archive-day archive-day--future"><span><time datetime="2026-07-25">25</time><span class="visually-hidden">July 25, future date</span></span></td>
+                            </tr>
+                            <tr>
+                                <td class="archive-day archive-day--future"><span><time datetime="2026-07-26">26</time><span class="visually-hidden">July 26, future date</span></span></td>
+                                <td class="archive-day archive-day--future"><span><time datetime="2026-07-27">27</time><span class="visually-hidden">July 27, future date</span></span></td>
+                                <td class="archive-day archive-day--future"><span><time datetime="2026-07-28">28</time><span class="visually-hidden">July 28, future date</span></span></td>
+                                <td class="archive-day archive-day--future"><span><time datetime="2026-07-29">29</time><span class="visually-hidden">July 29, future date</span></span></td>
+                                <td class="archive-day archive-day--future"><span><time datetime="2026-07-30">30</time><span class="visually-hidden">July 30, future date</span></span></td>
+                                <td class="archive-day archive-day--future"><span><time datetime="2026-07-31">31</time><span class="visually-hidden">July 31, future date</span></span></td>
+                                <td class="archive-day archive-day--empty"></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <aside class="archive-selection" id="selected-day" aria-labelledby="archive-selection-heading">
+                    <header><p class="eyebrow">Selected sky day</p><h3 id="archive-selection-heading">July 21</h3><span class="archive-complete-state"><i aria-hidden="true"></i>Finalized</span></header>
+                    <div class="archive-selection__frames">
+                        <a class="archive-selection__frame" href="frames.html?date=2026-07-21&amp;period=daylight&amp;at=14:10" aria-label="Browse daylight frames near 2:10 PM"><figure><img src="assets/all-sky-day.svg" alt="Representative daylight frame with broken cloud from the simulated July 21 sky-day archive"><figcaption><span>Daylight / 2:10 PM</span><strong>Nearby frames &rarr;</strong></figcaption></figure></a>
+                        <a class="archive-selection__frame" href="frames.html?date=2026-07-21&amp;period=night&amp;at=23:48" aria-label="Browse night frames near 11:48 PM"><figure><img src="assets/all-sky-night.svg" alt="Representative night frame from the simulated July 21 sky-day archive"><figcaption><span>Night / 11:48 PM</span><strong>Nearby frames &rarr;</strong></figcaption></figure></a>
+                    </div>
+                    <dl class="archive-selection__facts">
+                        <div><dt>Published frames</dt><dd>1,824</dd></div>
+                        <div><dt>Published span</dt><dd>23 h 56 min</dd></div>
+                        <div><dt>Day / night data</dt><dd>97% / 89%</dd></div>
+                        <div><dt>Local candidates</dt><dd>3</dd></div>
+                    </dl>
+                    <p class="archive-date-note"><strong>Sky day July 21</strong> begins at Tuesday sunrise and includes that daylight period and night through Wednesday sunrise in HST.</p>
+                    <a class="archive-primary-action" href="frames.html?date=2026-07-21">Browse all 1,824 frames <span aria-hidden="true">&rarr;</span></a>
+                </aside>
+            </div>
+        </section>
+
+        <section class="archive-night" id="sky-day-detail" aria-labelledby="archive-night-heading">
+            <header class="archive-night__head">
+                <div><p class="eyebrow">Finalized sky day / Demo archive</p><h2 id="archive-night-heading">Tuesday, July 21</h2><span>Sunrise 5:54 AM Tue &middot; Next sunrise 5:55 AM Wed &middot; HST</span></div>
+                <div class="archive-adjacent-placeholder" aria-label="Adjacent sky days are not simulated"><span>&larr; July 20</span><span>July 22 open &rarr;</span></div>
+            </header>
+
+            <div class="archive-view-switch">
+                <span class="archive-view-switch__label">View shown</span>
+                <strong>Full sky day</strong>
+                <span>Daylight</span>
+                <span>Night</span>
+            </div>
+
+            <div class="archive-night__grid">
+                <section class="archive-coverage" aria-labelledby="archive-coverage-heading">
+                    <header><p class="eyebrow">Published data</p><h3 id="archive-coverage-heading">Sunrise to sunrise</h3></header>
+                    <div class="archive-timeline" role="img" aria-label="Published frames span the full sky day from Tuesday sunrise to Wednesday sunrise, with 97 percent daylight data, 89 percent night data, three local candidates, and two short data gaps">
+                        <div class="archive-timeline__bar"><span class="archive-timeline__daylight"></span><span class="archive-timeline__dusk"></span><span class="archive-timeline__night"></span><span class="archive-timeline__dawn"></span><i class="archive-timeline__gap archive-timeline__gap--one"></i><i class="archive-timeline__gap archive-timeline__gap--two"></i><b class="archive-timeline__event archive-timeline__event--day"></b><b class="archive-timeline__event archive-timeline__event--one"></b><b class="archive-timeline__event archive-timeline__event--two"></b></div>
+                        <div class="archive-timeline__axis"><time class="archive-time--start" datetime="2026-07-21T05:54:00-10:00">5:54 AM</time><time class="archive-time--noon" datetime="2026-07-21T12:00:00-10:00">Noon</time><time class="archive-time--sunset" datetime="2026-07-21T19:14:00-10:00">Sunset</time><time class="archive-time--midnight" datetime="2026-07-22T00:00:00-10:00">Midnight</time><time class="archive-time--end" datetime="2026-07-22T05:55:00-10:00">5:55 AM</time></div>
+                        <div class="archive-timeline__phases" aria-hidden="true"><span class="archive-phase--daylight">Daylight</span><span class="archive-phase--dusk">Dusk</span><span class="archive-phase--night">Night</span><span class="archive-phase--dawn">Dawn</span></div>
+                    </div>
+                    <ul class="archive-timeline__legend">
+                        <li><span class="archive-gap-key"></span>No published frame</li>
+                        <li><span class="archive-event-key"></span>Local candidate</li>
+                    </ul>
+                    <dl class="archive-night-metrics">
+                        <div><dt>First frame</dt><dd>5:58 AM Tue</dd></div>
+                        <div><dt>Last frame</dt><dd>5:54 AM Wed</dd></div>
+                        <div><dt>Typical cadence</dt><dd>48 sec</dd></div>
+                        <div><dt>Longest pause</dt><dd>18 min</dd></div>
+                    </dl>
+                </section>
+
+                <aside class="archive-night-summary" aria-labelledby="archive-summary-heading">
+                    <header><p class="eyebrow">Period summaries</p><h3 id="archive-summary-heading">Day and night</h3></header>
+                    <section class="archive-period-summary" aria-labelledby="archive-daylight-summary"><div><span aria-hidden="true">Sun</span><h4 id="archive-daylight-summary">Daylight</h4><strong>97% data</strong></div><p>Variable cloud, clearing through afternoon</p><dl><dt>Cloud</dt><dd>8-45%</dd><dt>Air</dt><dd>12.1-19.6 C</dd></dl></section>
+                    <section class="archive-period-summary archive-period-summary--night" aria-labelledby="archive-night-summary"><div><span aria-hidden="true">Moon</span><h4 id="archive-night-summary">Night</h4><strong>89% data</strong></div><p>Mostly clear after a cloudy dusk</p><dl><dt>Cloud</dt><dd>6-28%</dd><dt>Air</dt><dd>9.8-12.4 C</dd></dl></section>
+                    <div class="archive-event-summary"><span>3 local candidates</span><a href="events.html?id=evt_3N6V1C#event-detail">Aircraft-like track at 3:14 PM</a><a href="events.html?id=evt_9P8R5T#event-detail">Aircraft-like track at 8:52 PM</a><a href="events.html?id=evt_7Q4M2K#event-detail">Meteor-like track at 10:17 PM</a><small>Preliminary until central review.</small></div>
+                </aside>
+            </div>
+
+            <nav class="archive-products" aria-label="Views available for the selected sky day">
+                <a href="frames.html?date=2026-07-21"><small>Published data</small><strong>Browse sky-day frames</strong><span>Open frame browser &rarr;</span></a>
+                <a href="time-lapse.html?date=2026-07-21"><small>Full sky day</small><strong>24-hour time-lapse</strong><span>Open product &rarr;</span></a>
+                <a href="keogram.html?date=2026-07-21"><small>Full sky day</small><strong>24-hour keogram</strong><span>Open product &rarr;</span></a>
+                <a href="star-trails.html?date=2026-07-21"><small>Night derived</small><strong>Star trails</strong><span>Open product &rarr;</span></a>
+                <a href="events.html?date=2026-07-21"><small>Detection</small><strong>Local event candidates</strong><span>Browse events &rarr;</span></a>
+            </nav>
+        </section>
+    </main>
+
+    <footer class="window-footer" aria-label="Station status footer">
+        <div class="window-shell window-footer__inner">
+            <span><span class="window-status-dot"></span>Public preview current</span>
+            <span>Finalized through 21 Jul</span>
+            <span>Selected: 21 Jul 2026</span>
+            <span>Times shown in HST</span>
+            <a href="observatory-window.html">Return to live sky</a>
+        </div>
+    </footer>
+</body>
+</html>

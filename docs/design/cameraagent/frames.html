@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Public CameraAgent sky-day frame browser design study">
+    <title>Sky-Day Frames - CameraAgent Concept</title>
+    <link rel="stylesheet" href="mockups.css">
+    <script src="frames-mock.js" defer></script>
+</head>
+<body class="window-page frame-page">
+    <a class="skip-link" href="#main">Skip to selected frame</a>
+    <header class="window-appbar">
+        <div class="window-shell window-appbar__inner">
+            <a class="window-brand" href="observatory-window.html"><span class="window-brand__mark"><img src="assets/all-sky-night.svg" alt=""></span><span class="window-brand__copy"><strong>Volcano Station</strong><small>HVO all-sky camera</small></span></a>
+            <nav class="window-view-nav" aria-label="Public sky views">
+                <a class="window-view-nav__link" href="observatory-window.html">Live</a>
+                <a class="window-view-nav__link window-view-nav__link--active" href="calendar.html" aria-current="location">Calendar</a>
+                <a class="window-view-nav__link" href="time-lapse.html">Time-lapse</a>
+                <a class="window-view-nav__link" href="keogram.html">Keogram</a>
+                <a class="window-view-nav__link" href="dewarped.html">Dewarped</a>
+                <a class="window-view-nav__link" href="events.html">Events</a>
+            </nav>
+            <a class="window-operator" href="sign-in.html">Operator sign in</a>
+        </div>
+    </header>
+
+    <main class="window-shell frame-main" id="main">
+        <nav class="frame-breadcrumb" aria-label="Breadcrumb"><a href="calendar.html">Calendar</a><span>/</span><a href="calendar.html?date=2026-07-21#selected-day">July 21</a><span>/</span><span aria-current="page">Frames</span></nav>
+
+        <header class="frame-heading">
+            <div><p class="eyebrow">Sky day / Tuesday, July 21</p><h1>Published frames</h1><p>Move directly to a local time, scan nearby frames, or browse a bounded overview of the sunrise-to-sunrise record.</p></div>
+            <span class="archive-data-badge">Demo archive</span>
+        </header>
+
+        <section class="frame-toolbar" aria-label="Frame browser controls">
+            <nav class="frame-periods" aria-label="Sky-day period"><a class="frame-pill frame-pill--active" href="frames.html?date=2026-07-21" aria-current="page">Full sky day <small>1,824</small></a><a class="frame-pill" href="frames.html?date=2026-07-21&amp;period=daylight">Daylight <small>857</small></a><a class="frame-pill" href="frames.html?date=2026-07-21&amp;period=night">Night <small>967</small></a></nav>
+            <form class="frame-time-jump" action="frames.html" method="get"><input type="hidden" name="date" value="2026-07-21"><label for="frame-time">Go to local time</label><input id="frame-time" name="at" type="time" value="14:10" step="1"><button type="submit">Find nearest</button></form>
+            <nav class="frame-view-links" aria-label="Frame browser views"><a href="#nearby" aria-current="location">Nearby</a><a href="#at-a-glance">At a glance</a></nav>
+        </section>
+
+        <section class="frame-detail" aria-labelledby="selected-frame-heading">
+            <header class="frame-detail__head"><div><p class="eyebrow">Selected frame / Daylight</p><h2 id="selected-frame-heading">2:10:24 PM HST</h2><span>Frame 642 of 1,824 &middot; published &middot; 35 sec from requested time</span></div><nav aria-label="Adjacent frames"><a href="frames.html?date=2026-07-21&amp;at=14:09:36">&larr; Previous</a><a href="frames.html?date=2026-07-21&amp;at=14:11:12">Next &rarr;</a></nav></header>
+            <div class="frame-detail__body">
+                <figure class="frame-canvas"><img src="assets/all-sky-day.svg" alt="Published daylight all-sky frame with broken cloud at 2:10 PM"><figcaption>Scaled synthetic preview of the proposed 3552 x 3552 final canvas / no UI crop or stretch</figcaption></figure>
+                <aside class="frame-metadata" aria-label="Selected frame summary">
+                    <dl><div><dt>Captured</dt><dd>2:10:24 PM HST</dd></div><div><dt>Published</dt><dd>2:10:31 PM HST</dd></div><div><dt>Exposure</dt><dd>0.8 ms</dd></div><div><dt>Integration</dt><dd>1 frame</dd></div><div><dt>Conditions</dt><dd>Broken cloud</dd></div><div><dt>Cloud estimate</dt><dd>34%</dd></div></dl>
+                    <div class="frame-event-note"><span aria-hidden="true">&#9733;</span><div><strong>3 candidates in this sky day</strong><p>Use the event browser for candidate times and public-safe detail.</p><a href="events.html">Browse events &rarr;</a></div></div>
+                    <a class="frame-open-image" href="assets/all-sky-day.svg">Open synthetic full-canvas preview &rarr;</a>
+                    <a class="frame-open-image" href="dewarped.html">Open dewarped view &rarr;</a>
+                </aside>
+            </div>
+        </section>
+
+        <section class="frame-nearby" id="nearby" aria-labelledby="nearby-heading">
+            <header><div><p class="eyebrow">Bounded timeline</p><h2 id="nearby-heading">Nearby frames</h2><span>Seven representative results around 2:10 PM; move the window without loading the full day.</span></div><nav aria-label="Move thumbnail window"><a href="frames.html?date=2026-07-21&amp;at=13:30">&larr; Earlier</a><a href="frames.html?date=2026-07-21&amp;at=14:50">Later &rarr;</a></nav></header>
+            <div class="frame-filmstrip">
+                <a href="frames.html?date=2026-07-21&amp;at=12:35"><img src="assets/all-sky-day.svg" alt=""><time datetime="2026-07-21T12:35:00-10:00">12:35 PM</time><span>Thin cloud</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=13:08"><img src="assets/all-sky-day.svg" alt=""><time datetime="2026-07-21T13:08:00-10:00">1:08 PM</time><span>Broken cloud</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=13:42"><img src="assets/all-sky-day.svg" alt=""><time datetime="2026-07-21T13:42:00-10:00">1:42 PM</time><span>Broken cloud</span></a>
+                <a class="frame-thumb--active" href="frames.html?date=2026-07-21&amp;at=14:10" aria-current="true"><img src="assets/all-sky-day.svg" alt=""><time datetime="2026-07-21T14:10:24-10:00">2:10 PM</time><span>Selected</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=14:38"><img src="assets/all-sky-day.svg" alt=""><time datetime="2026-07-21T14:38:00-10:00">2:38 PM</time><span>Clearing</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=15:14"><span class="frame-thumb__event">&#9733; 1</span><img src="assets/all-sky-day.svg" alt=""><time datetime="2026-07-21T15:14:00-10:00">3:14 PM</time><span>Local candidate</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=16:02"><img src="assets/all-sky-day.svg" alt=""><time datetime="2026-07-21T16:02:00-10:00">4:02 PM</time><span>Mostly clear</span></a>
+            </div>
+        </section>
+
+        <section class="frame-overview" id="at-a-glance" aria-labelledby="overview-heading">
+            <header><div><p class="eyebrow">Paged overview</p><h2 id="overview-heading">Sky day at a glance</h2><span>Representative samples across the full record; page 1 of 6.</span></div><nav aria-label="Overview pages"><span aria-disabled="true">&larr; Previous</span><a href="frames.html?date=2026-07-21&amp;page=2#at-a-glance">Next &rarr;</a></nav></header>
+            <div class="frame-overview__grid">
+                <a href="frames.html?date=2026-07-21&amp;at=05:58"><img src="assets/all-sky-day.svg" alt="Daylight frame near sunrise"><time datetime="2026-07-21T05:58:00-10:00">5:58 AM</time><span>Sunrise</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=09:04"><img src="assets/all-sky-day.svg" alt="Morning all-sky frame"><time datetime="2026-07-21T09:04:00-10:00">9:04 AM</time><span>Cloud building</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=12:02"><img src="assets/all-sky-day.svg" alt="Noon all-sky frame"><time datetime="2026-07-21T12:02:00-10:00">12:02 PM</time><span>Variable cloud</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=15:14"><span class="frame-thumb__event">&#9733; 1</span><img src="assets/all-sky-day.svg" alt="Afternoon all-sky frame with a local candidate"><time datetime="2026-07-21T15:14:00-10:00">3:14 PM</time><span>Local candidate</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=19:14"><img src="assets/all-sky-night.svg" alt="All-sky frame near sunset"><time datetime="2026-07-21T19:14:00-10:00">7:14 PM</time><span>Sunset</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=20:52"><span class="frame-thumb__event">&#9733; 1</span><img src="assets/all-sky-night.svg" alt="Night frame with an aircraft-like local candidate"><time datetime="2026-07-21T20:52:00-10:00">8:52 PM</time><span>Local candidate</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=22:17"><span class="frame-thumb__event">&#9733; 1</span><img src="assets/all-sky-night.svg" alt="Night frame with a meteor-like local candidate"><time datetime="2026-07-21T22:17:00-10:00">10:17 PM</time><span>Local candidate</span></a>
+                <a href="frames.html?date=2026-07-21&amp;at=03:02"><img src="assets/all-sky-night.svg" alt="Predawn all-sky frame"><time datetime="2026-07-22T03:02:00-10:00">3:02 AM</time><span>Mostly clear</span></a>
+            </div>
+        </section>
+    </main>
+
+    <footer class="window-footer" aria-label="Archive footer"><div class="window-shell window-footer__inner"><span>Sky day: 21 Jul</span><span>1,824 published frames</span><span>Daylight + night</span><span>Times shown in HST</span><a href="calendar.html?date=2026-07-21#selected-day">Return to Calendar</a></div></footer>
+</body>
+</html>

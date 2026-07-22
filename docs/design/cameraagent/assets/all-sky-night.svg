@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="300 0 1000 1000" role="img" aria-labelledby="title description">
+  <title id="title">Synthetic all-sky night preview</title>
+  <desc id="description">A circular fisheye view of a star field above a dark volcanic horizon, with a faint Milky Way and one meteor-like streak.</desc>
+  <defs>
+    <radialGradient id="sky" cx="48%" cy="43%" r="58%">
+      <stop offset="0" stop-color="#17305a"/>
+      <stop offset="0.48" stop-color="#0c1832"/>
+      <stop offset="0.82" stop-color="#07101f"/>
+      <stop offset="1" stop-color="#02050b"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#d8e7ff" stop-opacity=".28"/>
+      <stop offset=".55" stop-color="#8cacdb" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#52709d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="meteor" x1="0" x2="1">
+      <stop offset="0" stop-color="#eff9ff" stop-opacity="0"/>
+      <stop offset=".55" stop-color="#dff8ff" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#fff"/>
+    </linearGradient>
+    <filter id="blur"><feGaussianBlur stdDeviation="24"/></filter>
+    <filter id="soft"><feGaussianBlur stdDeviation="4"/></filter>
+    <clipPath id="fisheye"><circle cx="800" cy="500" r="470"/></clipPath>
+  </defs>
+  <rect width="1600" height="1000" fill="#020409"/>
+  <g clip-path="url(#fisheye)">
+    <rect x="330" y="30" width="940" height="940" fill="url(#sky)"/>
+    <ellipse cx="710" cy="450" rx="125" ry="580" fill="url(#glow)" transform="rotate(-32 710 450)" filter="url(#blur)"/>
+    <path d="M430 190 C610 325 690 510 960 790" fill="none" stroke="#c6d9f8" stroke-opacity=".1" stroke-width="92" filter="url(#blur)"/>
+    <g fill="#f5f9ff">
+      <circle cx="518" cy="174" r="3.2"/><circle cx="572" cy="234" r="1.8"/><circle cx="626" cy="153" r="2.1"/>
+      <circle cx="704" cy="210" r="1.4"/><circle cx="764" cy="136" r="2.8"/><circle cx="841" cy="184" r="1.3"/>
+      <circle cx="932" cy="148" r="2.2"/><circle cx="1022" cy="220" r="1.7"/><circle cx="1104" cy="273" r="2.5"/>
+      <circle cx="471" cy="310" r="1.5"/><circle cx="554" cy="356" r="2.7"/><circle cx="649" cy="288" r="1.2"/>
+      <circle cx="730" cy="342" r="2"/><circle cx="801" cy="281" r="3"/><circle cx="888" cy="327" r="1.4"/>
+      <circle cx="972" cy="305" r="1.9"/><circle cx="1054" cy="372" r="2.8"/><circle cx="1148" cy="352" r="1.3"/>
+      <circle cx="405" cy="466" r="2.1"/><circle cx="493" cy="433" r="1.4"/><circle cx="583" cy="498" r="2.6"/>
+      <circle cx="681" cy="432" r="1.6"/><circle cx="754" cy="488" r="1.3"/><circle cx="845" cy="421" r="2.5"/>
+      <circle cx="934" cy="477" r="1.2"/><circle cx="1011" cy="442" r="3.1"/><circle cx="1119" cy="508" r="1.7"/>
+      <circle cx="1202" cy="459" r="2.2"/><circle cx="444" cy="590" r="1.4"/><circle cx="532" cy="635" r="2.9"/>
+      <circle cx="612" cy="574" r="1.5"/><circle cx="704" cy="648" r="2.2"/><circle cx="788" cy="570" r="1.1"/>
+      <circle cx="872" cy="625" r="2.8"/><circle cx="963" cy="583" r="1.6"/><circle cx="1059" cy="642" r="2.1"/>
+      <circle cx="1144" cy="576" r="1.3"/><circle cx="469" cy="729" r="2.2"/><circle cx="575" cy="764" r="1.5"/>
+      <circle cx="670" cy="711" r="2.8"/><circle cx="765" cy="792" r="1.3"/><circle cx="849" cy="731" r="1.8"/>
+      <circle cx="948" cy="782" r="2.4"/><circle cx="1040" cy="724" r="1.2"/><circle cx="1120" cy="759" r="2.6"/>
+    </g>
+    <g fill="#9fc2f0" opacity=".68">
+      <circle cx="536" cy="219" r="1"/><circle cx="603" cy="411" r=".8"/><circle cx="676" cy="257" r=".9"/>
+      <circle cx="718" cy="522" r=".7"/><circle cx="826" cy="367" r="1"/><circle cx="907" cy="236" r=".8"/>
+      <circle cx="997" cy="540" r=".9"/><circle cx="1080" cy="418" r=".7"/><circle cx="1180" cy="621" r="1"/>
+      <circle cx="512" cy="680" r=".8"/><circle cx="637" cy="683" r=".7"/><circle cx="919" cy="686" r=".9"/>
+    </g>
+    <path d="M1082 245 L912 377" stroke="url(#meteor)" stroke-width="5" stroke-linecap="round" filter="url(#soft)"/>
+    <path d="M1082 245 L912 377" stroke="url(#meteor)" stroke-width="2" stroke-linecap="round"/>
+    <path d="M330 831 L396 799 L462 810 L537 758 L608 786 L676 733 L751 779 L823 750 L904 788 L978 735 L1051 777 L1124 749 L1192 803 L1270 817 L1270 1000 L330 1000 Z" fill="#02040a"/>
+    <path d="M330 850 C480 824 565 858 688 835 C830 808 955 854 1088 827 C1162 812 1211 829 1270 845" fill="none" stroke="#233347" stroke-opacity=".5" stroke-width="3"/>
+    <ellipse cx="813" cy="860" rx="302" ry="62" fill="#101824" opacity=".4" filter="url(#blur)"/>
+  </g>
+  <circle cx="800" cy="500" r="471" fill="none" stroke="#52647d" stroke-opacity=".42" stroke-width="2"/>
+  <circle cx="800" cy="500" r="485" fill="none" stroke="#101a29" stroke-width="14"/>
+</svg>

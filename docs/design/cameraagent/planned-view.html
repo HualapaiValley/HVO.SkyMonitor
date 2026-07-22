@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Index of CameraAgent public and protected design studies">
+    <title>CameraAgent Mock Suite</title>
+    <link rel="stylesheet" href="mockups.css">
+</head>
+<body class="window-page planned-page">
+    <a class="skip-link" href="#main">Skip to planned views</a>
+    <header class="window-appbar">
+        <div class="window-shell window-appbar__inner">
+            <a class="window-brand" href="observatory-window.html">
+                <span class="window-brand__mark"><img src="assets/all-sky-night.svg" alt=""></span>
+                <span class="window-brand__copy"><strong>Volcano Station</strong><small>HVO all-sky camera</small></span>
+            </a>
+            <nav class="window-view-nav" aria-label="Public sky views">
+                <a class="window-view-nav__link" href="observatory-window.html">Live</a>
+                <a class="window-view-nav__link" href="calendar.html">Calendar</a>
+                <a class="window-view-nav__link" href="time-lapse.html">Time-lapse</a>
+                <a class="window-view-nav__link" href="keogram.html">Keogram</a>
+                <a class="window-view-nav__link" href="dewarped.html">Dewarped</a>
+                <a class="window-view-nav__link" href="events.html">Events</a>
+            </nav>
+             <a class="window-operator" href="sign-in.html">Operator sign in</a>
+        </div>
+    </header>
+    <main class="window-shell planned-page__main" id="main">
+        <header>
+            <p class="eyebrow">CameraAgent mock suite</p>
+            <h1>Public and protected design studies.</h1>
+            <p>Use this index for routes that are not part of the primary public navigation.</p>
+        </header>
+        <nav class="planned-page__jumps" aria-label="Mockup categories"><a href="#calendar">Public archive</a><a href="#operator">Identity</a><a href="#settings">Setup</a><a href="#camera-profiles">Profiles</a><a href="#pipeline-settings">Processing</a><a href="#operations">Operations</a></nav>
+        <div class="planned-page__grid">
+            <section id="calendar"><small>History</small><h2>Daily and monthly calendar</h2><p>Navigate sunrise-to-sunrise sky days, compare daylight/night data, and open a selected daily summary.</p><a class="planned-page__card-link" href="calendar.html">Open Calendar mockup</a></section>
+            <section id="frames"><small>Published data</small><h2>Sky-day frame browser</h2><p>Jump to a time, scan a bounded thumbnail strip, or open a paged at-a-glance grid without loading every frame at once.</p><a class="planned-page__card-link" href="frames.html">Open Frames mockup</a></section>
+            <section id="time-lapse"><small>Derived view</small><h2>Time-lapse</h2><p>Review the full sky day as a generated sequence with time, period, cadence, and freshness context.</p><a class="planned-page__card-link" href="time-lapse.html">Open Time-lapse mockup</a></section>
+            <section id="keogram"><small>Derived view</small><h2>Keogram</h2><p>Inspect the full sky day as a time-versus-sky strip with clear daylight, night, and orientation context.</p><a class="planned-page__card-link" href="keogram.html">Open Keogram mockup</a></section>
+            <section id="dewarped"><small>Derived view</small><h2>Dewarped horizon</h2><p>Transform the fisheye preview into an orientation-labeled panoramic view.</p><a class="planned-page__card-link" href="dewarped.html">Open Dewarped mockup</a></section>
+            <section id="star-trails"><small>Night derived</small><h2>Star trails</h2><p>Build a night-only trail view within the selected sunrise-to-sunrise sky day.</p><a class="planned-page__card-link" href="star-trails.html">Open Star-trails mockup</a></section>
+            <section id="events"><small>Detection</small><h2>Sky events</h2><p>Browse sanitized local provisional candidates without implying central review state.</p><a class="planned-page__card-link" href="events.html">Open Events mockup</a></section>
+            <section id="operator"><small>Local identity</small><h2>Operator access</h2><p>Review sign-in, closed public registration, account management, and the local-versus-central identity boundary.</p><a class="planned-page__card-link" href="sign-in.html">Open Sign-in mockup</a></section>
+            <section id="settings"><small>Protected</small><h2>System settings</h2><p>Inspect the startup-validated camera, pipeline, observatory, storage, and identity configuration without exposing secrets.</p><a class="planned-page__card-link" href="settings.html">Open Settings mockup</a></section>
+            <section id="configuration"><small>Protected drafts</small><h2>Composed rig setup</h2><p>Select immutable camera, lens, calibration, installation, capture, and processing revisions before whole-draft validation and safe activation.</p><a class="planned-page__card-link" href="configuration.html">Open Rig setup mockup</a></section>
+            <section id="camera-profiles"><small>Profile library</small><h2>Camera models</h2><p>Separate reusable sensor/readout/control capability definitions from SDK reports, verification, and station device bindings.</p><a class="planned-page__card-link" href="camera-profiles.html">Open Camera profiles</a></section>
+            <section id="lens-profiles"><small>Profile library</small><h2>Lens models</h2><p>Maintain nominal reusable optics without treating lens metadata as sensor-specific projection calibration.</p><a class="planned-page__card-link" href="lens-profiles.html">Open Lens profiles</a></section>
+            <section id="calibration-profiles"><small>Projection evidence</small><h2>Camera-lens calibrations</h2><p>Bind fitted projection geometry to an exact camera, lens, mode, ROI, binning, focus, and evidence revision.</p><a class="planned-page__card-link" href="calibration-profiles.html">Open Calibrations</a></section>
+            <section id="alignment-profiles"><small>Station geometry</small><h2>Installation and alignment</h2><p>Version boresight, roll, parity, horizon, and obstruction geometry independently from optical calibration.</p><a class="planned-page__card-link" href="alignment-profiles.html">Open Alignment</a></section>
+            <section id="pipeline-settings"><small>Processing profile</small><h2>Capture and pipeline</h2><p>Compose a typed dependency graph from registered built-in operations and deployment-installed plugins.</p><a class="planned-page__card-link" href="pipeline-settings.html">Open Pipeline editor</a></section>
+            <section id="overlay-settings"><small>Display composition</small><h2>Overlay composer</h2><p>Order typed visual layers, bounded color-tag templates, and object-class styles into one encoded derivative.</p><a class="planned-page__card-link" href="overlay-settings.html">Open Overlay composer</a></section>
+            <section id="catalogs"><small>Read-only packages</small><h2>Astronomy catalogs</h2><p>Inspect checksum-verified catalog/topology/ephemeris provenance and edit only bounded query policy.</p><a class="planned-page__card-link" href="catalogs.html">Open Catalogs</a></section>
+            <section id="product-settings"><small>Generation policy</small><h2>Derived-product settings</h2><p>Configure future time-lapse, keogram, and star-trail scheduling, gaps, publication, and retention.</p><a class="planned-page__card-link" href="products-settings.html">Open Product settings</a></section>
+            <section id="event-settings"><small>Detection policy</small><h2>Sky-event settings</h2><p>Separate detector runtime mode and thresholds from sanitized anonymous display policy.</p><a class="planned-page__card-link" href="events-settings.html">Open Event settings</a></section>
+            <section id="operations"><small>Runtime control</small><h2>Operations and system info</h2><p>Start, pause, drain, stop, and restart CameraAgent scopes while monitoring container-visible resources and network facts.</p><a class="planned-page__card-link" href="operations.html">Open Operations mockup</a></section>
+            <section id="focus"><small>Protected workflow</small><h2>Focus assistant</h2><p>Reserve the camera, inspect repeatable measurements, and restore normal capture safely.</p><a class="planned-page__card-link" href="focus.html">Open Focus mockup</a></section>
+            <section id="identity"><small>Cross-host setup</small><h2>Device registration</h2><p>Carry a local identity to LogicHost, issue a short-lived envelope, and import protected device credentials.</p><a class="planned-page__card-link" href="identity-register.html">Open Registration mockup</a></section>
+        </div>
+        <a class="planned-page__return" href="observatory-window.html">Return to live sky</a>
+    </main>
+    <footer class="window-footer" aria-label="Station status footer">
+        <div class="window-shell window-footer__inner">
+            <span><span class="window-status-dot"></span>Public preview current</span>
+            <span>Volcano Station / HVO</span>
+            <span>22 Jul 2026 / 10:42 PM HST</span>
+            <span>Weather: 2 min old</span>
+            <a href="index.html">Concept comparison</a>
+        </div>
+    </footer>
+</body>
+</html>

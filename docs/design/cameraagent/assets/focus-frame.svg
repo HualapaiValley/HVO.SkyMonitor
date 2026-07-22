@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="title description">
+  <title id="title">Simulated focus analysis frame</title>
+  <desc id="description">A linear monochrome star-field crop with a selected analysis region and measured star markers.</desc>
+  <defs>
+    <radialGradient id="background" cx="48%" cy="45%" r="72%">
+      <stop offset="0" stop-color="#102039"/>
+      <stop offset="0.58" stop-color="#07111f"/>
+      <stop offset="1" stop-color="#02050a"/>
+    </radialGradient>
+    <filter id="soft"><feGaussianBlur stdDeviation="1.8"/></filter>
+    <filter id="halo"><feGaussianBlur stdDeviation="5"/></filter>
+    <pattern id="grid" width="100" height="100" patternUnits="userSpaceOnUse">
+      <path d="M100 0H0V100" fill="none" stroke="#83b5d4" stroke-opacity=".07" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="800" fill="url(#background)"/>
+  <rect width="1200" height="800" fill="url(#grid)"/>
+  <g fill="#dceeff" opacity=".28" filter="url(#halo)">
+    <circle cx="212" cy="162" r="12"/><circle cx="482" cy="226" r="14"/><circle cx="744" cy="128" r="10"/>
+    <circle cx="917" cy="272" r="13"/><circle cx="302" cy="502" r="11"/><circle cx="641" cy="448" r="15"/>
+    <circle cx="1020" cy="582" r="12"/><circle cx="814" cy="672" r="10"/>
+  </g>
+  <g fill="#f7fbff" filter="url(#soft)">
+    <circle cx="212" cy="162" r="4.8"/><circle cx="482" cy="226" r="5.4"/><circle cx="744" cy="128" r="4.1"/>
+    <circle cx="917" cy="272" r="5.2"/><circle cx="302" cy="502" r="4.6"/><circle cx="641" cy="448" r="5.8"/>
+    <circle cx="1020" cy="582" r="5"/><circle cx="814" cy="672" r="4.3"/>
+    <circle cx="119" cy="341" r="2.6"/><circle cx="369" cy="105" r="2.1"/><circle cx="574" cy="137" r="2.8"/>
+    <circle cx="1068" cy="158" r="2.4"/><circle cx="786" cy="348" r="2.7"/><circle cx="1090" cy="414" r="2.2"/>
+    <circle cx="474" cy="612" r="2.5"/><circle cx="151" cy="687" r="2.3"/><circle cx="598" cy="735" r="2.8"/>
+  </g>
+  <g fill="none" stroke="#76dbc4" stroke-width="1.5" opacity=".9">
+    <circle cx="212" cy="162" r="18"/><circle cx="482" cy="226" r="20"/><circle cx="744" cy="128" r="17"/>
+    <circle cx="917" cy="272" r="20"/><circle cx="302" cy="502" r="18"/><circle cx="641" cy="448" r="21"/>
+    <circle cx="1020" cy="582" r="19"/><circle cx="814" cy="672" r="17"/>
+  </g>
+  <rect x="120" y="82" width="960" height="630" rx="8" fill="none" stroke="#6da5ff" stroke-width="2" stroke-dasharray="10 8"/>
+  <g stroke="#6da5ff" stroke-width="2">
+    <path d="M120 112V82h30M1050 82h30v30M120 682v30h30M1050 712h30v-30" fill="none"/>
+  </g>
+  <g fill="#9ec3ff" font-family="ui-monospace, monospace" font-size="14">
+    <text x="138" y="108">ANALYSIS ROI 960 x 630</text>
+    <text x="138" y="694">46 VALID STARS / LINEAR16</text>
+  </g>
+</svg>

@@ -64,10 +64,12 @@ log_tool_version "dotnet" dotnet --info
 log_tool_version "Docker" docker --version
 log_tool_version "ripgrep" rg --version
 log_tool_version "ShellCheck" shellcheck --version
+log_tool_version "Node.js" node --version
+log_tool_version "npm" npm --version
 
 echo "Running post-create setup..."
 
-for required_command in jq rg shellcheck sqlite3; do
+for required_command in jq node npm rg shellcheck sqlite3; do
 	if ! command_exists "$required_command"; then
 		echo "Required development command '$required_command' is not installed." >&2
 		exit 1
@@ -94,6 +96,11 @@ dotnet tool restore
 
 echo "Restoring solution dependencies..."
 dotnet restore HVO.SkyMonitor.v9.slnx
+
+echo "Installing pinned Playwright browser tooling..."
+if ! bash "$SCRIPT_DIR/install-playwright.sh"; then
+	echo "Playwright browser setup failed; continuing without local browser tooling." >&2
+fi
 
 # The Docker devcontainer feature owns socket permissions and group membership.
 echo "Verifying Docker daemon access..."
@@ -160,6 +167,9 @@ log_tool_version "OpenCode" opencode --version
 log_tool_version "Tailscale" tailscale version
 log_tool_version "Docker" docker --version
 log_tool_version "ShellCheck" shellcheck --version
+log_tool_version "Node.js" node --version
+log_tool_version "npm" npm --version
+log_tool_version "Playwright" "$SCRIPT_DIR/playwright/node_modules/.bin/playwright" --version
 log_tool_version "dotnet" dotnet --version
 
 echo "Post-create setup completed successfully!"

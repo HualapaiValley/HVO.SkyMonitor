@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="360" viewBox="0 0 1000 360" role="img" aria-labelledby="title description">
+  <title id="title">Synthetic candidate track crop</title>
+  <desc id="description">A close display crop of a bright diagonal local-candidate track against a dark star field.</desc>
+  <defs><linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#17345c"/><stop offset="1" stop-color="#02050a"/></linearGradient><filter id="glow"><feGaussianBlur stdDeviation="9"/></filter></defs>
+  <rect width="1000" height="360" fill="url(#sky)"/><g fill="#f4f9ff"><circle cx="90" cy="75" r="2"/><circle cx="225" cy="260" r="3"/><circle cx="740" cy="85" r="2"/><circle cx="910" cy="290" r="2.5"/></g><path d="M135 305L875 52" stroke="#dff7ff" stroke-opacity=".28" stroke-width="26" filter="url(#glow)"/><path d="M135 305L875 52" stroke="#f4fbff" stroke-width="7" stroke-linecap="round"/>
+</svg>

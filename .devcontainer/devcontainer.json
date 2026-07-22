@@ -29,6 +29,11 @@
     "ghcr.io/devcontainers/features/dotnet:2": {
       "version": "10.0.100"
     },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22.17.0",
+      "nodeGypDependencies": false,
+      "pnpmVersion": "none"
+    },
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
   },
   "customizations": {
@@ -41,6 +46,7 @@
         "GitHub.copilot",
         "GitHub.copilot-chat",
         "github.vscode-github-actions",
+        "ms-playwright.playwright",
         "openai.chatgpt"
       ],
       "settings": {
@@ -92,6 +98,7 @@
   // 7096: Logic Host HTTPS (dotnet run)
   // 5174: SkyMonitor container mode (HTTP)
   // 5130: Camera agent container mode
+  // 4173: Static CameraAgent UI design studies
   // 4096: OpenCode server (Basic Auth)
   "appPort": [
     "127.0.0.1:4096:4096"
@@ -103,7 +110,8 @@
     5011,
     7096,
     5174,
-    5130
+    5130,
+    4173
   ],
   "portsAttributes": {
     "5000": {
@@ -131,6 +139,10 @@
     },
     "5130": {
       "onAutoForward": "silent"
+    },
+    "4173": {
+      "label": "CameraAgent UI Mockups",
+      "onAutoForward": "openBrowser"
     },
     "4096": {
       "label": "OpenCode (SSH tunnel only)",

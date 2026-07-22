@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Quiet Horizon concept for the CameraAgent public landing page">
+    <title>Quiet Horizon - CameraAgent Concept</title>
+    <link rel="stylesheet" href="mockups.css">
+</head>
+<body class="horizon-page">
+    <a class="skip-link" href="#main">Skip to latest sky image</a>
+    <main id="main">
+    <section class="horizon-hero" aria-labelledby="horizon-heading">
+        <img class="horizon-hero__image" src="assets/all-sky-night.svg" alt="Processed all-sky view showing stars, a faint Milky Way, dark horizon, and a meteor-like streak">
+        <nav class="horizon-nav" aria-label="Primary navigation">
+            <a class="horizon-brand" href="index.html"><span class="horizon-mark">H</span> HVO Skywatch</a>
+            <div class="horizon-nav__right">
+                <span>Volcano Station / Hawai'i</span>
+                <span>Operator sign-in preview</span>
+            </div>
+        </nav>
+
+        <div class="horizon-heading">
+            <p class="eyebrow"><span class="live-dot"></span>Capturing normally</p>
+            <h1 id="horizon-heading">Look up.</h1>
+            <p>A live processed view from a single all-sky camera above Volcano, Hawai'i. The current frame is 28 seconds old.</p>
+        </div>
+
+        <section class="horizon-dock" aria-label="Current sky summary">
+            <div class="horizon-dock__lead">
+                <small>Latest frame</small>
+                <strong>10:41:32 PM HST</strong>
+                <span>8 frames / 240 s integration</span>
+            </div>
+            <div class="horizon-dock__item">
+                <small>Sky</small>
+                <strong>Mostly clear</strong>
+            </div>
+            <div class="horizon-dock__item">
+                <small>Cloud</small>
+                <strong>14%</strong>
+            </div>
+            <div class="horizon-dock__item">
+                <small>Air</small>
+                <strong>11.2 C</strong>
+            </div>
+            <div class="horizon-dock__item">
+                <small>Moon</small>
+                <strong>38% / set</strong>
+            </div>
+            <div class="horizon-dock__action">
+                <a class="full-view" href="assets/all-sky-night.svg">Full frame</a>
+            </div>
+        </section>
+    </section>
+
+    <div class="horizon-content">
+        <header class="horizon-section-head">
+            <div>
+                <p class="eyebrow">Tonight at Volcano Station</p>
+                <h2>Clearer skies are returning.</h2>
+            </div>
+            <p>Cloud cover peaked near 34% earlier this evening and has fallen to 14%. Weather was updated two minutes ago; image freshness is measured separately.</p>
+        </header>
+
+        <div class="horizon-cards">
+            <section class="horizon-card" aria-labelledby="events-horizon-heading">
+                <p class="eyebrow">Recent sky events</p>
+                <h3 id="events-horizon-heading">Two local candidates</h3>
+                <article class="horizon-event">
+                    <time datetime="2026-07-21T22:17:08-10:00">10:17 PM</time>
+                    <div><strong>Meteor-like track</strong><small>Local candidate / preliminary</small></div>
+                </article>
+                <article class="horizon-event">
+                    <time datetime="2026-07-21T20:52:41-10:00">8:52 PM</time>
+                    <div><strong>Aircraft-like track</strong><small>Local provisional classification</small></div>
+                </article>
+            </section>
+
+            <section class="horizon-card" aria-labelledby="night-horizon-heading">
+                <p class="eyebrow">Night window</p>
+                <h3 id="night-horizon-heading">Until first light</h3>
+                <dl class="horizon-facts">
+                    <dt>Moon</dt><dd>38% waning</dd>
+                    <dt>Moonset</dt><dd>9:58 PM</dd>
+                    <dt>Astronomical dawn</dt><dd>5:11 AM</dd>
+                    <dt>Sunrise</dt><dd>5:54 AM</dd>
+                    <dt>Current mode</dt><dd>Automatic night</dd>
+                </dl>
+            </section>
+
+            <section class="horizon-card" aria-labelledby="rig-horizon-heading">
+                <p class="eyebrow">The camera</p>
+                <h3 id="rig-horizon-heading">A zenith view</h3>
+                <dl class="horizon-facts">
+                    <dt>Sensor</dt><dd>3552 x 3552 color</dd>
+                    <dt>Lens</dt><dd>2.5 mm fisheye</dd>
+                    <dt>Field</dt><dd>180 degrees</dd>
+                    <dt>Exposure</dt><dd>30 seconds</dd>
+                    <dt>Elevation</dt><dd>1,220 m</dd>
+                </dl>
+            </section>
+        </div>
+
+        <footer class="horizon-footer">
+            <a href="index.html">Back to concept comparison</a>
+            <span>Static design study / no live station data</span>
+        </footer>
+    </div>
+    </main>
+</body>
+</html>

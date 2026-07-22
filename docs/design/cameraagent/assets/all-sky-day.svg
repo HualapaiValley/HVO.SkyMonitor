@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="300 0 1000 1000" role="img" aria-labelledby="title description">
+  <title id="title">Synthetic all-sky daylight preview</title>
+  <desc id="description">A circular fisheye daylight view with broken clouds, blue sky, sunlight, and a dark volcanic horizon.</desc>
+  <defs>
+    <radialGradient id="day-sky" cx="48%" cy="42%" r="65%">
+      <stop offset="0" stop-color="#82c6e5"/>
+      <stop offset=".55" stop-color="#3f8fb9"/>
+      <stop offset=".86" stop-color="#205d85"/>
+      <stop offset="1" stop-color="#12364f"/>
+    </radialGradient>
+    <radialGradient id="sun-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#fff8c9" stop-opacity=".95"/>
+      <stop offset=".18" stop-color="#ffe9a1" stop-opacity=".75"/>
+      <stop offset="1" stop-color="#fff2b4" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cloud" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f7fbff" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#c9d9e2" stop-opacity=".42"/>
+    </linearGradient>
+    <filter id="cloud-soft"><feGaussianBlur stdDeviation="10"/></filter>
+    <filter id="sun-soft"><feGaussianBlur stdDeviation="24"/></filter>
+    <clipPath id="fisheye"><circle cx="800" cy="500" r="470"/></clipPath>
+  </defs>
+  <rect width="1600" height="1000" fill="#07131c"/>
+  <g clip-path="url(#fisheye)">
+    <rect x="330" y="30" width="940" height="940" fill="url(#day-sky)"/>
+    <circle cx="1060" cy="215" r="150" fill="url(#sun-glow)" filter="url(#sun-soft)"/>
+    <circle cx="1060" cy="215" r="28" fill="#fff6c8" opacity=".86"/>
+    <g fill="url(#cloud)" filter="url(#cloud-soft)">
+      <ellipse cx="580" cy="310" rx="170" ry="58" transform="rotate(-10 580 310)"/>
+      <ellipse cx="705" cy="350" rx="145" ry="52" transform="rotate(8 705 350)"/>
+      <ellipse cx="955" cy="470" rx="210" ry="72" transform="rotate(-14 955 470)"/>
+      <ellipse cx="690" cy="635" rx="180" ry="58" transform="rotate(12 690 635)" opacity=".64"/>
+    </g>
+    <g fill="#eef6f8" opacity=".58">
+      <ellipse cx="565" cy="298" rx="92" ry="24"/><ellipse cx="700" cy="340" rx="78" ry="20"/>
+      <ellipse cx="930" cy="452" rx="118" ry="28"/><ellipse cx="720" cy="625" rx="96" ry="22"/>
+    </g>
+    <path d="M330 825 L455 760 L510 790 L575 730 L650 782 L730 716 L810 770 L895 705 L978 766 L1060 720 L1135 784 L1270 740 L1270 1000 L330 1000 Z" fill="#10202b"/>
+    <path d="M330 850 C510 815 655 845 800 818 C960 790 1100 838 1270 805 L1270 1000 L330 1000 Z" fill="#07131b"/>
+  </g>
+  <circle cx="800" cy="500" r="470" fill="none" stroke="#08131d" stroke-width="18"/>
+  <circle cx="800" cy="500" r="456" fill="none" stroke="#89b7cc" stroke-opacity=".28" stroke-width="3"/>
+</svg>

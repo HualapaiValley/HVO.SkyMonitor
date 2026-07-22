@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Observatory Window concept for the CameraAgent public landing page">
+    <title>Observatory Window - CameraAgent Concept</title>
+    <link rel="stylesheet" href="mockups.css">
+</head>
+<body class="window-page">
+    <a class="skip-link" href="#main">Skip to latest sky image</a>
+    <header class="window-appbar">
+        <div class="window-shell window-appbar__inner">
+            <a class="window-brand" href="observatory-window.html">
+                <span class="window-brand__mark"><img src="assets/all-sky-night.svg" alt=""></span>
+                <span class="window-brand__copy">
+                    <strong>Volcano Station</strong>
+                    <small>HVO all-sky camera</small>
+                </span>
+            </a>
+            <nav class="window-view-nav" aria-label="Public sky views">
+                <a class="window-view-nav__link window-view-nav__link--active" href="observatory-window.html" aria-current="page">Live</a>
+                <a class="window-view-nav__link" href="calendar.html">Calendar</a>
+                <a class="window-view-nav__link" href="time-lapse.html">Time-lapse</a>
+                <a class="window-view-nav__link" href="keogram.html">Keogram</a>
+                <a class="window-view-nav__link" href="dewarped.html">Dewarped</a>
+                <a class="window-view-nav__link" href="events.html">Events</a>
+            </nav>
+            <a class="window-operator" href="sign-in.html">Operator sign in</a>
+        </div>
+    </header>
+
+    <main class="window-shell window-main" id="main">
+        <header class="window-intro">
+            <div>
+                <p class="eyebrow">Public station / Island of Hawai'i</p>
+                <h1>Current sky</h1>
+                <p class="window-intro__summary">The latest processed all-sky frame from Volcano Station.</p>
+            </div>
+            <div class="window-intro__meta" aria-label="Current station summary">
+                <span class="window-meta-chip window-meta-chip--live"><span class="live-dot"></span>Capturing</span>
+                <span class="window-meta-chip"><small>Frame age</small><strong>28 sec</strong></span>
+                <span class="window-meta-chip"><small>Local time</small><strong>10:42 PM HST</strong></span>
+            </div>
+        </header>
+
+        <section class="window-hero" aria-labelledby="latest-window-heading">
+            <figure class="window-frame">
+                <figcaption class="window-frame__caption">
+                    <div>
+                        <strong id="latest-window-heading">Latest processed sky</strong>
+                        <span>Captured 10:41:32 PM / 8 frames / 240 s total / current</span>
+                    </div>
+                    <a class="full-view" href="assets/all-sky-night.svg">Open full frame</a>
+                </figcaption>
+                <div class="window-image">
+                    <img src="assets/all-sky-night.svg" alt="Processed square all-sky view showing stars, a faint Milky Way, dark horizon, and a meteor-like streak">
+                </div>
+                <section class="window-now" aria-labelledby="sky-now-window-heading">
+                    <div class="window-now__summary">
+                        <p class="eyebrow">Conditions</p>
+                        <h2 id="sky-now-window-heading">Mostly clear</h2>
+                        <small>Updated 2 min ago</small>
+                    </div>
+                    <div class="window-reading"><span>Cloud</span><strong>14%</strong></div>
+                    <div class="window-reading"><span>Air</span><strong>11.2 C</strong></div>
+                    <div class="window-reading"><span>Humidity</span><strong>63%</strong></div>
+                    <div class="window-reading"><span>Wind</span><strong>7 km/h NE</strong></div>
+                    <div class="window-reading"><span>Rain</span><strong>None</strong></div>
+                    <div class="window-reading"><span>Sky quality</span><strong>20.8 mag</strong></div>
+                </section>
+            </figure>
+        </section>
+
+        <div class="window-lower">
+            <section class="window-panel" aria-labelledby="events-window-heading">
+                <p class="eyebrow">Recent sky events</p>
+                <h2 id="events-window-heading">Two local candidates tonight</h2>
+                <article class="event-line">
+                    <time datetime="2026-07-21T22:17:08-10:00">10:17 PM</time>
+                    <strong>Meteor-like track</strong>
+                    <small>Local candidate</small>
+                </article>
+                <article class="event-line">
+                    <time datetime="2026-07-21T20:52:41-10:00">8:52 PM</time>
+                    <strong>Aircraft-like track</strong>
+                    <small>Local provisional</small>
+                </article>
+                <p class="mock-note">Local candidates are preliminary and may change after central review.</p>
+            </section>
+
+            <section class="window-panel" aria-labelledby="tonight-window-heading">
+                <p class="eyebrow">Tonight</p>
+                <h2 id="tonight-window-heading">A dark first half</h2>
+                <dl class="window-facts">
+                    <dt>Moon</dt><dd>38% waning</dd>
+                    <dt>Moonset</dt><dd>9:58 PM</dd>
+                    <dt>Astronomical dawn</dt><dd>5:11 AM</dd>
+                    <dt>Sunrise</dt><dd>5:54 AM</dd>
+                    <dt>Capture mode</dt><dd>Automatic night</dd>
+                </dl>
+            </section>
+
+            <section class="window-panel" aria-labelledby="station-window-heading">
+                <p class="eyebrow">This station</p>
+                <h2 id="station-window-heading">Zenith all-sky rig</h2>
+                <dl class="window-facts">
+                    <dt>Sensor</dt><dd>3552 x 3552 color</dd>
+                    <dt>Optics</dt><dd>2.5 mm fisheye</dd>
+                    <dt>Field of view</dt><dd>180 degrees</dd>
+                    <dt>Pointing</dt><dd>Zenith</dd>
+                    <dt>Setting</dt><dd>High-elevation site</dd>
+                </dl>
+            </section>
+        </div>
+    </main>
+
+    <footer class="window-footer" aria-label="Station status footer">
+        <div class="window-shell window-footer__inner">
+            <span><span class="window-status-dot"></span>Public preview current</span>
+            <span>Volcano Station / HVO</span>
+            <span>22 Jul 2026 / 10:42 PM HST</span>
+            <span>Weather: 2 min old</span>
+            <a href="index.html">Concept comparison</a>
+        </div>
+    </footer>
+</body>
+</html>
