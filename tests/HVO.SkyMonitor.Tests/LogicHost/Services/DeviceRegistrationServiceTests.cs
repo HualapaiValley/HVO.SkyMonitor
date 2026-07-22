@@ -89,6 +89,7 @@ public sealed class DeviceRegistrationServiceTests
             DeviceId = "camera-alpha",
             ObservatoryId = observatoryId,
             FriendlyName = "Old Name",
+            OwnerUserId = "owner-99",
             Status = DeviceRegistrationStatus.Pending,
             VerificationCodeHash = "OLD",
             DevicePublicId = Guid.NewGuid(),
@@ -127,6 +128,66 @@ public sealed class DeviceRegistrationServiceTests
         result.IssuedAtUtc.Should().Be(now);
         result.ExpiresAtUtc.Should().Be(now + TimeSpan.FromMinutes(10));
 
+        (await context.DeviceRegistrations.CountAsync().ConfigureAwait(false)).Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task CreatePendingAsync_WithForeignOwnerPendingRegistration_RejectsWithoutChanges()
+    {
+        await using var context = CreateContext();
+        var now = new DateTimeOffset(2025, 11, 25, 7, 0, 0, TimeSpan.Zero);
+        var firstObservatory = new Observatory
+        {
+            OwnerUserId = "owner-1",
+            Name = "First Ridge",
+            LatitudeDegrees = 19.7,
+            LongitudeDegrees = -155.1,
+            ElevationMeters = 1200,
+            TimeZoneId = "Pacific/Honolulu",
+            IsActive = true
+        };
+        var secondObservatory = new Observatory
+        {
+            OwnerUserId = "owner-2",
+            Name = "Second Ridge",
+            LatitudeDegrees = 20.7,
+            LongitudeDegrees = -156.1,
+            ElevationMeters = 1300,
+            TimeZoneId = "Pacific/Honolulu",
+            IsActive = true
+        };
+        var existing = new DeviceRegistration
+        {
+            DeviceId = "shared-camera",
+            ObservatoryId = firstObservatory.Id,
+            FriendlyName = "First Owner Camera",
+            OwnerUserId = "owner-1",
+            Status = DeviceRegistrationStatus.Pending,
+            VerificationCodeHash = "ORIGINAL",
+            IssuedAtUtc = now.AddMinutes(-5),
+            ExpiresAtUtc = now.AddMinutes(10)
+        };
+        context.Observatories.AddRange(firstObservatory, secondObservatory);
+        context.DeviceRegistrations.Add(existing);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var service = new DeviceRegistrationService(context, new TestTimeProvider(now));
+
+        Func<Task> act = () => service.CreatePendingAsync(new DeviceRegistrationCreateRequest(
+            existing.DeviceId,
+            "attacker-code",
+            secondObservatory.Id,
+            "Second Owner Camera",
+            "owner-2",
+            "Second Owner",
+            null,
+            "SelfAttested",
+            null));
+
+        await act.Should().ThrowAsync<DeviceRegistrationException>()
+            .WithMessage("*access denied*").ConfigureAwait(false);
+        existing.OwnerUserId.Should().Be("owner-1");
+        existing.ObservatoryId.Should().Be(firstObservatory.Id);
+        existing.VerificationCodeHash.Should().Be("ORIGINAL");
         (await context.DeviceRegistrations.CountAsync().ConfigureAwait(false)).Should().Be(1);
     }
 

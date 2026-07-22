@@ -2,6 +2,8 @@ namespace HVO.SkyMonitor.LogicHost.Services;
 
 internal sealed class DeviceRegistrationException : InvalidOperationException
 {
+    internal const string NotFoundReasonCode = "registration-not-found";
+
     public DeviceRegistrationException()
     {
     }
