@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Public Sky Network landing page design study">
+    <title>Sky Network - Every Horizon Contributes</title>
+    <link rel="stylesheet" href="mockups.css">
+</head>
+<body>
+    <a class="skip-link" href="#main">Skip to Sky Network overview</a>
+    <header class="site-header">
+        <div class="shell site-header__inner">
+            <a class="brand" href="network.html"><span class="brand__mark" aria-hidden="true"></span><span class="brand__copy"><strong>Sky Network</strong><small>HVO all-sky observatories</small></span></a>
+            <nav class="public-nav" aria-label="Public Sky Network"><a aria-current="page" href="network.html">Discover</a><a href="observatories.html">Observatories</a><a href="events.html">Events</a><a href="#news">News</a><a href="#about">About all-sky</a></nav>
+            <div class="header-actions"><a class="header-actions__signin" href="app-dashboard.html">Sign in</a><a class="button button--primary" href="app-dashboard.html">Open operations</a></div>
+        </div>
+    </header>
+    <main class="public-main" id="main">
+        <section class="shell network-hero">
+            <div class="network-hero__copy">
+                <p class="eyebrow">The sky, observed together</p>
+                <h1>Every horizon <span>contributes.</span></h1>
+                <p>A distributed network of all-sky observatories watches weather, darkness, and fleeting events. Explore the public record, then follow the stations that matter to you.</p>
+                <div class="hero-actions"><a class="button button--primary" href="observatories.html">Explore observatories</a><a class="button" href="#about">How all-sky works</a></div>
+            </div>
+            <div class="sky-mosaic" aria-label="Recent published views across the network">
+                <figure class="sky-tile"><img src="assets/volcano-night.svg" alt="Published night all-sky view from Volcano Station"><figcaption class="sky-tile__caption"><span><strong>Volcano Station</strong><small>Island of Hawai'i / 38 sec ago</small></span><span class="status status--live">Live</span></figcaption></figure>
+                <figure class="sky-tile"><img src="assets/coastal-twilight.svg" alt="Published twilight all-sky view from Coastal Ridge"><figcaption class="sky-tile__caption"><span><strong>Coastal Ridge</strong><small>Twilight / 2 min ago</small></span></figcaption></figure>
+                <figure class="sky-tile"><img src="assets/rainforest-cloud.svg" alt="Published cloudy all-sky view from Rainforest Station"><figcaption class="sky-tile__caption"><span><strong>Rainforest Station</strong><small>Broken cloud / 1 min ago</small></span></figcaption></figure>
+            </div>
+        </section>
+        <section class="shell network-pulse" aria-label="Current public network summary">
+            <div><span>Network now</span><strong>Watching 5 regions</strong></div><div><span>Public observatories</span><strong>18</strong></div><div><span>Published cameras</span><strong>27</strong></div><div><span>Current previews</span><strong>21</strong></div><div><span>Verified tonight</span><strong>3 events</strong></div>
+        </section>
+        <section class="shell content-section">
+            <header class="section-heading"><div><p class="eyebrow">Verified across the network</p><h2>A shared track over Hawai'i</h2></div><p>Central review correlated two public camera observations. Publication was authorized by both contributing observatories.</p></header>
+            <article class="feature-event">
+                <div class="feature-event__image"><img src="assets/verified-event.svg" alt="Synthetic verified meteor track crossing a dark star field"></div>
+                <div class="feature-event__body"><span class="status status--live">Verified event</span><h3>Fast meteor, east to west</h3><p>Observed at 10:17:08 PM HST by Volcano Station and Coastal Ridge. The 1.8 second luminous track was independently detected, correlated, and released for public viewing.</p><dl class="fact-ribbon" style="grid-template-columns: 1fr 1fr; margin-top: 1rem"><div><dt>Duration</dt><dd>1.8 s</dd></div><div><dt>Stations</dt><dd>2 public</dd></div></dl><a class="button button--quiet" href="events.html">View verified event record</a><p class="release-note">Automatic highlight eligibility: verified, public release current, contributor identities safe to disclose. Synthetic design sample.</p></div>
+            </article>
+        </section>
+        <section class="shell content-section">
+            <header class="section-heading"><div><p class="eyebrow">Places to watch</p><h2>Featured observatories</h2></div><p>Editorial selections can highlight a station, while the directory remains available for every deliberately public observatory.</p></header>
+            <div class="station-cards">
+                <a class="station-card" href="observatory-volcano.html"><div class="station-card__image"><img src="assets/volcano-night.svg" alt="Night view from Volcano Station"></div><div class="station-card__body"><div class="station-card__top"><h3>Volcano Station</h3><span class="status status--live">Capturing</span></div><p>High-elevation views above the eastern rift, with two public all-sky cameras.</p><ul class="tag-list"><li>Island of Hawai'i</li><li>2 cameras</li><li>Featured</li></ul><dl class="station-card__facts"><div><dt>Cloud</dt><dd>14%</dd></div><div><dt>Frame age</dt><dd>38 sec</dd></div><div><dt>Events</dt><dd>2 tonight</dd></div></dl></div></a>
+                <a class="station-card" href="observatories.html"><div class="station-card__image"><img src="assets/coastal-twilight.svg" alt="Twilight view from Coastal Ridge"></div><div class="station-card__body"><div class="station-card__top"><h3>Coastal Ridge</h3><span class="status status--live">Twilight</span></div><p>Ocean-facing station contributing horizon context and event correlation.</p><ul class="tag-list"><li>Maui region</li><li>1 camera</li><li>Public archive</li></ul><dl class="station-card__facts"><div><dt>Cloud</dt><dd>32%</dd></div><div><dt>Frame age</dt><dd>2 min</dd></div><div><dt>Events</dt><dd>1 tonight</dd></div></dl></div></a>
+                <a class="station-card" href="observatories.html"><div class="station-card__image"><img src="assets/rainforest-cloud.svg" alt="Cloudy view from Rainforest Station"></div><div class="station-card__body"><div class="station-card__top"><h3>Rainforest Station</h3><span class="status status--warning">Cloudy</span></div><p>A low-elevation wet-side site focused on cloud motion and localized conditions.</p><ul class="tag-list"><li>Hilo region</li><li>2 cameras</li><li>Weather</li></ul><dl class="station-card__facts"><div><dt>Cloud</dt><dd>78%</dd></div><div><dt>Frame age</dt><dd>1 min</dd></div><div><dt>Rain</dt><dd>None</dd></div></dl></div></a>
+            </div>
+        </section>
+        <section class="shell content-section" id="news">
+            <header class="section-heading"><div><p class="eyebrow">Field notes</p><h2>From the network</h2></div><p>Editorial news explains the science and the people behind the public observations.</p></header>
+            <div class="story-grid"><article class="story-card"><p class="eyebrow">Network guide</p><h3>Why two cameras make one event more useful</h3><p>Learn how stations compare time, direction, and provenance without exposing private observatory data.</p></article><article class="story-card"><p class="eyebrow">Observatory profile</p><h3>Building above the cloud layer</h3><p>A field note from the fictional Volcano Station installation team.</p></article><article class="story-card" id="about"><p class="eyebrow">All-sky 101</p><h3>One lens, an entire hemisphere</h3><p>How fisheye projection, calibration, weather, and careful publication turn frames into trustworthy records.</p></article></div>
+        </section>
+    </main>
+    <footer class="public-footer"><div class="shell public-footer__inner"><div><strong>Sky Network</strong><p>Public observations are released by participating observatories. Freshness and authority are shown per record.</p></div><div class="footer-links"><a href="observatories.html">Observatories</a><a href="events.html">Events</a><a href="#news">News</a></div><div class="footer-links"><a href="#about">About</a><a href="app-dashboard.html">Sign in</a></div></div></footer>
+</body>
+</html>
