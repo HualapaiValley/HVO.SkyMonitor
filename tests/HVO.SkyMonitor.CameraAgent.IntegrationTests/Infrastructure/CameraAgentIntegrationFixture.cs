@@ -307,6 +307,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["Catalog:RequiredPackageKind"] = "Fixture",
             ["CameraAgent:ConfigFilePath"] = _configurationPath,
             ["CameraAgent:RawIngressRoot"] = _storageRoot,
+            ["CameraAgent:DiskPressureThresholdPercent"] = "1",
+            ["CameraAgent:DiskPressureRecoveryPercent"] = "2",
             ["DeviceProvisioning:StateDirectory"] = Path.Combine(_storageRoot!, "provisioning")
         };
         if (_hybridTransientMode)
