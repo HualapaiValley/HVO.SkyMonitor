@@ -123,6 +123,72 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
+    public async Task SyntheticCalibrationEffectsMatchIndependentGeneratedReferences()
+    {
+        var model = new SyntheticCalibrationModelV1
+        {
+            Gain = 1,
+            Defects = [new SyntheticCalibrationDefect(4, 4)]
+        };
+        var syntheticOptions = System.Text.Json.JsonSerializer.SerializeToElement(new VirtualSkyCameraModuleOptions
+        {
+            Seed = 2025,
+            MaximumResults = 10,
+            VignettingStrength = 0,
+            Bias = 0,
+            ReadNoiseStandardDeviation = 0,
+            DarkCurrentElectronsPerSecond = 0,
+            SyntheticCalibration = model
+        });
+        var idealOptions = System.Text.Json.JsonSerializer.SerializeToElement(new VirtualSkyCameraModuleOptions
+        {
+            Seed = 2025,
+            MaximumResults = 10,
+            VignettingStrength = 0,
+            Bias = 0,
+            ReadNoiseStandardDeviation = 0,
+            DarkCurrentElectronsPerSecond = 0
+        });
+        var baseConfig = CreateConfig(CameraPixelFormat.Mono16, 12, 10);
+        var syntheticConfig = baseConfig with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", syntheticOptions)
+        };
+        var idealConfig = baseConfig with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", idealOptions)
+        };
+        var syntheticModule = CreateModule(FixtureUtc);
+        var idealModule = CreateModule(FixtureUtc);
+        await syntheticModule.InitializeAsync(syntheticConfig, CancellationToken.None).ConfigureAwait(false);
+        await idealModule.InitializeAsync(idealConfig, CancellationToken.None).ConfigureAwait(false);
+        var request = new CaptureRequest(
+            FixtureUtc,
+            TimeSpan.FromSeconds(1),
+            CaptureMode.Still,
+            new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null));
+
+        var synthetic = (await syntheticModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var ideal = (await idealModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var references = SyntheticCalibrationReferenceGenerator.Generate(
+            synthetic.Width, synthetic.Height, synthetic.PixelFormat, model);
+        var corrected = Linear16ReferenceCalibration.Correct(
+            new Linear16Frame(synthetic.Width, synthetic.Height, synthetic.StrideBytes!.Value, synthetic.PixelFormat, synthetic.PixelData),
+            references.Bias,
+            references.Dark,
+            references.Flat,
+            references.DefectMask,
+            new(synthetic.Metadata.Exposure, model.DarkExposure, model.FlatExposure, references.FlatNormalizationAdu));
+
+        Assert.AreNotEqual(
+            Convert.ToHexString(SHA256.HashData(ideal.PixelData.Span)),
+            Convert.ToHexString(SHA256.HashData(synthetic.PixelData.Span)));
+        Assert.IsLessThanOrEqualTo(2d, MeanAbsoluteSampleDifference(ideal.PixelData.Span, corrected.PixelData.Span));
+        Assert.AreEqual(model.TemperatureC, synthetic.Metadata.TemperatureC);
+        Assert.IsTrue(synthetic.Metadata.Extra!.ContainsKey("syntheticCalibrationModelSha256"));
+    }
+
+    [TestMethod]
     public async Task FullAsi174McTelescopeProfileBuildsRgbCompatibleGraph()
     {
         var config = await LoadProfileAsync("virtual-asi174mc-telescope.full.json").ConfigureAwait(false);
@@ -1037,6 +1103,19 @@ public sealed class VirtualSkyCameraModuleTests
             maximum = Math.Max(maximum, (ushort)(pixels[offset] | pixels[offset + 1] << 8));
         }
         return maximum;
+    }
+
+    private static double MeanAbsoluteSampleDifference(ReadOnlySpan<byte> expected, ReadOnlySpan<byte> actual)
+    {
+        Assert.AreEqual(expected.Length, actual.Length);
+        double total = 0;
+        for (var offset = 0; offset < expected.Length; offset += 2)
+        {
+            var expectedValue = (ushort)(expected[offset] | expected[offset + 1] << 8);
+            var actualValue = (ushort)(actual[offset] | actual[offset + 1] << 8);
+            total += Math.Abs(expectedValue - actualValue);
+        }
+        return total / (expected.Length / 2);
     }
 
     private static PixelPoint CalculateLocalCentroid(CameraFrame frame, double sourceX, double sourceY, int radius)

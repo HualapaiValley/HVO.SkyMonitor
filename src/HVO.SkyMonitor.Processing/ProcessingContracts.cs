@@ -63,6 +63,12 @@ public sealed record ProcessingCompatibilityIdentity(
     string ProcessingProfile,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? LocationIdentitySha256 = null);
 
+/// <summary>Effective sensor conditions used to validate reference applicability without parsing host identities.</summary>
+public sealed record ProcessingCaptureConditions(
+    double Gain,
+    double? Offset,
+    double? TemperatureC);
+
 /// <summary>
 /// A borrowed immutable input. Its payload must remain valid until execution completes. Observation bounds describe
 /// sensor integration independently of artifact creation and are required by detector-input construction.
@@ -81,7 +87,8 @@ public sealed record ProcessingArtifact(
     long? CaptureSequence = null,
     IReadOnlyList<Guid>? SourceArtifactIds = null,
     DateTimeOffset? ObservationStartedUtc = null,
-    DateTimeOffset? ObservationEndedUtc = null)
+    DateTimeOffset? ObservationEndedUtc = null,
+    ProcessingCaptureConditions? Conditions = null)
 {
     /// <summary>
     /// Resolves the observation end. Accelerated captures may report an instantaneous acquisition while retaining a
@@ -186,6 +193,16 @@ public static class ProcessingReasonCodes
     public const string MissingAnnotation = "processing.missing-annotation";
     public const string InvalidAnnotation = "processing.invalid-annotation";
     public const string ExecutionFailed = "processing.execution-failed";
+    public const string MissingCalibrationProfile = "calibration.missing-profile";
+    public const string MissingCalibrationReference = "calibration.missing-reference";
+    public const string AmbiguousCalibrationReference = "calibration.ambiguous-reference";
+    public const string InvalidCalibrationProfile = "calibration.invalid-profile";
+    public const string StaleCalibrationProfile = "calibration.stale-profile";
+    public const string CalibrationReferenceChecksumMismatch = "calibration.reference-checksum-mismatch";
+    public const string CalibrationReferenceLayoutMismatch = "calibration.reference-layout-mismatch";
+    public const string CalibrationReferenceConditionsMismatch = "calibration.reference-conditions-mismatch";
+    public const string InvalidCalibrationFlat = "calibration.invalid-flat";
+    public const string UnrepairableCalibrationDefect = "calibration.unrepairable-defect";
 }
 
 public sealed record ProcessingRecipeDefinition(

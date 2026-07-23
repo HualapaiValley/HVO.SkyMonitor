@@ -270,6 +270,25 @@ For example, one generic sensor-stage fixture can be configured as:
 Dated fixture, W1/W2, ordinary-pipeline, runtime-signal, and privacy evidence is
 retained in `docs/validation/virtual-transient-scenarios.md`.
 
+### Deterministic synthetic calibration
+
+`synthetic-calibration-model-v1` is an optional software-only sensor model for
+Mono16 and RGGB16. Absence preserves the prior renderer path and bytes. When
+configured, VirtualSky applies deterministic spatial bias, dark fixed pattern,
+pixel-response variation, radial vignetting, and fixed defects after the ordinary
+ideal linear render. The model cannot be combined with a published ASI physical
+response model and is never described as measured hardware behavior.
+
+The normal CameraAgent `Calibration` step can select `SyntheticReferences` with
+the same model. It atomically materializes immutable manifest-v2 bias, dark, flat,
+and defect artifacts, then invokes the host-neutral `reference-calibration`
+recipe through the durable DAG. The recipe sees only those references and their
+canonical applicability/profile facts, not the model implementation, ideal
+pixels, expected checksums, or a truth image. Exact arithmetic and failure
+semantics are defined in `docs/contracts/reference-calibration-v1.md`. Raw
+provenance binds the exact synthetic model identity; a differently configured
+processing model is terminal rather than silently producing a mismatched result.
+
 ### Sky brightness and display
 
 The virtual sensor keeps raw Mono16 values linear. The ASI174MM response applies

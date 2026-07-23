@@ -15,6 +15,7 @@ public static class BuiltInProcessingRecipes
     public const string NoOpAnalyzer = "no-op-analyzer";
     public const string CloudAssessment = "cloud-assessment";
     public const string WeatherCloudOverlay = "weather-cloud-overlay";
+    public const string ReferenceCalibration = "reference-calibration";
 
     public static ProcessingRecipeIdentity CreateRequestedIdentity(
         string recipeName,
@@ -55,7 +56,8 @@ public static class BuiltInProcessingRecipes
         new ImageQualityRecipe(),
         new NoOpAnalyzerRecipe(),
         new CloudAssessmentRecipe(),
-        new WeatherCloudOverlayRecipe()
+        new WeatherCloudOverlayRecipe(),
+        new ReferenceCalibrationRecipe()
     ];
 }
 

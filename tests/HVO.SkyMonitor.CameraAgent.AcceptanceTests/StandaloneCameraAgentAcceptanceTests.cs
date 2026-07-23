@@ -168,6 +168,56 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         AssertNoOutboundAttempts(fixture);
     }
 
+    [TestMethod]
+    public async Task SyntheticCalibrationReferencesCorrectStandaloneCaptureAndSurviveRestartAsync()
+    {
+        await using var fixture = await StandaloneCameraAgentKestrelFixture.CreateAsync(
+            useSyntheticCalibration: true).ConfigureAwait(false);
+        var first = await WaitForCompleteCaptureAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
+        var raw = first.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw);
+        var calibrated = first.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Calibrated);
+        var rawManifest = ReadManifest(fixture.Root, raw.ArtifactId);
+        var calibratedManifest = ReadManifest(fixture.Root, calibrated.ArtifactId);
+
+        Assert.AreEqual(BuiltInProcessingRecipes.ReferenceCalibration, calibratedManifest.Descriptor.Artifact.Recipe.Name);
+        Assert.AreEqual("synthetic-corrected", calibratedManifest.Descriptor.Artifact.Variant);
+        Assert.HasCount(5, calibratedManifest.Descriptor.Artifact.SourceArtifactIds);
+        Assert.AreEqual(raw.ArtifactId, calibratedManifest.Descriptor.Artifact.SourceArtifactIds[0]);
+        Assert.AreEqual(rawManifest.Descriptor.Artifact.ChecksumSha256, raw.ChecksumSha256);
+        Assert.AreNotEqual(
+            rawManifest.Descriptor.Profiles.Calibration.Sha256,
+            calibratedManifest.Descriptor.Profiles.Calibration.Sha256);
+        Assert.AreNotEqual(
+            rawManifest.Descriptor.Profiles.Mask.Sha256,
+            calibratedManifest.Descriptor.Profiles.Mask.Sha256);
+        Assert.AreEqual("reference-calibration-profile", calibratedManifest.Descriptor.Profiles.Calibration.Name);
+        Assert.AreEqual(
+            ReferenceCalibrationProfileV1.CurrentSchemaVersion,
+            calibratedManifest.Descriptor.Profiles.Calibration.Version);
+        Assert.AreEqual("calibration-defect-mask", calibratedManifest.Descriptor.Profiles.Mask.Name);
+        foreach (var referenceId in calibratedManifest.Descriptor.Artifact.SourceArtifactIds.Skip(1))
+        {
+            var reference = ReadManifest(fixture.Root, referenceId);
+            Assert.AreEqual(FrameArtifactRole.Raw, reference.Descriptor.Artifact.Role);
+            CollectionAssert.Contains(CalibrationReferenceKinds.All.ToArray(), reference.Descriptor.Artifact.Variant);
+        }
+        Assert.AreNotEqual(raw.ChecksumSha256, calibrated.ChecksumSha256);
+        Assert.HasCount(4, Directory.EnumerateFiles(
+            Path.Combine(fixture.Root, "calibration", "synthetic"), "*.bin", SearchOption.AllDirectories).ToArray());
+        AssertNoOutboundAttempts(fixture);
+
+        await fixture.RestartHostAsync().ConfigureAwait(false);
+        var restarted = await WaitForCompleteCaptureAsync(
+            fixture.Services, fixture.Root, first.CaptureSequence).ConfigureAwait(false);
+        var restartedCalibrated = restarted.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Calibrated);
+        Assert.AreEqual(
+            BuiltInProcessingRecipes.ReferenceCalibration,
+            ReadManifest(fixture.Root, restartedCalibrated.ArtifactId).Descriptor.Artifact.Recipe.Name);
+        Assert.HasCount(4, Directory.EnumerateFiles(
+            Path.Combine(fixture.Root, "calibration", "synthetic"), "*.bin", SearchOption.AllDirectories).ToArray());
+        AssertNoOutboundAttempts(fixture);
+    }
+
     private static async Task<CameraAgentGalleryCapture> WaitForCompleteCaptureAsync(
         IServiceProvider services,
         string root,
@@ -269,12 +319,20 @@ public sealed class StandaloneCameraAgentAcceptanceTests
 
         var calibrated = manifests[capture.Artifacts.Single(static artifact =>
             artifact.Role == FrameArtifactRole.Calibrated).ArtifactId].Descriptor.Artifact;
-        Assert.AreEqual("none", calibrated.Variant);
-        Assert.AreEqual(BuiltInProcessingRecipes.LinearNormalization, calibrated.Recipe.Name);
-        Assert.AreEqual(
-            "None",
-            calibrated.Recipe.Options.Deserialize<LinearNormalizationOptions>(
-                WebJson)!.Mode);
+        if (string.Equals(calibrated.Recipe.Name, BuiltInProcessingRecipes.LinearNormalization, StringComparison.Ordinal))
+        {
+            Assert.AreEqual("none", calibrated.Variant);
+            Assert.AreEqual(
+                "None",
+                calibrated.Recipe.Options.Deserialize<LinearNormalizationOptions>(
+                    WebJson)!.Mode);
+        }
+        else
+        {
+            Assert.AreEqual(BuiltInProcessingRecipes.ReferenceCalibration, calibrated.Recipe.Name);
+            Assert.AreEqual("synthetic-corrected", calibrated.Variant);
+            Assert.HasCount(5, calibrated.SourceArtifactIds);
+        }
     }
 
     private static DeploymentLocationSnapshot ReadActiveLocation(IServiceProvider services)

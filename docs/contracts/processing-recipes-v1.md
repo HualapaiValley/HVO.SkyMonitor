@@ -56,6 +56,7 @@ filesystem, logging, stream, or disposable Skia types.
 | Recipe | Kind | Inputs | Output | Complexity and maximum live full-frame buffers |
 | --- | --- | --- | --- | --- |
 | `linear-normalization` | Transform | Raw | Packed calibrated linear frame | O(pixels), input plus one output |
+| `reference-calibration` | Transform | Raw plus named bias, dark, flat, defect, and profile inputs | Packed calibrated linear frame | O(pixels), five borrowed frames plus one output |
 | `encoded-preview` | Transform | Raw or calibrated | JPEG by default; packed compatibility projection | O(pixels), Mono16 input/histogram/display/output or CFA input/mosaic/RGB/output; JPEG may add one RGBA/native codec copy |
 | `annotation` | Transform | Raw, calibrated, combined, or exact preview result | JPEG by default; packed compatibility projection | O(pixels + rendered geometry), input/display/mask/output; hosts supply projected geometry |
 | `rolling-mean` | Window | Explicit ordered compatible linear sources | Packed combined linear frame | O(pixels x sources), sources plus UInt64 accumulator and one output; no source is retained |
@@ -84,6 +85,16 @@ versioned orientation profile is introduced. An orientation change still changes
 axes and resets the window.
 The arithmetic is a linear integer mean using UInt64 accumulation. Registration,
 sigma clipping, dark subtraction, and motion compensation are not implicit.
+
+## Reference Calibration
+
+`reference-calibration-profile-v1` binds exact immutable reference artifact IDs,
+payload checksums, exposure/gain/temperature applicability, effective interval,
+layout, flat normalization, source, and profile version. The recipe accepts only
+little-endian Mono16 or RGGB16 and requires the named `bias-reference`,
+`dark-reference`, `flat-reference`, `defect-reference`, and
+`calibration-profile` auxiliaries. Ordered output lineage is raw, bias, dark,
+flat, then defect. See [Reference Calibration v1](reference-calibration-v1.md).
 
 ## Cloud Assessment
 

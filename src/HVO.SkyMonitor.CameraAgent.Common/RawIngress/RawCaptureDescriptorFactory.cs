@@ -58,6 +58,18 @@ internal static class RawCaptureDescriptorFactory
             frame.PixelFormat,
             configuration.Rig.Sensor.ByteOrder);
 
+        var syntheticCalibrationIdentity = ResolveIdentity(frame, "syntheticCalibrationModelSha256");
+        var syntheticCalibrationSchema = ResolveText(frame, "syntheticCalibrationSchema");
+        var calibrationProfile = syntheticCalibrationIdentity is null
+            ? Profile(
+                calibrationSteps.Length == 0 ? "calibration" : "configured-calibration",
+                calibrationSteps.Length == 0 ? "none-v1" : "configured-v1",
+                calibrationElement)
+            : new ProfileIdentityDescriptor(
+                "synthetic-calibration-model",
+                syntheticCalibrationSchema ?? "unknown",
+                syntheticCalibrationIdentity);
+
         return new ReconstructionDescriptor(
             new CaptureIdentityDescriptor(identity.AgentId, $"rig-{rigHash[..16].ToUpperInvariant()}", identity.CaptureSequence, identity.CaptureId),
             timing,
@@ -72,10 +84,7 @@ internal static class RawCaptureDescriptorFactory
                 double.IsFinite(frame.Metadata.TemperatureC) ? frame.Metadata.TemperatureC : null),
             new CaptureProfileSet(
                 Profile("rig", configuration.Rig.ProfileVersion, rigElement),
-                Profile(
-                    calibrationSteps.Length == 0 ? "calibration" : "configured-calibration",
-                    calibrationSteps.Length == 0 ? "none-v1" : "configured-v1",
-                    calibrationElement),
+                calibrationProfile,
                 Profile("mask", "none-v1", NoneOptions),
                 Profile(configuration.Rig.Sensor.Name, configuration.Rig.Sensor.SensorRecipeVersion, sensorElement),
                 Profile("processing", "configured-v1", processingElement)),
@@ -208,6 +217,18 @@ internal static class RawCaptureDescriptorFactory
            double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : null;
+
+    private static string? ResolveText(CameraFrame frame, string key)
+        => frame.Metadata.Extra is not null && frame.Metadata.Extra.TryGetValue(key, out var value) &&
+           !string.IsNullOrWhiteSpace(value)
+            ? value
+            : null;
+
+    private static string? ResolveIdentity(CameraFrame frame, string key)
+    {
+        var value = ResolveText(frame, key);
+        return value is { Length: 64 } && value.All(Uri.IsHexDigit) ? value.ToUpperInvariant() : null;
+    }
 
     private static string MediaTypeFor(CameraPixelFormat pixelFormat) => pixelFormat switch
     {

@@ -59,7 +59,7 @@
   "processingSteps": [
     {
       "id": "Calibration",
-      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CalibrationCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "type": "Calibration",
       "order": 10,
       "options": {
         "enabled": true,

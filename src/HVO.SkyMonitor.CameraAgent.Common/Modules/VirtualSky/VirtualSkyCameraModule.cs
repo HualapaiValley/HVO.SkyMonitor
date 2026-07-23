@@ -46,6 +46,10 @@ public sealed class VirtualSkyCameraModule(
         }
 
         _options.Validate();
+        if (_options.SyntheticCalibration is { } syntheticCalibration)
+        {
+            syntheticCalibration.Validate(config.Rig.Sensor.WidthPixels, config.Rig.Sensor.HeightPixels);
+        }
         if (_options.CloudScenario is { } configuredCloud)
         {
             _options.CloudScenario = configuredCloud with
@@ -70,7 +74,10 @@ public sealed class VirtualSkyCameraModule(
             _options.Asi178Sensor.Enabled && pixelFormat != CameraPixelFormat.BayerRggb16 ||
             _options.Asi676Enabled && pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
             pixelFormat == CameraPixelFormat.BayerRggb16 &&
-            !_options.Asi178Sensor.Enabled && !_options.Asi676Enabled)
+            !_options.Asi178Sensor.Enabled && !_options.Asi676Enabled && _options.SyntheticCalibration is null ||
+            _options.SyntheticCalibration is not null &&
+            (pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
+                _options.Asi174Sensor.Enabled || _options.Asi178Sensor.Enabled || _options.Asi676Enabled))
         {
             throw new ArgumentException("The configured physical sensor model must match the raw pixel format.", nameof(config));
         }
@@ -159,6 +166,25 @@ public sealed class VirtualSkyCameraModule(
                 scene, layout, CreateBayerOptions(setpoint, captureSequence, projection, cloud, transient)),
             _ => throw new UnreachableException()
         };
+        if (_options.SyntheticCalibration is { } syntheticCalibration)
+        {
+            var affected = SyntheticCalibrationReferenceGenerator.ApplyToLightWithStatistics(
+                new Linear16Frame(
+                    layout.Width,
+                    layout.Height,
+                    layout.StrideBytes,
+                    layout.PixelFormat,
+                    render.Pixels),
+                setpoint.Exposure,
+                syntheticCalibration,
+                cancellationToken);
+            render = render with
+            {
+                Pixels = affected.PixelData,
+                AlgorithmVersion = $"{render.AlgorithmVersion}+{SyntheticCalibrationReferenceGenerator.AlgorithmVersion}",
+                Statistics = affected.Statistics
+            };
+        }
         sceneStore.Put(sceneId, scene);
         var cloudProvenance = CreateCloudProvenance(_options.CloudScenario, request.RequestedStartUtc, setpoint.Exposure);
         var transientProvenance = CreateTransientProvenance(
@@ -216,6 +242,14 @@ public sealed class VirtualSkyCameraModule(
             extra["transientParametersSha256"] = transientProvenance.ParametersSha256;
             extra["transientAlgorithm"] = transientProvenance.AlgorithmVersion;
         }
+        if (_options.SyntheticCalibration is { } calibration)
+        {
+            extra["syntheticCalibrationSchema"] = calibration.SchemaVersion;
+            extra["syntheticCalibrationModelSha256"] =
+                SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(calibration);
+            extra["blackLevelAdu"] = calibration.BiasPedestalAdu.ToString(CultureInfo.InvariantCulture);
+            extra["whiteLevelAdu"] = ushort.MaxValue.ToString(CultureInfo.InvariantCulture);
+        }
         if (_options.Asi174Sensor.Enabled)
         {
             var response = Asi174MmSensorModel.Resolve(setpoint.Gain, _options.Asi174Sensor.BlackLevelAdu);
@@ -267,7 +301,13 @@ public sealed class VirtualSkyCameraModule(
         var frame = new CameraFrame(
             request.RequestedStartUtc.ToUniversalTime(), sensor.WidthPixels, sensor.HeightPixels, sensor.PixelFormat,
             render.Pixels,
-            new FrameMetadata(setpoint.Exposure, setpoint.Gain, double.NaN, "VirtualSky", extra, Scene: provenance),
+            new FrameMetadata(
+                setpoint.Exposure,
+                setpoint.Gain,
+                _options.SyntheticCalibration?.TemperatureC ?? double.NaN,
+                "VirtualSky",
+                extra,
+                Scene: provenance),
             layout.StrideBytes);
         return new CaptureResult(frame, setpoint, timeProvider.GetElapsedTime(start), request.Mode, false)
         {
@@ -294,13 +334,13 @@ public sealed class VirtualSkyCameraModule(
             BackgroundElectronsPerSecond = _options.ResolveBackgroundElectronsPerSecond(projection),
             PsfSigmaPixels = _options.PsfSigmaPixels,
             PsfRadiusPixels = _options.PsfRadiusPixels,
-            VignettingStrength = _options.VignettingStrength,
-            Bias = _options.Asi174Sensor.Enabled || _options.Asi676Enabled ? 0 : _options.Bias,
+            VignettingStrength = _options.SyntheticCalibration is null ? _options.VignettingStrength : 0,
+            Bias = _options.SyntheticCalibration is not null || _options.Asi174Sensor.Enabled || _options.Asi676Enabled ? 0 : _options.Bias,
             ReadNoiseStandardDeviation = _options.Asi174Sensor.Enabled || _options.Asi676Enabled
                 ? 0
                 : _options.ReadNoiseStandardDeviation,
             ShotNoiseEnabled = _options.Asi174Sensor.Enabled || _options.Asi676Enabled || _options.ShotNoiseEnabled,
-            DarkCurrentElectronsPerSecond = _options.DarkCurrentElectronsPerSecond,
+            DarkCurrentElectronsPerSecond = _options.SyntheticCalibration is null ? _options.DarkCurrentElectronsPerSecond : 0,
             DarkNoiseEnabled = (_options.Asi174Sensor.Enabled || _options.Asi676Enabled) &&
                 _options.DarkCurrentElectronsPerSecond > 0,
             Seed = _options.Asi174Sensor.Enabled || _options.Asi676Enabled
@@ -326,11 +366,11 @@ public sealed class VirtualSkyCameraModule(
             BackgroundElectronsPerSecond = _options.ResolveBackgroundElectronsPerSecond(),
             PsfSigmaPixels = _options.PsfSigmaPixels,
             PsfRadiusPixels = _options.PsfRadiusPixels,
-            VignettingStrength = _options.VignettingStrength,
+            VignettingStrength = _options.SyntheticCalibration is null ? _options.VignettingStrength : 0,
             Bias = _options.Bias,
             ReadNoiseStandardDeviation = _options.ReadNoiseStandardDeviation,
             ShotNoiseEnabled = _options.ShotNoiseEnabled,
-            DarkCurrentElectronsPerSecond = _options.DarkCurrentElectronsPerSecond,
+            DarkCurrentElectronsPerSecond = _options.SyntheticCalibration is null ? _options.DarkCurrentElectronsPerSecond : 0,
             Seed = _options.Seed,
             Cloud = cloud,
             Transient = transient
@@ -349,19 +389,29 @@ public sealed class VirtualSkyCameraModule(
             BackgroundElectronsPerSecond = _options.ResolveBackgroundElectronsPerSecond(projection),
             PsfSigmaPixels = _options.PsfSigmaPixels,
             PsfRadiusPixels = _options.PsfRadiusPixels,
-            VignettingStrength = _options.VignettingStrength,
+            VignettingStrength = _options.SyntheticCalibration is null ? _options.VignettingStrength : 0,
             ShotNoiseEnabled = true,
-            DarkCurrentElectronsPerSecond = _options.DarkCurrentElectronsPerSecond,
-            DarkNoiseEnabled = _options.DarkCurrentElectronsPerSecond > 0,
+            DarkCurrentElectronsPerSecond = _options.SyntheticCalibration is null ? _options.DarkCurrentElectronsPerSecond : 0,
+            DarkNoiseEnabled = _options.SyntheticCalibration is null && _options.DarkCurrentElectronsPerSecond > 0,
             Seed = unchecked(_options.Seed + (int)(captureSequence * 104729)),
             Cloud = cloud,
             Transient = transient,
-            ChannelResponse = _options.Asi676Enabled
+            ChannelResponse = _options.SyntheticCalibration is not null || _options.Asi676Enabled
                 ? new RgbChannelSettings(1, 1, 1)
                 : new RgbChannelSettings(0.94, 1, 0.8),
             SensorResponse = _options.Asi178Sensor.Enabled
                 ? Asi178McSensorModel.Resolve(setpoint.Gain, _options.Asi178Sensor.BlackLevelContainerAdu)
-                : Asi676SensorModel.Resolve(setpoint.Gain, _options.Asi676Sensor!.BlackLevelAdu)
+                : _options.Asi676Enabled
+                    ? Asi676SensorModel.Resolve(setpoint.Gain, _options.Asi676Sensor!.BlackLevelAdu)
+                    : new MonoSensorResponse
+                    {
+                        AdcBitDepth = 16,
+                        FullWellElectrons = ushort.MaxValue,
+                        ElectronsPerAdu = 1,
+                        ReadNoiseElectrons = 0,
+                        BlackLevelAdu = 0,
+                        CompatibilityLabel = "Synthetic calibration ideal RGGB16 input"
+                    }
         };
 
     private static void ValidateRig(CameraRigConfig rig)
@@ -523,6 +573,8 @@ public sealed class VirtualSkyCameraModuleOptions
     public VirtualCloudScenarioDefinition? CloudScenario { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public VirtualTransientScenarioDefinition? TransientScenario { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SyntheticCalibrationModelV1? SyntheticCalibration { get; init; }
     public string CatalogName { get; init; } = "HYG";
     public string CatalogVersion { get; init; } = "4.2-test-fixture";
     public Uri CatalogSourceUrl { get; init; } = new("https://astronexus.com/projects/hyg");

@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 
@@ -81,6 +82,48 @@ public sealed class CameraAgentProcessingConformanceTests
         Assert.AreEqual(canonicalFallbackStart, fallbackDescriptor.Timing.ExposureStartedUtc);
         Assert.AreEqual(canonicalFallbackStart.AddSeconds(1), fallbackDescriptor.Timing.ExposureEndedUtc);
         Assert.AreEqual(fallbackDescriptor.Timing.ExposureEndedUtc, fallbackDescriptor.Timing.ReadoutCompletedUtc);
+        var syntheticIdentity = new string('B', 64);
+        var syntheticFrame = fallbackFrame with
+        {
+            Metadata = fallbackFrame.Metadata with
+            {
+                Extra = new Dictionary<string, string>
+                {
+                    ["syntheticCalibrationSchema"] = "synthetic-calibration-model-v1",
+                    ["syntheticCalibrationModelSha256"] = syntheticIdentity
+                }
+            }
+        };
+        var syntheticDescriptor = RawCaptureDescriptorFactory.Create(
+            ProcessingConformanceFixture.CameraConfig,
+            fallbackSubmission with
+            {
+                Result = fallbackSubmission.Result with { Frame = syntheticFrame }
+            },
+            new RawCaptureIdentity(
+                ProcessingConformanceFixture.CameraConfig.AgentId!,
+                2,
+                Guid.NewGuid(),
+                Guid.NewGuid()),
+            new string('C', 64),
+            fallbackTimestamp.AddSeconds(2));
+        Assert.AreEqual("synthetic-calibration-model", syntheticDescriptor.Profiles.Calibration.Name);
+        Assert.AreEqual("synthetic-calibration-model-v1", syntheticDescriptor.Profiles.Calibration.Version);
+        Assert.AreEqual(syntheticIdentity, syntheticDescriptor.Profiles.Calibration.Sha256);
+        var model = new SyntheticCalibrationModelV1();
+        var matchingDescriptor = syntheticDescriptor with
+        {
+            Profiles = syntheticDescriptor.Profiles with
+            {
+                Calibration = syntheticDescriptor.Profiles.Calibration with
+                {
+                    Sha256 = SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model)
+                }
+            }
+        };
+        Assert.IsTrue(CalibrationCaptureProcessingStep.MatchesSyntheticCalibrationModel(matchingDescriptor, model));
+        Assert.IsFalse(CalibrationCaptureProcessingStep.MatchesSyntheticCalibrationModel(
+            matchingDescriptor, model with { Seed = model.Seed + 1 }));
         var reconstructedArtifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(
             ProcessingConformanceFixture.CameraConfig,
             new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Raw, fallbackFrame),
