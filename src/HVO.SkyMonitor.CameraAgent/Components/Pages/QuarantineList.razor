@@ -1,0 +1,34 @@
+@using HVO.SkyMonitor.CameraAgent.Common.Operations
+@using HVO.SkyMonitor.CameraAgent.Services
+
+<section class="quarantine-list">
+    <h3>@Title</h3>
+    @if (Items.Count == 0)
+    {
+        <p>No quarantined items in the bounded current page.</p>
+    }
+    else
+    {
+        <ol>
+            @for (var index = 0; index < Items.Count; index++)
+            {
+                var item = Items[index];
+                var replayId = $"quarantine-{Title.GetHashCode(StringComparison.Ordinal):X}-{index}-replay";
+                var abandonId = $"quarantine-{Title.GetHashCode(StringComparison.Ordinal):X}-{index}-abandon";
+                <li>
+                    <dl><div><dt>Status</dt><dd>@OperationsPage.SplitWords(item.Status)</dd></div><div><dt>Role</dt><dd>@(item.Role ?? item.Kind)</dd></div><div><dt>Storage alias</dt><dd>@(item.StorageAlias ?? "Not applicable")</dd></div><div><dt>Attempts</dt><dd>@item.AttemptCount</dd></div><div><dt>Size</dt><dd>@OperationsPage.FormatBytes(item.PayloadBytes)</dd></div><div><dt>Updated</dt><dd>@OperationsPage.FormatTime(item.UpdatedUtc)</dd></div><div><dt>Created</dt><dd>@(item.CreatedUtc is null ? "Unavailable" : OperationsPage.FormatTime(item.CreatedUtc))</dd></div><div><dt>Next attempt</dt><dd>@(item.NextAttemptUtc is null ? "Unavailable" : OperationsPage.FormatTime(item.NextAttemptUtc))</dd></div><div><dt>Media type</dt><dd>@(item.MediaType ?? "Unavailable")</dd></div><div><dt>Reason</dt><dd>@OperationsPage.SplitWords(item.ReasonCode)</dd></div><div class="wide"><dt>Latest audit</dt><dd>@(item.AuditSummary ?? "No operator audit recorded")</dd></div></dl>
+                    <div class="actions">
+                        @if (item.ReplayToken is not null)
+                        {
+                            <button id="@replayId" type="button" class="btn btn-outline-primary" @onclick="() => Start(item, OutboxOperationAction.Replay, replayId)">Review replay</button>
+                        }
+                        @if (item.AbandonToken is not null)
+                        {
+                            <button id="@abandonId" type="button" class="btn btn-outline-danger" @onclick="() => Start(item, OutboxOperationAction.Abandon, abandonId)">Review abandon</button>
+                        }
+                    </div>
+                </li>
+            }
+        </ol>
+    }
+</section>

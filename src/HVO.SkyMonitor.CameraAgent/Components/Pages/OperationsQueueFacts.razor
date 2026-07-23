@@ -1,0 +1,12 @@
+@using HVO.SkyMonitor.CameraAgent.Common.Operations
+
+<dl class="fact-grid">
+    <div><dt>Availability</dt><dd>@OperationsPage.SplitWords(Queue.Availability)</dd></div>
+    <div><dt>Pending</dt><dd>@Queue.PendingCount</dd></div>
+    <div><dt>Size</dt><dd>@OperationsPage.FormatBytes(Queue.PendingBytes)</dd></div>
+    <div><dt>Leased</dt><dd>@Queue.LeasedCount</dd></div>
+    <div><dt>Retry</dt><dd>@Queue.RetryCount</dd></div>
+    <div><dt>Quarantine</dt><dd>@Queue.QuarantineCount</dd></div>
+    <div><dt>Terminal</dt><dd>@Queue.TerminalCount</dd></div>
+    <div><dt>Oldest</dt><dd>@OperationsPage.FormatTime(Queue.OldestPendingUtc)</dd></div>
+</dl>

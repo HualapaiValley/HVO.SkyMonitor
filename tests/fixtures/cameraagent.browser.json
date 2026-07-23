@@ -1,0 +1,103 @@
+{
+  "agentId": "cameraagent-browser-acceptance",
+  "module": {
+    "type": "RandomImage",
+    "options": {
+      "pattern": "Gradient",
+      "seed": 106
+    }
+  },
+  "observatory": {
+    "latitudeDegrees": 35.347,
+    "longitudeDegrees": -113.878,
+    "elevationMeters": 1000.0,
+    "timeZoneId": "America/Phoenix"
+  },
+  "rig": {
+    "sensor": {
+      "name": "BrowserFixtureMono8",
+      "widthPixels": 160,
+      "heightPixels": 120,
+      "pixelSizeMicrons": 5.0,
+      "colorMode": "Mono",
+      "pixelFormat": "Mono8",
+      "responseMode": "Monochrome",
+      "strideBytes": 160,
+      "byteOrder": "LittleEndian",
+      "sensorRecipeVersion": "browser-fixture-mono8-v1"
+    },
+    "optics": {
+      "projectionModel": "EquidistantFisheye",
+      "focalLengthMillimeters": 0.0,
+      "fieldOfViewDegrees": 180.0,
+      "rollDegrees": 0.0,
+      "lensKind": "Fisheye",
+      "principalPointX": 80.0,
+      "principalPointY": 60.0,
+      "imageCircleRadiusPixels": 58.0,
+      "horizontalFlip": false,
+      "calibrationVersion": "browser-fixture-optics-v1"
+    },
+    "orientation": {
+      "boresightAltitudeDegrees": 90.0,
+      "boresightAzimuthDegrees": 0.0,
+      "rollAdjustmentDegrees": 0.0
+    },
+    "pipeline": {
+      "captureInterval": "00:00:00.1000000",
+      "cadenceMode": "MinimumStartInterval",
+      "dayExposure": "00:00:00.0050000",
+      "nightExposure": "00:00:00.0050000",
+      "dayGain": 1.0,
+      "nightGain": 1.0
+    },
+    "controlPolicy": {
+      "autoGain": "Disabled",
+      "autoExposure": "Disabled"
+    }
+  },
+  "processingSteps": [
+    {
+      "id": "Calibration",
+      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CalibrationCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "order": 10,
+      "options": {
+        "enabled": true,
+        "strategy": "None",
+        "outputVariant": "none"
+      }
+    },
+    {
+      "id": "Preview",
+      "type": "Preview",
+      "order": 50,
+      "dependsOn": ["Calibration"],
+      "options": {
+        "enabled": true,
+        "recipeVersion": "browser-fixture-preview-v1",
+        "outputVariant": "browser-display",
+        "blackPercentile": 0.01,
+        "whitePercentile": 0.99,
+        "asinhStrength": 2.0
+      }
+    },
+    {
+      "id": "LocalStorage",
+      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "order": 100,
+      "dependsOn": ["Preview"],
+      "options": {
+        "storageRoot": __STORAGE_ROOT__,
+        "retentionDays": 1,
+        "updateLatestFrame": true,
+        "queueForUpload": false
+      }
+    },
+    {
+      "id": "Telemetry",
+      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "order": 1000,
+      "dependsOn": ["LocalStorage"]
+    }
+  ]
+}

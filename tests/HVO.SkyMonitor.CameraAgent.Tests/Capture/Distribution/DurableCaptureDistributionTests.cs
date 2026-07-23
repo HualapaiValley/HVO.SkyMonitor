@@ -520,7 +520,8 @@ public sealed class DurableCaptureDistributionTests
                 laneFaultInjector: new NullCaptureLaneFaultInjector());
             await retry.InitializeAsync(policy.Definitions, CancellationToken.None).ConfigureAwait(false);
             using var verify = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(5L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion,
+                await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(6L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM capture_lane_work;").ConfigureAwait(false));
             Assert.AreEqual(3L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM capture_lane_contexts;").ConfigureAwait(false));

@@ -1,0 +1,167 @@
+using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.Fleet.Contracts;
+using Microsoft.Extensions.Options;
+
+namespace HVO.SkyMonitor.CameraAgent.Tests.Operations;
+
+[TestClass]
+[TestCategory("Unit")]
+public sealed class CameraAgentOperationsSummaryTests
+{
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+
+    [TestMethod]
+    public void LatestReturnsNullForEmptyOrUnavailableSources()
+    {
+        Assert.IsNull(CameraAgentOperationsSummaryProvider.Latest([]));
+        Assert.IsNull(CameraAgentOperationsSummaryProvider.Latest([null, null]));
+    }
+
+    [TestMethod]
+    public async Task GetAsyncSnapshotsOperationalStatesWithSourcesWithoutSensitiveContent()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var timeProvider = TimeProvider.System;
+        var root = Path.Combine(Path.GetTempPath(), "private-operations-root");
+        var options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = root,
+            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = true }
+        });
+        var rawIngress = new RawIngressState(timeProvider);
+        rawIngress.Set(RawIngressAvailability.Degraded, "secret-raw-reason", 7, 700, 2, 200, now.AddMinutes(-1));
+        var lanes = new CaptureLaneState(timeProvider, options);
+        lanes.Update([
+            new CaptureLaneBacklog("standard", true, 3, 300, now.AddMinutes(-2), 1, 0),
+            new CaptureLaneBacklog("transient", false, 4, 400, now.AddMinutes(-1), 0, 2, 1)
+        ]);
+        var processing = new CaptureProcessingState();
+        processing.SetDurable(5, 2, 1, now.AddMinutes(-3));
+        var artifactOutbox = new ArtifactOutboxState();
+        artifactOutbox.ReportUnavailable(root, "secret-outbox-exception");
+        var storage = new StoragePressureState();
+        storage.Set(new StoragePressureSnapshot(
+            root,
+            new StorageCapacity(10_000, 2_000),
+            true,
+            2,
+            now,
+            "secret-probe-path"));
+        var runtime = new FleetRuntimeState(timeProvider);
+        runtime.ModuleAvailable();
+        runtime.CaptureFailed("secret-module-exception");
+        var heartbeat = new FleetHeartbeatState();
+        heartbeat.Update(
+            new FleetStatusOutboxSnapshot(6, 600, 1, 2, 3, 4, 5, now.AddMinutes(-4), now),
+            FleetAvailability.Degraded,
+            "https://private-heartbeat/secret");
+        var environmental = new EnvironmentalObservationDeliveryState();
+        environmental.Update(
+            new EnvironmentalObservationOutboxSnapshot(20, 2_000, 8, 800, 1, 2, 3, 4, 5, now.AddMinutes(-5), now),
+            EnvironmentalObservationDeliveryAvailability.Degraded,
+            "secret-environmental-reason");
+        var transient = new TransientWorkerState(timeProvider);
+        transient.Set(TransientWorkerAvailability.Degraded, "secret-transient-reason", 9, 10);
+        var telemetryProvider = new CaptureTelemetrySink();
+        telemetryProvider.Report(new CaptureTelemetrySample(
+            now,
+            TimeSpan.FromSeconds(2),
+            TimeSpan.FromSeconds(1),
+            12,
+            null,
+            CaptureMode.Still,
+            false,
+            true,
+            TimeSpan.FromMilliseconds(50),
+            TimeSpan.FromMilliseconds(1200),
+            []));
+        var configuration = new CameraAgentConfigurationAccessor();
+        using var moduleOptions = JsonDocument.Parse("""{"apiKey":"module-secret","endpoint":"https://private-module"}""");
+        configuration.SetConfiguration(CreateConfiguration(moduleOptions.RootElement.Clone()));
+        using var captureTelemetry = new CaptureControlTelemetry();
+        using var coordinator = new CaptureAdmissionCoordinator(
+            new NullIngress(), options, timeProvider, captureTelemetry);
+        var provider = new CameraAgentOperationsSummaryProvider(
+            timeProvider,
+            coordinator,
+            rawIngress,
+            lanes,
+            processing,
+            artifactOutbox,
+            storage,
+            runtime,
+            heartbeat,
+            environmental,
+            transient,
+            telemetryProvider,
+            configuration,
+            new CameraAgentStorageResolver(configuration, options));
+
+        var summary = await provider.GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual("Degraded", summary.RawIngress.Value.Availability);
+        Assert.AreEqual(7L, summary.RawIngress.Value.PendingCount);
+        Assert.HasCount(2, summary.CaptureLanes.Value.Lanes);
+        Assert.AreEqual(1L, summary.CaptureProcessing.Value.TerminalCount);
+        Assert.AreEqual("Unavailable", summary.ArtifactOutbox.Value.Availability);
+        Assert.AreEqual("raw-ingress", summary.Storage.Value[0].Alias);
+        Assert.IsFalse(summary.Storage.Value[0].ProbeSucceeded);
+        Assert.AreEqual(6L, summary.Heartbeat.Value.PendingCount);
+        Assert.AreEqual(8L, summary.EnvironmentalDelivery.Value.PendingCount);
+        Assert.AreEqual(9L, summary.TransientWorker.Value.PendingFrames);
+        Assert.AreEqual(1, summary.CaptureTelemetry.Value.SampleCount);
+        Assert.IsNotNull(summary.CaptureProcessing.ObservedUtc);
+        Assert.IsNotNull(summary.ArtifactOutbox.ObservedUtc);
+        Assert.AreEqual("agent-operations", summary.Configuration.Value.AgentId);
+        Assert.AreEqual("VirtualSky", summary.Configuration.Value.ModuleType);
+        Assert.AreEqual("validated", summary.Configuration.Value.ValidationStatus);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(summary.RawIngress.Source));
+        Assert.IsFalse(string.IsNullOrWhiteSpace(summary.RawIngress.Freshness));
+
+        var json = JsonSerializer.Serialize(summary, SerializerOptions);
+        Assert.IsFalse(json.Contains(root, StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(json.Contains("secret-", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(json.Contains("https://", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(json.Contains("apiKey", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(json.Contains("leaseToken", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(json.Contains("configurationSha256", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(json.Contains("pixelData", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static CameraModuleConfig CreateConfiguration(JsonElement moduleOptions)
+        => new(
+            new ObservatoryLocation(20, -155, 1000, "Pacific/Honolulu"),
+            new CameraModuleDescriptor("VirtualSky", moduleOptions),
+            new CameraRigConfig(
+                new SensorProfile("secret-sensor", 10, 10, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+                new OpticsProfile("EquidistantFisheye", 2, 180, 2),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(
+                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            AgentId: "agent-operations");
+
+    private sealed class NullIngress : IRawCaptureIngress
+    {
+        public ValueTask InitializeAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask<RawCaptureReceipt?> AcceptAsync(
+            CameraModuleConfig configuration,
+            CaptureLoopSubmission submission,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult<RawCaptureReceipt?>(null);
+    }
+}

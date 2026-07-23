@@ -18,6 +18,7 @@ using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
+using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Common.Observability;
@@ -26,6 +27,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpLogging;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -35,6 +37,7 @@ using Scalar.AspNetCore;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Endpoints;
 
 namespace HVO.SkyMonitor.CameraAgent;
 
@@ -162,6 +165,7 @@ public class Program
                 metrics.AddMeter(FleetHeartbeatTelemetry.MeterName);
                 metrics.AddMeter(EnvironmentalObservationDeliveryTelemetry.MeterName);
                 metrics.AddMeter(TransientWorkerTelemetry.MeterName);
+                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
             })
             .WithTracing(tracing => tracing.AddSource(TransientWorkerTelemetry.ActivitySourceName));
 
@@ -187,27 +191,11 @@ public class Program
 
         authenticationBuilder.AddIdentityCookies();
 
-        builder.Services.ConfigureApplicationCookie(options =>
-        {
-            options.LoginPath = "/Account/Login";
-            options.AccessDeniedPath = "/Account/AccessDenied";
-            options.Cookie.Name = "CameraAgent.Auth";
-            options.SlidingExpiration = true;
-            options.ExpireTimeSpan = TimeSpan.FromHours(12);
-            options.Events.OnRedirectToLogin = context =>
-            {
-                if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
-                {
-                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                    return Task.CompletedTask;
-                }
+        builder.Services.ConfigureApplicationCookie(ConfigureApplicationCookie);
 
-                context.Response.Redirect(context.RedirectUri);
-                return Task.CompletedTask;
-            };
-        });
-
-        builder.Services.AddAuthorization();
+        builder.Services.AddCameraAgentAuthorization();
+        builder.Services.AddCameraAgentOutboxOperations();
+        builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
 
         builder.Services.AddOptions<CapturePreviewOptions>()
             .Bind(builder.Configuration.GetSection("CapturePreview"))
@@ -224,6 +212,7 @@ public class Program
         healthChecks.AddCheck<FleetHeartbeatHealthCheck>("fleet-heartbeat", tags: ["dependency"]);
         healthChecks.AddCheck<EnvironmentalObservationDeliveryHealthCheck>("environmental-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
+        healthChecks.AddCheck<CaptureAdmissionHealthCheck>("capture-admission", tags: ["dependency"]);
         builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
         builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
 
@@ -248,6 +237,23 @@ public class Program
         app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api"), appBuilder =>
             {
                 appBuilder.UseStatusCodePagesWithReExecute("/not-found", "?statusCode={0}");
+                appBuilder.Use(async (context, next) =>
+                {
+                    await next(context).ConfigureAwait(false);
+                    if (context.Response.HasStarted)
+                    {
+                        return;
+                    }
+                    if (context.Response.StatusCode == StatusCodes.Status401Unauthorized)
+                    {
+                        var returnUrl = string.Concat(context.Request.PathBase, context.Request.Path, context.Request.QueryString);
+                        context.Response.Redirect($"/Account/Login?returnUrl={Uri.EscapeDataString(returnUrl)}");
+                    }
+                    else if (context.Response.StatusCode == StatusCodes.Status403Forbidden)
+                    {
+                        context.Response.Redirect("/Account/AccessDenied");
+                    }
+                });
             }
         );
 
@@ -267,6 +273,10 @@ public class Program
         });
 
         app.MapControllers();
+        app.MapCameraAgentGalleryEndpoints();
+        app.MapCameraAgentArtifactEndpoints();
+        app.MapCameraAgentOperationsEndpoints();
+        app.MapCameraAgentOutboxOperationsEndpoints();
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
         app.MapAdditionalIdentityEndpoints();
@@ -282,6 +292,37 @@ public class Program
         }
 
         await app.RunAsync().ConfigureAwait(false);
+    }
+
+    internal static void ConfigureApplicationCookie(CookieAuthenticationOptions options)
+    {
+        options.LoginPath = "/Account/Login";
+        options.AccessDeniedPath = "/Account/AccessDenied";
+        options.Cookie.Name = "CameraAgent.Auth";
+        options.SlidingExpiration = true;
+        options.ExpireTimeSpan = TimeSpan.FromHours(12);
+        options.Events.OnRedirectToLogin = context =>
+        {
+            if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return Task.CompletedTask;
+            }
+
+            context.Response.Redirect(context.RedirectUri);
+            return Task.CompletedTask;
+        };
+        options.Events.OnRedirectToAccessDenied = context =>
+        {
+            if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return Task.CompletedTask;
+            }
+
+            context.Response.Redirect(context.RedirectUri);
+            return Task.CompletedTask;
+        };
     }
 
     private static string ResolveIdentityDatabasePath(string? configuredPath, string contentRoot)

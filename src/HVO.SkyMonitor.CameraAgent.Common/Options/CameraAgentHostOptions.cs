@@ -28,6 +28,12 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     [Required]
     public EnvironmentalObservationDeliveryOptions EnvironmentalDelivery { get; init; } = new();
 
+    [Required]
+    public ArtifactReadOptions ArtifactRead { get; init; } = new();
+
+    [Range(1, 60)]
+    public int OperationsReferenceLifetimeMinutes { get; init; } = 15;
+
     public string? AgentId { get; init; }
 
     [Range(1, 1440)]
@@ -115,7 +121,39 @@ public sealed class CameraAgentHostOptions : IValidatableObject
         {
             yield return result;
         }
+
+        var artifactReadResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            ArtifactRead,
+            new ValidationContext(ArtifactRead),
+            artifactReadResults,
+            validateAllProperties: true);
+        foreach (var result in artifactReadResults)
+        {
+            yield return result;
+        }
     }
+}
+
+public sealed class ArtifactReadOptions
+{
+    [Range(1, 32_768)]
+    public int MaximumPreviewDimension { get; init; } = 8_192;
+
+    [Range(1, 1_073_741_824)]
+    public long MaximumPreviewSourceBytes { get; init; } = 64L * 1024 * 1024;
+
+    [Range(1, 268_435_456)]
+    public int MaximumPreviewEncodedBytes { get; init; } = 16 * 1024 * 1024;
+
+    [Range(1, 32)]
+    public int MaximumConcurrentPreviews { get; init; } = 2;
+
+    [Range(1, 1_073_741_824)]
+    public long PreviewCacheBytes { get; init; } = 64L * 1024 * 1024;
+
+    [Range(1, 4_096)]
+    public int ValidationCacheEntries { get; init; } = 256;
 }
 
 public enum TransientOperatingMode

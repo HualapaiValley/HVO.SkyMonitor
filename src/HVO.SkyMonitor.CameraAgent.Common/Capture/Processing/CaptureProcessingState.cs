@@ -13,7 +13,8 @@ public sealed record CaptureProcessingSnapshot(
     long RetryCount,
     long TerminalCount,
     string Reason,
-    DateTimeOffset? OldestPendingUtc = null);
+    DateTimeOffset? OldestPendingUtc = null,
+    DateTimeOffset? EvaluatedUtc = null);
 
 public sealed class CaptureProcessingState
 {
@@ -46,6 +47,7 @@ public sealed class CaptureProcessingState
             {
                 _snapshot = _snapshot with { OldestPendingUtc = DateTimeOffset.UtcNow };
             }
+            _snapshot = _snapshot with { EvaluatedUtc = DateTimeOffset.UtcNow };
         }
     }
 
@@ -63,6 +65,7 @@ public sealed class CaptureProcessingState
                     _ when _snapshot.RetryCount > 0 => _snapshot,
                     _ => _snapshot with { Availability = CaptureProcessingAvailability.Healthy, Reason = "completed" }
                 };
+                _snapshot = _snapshot with { EvaluatedUtc = DateTimeOffset.UtcNow };
                 return;
             }
             var pending = Math.Max(0, _snapshot.PendingCount - 1);
@@ -77,6 +80,7 @@ public sealed class CaptureProcessingState
                 _ => new(
                     CaptureProcessingAvailability.Unhealthy, pending, _snapshot.RetryCount, _snapshot.TerminalCount + 1, "terminal", PendingTime(pending))
             };
+            _snapshot = _snapshot with { EvaluatedUtc = DateTimeOffset.UtcNow };
 
             DateTimeOffset? PendingTime(long count) => count == 0 ? null : _snapshot.OldestPendingUtc;
         }
@@ -98,7 +102,8 @@ public sealed class CaptureProcessingState
                 retry,
                 terminal,
                 terminal > 0 ? "terminal" : retry > 0 ? "retry" : "completed",
-                oldestPendingUtc);
+                oldestPendingUtc,
+                DateTimeOffset.UtcNow);
         }
     }
 
@@ -113,6 +118,7 @@ public sealed class CaptureProcessingState
                     Availability = CaptureProcessingAvailability.Degraded,
                     Reason = "durable-state-unavailable"
                 };
+            _snapshot = _snapshot with { EvaluatedUtc = DateTimeOffset.UtcNow };
         }
     }
 }

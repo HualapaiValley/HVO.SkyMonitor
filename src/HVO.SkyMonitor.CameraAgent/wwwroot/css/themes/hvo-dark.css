@@ -858,6 +858,7 @@ body[data-theme="hvo-dark"] .btn-secondary:focus {
 }
 
 body[data-theme="hvo-dark"] .btn-outline-primary {
+    background: transparent;
     color: var(--hvo-accent);
     border-color: var(--hvo-accent);
 }
@@ -870,6 +871,7 @@ body[data-theme="hvo-dark"] .btn-outline-primary:focus {
 }
 
 body[data-theme="hvo-dark"] .btn-outline-secondary {
+    background: transparent;
     color: var(--hvo-muted-strong);
     border-color: rgba(148, 163, 184, 0.4);
 }

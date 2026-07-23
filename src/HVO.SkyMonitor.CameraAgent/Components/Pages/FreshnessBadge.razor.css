@@ -1,0 +1,4 @@
+.freshness { display: inline-flex; align-items: center; min-height: 1.7rem; padding: .2rem .65rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+.freshness--fresh { color: var(--hvo-success-fg); background: var(--hvo-success-bg); }
+.freshness--stale { color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
+.freshness--unknown { color: var(--hvo-muted); background: var(--hvo-nav-badge-bg); }

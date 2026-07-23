@@ -1,0 +1,272 @@
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Common.Upload;
+
+namespace HVO.SkyMonitor.CameraAgent.Common.Operations;
+
+public sealed record OperationsSection<T>(
+    string Source,
+    DateTimeOffset? ObservedUtc,
+    string Freshness,
+    T Value);
+
+public sealed record OperationsQueueState(
+    string Availability,
+    long PendingCount,
+    long PendingBytes,
+    long LeasedCount,
+    long RetryCount,
+    long QuarantineCount,
+    long TerminalCount,
+    DateTimeOffset? OldestPendingUtc);
+
+public sealed record OperationsLaneState(
+    string Name,
+    bool Required,
+    long PendingCount,
+    long PendingBytes,
+    long LeasedCount,
+    long QuarantineCount,
+    int PressureLevel,
+    DateTimeOffset? OldestPendingUtc);
+
+public sealed record OperationsCaptureLanesState(
+    string Availability,
+    IReadOnlyList<OperationsLaneState> Lanes,
+    long PendingCount,
+    long PendingBytes,
+    long LeasedCount,
+    long QuarantineCount,
+    DateTimeOffset? OldestPendingUtc);
+
+public sealed record OperationsStorageState(
+    string Alias,
+    long TotalBytes,
+    long AvailableBytes,
+    bool IsUnderPressure,
+    int EffectiveRetentionDays,
+    bool ProbeSucceeded);
+
+public sealed record OperationsCaptureRuntimeState(
+    string Availability,
+    DateTimeOffset? LastSucceededUtc,
+    DateTimeOffset? LastFailedUtc,
+    DateTimeOffset? LastRecoveredUtc,
+    IReadOnlyList<OperationsTimingState> Timings);
+
+public sealed record OperationsTimingState(
+    string Segment,
+    long SampleCount,
+    double MedianMilliseconds,
+    double P95Milliseconds,
+    double MaximumMilliseconds);
+
+public sealed record OperationsHeartbeatState(
+    string Availability,
+    DateTimeOffset? LastAcknowledgedUtc,
+    long PendingCount,
+    long PendingBytes,
+    long LeasedCount,
+    long RetryCount,
+    long QuarantineCount,
+    long OverflowCount,
+    long BlockedCount,
+    DateTimeOffset? OldestPendingUtc);
+
+public sealed record OperationsEnvironmentalDeliveryState(
+    string Availability,
+    DateTimeOffset? LastAcknowledgedUtc,
+    long StoredCount,
+    long StoredBytes,
+    long PendingCount,
+    long PendingBytes,
+    long LeasedCount,
+    long RetryCount,
+    long QuarantineCount,
+    long TerminalCount,
+    long OverflowCount,
+    DateTimeOffset? OldestPendingUtc);
+
+public sealed record OperationsTransientWorkerState(
+    string Availability,
+    long PendingFrames,
+    long PendingCandidates);
+
+public sealed record OperationsCaptureTelemetryState(
+    int SampleCount,
+    DateTimeOffset? LatestCaptureStartedUtc,
+    string? LatestMode,
+    double? LatestExposureMilliseconds,
+    double? LatestGain,
+    double AverageIntervalMilliseconds,
+    double AverageExposureMilliseconds,
+    double AverageProcessingMilliseconds,
+    double AverageLoopMilliseconds,
+    double CapturesPerMinute,
+    double DutyCycle,
+    int FramesStored,
+    int ImmediateUploadCount);
+
+public sealed record OperationsConfigurationState(
+    bool IsCurrent,
+    string ValidationStatus,
+    string? AgentId,
+    string? ModuleType);
+
+public sealed record OperationsCaptureControlState(
+    string State,
+    long Version,
+    bool IsInitialized);
+
+public sealed record CameraAgentOperationsSummary(
+    DateTimeOffset CapturedUtc,
+    OperationsSection<OperationsCaptureControlState> CaptureControl,
+    OperationsSection<OperationsQueueState> RawIngress,
+    OperationsSection<OperationsCaptureLanesState> CaptureLanes,
+    OperationsSection<OperationsQueueState> CaptureProcessing,
+    OperationsSection<OperationsQueueState> ArtifactOutbox,
+    OperationsSection<IReadOnlyList<OperationsStorageState>> Storage,
+    OperationsSection<OperationsCaptureRuntimeState> CaptureRuntime,
+    OperationsSection<OperationsHeartbeatState> Heartbeat,
+    OperationsSection<OperationsEnvironmentalDeliveryState> EnvironmentalDelivery,
+    OperationsSection<OperationsTransientWorkerState> TransientWorker,
+    OperationsSection<OperationsCaptureTelemetryState> CaptureTelemetry,
+    OperationsSection<OperationsConfigurationState> Configuration);
+
+public sealed class CameraAgentOperationsSummaryProvider(
+    TimeProvider timeProvider,
+    CaptureAdmissionCoordinator captureControl,
+    RawIngressState rawIngress,
+    CaptureLaneState captureLanes,
+    CaptureProcessingState captureProcessing,
+    ArtifactOutboxState artifactOutbox,
+    StoragePressureState storagePressure,
+    FleetRuntimeState fleetRuntime,
+    FleetHeartbeatState heartbeat,
+    EnvironmentalObservationDeliveryState environmentalDelivery,
+    TransientWorkerState transientWorker,
+    ICaptureTelemetryProvider captureTelemetry,
+    ICameraAgentConfigurationAccessor configurationAccessor,
+    CameraAgentStorageResolver storageResolver)
+{
+    private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(5);
+
+    public async ValueTask<CameraAgentOperationsSummary> GetAsync(CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow().ToUniversalTime();
+        var control = captureControl.Snapshot;
+        var ingress = rawIngress.Snapshot;
+        var lanes = captureLanes.Snapshot;
+        var processing = captureProcessing.Snapshot;
+        var outbox = artifactOutbox.Snapshot;
+        var storage = storagePressure.Snapshots;
+        var runtime = fleetRuntime.Snapshot;
+        var heartbeatSnapshot = heartbeat.Snapshot;
+        var environmental = environmentalDelivery.Snapshot;
+        var transient = transientWorker.Snapshot;
+        var telemetry = captureTelemetry.GetSnapshot();
+        var latest = telemetry.Samples.Count == 0 ? null : telemetry.Samples[^1];
+        var config = configurationAccessor.IsConfigured
+            ? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        var locations = config is null
+            ? []
+            : await storageResolver.GetUploadLocationsAsync(cancellationToken).ConfigureAwait(false);
+
+        return new CameraAgentOperationsSummary(
+            now,
+            Section("durable-capture-control", control.UpdatedUtc, now, new OperationsCaptureControlState(
+                control.State.ToString(), control.Version, control.IsInitialized)),
+            Section("raw-ingress-state", ingress.EvaluatedUtc, now, new OperationsQueueState(
+                ingress.Availability.ToString(), ingress.PendingCount, ingress.PendingBytes, 0, 0,
+                ingress.QuarantineCount, 0, ingress.OldestPendingUtc)),
+            Section("capture-lane-state", lanes.EvaluatedUtc, now, new OperationsCaptureLanesState(
+                lanes.Availability.ToString(),
+                lanes.Lanes.Select(static lane => new OperationsLaneState(
+                    lane.Lane, lane.Required, lane.PendingCount, lane.PendingBytes, lane.LeasedCount,
+                    lane.QuarantineCount, lane.PressureLevel, lane.OldestPendingUtc)).ToArray(),
+                lanes.PendingCount, lanes.PendingBytes, lanes.LeasedCount, lanes.QuarantineCount,
+                lanes.OldestPendingUtc)),
+            Section("durable-processing-refresh", processing.EvaluatedUtc, now, new OperationsQueueState(
+                processing.Availability.ToString(), processing.PendingCount, 0, 0, processing.RetryCount,
+                0, processing.TerminalCount, processing.OldestPendingUtc)),
+            Section("artifact-outbox-state", outbox.EvaluatedUtc, now, new OperationsQueueState(
+                outbox.Availability.ToString(), outbox.PendingCount, outbox.PendingBytes, outbox.LeasedCount,
+                outbox.RetryCount, outbox.QuarantineCount, 0, outbox.OldestPendingUtc)),
+            Section("storage-pressure-state", Latest(storage.Select(static item => (DateTimeOffset?)item.EvaluatedUtc)), now,
+                (IReadOnlyList<OperationsStorageState>)storage
+                    .Select(item => new { Snapshot = item, Location = locations.SingleOrDefault(location => PathsEqual(location.Root, item.StorageRoot)) })
+                    .Where(static item => item.Location is not null)
+                    .OrderBy(static item => item.Location!.Alias, StringComparer.Ordinal)
+                    .Select(static item => new OperationsStorageState(
+                        item.Location!.Alias, item.Snapshot.Capacity.TotalBytes, item.Snapshot.Capacity.AvailableBytes,
+                        item.Snapshot.IsUnderPressure, item.Snapshot.EffectiveRetentionDays, item.Snapshot.ProbeFailure is null))
+                    .ToArray()),
+            Section("fleet-runtime-state", Latest([
+                runtime.Capture.LastSucceededUtc,
+                runtime.Capture.LastFailedUtc,
+                runtime.Capture.LastRecoveredUtc]), now, new OperationsCaptureRuntimeState(
+                runtime.Capture.Availability.ToString(), runtime.Capture.LastSucceededUtc,
+                runtime.Capture.LastFailedUtc, runtime.Capture.LastRecoveredUtc,
+                runtime.Timings.Select(static timing => new OperationsTimingState(
+                    timing.Segment.ToString(), timing.SampleCount, timing.MedianMilliseconds,
+                    timing.P95Milliseconds, timing.MaximumMilliseconds)).ToArray())),
+            Section("fleet-heartbeat-state", heartbeatSnapshot.Outbox?.EvaluatedUtc, now, new OperationsHeartbeatState(
+                heartbeatSnapshot.Availability.ToString(), heartbeatSnapshot.LastAcknowledgedUtc,
+                heartbeatSnapshot.Outbox?.PendingCount ?? 0, heartbeatSnapshot.Outbox?.PendingBytes ?? 0,
+                heartbeatSnapshot.Outbox?.LeasedCount ?? 0, heartbeatSnapshot.Outbox?.RetryCount ?? 0,
+                heartbeatSnapshot.Outbox?.QuarantineCount ?? 0, heartbeatSnapshot.Outbox?.OverflowCount ?? 0,
+                heartbeatSnapshot.Outbox?.BlockedCount ?? 0, heartbeatSnapshot.Outbox?.OldestPendingUtc)),
+            Section("environmental-delivery-state", environmental.Outbox?.EvaluatedUtc, now,
+                new OperationsEnvironmentalDeliveryState(
+                    environmental.Availability.ToString(), environmental.LastAcknowledgedUtc,
+                    environmental.Outbox?.StoredCount ?? 0, environmental.Outbox?.StoredBytes ?? 0,
+                    environmental.Outbox?.PendingCount ?? 0, environmental.Outbox?.PendingBytes ?? 0,
+                    environmental.Outbox?.LeasedCount ?? 0, environmental.Outbox?.RetryCount ?? 0,
+                    environmental.Outbox?.QuarantineCount ?? 0, environmental.Outbox?.TerminalCount ?? 0,
+                    environmental.Outbox?.OverflowCount ?? 0, environmental.Outbox?.OldestPendingUtc)),
+            Section("transient-worker-state", transient.UpdatedUtc, now, new OperationsTransientWorkerState(
+                transient.Availability.ToString(), transient.PendingFrames, transient.PendingCandidates)),
+            Section("capture-telemetry-window", latest?.StartedUtc, now, new OperationsCaptureTelemetryState(
+                telemetry.Samples.Count, latest?.StartedUtc, latest?.Mode.ToString(), latest?.Exposure.TotalMilliseconds,
+                latest?.Gain, telemetry.Aggregate.AverageIntervalMilliseconds,
+                telemetry.Aggregate.AverageExposureMilliseconds, telemetry.Aggregate.AverageProcessingMilliseconds,
+                telemetry.Aggregate.AverageLoopMilliseconds, telemetry.Aggregate.CapturesPerMinute,
+                telemetry.Aggregate.DutyCycle, telemetry.Aggregate.FramesStored,
+                telemetry.Aggregate.ImmediateUploadCount)),
+            Section("validated-configuration", null, now, new OperationsConfigurationState(
+                config is not null, config is null ? "unavailable" : "validated", config?.AgentId,
+                config?.ModuleType)));
+    }
+
+    private static OperationsSection<T> Section<T>(
+        string source,
+        DateTimeOffset? observedUtc,
+        DateTimeOffset now,
+        T value)
+        => new(source, observedUtc, Freshness(observedUtc, now), value);
+
+    private static string Freshness(DateTimeOffset? observedUtc, DateTimeOffset now)
+        => observedUtc is null
+            ? "unknown"
+            : now - observedUtc.Value > StaleAfter
+                ? "stale"
+                : "fresh";
+
+    internal static DateTimeOffset? Latest(IEnumerable<DateTimeOffset?> timestamps)
+        => timestamps.Max();
+
+    private static bool PathsEqual(string left, string right)
+        => string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+}

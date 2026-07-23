@@ -111,7 +111,10 @@ public sealed class CaptureControlTelemetryTests
 
         await runner.RunAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
-        CollectionAssert.AreEquivalent(ExpectedMetricUnits.Keys.ToArray(), instrumentUnits.Keys.ToArray());
+        CollectionAssert.AreEquivalent(
+            ExpectedMetricUnits.Keys.Append("camera_agent.capture_control.admission.commands").ToArray(),
+            instrumentUnits.Keys.ToArray());
+        Assert.AreEqual("{command}", instrumentUnits["camera_agent.capture_control.admission.commands"]);
         foreach (var expected in ExpectedMetricUnits)
         {
             Assert.AreEqual(expected.Value, instrumentUnits[expected.Key], $"Unexpected unit for {expected.Key}.");

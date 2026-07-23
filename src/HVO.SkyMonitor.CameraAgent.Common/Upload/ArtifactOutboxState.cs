@@ -18,13 +18,15 @@ public sealed record ArtifactOutboxStateSnapshot(
     long RetryCount,
     long QuarantineCount,
     DateTimeOffset? OldestPendingUtc,
-    string? FailureReason);
+    string? FailureReason,
+    DateTimeOffset? EvaluatedUtc = null);
 
 public sealed class ArtifactOutboxState
 {
     private readonly ConcurrentDictionary<string, ArtifactOutboxSnapshot> _roots = new(PathComparer);
     private readonly ConcurrentDictionary<string, string> _failures = new(PathComparer);
     private int _initialized;
+    private long _evaluatedUnixMilliseconds = long.MinValue;
 
     public ArtifactOutboxStateSnapshot Snapshot
     {
@@ -48,11 +50,13 @@ public sealed class ArtifactOutboxState
                 snapshots.Sum(static item => item.LeasedCount),
                 retry,
                 quarantine,
-                snapshots.Where(static item => item.OldestHeldUtc.HasValue)
-                    .Select(static item => item.OldestHeldUtc)
-                    .DefaultIfEmpty()
+                snapshots.Select(static item => item.OldestHeldUtc)
+                    .Where(static timestamp => timestamp.HasValue)
                     .Min(),
-                failure);
+                failure,
+                Latest(
+                    snapshots.Select(static item => item.EvaluatedUtc),
+                    Volatile.Read(ref _evaluatedUnixMilliseconds)));
         }
     }
 
@@ -61,17 +65,34 @@ public sealed class ArtifactOutboxState
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentNullException.ThrowIfNull(snapshot);
         _roots[Path.GetFullPath(root)] = snapshot;
+        MarkEvaluated();
         Volatile.Write(ref _initialized, 1);
         _failures.TryRemove(Path.GetFullPath(root), out _);
     }
 
-    public void MarkInitialized() => Volatile.Write(ref _initialized, 1);
+    public void MarkInitialized()
+    {
+        MarkEvaluated();
+        Volatile.Write(ref _initialized, 1);
+    }
 
     public void ReportUnavailable(string root, string reason)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         _failures[Path.GetFullPath(root)] = reason.Length <= 256 ? reason : reason[..256];
+        MarkEvaluated();
+    }
+
+    private void MarkEvaluated()
+        => Interlocked.Exchange(ref _evaluatedUnixMilliseconds, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+    private static DateTimeOffset? Latest(IEnumerable<DateTimeOffset?> snapshots, long stateTimestamp)
+    {
+        var timestamps = stateTimestamp == long.MinValue
+            ? snapshots
+            : snapshots.Append(DateTimeOffset.FromUnixTimeMilliseconds(stateTimestamp));
+        return timestamps.Max();
     }
 
     private static StringComparer PathComparer => OperatingSystem.IsWindows()

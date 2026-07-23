@@ -51,7 +51,6 @@ internal sealed class CameraAgentIdentitySeeder(
             {
                 _logger.LogInformation("Seeded default admin account {Email}", _options.AdminEmail);
             }
-            return;
         }
 
         var needsUpdate = false;
@@ -71,6 +70,12 @@ internal sealed class CameraAgentIdentitySeeder(
         if (!user.EmailConfirmed)
         {
             user.EmailConfirmed = true;
+            needsUpdate = true;
+        }
+
+        if (!user.IsSiteOwner)
+        {
+            user.IsSiteOwner = true;
             needsUpdate = true;
         }
 
@@ -114,6 +119,31 @@ internal sealed class CameraAgentIdentitySeeder(
             {
                 _logger.LogInformation("Reset password for default admin account {Email}", _options.AdminEmail);
             }
+        }
+
+        var staleOwners = await userManager.Users
+            .Where(candidate => candidate.IsSiteOwner && candidate.Id != user.Id)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (var staleOwner in staleOwners)
+        {
+            staleOwner.IsSiteOwner = false;
+            var demoteResult = await userManager.UpdateAsync(staleOwner);
+            if (!demoteResult.Succeeded)
+            {
+                var errors = string.Join(", ", demoteResult.Errors.Select(e => e.Description));
+                _logger.LogError("Failed to demote stale site owner: {Errors}", errors);
+                throw new InvalidOperationException("Could not reconcile stale site owner");
+            }
+        }
+
+        if (staleOwners.Count > 0 && _logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Demoted {StaleOwnerCount} stale site owner accounts while reconciling {Email}",
+                staleOwners.Count,
+                _options.AdminEmail);
         }
     }
 }

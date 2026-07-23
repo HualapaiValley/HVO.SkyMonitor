@@ -1,0 +1,71 @@
+@page "/operations/quarantine"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Operations
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Quarantine</PageTitle>
+
+<div class="quarantine-page">
+    <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/operations">Operations</a><span>/</span><span aria-current="page">Quarantine</span></nav>
+    <header class="page-heading">
+        <div><p class="eyebrow">Protected durable recovery</p><h1>Quarantine browser</h1><p>Cursor-paged artifact and environmental dead letters. Records remain bounded and storage paths are never disclosed.</p></div>
+        @if (_page is not null) { <span class="result-count">@_page.Items.Count record@(_page.Items.Count == 1 ? string.Empty : "s")</span> }
+    </header>
+
+    <nav class="source-nav" aria-label="Quarantine source">
+        <a class="@SourceClass("Artifact")" href="/operations/quarantine">Artifact quarantine</a>
+        <a class="@SourceClass("Environmental")" href="/operations/quarantine?kind=Environmental">Environmental quarantine and terminal</a>
+    </nav>
+
+    @if (_page?.Kind == "Artifact" && _page.StorageAliases.Count > 0)
+    {
+        <nav class="alias-nav" aria-label="Artifact storage alias">
+            <span>Storage alias</span>
+            @foreach (var alias in _page.StorageAliases)
+            {
+                <a class="@(string.Equals(alias, _page.StorageAlias, StringComparison.Ordinal) ? "active" : null)" aria-current="@(string.Equals(alias, _page.StorageAlias, StringComparison.Ordinal) ? "page" : null)" href="@AliasUrl(alias)">@alias</a>
+            }
+        </nav>
+    }
+
+    @if (_isLoading)
+    {
+        <section class="page-state" role="status"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><strong>Loading bounded quarantine page</strong></section>
+    }
+    else if (_errorMessage is not null)
+    {
+        <section class="page-state page-state--error" role="alert"><div><strong>Quarantine unavailable</strong><p>@_errorMessage</p></div><button type="button" class="btn btn-outline-light" @onclick="ReloadAsync">Try again</button></section>
+    }
+    else if (_page is not null)
+    {
+        <QuarantineList Title="@ListTitle" Items="_page.Items" BeginAction="BeginAction" />
+        <nav class="cursor-nav" aria-label="Quarantine pages">
+            @if (!string.IsNullOrWhiteSpace(Cursor)) { <button type="button" class="btn btn-outline-light" @onclick="ShowNewest">Newest records</button> }
+            @if (_page.NextCursor is not null) { <button type="button" class="btn btn-primary" @onclick="ShowNext">Older records</button> }
+        </nav>
+    }
+
+    @if (_statusMessage is not null) { <p class="receipt" role="status">@_statusMessage</p> }
+
+    @if (_pending is not null)
+    {
+        <dialog @ref="_dialog" class="confirmation" aria-labelledby="quarantine-confirm-heading" aria-describedby="quarantine-confirm-description" @oncancel="CancelAsync" @oncancel:preventDefault>
+            <p class="eyebrow">Explicit confirmation</p>
+            <h2 id="quarantine-confirm-heading">@_pending.Action @OperationsPage.SplitWords(_pending.Item.Kind) item?</h2>
+            <p id="quarantine-confirm-description">@(_pending.Action == OutboxOperationAction.Abandon ? "Abandonment releases the durable delivery hold and stops delivery by this outbox." : "Replay returns the item to bounded delivery using its existing durable evidence.")</p>
+            <dl><div><dt>Status</dt><dd>@OperationsPage.SplitWords(_pending.Item.Status)</dd></div><div><dt>Storage alias</dt><dd>@(_pending.Item.StorageAlias ?? "Not applicable")</dd></div><div><dt>Attempts</dt><dd>@_pending.Item.AttemptCount</dd></div><div><dt>Reason</dt><dd>@OperationsPage.SplitWords(_pending.Item.ReasonCode)</dd></div></dl>
+            <label for="quarantine-reason">Controlled reason</label>
+            <select id="quarantine-reason" class="form-select" @bind="_reasonCode">
+                @foreach (var reason in ReasonCodes) { <option value="@reason.Code">@reason.Label</option> }
+            </select>
+            @if (_commandError is not null) { <p class="dialog-error" role="alert">@_commandError</p> }
+            <div class="confirmation-actions">
+                <button type="button" class="btn btn-outline-light" disabled="@_isSubmitting" @onclick="CancelAsync">Cancel action</button>
+                <button type="button" class="btn @(_pending.Action == OutboxOperationAction.Abandon ? "btn-danger" : "btn-primary")" disabled="@_isSubmitting" @onclick="ConfirmAsync">@(_isSubmitting ? "Submitting..." : $"Confirm {_pending.Action.ToString().ToLowerInvariant()}")</button>
+            </div>
+        </dialog>
+    }
+</div>

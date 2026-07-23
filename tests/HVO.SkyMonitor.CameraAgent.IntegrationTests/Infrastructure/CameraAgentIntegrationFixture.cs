@@ -14,6 +14,7 @@ using HVO.SkyMonitor.IntegrationTests;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.Common.Identity;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -123,6 +124,16 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                 });
                 builder.ConfigureTestServices(services =>
                 {
+                    services.AddAuthentication(options =>
+                        {
+                            options.DefaultAuthenticateScheme = IntegrationUserAuthenticationHandler.SchemeName;
+                            options.DefaultChallengeScheme = IntegrationUserAuthenticationHandler.SchemeName;
+                            options.DefaultForbidScheme = IntegrationUserAuthenticationHandler.SchemeName;
+                        })
+                        .AddScheme<AuthenticationSchemeOptions, IntegrationUserAuthenticationHandler>(
+                            IntegrationUserAuthenticationHandler.SchemeName,
+                            _ => { });
+
                     var drainService = services.Single(descriptor =>
                         descriptor.ServiceType == typeof(IHostedService) &&
                         descriptor.ImplementationType == typeof(ArtifactOutboxDrainService));
@@ -214,6 +225,24 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         });
     }
 
+    public WebApplicationFactory<Program> CreateCameraAgentFactory(
+        Action<IServiceCollection> configureServices)
+    {
+        ArgumentNullException.ThrowIfNull(configureServices);
+        EnsureInitialized();
+        return _agentFactory!.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+            {
+                foreach (var hostedService in services
+                             .Where(static descriptor => descriptor.ServiceType == typeof(IHostedService))
+                             .ToArray())
+                {
+                    services.Remove(hostedService);
+                }
+                configureServices(services);
+            }));
+    }
+
     /// <summary>
     /// Creates a scoped service provider from the camera agent factory.
     /// Caller is responsible for disposing the returned scope.
@@ -272,6 +301,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["CentralIdentity:ClientCredentials:ClientSecret"] = TestClients.SystemCameraAgent.ClientSecret,
             ["LocalIdentity:AdminEmail"] = "owner@cameraagent.integration",
             ["LocalIdentity:AdminPassword"] = "IntegrationOwner!123",
+            ["LocalIdentity:DatabasePath"] = Path.Combine(_storageRoot!, "cameraagent_identity.db"),
             ["SkyMonitor:BaseUrl"] = apiBase,
             ["Catalog:Root"] = _catalogFixture?.Root,
             ["Catalog:RequiredPackageKind"] = "Fixture",

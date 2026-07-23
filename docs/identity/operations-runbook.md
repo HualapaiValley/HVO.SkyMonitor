@@ -27,8 +27,9 @@ terminator, forwarded-header policy, external issuer, and OpenIddict signing and
 encryption certificate loader must be implemented and tested before this
 Compose file can be treated as a production identity deployment.
 
-Current authorization also has deployment limits: CameraAgent
-self-registration, its dashboard, and frame endpoints are anonymous, and most
+Current authorization still has deployment limits: CameraAgent
+self-registration is disabled and its operator, frame, gallery, artifact, and
+outbox surfaces are restricted to the configured local site owner, but most
 LogicHost bearer-protected APIs do not enforce a route-specific scope. Device
 listings and envelope issuance are owner-scoped, but the remaining limits still
 require a trusted development environment. Do not expose either host to an

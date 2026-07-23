@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
@@ -47,7 +48,7 @@ public sealed class RawCaptureIngressTests
             Assert.AreEqual("wal", await ScalarStringAsync(connection, "PRAGMA journal_mode;").ConfigureAwait(false));
             Assert.AreEqual(2L, await ScalarLongAsync(connection, "PRAGMA synchronous;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "PRAGMA foreign_keys;").ConfigureAwait(false));
-            Assert.AreEqual(5L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(6L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
 
             using var browser = new FileSystemFrameStorageService(
@@ -507,7 +508,7 @@ public sealed class RawCaptureIngressTests
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 6;";
+                command.CommandText = "PRAGMA user_version = 7;";
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var state = new RawIngressState(TimeProvider.System);
@@ -530,7 +531,7 @@ public sealed class RawCaptureIngressTests
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(6L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(7L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
             Assert.AreEqual(0L, telemetry.CheckpointCount);
             Assert.AreEqual(0L, telemetry.CheckpointFailureCount);
@@ -1176,10 +1177,62 @@ public sealed class RawCaptureIngressTests
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
 
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(5L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(6L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(3L, await ScalarLongAsync(
                 verify,
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('raw_capture_sequences','raw_capture_assignments','raw_captures');").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_MigratesPopulatedLegacyVersionZeroBeforeCreatingGalleryIndexes()
+    {
+        var root = CreateRoot();
+        try
+        {
+            RawCaptureReceipt receipt;
+            using (var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                receipt = (await ingress.AcceptAsync(
+                    CreateConfiguration(),
+                    CreateSubmission(Timestamp(2), [1, 2, 3, 4]),
+                    CancellationToken.None).ConfigureAwait(false))!;
+            }
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    DROP INDEX ix_raw_captures_gallery_origin;
+                    DROP INDEX ix_raw_captures_gallery_state;
+                    DROP INDEX ix_raw_captures_gallery_sequence;
+                    DROP INDEX ix_raw_captures_gallery_time;
+                    ALTER TABLE raw_captures DROP COLUMN evidence_origin;
+                    PRAGMA user_version = 0;
+                    """;
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            using (var migrated = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                await migrated.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
+            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(6L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(receipt.Manifest.Descriptor.Capture.CaptureId.ToString("N"),
+                await ScalarStringAsync(verify, "SELECT capture_id FROM raw_captures;").ConfigureAwait(false));
+            Assert.AreEqual(receipt.CommittedManifestSha256,
+                await ScalarStringAsync(verify, "SELECT manifest_sha256 FROM raw_captures;").ConfigureAwait(false));
+            Assert.AreEqual(GalleryEvidenceClassifier.Classify(receipt.Manifest).ToString(),
+                await ScalarStringAsync(verify, "SELECT evidence_origin FROM raw_captures;").ConfigureAwait(false));
+            Assert.AreEqual(4L, await ScalarLongAsync(
+                verify,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name LIKE 'ix_raw_captures_gallery_%';")
+                .ConfigureAwait(false));
         }
         finally
         {
@@ -1229,7 +1282,7 @@ public sealed class RawCaptureIngressTests
 
             using (var verify = await OpenJournalAsync(root).ConfigureAwait(false))
             {
-                Assert.AreEqual(5L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+                Assert.AreEqual(6L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
                 Assert.AreEqual(
                     CaptureContractJson.ComputeManifestSha256(reformatted),
                     await ScalarStringAsync(verify, "SELECT manifest_sha256 FROM raw_captures;").ConfigureAwait(false));

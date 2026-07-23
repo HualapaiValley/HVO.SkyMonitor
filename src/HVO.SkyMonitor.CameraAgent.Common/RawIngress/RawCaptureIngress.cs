@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
@@ -329,8 +330,9 @@ internal sealed class RawCaptureIngress :
                 paths.PayloadRelativePath,
                 paths.SidecarRelativePath,
                 manifestJson,
-                committedDescriptor.Timing.ExposureStartedUtc,
-                committedDescriptor.Timing.DurableIngressUtc);
+                    committedDescriptor.Timing.ExposureStartedUtc,
+                    committedDescriptor.Timing.DurableIngressUtc,
+                    EvidenceOrigin: GalleryEvidenceClassifier.Classify(manifest));
             var committedTiming = submission.Result.AcquisitionTiming is null
                 ? null
                 : submission.Result.AcquisitionTiming with

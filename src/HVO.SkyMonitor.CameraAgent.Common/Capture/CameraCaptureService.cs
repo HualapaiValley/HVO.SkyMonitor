@@ -24,6 +24,7 @@ public sealed class CameraCaptureService(
     TimeProvider timeProvider,
     IPlanetEphemeris planetEphemeris,
     CaptureControlTelemetry captureControlTelemetry,
+    CaptureAdmissionCoordinator captureAdmissionCoordinator,
     FleetRuntimeState fleetRuntimeState,
     ILogger<CameraCaptureService> logger) : BackgroundService
 {
@@ -35,6 +36,8 @@ public sealed class CameraCaptureService(
     private readonly IPlanetEphemeris _planetEphemeris = planetEphemeris;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton telemetry service.")]
     private readonly CaptureControlTelemetry _captureControlTelemetry = captureControlTelemetry;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton coordinator.")]
+    private readonly CaptureAdmissionCoordinator _captureAdmissionCoordinator = captureAdmissionCoordinator;
     private readonly FleetRuntimeState _fleetRuntimeState = fleetRuntimeState;
     private readonly ILogger<CameraCaptureService> _logger = logger;
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
@@ -50,6 +53,7 @@ public sealed class CameraCaptureService(
             try
             {
                 await _rawCaptureIngress.InitializeAsync(stoppingToken).ConfigureAwait(false);
+                await _captureAdmissionCoordinator.InitializeAsync(stoppingToken).ConfigureAwait(false);
                 await module.InitializeAsync(config, stoppingToken).ConfigureAwait(false);
                 _fleetRuntimeState.ModuleAvailable();
                 _logger.CameraModuleInitialized(module.DisplayName);
@@ -61,6 +65,7 @@ public sealed class CameraCaptureService(
                     hostContext,
                     _timeProvider,
                     _logger,
+                    _captureAdmissionCoordinator,
                     _planetEphemeris,
                     _captureControlTelemetry,
                     _fleetRuntimeState);

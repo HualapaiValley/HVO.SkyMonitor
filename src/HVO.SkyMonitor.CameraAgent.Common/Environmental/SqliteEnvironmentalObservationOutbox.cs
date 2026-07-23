@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 
@@ -18,6 +19,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     IEnvironmentalObservationOutboxFaultInjector? faultInjector = null) : IEnvironmentalObservationOutbox, IDisposable
 {
     private const int MaximumAuditRecords = 10_000;
+    internal const int MaximumOperationReceipts = 10_000;
+    internal const int OperationReceiptRetentionDays = 30;
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly IEnvironmentalObservationOutboxFaultInjector _faultInjector =
         faultInjector ?? NullEnvironmentalObservationOutboxFaultInjector.Instance;
@@ -374,6 +377,199 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         CancellationToken cancellationToken)
         => ResolveDeadLetterAsync(root, recordId, actor, reason, replay: false, cancellationToken);
 
+    public async ValueTask<EnvironmentalOutboxOperationsPage> ReadOperationsPageAsync(
+        string root,
+        int pageSize,
+        EnvironmentalOutboxOperationsCursor? cursor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(pageSize, 100);
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = cursor is null
+            ? string.Concat(OperationsSelectColumns, " WHERE status IN ('quarantined','terminal') ORDER BY record_id DESC LIMIT $limit;")
+            : string.Concat(OperationsSelectColumns, " WHERE status IN ('quarantined','terminal') AND record_id < $record_id ORDER BY record_id DESC LIMIT $limit;");
+        command.Parameters.AddWithValue("$limit", pageSize + 1);
+        if (cursor is not null)
+        {
+            command.Parameters.AddWithValue("$record_id", cursor.RecordId);
+        }
+        var records = new List<EnvironmentalOutboxOperationsRecord>(pageSize + 1);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            records.Add(ReadOperationsRecord(reader));
+        }
+        var hasMore = records.Count > pageSize;
+        if (hasMore)
+        {
+            records.RemoveAt(records.Count - 1);
+        }
+        return new EnvironmentalOutboxOperationsPage(
+            records,
+            hasMore && records.Count > 0 ? records[^1].Cursor : null);
+    }
+
+    public async ValueTask<EnvironmentalOutboxOperationsRecord?> ReadOperationsDetailAsync(
+        string root,
+        long recordId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(recordId, 1);
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = string.Concat(
+            OperationsSelectColumns,
+            " WHERE record_id = $record_id AND status IN ('quarantined','terminal');");
+        command.Parameters.AddWithValue("$record_id", recordId);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadOperationsRecord(reader) : null;
+    }
+
+    public async ValueTask<OutboxOperationsAuditPage> ReadOperationsAuditAsync(
+        string root,
+        long recordId,
+        int pageSize,
+        OutboxOperationsAuditCursor? cursor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(recordId, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(pageSize, 100);
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = cursor is null
+            ? "SELECT audit_id, action, actor, reason, occurred_unix_ms FROM environmental_observation_outbox_audit WHERE record_id = $record_id ORDER BY audit_id DESC LIMIT $limit;"
+            : "SELECT audit_id, action, actor, reason, occurred_unix_ms FROM environmental_observation_outbox_audit WHERE record_id = $record_id AND audit_id < $sequence ORDER BY audit_id DESC LIMIT $limit;";
+        command.Parameters.AddWithValue("$record_id", recordId);
+        command.Parameters.AddWithValue("$limit", pageSize + 1);
+        if (cursor is not null)
+        {
+            command.Parameters.AddWithValue("$sequence", cursor.Sequence);
+        }
+        var entries = new List<OutboxOperationsAuditRecord>(pageSize + 1);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            entries.Add(new OutboxOperationsAuditRecord(
+                reader.GetInt64(0),
+                Bound(reader.GetString(1), 32),
+                string.Equals(reader.GetString(2), "owner", StringComparison.Ordinal) ? "owner" : "system",
+                OutboxOperationsReasonCodes.Sanitize(reader.GetString(3)),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4))));
+        }
+        var hasMore = entries.Count > pageSize;
+        if (hasMore)
+        {
+            entries.RemoveAt(entries.Count - 1);
+        }
+        return new OutboxOperationsAuditPage(
+            entries,
+            hasMore && entries.Count > 0 ? new OutboxOperationsAuditCursor(entries[^1].Sequence) : null);
+    }
+
+    public async ValueTask<OutboxOperationDisposition> ResolveOperationsAsync(
+        string root,
+        long recordId,
+        OutboxOperationAction action,
+        string operationKey,
+        string actorKind,
+        string reasonCode,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(recordId, 1);
+        ValidateOperation(operationKey, actorKind, reasonCode);
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        var existing = await ReadOperationAsync(root, operationKey, cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return MatchOperation(existing, recordId, action, actorKind, reasonCode);
+        }
+
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(deferred: false);
+        existing = await ReadOperationAsync(connection, transaction, operationKey, cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            var disposition = MatchOperation(existing, recordId, action, actorKind, reasonCode);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return disposition;
+        }
+        string status;
+        int payloadBytes;
+        using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = "SELECT status, payload_bytes FROM environmental_observation_outbox WHERE record_id = $id AND status IN ('quarantined','terminal');";
+            read.Parameters.AddWithValue("$id", recordId);
+            using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("Environmental observation dead-letter resolution requires one terminal or quarantined record.");
+            }
+            status = reader.GetString(0);
+            payloadBytes = reader.GetInt32(1);
+        }
+        var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText = action == OutboxOperationAction.Replay
+                ? "UPDATE environmental_observation_outbox SET status = 'pending', attempt_count = 0, next_attempt_unix_ms = $now, last_reason = NULL, lease_owner = NULL, lease_token = NULL, lease_expires_unix_ms = NULL, updated_unix_ms = $now WHERE record_id = $id AND status IN ('quarantined','terminal');"
+                : "DELETE FROM environmental_observation_outbox WHERE record_id = $id AND status IN ('quarantined','terminal');";
+            update.Parameters.AddWithValue("$id", recordId);
+            update.Parameters.AddWithValue("$now", now);
+            if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                throw new InvalidOperationException("Environmental observation dead-letter resolution requires one terminal or quarantined record.");
+            }
+        }
+        if (action == OutboxOperationAction.Abandon)
+        {
+            using var metadata = connection.CreateCommand();
+            metadata.Transaction = transaction;
+            metadata.CommandText = "UPDATE environmental_observation_metadata SET stored_count = stored_count - 1, stored_bytes = stored_bytes - $bytes WHERE metadata_key = 1;";
+            metadata.Parameters.AddWithValue("$bytes", payloadBytes);
+            await metadata.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        using (var operation = connection.CreateCommand())
+        {
+            operation.Transaction = transaction;
+            operation.CommandText = "INSERT INTO environmental_observation_outbox_operations(operation_key, record_id, action, actor_kind, reason, occurred_unix_ms) VALUES($operation, $id, $action, $actor, $reason, $now);";
+            operation.Parameters.AddWithValue("$operation", operationKey);
+            operation.Parameters.AddWithValue("$id", recordId);
+            operation.Parameters.AddWithValue("$action", FormatAction(action));
+            operation.Parameters.AddWithValue("$actor", actorKind);
+            operation.Parameters.AddWithValue("$reason", reasonCode);
+            operation.Parameters.AddWithValue("$now", now);
+            await operation.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        using (var audit = connection.CreateCommand())
+        {
+            audit.Transaction = transaction;
+            audit.CommandText = "INSERT INTO environmental_observation_outbox_audit(record_id, previous_status, action, actor, reason, occurred_unix_ms, operation_key) VALUES($id, $status, $action, $actor, $reason, $now, $operation);";
+            audit.Parameters.AddWithValue("$id", recordId);
+            audit.Parameters.AddWithValue("$status", status);
+            audit.Parameters.AddWithValue("$action", FormatAction(action));
+            audit.Parameters.AddWithValue("$actor", actorKind);
+            audit.Parameters.AddWithValue("$reason", reasonCode);
+            audit.Parameters.AddWithValue("$now", now);
+            audit.Parameters.AddWithValue("$operation", operationKey);
+            await audit.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await PruneOperationReceiptsAsync(connection, transaction, now, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return OutboxOperationDisposition.Applied;
+    }
+
     private async ValueTask InitializeAsync(string root, CancellationToken cancellationToken)
     {
         lock (_initializedLock)
@@ -403,17 +599,26 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             var version = Convert.ToInt32(
                 await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
                 System.Globalization.CultureInfo.InvariantCulture);
-            if (version > 1)
+            if (version > 2)
             {
-                throw new InvalidOperationException($"Environmental observation outbox schema {version} is newer than supported schema 1.");
+                throw new InvalidOperationException($"Environmental observation outbox schema {version} is newer than supported schema 2.");
             }
             command.CommandText = SchemaSql;
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (version < 2)
+            {
+                using var transaction = connection.BeginTransaction(deferred: false);
+                command.Transaction = transaction;
+                command.CommandText = MigrationV2Sql;
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                command.Transaction = null;
+            }
             command.CommandText = "PRAGMA user_version;";
             version = Convert.ToInt32(
                 await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
                 System.Globalization.CultureInfo.InvariantCulture);
-            if (version != 1)
+            if (version != 2)
             {
                 throw new InvalidOperationException($"Environmental observation outbox schema {version} is not supported.");
             }
@@ -583,6 +788,126 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    private static async ValueTask PruneOperationReceiptsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long nowUnixMilliseconds,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            DELETE FROM environmental_observation_outbox_audit
+            WHERE operation_key IN (
+                SELECT operation_key FROM environmental_observation_outbox_operations
+                WHERE occurred_unix_ms < $cutoff
+                   OR operation_key IN (
+                       SELECT operation_key FROM environmental_observation_outbox_operations
+                       ORDER BY occurred_unix_ms DESC, operation_key DESC
+                       LIMIT -1 OFFSET $maximum));
+            DELETE FROM environmental_observation_outbox_operations
+            WHERE occurred_unix_ms < $cutoff
+               OR operation_key IN (
+                   SELECT operation_key FROM environmental_observation_outbox_operations
+                   ORDER BY occurred_unix_ms DESC, operation_key DESC
+                   LIMIT -1 OFFSET $maximum);
+            DELETE FROM environmental_observation_outbox_audit
+            WHERE audit_id IN (
+                SELECT audit_id FROM environmental_observation_outbox_audit
+                ORDER BY audit_id DESC LIMIT -1 OFFSET $maximum);
+            """;
+        command.Parameters.AddWithValue(
+            "$cutoff",
+            DateTimeOffset.FromUnixTimeMilliseconds(nowUnixMilliseconds)
+                .AddDays(-OperationReceiptRetentionDays)
+                .ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$maximum", MaximumOperationReceipts);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<CommittedOperation?> ReadOperationAsync(
+        string root,
+        string operationKey,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        return await ReadOperationAsync(connection, transaction: null, operationKey, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<CommittedOperation?> ReadOperationAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string operationKey,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT record_id, action, actor_kind, reason FROM environmental_observation_outbox_operations WHERE operation_key = $operation;";
+        command.Parameters.AddWithValue("$operation", operationKey);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new CommittedOperation(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3))
+            : null;
+    }
+
+    private static OutboxOperationDisposition MatchOperation(
+        CommittedOperation existing,
+        long recordId,
+        OutboxOperationAction action,
+        string actorKind,
+        string reasonCode)
+    {
+        if (existing.RecordId != recordId ||
+            !string.Equals(existing.Action, FormatAction(action), StringComparison.Ordinal) ||
+            !string.Equals(existing.ActorKind, actorKind, StringComparison.Ordinal) ||
+            !string.Equals(existing.ReasonCode, reasonCode, StringComparison.Ordinal))
+        {
+            throw new OutboxOperationCollisionException("The operation key is already bound to a different request.");
+        }
+        return OutboxOperationDisposition.Duplicate;
+    }
+
+    private static void ValidateOperation(string operationKey, string actorKind, string reasonCode)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationKey);
+        if (operationKey.Length > 128 || operationKey.Any(static character => char.IsControl(character)))
+        {
+            throw new ArgumentException("Operation key is invalid.", nameof(operationKey));
+        }
+        if (actorKind is not ("owner" or "system"))
+        {
+            throw new ArgumentException("Actor kind is invalid.", nameof(actorKind));
+        }
+        ArgumentException.ThrowIfNullOrWhiteSpace(reasonCode);
+        if (reasonCode.Length > 64)
+        {
+            throw new ArgumentException("Reason code is invalid.", nameof(reasonCode));
+        }
+    }
+
+    private static EnvironmentalOutboxOperationsRecord ReadOperationsRecord(SqliteDataReader reader)
+    {
+        var updatedUnixMilliseconds = reader.GetInt64(6);
+        return new EnvironmentalOutboxOperationsRecord(
+            reader.GetInt64(0),
+            reader.GetString(1),
+            reader.GetInt32(2),
+            reader.GetInt32(3),
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
+            DateTimeOffset.FromUnixTimeMilliseconds(updatedUnixMilliseconds),
+            reader.IsDBNull(4) ? null : OutboxOperationsReasonCodes.Sanitize(reader.GetString(4)),
+            CanReplay: true,
+            CanAbandon: true,
+            new EnvironmentalOutboxOperationsCursor(reader.GetInt64(0)));
+    }
+
+    private static string FormatAction(OutboxOperationAction action) => action switch
+    {
+        OutboxOperationAction.Replay => "replay",
+        OutboxOperationAction.Abandon => "abandon",
+        _ => throw new ArgumentOutOfRangeException(nameof(action))
+    };
 
     private ValueTask TerminalSettleAsync(
         string root,
@@ -761,6 +1086,17 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         }
     }
 
+    private sealed record CommittedOperation(
+        long RecordId,
+        string Action,
+        string ActorKind,
+        string ReasonCode);
+
+    private const string OperationsSelectColumns = """
+        SELECT record_id, status, attempt_count, payload_bytes, last_reason, created_unix_ms, updated_unix_ms
+        FROM environmental_observation_outbox
+        """;
+
     private const string SchemaSql = """
         CREATE TABLE IF NOT EXISTS environmental_observation_metadata(
             metadata_key INTEGER NOT NULL PRIMARY KEY CHECK(metadata_key = 1),
@@ -800,10 +1136,26 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 OR (status != 'leased' AND lease_owner IS NULL AND lease_token IS NULL AND lease_expires_unix_ms IS NULL))) STRICT;
         CREATE UNIQUE INDEX IF NOT EXISTS ux_environment_identity
             ON environmental_observation_outbox(source_identity_sha256, observation_id);
+        CREATE INDEX IF NOT EXISTS ix_environment_operations
+            ON environmental_observation_outbox(status, record_id DESC);
         CREATE INDEX IF NOT EXISTS ix_environment_claim
             ON environmental_observation_outbox(status, next_attempt_unix_ms, created_unix_ms, record_id);
         CREATE INDEX IF NOT EXISTS ix_environment_lease
             ON environmental_observation_outbox(status, lease_expires_unix_ms, created_unix_ms, record_id);
-        PRAGMA user_version=1;
+        """;
+
+    private const string MigrationV2Sql = """
+        ALTER TABLE environmental_observation_outbox_audit ADD COLUMN operation_key TEXT NULL;
+        CREATE UNIQUE INDEX ux_environment_audit_operation
+            ON environmental_observation_outbox_audit(operation_key) WHERE operation_key IS NOT NULL;
+        CREATE TABLE environmental_observation_outbox_operations(
+            operation_key TEXT NOT NULL PRIMARY KEY CHECK(length(operation_key) BETWEEN 1 AND 128),
+            record_id INTEGER NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('replay','abandon')),
+            actor_kind TEXT NOT NULL CHECK(actor_kind IN ('owner','system')),
+            reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 64),
+            occurred_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        PRAGMA user_version=2;
         """;
 }

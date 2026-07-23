@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
 
@@ -65,6 +66,33 @@ public interface IArtifactOutbox
         string idempotencyKey,
         CancellationToken cancellationToken)
         => throw new NotSupportedException("This legacy outbox does not expose audit records.");
+    ValueTask<ArtifactOutboxOperationsPage> ReadOperationsPageAsync(
+        string root,
+        int pageSize,
+        ArtifactOutboxOperationsCursor? cursor,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This legacy outbox does not expose operational records.");
+    ValueTask<ArtifactOutboxOperationsRecord?> ReadOperationsDetailAsync(
+        string root,
+        string recordKey,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This legacy outbox does not expose operational records.");
+    ValueTask<OutboxOperationsAuditPage> ReadOperationsAuditAsync(
+        string root,
+        string recordKey,
+        int pageSize,
+        OutboxOperationsAuditCursor? cursor,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This legacy outbox does not expose operational audit records.");
+    ValueTask<OutboxOperationDisposition> ResolveOperationsAsync(
+        string root,
+        string recordKey,
+        OutboxOperationAction action,
+        string operationKey,
+        string actorKind,
+        string reasonCode,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This legacy outbox does not support operational resolution.");
     ValueTask<IReadOnlyList<ArtifactOutboxRetentionHold>> GetRetentionHoldsAsync(
         string root,
         CancellationToken cancellationToken)

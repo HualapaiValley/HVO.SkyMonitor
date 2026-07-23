@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Run the opt-in CameraAgent UI acceptance and performance evidence for issue #106.
+
+set -euo pipefail
+export LC_ALL=C
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
+readonly CONFIGURATION="Release"
+readonly OUTPUT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/$CONFIGURATION/net10.0"
+install_browser=false
+
+for argument in "$@"; do
+    case "$argument" in
+        --install-browser)
+            install_browser=true
+            ;;
+        *)
+            printf 'Usage: %s [--install-browser]\n' "${0##*/}" >&2
+            exit 2
+            ;;
+    esac
+done
+
+dotnet build "$PROJECT" --configuration "$CONFIGURATION" -warnaserror
+
+if [[ "$install_browser" == true ]]; then
+    PLAYWRIGHT_DRIVER_SEARCH_PATH="$OUTPUT" dotnet exec \
+        --runtimeconfig "$OUTPUT/HVO.SkyMonitor.CameraAgent.AcceptanceTests.runtimeconfig.json" \
+        --depsfile "$OUTPUT/HVO.SkyMonitor.CameraAgent.AcceptanceTests.deps.json" \
+        "$OUTPUT/Microsoft.Playwright.dll" install chromium
+fi
+
+dotnet test "$PROJECT" \
+    --no-build \
+    --configuration "$CONFIGURATION" \
+    --filter "TestCategory=Manual" \
+    --logger "console;verbosity=normal"
