@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title description">
+  <title id="title">Synthetic verified meteor event</title>
+  <desc id="description">Wide star field with a bright diagonal meteor track and a faint volcanic horizon.</desc>
+  <defs><linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#243968"/><stop offset=".5" stop-color="#0b1630"/><stop offset="1" stop-color="#02050a"/></linearGradient><filter id="glow"><feGaussianBlur stdDeviation="11"/></filter></defs>
+  <rect width="1200" height="620" fill="url(#sky)"/><g fill="#f4f9ff"><circle cx="80" cy="95" r="2"/><circle cx="210" cy="280" r="3"/><circle cx="410" cy="130" r="1.5"/><circle cx="660" cy="170" r="2"/><circle cx="850" cy="90" r="2.5"/><circle cx="1070" cy="260" r="2"/><circle cx="980" cy="430" r="1.5"/><circle cx="320" cy="470" r="2"/></g><path d="M190 500L1000 84" stroke="#dff7ff" stroke-opacity=".3" stroke-width="34" filter="url(#glow)"/><path d="M190 500L1000 84" stroke="#f4fbff" stroke-width="8" stroke-linecap="round"/><path d="M0 555L125 510L250 545L380 500L520 548L690 510L825 552L980 505L1200 550V620H0Z" fill="#020409"/>
+</svg>

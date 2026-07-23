@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000" role="img" aria-labelledby="title description">
+  <title id="title">Synthetic Rainforest Station cloud view</title>
+  <desc id="description">Circular all-sky view under moonlit broken clouds above a forest horizon.</desc>
+  <defs><radialGradient id="sky"><stop stop-color="#466071"/><stop offset=".58" stop-color="#152938"/><stop offset="1" stop-color="#061017"/></radialGradient><filter id="soft"><feGaussianBlur stdDeviation="26"/></filter><clipPath id="lens"><circle cx="500" cy="500" r="462"/></clipPath></defs>
+  <rect width="1000" height="1000" fill="#020409"/>
+  <g clip-path="url(#lens)"><rect x="38" y="38" width="924" height="924" fill="url(#sky)"/><circle cx="300" cy="270" r="70" fill="#d8e5ee" opacity=".25" filter="url(#soft)"/><g fill="#b9c6cd" opacity=".3" filter="url(#soft)"><ellipse cx="300" cy="430" rx="260" ry="90"/><ellipse cx="700" cy="335" rx="230" ry="80"/><ellipse cx="610" cy="620" rx="320" ry="105"/></g><path d="M38 810L95 760L130 800L180 725L225 797L270 740L320 805L380 730L430 798L490 748L545 810L605 720L665 792L720 738L775 805L830 730L890 792L962 750V1000H38Z" fill="#04100e"/></g>
+  <circle cx="500" cy="500" r="463" fill="none" stroke="#61727e" stroke-opacity=".55" stroke-width="2"/>
+</svg>

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000" role="img" aria-labelledby="title description">
+  <title id="title">Synthetic Coastal Ridge twilight sky</title>
+  <desc id="description">Circular all-sky view with a blue twilight gradient, sparse stars, cloud bands, and an ocean horizon.</desc>
+  <defs>
+    <radialGradient id="sky" cx="50%" cy="38%" r="65%"><stop stop-color="#7087ba"/><stop offset=".46" stop-color="#344f82"/><stop offset=".8" stop-color="#182b4e"/><stop offset="1" stop-color="#07101d"/></radialGradient>
+    <linearGradient id="cloud"><stop stop-color="#d8dff0" stop-opacity="0"/><stop offset=".5" stop-color="#d8dff0" stop-opacity=".28"/><stop offset="1" stop-color="#d8dff0" stop-opacity="0"/></linearGradient>
+    <clipPath id="lens"><circle cx="500" cy="500" r="462"/></clipPath>
+  </defs>
+  <rect width="1000" height="1000" fill="#020409"/>
+  <g clip-path="url(#lens)">
+    <rect x="38" y="38" width="924" height="924" fill="url(#sky)"/>
+    <path d="M30 470C220 410 350 520 525 455S800 390 980 480" fill="none" stroke="url(#cloud)" stroke-width="85"/>
+    <path d="M30 610C250 560 390 650 560 590S820 540 980 620" fill="none" stroke="url(#cloud)" stroke-width="50"/>
+    <g fill="#f8fbff"><circle cx="250" cy="210" r="2"/><circle cx="410" cy="170" r="1.5"/><circle cx="590" cy="230" r="2.2"/><circle cx="750" cy="190" r="1.4"/><circle cx="690" cy="350" r="1.7"/></g>
+    <path d="M38 810C210 775 360 830 515 795S790 770 962 812V1000H38Z" fill="#07101b"/>
+    <path d="M38 850C250 820 430 875 620 840S840 825 962 852" fill="none" stroke="#486583" stroke-opacity=".55" stroke-width="5"/>
+  </g>
+  <circle cx="500" cy="500" r="463" fill="none" stroke="#7487a5" stroke-opacity=".55" stroke-width="2"/>
+</svg>
