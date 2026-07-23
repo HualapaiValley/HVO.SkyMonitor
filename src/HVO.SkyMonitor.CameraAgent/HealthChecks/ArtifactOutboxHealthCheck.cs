@@ -14,6 +14,22 @@ public sealed class ArtifactOutboxHealthCheck(
         HealthCheckContext context,
         CancellationToken cancellationToken = default)
     {
+        if (options.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            return Task.FromResult(HealthCheckResult.Healthy(
+                "Artifact delivery is disabled/not configured.",
+                new Dictionary<string, object>
+                {
+                    ["Availability"] = "Disabled",
+                    ["PendingCount"] = 0L,
+                    ["PendingBytes"] = 0L,
+                    ["LeasedCount"] = 0L,
+                    ["RetryCount"] = 0L,
+                    ["QuarantineCount"] = 0L,
+                    ["OldestAgeSeconds"] = 0D
+                }));
+        }
+
         var snapshot = state.Snapshot;
         var oldestAge = snapshot.OldestPendingUtc is { } oldest
             ? timeProvider.GetUtcNow() - oldest

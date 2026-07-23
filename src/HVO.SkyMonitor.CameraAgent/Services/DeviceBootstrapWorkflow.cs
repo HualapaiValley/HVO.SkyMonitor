@@ -2,6 +2,7 @@ using System;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Http;
 using HVO.SkyMonitor.CameraAgent.Services.Models;
 using Microsoft.Extensions.Logging;
@@ -14,6 +15,7 @@ internal sealed class DeviceBootstrapWorkflow(
     IDeviceIdentityStore identityStore,
     IDeviceSecretStore secretStore,
     IDeviceRigProfileSeeder rigProfileSeeder,
+    IOptions<CameraAgentHostOptions> options,
     ILogger<DeviceBootstrapWorkflow> logger)
 {
     public async Task<DeviceSecrets> BootstrapAsync(string envelope, CancellationToken cancellationToken = default)
@@ -21,6 +23,10 @@ internal sealed class DeviceBootstrapWorkflow(
         if (string.IsNullOrWhiteSpace(envelope))
         {
             throw new ArgumentException("Envelope is required.", nameof(envelope));
+        }
+        if (options.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            throw new InvalidOperationException("LogicHost integration is disabled for this CameraAgent.");
         }
 
         var identity = await identityStore.GetOrCreateAsync(cancellationToken).ConfigureAwait(false);

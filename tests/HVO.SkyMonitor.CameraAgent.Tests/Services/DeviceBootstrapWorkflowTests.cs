@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Authentication;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Http;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -12,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Services.Models;
 using HVO.SkyMonitor.Common.Identity;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using Moq.Protected;
 
@@ -101,6 +103,7 @@ public sealed class DeviceBootstrapWorkflowTests
             mockIdentityStore.Object,
             mockSecretStore.Object,
             mockSeeder.Object,
+            Options.Create(new CameraAgentHostOptions()),
             NullLogger<DeviceBootstrapWorkflow>.Instance);
 
         var result = await workflow.BootstrapAsync(" envelope ", CancellationToken.None).ConfigureAwait(false);
@@ -152,6 +155,7 @@ public sealed class DeviceBootstrapWorkflowTests
             mockIdentityStore.Object,
             Mock.Of<IDeviceSecretStore>(),
             Mock.Of<IDeviceRigProfileSeeder>(),
+            Options.Create(new CameraAgentHostOptions()),
             logger.Object);
 
         await Assert.ThrowsAsync<HttpRequestException>(
@@ -160,6 +164,26 @@ public sealed class DeviceBootstrapWorkflowTests
         Assert.IsFalse(logger.Invocations.Any(invocation =>
             invocation.Arguments.Any(argument =>
                 argument?.ToString()?.Contains(sensitiveDetail, StringComparison.Ordinal) == true)));
+    }
+
+    [TestMethod]
+    public async Task BootstrapAsync_WhenCentralIntegrationIsDisabled_DoesNotResolveCentralDependencies()
+    {
+        var workflow = new DeviceBootstrapWorkflow(
+            Mock.Of<IHttpClientFactory>(MockBehavior.Strict),
+            Mock.Of<IDeviceIdentityStore>(MockBehavior.Strict),
+            Mock.Of<IDeviceSecretStore>(MockBehavior.Strict),
+            Mock.Of<IDeviceRigProfileSeeder>(MockBehavior.Strict),
+            Options.Create(new CameraAgentHostOptions
+            {
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            }),
+            NullLogger<DeviceBootstrapWorkflow>.Instance);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => workflow.BootstrapAsync("envelope", CancellationToken.None)).ConfigureAwait(false);
+
+        StringAssert.Contains(exception.Message, "disabled", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreateDeviceKeyBase64()

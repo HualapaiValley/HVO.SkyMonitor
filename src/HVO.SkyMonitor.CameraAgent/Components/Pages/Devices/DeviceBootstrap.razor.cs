@@ -5,8 +5,10 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages.Devices;
 
@@ -18,6 +20,8 @@ public sealed partial class DeviceBootstrap : ComponentBase
     private string? SubmitError { get; set; }
     private string? SubmitSuccess { get; set; }
     private bool IsBusy { get; set; }
+    private bool IsCentralIntegrationDisabled =>
+        HostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled;
 
     [Inject]
     internal IDeviceIdentityStore IdentityStore { get; set; } = default!;
@@ -29,6 +33,9 @@ public sealed partial class DeviceBootstrap : ComponentBase
     internal DeviceBootstrapWorkflow BootstrapWorkflow { get; set; } = default!;
 
     [Inject]
+    internal IOptions<CameraAgentHostOptions> HostOptions { get; set; } = default!;
+
+    [Inject]
     internal ILogger<DeviceBootstrap> Logger { get; set; } = default!;
 
     protected override async Task OnInitializedAsync()
@@ -38,7 +45,10 @@ public sealed partial class DeviceBootstrap : ComponentBase
 
     private async Task LoadStateAsync()
     {
-        Identity = await IdentityStore.GetOrCreateAsync().ConfigureAwait(false);
+        if (!IsCentralIntegrationDisabled)
+        {
+            Identity = await IdentityStore.GetOrCreateAsync().ConfigureAwait(false);
+        }
         Secrets = await SecretStore.GetAsync().ConfigureAwait(false);
     }
 

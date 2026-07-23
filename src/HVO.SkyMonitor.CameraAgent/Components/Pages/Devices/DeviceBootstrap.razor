@@ -29,6 +29,14 @@
         </div>
     </div>
 
+    @if (IsCentralIntegrationDisabled)
+    {
+        <div class="alert alert-info" role="status">
+            <i class="bi bi-info-circle me-2"></i>
+            LogicHost integration is disabled. This CameraAgent is operating independently and cannot import a bootstrap envelope.
+        </div>
+    }
+
     @if (!string.IsNullOrWhiteSpace(SubmitError))
     {
         <div class="alert alert-danger" role="alert">
@@ -52,7 +60,11 @@
                     <h2 class="h5 mb-0">Device Identity</h2>
                 </div>
                 <div class="card-body">
-                    @if (Identity is null)
+                    @if (IsCentralIntegrationDisabled)
+                    {
+                        <p class="text-muted mb-0">Central device identity is not generated in standalone mode.</p>
+                    }
+                    else if (Identity is null)
                     {
                         <div class="text-muted">
                             <div class="spinner-border spinner-border-sm me-2" role="status"></div>
@@ -86,6 +98,12 @@
                     </span>
                 </div>
                 <div class="card-body">
+                    @if (IsCentralIntegrationDisabled)
+                    {
+                        <p class="text-muted mb-0">Enable LogicHost integration and restart before pairing this CameraAgent.</p>
+                    }
+                    else
+                    {
                     <EditForm Model="this" OnValidSubmit="SubmitAsync">
                         <div class="mb-3">
                             <label class="form-label" for="envelopeInput">Envelope</label>
@@ -104,6 +122,7 @@
                             </button>
                         </div>
                     </EditForm>
+                    }
                     @if (Secrets is not null)
                     {
                         <div class="mt-4">

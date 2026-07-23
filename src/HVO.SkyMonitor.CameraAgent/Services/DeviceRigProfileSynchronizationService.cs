@@ -1,14 +1,23 @@
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using Microsoft.Extensions.Options;
+
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
 internal sealed class DeviceRigProfileSynchronizationService(
     IDeviceIdentityStore identityStore,
     IDeviceSecretStore secretStore,
     IDeviceRigProfileSeeder seeder,
+    IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider,
     ILogger<DeviceRigProfileSynchronizationService> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (options.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             var provisioned = false;

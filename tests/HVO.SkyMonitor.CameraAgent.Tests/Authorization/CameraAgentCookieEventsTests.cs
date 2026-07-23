@@ -34,4 +34,14 @@ public sealed class CameraAgentCookieEventsTests
         Assert.AreEqual(StatusCodes.Status302Found, page.Response.StatusCode);
         Assert.AreEqual("/Account/AccessDenied", page.Response.Headers.Location.ToString());
     }
+
+    [TestMethod]
+    public void ConfigureApplicationCookie_UsesConfiguredPerAgentName()
+    {
+        var options = new CookieAuthenticationOptions();
+
+        Program.ConfigureApplicationCookie(options, "CameraAgent.SidingSpring.Auth");
+
+        Assert.AreEqual("CameraAgent.SidingSpring.Auth", options.Cookie.Name);
+    }
 }

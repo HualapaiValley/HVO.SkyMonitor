@@ -24,6 +24,9 @@
     <None Include="..\fixtures\cameraagent.browser.json" Link="Fixtures\cameraagent.browser.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\fixtures\cameraagent.integration.json" Link="Fixtures\cameraagent.integration.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.HealthChecks;
 using HVO.SkyMonitor.Common.Identity;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
@@ -139,7 +140,10 @@ public sealed class CameraAgentEnvironmentalObservationBridgeTests
                 3, 300, 1, 100, 0, 1, 1, 1, 2, Epoch.AddMinutes(-1), Epoch),
             EnvironmentalObservationDeliveryAvailability.Unhealthy,
             "terminal");
-        var check = new EnvironmentalObservationDeliveryHealthCheck(state, new FixedTimeProvider(Epoch));
+        var check = new EnvironmentalObservationDeliveryHealthCheck(
+            state,
+            Options.Create(new CameraAgentHostOptions()),
+            new FixedTimeProvider(Epoch));
 
         var result = await check.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
 

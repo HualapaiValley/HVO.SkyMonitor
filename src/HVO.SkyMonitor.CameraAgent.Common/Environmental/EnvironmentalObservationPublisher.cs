@@ -19,6 +19,13 @@ public sealed class EnvironmentalObservationPublisher(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(fact);
+        if (options.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            return new EnvironmentalObservationPublishResult(
+                EnvironmentalObservationPublishDisposition.Disabled,
+                null);
+        }
+
         var target = await targetResolver.ResolveAsync(cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Environmental observations require an active device provisioning target.");
         if (target.ObservatoryId == Guid.Empty || target.DevicePublicId == Guid.Empty)

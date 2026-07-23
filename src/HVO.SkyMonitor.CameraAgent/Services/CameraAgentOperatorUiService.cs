@@ -84,6 +84,7 @@ internal sealed record CameraAgentSystemStatus(
     string ValidationStatus,
     string AgentId,
     string ModuleType,
+    string CentralIntegration,
     CameraAgentSensorStatus Sensor,
     CameraAgentOpticsStatus Optics,
     CameraAgentCapturePolicyStatus Capture,
@@ -239,8 +240,13 @@ internal sealed class CameraAgentOperatorUiService(
         try
         {
             var summary = await operationsProvider.GetAsync(cancellationToken).ConfigureAwait(false);
-            var artifacts = await ReadArtifactQuarantineAsync(cancellationToken).ConfigureAwait(false);
-            var environmental = await ReadEnvironmentalQuarantineAsync(cancellationToken).ConfigureAwait(false);
+            var centralDisabled = _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Disabled;
+            var artifacts = centralDisabled
+                ? []
+                : await ReadArtifactQuarantineAsync(cancellationToken).ConfigureAwait(false);
+            var environmental = centralDisabled
+                ? []
+                : await ReadEnvironmentalQuarantineAsync(cancellationToken).ConfigureAwait(false);
             return OperatorUiResult<CameraAgentOperationsView>.Success(new(summary, artifacts, environmental));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -309,6 +315,13 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
+            if (_hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+            {
+                return OperatorUiResult<OperatorOutboxPage>.Success(new(
+                    string.Equals(kind, "Artifact", StringComparison.OrdinalIgnoreCase) ? "Artifact" : "Environmental",
+                    [], null, [], null));
+            }
+
             if (string.Equals(kind, "Artifact", StringComparison.OrdinalIgnoreCase))
             {
                 var locations = await storageResolver.GetUploadLocationsAsync(cancellationToken).ConfigureAwait(false);
@@ -492,6 +505,7 @@ internal sealed class CameraAgentOperatorUiService(
             var distribution = _hostOptions.CaptureDistribution;
             var environmental = _hostOptions.EnvironmentalDelivery;
             var transient = _hostOptions.TransientDetection;
+            var centralEnabled = _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled;
 
             var status = new CameraAgentSystemStatus(
                 "Unversioned startup snapshot",
@@ -499,6 +513,7 @@ internal sealed class CameraAgentOperatorUiService(
                 "Validated at startup",
                 config.AgentId ?? "Unavailable",
                 ResolveModuleAlias(config.ModuleType, moduleRegistrations),
+                _hostOptions.CentralIntegration.Mode.ToString(),
                 new CameraAgentSensorStatus(
                     sensor.Name,
                     sensor.WidthPixels,
@@ -538,7 +553,7 @@ internal sealed class CameraAgentOperatorUiService(
                     _hostOptions.DiskPressureRetentionDays,
                     _hostOptions.RawIngressReserveBytes),
                 new CameraAgentUploadStatus(
-                    distribution.UploadEnabled,
+                    centralEnabled && distribution.UploadEnabled,
                     _hostOptions.UploadBatchSize,
                     _hostOptions.UploadPollIntervalSeconds,
                     _hostOptions.UploadRetryInitialDelaySeconds,
@@ -549,7 +564,7 @@ internal sealed class CameraAgentOperatorUiService(
                     distribution.OptionalMaximumPendingCount,
                     distribution.OptionalMaximumPendingBytes),
                 new CameraAgentEnvironmentalPolicyStatus(
-                    environmental.Enabled,
+                    centralEnabled && environmental.Enabled,
                     environmental.BatchSize,
                     environmental.PollIntervalSeconds,
                     environmental.MaximumAttempts,
@@ -852,6 +867,7 @@ internal sealed class CameraAgentOperatorUiService(
             status.ValidationStatus,
             status.AgentId,
             status.ModuleType,
+            status.CentralIntegration,
             status.Sensor,
             status.Optics,
             status.Capture,

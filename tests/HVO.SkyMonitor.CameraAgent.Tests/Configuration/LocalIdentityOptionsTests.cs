@@ -58,4 +58,40 @@ public class LocalIdentityOptionsTests
         Assert.IsFalse(isValid);
         Assert.IsTrue(validationResults.Count >= 2);
     }
+
+    [TestMethod]
+    public void Validate_WithCustomCookieName_Succeeds()
+    {
+        var options = new LocalIdentityOptions
+        {
+            AdminPassword = "IdentityOwner!123",
+            CookieName = "CameraAgent.Hualapai.Auth"
+        };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsTrue(valid, string.Join("; ", results));
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("CameraAgent Auth")]
+    [DataRow("CameraAgent;Auth")]
+    public void Validate_WithUnsafeCookieName_Fails(string cookieName)
+    {
+        var options = new LocalIdentityOptions
+        {
+            AdminPassword = "IdentityOwner!123",
+            CookieName = cookieName
+        };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(LocalIdentityOptions.CookieName))));
+    }
 }

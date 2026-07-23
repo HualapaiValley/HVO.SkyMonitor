@@ -6,9 +6,11 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -18,11 +20,14 @@ internal sealed class NoOpFileStorageProcessingStep(
     ILatestFrameAccessor latestFrameAccessor,
     IFrameStorageService frameStorageService,
     IArtifactOutbox artifactOutbox,
+    IOptions<CameraAgentHostOptions> hostOptions,
     ILogger<NoOpFileStorageProcessingStep> logger) : ConfigurableCaptureProcessingStep<NoOpFileStorageProcessingStepOptions>(metadata, options)
 {
     private readonly ILatestFrameAccessor _latestFrameAccessor = latestFrameAccessor;
     private readonly IFrameStorageService _frameStorageService = frameStorageService;
     private readonly IArtifactOutbox _artifactOutbox = artifactOutbox;
+    private readonly bool _centralIntegrationEnabled =
+        hostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Enabled;
     private readonly ILogger<NoOpFileStorageProcessingStep> _logger = logger;
 
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
@@ -82,7 +87,7 @@ internal sealed class NoOpFileStorageProcessingStep(
                             Options.StorageRoot, artifact, cancellationToken).ConfigureAwait(false);
                     }
                 }
-                if (policy?.QueueForUpload ?? Options.QueueForUpload)
+                if (_centralIntegrationEnabled && (policy?.QueueForUpload ?? Options.QueueForUpload))
                 {
                     if (uploadManifest is null)
                     {

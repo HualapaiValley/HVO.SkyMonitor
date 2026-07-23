@@ -114,11 +114,13 @@ public sealed class CameraAgentOperatorUiServiceTests
             ]
         };
         var changed = status with { Capture = status.Capture with { NightGain = status.Capture.NightGain + 1 } };
+        var standalone = status with { CentralIntegration = "Disabled" };
 
         var identity = CameraAgentOperatorUiService.ComputeSnapshotIdentity(status);
 
         Assert.AreEqual(identity, CameraAgentOperatorUiService.ComputeSnapshotIdentity(reordered));
         Assert.AreNotEqual(identity, CameraAgentOperatorUiService.ComputeSnapshotIdentity(changed));
+        Assert.AreNotEqual(identity, CameraAgentOperatorUiService.ComputeSnapshotIdentity(standalone));
         Assert.AreEqual(64, identity.Length);
         Assert.IsTrue(identity.All(Uri.IsHexDigit));
         var serialized = System.Text.Json.JsonSerializer.Serialize(status with { SnapshotIdentity = identity });

@@ -38,6 +38,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
+    private readonly bool _centralIntegrationDisabled;
     private readonly SqliteCaptureProcessingStore _processingStore;
     private readonly ICameraAgentStorageResolver? _storageResolver;
 
@@ -52,6 +53,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
         _root = Path.GetFullPath(options.Value.RawIngressRoot);
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
         _busyTimeoutSeconds = options.Value.RawIngressSqliteBusyTimeoutSeconds;
+        _centralIntegrationDisabled = options.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled;
     }
 
     public async ValueTask<CameraAgentGalleryPage> GetPageAsync(
@@ -260,6 +262,10 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
         if (artifactIds.Length is 0 or > MaximumDetailArtifacts)
         {
             return new("Unavailable", new Dictionary<Guid, IReadOnlyList<CameraAgentGalleryArtifactDelivery>>());
+        }
+        if (_centralIntegrationDisabled)
+        {
+            return new("Disabled", new Dictionary<Guid, IReadOnlyList<CameraAgentGalleryArtifactDelivery>>());
         }
         IReadOnlyList<CameraAgentStorageLocation> locations = _storageResolver is null
             ? new[] { new CameraAgentStorageLocation("raw-ingress", _root) }

@@ -23,6 +23,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public CaptureDistributionOptions CaptureDistribution { get; init; } = new();
 
     [Required]
+    public CentralIntegrationOptions CentralIntegration { get; init; } = new();
+
+    [Required]
     public TransientDetectionOptions TransientDetection { get; init; } = new();
 
     [Required]
@@ -93,6 +96,17 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             yield return result;
         }
 
+        var centralIntegrationResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            CentralIntegration,
+            new ValidationContext(CentralIntegration),
+            centralIntegrationResults,
+            validateAllProperties: true);
+        foreach (var result in centralIntegrationResults)
+        {
+            yield return result;
+        }
+
         var transientResults = new List<ValidationResult>();
         Validator.TryValidateObject(
             TransientDetection,
@@ -109,6 +123,13 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             yield return new ValidationResult(
                 "Central and Hybrid transient detection require the upload lane.",
                 [nameof(TransientDetection), nameof(CaptureDistribution)]);
+        }
+        if (CentralIntegration.Mode == CentralIntegrationMode.Disabled &&
+            TransientDetection.Mode is TransientOperatingMode.Central or TransientOperatingMode.Hybrid)
+        {
+            yield return new ValidationResult(
+                "Central and Hybrid transient detection require central integration.",
+                [nameof(CentralIntegration), nameof(TransientDetection)]);
         }
 
         var environmentalResults = new List<ValidationResult>();
@@ -133,6 +154,18 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             yield return result;
         }
     }
+}
+
+public enum CentralIntegrationMode
+{
+    Enabled,
+    Disabled
+}
+
+public sealed class CentralIntegrationOptions
+{
+    [EnumDataType(typeof(CentralIntegrationMode))]
+    public CentralIntegrationMode Mode { get; init; } = CentralIntegrationMode.Enabled;
 }
 
 public sealed class ArtifactReadOptions

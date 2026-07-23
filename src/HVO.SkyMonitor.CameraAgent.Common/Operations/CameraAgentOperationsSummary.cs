@@ -9,6 +9,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Operations;
 
@@ -119,7 +121,8 @@ public sealed record OperationsConfigurationState(
     bool IsCurrent,
     string ValidationStatus,
     string? AgentId,
-    string? ModuleType);
+    string? ModuleType,
+    string CentralIntegration);
 
 public sealed record OperationsCaptureControlState(
     string State,
@@ -155,7 +158,8 @@ public sealed class CameraAgentOperationsSummaryProvider(
     TransientWorkerState transientWorker,
     ICaptureTelemetryProvider captureTelemetry,
     ICameraAgentConfigurationAccessor configurationAccessor,
-    CameraAgentStorageResolver storageResolver)
+    CameraAgentStorageResolver storageResolver,
+    IOptions<CameraAgentHostOptions> hostOptions)
 {
     private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(5);
 
@@ -174,12 +178,13 @@ public sealed class CameraAgentOperationsSummaryProvider(
         var transient = transientWorker.Snapshot;
         var telemetry = captureTelemetry.GetSnapshot();
         var latest = telemetry.Samples.Count == 0 ? null : telemetry.Samples[^1];
+        var centralDisabled = hostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled;
         var config = configurationAccessor.IsConfigured
             ? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false)
             : null;
         var locations = config is null
             ? []
-            : await storageResolver.GetUploadLocationsAsync(cancellationToken).ConfigureAwait(false);
+            : await storageResolver.GetStorageLocationsAsync(cancellationToken).ConfigureAwait(false);
 
         return new CameraAgentOperationsSummary(
             now,
@@ -199,8 +204,14 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 processing.Availability.ToString(), processing.PendingCount, 0, 0, processing.RetryCount,
                 0, processing.TerminalCount, processing.OldestPendingUtc)),
             Section("artifact-outbox-state", outbox.EvaluatedUtc, now, new OperationsQueueState(
-                outbox.Availability.ToString(), outbox.PendingCount, outbox.PendingBytes, outbox.LeasedCount,
-                outbox.RetryCount, outbox.QuarantineCount, 0, outbox.OldestPendingUtc)),
+                centralDisabled ? "Disabled" : outbox.Availability.ToString(),
+                centralDisabled ? 0 : outbox.PendingCount,
+                centralDisabled ? 0 : outbox.PendingBytes,
+                centralDisabled ? 0 : outbox.LeasedCount,
+                centralDisabled ? 0 : outbox.RetryCount,
+                centralDisabled ? 0 : outbox.QuarantineCount,
+                0,
+                centralDisabled ? null : outbox.OldestPendingUtc)),
             Section("storage-pressure-state", Latest(storage.Select(static item => (DateTimeOffset?)item.EvaluatedUtc)), now,
                 (IReadOnlyList<OperationsStorageState>)storage
                     .Select(item => new { Snapshot = item, Location = locations.SingleOrDefault(location => PathsEqual(location.Root, item.StorageRoot)) })
@@ -220,19 +231,30 @@ public sealed class CameraAgentOperationsSummaryProvider(
                     timing.Segment.ToString(), timing.SampleCount, timing.MedianMilliseconds,
                     timing.P95Milliseconds, timing.MaximumMilliseconds)).ToArray())),
             Section("fleet-heartbeat-state", heartbeatSnapshot.Outbox?.EvaluatedUtc, now, new OperationsHeartbeatState(
-                heartbeatSnapshot.Availability.ToString(), heartbeatSnapshot.LastAcknowledgedUtc,
-                heartbeatSnapshot.Outbox?.PendingCount ?? 0, heartbeatSnapshot.Outbox?.PendingBytes ?? 0,
-                heartbeatSnapshot.Outbox?.LeasedCount ?? 0, heartbeatSnapshot.Outbox?.RetryCount ?? 0,
-                heartbeatSnapshot.Outbox?.QuarantineCount ?? 0, heartbeatSnapshot.Outbox?.OverflowCount ?? 0,
-                heartbeatSnapshot.Outbox?.BlockedCount ?? 0, heartbeatSnapshot.Outbox?.OldestPendingUtc)),
+                centralDisabled ? "Disabled" : heartbeatSnapshot.Availability.ToString(),
+                centralDisabled ? null : heartbeatSnapshot.LastAcknowledgedUtc,
+                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.PendingCount ?? 0,
+                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.PendingBytes ?? 0,
+                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.LeasedCount ?? 0,
+                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.RetryCount ?? 0,
+                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.QuarantineCount ?? 0,
+                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.OverflowCount ?? 0,
+                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.BlockedCount ?? 0,
+                centralDisabled ? null : heartbeatSnapshot.Outbox?.OldestPendingUtc)),
             Section("environmental-delivery-state", environmental.Outbox?.EvaluatedUtc, now,
                 new OperationsEnvironmentalDeliveryState(
-                    environmental.Availability.ToString(), environmental.LastAcknowledgedUtc,
-                    environmental.Outbox?.StoredCount ?? 0, environmental.Outbox?.StoredBytes ?? 0,
-                    environmental.Outbox?.PendingCount ?? 0, environmental.Outbox?.PendingBytes ?? 0,
-                    environmental.Outbox?.LeasedCount ?? 0, environmental.Outbox?.RetryCount ?? 0,
-                    environmental.Outbox?.QuarantineCount ?? 0, environmental.Outbox?.TerminalCount ?? 0,
-                    environmental.Outbox?.OverflowCount ?? 0, environmental.Outbox?.OldestPendingUtc)),
+                    centralDisabled ? "Disabled" : environmental.Availability.ToString(),
+                    centralDisabled ? null : environmental.LastAcknowledgedUtc,
+                    centralDisabled ? 0 : environmental.Outbox?.StoredCount ?? 0,
+                    centralDisabled ? 0 : environmental.Outbox?.StoredBytes ?? 0,
+                    centralDisabled ? 0 : environmental.Outbox?.PendingCount ?? 0,
+                    centralDisabled ? 0 : environmental.Outbox?.PendingBytes ?? 0,
+                    centralDisabled ? 0 : environmental.Outbox?.LeasedCount ?? 0,
+                    centralDisabled ? 0 : environmental.Outbox?.RetryCount ?? 0,
+                    centralDisabled ? 0 : environmental.Outbox?.QuarantineCount ?? 0,
+                    centralDisabled ? 0 : environmental.Outbox?.TerminalCount ?? 0,
+                    centralDisabled ? 0 : environmental.Outbox?.OverflowCount ?? 0,
+                    centralDisabled ? null : environmental.Outbox?.OldestPendingUtc)),
             Section("transient-worker-state", transient.UpdatedUtc, now, new OperationsTransientWorkerState(
                 transient.Availability.ToString(), transient.PendingFrames, transient.PendingCandidates)),
             Section("capture-telemetry-window", latest?.StartedUtc, now, new OperationsCaptureTelemetryState(
@@ -244,7 +266,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 telemetry.Aggregate.ImmediateUploadCount)),
             Section("validated-configuration", null, now, new OperationsConfigurationState(
                 config is not null, config is null ? "unavailable" : "validated", config?.AgentId,
-                config?.ModuleType)));
+                config?.ModuleType, hostOptions.Value.CentralIntegration.Mode.ToString())));
     }
 
     private static OperationsSection<T> Section<T>(

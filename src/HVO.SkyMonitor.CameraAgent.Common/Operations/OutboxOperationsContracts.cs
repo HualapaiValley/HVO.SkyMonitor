@@ -92,6 +92,9 @@ public sealed record CameraAgentStorageLocation(string Alias, string Root);
 
 public interface ICameraAgentStorageResolver
 {
+    ValueTask<IReadOnlyList<CameraAgentStorageLocation>> GetStorageLocationsAsync(CancellationToken cancellationToken)
+        => GetUploadLocationsAsync(cancellationToken);
+
     ValueTask<IReadOnlyList<CameraAgentStorageLocation>> GetUploadLocationsAsync(CancellationToken cancellationToken);
 
     ValueTask<CameraAgentStorageLocation?> ResolveAliasAsync(string storageAlias, CancellationToken cancellationToken);
@@ -101,11 +104,20 @@ public sealed class CameraAgentStorageResolver(
     ICameraAgentConfigurationAccessor configurationAccessor,
     IOptions<CameraAgentHostOptions> hostOptions) : ICameraAgentStorageResolver
 {
-    public async ValueTask<IReadOnlyList<CameraAgentStorageLocation>> GetUploadLocationsAsync(
+    public async ValueTask<IReadOnlyList<CameraAgentStorageLocation>> GetStorageLocationsAsync(
         CancellationToken cancellationToken)
     {
         var configuration = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
         return Resolve(configuration, hostOptions.Value);
+    }
+
+    public async ValueTask<IReadOnlyList<CameraAgentStorageLocation>> GetUploadLocationsAsync(
+        CancellationToken cancellationToken)
+    {
+        var configuration = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+        return ResolveLocations(
+            ArtifactOutboxDrainService.ResolveStorageRoots(configuration, hostOptions.Value),
+            hostOptions.Value.RawIngressRoot);
     }
 
     public async ValueTask<CameraAgentStorageLocation?> ResolveAliasAsync(
@@ -121,8 +133,16 @@ public sealed class CameraAgentStorageResolver(
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(options);
 
-        var roots = ArtifactOutboxDrainService.ResolveStorageRoots(configuration, options);
-        var rawRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.RawIngressRoot));
+        return ResolveLocations(
+            ArtifactOutboxDrainService.ResolveLocalStorageRoots(configuration, options),
+            options.RawIngressRoot);
+    }
+
+    private static List<CameraAgentStorageLocation> ResolveLocations(
+        IReadOnlyList<string> roots,
+        string rawIngressRoot)
+    {
+        var rawRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rawIngressRoot));
         var locations = new List<CameraAgentStorageLocation>(roots.Count);
         var nextStorage = 1;
         foreach (var configuredRoot in roots)
