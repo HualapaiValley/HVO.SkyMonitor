@@ -34,4 +34,15 @@ public sealed class ArtifactOutboxStateTests
         state.Update("/tmp/outbox-failed", new ArtifactOutboxSnapshot(0, 0, null, 0, 0, 0, 0, 0, 0));
         Assert.AreEqual(ArtifactOutboxAvailability.Healthy, state.Snapshot.Availability);
     }
+
+    [TestMethod]
+    public void Snapshot_IgnoresDrainedRootsWhenSelectingOldestPendingTime()
+    {
+        var state = new ArtifactOutboxState();
+        var oldest = new DateTimeOffset(2026, 7, 23, 1, 2, 3, TimeSpan.Zero);
+        state.Update("/tmp/outbox-drained", new ArtifactOutboxSnapshot(0, 0, null, 0, 0, 0, 4, 0, 0));
+        state.Update("/tmp/outbox-pending", new ArtifactOutboxSnapshot(2, 512, oldest, 2, 0, 0, 0, 0, 0));
+
+        Assert.AreEqual(oldest, state.Snapshot.OldestPendingUtc);
+    }
 }

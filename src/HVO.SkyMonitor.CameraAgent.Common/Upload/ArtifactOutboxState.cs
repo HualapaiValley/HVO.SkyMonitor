@@ -50,7 +50,9 @@ public sealed class ArtifactOutboxState
                 snapshots.Sum(static item => item.LeasedCount),
                 retry,
                 quarantine,
-                snapshots.Select(static item => item.OldestHeldUtc).Min(),
+                snapshots.Select(static item => item.OldestHeldUtc)
+                    .Where(static timestamp => timestamp.HasValue)
+                    .Min(),
                 failure,
                 Latest(
                     snapshots.Select(static item => item.EvaluatedUtc),
