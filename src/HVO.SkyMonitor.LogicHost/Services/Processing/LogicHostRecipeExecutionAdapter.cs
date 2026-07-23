@@ -80,7 +80,8 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
                     descriptor.Capture.CaptureSequence,
                     descriptor.Artifact.SourceArtifactIds,
                     observation.StartedUtc,
-                    observation.EndedUtc));
+                    observation.EndedUtc,
+                    CreateConditions(descriptor)));
             }
         }
         var artifactAuxiliaryInputs = inputs
@@ -131,8 +132,15 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             descriptor.Capture.CaptureSequence,
             descriptor.Artifact.SourceArtifactIds,
             observation.StartedUtc,
-            observation.EndedUtc);
+            observation.EndedUtc,
+            CreateConditions(descriptor));
     }
+
+    private static ProcessingCaptureConditions CreateConditions(ReconstructionDescriptor descriptor)
+        => new(
+            descriptor.Controls.EffectiveGain,
+            descriptor.Controls.EffectiveOffset,
+            descriptor.Controls.EffectiveTemperatureC);
 
     private static (DateTimeOffset StartedUtc, DateTimeOffset EndedUtc) ResolveObservationBounds(
         ReconstructionDescriptor descriptor)

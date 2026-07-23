@@ -56,7 +56,16 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             CaptureSequence: reconstructionDescriptor?.Capture.CaptureSequence,
             SourceArtifactIds: artifact.SourceArtifactIds,
             ObservationStartedUtc: observationStartedUtc.ToUniversalTime(),
-            ObservationEndedUtc: observationEndedUtc.ToUniversalTime());
+            ObservationEndedUtc: observationEndedUtc.ToUniversalTime(),
+            Conditions: reconstructionDescriptor is null
+                ? new ProcessingCaptureConditions(
+                    frame.Metadata.Gain,
+                    frame.Metadata.Offset,
+                    double.IsFinite(frame.Metadata.TemperatureC) ? frame.Metadata.TemperatureC : null)
+                : new ProcessingCaptureConditions(
+                    reconstructionDescriptor.Controls.EffectiveGain,
+                    reconstructionDescriptor.Controls.EffectiveOffset,
+                    reconstructionDescriptor.Controls.EffectiveTemperatureC));
     }
 
     public static CameraFrame CreateFrame(ProcessingProduct product, CameraFrame source, string sourceId)

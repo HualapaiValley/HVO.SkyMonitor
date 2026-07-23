@@ -50,7 +50,9 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     private HostInstance Host => _host
         ?? throw new InvalidOperationException("The standalone CameraAgent host is not running.");
 
-    internal static async Task<StandaloneCameraAgentKestrelFixture> CreateAsync(bool useSidingSpringLocation = false)
+    internal static async Task<StandaloneCameraAgentKestrelFixture> CreateAsync(
+        bool useSidingSpringLocation = false,
+        bool useSyntheticCalibration = false)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -61,7 +63,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         try
         {
             var configPath = Path.Combine(root, "cameraagent.standalone.json");
-            await WriteConfigurationAsync(configPath, root).ConfigureAwait(false);
+            await WriteConfigurationAsync(configPath, root, useSyntheticCalibration).ConfigureAwait(false);
             var overrides = new Dictionary<string, string?>
             {
                 ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
@@ -199,7 +201,10 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         }
     }
 
-    private static async Task WriteConfigurationAsync(string configPath, string root)
+    private static async Task WriteConfigurationAsync(
+        string configPath,
+        string root,
+        bool useSyntheticCalibration)
     {
         var template = await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.integration.json")).ConfigureAwait(false);
@@ -220,6 +225,38 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         foreach (var policy in options["policies"]!.AsArray())
         {
             policy!.AsObject()["queueForUpload"] = true;
+        }
+        if (useSyntheticCalibration)
+        {
+            var model = JsonNode.Parse("""
+                {
+                  "schemaVersion": "synthetic-calibration-model-v1",
+                  "seed": 195,
+                  "biasPedestalAdu": 100,
+                  "biasPatternAmplitudeAdu": 8,
+                  "darkCurrentAduPerSecond": 5.0,
+                  "darkPatternFraction": 0.25,
+                  "pixelResponseVariationFraction": 0.1,
+                  "vignettingStrength": 0.2,
+                  "flatSignalAdu": 20000,
+                  "biasExposure": "00:00:00.0010000",
+                  "darkExposure": "00:00:10",
+                  "flatExposure": "00:00:02",
+                  "gain": 1.0,
+                  "temperatureC": -10.0,
+                  "defects": [{ "x": 4, "y": 4, "fixedValueAdu": 65535 }]
+                }
+                """)!;
+            var moduleOptions = configuration["module"]!["options"]!.AsObject();
+            moduleOptions["asi174Sensor"] = new JsonObject { ["enabled"] = false };
+            moduleOptions["syntheticCalibration"] = model.DeepClone();
+            var calibration = configuration["processingSteps"]!.AsArray()
+                .Select(static node => node!.AsObject())
+                .Single(static step => step["id"]!.GetValue<string>() == "Calibration");
+            calibration["type"] = "Calibration";
+            calibration["options"]!["strategy"] = "SyntheticReferences";
+            calibration["options"]!["outputVariant"] = "synthetic-corrected";
+            calibration["options"]!["syntheticCalibration"] = model.DeepClone();
         }
 
         await File.WriteAllTextAsync(

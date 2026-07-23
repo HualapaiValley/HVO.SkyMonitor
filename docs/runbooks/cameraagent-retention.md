@@ -166,6 +166,14 @@ capture-time location versions unavailable; the marker and retained manifests
 make CameraAgent fail closed rather than assigning current coordinates or
 silently creating a replacement version 1.
 
+Configured synthetic calibration references are immutable payload/manifest pairs
+under `<raw-ingress-root>/calibration/synthetic/`. They are explicit processing
+retention holds and must be backed up with the raw evidence while their profile
+is configured. `calibration-profile.json` is the bundle commit marker. Removing
+or replacing it or any committed reference makes calibration fail closed before
+a partial derivative can be published; restore the exact evidence rather than
+deleting the rest of the bundle.
+
 On restart, complete valid manifest-v2 pairs are recovered exactly once, stale
 temporary files are recorded and removed, compatibility indexes are repaired,
 and malformed or conflicting evidence moves beneath `quarantine/`. A committed

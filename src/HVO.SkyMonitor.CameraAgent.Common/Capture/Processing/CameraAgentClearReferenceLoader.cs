@@ -75,7 +75,13 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
             throw new InvalidDataException(
                 $"Configured clear reference is not reconstructable ({reconstruction.ReasonCode}).");
         }
-        return new ProcessingArtifact(
+        return CreateArtifact(descriptor, payload);
+    }
+
+    internal static ProcessingArtifact CreateArtifact(
+        ReconstructionDescriptor descriptor,
+        ReadOnlyMemory<byte> payload)
+        => new(
             descriptor.Artifact.ArtifactId,
             descriptor.Artifact.Role,
             descriptor.Artifact.Variant,
@@ -92,8 +98,11 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
             ProcessingArtifact.ResolveObservationEndedUtc(
                 descriptor.Timing.ExposureStartedUtc,
                 descriptor.Timing.ExposureEndedUtc,
-                descriptor.Controls.EffectiveExposure));
-    }
+                descriptor.Controls.EffectiveExposure),
+            new ProcessingCaptureConditions(
+                descriptor.Controls.EffectiveGain,
+                descriptor.Controls.EffectiveOffset,
+                descriptor.Controls.EffectiveTemperatureC));
 
     private string ResolveSafePath(string relativePath)
     {

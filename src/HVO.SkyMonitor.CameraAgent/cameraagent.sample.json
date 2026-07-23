@@ -149,7 +149,7 @@
         },
         {
             "id": "Calibration",
-            "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CalibrationCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+            "type": "Calibration",
             "order": -1000,
             "options": {
                 "enabled": true,

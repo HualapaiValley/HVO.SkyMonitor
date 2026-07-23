@@ -123,6 +123,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentArtifactService, CameraAgentArtifactService>();
         services.AddSingleton<CaptureProcessingPersistence>();
         services.AddSingleton<CameraAgentClearReferenceLoader>();
+        services.AddSingleton<SyntheticCalibrationReferenceStore>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
         services.AddSingleton<IProcessingRetentionHolds>(provider =>
             new CompositeProcessingRetentionHolds(
@@ -148,6 +149,8 @@ public static class CameraAgentServiceCollectionExtensions
             "RollingCombination", typeof(RollingCombinationCaptureProcessingStep), typeof(RollingCombinationProcessingStepOptions), 25));
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "Annotation", typeof(AnnotationCaptureProcessingStep), typeof(AnnotationProcessingStepOptions), 75));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "Calibration", typeof(CalibrationCaptureProcessingStep), typeof(CalibrationProcessingStepOptions), 20, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "VirtualSkyCloudObservation", typeof(VirtualSkyCloudObservationProcessingStep),
             typeof(VirtualSkyCloudObservationProcessingStepOptions), 10, AutoInclude: false));

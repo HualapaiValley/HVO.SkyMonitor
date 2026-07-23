@@ -20,6 +20,7 @@ public sealed class ProcessingRecipePerformanceTests
     [
         "direct-display-baseline",
         "linear-normalization",
+        "reference-calibration",
         "shared-preview-packed",
         "encoded-preview-jpeg",
         "annotation-packed",
@@ -32,6 +33,12 @@ public sealed class ProcessingRecipePerformanceTests
         {
             ["W1"] = "42CA6AF7B5E237398972AB0DBBA89AF4A96F43A86EE60B5E7D985340E4A10980",
             ["W2"] = "A1AF7A36883C10255CD2CB519B86409E4DA5FA82AB38B640B3A8D0708D30657D"
+        };
+    private static readonly Dictionary<string, string> ExpectedReferenceCalibrationChecksums =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["W1"] = "D1985318620745A987148B339FB1C0764042597582A00EFE211CE9F2DF256DE6",
+            ["W2"] = "CF2EC8DA21988C5420022A110BE2AFAD93A019A8503634F427DE2A279CDC3BE7"
         };
     private static readonly ProcessingRecipeIdentity DirectBaselineIdentity = ProcessingIdentity.CreateRecipeIdentity(
         new ProcessingRecipeDefinition("baseline", "1.0.0", "direct-v1", ProcessingOperationKind.Transform),
@@ -109,6 +116,7 @@ public sealed class ProcessingRecipePerformanceTests
         {
             "linear-normalization" => CreateRequest(
                 BuiltInProcessingRecipes.LinearNormalization, EmptyOptions(), workload, "none"),
+            "reference-calibration" => CreateCalibrationRequest(workload),
             "shared-preview-packed" => CreateRequest(
                 BuiltInProcessingRecipes.EncodedPreview,
                 JsonSerializer.SerializeToElement(new EncodedPreviewOptions(OutputEncoding: "Packed")),
@@ -147,6 +155,7 @@ public sealed class ProcessingRecipePerformanceTests
         var elapsed = new double[repetitions];
         long allocated = 0;
         string? checksum = null;
+        var immutableInputChecksum = ProcessingIdentity.ComputePayloadSha256(workload.Artifact.Payload);
         var process = Process.GetCurrentProcess();
         var workingSetStart = process.WorkingSet64;
         var workingSetPeak = Math.Max(workingSetStart, process.PeakWorkingSet64);
@@ -175,6 +184,12 @@ public sealed class ProcessingRecipePerformanceTests
             {
                 Assert.AreEqual(product.ChecksumSha256, ProcessingIdentity.ComputePayloadSha256(product.Payload));
             }
+            if (recipe == "reference-calibration")
+            {
+                Assert.AreEqual(ExpectedReferenceCalibrationChecksums[workload.Id], product.ChecksumSha256);
+                Assert.HasCount(5, product.SourceArtifactIds);
+                Assert.AreEqual(immutableInputChecksum, ProcessingIdentity.ComputePayloadSha256(workload.Artifact.Payload));
+            }
             outputBytes = product.Payload.Length;
             process.Refresh();
             workingSetPeak = Math.Max(workingSetPeak, process.PeakWorkingSet64);
@@ -194,7 +209,9 @@ public sealed class ProcessingRecipePerformanceTests
             workload.Width,
             workload.Height,
             workload.Format.ToString(),
-            workload.Artifact.Payload.Length,
+            recipe == "reference-calibration"
+                ? workload.Artifact.Payload.Length * 5L
+                : workload.Artifact.Payload.Length,
             outputBytes,
             median,
             p95,
@@ -211,12 +228,14 @@ public sealed class ProcessingRecipePerformanceTests
             GC.CollectionCount(2) - generation2Start,
             averageMilliseconds == 0 ? 0 : 1000 / averageMilliseconds,
             averageMilliseconds == 0 ? 0 :
-                workload.Artifact.Payload.Length / 1024d / 1024d / (averageMilliseconds / 1000d),
+                (recipe == "reference-calibration" ? workload.Artifact.Payload.Length * 5L : workload.Artifact.Payload.Length) /
+                1024d / 1024d / (averageMilliseconds / 1000d),
             checksum!,
             recipe switch
             {
                 "direct-display-baseline" => workload.Format == CameraPixelFormat.BayerRggb16 ? 3 : 2,
                 "linear-normalization" => 2,
+                "reference-calibration" => 6,
                 "shared-preview-packed" => workload.Format == CameraPixelFormat.BayerRggb16 ? 3 : 2,
                 "rolling-mean-5" => 10,
                 "annotation-packed" => workload.Format == CameraPixelFormat.BayerRggb16 ? 7 : 5,
@@ -227,6 +246,7 @@ public sealed class ProcessingRecipePerformanceTests
             {
                 "direct-display-baseline" => workload.Format == CameraPixelFormat.BayerRggb16 ? 2 : 1,
                 "linear-normalization" => 1,
+                "reference-calibration" => 1,
                 "shared-preview-packed" => workload.Format == CameraPixelFormat.BayerRggb16 ? 2 : 1,
                 "encoded-preview-jpeg" => workload.Format == CameraPixelFormat.BayerRggb16 ? 4 : 2,
                 "annotation-packed" => workload.Format == CameraPixelFormat.BayerRggb16 ? 6 : 4,
@@ -300,6 +320,102 @@ public sealed class ProcessingRecipePerformanceTests
             ProcessingInputSelector.Raw("source"),
             sources,
             "mean-5");
+    }
+
+    private static ProcessingExecutionRequest CreateCalibrationRequest(Workload workload)
+    {
+        var model = new SyntheticCalibrationModelV1
+        {
+            Gain = 10,
+            TemperatureC = -10,
+            Defects = [new SyntheticCalibrationDefect(workload.Width / 2, workload.Height / 2)]
+        };
+        var frame = new Linear16Frame(
+            workload.Width,
+            workload.Height,
+            workload.Artifact.Layout!.StrideBytes,
+            workload.Format,
+            workload.Artifact.Payload);
+        var references = SyntheticCalibrationReferenceGenerator.Generate(
+            workload.Width, workload.Height, workload.Format, model);
+        var corrupted = SyntheticCalibrationReferenceGenerator.ApplyToLight(
+            frame, workload.Artifact.Integration, model);
+        var light = workload.Artifact with
+        {
+            Payload = corrupted,
+            Conditions = new ProcessingCaptureConditions(model.Gain, 0, model.TemperatureC)
+        };
+        var referenceFrames = new Dictionary<string, (Linear16Frame Frame, TimeSpan Exposure)>(StringComparer.Ordinal)
+        {
+            [CalibrationReferenceKinds.Bias] = (references.Bias, model.BiasExposure),
+            [CalibrationReferenceKinds.Dark] = (references.Dark, model.DarkExposure),
+            [CalibrationReferenceKinds.Flat] = (references.Flat, model.FlatExposure),
+            [CalibrationReferenceKinds.Defect] = (references.DefectMask, model.BiasExposure)
+        };
+        var artifacts = referenceFrames.Select((pair, index) => new ProcessingArtifact(
+            CreateGuid(workload.Id, index + 10),
+            FrameArtifactRole.Raw,
+            pair.Key,
+            new string('C', 64),
+            "application/x-hvo-linear-frame",
+            workload.Artifact.Layout! with
+            {
+                StrideBytes = pair.Value.Frame.StrideBytes,
+                ByteLength = pair.Value.Frame.PixelData.Length
+            },
+            pair.Value.Frame.PixelData,
+            workload.Artifact.CreatedUtc,
+            pair.Value.Exposure,
+            workload.Artifact.Compatibility,
+            Conditions: new ProcessingCaptureConditions(model.Gain, 0, model.TemperatureC))).ToArray();
+        var descriptors = artifacts.Select(artifact => new CalibrationReferenceDescriptorV1(
+            artifact.Variant,
+            artifact.ArtifactId,
+            ProcessingIdentity.ComputePayloadSha256(artifact.Payload),
+            artifact.Integration,
+            model.Gain,
+            model.TemperatureC)).ToArray();
+        var profile = new ReferenceCalibrationProfileV1(
+            ReferenceCalibrationProfileV1.CurrentSchemaVersion,
+            $"{workload.Id}-performance",
+            "1",
+            "issue-195 performance fixture",
+            workload.Artifact.CreatedUtc.AddDays(-1),
+            null,
+            workload.Width,
+            workload.Height,
+            workload.Format,
+            references.FlatNormalizationAdu,
+            model.Gain,
+            model.Gain,
+            model.TemperatureC,
+            model.TemperatureC,
+            descriptors);
+        var profileElement = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(profile));
+        var profileBytes = System.Text.Encoding.UTF8.GetBytes(profileElement.GetRawText());
+        var profileIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(profileElement);
+        var auxiliaries = new List<ProcessingAuxiliaryInput>
+        {
+            new(
+                "calibration-profile",
+                ProcessingAuxiliaryInputKind.CanonicalJson,
+                SchemaVersion: ReferenceCalibrationProfileV1.CurrentSchemaVersion,
+                IdentitySha256: profileIdentity,
+                Payload: profileBytes)
+        };
+        auxiliaries.AddRange(artifacts.Select(artifact => new ProcessingAuxiliaryInput(
+            $"{artifact.Variant}-reference",
+            ProcessingAuxiliaryInputKind.Artifact,
+            ProcessingInputSelector.Raw(artifact.Variant),
+            ArtifactId: artifact.ArtifactId)));
+        return new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ReferenceCalibration,
+            JsonSerializer.SerializeToElement(new ReferenceCalibrationOptions()),
+            ProcessingInputSelector.Raw("source"),
+            [light, .. artifacts],
+            "synthetic-corrected",
+            AuxiliaryInputs: auxiliaries,
+            InputArtifactId: light.ArtifactId);
     }
 
     private static ProcessingAnnotationInput CreateAnnotation(Workload workload)

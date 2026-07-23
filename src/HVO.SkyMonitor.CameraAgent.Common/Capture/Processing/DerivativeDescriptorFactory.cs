@@ -16,11 +16,27 @@ internal static class DerivativeDescriptorFactory
         ArgumentNullException.ThrowIfNull(product);
         var layout = product.Layout
             ?? throw new InvalidOperationException("CameraAgent frame derivatives require a reconstructable frame layout.");
+        var referenceCalibration = string.Equals(
+            product.Recipe.Descriptor.Name,
+            BuiltInProcessingRecipes.ReferenceCalibration,
+            StringComparison.Ordinal);
         return new ReconstructionDescriptor(
             raw.Capture,
             raw.Timing,
             raw.Controls,
-            raw.Profiles,
+            raw.Profiles with
+            {
+                Calibration = referenceCalibration
+                    ? new ProfileIdentityDescriptor(
+                        "reference-calibration-profile",
+                        ReferenceCalibrationProfileV1.CurrentSchemaVersion,
+                        product.Compatibility.Calibration)
+                    : raw.Profiles.Calibration with { Sha256 = product.Compatibility.Calibration },
+                Mask = referenceCalibration
+                    ? new ProfileIdentityDescriptor("calibration-defect-mask", "1.0.0", product.Compatibility.Mask)
+                    : raw.Profiles.Mask with { Sha256 = product.Compatibility.Mask },
+                Processing = raw.Profiles.Processing with { Sha256 = product.Compatibility.ProcessingProfile }
+            },
             layout,
             new ArtifactDescriptor(
                 artifactId,

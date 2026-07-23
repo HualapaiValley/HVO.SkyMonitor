@@ -150,6 +150,7 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
             return false;
         }
 
+        var conditions = input.Conditions;
         return !string.IsNullOrWhiteSpace(compatibility.Rig) &&
             !string.IsNullOrWhiteSpace(compatibility.Orientation) &&
             !string.IsNullOrWhiteSpace(compatibility.Calibration) &&
@@ -159,7 +160,10 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
             !string.IsNullOrWhiteSpace(compatibility.ProcessingProfile) &&
             (compatibility.LocationIdentitySha256 is null ||
                 compatibility.LocationIdentitySha256.Length == 64 &&
-                compatibility.LocationIdentitySha256.All(Uri.IsHexDigit));
+                compatibility.LocationIdentitySha256.All(Uri.IsHexDigit)) &&
+            (conditions is null || double.IsFinite(conditions.Gain) && conditions.Gain >= 0 &&
+                (!conditions.Offset.HasValue || double.IsFinite(conditions.Offset.Value)) &&
+                (!conditions.TemperatureC.HasValue || double.IsFinite(conditions.TemperatureC.Value)));
     }
 
     private static bool IsValidAnnotation(ProcessingAnnotationInput? annotation)
