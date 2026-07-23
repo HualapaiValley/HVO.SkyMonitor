@@ -232,6 +232,37 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
+    public async Task CaptureAsync_DeploymentSnapshotOverridesLegacyObservatoryGeometry()
+    {
+        var hualapaiConfig = CreateConfig();
+        var sidingSpring = DeploymentLocationSnapshot.Create(
+            "siding-spring-synthetic",
+            1,
+            "GitHub issue #196 operator-pinned acceptance coordinates; not a physical survey",
+            null,
+            DateTimeOffset.Parse("2025-01-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
+            null,
+            -31.2733,
+            149.0700,
+            1165,
+            "Australia/Sydney");
+        var sidingSpringConfig = hualapaiConfig with { DeploymentLocation = sidingSpring };
+        var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still);
+        var hualapaiModule = CreateModule(FixtureUtc);
+        var sidingSpringModule = CreateModule(FixtureUtc);
+        await hualapaiModule.InitializeAsync(hualapaiConfig, CancellationToken.None).ConfigureAwait(false);
+        await sidingSpringModule.InitializeAsync(sidingSpringConfig, CancellationToken.None).ConfigureAwait(false);
+
+        var hualapai = await hualapaiModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var southern = await sidingSpringModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(35.347, sidingSpringConfig.Observatory.LatitudeDegrees, 1e-12);
+        Assert.AreEqual(-31.2733, sidingSpringConfig.ResolveObservatory().LatitudeDegrees, 1e-12);
+        Assert.AreNotEqual(hualapai.Frame!.Metadata.Scene!.SceneId, southern.Frame!.Metadata.Scene!.SceneId);
+        CollectionAssert.AreNotEqual(hualapai.Frame.PixelData.ToArray(), southern.Frame.PixelData.ToArray());
+    }
+
+    [TestMethod]
     public async Task CameraModuleFactoryCreatesConfiguredVirtualSkyModule()
     {
         var catalog = new InMemoryCelestialCatalog([]);

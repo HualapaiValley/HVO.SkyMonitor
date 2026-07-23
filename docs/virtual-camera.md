@@ -459,6 +459,16 @@ The canonical Hualapai ASI174 conformance evidence is stored in
 independent Astropy reference cases from internal deterministic render
 regressions and is consumed directly by Astronomy and CameraAgent tests.
 
+### Synthetic Siding Spring deployment fixture
+
+`tests/fixtures/locations/siding-spring-synthetic-deployment-v1.json` pins the
+second standalone deployment fixture to latitude `-31.2733`, east-positive
+longitude `149.0700`, elevation `1165 m`, and timezone `Australia/Sydney`.
+Its source states that these are operator-pinned acceptance coordinates rather
+than a physical survey. The fixture's camera and equidistant-fisheye optics are
+explicitly synthetic and do not represent installed equipment or measured lens
+calibration. It supplements and never changes the canonical Hualapai fixture.
+
 ## Astronomy Model
 
 HYG star coordinates are J2000/ICRS catalog coordinates. Production projection

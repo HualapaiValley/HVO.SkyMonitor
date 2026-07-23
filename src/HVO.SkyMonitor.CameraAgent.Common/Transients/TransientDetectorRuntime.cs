@@ -3,13 +3,15 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Transients;
 
 internal sealed class TransientDetectorRuntime(
     ICelestialCatalog catalog,
     IConstellationTopology? constellationTopology = null,
-    IPlanetEphemeris? planetEphemeris = null)
+    IPlanetEphemeris? planetEphemeris = null,
+    Func<IDeploymentLocationStore?>? deploymentLocationStoreAccessor = null)
 {
     internal static readonly TransientDeterministicAssessmentOptionsV1 AssessmentOptions = new(
         5, 3, 8, 3, 1.8, 0.5, 10, 100_000, 3, 3, 3, 1_000, 30, 2);
@@ -66,6 +68,7 @@ internal sealed class TransientDetectorRuntime(
         var starRegions = new List<Linear16CircularMaskRegion>();
         foreach (var pair in frames.OrderBy(static pair => pair.Key))
         {
+            var observatory = ResolveObservatory(pair.Value.Manifest.Descriptor, configuration);
             var metadata = (catalog as ICelestialCatalogMetadataSource)?.Metadata ?? new CatalogMetadata(
                 "runtime-catalog",
                 "unversioned",
@@ -76,9 +79,9 @@ internal sealed class TransientDetectorRuntime(
             var request = new VisibleSceneRequest(
                 pair.Value.Source.ObservationStartedUtc,
                 new ObserverLocation(
-                    configuration.Observatory.LatitudeDegrees,
-                    configuration.Observatory.LongitudeDegrees,
-                    configuration.Observatory.ElevationMeters),
+                    observatory.LatitudeDegrees,
+                    observatory.LongitudeDegrees,
+                    observatory.ElevationMeters),
                 projection,
                 new CatalogQuery(options.StarMaximumMagnitude, options.StarMaximumResults),
                 metadata,
@@ -118,6 +121,24 @@ internal sealed class TransientDetectorRuntime(
                 pair.Value,
                 new TransientSensitivityV1(pair.Value.Descriptor.Compatibility.SetpointRegime, 1, 1),
                 masks));
+    }
+
+    internal ObservatoryLocation ResolveObservatory(
+        ReconstructionDescriptor descriptor,
+        CameraModuleConfig configuration)
+    {
+        if (descriptor.Location is { } provenance)
+        {
+            var store = deploymentLocationStoreAccessor?.Invoke() ?? throw new TransientWorkerExecutionException(
+                "transient-runtime.location-history-unavailable", retryable: false);
+            return store.Resolve(provenance, descriptor.Timing.ExposureStartedUtc).ToObservatoryLocation();
+        }
+        if (configuration.DeploymentLocation is not null || configuration.DeploymentLocationRedacted)
+        {
+            throw new TransientWorkerExecutionException(
+                "transient-runtime.capture-location-missing", retryable: false);
+        }
+        return configuration.Observatory;
     }
 
     internal static TransientCandidateExtractionOutcome Extract(

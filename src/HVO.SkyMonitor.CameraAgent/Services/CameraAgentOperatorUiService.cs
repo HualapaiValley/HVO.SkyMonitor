@@ -508,7 +508,9 @@ internal sealed class CameraAgentOperatorUiService(
             var centralEnabled = _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled;
 
             var status = new CameraAgentSystemStatus(
-                "Unversioned startup snapshot",
+                config.DeploymentLocation is { } deploymentLocation
+                    ? $"Deployment location {deploymentLocation.LocationId} v{deploymentLocation.Version}"
+                    : "Legacy location unknown",
                 string.Empty,
                 "Validated at startup",
                 config.AgentId ?? "Unavailable",

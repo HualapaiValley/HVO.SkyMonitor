@@ -16,8 +16,14 @@ internal static class CaptureLaneEnvelopeSerializer
         {
             Result = submission.Result with { Frame = null, Artifacts = null }
         };
+        var redactedConfiguration = configuration with
+        {
+            Observatory = new ObservatoryLocation(0, 0, 0, "UTC"),
+            DeploymentLocation = null,
+            DeploymentLocationRedacted = true
+        };
         var json = JsonSerializer.SerializeToUtf8Bytes(
-            new CaptureLaneEnvelope(configuration, lightweight), SerializerOptions);
+            new CaptureLaneEnvelope(redactedConfiguration, lightweight), SerializerOptions);
         return (json, Convert.ToHexString(SHA256.HashData(json)));
     }
 
@@ -31,5 +37,11 @@ internal static class CaptureLaneEnvelopeSerializer
 
         return JsonSerializer.Deserialize<CaptureLaneEnvelope>(json, SerializerOptions)
             ?? throw new InvalidDataException("Capture lane context is invalid.");
+    }
+
+    internal static (byte[] Json, string Sha256) Redact(ReadOnlySpan<byte> json, string expectedSha256)
+    {
+        var envelope = Deserialize(json, expectedSha256);
+        return Serialize(envelope.Configuration, envelope.Submission);
     }
 }

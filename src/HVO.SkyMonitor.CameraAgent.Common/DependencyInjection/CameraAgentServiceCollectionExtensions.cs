@@ -20,6 +20,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -42,6 +43,8 @@ public static class CameraAgentServiceCollectionExtensions
             .ValidateOnStart();
 
         services.AddSingleton<ICameraAgentConfigurationAccessor, CameraAgentConfigurationAccessor>();
+        services.AddSingleton<DeploymentLocationTelemetry>();
+        services.AddSingleton<IDeploymentLocationStore, ProtectedDeploymentLocationStore>();
         services.AddSingleton<ICameraAgentConfigurationLoader, FileCameraAgentConfigurationLoader>();
         services.AddSingleton<IFrameStorageService, FileSystemFrameStorageService>();
         services.AddSingleton<IStorageCapacityProvider, FileSystemStorageCapacityProvider>();
@@ -65,7 +68,11 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<SqliteTransientRuntimeStore>();
         services.AddSingleton<ITransientRuntimeManagement>(provider =>
             provider.GetRequiredService<SqliteTransientRuntimeStore>());
-        services.AddSingleton<TransientDetectorRuntime>();
+        services.AddSingleton(provider => new TransientDetectorRuntime(
+            provider.GetRequiredService<ICelestialCatalog>(),
+            provider.GetService<IConstellationTopology>(),
+            provider.GetService<IPlanetEphemeris>(),
+            () => provider.GetService<IDeploymentLocationStore>()));
         services.AddSingleton<TransientWorkerWakeup>();
         services.AddSingleton<TransientWorkerState>();
         services.AddSingleton<TransientWorkerTelemetry>();
@@ -74,7 +81,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());
         services.AddSingleton<IAnnotationSceneProvider>(provider => new AnnotationSceneProvider(
             () => provider.GetService<ICelestialCatalog>(),
-            provider.GetRequiredService<IConstellationTopology>()));
+            provider.GetRequiredService<IConstellationTopology>(),
+            () => provider.GetService<IDeploymentLocationStore>()));
         services.AddSingleton<IPlanetEphemeris, AstronomyEnginePlanetEphemeris>();
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();

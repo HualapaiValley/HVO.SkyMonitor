@@ -9,6 +9,8 @@ using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
@@ -17,6 +19,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 [DoNotParallelize]
 public sealed class RawCaptureIngressTests
 {
+    private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
+
     [TestMethod]
     public async Task AcceptAsync_PublishesV2EvidenceBeforeWalCommitAndIsIdempotent()
     {
@@ -25,7 +29,10 @@ public sealed class RawCaptureIngressTests
         {
             var state = new RawIngressState(TimeProvider.System);
             using var ingress = CreateIngress(root, state);
-            var configuration = CreateConfiguration();
+            var location = DeploymentLocationSnapshot.Create(
+                "siding-spring-synthetic", 1, "synthetic test", null,
+                DateTimeOffset.UnixEpoch, null, -31.2733, 149.0700, 1165, "Australia/Sydney");
+            var configuration = CreateConfiguration() with { DeploymentLocation = location };
             var submission = CreateSubmission(Timestamp(2), [1, 2, 3, 4]);
 
             var first = await ingress.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false);
@@ -40,6 +47,7 @@ public sealed class RawCaptureIngressTests
             var parsed = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false));
             Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
             Assert.AreEqual(first.Manifest.IdempotencyKey, parsed.Document!.Manifest!.IdempotencyKey);
+            Assert.AreEqual(location.ToProvenance(), first.Manifest.Descriptor.Location);
             Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
             Assert.AreEqual(1, state.Snapshot.PendingCount);
             Assert.AreEqual(4, state.Snapshot.PendingBytes);
@@ -48,8 +56,20 @@ public sealed class RawCaptureIngressTests
             Assert.AreEqual("wal", await ScalarStringAsync(connection, "PRAGMA journal_mode;").ConfigureAwait(false));
             Assert.AreEqual(2L, await ScalarLongAsync(connection, "PRAGMA synchronous;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "PRAGMA foreign_keys;").ConfigureAwait(false));
-            Assert.AreEqual(6L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(7L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+            var contextJson = await ScalarBytesAsync(
+                connection, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
+            var contextText = System.Text.Encoding.UTF8.GetString(contextJson);
+            Assert.IsFalse(contextText.Contains("-31.2733", StringComparison.Ordinal));
+            Assert.IsFalse(contextText.Contains("149.07", StringComparison.Ordinal));
+            Assert.IsFalse(contextText.Contains("Australia/Sydney", StringComparison.Ordinal));
+            var contextSha256 = await ScalarStringAsync(
+                connection, "SELECT context_sha256 FROM capture_lane_contexts;").ConfigureAwait(false);
+            var envelope = CaptureLaneEnvelopeSerializer.Deserialize(contextJson, contextSha256);
+            Assert.IsNull(envelope.Configuration.DeploymentLocation);
+            Assert.IsTrue(envelope.Configuration.DeploymentLocationRedacted);
+            Assert.AreEqual(new ObservatoryLocation(0, 0, 0, "UTC"), envelope.Configuration.Observatory);
 
             using var browser = new FileSystemFrameStorageService(
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<FileSystemFrameStorageService>.Instance);
@@ -508,7 +528,7 @@ public sealed class RawCaptureIngressTests
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 7;";
+                command.CommandText = "PRAGMA user_version = 8;";
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var state = new RawIngressState(TimeProvider.System);
@@ -531,7 +551,7 @@ public sealed class RawCaptureIngressTests
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(7L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(8L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
             Assert.AreEqual(0L, telemetry.CheckpointCount);
             Assert.AreEqual(0L, telemetry.CheckpointFailureCount);
@@ -1177,10 +1197,92 @@ public sealed class RawCaptureIngressTests
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
 
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(6L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(7L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(3L, await ScalarLongAsync(
                 verify,
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('raw_capture_sequences','raw_capture_assignments','raw_captures');").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_MigratesV6LaneContextsWithoutCoordinates()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var location = DeploymentLocationSnapshot.Create(
+                "siding-spring-synthetic", 1, "test", null,
+                DateTimeOffset.UnixEpoch, null, -31.2733, 149.0700, 1165, "Australia/Sydney");
+            var legacyObservatory = new ObservatoryLocation(12.345678, -98.765432, 543.21, "Pacific/Nauru");
+            var configuration = CreateConfiguration() with
+            {
+                Observatory = legacyObservatory,
+                DeploymentLocation = location
+            };
+            var submission = CreateSubmission(Timestamp(2), [1, 2, 3, 4]);
+            using (var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                _ = await ingress.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false);
+            }
+            var lightweight = submission with
+            {
+                Result = submission.Result with { Frame = null, Artifacts = null }
+            };
+            var legacyJson = JsonSerializer.SerializeToUtf8Bytes(
+                new CaptureLaneEnvelope(configuration, lightweight),
+                WebJson);
+            var legacyText = System.Text.Encoding.UTF8.GetString(legacyJson);
+            Assert.IsTrue(legacyText.Contains("12.345678", StringComparison.Ordinal));
+            Assert.IsTrue(legacyText.Contains("-98.765432", StringComparison.Ordinal));
+            Assert.IsTrue(legacyText.Contains("Pacific/Nauru", StringComparison.Ordinal));
+            var legacySha = Convert.ToHexString(SHA256.HashData(legacyJson));
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE capture_lane_contexts SET context_json = $json, context_sha256 = $sha;
+                    PRAGMA user_version = 6;
+                    """;
+                command.Parameters.AddWithValue("$json", legacyJson);
+                command.Parameters.AddWithValue("$sha", legacySha);
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            using (var migrated = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                await migrated.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            using (var verify = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                Assert.AreEqual(7L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+                var context = await ScalarBytesAsync(
+                    verify, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
+                var text = System.Text.Encoding.UTF8.GetString(context);
+                Assert.IsFalse(text.Contains("12.345678", StringComparison.Ordinal));
+                Assert.IsFalse(text.Contains("-98.765432", StringComparison.Ordinal));
+                Assert.IsFalse(text.Contains("Pacific/Nauru", StringComparison.Ordinal));
+                var migratedSha = await ScalarStringAsync(
+                    verify, "SELECT context_sha256 FROM capture_lane_contexts;").ConfigureAwait(false);
+                Assert.IsTrue(CaptureLaneEnvelopeSerializer.Deserialize(context, migratedSha)
+                    .Configuration.DeploymentLocationRedacted);
+            }
+            SqliteConnection.ClearAllPools();
+            foreach (var suffix in new[] { string.Empty, "-wal", "-shm" })
+            {
+                var path = Path.Combine(root, "journal", string.Concat("raw-ingress.db", suffix));
+                if (!File.Exists(path))
+                {
+                    continue;
+                }
+                var bytes = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
+                Assert.IsFalse(bytes.AsSpan().IndexOf(System.Text.Encoding.UTF8.GetBytes("12.345678")) >= 0);
+                Assert.IsFalse(bytes.AsSpan().IndexOf(System.Text.Encoding.UTF8.GetBytes("-98.765432")) >= 0);
+                Assert.IsFalse(bytes.AsSpan().IndexOf(System.Text.Encoding.UTF8.GetBytes("Pacific/Nauru")) >= 0);
+            }
         }
         finally
         {
@@ -1194,14 +1296,35 @@ public sealed class RawCaptureIngressTests
         var root = CreateRoot();
         try
         {
+            var location = DeploymentLocationSnapshot.Create(
+                "siding-spring-synthetic", 1, "test", null,
+                DateTimeOffset.UnixEpoch, null, -31.2733, 149.0700, 1165, "Australia/Sydney");
+            var legacyObservatory = new ObservatoryLocation(12.345678, -98.765432, 543.21, "Pacific/Nauru");
+            var configuration = CreateConfiguration() with
+            {
+                Observatory = legacyObservatory,
+                DeploymentLocation = location
+            };
+            var submission = CreateSubmission(Timestamp(2), [1, 2, 3, 4]);
             RawCaptureReceipt receipt;
             using (var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System)))
             {
                 receipt = (await ingress.AcceptAsync(
-                    CreateConfiguration(),
-                    CreateSubmission(Timestamp(2), [1, 2, 3, 4]),
+                    configuration,
+                    submission,
                     CancellationToken.None).ConfigureAwait(false))!;
             }
+            var legacyJson = JsonSerializer.SerializeToUtf8Bytes(
+                new CaptureLaneEnvelope(configuration, submission with
+                {
+                    Result = submission.Result with { Frame = null, Artifacts = null }
+                }),
+                WebJson);
+            var legacyText = System.Text.Encoding.UTF8.GetString(legacyJson);
+            Assert.IsTrue(legacyText.Contains("12.345678", StringComparison.Ordinal));
+            Assert.IsTrue(legacyText.Contains("-98.765432", StringComparison.Ordinal));
+            Assert.IsTrue(legacyText.Contains("Pacific/Nauru", StringComparison.Ordinal));
+            var legacySha = Convert.ToHexString(SHA256.HashData(legacyJson));
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
                 using var command = connection.CreateCommand();
@@ -1211,8 +1334,11 @@ public sealed class RawCaptureIngressTests
                     DROP INDEX ix_raw_captures_gallery_sequence;
                     DROP INDEX ix_raw_captures_gallery_time;
                     ALTER TABLE raw_captures DROP COLUMN evidence_origin;
+                    UPDATE capture_lane_contexts SET context_json = $json, context_sha256 = $sha;
                     PRAGMA user_version = 0;
                     """;
+                command.Parameters.AddWithValue("$json", legacyJson);
+                command.Parameters.AddWithValue("$sha", legacySha);
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
 
@@ -1222,7 +1348,7 @@ public sealed class RawCaptureIngressTests
             }
 
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(6L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(7L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(receipt.Manifest.Descriptor.Capture.CaptureId.ToString("N"),
                 await ScalarStringAsync(verify, "SELECT capture_id FROM raw_captures;").ConfigureAwait(false));
             Assert.AreEqual(receipt.CommittedManifestSha256,
@@ -1233,6 +1359,16 @@ public sealed class RawCaptureIngressTests
                 verify,
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name LIKE 'ix_raw_captures_gallery_%';")
                 .ConfigureAwait(false));
+            var context = await ScalarBytesAsync(
+                verify, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
+            var contextSha = await ScalarStringAsync(
+                verify, "SELECT context_sha256 FROM capture_lane_contexts;").ConfigureAwait(false);
+            Assert.IsTrue(CaptureLaneEnvelopeSerializer.Deserialize(context, contextSha)
+                .Configuration.DeploymentLocationRedacted);
+            var contextText = System.Text.Encoding.UTF8.GetString(context);
+            Assert.IsFalse(contextText.Contains("12.345678", StringComparison.Ordinal));
+            Assert.IsFalse(contextText.Contains("-98.765432", StringComparison.Ordinal));
+            Assert.IsFalse(contextText.Contains("Pacific/Nauru", StringComparison.Ordinal));
         }
         finally
         {
@@ -1282,11 +1418,28 @@ public sealed class RawCaptureIngressTests
 
             using (var verify = await OpenJournalAsync(root).ConfigureAwait(false))
             {
-                Assert.AreEqual(6L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+                Assert.AreEqual(7L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
                 Assert.AreEqual(
                     CaptureContractJson.ComputeManifestSha256(reformatted),
                     await ScalarStringAsync(verify, "SELECT manifest_sha256 FROM raw_captures;").ConfigureAwait(false));
                 Assert.AreEqual("committed", await ScalarStringAsync(verify, "SELECT state FROM raw_captures;").ConfigureAwait(false));
+            }
+            using (var interrupted = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                using var command = interrupted.CreateCommand();
+                command.CommandText = "PRAGMA user_version = -7;";
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            using (var resumed = CreateIngress(root, state))
+            {
+                await resumed.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            using (var verify = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                Assert.AreEqual(7L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+                Assert.AreEqual(
+                    CaptureContractJson.ComputeManifestSha256(reformatted),
+                    await ScalarStringAsync(verify, "SELECT manifest_sha256 FROM raw_captures;").ConfigureAwait(false));
             }
             Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
             Assert.IsTrue(File.Exists(receipt.StoredFrame.AbsolutePath));

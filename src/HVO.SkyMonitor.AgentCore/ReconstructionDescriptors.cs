@@ -127,6 +127,10 @@ public sealed record ReconstructionDescriptor(
     [property: JsonRequired] FrameLayoutDescriptor Layout,
     [property: JsonRequired] ArtifactDescriptor Artifact)
 {
+    /// <summary>Gets optional coordinate-free identity of the deployment location used for this capture.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CaptureLocationProvenance? Location { get; init; }
+
     /// <summary>Gets optional acquisition-critical evidence retained for this capture cycle.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CaptureCycleEvidence? CycleEvidence { get; init; }
@@ -180,6 +184,18 @@ internal static class ReconstructionDescriptorValidator
         if (!cycleEvidenceResult.IsValid)
         {
             return cycleEvidenceResult;
+        }
+
+        var locationResult = descriptor.Location?.Validate() ?? CaptureContractValidationResult.Success;
+        if (!locationResult.IsValid)
+        {
+            return locationResult;
+        }
+        if (descriptor.Location is { } location &&
+            (descriptor.Timing.ExposureStartedUtc < location.EffectiveFromUtc ||
+             location.EffectiveUntilUtc is { } locationUntil && descriptor.Timing.ExposureStartedUtc >= locationUntil))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidLocationInterval, "descriptor.location.effectiveInterval");
         }
 
         var profileResult = ValidateProfiles(descriptor.Profiles);

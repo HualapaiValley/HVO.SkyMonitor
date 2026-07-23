@@ -326,7 +326,8 @@ public static class TransientDetectorInputFactory
            Bounded(compatibility.Rig) && Bounded(compatibility.Orientation) &&
            Bounded(compatibility.Calibration) && Bounded(compatibility.Mask) &&
            Bounded(compatibility.Sensor) && Bounded(compatibility.SetpointRegime) &&
-           Bounded(compatibility.ProcessingProfile);
+           Bounded(compatibility.ProcessingProfile) &&
+           (compatibility.LocationIdentitySha256 is null || Sha256(compatibility.LocationIdentitySha256));
 
     private static bool Bounded(string value)
         => !string.IsNullOrWhiteSpace(value) && value.Length <= MaximumIdentityLength && value == value.Trim();

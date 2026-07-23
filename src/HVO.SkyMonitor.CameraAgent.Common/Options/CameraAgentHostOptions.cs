@@ -69,6 +69,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     [Required]
     public ObservatoryLocation Observatory { get; init; } = new(0, 0, 0, "UTC");
 
+    [Required]
+    public DeploymentLocationOptions DeploymentLocation { get; init; } = new();
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (DiskPressureRecoveryPercent <= DiskPressureThresholdPercent)
@@ -152,6 +155,51 @@ public sealed class CameraAgentHostOptions : IValidatableObject
         foreach (var result in artifactReadResults)
         {
             yield return result;
+        }
+
+        var locationResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            DeploymentLocation,
+            new ValidationContext(DeploymentLocation),
+            locationResults,
+            validateAllProperties: true);
+        foreach (var result in locationResults)
+        {
+            yield return result;
+        }
+    }
+}
+
+public sealed class DeploymentLocationOptions : IValidatableObject
+{
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(128)]
+    public string LocationId { get; init; } = "local-deployment";
+
+    [Required(AllowEmptyStrings = false)]
+    [MaxLength(512)]
+    public string Source { get; init; } = "local-configuration";
+
+    [Range(0, double.MaxValue)]
+    public double? HorizontalAccuracyMeters { get; init; }
+
+    public DateTimeOffset? EffectiveFromUtc { get; init; }
+
+    public DateTimeOffset? EffectiveUntilUtc { get; init; }
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (HorizontalAccuracyMeters is { } accuracy && !double.IsFinite(accuracy))
+        {
+            yield return new ValidationResult(
+                "HorizontalAccuracyMeters must be finite when specified.",
+                [nameof(HorizontalAccuracyMeters)]);
+        }
+        if (EffectiveFromUtc is { } from && EffectiveUntilUtc is { } until && until <= from)
+        {
+            yield return new ValidationResult(
+                "EffectiveUntilUtc must be later than EffectiveFromUtc.",
+                [nameof(EffectiveFromUtc), nameof(EffectiveUntilUtc)]);
         }
     }
 }

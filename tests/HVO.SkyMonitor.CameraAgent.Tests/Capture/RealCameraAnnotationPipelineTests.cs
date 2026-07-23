@@ -4,6 +4,8 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -125,6 +127,56 @@ public sealed class RealCameraAnnotationPipelineTests
         Assert.IsFalse(annotated.Metadata.Scene.IncludeConstellationEndpointStars);
     }
 
+    [TestMethod]
+    public async Task AnnotationSceneProvider_LegacyDescriptorDoesNotInferCurrentLocation()
+    {
+        var catalog = CreateCatalog();
+        var topology = new InMemoryConstellationTopology([]);
+        var provider = new AnnotationSceneProvider(() => catalog, topology, () => null);
+        var config = CreateConfig();
+        var raw = new CameraFrame(
+            Utc, 200, 200, CameraPixelFormat.Mono16, new byte[200 * 200 * 2],
+            new FrameMetadata(TimeSpan.FromSeconds(20), 150, -10), 400);
+        var legacyDescriptor = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono16, 200, 200, 400, raw.PixelData.ToArray()).Descriptor;
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await provider.BuildAsync(
+                config, legacyDescriptor, raw, ExpectedConstellationIds, CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+
+        StringAssert.Contains(exception.Message, "not inferred", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task AnnotationSceneProvider_UsesDescriptorLocationInsteadOfCurrentConfiguration()
+    {
+        var catalog = CreateCatalog();
+        var topology = new InMemoryConstellationTopology([]);
+        var captureLocation = DeploymentLocationSnapshot.Create(
+            "capture-location", 1, "test", null, DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC");
+        var currentLocation = DeploymentLocationSnapshot.Create(
+            "current-location", 1, "test", null, DateTimeOffset.UnixEpoch, null, 45, 90, 100, "UTC");
+        var locationStore = new StaticLocationStore(captureLocation);
+        var provider = new AnnotationSceneProvider(() => catalog, topology, () => locationStore);
+        var config = CreateConfig() with { DeploymentLocation = currentLocation };
+        var raw = new CameraFrame(
+            Utc, 200, 200, CameraPixelFormat.Mono16, new byte[200 * 200 * 2],
+            new FrameMetadata(TimeSpan.FromSeconds(20), 150, -10), 400);
+        var descriptor = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono16, 200, 200, 400, raw.PixelData.ToArray()).Descriptor with
+        {
+            Location = captureLocation.ToProvenance()
+        };
+
+        var scene = await provider.BuildAsync(
+            config, descriptor, raw, ExpectedConstellationIds, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(0, scene.Scene.Request.Observer.LatitudeDegrees, 1e-12);
+        Assert.AreEqual(0, scene.Scene.Request.Observer.LongitudeDegrees, 1e-12);
+        Assert.AreEqual(captureLocation.ToProvenance(), locationStore.Resolved);
+    }
+
     private static ServiceProvider CreateServices(
         ICelestialCatalog catalog,
         IConstellationTopology topology)
@@ -200,7 +252,12 @@ public sealed class RealCameraAnnotationPipelineTests
                         ConstellationLineOpacity = 1,
                         RecipeVersion = "real-constellation-test-v1"
                     }))
-            ]);
+            ])
+        {
+            DeploymentLocation = DeploymentLocationSnapshot.Create(
+                "physical-test-location", 1, "synthetic test", null,
+                DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC")
+        };
 
     private static TestCatalog CreateCatalog()
     {
@@ -243,5 +300,24 @@ public sealed class RealCameraAnnotationPipelineTests
             IReadOnlyCollection<string> hipparcosIds,
             CancellationToken cancellationToken = default)
             => _inner.GetByHipparcosIdsAsync(hipparcosIds, cancellationToken);
+    }
+
+    private sealed class StaticLocationStore(DeploymentLocationSnapshot snapshot) : IDeploymentLocationStore
+    {
+        public DeploymentLocationSnapshot? Active => snapshot;
+
+        public CaptureLocationProvenance? Resolved { get; private set; }
+
+        public ValueTask<DeploymentLocationSnapshot> InitializeAsync(
+            DeploymentLocationSeed seed,
+            CancellationToken cancellationToken) => ValueTask.FromResult(snapshot);
+
+        public DeploymentLocationSnapshot Resolve(
+            CaptureLocationProvenance provenance,
+            DateTimeOffset? effectiveUtc = null)
+        {
+            Resolved = provenance;
+            return snapshot;
+        }
     }
 }

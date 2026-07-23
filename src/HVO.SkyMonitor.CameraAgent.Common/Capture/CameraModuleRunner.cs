@@ -590,11 +590,12 @@ internal sealed class CameraModuleRunner
             throw new InvalidOperationException("Host-metered capture control requires a planet ephemeris.");
         }
         var policy = config.Rig.ControlPolicy!.SolarRegimes ?? new CaptureSolarRegimePolicy();
+        var observatory = config.ResolveObservatory(utc);
         var classification = SolarAltitudeClassifier.Classify(
             _planetEphemeris,
             utc,
-            config.Observatory.LatitudeDegrees,
-            config.Observatory.LongitudeDegrees,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
             policy.DayAltitudeThresholdDegrees,
             policy.NightAltitudeThresholdDegrees);
         return classification.Regime switch

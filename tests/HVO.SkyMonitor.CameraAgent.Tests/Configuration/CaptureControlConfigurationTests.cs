@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -239,7 +240,21 @@ public sealed class CaptureControlConfigurationTests
         })).ConfigureAwait(false);
     }
 
-    private static async Task<CameraModuleConfig> LoadAsync(Action<JsonObject>? mutate = null)
+    [TestMethod]
+    public async Task LoadAsync_InvalidConfigurationDoesNotMutateDeploymentLocationHistory()
+    {
+        var locationStore = new RecordingDeploymentLocationStore();
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(
+            root => Remove(root, "module.type"),
+            locationStore)).ConfigureAwait(false);
+
+        Assert.AreEqual(0, locationStore.InitializeCalls);
+    }
+
+    private static async Task<CameraModuleConfig> LoadAsync(
+        Action<JsonObject>? mutate = null,
+        IDeploymentLocationStore? deploymentLocationStore = null)
     {
         var directory = Path.Combine(
             Path.GetTempPath(), "hvo-capture-control-configuration", Guid.NewGuid().ToString("N"));
@@ -257,7 +272,8 @@ public sealed class CaptureControlConfigurationTests
                     AgentId = "configuration-test",
                     Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC")
                 }),
-                NullLogger<FileCameraAgentConfigurationLoader>.Instance);
+                NullLogger<FileCameraAgentConfigurationLoader>.Instance,
+                deploymentLocationStore);
 
             return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
         }
@@ -289,6 +305,26 @@ public sealed class CaptureControlConfigurationTests
                 ?? throw new InvalidOperationException($"Configuration object '{segment}' was not present.");
         }
         return (parent, segments[^1]);
+    }
+
+    private sealed class RecordingDeploymentLocationStore : IDeploymentLocationStore
+    {
+        internal int InitializeCalls { get; private set; }
+
+        public DeploymentLocationSnapshot? Active => null;
+
+        public ValueTask<DeploymentLocationSnapshot> InitializeAsync(
+            DeploymentLocationSeed seed,
+            CancellationToken cancellationToken)
+        {
+            InitializeCalls++;
+            throw new InvalidOperationException("A rejected configuration must not initialize location state.");
+        }
+
+        public DeploymentLocationSnapshot Resolve(
+            CaptureLocationProvenance provenance,
+            DateTimeOffset? effectiveUtc = null)
+            => throw new NotSupportedException();
     }
 
     private const string ValidHostMeteredJson = """

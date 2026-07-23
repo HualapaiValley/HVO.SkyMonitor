@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Imaging;
 
@@ -59,7 +60,8 @@ public sealed record ProcessingCompatibilityIdentity(
     string Mask,
     string Sensor,
     string SetpointRegime,
-    string ProcessingProfile);
+    string ProcessingProfile,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? LocationIdentitySha256 = null);
 
 /// <summary>
 /// A borrowed immutable input. Its payload must remain valid until execution completes. Observation bounds describe

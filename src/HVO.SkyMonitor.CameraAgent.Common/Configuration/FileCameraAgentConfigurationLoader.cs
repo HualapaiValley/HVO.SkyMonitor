@@ -6,6 +6,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -13,7 +14,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Configuration;
 
 public sealed class FileCameraAgentConfigurationLoader(
     IOptions<CameraAgentHostOptions> options,
-    ILogger<FileCameraAgentConfigurationLoader> logger) : ICameraAgentConfigurationLoader
+    ILogger<FileCameraAgentConfigurationLoader> logger,
+    IDeploymentLocationStore? deploymentLocationStore = null) : ICameraAgentConfigurationLoader
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -31,6 +33,7 @@ public sealed class FileCameraAgentConfigurationLoader(
 
     private readonly CameraAgentHostOptions _options = options.Value;
     private readonly ILogger<FileCameraAgentConfigurationLoader> _logger = logger;
+    private readonly IDeploymentLocationStore? _deploymentLocationStore = deploymentLocationStore;
 
     public async Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken)
     {
@@ -51,15 +54,42 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new InvalidOperationException("Camera agent configuration is invalid.");
         }
 
+        var agentId = string.IsNullOrWhiteSpace(_options.AgentId) ? document.AgentId : _options.AgentId;
+        var locationSeed = new DeploymentLocationSeed(
+            _options.DeploymentLocation.LocationId,
+            _options.DeploymentLocation.Source,
+            _options.DeploymentLocation.HorizontalAccuracyMeters,
+            _options.DeploymentLocation.EffectiveFromUtc,
+            _options.DeploymentLocation.EffectiveUntilUtc,
+            _options.Observatory);
+        var location = DeploymentLocationSnapshot.Create(
+            locationSeed.LocationId,
+            1,
+            locationSeed.Source,
+            locationSeed.HorizontalAccuracyMeters,
+            locationSeed.EffectiveFromUtc ?? DateTimeOffset.UnixEpoch,
+            locationSeed.EffectiveUntilUtc,
+            locationSeed.Coordinates.LatitudeDegrees,
+            locationSeed.Coordinates.LongitudeDegrees,
+            locationSeed.Coordinates.ElevationMeters,
+            locationSeed.Coordinates.TimeZoneId);
         var config = new CameraModuleConfig(
             Observatory: _options.Observatory,
             Module: document.Module,
             Rig: document.Rig,
             ProcessingSteps: document.ProcessingSteps,
             Pipeline: document.Pipeline,
-            AgentId: string.IsNullOrWhiteSpace(_options.AgentId) ? document.AgentId : _options.AgentId);
+            AgentId: agentId)
+        {
+            DeploymentLocation = location
+        };
 
         ValidateConfig(config);
+        if (_deploymentLocationStore is not null)
+        {
+            location = await _deploymentLocationStore.InitializeAsync(locationSeed, cancellationToken).ConfigureAwait(false);
+            config = config with { DeploymentLocation = location };
+        }
         _logger.ConfigurationLoaded(path);
         return config;
     }
@@ -74,6 +104,14 @@ public sealed class FileCameraAgentConfigurationLoader(
         if (string.IsNullOrWhiteSpace(config.AgentId))
         {
             throw new InvalidOperationException("AgentId must be specified and match the registered device identity.");
+        }
+
+        var locationValidation = config.DeploymentLocation?.Validate()
+            ?? CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidLocation, "location");
+        if (!locationValidation.IsValid)
+        {
+            throw new InvalidOperationException(
+                $"Deployment location is invalid ({locationValidation.ReasonCode}, {locationValidation.FieldPath}).");
         }
 
         if (config.Rig.Sensor.WidthPixels <= 0 || config.Rig.Sensor.HeightPixels <= 0)

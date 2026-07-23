@@ -156,7 +156,10 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
             !string.IsNullOrWhiteSpace(compatibility.Mask) &&
             !string.IsNullOrWhiteSpace(compatibility.Sensor) &&
             !string.IsNullOrWhiteSpace(compatibility.SetpointRegime) &&
-            !string.IsNullOrWhiteSpace(compatibility.ProcessingProfile);
+            !string.IsNullOrWhiteSpace(compatibility.ProcessingProfile) &&
+            (compatibility.LocationIdentitySha256 is null ||
+                compatibility.LocationIdentitySha256.Length == 64 &&
+                compatibility.LocationIdentitySha256.All(Uri.IsHexDigit));
     }
 
     private static bool IsValidAnnotation(ProcessingAnnotationInput? annotation)

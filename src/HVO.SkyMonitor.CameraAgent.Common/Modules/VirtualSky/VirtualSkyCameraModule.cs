@@ -113,10 +113,11 @@ public sealed class VirtualSkyCameraModule(
             _options.CatalogLicense,
             _options.CatalogSchemaVersion);
         var metadata = (catalog as ICelestialCatalogMetadataSource)?.Metadata ?? configuredMetadata;
+        var observatory = config.ResolveObservatory(request.RequestedStartUtc);
         var sceneRequest = new VisibleSceneRequest(
             request.RequestedStartUtc,
-            new ObserverLocation(config.Observatory.LatitudeDegrees, config.Observatory.LongitudeDegrees,
-                config.Observatory.ElevationMeters),
+            new ObserverLocation(observatory.LatitudeDegrees, observatory.LongitudeDegrees,
+                observatory.ElevationMeters),
             projection,
             new CatalogQuery(_options.MaximumMagnitude, _options.MaximumResults),
             metadata,

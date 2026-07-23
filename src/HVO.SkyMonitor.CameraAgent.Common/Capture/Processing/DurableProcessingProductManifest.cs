@@ -107,7 +107,8 @@ internal static class DurableProcessingProductManifestJson
             string.IsNullOrWhiteSpace(manifest.Compatibility.Mask) ||
             string.IsNullOrWhiteSpace(manifest.Compatibility.Sensor) ||
             string.IsNullOrWhiteSpace(manifest.Compatibility.SetpointRegime) ||
-            string.IsNullOrWhiteSpace(manifest.Compatibility.ProcessingProfile))
+            string.IsNullOrWhiteSpace(manifest.Compatibility.ProcessingProfile) ||
+            manifest.Compatibility.LocationIdentitySha256 is { } locationSha256 && !IsSha256(locationSha256))
         {
             throw new InvalidDataException("Durable processing product provenance is invalid.");
         }

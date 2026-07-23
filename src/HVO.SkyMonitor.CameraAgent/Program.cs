@@ -37,6 +37,7 @@ using Scalar.AspNetCore;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 
 namespace HVO.SkyMonitor.CameraAgent;
@@ -104,6 +105,7 @@ public class Program
         DeviceStateFilePermissions.RestrictDirectory(dataProtectionPath);
         builder.Services.AddDataProtection()
             .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath));
+        builder.Services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
 
         builder.Services.AddDbContext<ApplicationDbContext>(options =>
         {
@@ -158,6 +160,7 @@ public class Program
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks();
         healthChecks.AddDbContextCheck<ApplicationDbContext>("identity-database", tags: ["dependency"]);
         healthChecks.AddInstalledCelestialCatalogHealthCheck();
+        healthChecks.AddCheck<DeploymentLocationHealthCheck>("deployment-location", tags: ["dependency"]);
         builder.Services.AddOpenTelemetry()
             .WithMetrics(metrics =>
             {
@@ -166,8 +169,11 @@ public class Program
                 metrics.AddMeter(EnvironmentalObservationDeliveryTelemetry.MeterName);
                 metrics.AddMeter(TransientWorkerTelemetry.MeterName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
+                metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
             })
-            .WithTracing(tracing => tracing.AddSource(TransientWorkerTelemetry.ActivitySourceName));
+            .WithTracing(tracing => tracing
+                .AddSource(TransientWorkerTelemetry.ActivitySourceName)
+                .AddSource(DeploymentLocationTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {

@@ -17,6 +17,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
@@ -26,6 +27,25 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class TransientWorkerRuntimeTests
 {
+    [TestMethod]
+    public void ResolveObservatory_MigratedLegacyContextFailsClosed()
+    {
+        var runtime = new TransientDetectorRuntime(new InMemoryCelestialCatalog([]));
+        var descriptor = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor;
+        var configuration = CreateConfiguration() with
+        {
+            Observatory = new ObservatoryLocation(0, 0, 0, "UTC"),
+            DeploymentLocation = null,
+            DeploymentLocationRedacted = true
+        };
+
+        var exception = Assert.ThrowsExactly<TransientWorkerExecutionException>(() =>
+            runtime.ResolveObservatory(descriptor, configuration));
+
+        Assert.AreEqual("transient-runtime.capture-location-missing", exception.Message);
+    }
+
     [TestMethod]
     [DataRow(TransientOperatingMode.Edge, "finalized")]
     [DataRow(TransientOperatingMode.Hybrid, "handoff_pending")]
