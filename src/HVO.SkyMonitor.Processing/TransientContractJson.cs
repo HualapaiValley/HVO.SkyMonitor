@@ -810,7 +810,8 @@ public static class TransientContractJson
            Bounded(value.Orientation, MaximumIdentityLength) && Bounded(value.Calibration, MaximumIdentityLength) &&
            Bounded(value.Mask, MaximumIdentityLength) && Bounded(value.Sensor, MaximumIdentityLength) &&
            Bounded(value.SetpointRegime, MaximumIdentityLength) &&
-           Bounded(value.ProcessingProfile, MaximumIdentityLength);
+           Bounded(value.ProcessingProfile, MaximumIdentityLength) &&
+           (value.LocationIdentitySha256 is null || Sha256(value.LocationIdentitySha256));
 
     private static bool ValidObservationProvenance(TransientObservationProvenanceV1? value)
         => value is not null && Sha256(value.DetectorInputIdentitySha256) &&

@@ -50,7 +50,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     private HostInstance Host => _host
         ?? throw new InvalidOperationException("The standalone CameraAgent host is not running.");
 
-    internal static async Task<StandaloneCameraAgentKestrelFixture> CreateAsync()
+    internal static async Task<StandaloneCameraAgentKestrelFixture> CreateAsync(bool useSidingSpringLocation = false)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -84,6 +84,17 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 ["Logging:LogLevel:Default"] = "Warning",
                 ["Serilog:MinimumLevel:Default"] = "Warning"
             };
+            if (useSidingSpringLocation)
+            {
+                overrides["CameraAgent:Observatory:LatitudeDegrees"] = "-31.2733";
+                overrides["CameraAgent:Observatory:LongitudeDegrees"] = "149.0700";
+                overrides["CameraAgent:Observatory:ElevationMeters"] = "1165";
+                overrides["CameraAgent:Observatory:TimeZoneId"] = "Australia/Sydney";
+                overrides["CameraAgent:DeploymentLocation:LocationId"] = "siding-spring-synthetic";
+                overrides["CameraAgent:DeploymentLocation:Source"] =
+                    "GitHub issue #196 operator-pinned acceptance coordinates; not a physical survey";
+                overrides["CameraAgent:DeploymentLocation:EffectiveFromUtc"] = "2025-01-01T00:00:00Z";
+            }
             var fixture = new StandaloneCameraAgentKestrelFixture(root, catalog, overrides);
             await fixture.StartHostAsync().ConfigureAwait(false);
             return fixture;

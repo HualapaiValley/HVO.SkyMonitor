@@ -19,7 +19,8 @@ internal sealed class SqliteRawCaptureJournal(
     Func<DateTimeOffset>? utcNow = null,
     TransientDetectionOptions? transientOptions = null)
 {
-    internal const int CurrentSchemaVersion = 6;
+    internal const int CurrentSchemaVersion = 7;
+    private const int PendingCoordinateScrubSchemaVersion = -7;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly int _busyTimeoutSeconds = busyTimeoutSeconds;
     private readonly Action<TimeSpan>? _lockWaitRecorder = lockWaitRecorder;
@@ -49,6 +50,12 @@ internal sealed class SqliteRawCaptureJournal(
         EnsureDatabaseFilesArePhysical();
 
         var version = await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
+        if (version == PendingCoordinateScrubSchemaVersion)
+        {
+            await CompleteCoordinateScrubAsync(connection, cancellationToken).ConfigureAwait(false);
+            version = CurrentSchemaVersion;
+            _transactionRecorder?.Invoke("migration", true);
+        }
         if (version > CurrentSchemaVersion)
         {
             throw new InvalidOperationException($"Raw ingress schema {version} is newer than supported schema {CurrentSchemaVersion}.");
@@ -57,6 +64,8 @@ internal sealed class SqliteRawCaptureJournal(
         {
             try
             {
+                await ExecuteNonQueryAsync(connection, transaction: null, "PRAGMA secure_delete = ON;", cancellationToken)
+                    .ConfigureAwait(false);
                 using var transaction = BeginImmediate(connection);
                 _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
                 if (version == 0)
@@ -123,9 +132,18 @@ internal sealed class SqliteRawCaptureJournal(
                 {
                     await BackfillEvidenceOriginsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 }
-                await ExecuteNonQueryAsync(connection, transaction, $"PRAGMA user_version = {CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
+                if (version < 7)
+                {
+                    await RedactLaneContextsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                }
+                await ExecuteNonQueryAsync(
+                    connection,
+                    transaction,
+                    $"PRAGMA user_version = {PendingCoordinateScrubSchemaVersion};",
+                    cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CompleteCoordinateScrubAsync(connection, cancellationToken).ConfigureAwait(false);
                 _transactionRecorder?.Invoke("migration", true);
             }
             catch
@@ -191,6 +209,93 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyIndexAsync(connection, "ix_transient_candidate_conflicts_observed", "observed_unix_ms,conflict_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_transient_candidate_conflicts_candidate", "candidate_id,conflict_id", cancellationToken).ConfigureAwait(false);
         await VerifyConnectionSettingsAsync(connection, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task RedactLaneContextsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        const int batchSize = 256;
+        var lastRawCaptureRowId = 0L;
+        while (true)
+        {
+            var contexts = new List<(long RawCaptureRowId, byte[] Json, string Sha256)>(batchSize);
+            using (var select = connection.CreateCommand())
+            {
+                select.Transaction = transaction;
+                select.CommandText = """
+                    SELECT raw_capture_row_id, context_json, context_sha256
+                    FROM capture_lane_contexts
+                    WHERE raw_capture_row_id > $last
+                    ORDER BY raw_capture_row_id
+                    LIMIT $batch;
+                    """;
+                select.Parameters.AddWithValue("$last", lastRawCaptureRowId);
+                select.Parameters.AddWithValue("$batch", batchSize);
+                using var reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    contexts.Add((reader.GetInt64(0), (byte[])reader.GetValue(1), reader.GetString(2)));
+                }
+            }
+
+            if (contexts.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var context in contexts)
+            {
+                var redacted = CaptureLaneEnvelopeSerializer.Redact(context.Json, context.Sha256);
+                if (context.Json.AsSpan().SequenceEqual(redacted.Json))
+                {
+                    continue;
+                }
+                using var update = connection.CreateCommand();
+                update.Transaction = transaction;
+                update.CommandText = """
+                    UPDATE capture_lane_contexts
+                    SET context_json = $json, context_sha256 = $sha
+                    WHERE raw_capture_row_id = $raw;
+                    """;
+                update.Parameters.AddWithValue("$json", redacted.Json);
+                update.Parameters.AddWithValue("$sha", redacted.Sha256);
+                update.Parameters.AddWithValue("$raw", context.RawCaptureRowId);
+                if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                {
+                    throw new InvalidDataException("Raw ingress lane-context redaction did not update exactly one row.");
+                }
+            }
+            lastRawCaptureRowId = contexts[^1].RawCaptureRowId;
+        }
+    }
+
+    private static async Task ScrubMigratedCoordinateBytesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteNonQueryAsync(
+            connection, transaction: null, "PRAGMA wal_checkpoint(TRUNCATE);", cancellationToken).ConfigureAwait(false);
+        await ExecuteNonQueryAsync(connection, transaction: null, "VACUUM;", cancellationToken).ConfigureAwait(false);
+        await ExecuteNonQueryAsync(
+            connection, transaction: null, "PRAGMA wal_checkpoint(TRUNCATE);", cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task CompleteCoordinateScrubAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteNonQueryAsync(connection, transaction: null, "PRAGMA secure_delete = ON;", cancellationToken)
+            .ConfigureAwait(false);
+        await ScrubMigratedCoordinateBytesAsync(connection, cancellationToken).ConfigureAwait(false);
+        using var versionTransaction = BeginImmediate(connection);
+        await ExecuteNonQueryAsync(
+            connection,
+            versionTransaction,
+            $"PRAGMA user_version = {CurrentSchemaVersion};",
+            cancellationToken).ConfigureAwait(false);
+        await versionTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task RehashCommittedManifestBytesAsync(

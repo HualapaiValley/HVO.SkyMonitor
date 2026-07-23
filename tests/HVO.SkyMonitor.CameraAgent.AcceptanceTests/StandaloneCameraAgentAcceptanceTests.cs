@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Identity;
@@ -43,6 +44,9 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         await using var fixture = await StandaloneCameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         var firstCapture = await WaitForCompleteCaptureAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
         var firstOwner = await ReadOwnerAsync(fixture.Services).ConfigureAwait(false);
+        var firstLocation = ReadActiveLocation(fixture.Services);
+        AssertProtectedLocationState(fixture.Root);
+        AssertLaneJournalHasNoCoordinates(fixture.Root, "35.5599378", "-113.9119818", "America/Phoenix");
 
         using (var ownerClient = await fixture.CreateOwnerClientAsync().ConfigureAwait(false))
         {
@@ -78,9 +82,12 @@ public sealed class StandaloneCameraAgentAcceptanceTests
             "the paused capture state to recover").ConfigureAwait(false);
         Assert.AreEqual(paused.Version, recoveredCoordinator.Snapshot.Version);
         var recoveredOwner = await ReadOwnerAsync(fixture.Services).ConfigureAwait(false);
+        var recoveredLocation = ReadActiveLocation(fixture.Services);
         Assert.AreEqual(firstOwner.Id, recoveredOwner.Id);
         Assert.AreEqual(firstOwner.NormalizedEmail, recoveredOwner.NormalizedEmail);
         Assert.IsTrue(recoveredOwner.IsSiteOwner);
+        Assert.AreEqual(firstLocation.ToProvenance(), recoveredLocation.ToProvenance());
+        AssertProtectedLocationState(fixture.Root);
 
         using (var recoveredOwnerClient = await fixture.CreateOwnerClientAsync().ConfigureAwait(false))
         {
@@ -109,10 +116,55 @@ public sealed class StandaloneCameraAgentAcceptanceTests
             preRestartMaximumSequence).ConfigureAwait(false);
         Assert.IsGreaterThan(preRestartMaximumSequence, resumedCapture.CaptureSequence);
         Assert.AreEqual(StandaloneCameraAgentKestrelFixture.AgentId, resumedCapture.AgentId);
+        Assert.AreEqual(firstLocation.ToProvenance(), ReadActiveLocation(fixture.Services).ToProvenance());
         await AssertCentralStateIsEmptyAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
         AssertNoOutboundAttempts(fixture);
 
         await fixture.StopHostAsync().ConfigureAwait(false);
+        AssertNoOutboundAttempts(fixture);
+    }
+
+    [TestMethod]
+    public async Task SidingSpringLocationRemainsAuthoritativeAcrossStandaloneRestartAsync()
+    {
+        await using var fixture = await StandaloneCameraAgentKestrelFixture.CreateAsync(
+            useSidingSpringLocation: true).ConfigureAwait(false);
+        var firstCapture = await WaitForCompleteCaptureAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
+        var first = fixture.Services.GetRequiredService<IDeploymentLocationStore>().Active;
+        var firstConfig = await fixture.Services.GetRequiredService<HVO.SkyMonitor.CameraAgent.Common.Configuration.ICameraAgentConfigurationAccessor>()
+            .WaitForConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(first);
+        Assert.AreEqual("siding-spring-synthetic", first.LocationId);
+        Assert.AreEqual(-31.2733, first.LatitudeDegrees, 1e-12);
+        Assert.AreEqual(149.0700, first.LongitudeDegrees, 1e-12);
+        Assert.AreEqual(1165, first.ElevationMeters, 1e-12);
+        Assert.AreEqual("Australia/Sydney", first.TimeZoneId);
+        Assert.AreEqual(1L, first.Version);
+        AssertLaneJournalHasNoCoordinates(fixture.Root, "-31.2733", "149.07", "Australia/Sydney");
+        AssertNoOutboundAttempts(fixture);
+
+        await fixture.RestartHostAsync().ConfigureAwait(false);
+        var restartedCapture = await WaitForCompleteCaptureAsync(
+            fixture.Services, fixture.Root, firstCapture.CaptureSequence).ConfigureAwait(false);
+        var restarted = fixture.Services.GetRequiredService<IDeploymentLocationStore>().Active;
+        var restartedConfig = await fixture.Services.GetRequiredService<HVO.SkyMonitor.CameraAgent.Common.Configuration.ICameraAgentConfigurationAccessor>()
+            .WaitForConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(restarted);
+        Assert.AreEqual(first.ToProvenance(), restarted.ToProvenance());
+        Assert.AreEqual(first.ToObservatoryLocation(), restarted.ToObservatoryLocation());
+        Assert.AreEqual(firstConfig.ResolveObservatory(), restartedConfig.ResolveObservatory());
+        Assert.AreEqual(firstConfig.Rig, restartedConfig.Rig);
+        var restartedRawManifest = ReadManifest(
+            fixture.Root,
+            restartedCapture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw).ArtifactId);
+        Assert.AreEqual(restarted.ToProvenance(), restartedRawManifest.Descriptor.Location);
+        Assert.IsNotNull(restartedRawManifest.Scene);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(restartedRawManifest.Scene.ProjectionModel));
+        Assert.IsFalse(string.IsNullOrWhiteSpace(restartedRawManifest.Scene.ProjectionCalibrationVersion));
+        Assert.IsNotNull(restartedRawManifest.Scene.Objects);
+        Assert.IsNotEmpty(restartedRawManifest.Scene.Objects);
         AssertNoOutboundAttempts(fixture);
     }
 
@@ -184,6 +236,12 @@ public sealed class StandaloneCameraAgentAcceptanceTests
             .Select(static parsed => parsed.Document!.Manifest!)
             .GroupBy(static manifest => manifest.Descriptor.Artifact.ArtifactId)
             .ToDictionary(static group => group.Key, static group => group.First());
+        var captureLocations = manifests.Values
+            .Where(manifest => manifest.Descriptor.Capture.CaptureId == capture.CaptureId)
+            .Select(static manifest => manifest.Descriptor.Location)
+            .ToArray();
+        Assert.IsTrue(captureLocations.All(static location => location is not null));
+        Assert.AreEqual(1, captureLocations.Distinct().Count());
         foreach (var artifact in capture.Artifacts)
         {
             Assert.IsTrue(manifests.TryGetValue(artifact.ArtifactId, out var manifest), artifact.ArtifactId.ToString("D"));
@@ -203,6 +261,10 @@ public sealed class StandaloneCameraAgentAcceptanceTests
                 ignoreCase: true);
             Assert.IsTrue(descriptor.Artifact.SourceArtifactIds.All(manifests.ContainsKey),
                 $"Artifact {artifact.ArtifactId:D} has dangling source identities.");
+            var manifestText = System.Text.Encoding.UTF8.GetString(CaptureContractJson.Serialize(manifest));
+            Assert.IsFalse(manifestText.Contains("35.5599378", StringComparison.Ordinal));
+            Assert.IsFalse(manifestText.Contains("-113.9119818", StringComparison.Ordinal));
+            Assert.IsFalse(manifestText.Contains("America/Phoenix", StringComparison.Ordinal));
         }
 
         var calibrated = manifests[capture.Artifacts.Single(static artifact =>
@@ -213,6 +275,44 @@ public sealed class StandaloneCameraAgentAcceptanceTests
             "None",
             calibrated.Recipe.Options.Deserialize<LinearNormalizationOptions>(
                 WebJson)!.Mode);
+    }
+
+    private static DeploymentLocationSnapshot ReadActiveLocation(IServiceProvider services)
+    {
+        var active = services.GetRequiredService<IDeploymentLocationStore>().Active;
+        Assert.IsNotNull(active);
+        Assert.IsTrue(active.Validate().IsValid);
+        Assert.AreEqual(1L, active.Version);
+        Assert.AreEqual("hualapai-cameraagent", active.LocationId);
+        return active;
+    }
+
+    private static void AssertProtectedLocationState(string root)
+    {
+        var path = Path.Combine(root, ".location", "deployment-location.v1.protected");
+        Assert.IsTrue(File.Exists(path));
+        var protectedText = System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(path));
+        Assert.IsFalse(protectedText.Contains("35.5599378", StringComparison.Ordinal));
+        Assert.IsFalse(protectedText.Contains("-113.9119818", StringComparison.Ordinal));
+        Assert.IsFalse(protectedText.Contains("America/Phoenix", StringComparison.Ordinal));
+    }
+
+    private static void AssertLaneJournalHasNoCoordinates(string root, params string[] forbidden)
+    {
+        var journalRoot = Path.Combine(root, "journal");
+        foreach (var path in new[]
+        {
+            Path.Combine(journalRoot, "raw-ingress.db"),
+            Path.Combine(journalRoot, "raw-ingress.db-wal"),
+            Path.Combine(journalRoot, "raw-ingress.db-shm")
+        }.Where(File.Exists))
+        {
+            var content = System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(path));
+            foreach (var value in forbidden)
+            {
+                Assert.IsFalse(content.Contains(value, StringComparison.Ordinal), path);
+            }
+        }
     }
 
     private static async Task<CameraAgentOperationsSummary> WaitForStandaloneSummaryAsync(HttpClient client)
@@ -274,6 +374,10 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         StringAssert.Contains(health, "Artifact delivery is disabled/not configured.", StringComparison.Ordinal);
         StringAssert.Contains(health, "Fleet heartbeat is disabled/not configured.", StringComparison.Ordinal);
         StringAssert.Contains(health, "Environmental delivery is disabled/not configured.", StringComparison.Ordinal);
+        StringAssert.Contains(health, "Protected deployment-location history is available.", StringComparison.Ordinal);
+        Assert.IsFalse(health.Contains("35.5599378", StringComparison.Ordinal));
+        Assert.IsFalse(health.Contains("-113.9119818", StringComparison.Ordinal));
+        Assert.IsFalse(health.Contains("America/Phoenix", StringComparison.Ordinal));
     }
 
     private static async Task AssertCaptureHttpEvidenceAsync(
@@ -377,6 +481,20 @@ public sealed class StandaloneCameraAgentAcceptanceTests
             return $"Artifact reconstruction: {reconstruction.ReasonCode ?? "valid"} at {manifest.RelativeArtifactPath}";
         }
         return $"Artifact {artifactId:D} has no local manifest.";
+    }
+
+    private static ArtifactManifestV2 ReadManifest(string root, Guid artifactId)
+    {
+        foreach (var sidecarPath in Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories))
+        {
+            var parsed = CaptureContractJson.ParseManifest(File.ReadAllBytes(sidecarPath));
+            if (parsed.Document?.Manifest is { } manifest &&
+                manifest.Descriptor.Artifact.ArtifactId == artifactId)
+            {
+                return manifest;
+            }
+        }
+        throw new AssertFailedException($"Artifact {artifactId:D} has no local manifest.");
     }
 
     private static async Task AssertCentralStateIsEmptyAsync(IServiceProvider services, string root)

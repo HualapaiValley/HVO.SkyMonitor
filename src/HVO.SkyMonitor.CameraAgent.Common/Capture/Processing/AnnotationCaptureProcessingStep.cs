@@ -48,7 +48,8 @@ internal sealed class AnnotationCaptureProcessingStep(
         if (provenance is null && Options.DrawConstellationLines && Options.ConstellationIds.Count > 0)
         {
             generatedScene = await annotationSceneProvider.BuildAsync(
-                context.Config, artifacts.Raw.Frame, Options.ConstellationIds, cancellationToken).ConfigureAwait(false);
+                context.Config, context.ReconstructionDescriptor, artifacts.Raw.Frame,
+                Options.ConstellationIds, cancellationToken).ConfigureAwait(false);
             provenance = generatedScene.Provenance;
         }
         if (provenance is null && (Options.DrawImageCircle || Options.DrawCardinalDirections))

@@ -17,6 +17,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -35,6 +36,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
     private const int WarmupCount = 5;
     private const int MeasuredCount = 30;
     private const int W3MetadataCount = 10_000;
+    private const int W3LegacyContextCount = 1_000;
     private const int W3PayloadCount = 100;
     private const long W3PayloadBytes = 1_287_936_000;
     private const int VirtualSkySeed = 2025;
@@ -42,6 +44,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
     private const double W2BaselineP95Milliseconds = 39.4532;
     private const string ExpectedProfileSha256 = "4CDF8496A1F5A05D005CF101A594CEF2053BFF418C554AED14AB1563AA549308";
     private static readonly JsonSerializerOptions EvidenceOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private static readonly JsonSerializerOptions LaneContextOptions = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
     public async Task W2W3MAndBlockedLane_DurableLaneEvidence()
@@ -70,7 +73,8 @@ public sealed class DurableCaptureDistributionPerformanceTests
 
             var w2 = await MeasureW2Async(
                 Path.Combine(workRoot, "w2"), input, configuration, runtimeSignals).ConfigureAwait(false);
-            var w3m = await MeasureW3MetadataAsync(Path.Combine(workRoot, "w3m")).ConfigureAwait(false);
+            var w3m = await MeasureW3MetadataAsync(
+                Path.Combine(workRoot, "w3m"), input, configuration).ConfigureAwait(false);
             var unblocked = await MeasureLiveScenarioAsync(
                 Path.Combine(workRoot, "w3p-unblocked"), input, configuration, blocked: false, runtimeSignals).ConfigureAwait(false);
             var blocked = await MeasureLiveScenarioAsync(
@@ -403,11 +407,14 @@ public sealed class DurableCaptureDistributionPerformanceTests
             sequences.Count);
     }
 
-    private static async Task<W3MetadataMeasurement> MeasureW3MetadataAsync(string root)
+    private static async Task<W3MetadataMeasurement> MeasureW3MetadataAsync(
+        string root,
+        W2Input input,
+        CameraModuleConfig configuration)
     {
         Directory.CreateDirectory(Path.Combine(root, "journal"));
         var databasePath = DatabasePath(root);
-        var insertion = await CreateV1DatabaseAsync(databasePath).ConfigureAwait(false);
+        var insertion = await CreateV1DatabaseAsync(databasePath, input, configuration).ConfigureAwait(false);
         SqliteConnection.ClearAllPools();
 
         var distribution = CreateDistributionOptions();
@@ -450,11 +457,12 @@ public sealed class DurableCaptureDistributionPerformanceTests
         var integrity = await ScalarStringAsync(connection, "PRAGMA integrity_check;").ConfigureAwait(false);
         Assert.AreEqual(W3MetadataCount, rawRows);
         Assert.AreEqual(W3MetadataCount * 3L, laneRows);
-        Assert.AreEqual(0L, contextRows);
-        Assert.AreEqual(2L, version);
+        Assert.AreEqual(W3LegacyContextCount, contextRows);
+        Assert.AreEqual(7L, version);
         Assert.AreEqual("ok", integrity);
         Assert.AreEqual(0L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures r WHERE (SELECT COUNT(*) FROM capture_lane_work w WHERE w.raw_capture_row_id = r.raw_capture_row_id) != 3;").ConfigureAwait(false));
         await AssertReferenceOnlyLaneWorkAsync(connection).ConfigureAwait(false);
+        await AssertAllLaneContextsRedactedAsync(connection, W3LegacyContextCount).ConfigureAwait(false);
 
         var queryPlan = await ReadStringsAsync(connection, "EXPLAIN QUERY PLAN SELECT w.work_id FROM capture_lane_work w JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id LEFT JOIN capture_lane_contexts c ON c.raw_capture_row_id = r.raw_capture_row_id WHERE w.lane_name = 'standard' AND w.state NOT IN ('completed', 'abandoned') ORDER BY w.agent_id, w.capture_sequence LIMIT 1;").ConfigureAwait(false);
         Assert.IsTrue(queryPlan.Any(static detail =>
@@ -542,7 +550,10 @@ public sealed class DurableCaptureDistributionPerformanceTests
             PersistedPayloadCopyCount: 0);
     }
 
-    private static async Task<V1InsertionMeasurement> CreateV1DatabaseAsync(string databasePath)
+    private static async Task<V1InsertionMeasurement> CreateV1DatabaseAsync(
+        string databasePath,
+        W2Input input,
+        CameraModuleConfig configuration)
     {
         using var connection = new SqliteConnection($"Data Source={databasePath}");
         await connection.OpenAsync().ConfigureAwait(false);
@@ -551,6 +562,13 @@ public sealed class DurableCaptureDistributionPerformanceTests
             schema.CommandText = V1SchemaSql;
             await schema.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
+
+        var migrationManifestTemplate = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono8,
+            2,
+            2,
+            2,
+            [1, 2, 3, 4]);
 
         var started = Stopwatch.GetTimestamp();
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
@@ -595,8 +613,17 @@ public sealed class DurableCaptureDistributionPerformanceTests
             ManifestJson = capture.Parameters.Add("$manifest_json", SqliteType.Blob),
             Time = capture.Parameters.Add("$time", SqliteType.Integer)
         };
-        var emptyManifest = Encoding.ASCII.GetBytes("{}");
-        var payloadSha256 = new string('C', 64);
+        using var context = connection.CreateCommand();
+        context.Transaction = transaction;
+        context.CommandText = """
+            INSERT INTO capture_lane_contexts(
+                raw_capture_row_id, context_json, context_sha256, context_source)
+            VALUES ($raw, $json, $sha, 'capture');
+            """;
+        var contextRaw = context.Parameters.Add("$raw", SqliteType.Integer);
+        var contextJson = context.Parameters.Add("$json", SqliteType.Blob);
+        var contextSha = context.Parameters.Add("$sha", SqliteType.Text);
+        var payloadSha256 = PayloadChecksum.ComputeSha256([1, 2, 3, 4]);
         for (var index = 0; index < W3MetadataCount; index++)
         {
             var captureId = (index + 1).ToString("X32", System.Globalization.CultureInfo.InvariantCulture);
@@ -609,20 +636,60 @@ public sealed class DurableCaptureDistributionPerformanceTests
             parameters.Capture.Value = captureId;
             parameters.Artifact.Value = artifactId;
             parameters.Sequence.Value = index + 1;
-            parameters.Descriptor.Value = StableSha256("descriptor", index);
-            parameters.Manifest.Value = StableSha256("manifest", index);
+            var timestamp = CanonicalTime.AddMilliseconds(index);
+            var migrationManifest = migrationManifestTemplate with
+            {
+                RelativeArtifactPath = $"metadata/{index:D5}.bin",
+                Descriptor = migrationManifestTemplate.Descriptor with
+                {
+                    Capture = migrationManifestTemplate.Descriptor.Capture with
+                    {
+                        AgentId = "agent-95-w3m",
+                        CaptureSequence = index + 1,
+                        CaptureId = Guid.Parse(captureId)
+                    },
+                    Timing = new CaptureTimingDescriptor(
+                        timestamp,
+                        timestamp,
+                        timestamp,
+                        timestamp,
+                        timestamp),
+                    Artifact = migrationManifestTemplate.Descriptor.Artifact with
+                    {
+                        ArtifactId = Guid.Parse(artifactId),
+                        CreatedUtc = timestamp
+                    }
+                }
+            };
+            parameters.Descriptor.Value = CaptureContractJson.ComputeDescriptorSha256(migrationManifest.Descriptor);
+            parameters.Manifest.Value = CaptureContractJson.ComputeManifestSha256(migrationManifest);
             parameters.Payload.Value = payloadSha256;
-            parameters.PayloadLength.Value = W2PayloadBytes;
+            parameters.PayloadLength.Value = 4;
             parameters.PayloadPath.Value = $"metadata/{index:D5}.bin";
             parameters.SidecarPath.Value = $"metadata/{index:D5}.json";
-            parameters.ManifestJson.Value = emptyManifest;
-            parameters.Time.Value = CanonicalTime.ToUnixTimeMilliseconds() + index;
+            parameters.ManifestJson.Value = CaptureContractJson.Serialize(migrationManifest);
+            parameters.Time.Value = timestamp.ToUnixTimeMilliseconds();
             await capture.ExecuteNonQueryAsync().ConfigureAwait(false);
+            if (index < W3LegacyContextCount)
+            {
+                var submission = CreateSubmission(index, input);
+                var lightweight = submission with
+                {
+                    Result = submission.Result with { Frame = null, Artifacts = null }
+                };
+                var json = JsonSerializer.SerializeToUtf8Bytes(
+                    new CaptureLaneEnvelope(configuration, lightweight),
+                    LaneContextOptions);
+                contextRaw.Value = index + 1;
+                contextJson.Value = json;
+                contextSha.Value = Convert.ToHexString(SHA256.HashData(json));
+                await context.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
         }
         await transaction.CommitAsync().ConfigureAwait(false);
         return new V1InsertionMeasurement(
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-            1 + W3MetadataCount * 2);
+            1 + W3MetadataCount * 2 + W3LegacyContextCount);
     }
 
     private static async Task<LiveScenarioMeasurement> MeasureLiveScenarioAsync(
@@ -1004,6 +1071,27 @@ public sealed class DurableCaptureDistributionPerformanceTests
             column.Name.Contains("context", StringComparison.OrdinalIgnoreCase) ||
             column.Type.Contains("BLOB", StringComparison.OrdinalIgnoreCase)));
         Assert.IsTrue(columns.Any(static column => column.Name == "raw_capture_row_id"));
+    }
+
+    private static async Task AssertAllLaneContextsRedactedAsync(
+        SqliteConnection connection,
+        int expectedCount)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT context_json, context_sha256 FROM capture_lane_contexts ORDER BY raw_capture_row_id;";
+        using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        var count = 0;
+        while (await reader.ReadAsync().ConfigureAwait(false))
+        {
+            var envelope = CaptureLaneEnvelopeSerializer.Deserialize(
+                (byte[])reader.GetValue(0),
+                reader.GetString(1));
+            Assert.IsTrue(envelope.Configuration.DeploymentLocationRedacted);
+            Assert.IsNull(envelope.Configuration.DeploymentLocation);
+            Assert.AreEqual(new ObservatoryLocation(0, 0, 0, "UTC"), envelope.Configuration.Observatory);
+            count++;
+        }
+        Assert.AreEqual(expectedCount, count);
     }
 
     private static async Task<int> ReadAllLaneWorkPagesAsync(SqliteConnection connection, string lane)
@@ -1751,6 +1839,13 @@ public sealed class DurableCaptureDistributionPerformanceTests
         CREATE INDEX ix_raw_captures_discovery ON raw_captures(state, agent_id, capture_sequence);
         CREATE INDEX ix_raw_captures_backlog ON raw_captures(state, durable_ingress_unix_ms);
         CREATE INDEX ix_raw_captures_retention ON raw_captures(retention_hold, exposure_started_unix_ms);
+        CREATE TABLE capture_lane_contexts (
+            raw_capture_row_id INTEGER PRIMARY KEY,
+            context_json BLOB NOT NULL,
+            context_sha256 TEXT NOT NULL CHECK (length(context_sha256) = 64),
+            context_source TEXT NOT NULL CHECK (context_source IN ('capture', 'manifest-fallback')),
+            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id) ON DELETE CASCADE
+        ) STRICT;
         CREATE TABLE raw_ingress_reconciliation (
             reconciliation_id INTEGER PRIMARY KEY,
             evidence_key TEXT NOT NULL UNIQUE,

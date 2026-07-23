@@ -488,6 +488,42 @@ public sealed class CameraModuleCadenceTests
     }
 
     [TestMethod]
+    public async Task RunAsync_HostMeteredSolarRegimeUsesDeploymentLocationInsteadOfLegacyObservatory()
+    {
+        var timeProvider = new ManualTimeProvider(StartUtc);
+        using var cancellation = new CancellationTokenSource();
+        var module = new ScriptedCameraModule(
+            timeProvider,
+            (_, request) => CreateResult(request));
+        var location = DeploymentLocationSnapshot.Create(
+            "siding-spring-synthetic",
+            1,
+            "test",
+            null,
+            DateTimeOffset.UnixEpoch,
+            null,
+            -31.2733,
+            149.0700,
+            1165,
+            "Australia/Sydney");
+        var configuration = CreateHostMeteredConfig(CameraPixelFormat.Mono16) with
+        {
+            Observatory = new ObservatoryLocation(0, 0, 0, "UTC"),
+            DeploymentLocation = location
+        };
+        var context = new RecordingHostContext(
+            configuration,
+            timeProvider,
+            cancellation,
+            publishTarget: 1);
+        var runner = CreateRunner(module, context, timeProvider, new ZenithSunEphemeris());
+
+        await runner.RunAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureSolarRegime.Night, RequiredEvidence(context.Submissions.Single()).SolarRegime);
+    }
+
+    [TestMethod]
     public async Task RunAsync_HostMetersBigEndianMono16UsingConfiguredSensorByteOrder()
     {
         var timeProvider = new ManualTimeProvider(StartUtc);

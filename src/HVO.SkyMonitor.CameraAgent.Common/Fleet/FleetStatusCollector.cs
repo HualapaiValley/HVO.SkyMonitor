@@ -107,7 +107,14 @@ public sealed class FleetStatusCollector(
                 ?? "unknown",
             new FleetConfigurationIdentity(
                 "1",
-                CaptureContractJson.ComputeCanonicalJsonSha256(configuration),
+                CaptureContractJson.ComputeCanonicalJsonSha256(new
+                {
+                    configuration.AgentId,
+                    configuration.Module,
+                    configuration.Rig,
+                    ProcessingSteps = configuration.ResolveProcessingSteps(),
+                    Location = configuration.DeploymentLocation?.ToProvenance()
+                }),
                 Bound(configuration.ModuleType, 64),
                 Bound(configuration.Rig.ProfileVersion, 64),
                 CameraRigProfileIdentity.ComputeSha256(configuration.Rig),

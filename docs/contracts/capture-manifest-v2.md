@@ -24,6 +24,21 @@ record those facts; readers do not infer them from current configuration. Null
 optional evidence is omitted during serialization, preserving legacy bytes and
 descriptor hashes.
 
+`descriptor.location` is also additive and optional. It records the stable
+deployment-location ID and version plus source, known horizontal accuracy, and
+effective interval used for the capture. It omits latitude, longitude,
+elevation, timezone, and the coordinate-derived canonical hash because the
+complete immutable snapshot is protected in CameraAgent local state. A
+coordinate-free hash of ID and version is used only as a processing
+compatibility axis. Absence means location is unknown; legacy captures are
+never assigned the current location.
+
+Location intervals are half-open. An open-ended captured snapshot remains
+immutable; when a later version is activated, protected CameraAgent history
+records the new version's effective start as the prior version's supersession
+boundary. This closes the operational interval without changing hashes already
+referenced by older captures.
+
 ## Descriptor
 
 The reconstruction descriptor records:
@@ -42,7 +57,8 @@ The reconstruction descriptor records:
 - artifact role, non-empty variant, creation time, media type, payload SHA-256,
   and ordered lineage;
 - descriptive recipe name, semantic version, implementation version, canonical
-  options, and options SHA-256.
+  options, and options SHA-256;
+- optional coordinate-free capture-time deployment-location provenance.
 
 New captures may also retain `CaptureCycleEvidence`: cadence mode and start
 reason, host module-call time, exposure/gain ownership, solar regime, observed
@@ -80,8 +96,10 @@ option object keys are sorted ordinally at every nesting level before hashing or
 serialization; array order is preserved. The v2 idempotency key hashes the
 canonical reconstruction descriptor, so moving an unchanged payload does not
 change logical identity while a variant, recipe, lineage, profile, layout, or
-checksum change does. Non-null cycle evidence also participates in descriptor
-identity. A retry of legacy evidence remains legacy and never rewrites an old
+checksum change does. Non-null cycle evidence and location provenance also
+participate in descriptor identity. The coordinate-free location identity is a processing
+compatibility axis, so a location-version change starts a new rolling or window
+history. A retry of legacy evidence remains legacy and never rewrites an old
 sidecar merely to add newly available fields.
 
 `FrameReconstructor.TryReconstruct` validates the descriptor and exact payload

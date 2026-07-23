@@ -128,5 +128,6 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
             descriptor.Profiles.Sensor.Sha256,
             FormattableString.Invariant(
                 $"exposure={descriptor.Controls.EffectiveExposure.TotalMilliseconds:R};gain={descriptor.Controls.EffectiveGain:R};offset={descriptor.Controls.EffectiveOffset:R};temperatureSetpoint={descriptor.Controls.TemperatureSetpointC:R}"),
-            descriptor.Profiles.Processing.Sha256);
+            descriptor.Profiles.Processing.Sha256,
+            descriptor.Location?.IdentitySha256);
 }

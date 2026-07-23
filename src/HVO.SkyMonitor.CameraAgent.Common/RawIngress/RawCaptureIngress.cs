@@ -252,6 +252,10 @@ internal sealed class RawCaptureIngress :
                 {
                     expectedDescriptor = expectedDescriptor with { CycleEvidence = null };
                 }
+                if (manifest.Descriptor.Location is null)
+                {
+                    expectedDescriptor = expectedDescriptor with { Location = null };
+                }
                 if (manifest.Descriptor.Timing.SetpointAppliedUtc is null)
                 {
                     expectedDescriptor = expectedDescriptor with

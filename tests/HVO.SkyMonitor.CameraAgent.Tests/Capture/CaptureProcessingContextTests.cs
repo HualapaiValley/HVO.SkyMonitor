@@ -324,6 +324,40 @@ public sealed class CaptureProcessingContextTests
     }
 
     [TestMethod]
+    public async Task RollingCombinationStep_DeploymentLocationChangeStartsFreshWindow()
+    {
+        var step = new RollingCombinationCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("Rolling", "Rolling", 0),
+            new RollingCombinationProcessingStepOptions { WindowSize = 2 }, Adapter);
+        var first = new CameraFrame(DateTimeOffset.UnixEpoch, 1, 1, CameraPixelFormat.Mono16,
+            new byte[] { 100, 0 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+        var second = new CameraFrame(DateTimeOffset.UnixEpoch.AddSeconds(1), 1, 1, CameraPixelFormat.Mono16,
+            new byte[] { 44, 1 }, new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0));
+        var hualapai = CreateConfig() with
+        {
+            DeploymentLocation = DeploymentLocationSnapshot.Create(
+                "deployment", 1, "test", null, DateTimeOffset.UnixEpoch, null,
+                35.347, -113.878, 0, "America/Phoenix")
+        };
+        var sidingSpring = CreateConfig() with
+        {
+            DeploymentLocation = DeploymentLocationSnapshot.Create(
+                "deployment", 2, "test", null, DateTimeOffset.UnixEpoch.AddSeconds(1), null,
+                -31.2733, 149.0700, 1165, "Australia/Sydney")
+        };
+
+        await step.ProcessAsync(
+            new CaptureProcessingContext(hualapai, CreateSubmission(first)),
+            CancellationToken.None).ConfigureAwait(false);
+        var changedContext = new CaptureProcessingContext(sidingSpring, CreateSubmission(second));
+        await step.ProcessAsync(changedContext, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual((ushort)300, BitConverter.ToUInt16(
+            changedContext.Artifacts![FrameArtifactRole.Combined].Frame.PixelData.Span));
+        Assert.AreEqual(1, step.BufferedFrameCount);
+    }
+
+    [TestMethod]
     public async Task RollingCombinationStep_CancellationDoesNotCommitTentativeWindow()
     {
         var step = new RollingCombinationCaptureProcessingStep(
@@ -493,6 +527,7 @@ public sealed class CaptureProcessingContextTests
     {
         public ValueTask<AnnotationSceneResult> BuildAsync(
             CameraModuleConfig config,
+            ReconstructionDescriptor? descriptor,
             CameraFrame rawFrame,
             IReadOnlyList<string> constellationIds,
             CancellationToken cancellationToken = default)

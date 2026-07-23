@@ -40,6 +40,7 @@ internal static class RawCaptureDescriptorFactory
     {
         var frame = submission.Result.Frame ?? throw new ArgumentException("A raw frame is required.", nameof(submission));
         var timing = ResolveTiming(submission, frame, durableIngressUtc);
+        _ = configuration.ResolveObservatory(timing.ExposureStartedUtc);
         var requestedSetpoint = submission.Request.RequestedSetpoint;
         var rigElement = CaptureContractJson.SerializeToElement(configuration.Rig);
         var sensorElement = JsonSerializer.SerializeToElement(configuration.Rig.Sensor);
@@ -102,7 +103,8 @@ internal static class RawCaptureDescriptorFactory
                 MediaTypeFor(frame.PixelFormat),
                 payloadSha256))
         {
-            CycleEvidence = NormalizeEvidence(submission.CycleEvidence)
+            CycleEvidence = NormalizeEvidence(submission.CycleEvidence),
+            Location = configuration.DeploymentLocation?.ToProvenance()
         };
     }
 

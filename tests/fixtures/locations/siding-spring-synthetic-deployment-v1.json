@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "hvo-deployment-location-fixture-v1",
+  "fixtureId": "siding-spring-synthetic-deployment-v1",
+  "locationId": "siding-spring-synthetic",
+  "version": 1,
+  "canonicalSha256": "DF0EA7C58E708F41B62A93C8F44F32F0D22C8D2EDF6C2725B0F25DD501BF6EE0",
+  "source": "GitHub issue #196 operator-pinned acceptance coordinates; not a physical survey",
+  "horizontalAccuracyMeters": null,
+  "effectiveFromUtc": "2025-01-01T00:00:00Z",
+  "effectiveUntilUtc": null,
+  "latitudeDegrees": -31.2733,
+  "longitudeDegreesEastPositive": 149.0700,
+  "elevationMeters": 1165,
+  "timeZoneId": "Australia/Sydney",
+  "cameraLabel": "Synthetic VirtualSky acceptance camera; no installed camera is represented",
+  "opticsLabel": "Synthetic equidistant fisheye acceptance optics; no measured lens calibration is represented"
+}

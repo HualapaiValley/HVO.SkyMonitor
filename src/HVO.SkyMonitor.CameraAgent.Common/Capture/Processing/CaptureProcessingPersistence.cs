@@ -585,6 +585,7 @@ internal sealed class CaptureProcessingPersistence(
            current.Profiles.Mask == candidate.Profiles.Mask &&
            current.Profiles.Sensor == candidate.Profiles.Sensor &&
            current.Profiles.Processing == candidate.Profiles.Processing &&
+           current.Location == candidate.Location &&
            current.Controls.EffectiveExposure == candidate.Controls.EffectiveExposure &&
            current.Controls.EffectiveGain == candidate.Controls.EffectiveGain &&
            current.Controls.EffectiveOffset == candidate.Controls.EffectiveOffset &&

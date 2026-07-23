@@ -183,6 +183,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             descriptor.Profiles.Sensor.Sha256,
             string.Create(CultureInfo.InvariantCulture,
                 $"exposure={descriptor.Controls.EffectiveExposure.TotalMilliseconds:R};gain={descriptor.Controls.EffectiveGain:R};offset={descriptor.Controls.EffectiveOffset:R};temperatureSetpoint={descriptor.Controls.TemperatureSetpointC:R}"),
-            descriptor.Profiles.Processing.Sha256);
+            descriptor.Profiles.Processing.Sha256,
+            descriptor.Location?.IdentitySha256);
     }
 }

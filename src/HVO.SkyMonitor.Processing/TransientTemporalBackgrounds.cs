@@ -650,7 +650,8 @@ public static class TransientTemporalBackgroundFactory
            string.Equals(expected.Calibration, actual.Calibration, StringComparison.Ordinal) &&
            string.Equals(expected.Mask, actual.Mask, StringComparison.Ordinal) &&
            string.Equals(expected.Sensor, actual.Sensor, StringComparison.Ordinal) &&
-           string.Equals(expected.ProcessingProfile, actual.ProcessingProfile, StringComparison.Ordinal);
+           string.Equals(expected.ProcessingProfile, actual.ProcessingProfile, StringComparison.Ordinal) &&
+           string.Equals(expected.LocationIdentitySha256, actual.LocationIdentitySha256, StringComparison.OrdinalIgnoreCase);
 
     private static bool TryValidateSource(
         TransientTemporalSource source,

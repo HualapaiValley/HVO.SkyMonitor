@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -11,6 +12,7 @@ internal interface IAnnotationSceneProvider
 {
     ValueTask<AnnotationSceneResult> BuildAsync(
         CameraModuleConfig config,
+        ReconstructionDescriptor? descriptor,
         CameraFrame rawFrame,
         IReadOnlyList<string> constellationIds,
         CancellationToken cancellationToken = default);
@@ -18,12 +20,14 @@ internal interface IAnnotationSceneProvider
 
 internal sealed class AnnotationSceneProvider(
     Func<ICelestialCatalog?> catalogAccessor,
-    IConstellationTopology constellationTopology) : IAnnotationSceneProvider
+    IConstellationTopology constellationTopology,
+    Func<IDeploymentLocationStore?> deploymentLocationStoreAccessor) : IAnnotationSceneProvider
 {
     private const string AstronomyAlgorithmVersion = "visible-scene-iau1976-constellation-v2";
 
     public async ValueTask<AnnotationSceneResult> BuildAsync(
         CameraModuleConfig config,
+        ReconstructionDescriptor? descriptor,
         CameraFrame rawFrame,
         IReadOnlyList<string> constellationIds,
         CancellationToken cancellationToken = default)
@@ -43,6 +47,27 @@ internal sealed class AnnotationSceneProvider(
             throw new InvalidOperationException(
                 "Real-frame constellation annotation requires stable Hipparcos catalog lookup.");
         }
+        DeploymentLocationSnapshot location;
+        if (descriptor?.Location is { } locationProvenance)
+        {
+            var locationStore = deploymentLocationStoreAccessor() ?? throw new InvalidOperationException(
+                "Location-dependent annotation requires protected deployment-location history.");
+            location = locationStore.Resolve(locationProvenance, rawFrame.TimestampUtc);
+        }
+        else if (descriptor is null)
+        {
+            location = config.DeploymentLocation ?? throw new InvalidOperationException(
+                "Location-dependent annotation requires capture-time deployment-location provenance.");
+            if (!location.IsEffectiveAt(rawFrame.TimestampUtc))
+            {
+                throw new InvalidOperationException("Deployment location is not effective for the annotation time.");
+            }
+        }
+        else
+        {
+            throw new InvalidOperationException(
+                "Legacy capture evidence has no deployment location; current coordinates are not inferred.");
+        }
         if (rawFrame.Width != config.Rig.Sensor.WidthPixels || rawFrame.Height != config.Rig.Sensor.HeightPixels ||
             rawFrame.PixelFormat != config.Rig.Sensor.PixelFormat)
         {
@@ -55,9 +80,9 @@ internal sealed class AnnotationSceneProvider(
         var request = new VisibleSceneRequest(
             rawFrame.TimestampUtc,
             new ObserverLocation(
-                config.Observatory.LatitudeDegrees,
-                config.Observatory.LongitudeDegrees,
-                config.Observatory.ElevationMeters),
+                location.LatitudeDegrees,
+                location.LongitudeDegrees,
+                location.ElevationMeters),
             projection,
             new CatalogQuery(-30, 1),
             metadata,

@@ -158,6 +158,14 @@ files while CameraAgent is running. `/health` reports `raw-ingress` as healthy
 only after schema verification, integrity checking, reconciliation, and a
 passive checkpoint complete.
 
+The protected deployment-location history and dedicated stable-application Data
+Protection key ring are under `<raw-ingress-root>/.location/`; the non-secret
+initialization marker is `<raw-ingress-root>/.deployment-location.v1.identity`.
+Back up and restore those paths with the raw-ingress evidence. Loss of the protected history or its key ring makes
+capture-time location versions unavailable; the marker and retained manifests
+make CameraAgent fail closed rather than assigning current coordinates or
+silently creating a replacement version 1.
+
 On restart, complete valid manifest-v2 pairs are recovered exactly once, stale
 temporary files are recorded and removed, compatibility indexes are repaired,
 and malformed or conflicting evidence moves beneath `quarantine/`. A committed

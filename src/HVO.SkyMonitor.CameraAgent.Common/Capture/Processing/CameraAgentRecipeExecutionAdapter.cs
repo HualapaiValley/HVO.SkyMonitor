@@ -150,7 +150,8 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             CaptureContractJson.ComputeCanonicalJsonSha256(
                 JsonSerializer.SerializeToElement(config.Rig.Sensor)),
             setpoint,
-            CaptureContractJson.ComputeCanonicalJsonSha256(processing));
+            CaptureContractJson.ComputeCanonicalJsonSha256(processing),
+            config.DeploymentLocation?.ToProvenance().IdentitySha256);
     }
 
     internal static ProcessingCompatibilityIdentity CreateCompatibility(ReconstructionDescriptor descriptor)
@@ -162,7 +163,8 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             descriptor.Profiles.Sensor.Sha256,
             string.Create(CultureInfo.InvariantCulture,
                 $"exposure={descriptor.Controls.EffectiveExposure.TotalMilliseconds:R};gain={descriptor.Controls.EffectiveGain:R};offset={descriptor.Controls.EffectiveOffset:R};temperatureSetpoint={descriptor.Controls.TemperatureSetpointC:R}"),
-            descriptor.Profiles.Processing.Sha256);
+            descriptor.Profiles.Processing.Sha256,
+            descriptor.Location?.IdentitySha256);
 
     private static double? TryGetLevel(IReadOnlyDictionary<string, string>? metadata, string key) =>
         metadata is not null && metadata.TryGetValue(key, out var value) &&

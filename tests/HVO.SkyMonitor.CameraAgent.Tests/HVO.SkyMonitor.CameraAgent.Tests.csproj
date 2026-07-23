@@ -53,6 +53,9 @@
     <None Include="..\fixtures\astronomy\hualapai-asi174-conformance-v1.json" Link="Fixtures\hualapai-asi174-conformance-v1.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\fixtures\locations\siding-spring-synthetic-deployment-v1.json" Link="Fixtures\siding-spring-synthetic-deployment-v1.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

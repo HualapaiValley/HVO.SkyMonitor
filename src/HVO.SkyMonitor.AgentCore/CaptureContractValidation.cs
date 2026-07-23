@@ -11,6 +11,10 @@ public static class CaptureContractReasonCodes
     public const string InvalidControls = "controls.invalid";
     public const string InvalidCadence = "cadence.invalid";
     public const string InvalidMetering = "metering.invalid";
+    public const string InvalidLocation = "location.invalid";
+    public const string InvalidLocationInterval = "location.interval-invalid";
+    public const string InvalidLocationTimeZone = "location.timezone-invalid";
+    public const string LocationHashMismatch = "location.hash-mismatch";
     public const string InvalidDimensions = "layout.invalid-dimensions";
     public const string InvalidStride = "layout.invalid-stride";
     public const string UnsupportedFormat = "layout.unsupported-format";

@@ -1,0 +1,36 @@
+{
+  "schema": "hvo-runtime-signal-manifest-v1",
+  "issue": 196,
+  "component": "CameraAgent protected deployment location",
+  "meter": "HVO.SkyMonitor.CameraAgent.DeploymentLocation",
+  "activitySource": "HVO.SkyMonitor.CameraAgent.DeploymentLocation",
+  "logs": [
+    { "eventId": 7301, "level": "Information", "fields": ["LocationId", "Version"] },
+    { "eventId": 7302, "level": "Information", "fields": ["LocationId", "Version"] }
+  ],
+  "metrics": [
+    { "name": "skymonitor.cameraagent.deployment_location.operations", "unit": "{operation}", "labels": { "operation": ["initialize", "load", "change"], "outcome": ["applied", "existing", "failed"] } },
+    { "name": "skymonitor.cameraagent.deployment_location.duration", "unit": "ms", "labels": { "operation": ["initialize", "load", "change"], "outcome": ["applied", "existing", "failed"] } }
+  ],
+  "spans": [
+    { "name": "deployment-location.initialize", "kind": "Internal", "tags": ["operation", "outcome"] }
+  ],
+  "health": {
+    "check": "deployment-location",
+    "healthy": ["protected history available"],
+    "degraded": ["waiting for protected history"],
+    "unhealthy": ["host startup fails on invalid, tampered, overlapping, or undecryptable history"],
+    "fields": ["locationId", "version"]
+  },
+  "privacy": {
+    "forbidden": ["latitude", "longitude", "elevation", "timezone", "protected payload", "Data Protection key material"],
+    "identifiers": "LocationId and version may appear in authenticated configuration and structured logs; the coordinate-derived canonical hash remains protected, and hashes and location identifiers are never metric labels or trace tags."
+  },
+  "collection": {
+    "focusedCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --filter FullyQualifiedName~DeploymentLocation",
+    "standaloneCommand": "DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --configuration Release --filter FullyQualifiedName~StandaloneCameraAgentAcceptanceTests",
+    "performanceCommand": "DOTNET_gcServer=1 dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --filter FullyQualifiedName~DeploymentLocationPerformanceTests",
+    "retainedArtifactPath": "TestResults/issue-196/",
+    "centralBoundary": "N/A: LogicHost membership, reconciliation, migrations, and central backfill remain issue #170."
+  }
+}
