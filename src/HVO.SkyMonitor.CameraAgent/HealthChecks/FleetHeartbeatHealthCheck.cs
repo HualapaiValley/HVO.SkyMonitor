@@ -1,17 +1,37 @@
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.Fleet.Contracts;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.HealthChecks;
 
 public sealed class FleetHeartbeatHealthCheck(
     FleetHeartbeatState state,
+    IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider) : IHealthCheck
 {
     public Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
         CancellationToken cancellationToken = default)
     {
+        if (options.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            return Task.FromResult(HealthCheckResult.Healthy(
+                "Fleet heartbeat is disabled/not configured.",
+                new Dictionary<string, object>
+                {
+                    ["Availability"] = "Disabled",
+                    ["PendingCount"] = 0L,
+                    ["PendingBytes"] = 0L,
+                    ["RetryCount"] = 0L,
+                    ["QuarantineCount"] = 0L,
+                    ["OverflowCount"] = 0L,
+                    ["BlockedCount"] = 0L,
+                    ["OldestAgeSeconds"] = 0D
+                }));
+        }
+
         var snapshot = state.Snapshot;
         var outbox = snapshot.Outbox;
         var oldestAge = outbox?.OldestPendingUtc is { } oldest

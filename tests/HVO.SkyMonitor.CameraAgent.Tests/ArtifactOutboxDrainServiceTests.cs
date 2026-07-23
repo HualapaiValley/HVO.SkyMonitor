@@ -109,13 +109,14 @@ public sealed class ArtifactOutboxDrainServiceTests
                 Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
                 {
                     StorageRoot = archiveRoot,
-                    QueueForUpload = true
+                    QueueForUpload = false
                 }))],
             AgentId: "agent");
         var options = new CameraAgentHostOptions
         {
             RawIngressRoot = rawRoot,
-            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = true }
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
+            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = false }
         };
 
         var locations = CameraAgentStorageResolver.Resolve(config, options);

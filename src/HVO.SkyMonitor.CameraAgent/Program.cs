@@ -191,7 +191,8 @@ public class Program
 
         authenticationBuilder.AddIdentityCookies();
 
-        builder.Services.ConfigureApplicationCookie(ConfigureApplicationCookie);
+        builder.Services.ConfigureApplicationCookie(options =>
+            ConfigureApplicationCookie(options, localIdentitySettings.CookieName));
 
         builder.Services.AddCameraAgentAuthorization();
         builder.Services.AddCameraAgentOutboxOperations();
@@ -294,11 +295,13 @@ public class Program
         await app.RunAsync().ConfigureAwait(false);
     }
 
-    internal static void ConfigureApplicationCookie(CookieAuthenticationOptions options)
+    internal static void ConfigureApplicationCookie(
+        CookieAuthenticationOptions options,
+        string cookieName = LocalIdentityOptions.DefaultCookieName)
     {
         options.LoginPath = "/Account/Login";
         options.AccessDeniedPath = "/Account/AccessDenied";
-        options.Cookie.Name = "CameraAgent.Auth";
+        options.Cookie.Name = cookieName;
         options.SlidingExpiration = true;
         options.ExpireTimeSpan = TimeSpan.FromHours(12);
         options.Events.OnRedirectToLogin = context =>

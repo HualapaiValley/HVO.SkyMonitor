@@ -124,6 +124,11 @@ public sealed class EnvironmentalObservationDeliveryService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (options.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            return;
+        }
+
         var delivery = options.Value.EnvironmentalDelivery;
         var root = options.Value.RawIngressRoot;
         var refreshInterval = TimeSpan.FromSeconds(delivery.PollIntervalSeconds);

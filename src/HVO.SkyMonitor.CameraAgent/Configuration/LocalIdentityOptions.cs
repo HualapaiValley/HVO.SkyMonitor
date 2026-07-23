@@ -4,6 +4,8 @@ namespace HVO.SkyMonitor.CameraAgent.Configuration;
 
 public sealed class LocalIdentityOptions : IValidatableObject
 {
+    public const string DefaultCookieName = "CameraAgent.Auth";
+
     [Required]
     [EmailAddress]
     public string AdminEmail { get; set; } = "owner@cameraagent.local";
@@ -11,6 +13,11 @@ public sealed class LocalIdentityOptions : IValidatableObject
     [Required]
     [MinLength(12)]
     public string AdminPassword { get; set; } = string.Empty;
+
+    [Required]
+    [StringLength(128, MinimumLength = 1)]
+    [RegularExpression("^[A-Za-z0-9._-]+$")]
+    public string CookieName { get; set; } = DefaultCookieName;
 
     /// <summary>
     /// Optional override for the SQLite database path. Defaults to App_Data/cameraagent_identity.db.

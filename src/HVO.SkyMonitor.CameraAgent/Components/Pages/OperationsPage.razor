@@ -60,6 +60,12 @@
                 <div><strong>LogicHost connectivity is unavailable</strong><p>Local capture and durable queues continue independently.</p></div>
             </section>
         }
+        @if (IsCentralIntegrationDisabled)
+        {
+            <section class="state-banner" role="status">
+                <div><strong>LogicHost integration is disabled</strong><p>Local capture, processing, retention, and operations continue independently.</p></div>
+            </section>
+        }
         @if (HasPressure)
         {
             <section class="state-banner state-banner--warning" role="alert">
@@ -174,7 +180,7 @@
 
             <article class="instrument-card instrument-card--wide">
                 <header><div><p class="eyebrow">Startup snapshot</p><h2>Configuration status</h2></div><FreshnessBadge Value="_view.Summary.Configuration.Freshness" /></header>
-                <dl class="fact-grid"><div><dt>Validation</dt><dd>@SplitWords(_view.Summary.Configuration.Value.ValidationStatus)</dd></div><div><dt>Current</dt><dd>@YesNo(_view.Summary.Configuration.Value.IsCurrent)</dd></div><div><dt>Agent</dt><dd>@(_view.Summary.Configuration.Value.AgentId ?? "Unavailable")</dd></div><div><dt>Module</dt><dd>@(_view.Summary.Configuration.Value.ModuleType ?? "Unavailable")</dd></div></dl>
+                <dl class="fact-grid"><div><dt>Validation</dt><dd>@SplitWords(_view.Summary.Configuration.Value.ValidationStatus)</dd></div><div><dt>Current</dt><dd>@YesNo(_view.Summary.Configuration.Value.IsCurrent)</dd></div><div><dt>Central integration</dt><dd>@SplitWords(_view.Summary.Configuration.Value.CentralIntegration)</dd></div><div><dt>Agent</dt><dd>@(_view.Summary.Configuration.Value.AgentId ?? "Unavailable")</dd></div><div><dt>Module</dt><dd>@(_view.Summary.Configuration.Value.ModuleType ?? "Unavailable")</dd></div></dl>
                 <a class="inline-link" href="/system">Inspect allowlisted startup configuration</a>
             </article>
         </section>

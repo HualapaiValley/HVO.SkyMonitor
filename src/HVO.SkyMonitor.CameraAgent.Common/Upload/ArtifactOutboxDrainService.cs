@@ -57,6 +57,12 @@ public sealed class ArtifactOutboxDrainService(
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The linked upload cancellation source is disposed unconditionally in the immediately enclosing finally block.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (hostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            state.MarkInitialized();
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             var config = await configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
@@ -310,6 +316,10 @@ public sealed class ArtifactOutboxDrainService(
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(options);
+        if (options.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            return [];
+        }
         var roots = new List<string>();
         if (options.CaptureDistribution.UploadEnabled)
         {
@@ -338,6 +348,45 @@ public sealed class ArtifactOutboxDrainService(
                 {
                     roots.Add(root);
                 }
+            }
+        }
+        return roots;
+    }
+
+    public static IReadOnlyList<string> ResolveLocalStorageRoots(
+        HVO.SkyMonitor.AgentCore.CameraModuleConfig config,
+        CameraAgentHostOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(options);
+        var roots = new List<string> { Path.GetFullPath(options.RawIngressRoot) };
+        foreach (var step in config.ResolveProcessingSteps())
+        {
+            if (!step.Type.Contains(nameof(NoOpFileStorageProcessingStep), StringComparison.OrdinalIgnoreCase) ||
+                step.Options is not { } stepOptions)
+            {
+                continue;
+            }
+
+            NoOpFileStorageProcessingStepOptions? parsed;
+            try
+            {
+                parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(
+                    stepOptions.GetRawText(), SerializerOptions);
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                continue;
+            }
+            if (parsed is null || string.IsNullOrWhiteSpace(parsed.StorageRoot))
+            {
+                continue;
+            }
+
+            var root = Path.GetFullPath(parsed.StorageRoot);
+            if (!roots.Any(existing => PathsEqual(existing, root)))
+            {
+                roots.Add(root);
             }
         }
         return roots;

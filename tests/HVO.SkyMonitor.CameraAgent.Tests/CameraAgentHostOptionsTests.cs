@@ -14,6 +14,65 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed class CameraAgentHostOptionsTests
 {
     [TestMethod]
+    public void CentralIntegration_DefaultsToEnabled()
+    {
+        Assert.AreEqual(CentralIntegrationMode.Enabled, new CameraAgentHostOptions().CentralIntegration.Mode);
+    }
+
+    [TestMethod]
+    public void Validate_WhenCentralIntegrationModeIsInvalid_ReturnsValidationError()
+    {
+        var options = new CameraAgentHostOptions
+        {
+            RawIngressRoot = "raw-ingress",
+            CentralIntegration = new CentralIntegrationOptions { Mode = (CentralIntegrationMode)99 }
+        };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(CentralIntegrationOptions.Mode))));
+    }
+
+    [TestMethod]
+    [DataRow(TransientOperatingMode.Central)]
+    [DataRow(TransientOperatingMode.Hybrid)]
+    public void Validate_WhenCentralTransientModeIsConfiguredStandalone_ReturnsValidationError(
+        TransientOperatingMode mode)
+    {
+        var options = new CameraAgentHostOptions
+        {
+            RawIngressRoot = "raw-ingress",
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
+            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = true },
+            TransientDetection = new TransientDetectionOptions { Mode = mode }
+        };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(CameraAgentHostOptions.CentralIntegration))));
+    }
+
+    [TestMethod]
+    public void CaptureLanePolicy_DisabledCentralIntegrationSuppressesConfiguredUploadLane()
+    {
+        var policy = new CaptureLanePolicy(Options.Create(new CameraAgentHostOptions
+        {
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
+            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = true }
+        }));
+
+        var upload = policy.Definitions.Single(static lane => lane.Name == "upload");
+        Assert.IsFalse(upload.Enabled);
+        Assert.IsTrue(upload.Required);
+    }
+
+    [TestMethod]
     public void Validate_WhenUploadMaximumIsBelowInitial_ReturnsValidationError()
     {
         var options = new CameraAgentHostOptions

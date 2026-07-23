@@ -4,10 +4,12 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Http;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Common.Identity;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Moq.Protected;
 
@@ -26,6 +28,7 @@ public sealed class DeviceRigProfileSeederTests
         var seeder = new DeviceRigProfileSeeder(
             mockHttpClientFactory.Object,
             mockLoader.Object,
+            Options.Create(new CameraAgentHostOptions()),
             NullLogger<DeviceRigProfileSeeder>.Instance);
 
         var identity = new DeviceIdentity("device-1", "CODE", DateTimeOffset.UtcNow);
@@ -88,6 +91,7 @@ public sealed class DeviceRigProfileSeederTests
         var seeder = new DeviceRigProfileSeeder(
             mockHttpClientFactory.Object,
             mockLoader.Object,
+            Options.Create(new CameraAgentHostOptions()),
             NullLogger<DeviceRigProfileSeeder>.Instance);
 
         var identity = new DeviceIdentity("device-1", "CODE", DateTimeOffset.UtcNow);

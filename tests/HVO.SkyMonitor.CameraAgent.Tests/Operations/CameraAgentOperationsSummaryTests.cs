@@ -109,7 +109,8 @@ public sealed class CameraAgentOperationsSummaryTests
             transient,
             telemetryProvider,
             configuration,
-            new CameraAgentStorageResolver(configuration, options));
+            new CameraAgentStorageResolver(configuration, options),
+            options);
 
         var summary = await provider.GetAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -129,6 +130,7 @@ public sealed class CameraAgentOperationsSummaryTests
         Assert.AreEqual("agent-operations", summary.Configuration.Value.AgentId);
         Assert.AreEqual("VirtualSky", summary.Configuration.Value.ModuleType);
         Assert.AreEqual("validated", summary.Configuration.Value.ValidationStatus);
+        Assert.AreEqual("Enabled", summary.Configuration.Value.CentralIntegration);
         Assert.IsFalse(string.IsNullOrWhiteSpace(summary.RawIngress.Source));
         Assert.IsFalse(string.IsNullOrWhiteSpace(summary.RawIngress.Freshness));
 

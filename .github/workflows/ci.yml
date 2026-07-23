@@ -172,6 +172,7 @@ jobs:
       - name: Run Integration suites
         run: |
           dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx"
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-standalone --logger "trx;LogFileName=integration-cameraagent-standalone.trx"
           dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/logichost --logger "trx;LogFileName=integration-logichost.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-host --logger "trx;LogFileName=integration-cameraagent-host.trx"
       - name: Upload Integration evidence
@@ -331,6 +332,7 @@ jobs:
             'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
             'TestResults/unit/logichost/*/coverage.cobertura.xml'
             'TestResults/integration/cameraagent-storage/*/coverage.cobertura.xml'
+            'TestResults/integration/cameraagent-standalone/*/coverage.cobertura.xml'
             'TestResults/integration/logichost/*/coverage.cobertura.xml'
             'TestResults/integration/cameraagent-host/*/coverage.cobertura.xml'
             'TestResults/architecture/*/coverage.cobertura.xml'

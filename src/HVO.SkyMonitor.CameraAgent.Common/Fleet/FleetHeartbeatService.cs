@@ -100,6 +100,11 @@ public sealed class FleetHeartbeatService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (options.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            return;
+        }
+
         var root = options.Value.RawIngressRoot;
         while (!stoppingToken.IsCancellationRequested)
         {

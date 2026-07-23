@@ -48,6 +48,29 @@ public sealed class OperationsPageTests
     }
 
     [TestMethod]
+    public void StandaloneMode_RendersNeutralCurrentStateWithoutDisconnectedWarning()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.OperationsHandler = _ => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentOperationsView>.Success(
+                OperatorUiTestData.Operations(
+                    heartbeat: "Disabled",
+                    centralIntegration: "Disabled")));
+
+        var cut = context.Render<OperationsPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "LogicHost integration is disabled", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Raw ingress", StringComparison.OrdinalIgnoreCase);
+            StringAssert.Contains(cut.Markup, ">Current<", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("connectivity is unavailable", StringComparison.OrdinalIgnoreCase));
+            Assert.IsFalse(cut.Markup.Contains(">Disconnected<", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
     public void InitialFailure_RendersSanitizedError()
     {
         using var context = new BunitContext();

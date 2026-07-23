@@ -53,7 +53,11 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
                 new EnvironmentalObservationDeliveryWakeup(),
                 new EnvironmentalObservationDeliveryState(),
                 telemetry,
-                Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root! }),
+                Options.Create(new CameraAgentHostOptions
+                {
+                    RawIngressRoot = _root!,
+                    EnvironmentalDelivery = new EnvironmentalObservationDeliveryOptions { Enabled = false }
+                }),
                 TimeProvider.System);
             var published = await publisher.PublishAsync(CreateFact(Guid.NewGuid())).ConfigureAwait(false);
             Assert.AreEqual(EnvironmentalObservationPublishDisposition.Enqueued, published.Disposition);
@@ -71,6 +75,35 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         Assert.AreEqual(
             EnvironmentalObservationJson.ComputeContentSha256(lease.Record.Observation),
             lease.Record.ContentSha256);
+    }
+
+    [TestMethod]
+    public async Task Publisher_WhenCentralIntegrationIsDisabled_CreatesNoTargetOrDurableWork()
+    {
+        var resolver = new MutableTargetResolver(new EnvironmentalObservationResolvedTarget(
+            Guid.NewGuid(), Guid.NewGuid()));
+        using var outbox = new SqliteEnvironmentalObservationOutbox();
+        var state = new EnvironmentalObservationDeliveryState();
+        using var telemetry = new EnvironmentalObservationDeliveryTelemetry(state, TimeProvider.System);
+        var publisher = new EnvironmentalObservationPublisher(
+            resolver,
+            outbox,
+            new EnvironmentalObservationDeliveryWakeup(),
+            state,
+            telemetry,
+            Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = _root!,
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            }),
+            TimeProvider.System);
+
+        var result = await publisher.PublishAsync(CreateFact(Guid.NewGuid())).ConfigureAwait(false);
+
+        Assert.AreEqual(EnvironmentalObservationPublishDisposition.Disabled, result.Disposition);
+        Assert.IsNull(result.Observation);
+        Assert.AreEqual(0, resolver.ResolveCount);
+        Assert.IsFalse(File.Exists(Path.Combine(_root!, ".environment", "environmental-observation-outbox.db")));
     }
 
     [TestMethod]
@@ -640,9 +673,13 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         : IEnvironmentalObservationTargetResolver
     {
         public EnvironmentalObservationResolvedTarget Target { get; set; } = target;
+        public int ResolveCount { get; private set; }
 
         public ValueTask<EnvironmentalObservationResolvedTarget?> ResolveAsync(CancellationToken cancellationToken)
-            => ValueTask.FromResult<EnvironmentalObservationResolvedTarget?>(Target);
+        {
+            ResolveCount++;
+            return ValueTask.FromResult<EnvironmentalObservationResolvedTarget?>(Target);
+        }
     }
 
     private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider

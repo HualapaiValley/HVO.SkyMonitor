@@ -52,6 +52,36 @@ public sealed class SystemStatusPageTests
     }
 
     [TestMethod]
+    public void StandaloneStatus_RendersCentralAndEffectiveDeliveryAsDisabled()
+    {
+        using var context = new BunitContext();
+        var source = OperatorUiTestData.SystemStatus();
+        var service = new TestOperatorUiService
+        {
+            SystemHandler = _ => ValueTask.FromResult(
+                OperatorUiResult<CameraAgentSystemStatus>.Success(source with
+                {
+                    CentralIntegration = "Disabled",
+                    Upload = source.Upload with { Enabled = false },
+                    Environmental = source.Environmental with { Enabled = false }
+                }))
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+
+        var cut = context.Render<SystemStatusPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "Central integration", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Disabled", StringComparison.Ordinal);
+            var upload = cut.FindAll("article").Single(node => node.TextContent.Contains("Artifact delivery policy", StringComparison.Ordinal));
+            var environmental = cut.FindAll("article").Single(node => node.TextContent.Contains("Observation policy", StringComparison.Ordinal));
+            StringAssert.Contains(upload.TextContent, "EnabledNo", StringComparison.Ordinal);
+            StringAssert.Contains(environmental.TextContent, "EnabledNo", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
     public void AssemblyQualifiedProcessingType_IsNeverRendered()
     {
         using var context = new BunitContext();

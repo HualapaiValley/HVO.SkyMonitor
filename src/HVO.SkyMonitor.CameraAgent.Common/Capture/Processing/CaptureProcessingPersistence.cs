@@ -202,7 +202,8 @@ internal sealed class CaptureProcessingPersistence(
                     var evidenceJson = CaptureContractJson.Serialize(new ArtifactManifestV2(
                         ArtifactManifestV2.CurrentSchemaVersion,
                         descriptor,
-                        relativePayloadPath));
+                        relativePayloadPath,
+                        artifact.Frame.Metadata.Scene));
                     outputs.Add(new DurableProcessingOutput(
                         product.OutputIdentitySha256,
                         artifact.ArtifactId,

@@ -20,6 +20,7 @@ public sealed class EnvironmentalObservationDeliveryHostTests
 
         var published = await publisher.PublishAsync(CreateFact(observationId)).ConfigureAwait(false);
 
+        Assert.IsNotNull(published.Observation);
         Assert.AreEqual(AssemblyHooks.Fixture.ObservatoryId, published.Observation.Target.SiteId);
         Assert.AreEqual(AssemblyHooks.Fixture.DevicePublicId, published.Observation.Target.AgentId);
         var deadline = DateTimeOffset.UtcNow.AddSeconds(10);

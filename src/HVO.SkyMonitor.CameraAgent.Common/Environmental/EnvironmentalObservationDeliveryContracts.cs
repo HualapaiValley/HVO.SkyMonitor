@@ -15,13 +15,14 @@ public interface IEnvironmentalObservationTargetResolver
 
 public enum EnvironmentalObservationPublishDisposition
 {
+    Disabled,
     Enqueued,
     Duplicate
 }
 
 public sealed record EnvironmentalObservationPublishResult(
     EnvironmentalObservationPublishDisposition Disposition,
-    EnvironmentalObservationV1 Observation);
+    EnvironmentalObservationV1? Observation);
 
 public interface IEnvironmentalObservationPublisher
 {

@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 
-[assembly: TestCategory("Manual")]
 [assembly: DoNotParallelize]
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;

@@ -12,6 +12,7 @@ internal static class OperatorUiTestData
     internal static CameraAgentOperationsView Operations(
         int samples = 1,
         string heartbeat = "Available",
+        string centralIntegration = "Enabled",
         int lanePressure = 0,
         bool storagePressure = false,
         IReadOnlyList<OperatorOutboxItem>? artifactQuarantine = null)
@@ -53,7 +54,7 @@ internal static class OperatorUiTestData
                 .2,
                 samples,
                 0)),
-            Section(new OperationsConfigurationState(true, "validated", "agent-test", "VirtualSky")));
+            Section(new OperationsConfigurationState(true, "validated", "agent-test", "VirtualSky", centralIntegration)));
         return new CameraAgentOperationsView(summary, artifactQuarantine ?? [], []);
     }
 
@@ -107,6 +108,7 @@ internal static class OperatorUiTestData
         "Validated at startup",
         "agent-test",
         "VirtualSky",
+        "Enabled",
         new CameraAgentSensorStatus("Virtual sensor", 640, 480, 5.86, "Mono", "Mono16", "Monochrome", "unversioned", "test-v1"),
         new CameraAgentOpticsStatus("Fisheye", "Equidistant", 3, 180, 140, "cal-v1", false, "Full sensor"),
         new CameraAgentCapturePolicyStatus("MinimumStartInterval", 5, 10, 1000, 1, 2, 1, 2000, 0, 10, "ExposureFirst"),

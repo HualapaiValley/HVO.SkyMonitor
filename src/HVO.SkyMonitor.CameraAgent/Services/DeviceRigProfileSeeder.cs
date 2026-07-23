@@ -5,8 +5,10 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Http;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
@@ -18,6 +20,7 @@ internal interface IDeviceRigProfileSeeder
 internal sealed class DeviceRigProfileSeeder(
     IHttpClientFactory httpClientFactory,
     ICameraAgentConfigurationLoader configurationLoader,
+    IOptions<CameraAgentHostOptions> options,
     ILogger<DeviceRigProfileSeeder> logger) : IDeviceRigProfileSeeder
 {
     private static readonly JsonSerializerOptions RigSerializerOptions = new(JsonSerializerDefaults.Web)
@@ -32,6 +35,10 @@ internal sealed class DeviceRigProfileSeeder(
     {
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentNullException.ThrowIfNull(secrets);
+        if (options.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            return;
+        }
 
         if (string.IsNullOrWhiteSpace(secrets.RigProfileEndpoint))
         {

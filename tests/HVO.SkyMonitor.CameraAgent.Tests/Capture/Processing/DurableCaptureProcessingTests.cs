@@ -26,7 +26,10 @@ public sealed class DurableCaptureProcessingTests
         Directory.CreateDirectory(root);
         try
         {
-            var fixture = await CreateFixtureAsync(root, includeCycleEvidence: true).ConfigureAwait(false);
+            var fixture = await CreateFixtureAsync(
+                root,
+                includeCycleEvidence: true,
+                includeSceneEvidence: true).ConfigureAwait(false);
             CaptureLaneHandlerResult first;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
@@ -82,9 +85,13 @@ public sealed class DurableCaptureProcessingTests
             var sidecar = CaptureContractJson.ParseManifest(
                 await File.ReadAllBytesAsync(Path.Combine(root, output.SidecarRelativePath)).ConfigureAwait(false));
             Assert.IsTrue(sidecar.IsValid, sidecar.Validation.ReasonCode);
+            CollectionAssert.AreEqual(
+                output.EvidenceJson,
+                await File.ReadAllBytesAsync(Path.Combine(root, output.SidecarRelativePath)).ConfigureAwait(false));
             Assert.AreEqual(
                 fixture.Manifest.Descriptor.CycleEvidence,
                 sidecar.Document!.Manifest!.Descriptor.CycleEvidence);
+            Assert.AreEqual(fixture.Manifest.Scene, sidecar.Document.Manifest.Scene);
             Assert.AreEqual(1, Directory.EnumerateFiles(
                 Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories).Count());
         }
@@ -714,7 +721,10 @@ public sealed class DurableCaptureProcessingTests
         Assert.AreEqual("test.canonical-terminal", result.Reason);
     }
 
-    private static async Task<Fixture> CreateFixtureAsync(string root, bool includeCycleEvidence = false)
+    private static async Task<Fixture> CreateFixtureAsync(
+        string root,
+        bool includeCycleEvidence = false,
+        bool includeSceneEvidence = false)
     {
         var payload = new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 };
         var manifest = ReconstructableCaptureContractTests.CreateManifest(
@@ -729,6 +739,21 @@ public sealed class DurableCaptureProcessingTests
                 }
             };
         }
+        SceneProvenance? scene = null;
+        if (includeSceneEvidence)
+        {
+            scene = new SceneProvenance(
+                "durable-processing-scene",
+                "rig-v1",
+                "fixture",
+                "1",
+                new string('A', 64),
+                "EquidistantFisheye",
+                "projection-v1",
+                "astronomy-v1",
+                "sensor-v1");
+            manifest = manifest with { Scene = scene };
+        }
         var payloadPath = Path.Combine(root, "raw.bin");
         await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
         await File.WriteAllBytesAsync(
@@ -742,6 +767,10 @@ public sealed class DurableCaptureProcessingTests
             CaptureContractJson.ComputeManifestSha256(manifest));
         var reconstruction = FrameReconstructor.TryReconstruct(manifest.Descriptor, payload, out var frame);
         Assert.IsTrue(reconstruction.IsValid);
+        if (scene is not null)
+        {
+            frame = frame! with { Metadata = frame.Metadata with { Scene = scene } };
+        }
         var config = CreateConfig();
         var submission = CreateSubmission(frame!) with
         {

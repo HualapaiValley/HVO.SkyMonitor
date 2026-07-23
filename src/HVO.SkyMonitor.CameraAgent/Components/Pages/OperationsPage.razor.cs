@@ -327,7 +327,10 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
 
     private bool CanPause => _view?.Summary.CaptureControl.Value.State == "Running";
     private bool CanResume => _view?.Summary.CaptureControl.Value.State == "Paused";
-    private bool IsDisconnected => _view?.Summary.Heartbeat.Value.Availability is not "Available";
+    private bool IsCentralIntegrationDisabled =>
+        _view?.Summary.Configuration.Value.CentralIntegration == "Disabled";
+    private bool IsDisconnected => !IsCentralIntegrationDisabled &&
+        _view?.Summary.Heartbeat.Value.Availability is not "Available";
     private bool HasPressure => _view is not null && (
         _view.Summary.Storage.Value.Any(static item => item.IsUnderPressure) ||
         _view.Summary.CaptureLanes.Value.Lanes.Any(static lane => lane.PressureLevel > 0));
