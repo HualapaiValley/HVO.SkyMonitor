@@ -169,13 +169,20 @@ select:focus-visible {
     border-radius: 999px;
     background: rgba(17, 25, 44, 0.78);
     color: #f4f6fb;
+    cursor: pointer;
+    font-family: inherit;
     font-size: 0.75rem;
     font-weight: 720;
     padding: 0.65rem 1rem;
     text-decoration: none;
 }
 
-.button:hover {
+.button:disabled {
+    cursor: not-allowed;
+    opacity: 0.65;
+}
+
+.button:not(:disabled):hover {
     border-color: #bcb2ff;
     background: rgba(141, 124, 255, 0.14);
 }
@@ -186,7 +193,7 @@ select:focus-visible {
     color: #0c0a1c;
 }
 
-.button--primary:hover {
+.button--primary:not(:disabled):hover {
     background: linear-gradient(135deg, #c4bdff, #8b7af8);
 }
 
