@@ -89,6 +89,7 @@ public sealed class VirtualSkyPipelineTests
                 TimeSpan.FromSeconds(20)).ConfigureAwait(false);
             var outageCheckpointUtc = DateTimeOffset.UtcNow;
             var checkpointCaptureIds = ListStoredFrames()
+                .Where(static item => item.Role == FrameArtifactRole.Raw)
                 .Select(item => CaptureContractJson.ParseManifest(
                     File.ReadAllBytes(Path.ChangeExtension(item.AbsolutePath, ".json"))))
                 .Where(static parsed => parsed.IsValid && parsed.Document!.Manifest is not null)
@@ -100,6 +101,7 @@ public sealed class VirtualSkyPipelineTests
                 () =>
                 {
                     var newManifests = ListStoredFrames()
+                        .Where(static item => item.Role is FrameArtifactRole.Raw or FrameArtifactRole.Preview)
                         .Select(item => new
                         {
                             Stored = item,
@@ -127,7 +129,8 @@ public sealed class VirtualSkyPipelineTests
                         .ToArray();
                     return true;
                 },
-                TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+                TimeSpan.FromSeconds(20),
+                TimeSpan.FromSeconds(1)).ConfigureAwait(false);
 
             Assert.IsNotEmpty(measuredCapture);
             var transient = measuredCapture
@@ -657,7 +660,10 @@ public sealed class VirtualSkyPipelineTests
         Assert.Fail("The configured preview lineage did not reach a durable raw artifact.");
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    private static async Task WaitUntilAsync(
+        Func<bool> condition,
+        TimeSpan timeout,
+        TimeSpan? pollInterval = null)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (!condition())
@@ -666,7 +672,7 @@ public sealed class VirtualSkyPipelineTests
             {
                 Assert.Fail("Timed out waiting for the configured VirtualSky pipeline.");
             }
-            await Task.Delay(100).ConfigureAwait(false);
+            await Task.Delay(pollInterval ?? TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
         }
     }
 
