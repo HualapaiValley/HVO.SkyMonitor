@@ -56,9 +56,16 @@ public sealed class VirtualSkyPipelineTests
                 && latest.TryGetSnapshot(FrameArtifactRole.Raw, out _),
             TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         Assert.IsTrue(latest.TryGetSnapshot(FrameArtifactRole.Raw, out var before));
-        var beforeTimestamp = before.TimestampUtc;
-        var beforeStored = services.GetRequiredService<IFrameStorageService>().List(
-            Fixture.StorageRoot, DateOnly.FromDateTime(before.TimestampUtc.UtcDateTime), null, 10_000).Count;
+        var storage = services.GetRequiredService<IFrameStorageService>();
+        var storageDate = DateOnly.FromDateTime(before.TimestampUtc.UtcDateTime);
+        IReadOnlyList<StoredFrameReference> ListStoredFrames()
+        {
+            var checkpointDateFrames = storage.List(Fixture.StorageRoot, storageDate, null, 10_000);
+            var currentDate = DateOnly.FromDateTime(DateTime.UtcNow);
+            return currentDate == storageDate
+                ? checkpointDateFrames
+                : [.. checkpointDateFrames, .. storage.List(Fixture.StorageRoot, currentDate, null, 10_000)];
+        }
 
         var configured = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;
         var outageOptions = Options.Create(new CameraAgentHostOptions
@@ -80,10 +87,64 @@ public sealed class VirtualSkyPipelineTests
             await WaitUntilAsync(
                 HasTransportFailureRetry,
                 TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+            var outageCheckpointUtc = DateTimeOffset.UtcNow;
+            var checkpointCaptureIds = ListStoredFrames()
+                .Where(static item => item.Role == FrameArtifactRole.Raw)
+                .Select(item => CaptureContractJson.ParseManifest(
+                    File.ReadAllBytes(Path.ChangeExtension(item.AbsolutePath, ".json"))))
+                .Where(static parsed => parsed.IsValid && parsed.Document!.Manifest is not null)
+                .Select(static parsed => parsed.Document!.Manifest!.Descriptor.Capture.CaptureId)
+                .ToHashSet();
+            Assert.IsNotEmpty(checkpointCaptureIds);
+            (StoredFrameReference Stored, ArtifactManifestParseResult Parsed)[] measuredCapture = [];
             await WaitUntilAsync(
-                () => latest.TryGetSnapshot(FrameArtifactRole.Raw, out var current)
-                    && current.TimestampUtc > beforeTimestamp,
-                TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+                () =>
+                {
+                    var newManifests = ListStoredFrames()
+                        .Where(static item => item.Role is FrameArtifactRole.Raw or FrameArtifactRole.Preview)
+                        .Select(item => new
+                        {
+                            Stored = item,
+                            Parsed = CaptureContractJson.ParseManifest(
+                                File.ReadAllBytes(Path.ChangeExtension(item.AbsolutePath, ".json")))
+                        })
+                        .Where(item => item.Parsed.IsValid
+                            && item.Parsed.Document!.Manifest is not null
+                            && !checkpointCaptureIds.Contains(
+                                item.Parsed.Document.Manifest.Descriptor.Capture.CaptureId)
+                            && item.Parsed.Document.Manifest.Descriptor.Timing.ExposureStartedUtc
+                                > outageCheckpointUtc)
+                        .GroupBy(item => item.Parsed.Document!.Manifest!.Descriptor.Capture.CaptureId)
+                        .FirstOrDefault(group => group.Any(item =>
+                                item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Raw)
+                            && group.Any(item =>
+                                item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Preview));
+                    if (newManifests is null)
+                    {
+                        return false;
+                    }
+
+                    measuredCapture = newManifests
+                        .Select(static item => (item.Stored, item.Parsed))
+                        .ToArray();
+                    return true;
+                },
+                TimeSpan.FromSeconds(20),
+                TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+
+            Assert.IsNotEmpty(measuredCapture);
+            var transient = measuredCapture
+                .Select(static item => item.Parsed.Document!.Manifest!.Scene?.TransientScenario)
+                .FirstOrDefault(static scenario => scenario is not null);
+            Assert.IsNotNull(transient);
+            Assert.IsTrue(measuredCapture.All(item => File.Exists(item.Stored.AbsolutePath)));
+            Assert.IsTrue(measuredCapture.Any(item =>
+                item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Raw));
+            Assert.IsTrue(measuredCapture.Any(item =>
+                item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Preview));
+            Assert.IsTrue(measuredCapture.All(item =>
+                item.Parsed.Document!.Manifest!.Scene?.TransientScenario?.ParametersSha256
+                    == transient.ParametersSha256));
         }
         finally
         {
@@ -92,31 +153,6 @@ public sealed class VirtualSkyPipelineTests
             ResetTransportFailureRetries();
         }
 
-        Assert.IsTrue(latest.TryGetSnapshot(FrameArtifactRole.Raw, out var after));
-        Assert.IsGreaterThan(beforeTimestamp, after.TimestampUtc);
-        Assert.IsNotNull(after.Metadata?.Scene?.TransientScenario);
-        var transient = after.Metadata.Scene.TransientScenario;
-        var stored = services.GetRequiredService<IFrameStorageService>().List(
-            Fixture.StorageRoot, DateOnly.FromDateTime(after.TimestampUtc.UtcDateTime), null, 10_000);
-        Assert.IsGreaterThan(beforeStored, stored.Count);
-        var currentFrameManifests = stored.Select(item => new
-        {
-            Stored = item,
-            Parsed = CaptureContractJson.ParseManifest(
-                File.ReadAllBytes(Path.ChangeExtension(item.AbsolutePath, ".json")))
-        })
-            .Where(item => item.Parsed.IsValid
-                && item.Stored.TimestampUtc > beforeTimestamp)
-            .ToArray();
-        Assert.IsNotEmpty(currentFrameManifests);
-        Assert.IsTrue(currentFrameManifests.All(item => File.Exists(item.Stored.AbsolutePath)));
-        Assert.IsTrue(currentFrameManifests.Any(item =>
-            item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Raw));
-        Assert.IsTrue(currentFrameManifests.Any(item =>
-            item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Preview));
-        Assert.IsTrue(currentFrameManifests.All(item =>
-            item.Parsed.Document!.Manifest!.Scene?.TransientScenario?.ParametersSha256
-                == transient.ParametersSha256));
         Assert.IsTrue(HasPendingOrRetryOutboxRecord());
         Assert.AreEqual(RawIngressAvailability.Accepting,
             services.GetRequiredService<RawIngressState>().Snapshot.Availability);
@@ -624,7 +660,10 @@ public sealed class VirtualSkyPipelineTests
         Assert.Fail("The configured preview lineage did not reach a durable raw artifact.");
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    private static async Task WaitUntilAsync(
+        Func<bool> condition,
+        TimeSpan timeout,
+        TimeSpan? pollInterval = null)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (!condition())
@@ -633,7 +672,7 @@ public sealed class VirtualSkyPipelineTests
             {
                 Assert.Fail("Timed out waiting for the configured VirtualSky pipeline.");
             }
-            await Task.Delay(100).ConfigureAwait(false);
+            await Task.Delay(pollInterval ?? TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
         }
     }
 
