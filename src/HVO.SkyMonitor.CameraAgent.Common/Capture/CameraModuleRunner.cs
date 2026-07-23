@@ -20,6 +20,7 @@ internal sealed class CameraModuleRunner
     private readonly ICaptureHostContext _hostContext;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger _logger;
+    private readonly CaptureAdmissionCoordinator? _captureAdmissionCoordinator;
     private readonly IPlanetEphemeris? _planetEphemeris;
     private readonly CaptureControlTelemetry? _telemetry;
     private readonly FleetRuntimeState? _fleetRuntimeState;
@@ -32,11 +33,25 @@ internal sealed class CameraModuleRunner
         IPlanetEphemeris? planetEphemeris = null,
         CaptureControlTelemetry? telemetry = null,
         FleetRuntimeState? fleetRuntimeState = null)
+        : this(module, hostContext, timeProvider, logger, null, planetEphemeris, telemetry, fleetRuntimeState)
+    {
+    }
+
+    public CameraModuleRunner(
+        ICameraModule module,
+        ICaptureHostContext hostContext,
+        TimeProvider timeProvider,
+        ILogger logger,
+        CaptureAdmissionCoordinator? captureAdmissionCoordinator,
+        IPlanetEphemeris? planetEphemeris = null,
+        CaptureControlTelemetry? telemetry = null,
+        FleetRuntimeState? fleetRuntimeState = null)
     {
         _module = module;
         _hostContext = hostContext;
         _timeProvider = timeProvider;
         _logger = logger;
+        _captureAdmissionCoordinator = captureAdmissionCoordinator;
         _planetEphemeris = planetEphemeris;
         _telemetry = telemetry;
         _fleetRuntimeState = fleetRuntimeState;
@@ -107,16 +122,25 @@ internal sealed class CameraModuleRunner
             using var cycleActivity = CaptureControlTelemetry.ActivitySource.StartActivity("capture-cycle");
             cycleActivity?.SetTag("cadence.mode", cadenceMode.ToString());
             cycleActivity?.SetTag("start.reason", schedule.StartReason.ToString());
+            CaptureAdmissionCoordinator.CaptureAdmissionLease admission = default;
             try
             {
+                if (_captureAdmissionCoordinator is not null)
+                {
+                    admission = await _captureAdmissionCoordinator.EnterAsync(cancellationToken).ConfigureAwait(false);
+                }
                 result = await _module.CaptureAsync(request, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                admission.MarkNoPublicationRequired();
+                admission.Dispose();
                 break;
             }
             catch (Exception ex)
             {
+                admission.MarkNoPublicationRequired();
+                admission.Dispose();
                 _fleetRuntimeState?.CaptureFailed(ex.GetType().Name);
                 cycleActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "module-failure");
                 consecutiveFailures++;
@@ -135,6 +159,8 @@ internal sealed class CameraModuleRunner
 
             if (result is null)
             {
+                admission.MarkNoPublicationRequired();
+                admission.Dispose();
                 _fleetRuntimeState?.CaptureFailed("null-result");
                 cycleActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "null-result");
                 consecutiveFailures++;
@@ -150,6 +176,7 @@ internal sealed class CameraModuleRunner
                 }
                 continue;
             }
+            using var acceptedAdmission = admission;
             if (consecutiveFailures > 0)
             {
                 _logger.CaptureRecovered(consecutiveFailures);
@@ -294,6 +321,7 @@ internal sealed class CameraModuleRunner
                     await _hostContext.PublishAsync(
                         submission,
                         setpointFailure is null ? cancellationToken : CancellationToken.None).ConfigureAwait(false);
+                    acceptedAdmission.MarkPublished();
                     ingressActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 }
                 catch (Exception exception)

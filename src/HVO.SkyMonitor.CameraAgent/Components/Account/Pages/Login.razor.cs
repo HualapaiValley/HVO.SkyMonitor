@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.CameraAgent.Data;
@@ -27,14 +26,7 @@ public sealed partial class Login : ComponentBase
     private ILogger<Login> Logger { get; set; } = default!;
 
     [Inject]
-    private NavigationManager NavigationManager { get; set; } = default!;
-
-    [Inject]
     private IdentityRedirectManager RedirectManager { get; set; } = default!;
-
-    private string RegisterUrl => NavigationManager.GetUriWithQueryParameters(
-        "Account/Register",
-        new Dictionary<string, object?> { ["ReturnUrl"] = ReturnUrl });
 
     protected override Task OnInitializedAsync()
     {

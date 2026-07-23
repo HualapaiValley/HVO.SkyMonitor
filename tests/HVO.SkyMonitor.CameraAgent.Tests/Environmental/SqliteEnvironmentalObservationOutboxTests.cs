@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -173,7 +174,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         await connection.OpenAsync().ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA user_version;";
-        Assert.AreEqual(1L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
+        Assert.AreEqual(2L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
         command.CommandText = "PRAGMA journal_mode;";
         Assert.AreEqual("wal", (string)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
         command.CommandText = "PRAGMA synchronous;";
@@ -401,6 +402,165 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         Assert.AreEqual(2, reader.GetInt64(0));
         Assert.AreEqual(1, reader.GetInt64(1));
         Assert.AreEqual(2, reader.GetInt64(2));
+    }
+
+    [TestMethod]
+    public async Task OperationsProjectionAndResolution_PreserveCapacityAuditAndDurableIdempotency()
+    {
+        const string replayKey = "environment-replay-1";
+        const string abandonKey = "environment-abandon-1";
+        long replayId;
+        long abandonId;
+        using (var outbox = new SqliteEnvironmentalObservationOutbox(maximumRecords: 2))
+        {
+            await outbox.EnqueueAsync(_root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+            await outbox.EnqueueAsync(_root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+            var firstLease = await outbox.ClaimAsync(
+                _root!, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(firstLease);
+            await outbox.QuarantineAsync(_root!, firstLease, "invalid-envelope", CancellationToken.None).ConfigureAwait(false);
+            var secondLease = await outbox.ClaimAsync(
+                _root!, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(secondLease);
+            await outbox.TerminalAsync(_root!, secondLease, "upstream-rejected", CancellationToken.None).ConfigureAwait(false);
+
+            var firstPage = await outbox.ReadOperationsPageAsync(_root!, 1, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(1, firstPage.Items);
+            Assert.IsNotNull(firstPage.NextCursor);
+            var secondPage = await outbox.ReadOperationsPageAsync(
+                _root!, 1, firstPage.NextCursor, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(1, secondPage.Items);
+            replayId = firstLease.Record.RecordId;
+            abandonId = secondLease.Record.RecordId;
+
+            Assert.AreEqual(OutboxOperationDisposition.Applied, await outbox.ResolveOperationsAsync(
+                _root!, replayId, OutboxOperationAction.Replay, replayKey, "owner", "upstream-recovered",
+                CancellationToken.None).ConfigureAwait(false));
+            Assert.AreEqual(OutboxOperationDisposition.Applied, await outbox.ResolveOperationsAsync(
+                _root!, abandonId, OutboxOperationAction.Abandon, abandonKey, "owner", "operator-approved-loss",
+                CancellationToken.None).ConfigureAwait(false));
+            var snapshot = await outbox.GetSnapshotAsync(_root!, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(1, snapshot.StoredCount);
+            Assert.AreEqual(1, snapshot.PendingCount);
+            await outbox.EnqueueAsync(_root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+        }
+
+        using var restarted = new SqliteEnvironmentalObservationOutbox(maximumRecords: 2);
+        Assert.AreEqual(OutboxOperationDisposition.Duplicate, await restarted.ResolveOperationsAsync(
+            _root!, abandonId, OutboxOperationAction.Abandon, abandonKey, "owner", "operator-approved-loss",
+            CancellationToken.None).ConfigureAwait(false));
+        await Assert.ThrowsExactlyAsync<OutboxOperationCollisionException>(async () =>
+            await restarted.ResolveOperationsAsync(
+                _root!, abandonId, OutboxOperationAction.Abandon, abandonKey, "owner", "invalid-source",
+                CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        var audit = await restarted.ReadOperationsAuditAsync(
+            _root!, abandonId, 10, null, CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, audit.Items);
+        Assert.AreEqual("owner", audit.Items[0].ActorKind);
+        Assert.AreEqual("operator-approved-loss", audit.Items[0].ReasonCode);
+    }
+
+    [TestMethod]
+    public async Task OperationsPagesFilterBeforeLimitAndRemainStableWhenRowsMutate()
+    {
+        using var outbox = new SqliteEnvironmentalObservationOutbox(maximumRecords: 100);
+        await outbox.EnqueueAsync(_root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+        await outbox.EnqueueAsync(_root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+        var firstLease = (await outbox.ClaimAsync(
+            _root!, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false))!;
+        await outbox.QuarantineAsync(_root!, firstLease, "invalid-envelope", CancellationToken.None).ConfigureAwait(false);
+        var secondLease = (await outbox.ClaimAsync(
+            _root!, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false))!;
+        await outbox.TerminalAsync(_root!, secondLease, "upstream-rejected", CancellationToken.None).ConfigureAwait(false);
+        foreach (var _ in Enumerable.Range(0, 55))
+        {
+            await outbox.EnqueueAsync(
+                _root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+        }
+
+        var firstPage = await outbox.ReadOperationsPageAsync(
+            _root!, 1, null, CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, firstPage.Items);
+        Assert.IsNotNull(firstPage.NextCursor);
+        using (var connection = new SqliteConnection(
+                   $"Data Source={Path.Combine(_root!, ".environment", "environmental-observation-outbox.db")}"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE environmental_observation_outbox SET updated_unix_ms = updated_unix_ms + 100000 WHERE record_id = $id;";
+            command.Parameters.AddWithValue("$id", firstPage.Items[0].RecordId);
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+        var secondPage = await outbox.ReadOperationsPageAsync(
+            _root!, 1, firstPage.NextCursor, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(1, secondPage.Items);
+        CollectionAssert.AreEquivalent(
+            new[] { firstLease.Record.RecordId, secondLease.Record.RecordId },
+            firstPage.Items.Concat(secondPage.Items).Select(static item => item.RecordId).ToArray());
+    }
+
+    [TestMethod]
+    public async Task OperationReceiptsAreTransactionallyCappedAndRecentReplaySurvives()
+    {
+        var clock = new MutableTimeProvider(Epoch.AddDays(31));
+        using var outbox = new SqliteEnvironmentalObservationOutbox(clock);
+        await outbox.EnqueueAsync(_root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+        var lease = await outbox.ClaimAsync(
+            _root!, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        var claimed = lease!;
+        await outbox.TerminalAsync(_root!, claimed, "upstream-rejected", CancellationToken.None).ConfigureAwait(false);
+        var recordId = claimed.Record.RecordId;
+        var databasePath = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db");
+
+        using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var seed = connection.CreateCommand();
+            seed.CommandText = """
+                WITH RECURSIVE values_to_seed(value) AS (
+                    SELECT 0 UNION ALL SELECT value + 1 FROM values_to_seed WHERE value < $maximum)
+                INSERT INTO environmental_observation_outbox_operations(
+                    operation_key, record_id, action, actor_kind, reason, occurred_unix_ms)
+                SELECT printf('seed-%05d', value), $record, 'replay', 'owner', 'upstream-recovered',
+                       CASE WHEN value = 0 THEN $start ELSE $recent + value END
+                FROM values_to_seed;
+                INSERT INTO environmental_observation_outbox_audit(
+                    record_id, previous_status, action, actor, reason, occurred_unix_ms, operation_key)
+                SELECT record_id, 'terminal', action, actor_kind, reason, occurred_unix_ms, operation_key
+                FROM environmental_observation_outbox_operations;
+                """;
+            seed.Parameters.AddWithValue("$maximum", SqliteEnvironmentalObservationOutbox.MaximumOperationReceipts);
+            seed.Parameters.AddWithValue("$record", recordId);
+            seed.Parameters.AddWithValue("$start", Epoch.ToUnixTimeMilliseconds());
+            seed.Parameters.AddWithValue("$recent", Epoch.AddDays(30).ToUnixTimeMilliseconds());
+            await seed.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+
+        Assert.AreEqual(OutboxOperationDisposition.Applied, await outbox.ResolveOperationsAsync(
+            _root!, recordId, OutboxOperationAction.Replay, "newest-operation",
+            "owner", "upstream-recovered", CancellationToken.None).ConfigureAwait(false));
+
+        using (var verify = new SqliteConnection($"Data Source={databasePath}"))
+        {
+            await verify.OpenAsync().ConfigureAwait(false);
+            using var counts = verify.CreateCommand();
+            counts.CommandText = """
+                SELECT
+                    (SELECT COUNT(*) FROM environmental_observation_outbox_operations),
+                    (SELECT COUNT(*) FROM environmental_observation_outbox_audit WHERE operation_key IS NOT NULL),
+                    (SELECT COUNT(*) FROM environmental_observation_outbox_operations WHERE operation_key = 'seed-00000');
+                """;
+            using var reader = await counts.ExecuteReaderAsync().ConfigureAwait(false);
+            Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+            Assert.AreEqual(SqliteEnvironmentalObservationOutbox.MaximumOperationReceipts, reader.GetInt32(0));
+            Assert.AreEqual(SqliteEnvironmentalObservationOutbox.MaximumOperationReceipts, reader.GetInt32(1));
+            Assert.AreEqual(0, reader.GetInt32(2));
+        }
+        Assert.AreEqual(OutboxOperationDisposition.Duplicate, await outbox.ResolveOperationsAsync(
+            _root!, recordId, OutboxOperationAction.Replay,
+            $"seed-{SqliteEnvironmentalObservationOutbox.MaximumOperationReceipts:D5}",
+            "owner", "upstream-recovered", CancellationToken.None).ConfigureAwait(false));
     }
 
     private static EnvironmentalObservationFactV1 CreateFact(Guid observationId)

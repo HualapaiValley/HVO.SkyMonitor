@@ -44,8 +44,9 @@ offline. It does not share LogicHost users, cookies, or SQL Server tables.
   and API-key modes authenticate outbound requests to LogicHost.
 - Local email delivery, local API keys, roles, two-factor authentication, and
   passkeys are not implemented.
-- Local self-registration, the dashboard, and frame endpoints are currently
-  anonymous. The host is not ready for an untrusted network.
+- Local self-registration is disabled. Operator pages, frame previews, gallery,
+  artifact retrieval, capture controls, and outbox operations require the
+  configured site owner; API denials return `401` or `403` instead of redirects.
 - Device identity and encrypted secrets are stored under
   `DeviceProvisioning:StateDirectory`.
 
@@ -91,6 +92,9 @@ still be treated as trusted until those controls are added.
   never guesses ownership from denormalized snapshot fields.
 - Data Protection keys and local Identity/provisioning files are persistent
   runtime state and are never committed.
+- CameraAgent operator APIs expose opaque artifact IDs and time-limited outbox
+  references. Legacy raw-root, idempotency-key, and internal-record-ID routes
+  are intentionally retired and have no compatibility alias.
 - SQL Server, Redis, and MinIO ownership is explicit; Redis and MinIO root access
   are never substitutes for identity revocation.
 - Azure Key Vault may be one future provider, but no cloud secret provider is

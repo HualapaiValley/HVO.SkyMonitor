@@ -11,24 +11,16 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
 {
     private static readonly IReadOnlyList<NavigationLink> PrimaryLinks =
     [
-        new NavigationLink("/", "Dashboard", "bi bi-house", NavLinkMatch.All),
-        new NavigationLink("/devices/bootstrap", "Device Bootstrap", "bi bi-usb-symbol", NavLinkMatch.Prefix)
-    ];
-
-    private static readonly IReadOnlyList<ToolbarAction> ToolbarActions =
-    [
-        new ToolbarAction("bi bi-bell", "Notifications"),
-        new ToolbarAction("bi bi-gear", "Configuration"),
-        new ToolbarAction("bi bi-question-circle", "Help"),
-        new ToolbarAction("bi bi-chat-dots", "Feedback")
+        new NavigationLink("/", "Operations", "bi bi-activity", NavLinkMatch.All),
+        new NavigationLink("/gallery", "Gallery", "bi bi-images", NavLinkMatch.Prefix),
+        new NavigationLink("/system", "System", "bi bi-cpu", NavLinkMatch.Prefix),
+        new NavigationLink("/devices/bootstrap", "Device", "bi bi-usb-symbol", NavLinkMatch.Prefix)
     ];
 
     [Inject]
     public NavigationManager NavigationManager { get; set; } = default!;
 
     private IEnumerable<NavigationLink> PrimaryNavigationLinks => PrimaryLinks;
-
-    private IEnumerable<ToolbarAction> AuxiliaryActions => ToolbarActions;
 
     private string CurrentReturnUrl = ReturnUrlHelper.NormalizeReturnUrl(null);
 
@@ -106,8 +98,6 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
 
         return "??";
     }
-
-    private sealed record ToolbarAction(string IconClass, string Tooltip);
 
     private sealed record NavigationLink(string Href, string Label, string IconClass, NavLinkMatch Match);
 }

@@ -25,16 +25,6 @@
                 </div>
 
                 <div class="nav-toolbar d-flex align-items-center gap-3 mt-3 mt-lg-0 ms-lg-4">
-                    <div class="nav-actions d-flex align-items-center gap-2">
-                        @foreach (var action in AuxiliaryActions)
-                        {
-                            <button type="button" class="nav-icon-button" title="@action.Tooltip"
-                                aria-label="@action.Tooltip">
-                                <i class="@action.IconClass"></i>
-                            </button>
-                        }
-                    </div>
-
                     <AuthorizeView Context="authState">
                         <Authorized>
                             <div class="nav-account-info d-flex align-items-center gap-2 dropdown">
@@ -53,7 +43,7 @@
                                     <li>
                                         <a class="dropdown-item d-flex align-items-center gap-2" href="Account/Manage">
                                             <i class="bi bi-person-badge"></i>
-                                            Account Management
+                                            Account
                                         </a>
                                     </li>
                                     <li>

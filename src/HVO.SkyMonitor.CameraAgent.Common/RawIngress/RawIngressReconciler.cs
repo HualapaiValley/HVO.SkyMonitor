@@ -1,5 +1,6 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -200,7 +201,8 @@ internal sealed class RawIngressReconciler(
                 sidecarRelative,
                 sidecar,
                 descriptor.Timing.ExposureStartedUtc,
-                descriptor.Timing.DurableIngressUtc);
+                descriptor.Timing.DurableIngressUtc,
+                EvidenceOrigin: GalleryEvidenceClassifier.Classify(manifest));
             SyncFile(payloadPath);
             SyncFile(sidecarPath);
             SyncDirectory(Path.GetDirectoryName(sidecarPath)!);

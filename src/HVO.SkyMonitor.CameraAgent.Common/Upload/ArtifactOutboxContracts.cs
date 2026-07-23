@@ -85,7 +85,8 @@ public sealed record ArtifactOutboxSnapshot(
     long RetryCount,
     long AcknowledgedCount,
     long QuarantinedCount,
-    long AbandonedCount);
+    long AbandonedCount,
+    DateTimeOffset? EvaluatedUtc = null);
 
 public sealed record ArtifactOutboxAuditEntry(
     long Sequence,

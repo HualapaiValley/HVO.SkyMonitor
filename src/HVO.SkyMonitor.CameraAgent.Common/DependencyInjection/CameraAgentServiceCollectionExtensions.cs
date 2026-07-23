@@ -18,6 +18,8 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -96,6 +98,11 @@ public static class CameraAgentServiceCollectionExtensions
         });
         services.AddSingleton<IEnvironmentalObservationPublisher, EnvironmentalObservationPublisher>();
         services.AddSingleton<CaptureControlTelemetry>();
+        services.AddSingleton<CaptureAdmissionCoordinator>();
+        services.AddSingleton<CameraAgentStorageResolver>();
+        services.AddSingleton<ICameraAgentStorageResolver>(static provider =>
+            provider.GetRequiredService<CameraAgentStorageResolver>());
+        services.AddSingleton<CameraAgentOperationsSummaryProvider>();
         services.AddSingleton<CaptureTelemetrySink>();
         services.AddSingleton<ICaptureTelemetrySink>(sp => sp.GetRequiredService<CaptureTelemetrySink>());
         services.AddSingleton<ICaptureTelemetryProvider>(sp => sp.GetRequiredService<CaptureTelemetrySink>());
@@ -103,6 +110,9 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureProcessingState>();
         services.AddSingleton<CaptureProcessingTelemetry>();
         services.AddSingleton<SqliteCaptureProcessingStore>();
+        services.AddSingleton<ICameraAgentGallery, SqliteCameraAgentGallery>();
+        services.AddSingleton<ICameraAgentPreviewEncoder, CameraAgentPreviewEncoder>();
+        services.AddSingleton<ICameraAgentArtifactService, CameraAgentArtifactService>();
         services.AddSingleton<CaptureProcessingPersistence>();
         services.AddSingleton<CameraAgentClearReferenceLoader>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();

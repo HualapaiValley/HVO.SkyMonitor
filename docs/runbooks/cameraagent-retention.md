@@ -127,13 +127,27 @@ OAuth client-credentials bearer authentication is the supported upload mode.
 An API key, rejected bearer identity, or inactive registration results in an
 `authentication-rejected` quarantine rather than an infinite retry.
 
-To resolve quarantined work, authenticate to the local CameraAgent and POST a
-non-empty reason and configured `storageRoot` to either
-`/api/v1.0/artifact-outbox/{idempotencyKey}/replay` or
-`/api/v1.0/artifact-outbox/{idempotencyKey}/abandon`. Replay is allowed only for
-valid deliverable evidence. Abandonment releases the delivery hold only after
-the actor, UTC time, and reason commit to the audit table. Preserve or export
-the payload, sidecar, journal, and conflict evidence before abandonment.
+To resolve quarantined work, authenticate as the configured local site owner and
+list `/api/v1/operations/outboxes/artifacts?storage=<alias>`. Use only the opaque,
+time-limited action token returned by that owner-only API when posting a bounded
+reason code to `/api/v1/operations/outboxes/artifacts/replay` or
+`/api/v1/operations/outboxes/artifacts/abandon`; do not expose a storage root,
+SQLite record ID, or idempotency key in an operator URL. Replay is allowed only
+for valid deliverable evidence. Abandonment releases the delivery hold only
+after the actor, UTC time, and reason commit to the audit table. Preserve or
+export the payload, sidecar, journal, and conflict evidence before abandonment.
+
+Artifact and environmental operator receipts and their linked audit rows are
+pruned in the same transaction that records a new disposition. Each outbox
+retains at most 10,000 of the newest receipts and no receipt older than 30 days.
+Recent retained receipts continue to provide exact idempotent replay; callers
+must treat an operation key outside that documented retention window as a new
+request and obtain a fresh opaque action token.
+
+The former `/api/v1.0/artifact-outbox/{idempotencyKey}/*` and
+`/api/v1.0/environmental-observation-outbox/{recordId}/*` routes are retired as
+an intentional security breaking change. They accepted internal durable keys
+and raw storage-root selection directly; no compatibility shim is provided.
 
 ## Raw Ingress Recovery
 

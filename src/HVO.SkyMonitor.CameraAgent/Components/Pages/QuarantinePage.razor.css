@@ -1,0 +1,27 @@
+.quarantine-page { width: min(100%, 76rem); margin: 0 auto; padding: clamp(1rem, 3vw, 2.25rem); overflow-x: clip; }
+.breadcrumb, .source-nav, .alias-nav, .cursor-nav { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.breadcrumb { margin-bottom: 1rem; color: var(--hvo-muted); font-size: .78rem; }
+.page-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; }
+.page-heading h1 { margin: 0; font-size: clamp(2rem, 5vw, 3.6rem); line-height: .96; letter-spacing: -.04em; }
+.page-heading p:last-child { max-width: 48rem; margin: .7rem 0 0; color: var(--hvo-muted); }
+.eyebrow { margin: 0 0 .3rem; color: var(--hvo-info-fg); font-size: .68rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+.result-count { padding: .25rem .65rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; color: var(--hvo-muted); white-space: nowrap; }
+.source-nav, .alias-nav { margin-bottom: .8rem; padding: .7rem; border: 1px solid var(--hvo-border-muted); background: rgba(15, 23, 42, .62); }
+.source-nav a, .alias-nav a { display: inline-flex; min-height: 44px; align-items: center; padding: .35rem .7rem; border: 1px solid transparent; text-decoration: none; }
+.source-nav a.active, .alias-nav a.active { border-color: var(--hvo-info-strong); color: var(--hvo-info-fg); background: var(--hvo-info-bg); }
+.alias-nav > span { color: var(--hvo-muted); font-size: .72rem; font-weight: 700; text-transform: uppercase; }
+.page-state { display: flex; justify-content: space-between; align-items: center; gap: 1rem; min-height: 7rem; padding: 1rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-surface-elevated); }
+.page-state--error { border-color: var(--hvo-danger-strong); background: var(--hvo-danger-bg); }
+.cursor-nav { justify-content: flex-end; margin-top: 1rem; }
+.cursor-nav .btn { min-height: 44px; }
+.receipt { position: sticky; bottom: 1rem; z-index: 4; margin: 1rem 0 0; padding: .8rem; border: 1px solid var(--hvo-success-strong); color: var(--hvo-success-fg); background: var(--hvo-surface); }
+.confirmation { width: min(calc(100% - 2rem), 34rem); max-height: calc(100dvh - 2rem); overflow-y: auto; padding: 1.2rem; border: 1px solid var(--hvo-border-stronger); color: var(--hvo-body-color); background: var(--hvo-surface); }
+.confirmation::backdrop { background: rgba(2, 6, 23, .86); }
+.confirmation h2 { margin: 0; }
+.confirmation dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.confirmation label { display: block; margin: .8rem 0 .35rem; font-weight: 700; }
+.confirmation-actions { display: flex; justify-content: flex-end; gap: .6rem; margin-top: 1rem; }
+.confirmation-actions .btn { min-height: 44px; }
+.dialog-error { margin: .8rem 0 0; padding: .7rem; border: 1px solid var(--hvo-danger-strong); color: var(--hvo-danger-fg); background: var(--hvo-danger-bg); }
+:is(a, button, select):focus-visible { outline: 3px solid var(--hvo-info-strong); outline-offset: 3px; }
+@media (max-width: 600px) { .quarantine-page { padding: 1rem .75rem 2rem; } .page-heading { display: grid; } .cursor-nav, .confirmation-actions { display: grid; } }

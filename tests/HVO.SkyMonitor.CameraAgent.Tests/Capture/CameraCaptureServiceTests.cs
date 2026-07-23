@@ -7,6 +7,9 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using Microsoft.Extensions.Logging.Abstractions;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
@@ -17,29 +20,50 @@ public sealed class CameraCaptureServiceTests
     [TestMethod]
     public async Task StopAsync_CancelsCaptureAndDisposesModule()
     {
-        var config = CreateConfig();
-        var module = new GatedCameraModule();
-        var distributor = new RecordingDistributor();
-        using var telemetry = new CaptureControlTelemetry();
-        var service = new CameraCaptureService(
-            new ConfigurationAccessor(config),
-            new ModuleFactory(module),
-            new PassthroughRawIngress(),
-            distributor,
-            TimeProvider.System,
-            new AstronomyEnginePlanetEphemeris(),
-            telemetry,
-            new FleetRuntimeState(TimeProvider.System),
-            NullLogger<CameraCaptureService>.Instance);
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-capture-service-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var config = CreateConfig();
+            var module = new GatedCameraModule();
+            var distributor = new RecordingDistributor();
+            var ingress = new PassthroughRawIngress(root);
+            using var telemetry = new CaptureControlTelemetry();
+            using var coordinator = new CaptureAdmissionCoordinator(
+                ingress,
+                Options.Create(new CameraAgentHostOptions
+                {
+                    RawIngressRoot = root,
+                    RawIngressSqliteBusyTimeoutSeconds = 1
+                }),
+                TimeProvider.System,
+                telemetry);
+            var service = new CameraCaptureService(
+                new ConfigurationAccessor(config),
+                new ModuleFactory(module),
+                ingress,
+                distributor,
+                TimeProvider.System,
+                new AstronomyEnginePlanetEphemeris(),
+                telemetry,
+                coordinator,
+                new FleetRuntimeState(TimeProvider.System),
+                NullLogger<CameraCaptureService>.Instance);
 
-        await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
-        await module.SecondCaptureStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            await module.SecondCaptureStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
-        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        await module.CaptureCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await module.CaptureCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
-        Assert.AreEqual(1, distributor.EphemeralCount);
-        Assert.IsTrue(module.IsDisposed);
+            Assert.AreEqual(1, distributor.EphemeralCount);
+            Assert.IsTrue(module.IsDisposed);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, true);
+        }
     }
 
     private static CameraModuleConfig CreateConfig()
@@ -69,9 +93,12 @@ public sealed class CameraCaptureServiceTests
         public ICameraModule Create(string moduleType) => module;
     }
 
-    private sealed class PassthroughRawIngress : IRawCaptureIngress
+    private sealed class PassthroughRawIngress(string root) : IRawCaptureIngress
     {
-        public ValueTask InitializeAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public async ValueTask InitializeAsync(CancellationToken cancellationToken)
+            => await new SqliteRawCaptureJournal(
+                Path.Combine(root, "journal", "raw-ingress.db"), 1)
+                .InitializeAsync(cancellationToken).ConfigureAwait(false);
 
         public ValueTask<RawCaptureReceipt?> AcceptAsync(
             CameraModuleConfig configuration,

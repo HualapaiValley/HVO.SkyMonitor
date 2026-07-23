@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Environmental;
 
@@ -159,6 +160,37 @@ public interface IEnvironmentalObservationOutbox
         string actor,
         string reason,
         CancellationToken cancellationToken);
+
+    ValueTask<EnvironmentalOutboxOperationsPage> ReadOperationsPageAsync(
+        string root,
+        int pageSize,
+        EnvironmentalOutboxOperationsCursor? cursor,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This outbox does not expose operational records.");
+
+    ValueTask<EnvironmentalOutboxOperationsRecord?> ReadOperationsDetailAsync(
+        string root,
+        long recordId,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This outbox does not expose operational records.");
+
+    ValueTask<OutboxOperationsAuditPage> ReadOperationsAuditAsync(
+        string root,
+        long recordId,
+        int pageSize,
+        OutboxOperationsAuditCursor? cursor,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This outbox does not expose operational audit records.");
+
+    ValueTask<OutboxOperationDisposition> ResolveOperationsAsync(
+        string root,
+        long recordId,
+        OutboxOperationAction action,
+        string operationKey,
+        string actorKind,
+        string reasonCode,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This outbox does not support operational resolution.");
 }
 
 public interface IEnvironmentalObservationOutboxFaultInjector

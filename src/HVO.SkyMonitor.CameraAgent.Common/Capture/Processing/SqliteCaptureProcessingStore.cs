@@ -49,6 +49,28 @@ internal sealed record DurableProcessingNode(
     string PlanSha256,
     IReadOnlyList<DurableProcessingOutput> Outputs);
 
+internal sealed record DurableGalleryProcessingNode(
+    Guid CaptureId,
+    string NodeId,
+    bool Required,
+    DurableProcessingNodeStatus Status,
+    string? RecipeName,
+    string? OutputRole,
+    string? OutputVariant,
+    IReadOnlyList<DurableProcessingOutput> Outputs);
+
+internal sealed record DurableGalleryProcessingProjection(
+    IReadOnlyList<DurableGalleryProcessingNode> Nodes,
+    IReadOnlySet<Guid> TruncatedNodeCaptures,
+    IReadOnlySet<Guid> TruncatedOutputCaptures);
+
+internal sealed record DurableGalleryProcessingNodeDetail(
+    string NodeId,
+    IReadOnlyList<string> Dependencies,
+    int Attempt,
+    DateTimeOffset CompletedUtc,
+    string? Reason);
+
 internal sealed record DurableRawProcessingInput(
     ReconstructionDescriptor Descriptor,
     string PayloadRelativePath);
@@ -77,6 +99,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         _busyTimeoutSeconds = values.RawIngressSqliteBusyTimeoutSeconds;
     }
 
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The migration statement is selected only from internal constants.")]
     internal async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _initialized))
@@ -108,14 +131,22 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                         await versionCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
                         System.Globalization.CultureInfo.InvariantCulture);
                 }
-                if (version > 1)
+                if (version > 2)
                 {
-                    throw new InvalidOperationException($"Capture processing schema {version} is newer than supported schema 1.");
+                    throw new InvalidOperationException($"Capture processing schema {version} is newer than supported schema 2.");
+                }
+                if (version < 2)
+                {
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+                    using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+                    using var command = connection.CreateCommand();
+                    command.Transaction = transaction;
+                    command.CommandText = version == 0 ? SchemaSql : ProcessingV2MigrationSql;
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 }
             }
-            using var command = connection.CreateCommand();
-            command.CommandText = SchemaSql;
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             using var integrity = connection.CreateCommand();
             integrity.CommandText = "PRAGMA integrity_check;";
             var result = Convert.ToString(
@@ -129,11 +160,13 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             schemaObjects.CommandText = """
                 SELECT COUNT(*) FROM sqlite_master WHERE name IN (
                     'capture_processing_schema', 'processing_nodes', 'processing_outputs',
-                    'ix_processing_outputs_capture_node', 'ix_processing_outputs_window');
+                    'ix_processing_outputs_capture_node', 'ix_processing_outputs_window',
+                    'ix_processing_nodes_status', 'ix_processing_nodes_recipe',
+                    'ix_processing_outputs_role', 'ix_processing_outputs_recipe');
                 """;
             if (Convert.ToInt32(
                 await schemaObjects.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture) != 5)
+                System.Globalization.CultureInfo.InvariantCulture) != 9)
             {
                 throw new InvalidDataException("Capture processing SQLite schema is incomplete or drifted.");
             }
@@ -295,9 +328,202 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$node_id", nodeId);
         command.Parameters.AddWithValue("$role", role.ToString());
         command.Parameters.AddWithValue("$maximum_count", maximumCount);
-        var values = await ReadOutputsAsync(command, cancellationToken).ConfigureAwait(false);
+        var values = (await ReadOutputRowsAsync(command, cancellationToken).ConfigureAwait(false))
+            .Select(static row => row.Output)
+            .ToList();
         values.Reverse();
         return values;
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The generated placeholders contain only bounded integer ordinals; capture identities remain parameterized.")]
+    internal async ValueTask<DurableGalleryProcessingProjection> ReadGalleryNodesAsync(
+        IReadOnlyList<Guid> captureIds,
+        int maximumNodesPerCapture,
+        int maximumOutputsPerCapture,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(captureIds);
+        if (captureIds.Count == 0)
+        {
+            return new([], new HashSet<Guid>(), new HashSet<Guid>());
+        }
+        if (captureIds.Count > 101)
+        {
+            throw new ArgumentOutOfRangeException(nameof(captureIds));
+        }
+
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        var placeholders = string.Join(", ", Enumerable.Range(0, captureIds.Count).Select(static index => $"$capture{index}"));
+        var nodes = new List<(Guid CaptureId, string NodeId, bool Required, DurableProcessingNodeStatus Status, string? RecipeName, string? OutputRole, string? OutputVariant)>();
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = $"""
+                WITH ranked_nodes AS (
+                    SELECT capture_id, node_id, required, status, recipe_name, output_role, output_variant,
+                           ROW_NUMBER() OVER (PARTITION BY capture_id ORDER BY node_id) AS gallery_rank
+                    FROM processing_nodes
+                    WHERE capture_id IN ({placeholders})
+                )
+                SELECT capture_id, node_id, required, status, recipe_name, output_role, output_variant
+                FROM ranked_nodes
+                WHERE gallery_rank <= $maximum_nodes
+                ORDER BY capture_id, node_id;
+                """;
+            AddCaptureParameters(command, captureIds);
+            command.Parameters.AddWithValue("$maximum_nodes", maximumNodesPerCapture + 1);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                nodes.Add((
+                    Guid.ParseExact(reader.GetString(0), "N"),
+                    reader.GetString(1),
+                    reader.GetBoolean(2),
+                    Enum.Parse<DurableProcessingNodeStatus>(reader.GetString(3)),
+                    await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(4),
+                    await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5),
+                    await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6)));
+            }
+        }
+
+        List<(Guid CaptureId, string NodeId, DurableProcessingOutput Output)> outputRows;
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = $"""
+                WITH ranked_outputs AS (
+                    SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
+                           descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
+                           algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
+                           legacy_recipe_version,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY capture_id ORDER BY node_id, output_identity_sha256) AS gallery_rank
+                    FROM processing_outputs
+                    WHERE capture_id IN ({placeholders})
+                )
+                SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
+                       descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
+                       algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, legacy_recipe_version
+                FROM ranked_outputs
+                WHERE gallery_rank <= $maximum_outputs
+                ORDER BY capture_id, node_id, output_identity_sha256;
+                """;
+            AddCaptureParameters(command, captureIds);
+            command.Parameters.AddWithValue("$maximum_outputs", maximumOutputsPerCapture + 1);
+            outputRows = await ReadOutputRowsAsync(command, cancellationToken, skipInvalid: true).ConfigureAwait(false);
+        }
+
+        var truncatedNodes = nodes.GroupBy(static node => node.CaptureId)
+            .Where(group => group.Count() > maximumNodesPerCapture)
+            .Select(static group => group.Key)
+            .ToHashSet();
+        var truncatedOutputs = outputRows.GroupBy(static row => row.CaptureId)
+            .Where(group => group.Count() > maximumOutputsPerCapture)
+            .Select(static group => group.Key)
+            .ToHashSet();
+        outputRows = outputRows.GroupBy(static row => row.CaptureId)
+            .SelectMany(group => group.Take(maximumOutputsPerCapture))
+            .ToList();
+        var outputs = outputRows.ToLookup(static row => (row.CaptureId, row.NodeId), static row => row.Output);
+        var projected = nodes.GroupBy(static node => node.CaptureId)
+            .SelectMany(group => group.Take(maximumNodesPerCapture))
+            .Select(node => new DurableGalleryProcessingNode(
+            node.CaptureId,
+            node.NodeId,
+            node.Required,
+            node.Status,
+            node.RecipeName,
+            node.OutputRole,
+            node.OutputVariant,
+            outputs[(node.CaptureId, node.NodeId)].ToArray())).ToArray();
+        return new(projected, truncatedNodes, truncatedOutputs);
+    }
+
+    internal async ValueTask<IReadOnlyList<DurableGalleryProcessingNodeDetail>> ReadGalleryNodeDetailsAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT node_id, dependencies_json, attempt, completed_unix_ms, reason
+            FROM processing_nodes
+            WHERE capture_id = $capture_id
+            ORDER BY node_id
+            LIMIT 65;
+            """;
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        var details = new List<DurableGalleryProcessingNodeDetail>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var dependencies = JsonSerializer.Deserialize<string[]>(reader.GetString(1), SerializerOptions)
+                ?? throw new InvalidDataException("Processing dependencies are invalid.");
+            if (dependencies.Length > 64 || dependencies.Any(static dependency =>
+                    string.IsNullOrWhiteSpace(dependency) || dependency.Length > 128))
+            {
+                throw new InvalidDataException("Processing dependencies exceed gallery bounds.");
+            }
+            details.Add(new DurableGalleryProcessingNodeDetail(
+                reader.GetString(0),
+                dependencies,
+                reader.GetInt32(2),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
+                await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(4)));
+        }
+        return details.Take(64).ToArray();
+    }
+
+    internal async ValueTask<IReadOnlyDictionary<Guid, bool>> ReadGalleryRetentionStatesAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output.artifact_id,
+                   CASE WHEN (
+                       SELECT COUNT(*)
+                       FROM processing_outputs newer
+                       WHERE newer.agent_id = output.agent_id AND newer.node_id = output.node_id
+                         AND (newer.capture_sequence > output.capture_sequence OR
+                              (newer.capture_sequence = output.capture_sequence AND
+                               newer.output_identity_sha256 > output.output_identity_sha256))) < 100
+                     OR EXISTS (
+                       SELECT 1
+                       FROM raw_captures raw
+                       JOIN capture_lane_work work ON work.raw_capture_row_id = raw.raw_capture_row_id
+                       WHERE raw.capture_id = output.capture_id AND work.lane_name = 'standard'
+                         AND work.state NOT IN ('completed', 'abandoned'))
+                   THEN 1 ELSE 0 END
+            FROM processing_outputs output
+            WHERE output.capture_id = $capture_id
+            LIMIT 129;
+            """;
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        var values = new Dictionary<Guid, bool>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (values.Count == 128)
+            {
+                break;
+            }
+            if (Guid.TryParseExact(reader.GetString(0), "N", out var artifactId))
+            {
+                values[artifactId] = reader.GetBoolean(1);
+            }
+        }
+        return values;
+    }
+
+    private static void AddCaptureParameters(SqliteCommand command, IReadOnlyList<Guid> captureIds)
+    {
+        for (var index = 0; index < captureIds.Count; index++)
+        {
+            command.Parameters.AddWithValue($"$capture{index}", captureIds[index].ToString("N"));
+        }
     }
 
     internal async ValueTask<IReadOnlyList<ProcessingRetentionHold>> ReadRetentionHoldsAsync(
@@ -567,85 +793,104 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             """;
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
         command.Parameters.AddWithValue("$node_id", nodeId);
-        return await ReadOutputsAsync(command, cancellationToken).ConfigureAwait(false);
+        return (await ReadOutputRowsAsync(command, cancellationToken).ConfigureAwait(false))
+            .Select(static row => row.Output)
+            .ToArray();
     }
 
-    private static async ValueTask<List<DurableProcessingOutput>> ReadOutputsAsync(
+    private static async ValueTask<List<(Guid CaptureId, string NodeId, DurableProcessingOutput Output)>> ReadOutputRowsAsync(
         SqliteCommand command,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool skipInvalid = false)
     {
-        var outputs = new List<DurableProcessingOutput>();
+        var outputs = new List<(Guid CaptureId, string NodeId, DurableProcessingOutput Output)>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            var descriptorJson = await reader.GetFieldValueAsync<byte[]>(4, cancellationToken).ConfigureAwait(false);
-            var algorithmsJson = await reader.GetFieldValueAsync<byte[]>(11, cancellationToken).ConfigureAwait(false);
-            var compatibilityJson = await reader.GetFieldValueAsync<byte[]>(12, cancellationToken).ConfigureAwait(false);
-            ReconstructionDescriptor? descriptor = null;
-            DurableProcessingProductManifestV1? productManifest = null;
             try
             {
-                using var evidence = JsonDocument.Parse(descriptorJson);
-                if (evidence.RootElement.ValueKind != JsonValueKind.Object ||
-                    !evidence.RootElement.TryGetProperty("schemaVersion", out var schema) ||
-                    schema.ValueKind != JsonValueKind.String)
+                outputs.Add(await ReadOutputRowAsync(reader, cancellationToken).ConfigureAwait(false));
+            }
+            catch (Exception exception) when (skipInvalid && exception is InvalidDataException or FormatException or ArgumentException)
+            {
+            }
+        }
+        return outputs;
+    }
+
+    private static async ValueTask<(Guid CaptureId, string NodeId, DurableProcessingOutput Output)> ReadOutputRowAsync(
+        SqliteDataReader reader,
+        CancellationToken cancellationToken)
+    {
+        var descriptorJson = await reader.GetFieldValueAsync<byte[]>(4, cancellationToken).ConfigureAwait(false);
+        var algorithmsJson = await reader.GetFieldValueAsync<byte[]>(11, cancellationToken).ConfigureAwait(false);
+        var compatibilityJson = await reader.GetFieldValueAsync<byte[]>(12, cancellationToken).ConfigureAwait(false);
+        ReconstructionDescriptor? descriptor = null;
+        DurableProcessingProductManifestV1? productManifest = null;
+        try
+        {
+            using var evidence = JsonDocument.Parse(descriptorJson);
+            if (evidence.RootElement.ValueKind != JsonValueKind.Object ||
+                !evidence.RootElement.TryGetProperty("schemaVersion", out var schema) ||
+                schema.ValueKind != JsonValueKind.String)
+            {
+                throw new InvalidDataException("Committed processing output descriptor is invalid.");
+            }
+            if (string.Equals(schema.GetString(), DurableProcessingProductManifestV1.CurrentSchemaVersion, StringComparison.Ordinal))
+            {
+                productManifest = DurableProcessingProductManifestJson.Parse(descriptorJson);
+            }
+            else
+            {
+                var parsed = CaptureContractJson.ParseManifest(descriptorJson);
+                descriptor = parsed.Document?.Manifest?.Descriptor;
+                if (!parsed.IsValid || descriptor is null)
                 {
                     throw new InvalidDataException("Committed processing output descriptor is invalid.");
                 }
-                if (string.Equals(schema.GetString(), DurableProcessingProductManifestV1.CurrentSchemaVersion, StringComparison.Ordinal))
-                {
-                    productManifest = DurableProcessingProductManifestJson.Parse(descriptorJson);
-                }
-                else
-                {
-                    var parsed = CaptureContractJson.ParseManifest(descriptorJson);
-                    descriptor = parsed.Document?.Manifest?.Descriptor;
-                    if (!parsed.IsValid || descriptor is null)
-                    {
-                        throw new InvalidDataException("Committed processing output descriptor is invalid.");
-                    }
-                }
             }
-            catch (JsonException exception)
-            {
-                throw new InvalidDataException("Committed processing output descriptor is invalid.", exception);
-            }
-            catch (InvalidOperationException exception)
-            {
-                throw new InvalidDataException("Committed processing output descriptor is invalid.", exception);
-            }
-            var algorithms = JsonSerializer.Deserialize<ProcessingAlgorithmIdentity[]>(
-                algorithmsJson, SerializerOptions) ?? [];
-            var compatibility = JsonSerializer.Deserialize<ProcessingCompatibilityIdentity>(
-                compatibilityJson, SerializerOptions)
-                ?? throw new InvalidDataException("Committed processing compatibility is invalid.");
-            var artifact = descriptor?.Artifact ?? productManifest!.Artifact;
-            var capture = descriptor?.Capture ?? productManifest!.Capture;
-            var outputIdentity = reader.GetString(0);
-            var artifactId = Guid.ParseExact(reader.GetString(1), "N");
-            var payloadRelativePath = reader.GetString(2);
-            var recipeIdentity = reader.GetString(10);
-            var totalIntegration = TimeSpan.FromTicks(reader.GetInt64(13));
-            var captureSequence = reader.GetInt64(14);
-            if (!string.Equals(reader.GetString(5), capture.CaptureId.ToString("N"), StringComparison.Ordinal) ||
-                !string.Equals(reader.GetString(6), capture.AgentId, StringComparison.Ordinal) ||
-                string.IsNullOrWhiteSpace(reader.GetString(7)) ||
-                productManifest is not null && !string.Equals(
-                    reader.GetString(7), productManifest.Artifact.SourceId, StringComparison.Ordinal) ||
-                !string.Equals(reader.GetString(8), artifact.Role.ToString(), StringComparison.Ordinal) ||
-                !string.Equals(reader.GetString(9), artifact.Variant, StringComparison.Ordinal) ||
-                artifactId != artifact.ArtifactId ||
-                !string.Equals(payloadRelativePath, productManifest?.RelativeArtifactPath ?? payloadRelativePath, StringComparison.Ordinal) ||
-                !string.Equals(outputIdentity, productManifest?.OutputIdentitySha256 ?? outputIdentity, StringComparison.Ordinal) ||
-                !string.Equals(recipeIdentity, ProcessingIdentity.CreateRecipeIdentity(artifact.Recipe).IdentitySha256, StringComparison.Ordinal) ||
-                !algorithms.SequenceEqual(productManifest?.Algorithms ?? algorithms) ||
-                compatibility != (productManifest?.Compatibility ?? compatibility) ||
-                totalIntegration.Ticks != (productManifest?.TotalIntegrationTicks ?? totalIntegration.Ticks) ||
-                captureSequence != capture.CaptureSequence)
-            {
-                throw new InvalidDataException("Committed processing output columns conflict with its descriptor.");
-            }
-            outputs.Add(new DurableProcessingOutput(
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException("Committed processing output descriptor is invalid.", exception);
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new InvalidDataException("Committed processing output descriptor is invalid.", exception);
+        }
+        var algorithms = JsonSerializer.Deserialize<ProcessingAlgorithmIdentity[]>(algorithmsJson, SerializerOptions) ?? [];
+        var compatibility = JsonSerializer.Deserialize<ProcessingCompatibilityIdentity>(compatibilityJson, SerializerOptions)
+            ?? throw new InvalidDataException("Committed processing compatibility is invalid.");
+        var artifact = descriptor?.Artifact ?? productManifest!.Artifact;
+        var capture = descriptor?.Capture ?? productManifest!.Capture;
+        var outputIdentity = reader.GetString(0);
+        var artifactId = Guid.ParseExact(reader.GetString(1), "N");
+        var payloadRelativePath = reader.GetString(2);
+        var recipeIdentity = reader.GetString(10);
+        var totalIntegration = TimeSpan.FromTicks(reader.GetInt64(13));
+        var captureSequence = reader.GetInt64(14);
+        if (!string.Equals(reader.GetString(5), capture.CaptureId.ToString("N"), StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(6), capture.AgentId, StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(reader.GetString(7)) ||
+            productManifest is not null && !string.Equals(
+                reader.GetString(7), productManifest.Artifact.SourceId, StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(8), artifact.Role.ToString(), StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(9), artifact.Variant, StringComparison.Ordinal) ||
+            artifactId != artifact.ArtifactId ||
+            !string.Equals(payloadRelativePath, productManifest?.RelativeArtifactPath ?? payloadRelativePath, StringComparison.Ordinal) ||
+            !string.Equals(outputIdentity, productManifest?.OutputIdentitySha256 ?? outputIdentity, StringComparison.Ordinal) ||
+            !string.Equals(recipeIdentity, ProcessingIdentity.CreateRecipeIdentity(artifact.Recipe).IdentitySha256, StringComparison.Ordinal) ||
+            !algorithms.SequenceEqual(productManifest?.Algorithms ?? algorithms) ||
+            compatibility != (productManifest?.Compatibility ?? compatibility) ||
+            totalIntegration.Ticks != (productManifest?.TotalIntegrationTicks ?? totalIntegration.Ticks) ||
+            captureSequence != capture.CaptureSequence)
+        {
+            throw new InvalidDataException("Committed processing output columns conflict with its descriptor.");
+        }
+        return (
+            capture.CaptureId,
+            reader.GetString(7),
+            new DurableProcessingOutput(
                 outputIdentity,
                 artifactId,
                 payloadRelativePath,
@@ -659,8 +904,6 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 totalIntegration,
                 captureSequence,
                 await reader.IsDBNullAsync(15, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(15)));
-        }
-        return outputs;
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The interpolated value is a validated integer host option used only for SQLite PRAGMA configuration.")]
@@ -695,9 +938,9 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
     private const string SchemaSql = """
         CREATE TABLE IF NOT EXISTS capture_processing_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 1)
+            version INTEGER NOT NULL CHECK(version = 2)
         ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 1)
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 2)
             ON CONFLICT(schema_key) DO NOTHING;
         CREATE TABLE IF NOT EXISTS processing_nodes(
             capture_id TEXT NOT NULL,
@@ -739,5 +982,30 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             ON processing_outputs(capture_id, node_id);
         CREATE INDEX IF NOT EXISTS ix_processing_outputs_window
             ON processing_outputs(agent_id, node_id, role, capture_sequence);
+        CREATE INDEX IF NOT EXISTS ix_processing_nodes_status
+            ON processing_nodes(status, capture_id);
+        CREATE INDEX IF NOT EXISTS ix_processing_nodes_recipe
+            ON processing_nodes(upper(recipe_name), capture_id);
+        CREATE INDEX IF NOT EXISTS ix_processing_outputs_role
+            ON processing_outputs(role, capture_id);
+        CREATE INDEX IF NOT EXISTS ix_processing_outputs_recipe
+            ON processing_outputs(recipe_identity_sha256, capture_id);
+        """;
+
+    private const string ProcessingV2MigrationSql = """
+        CREATE INDEX IF NOT EXISTS ix_processing_nodes_status
+            ON processing_nodes(status, capture_id);
+        CREATE INDEX IF NOT EXISTS ix_processing_nodes_recipe
+            ON processing_nodes(upper(recipe_name), capture_id);
+        CREATE INDEX IF NOT EXISTS ix_processing_outputs_role
+            ON processing_outputs(role, capture_id);
+        CREATE INDEX IF NOT EXISTS ix_processing_outputs_recipe
+            ON processing_outputs(recipe_identity_sha256, capture_id);
+        DROP TABLE capture_processing_schema;
+        CREATE TABLE capture_processing_schema(
+            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
+            version INTEGER NOT NULL CHECK(version = 2)
+        ) STRICT;
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 2);
         """;
 }

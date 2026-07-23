@@ -1,0 +1,5 @@
+.fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; margin: 1rem 0 0; }
+.fact-grid > div { min-width: 0; padding: .55rem 0; border-top: 1px solid var(--hvo-border-muted); }
+.fact-grid > div:nth-child(odd) { padding-right: .6rem; }
+dt { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
+dd { margin: .15rem 0 0; overflow-wrap: anywhere; font-weight: 650; }

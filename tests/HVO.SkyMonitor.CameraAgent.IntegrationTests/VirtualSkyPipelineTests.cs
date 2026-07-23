@@ -14,6 +14,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
+using Microsoft.AspNetCore.Identity;
+using CameraAgentApplicationUser = HVO.SkyMonitor.CameraAgent.Data.ApplicationUser;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -407,7 +409,16 @@ public sealed class VirtualSkyPipelineTests
                 TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         }
 
+        string ownerId;
+        using (var ownerScope = Fixture.CreateCameraAgentScope())
+        {
+            var owner = await ownerScope.ServiceProvider.GetRequiredService<UserManager<CameraAgentApplicationUser>>()
+                .FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false);
+            Assert.IsNotNull(owner);
+            ownerId = owner.Id;
+        }
         using var client = Fixture.CreateCameraAgentClient();
+        client.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
         using var response = await client.GetAsync(new Uri("/api/v1.0/frames/latest", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
         Assert.AreEqual("image/jpeg", response.Content.Headers.ContentType?.MediaType);
@@ -515,7 +526,9 @@ public sealed class VirtualSkyPipelineTests
         IReadOnlyDictionary<string, double> measurements)
     {
         var files = Directory.EnumerateFiles(Fixture.StorageRoot, "*", SearchOption.AllDirectories)
-            .Select(static path => new FileInfo(path))
+            .Where(static path => !Path.GetFileName(path).Contains(".tmp", StringComparison.Ordinal))
+            .Select(TrySnapshotFile)
+            .OfType<RuntimeFileSnapshot>()
             .ToArray();
         var evidence = new
         {
@@ -561,6 +574,25 @@ public sealed class VirtualSkyPipelineTests
             JsonSerializer.Serialize(evidence, EvidenceSerializerOptions))
             .ConfigureAwait(false);
     }
+
+    private static RuntimeFileSnapshot? TrySnapshotFile(string path)
+    {
+        try
+        {
+            var file = new FileInfo(path);
+            return new RuntimeFileSnapshot(file.Extension, file.Length);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private sealed record RuntimeFileSnapshot(string Extension, long Length);
 
     private static ushort ReadMono16(ReadOnlySpan<byte> pixels, int strideBytes, int x, int y)
         => System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(pixels[(y * strideBytes + x * 2)..]);

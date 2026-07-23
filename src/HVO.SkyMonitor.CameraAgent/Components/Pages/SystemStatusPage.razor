@@ -1,0 +1,43 @@
+@page "/system"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>System status</PageTitle>
+
+<div class="system-page">
+    <header class="system-heading">
+        <div><p class="eyebrow">Protected read-only status</p><h1>System snapshot</h1><p>Allowlisted numeric and policy facts from the configuration validated when this process started.</p></div>
+        @if (_status is not null) { <div class="snapshot-badges"><span>@_status.SnapshotLabel</span><span>@_status.ValidationStatus</span></div> }
+    </header>
+    <p class="truth-note" role="note"><strong>Startup truth:</strong> this host has no configuration revision or live apply contract. This page is an unversioned snapshot and provides no edit, validate, apply, or mutation controls.</p>
+
+    @if (_isLoading)
+    {
+        <section class="system-state" role="status"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><strong>Loading startup configuration status</strong></section>
+    }
+    else if (_errorMessage is not null || _status is null)
+    {
+        <section class="system-state system-state--error" role="alert"><div><strong>System status unavailable</strong><p>@(_errorMessage ?? "The startup configuration snapshot could not be read.")</p></div><button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button></section>
+    }
+    else
+    {
+        <section class="system-grid" aria-label="Allowlisted configuration facts">
+            <article><header><p class="eyebrow">Identity</p><h2>Module and agent</h2></header><dl><div><dt>Agent ID</dt><dd>@_status.AgentId</dd></div><div><dt>Module alias</dt><dd>@SafeAlias(_status.ModuleType)</dd></div><div><dt>Snapshot</dt><dd>@_status.SnapshotLabel</dd></div><div><dt>Snapshot identity</dt><dd>@_status.SnapshotIdentity</dd></div><div><dt>Validation</dt><dd>@_status.ValidationStatus</dd></div></dl></article>
+            <article><header><p class="eyebrow">Capture layout</p><h2>Sensor</h2></header><dl><div><dt>Name</dt><dd>@_status.Sensor.Name</dd></div><div><dt>Dimensions</dt><dd>@_status.Sensor.WidthPixels x @_status.Sensor.HeightPixels px</dd></div><div><dt>Pixel size</dt><dd>@FormatNumber(_status.Sensor.PixelSizeMicrons) um</dd></div><div><dt>Color mode</dt><dd>@OperationsPage.SplitWords(_status.Sensor.ColorMode)</dd></div><div><dt>Pixel format</dt><dd>@OperationsPage.SplitWords(_status.Sensor.PixelFormat)</dd></div><div><dt>Response mode</dt><dd>@OperationsPage.SplitWords(_status.Sensor.ResponseMode)</dd></div><div><dt>Rig profile</dt><dd>@_status.Sensor.ProfileVersion</dd></div><div><dt>Sensor recipe</dt><dd>@_status.Sensor.SensorRecipeVersion</dd></div></dl></article>
+            <article><header><p class="eyebrow">Image geometry</p><h2>Optics and rig</h2></header><dl><div><dt>Lens kind</dt><dd>@OperationsPage.SplitWords(_status.Optics.LensKind)</dd></div><div><dt>Projection</dt><dd>@OperationsPage.SplitWords(_status.Optics.ProjectionModel)</dd></div><div><dt>Focal length</dt><dd>@FormatNumber(_status.Optics.FocalLengthMillimeters) mm</dd></div><div><dt>Horizontal FOV</dt><dd>@FormatNumber(_status.Optics.HorizontalFieldOfViewDegrees) deg</dd></div><div><dt>Vertical FOV</dt><dd>@FormatOptionalNumber(_status.Optics.VerticalFieldOfViewDegrees, "deg")</dd></div><div><dt>Layout</dt><dd>@_status.Optics.Layout</dd></div><div><dt>Horizontal flip</dt><dd>@YesNo(_status.Optics.HorizontalFlip)</dd></div><div><dt>Calibration</dt><dd>@_status.Optics.CalibrationVersion</dd></div></dl></article>
+            <article><header><p class="eyebrow">Acquisition policy</p><h2>Cadence and exposure</h2></header><dl><div><dt>Cadence mode</dt><dd>@OperationsPage.SplitWords(_status.Capture.CadenceMode)</dd></div><div><dt>Capture interval</dt><dd>@FormatNumber(_status.Capture.CaptureIntervalSeconds) sec</dd></div><div><dt>Day exposure</dt><dd>@FormatNumber(_status.Capture.DayExposureMilliseconds) ms</dd></div><div><dt>Night exposure</dt><dd>@FormatNumber(_status.Capture.NightExposureMilliseconds) ms</dd></div><div><dt>Day gain</dt><dd>@FormatNumber(_status.Capture.DayGain)</dd></div><div><dt>Night gain</dt><dd>@FormatNumber(_status.Capture.NightGain)</dd></div><div><dt>Exposure envelope</dt><dd>@FormatRange(_status.Capture.MinimumExposureMilliseconds, _status.Capture.MaximumExposureMilliseconds, "ms")</dd></div><div><dt>Gain envelope</dt><dd>@FormatRange(_status.Capture.MinimumGain, _status.Capture.MaximumGain, null)</dd></div><div><dt>Adjustment order</dt><dd>@OperationsPage.SplitWords(_status.Capture.ExposurePreference)</dd></div></dl></article>
+
+            <article class="wide"><header><p class="eyebrow">Validated graph</p><h2>Processing pipeline</h2></header>
+                @if (_status.Pipeline.Count == 0) { <p class="empty-copy">No processing nodes are configured.</p> }
+                else { <ol class="pipeline-list">@foreach (var node in _status.Pipeline) { <li><span>@node.Id</span><div><strong>@OperationsPage.SplitWords(SafeAlias(node.Type))</strong><small>@(node.Required ? "Required" : "Optional")</small></div><div><strong>Dependencies</strong><small>@(node.Dependencies.Count == 0 ? "None" : string.Join(", ", node.Dependencies))</small></div></li> }</ol> }
+            </article>
+
+            <article><header><p class="eyebrow">Durability policy</p><h2>Retention</h2></header><dl><div><dt>Sweep interval</dt><dd>@_status.Retention.SweepIntervalMinutes min</dd></div><div><dt>Pressure threshold</dt><dd>@FormatNumber(_status.Retention.PressureThresholdPercent)% free</dd></div><div><dt>Recovery threshold</dt><dd>@FormatNumber(_status.Retention.PressureRecoveryPercent)% free</dd></div><div><dt>Pressure retention</dt><dd>@_status.Retention.PressureRetentionDays day(s)</dd></div><div><dt>Ingress reserve</dt><dd>@OperationsPage.FormatBytes(_status.Retention.RawIngressReserveBytes)</dd></div></dl></article>
+            <article><header><p class="eyebrow">Artifact delivery policy</p><h2>Upload</h2></header><dl><div><dt>Enabled</dt><dd>@YesNo(_status.Upload.Enabled)</dd></div><div><dt>Batch size</dt><dd>@_status.Upload.BatchSize</dd></div><div><dt>Poll interval</dt><dd>@_status.Upload.PollIntervalSeconds sec</dd></div><div><dt>Retry envelope</dt><dd>@_status.Upload.RetryInitialDelaySeconds-@_status.Upload.RetryMaximumDelaySeconds sec</dd></div><div><dt>Bandwidth limit</dt><dd>@(_status.Upload.BandwidthLimitBytesPerSecond == 0 ? "Unlimited by policy" : $"{OperationsPage.FormatBytes(_status.Upload.BandwidthLimitBytesPerSecond)}/s")</dd></div><div><dt>Required lane limit</dt><dd>@_status.Upload.RequiredMaximumPendingCount / @OperationsPage.FormatBytes(_status.Upload.RequiredMaximumPendingBytes)</dd></div><div><dt>Optional lane limit</dt><dd>@_status.Upload.OptionalMaximumPendingCount / @OperationsPage.FormatBytes(_status.Upload.OptionalMaximumPendingBytes)</dd></div></dl></article>
+            <article><header><p class="eyebrow">Observation policy</p><h2>Environment delivery</h2></header><dl><div><dt>Enabled</dt><dd>@YesNo(_status.Environmental.Enabled)</dd></div><div><dt>Batch size</dt><dd>@_status.Environmental.BatchSize</dd></div><div><dt>Poll interval</dt><dd>@_status.Environmental.PollIntervalSeconds sec</dd></div><div><dt>Maximum attempts</dt><dd>@_status.Environmental.MaximumAttempts</dd></div><div><dt>Pending count limit</dt><dd>@_status.Environmental.MaximumPendingCount</dd></div><div><dt>Pending byte limit</dt><dd>@OperationsPage.FormatBytes(_status.Environmental.MaximumPendingBytes)</dd></div></dl></article>
+            <article><header><p class="eyebrow">Candidate policy</p><h2>Transient</h2></header><dl><div><dt>Mode</dt><dd>@OperationsPage.SplitWords(_status.Transient.Mode)</dd></div><div><dt>Required</dt><dd>@YesNo(_status.Transient.Required)</dd></div><div><dt>Candidate timeout</dt><dd>@_status.Transient.CandidateTimeoutMinutes min</dd></div><div><dt>Worker poll</dt><dd>@_status.Transient.WorkerPollIntervalMilliseconds ms</dd></div><div><dt>Maximum attempts</dt><dd>@_status.Transient.MaximumAttempts</dd></div><div><dt>Adjacent interval</dt><dd>@_status.Transient.MaximumAdjacentStartIntervalSeconds sec</dd></div><div><dt>Star result bound</dt><dd>@_status.Transient.StarMaximumResults</dd></div></dl></article>
+        </section>
+    }
+</div>

@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -15,6 +16,8 @@ public sealed class SqliteArtifactOutbox(
     TimeProvider? timeProvider = null,
     int busyTimeoutSeconds = 5) : IArtifactOutbox, IDisposable
 {
+    internal const int MaximumOperationReceipts = 10_000;
+    internal const int OperationReceiptRetentionDays = 30;
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly int _busyTimeoutSeconds = busyTimeoutSeconds;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _initializationGates = new(PathComparer);
@@ -50,6 +53,7 @@ public sealed class SqliteArtifactOutbox(
             EnsureDatabaseFilesArePhysical(root);
             using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
             EnsureDatabaseFilesArePhysical(root);
+            var existingVersion = 0;
             using (var existingSchema = connection.CreateCommand())
             {
                 existingSchema.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'artifact_outbox_schema';";
@@ -59,19 +63,35 @@ public sealed class SqliteArtifactOutbox(
                 if (schemaExists)
                 {
                     existingSchema.CommandText = "SELECT COALESCE((SELECT version FROM artifact_outbox_schema WHERE schema_key = 1), 0);";
-                    var existingVersion = Convert.ToInt32(
+                    existingVersion = Convert.ToInt32(
                         await existingSchema.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
                         System.Globalization.CultureInfo.InvariantCulture);
-                    if (existingVersion > 1)
+                    if (existingVersion > 2)
                     {
-                        throw new InvalidOperationException($"Artifact outbox schema {existingVersion} is newer than supported schema 1.");
+                        throw new InvalidOperationException($"Artifact outbox schema {existingVersion} is newer than supported schema 2.");
                     }
                 }
             }
-            using (var command = connection.CreateCommand())
+            if (existingVersion == 0)
             {
+                using var command = connection.CreateCommand();
                 command.CommandText = SchemaSql;
                 await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            using (var migration = connection.CreateCommand())
+            {
+                migration.CommandText = "SELECT version FROM artifact_outbox_schema WHERE schema_key = 1;";
+                var version = Convert.ToInt32(
+                    await migration.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                    System.Globalization.CultureInfo.InvariantCulture);
+                if (version == 1)
+                {
+                    using var transaction = BeginImmediate(connection);
+                    migration.Transaction = transaction;
+                    migration.CommandText = MigrationV2Sql;
+                    await migration.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                }
             }
             using (var version = connection.CreateCommand())
             {
@@ -79,10 +99,15 @@ public sealed class SqliteArtifactOutbox(
                 var value = Convert.ToInt32(
                     await version.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
                     System.Globalization.CultureInfo.InvariantCulture);
-                if (value != 1)
+                if (value != 2)
                 {
                     throw new InvalidOperationException($"Artifact outbox schema {value} is not supported.");
                 }
+            }
+            using (var operationalIndex = connection.CreateCommand())
+            {
+                operationalIndex.CommandText = "CREATE INDEX IF NOT EXISTS ix_artifact_outbox_operations ON artifact_outbox_records(status, record_id DESC);";
+                await operationalIndex.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
             using (var integrity = connection.CreateCommand())
             {
@@ -473,6 +498,177 @@ public sealed class SqliteArtifactOutbox(
         return entries;
     }
 
+    public async ValueTask<ArtifactOutboxOperationsPage> ReadOperationsPageAsync(
+        string root,
+        int pageSize,
+        ArtifactOutboxOperationsCursor? cursor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(pageSize, 100);
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = string.Concat(
+            OperationsSelectColumns,
+            cursor is null
+                ? " WHERE status = 'quarantined' ORDER BY record_id DESC LIMIT $limit;"
+                : " WHERE status = 'quarantined' AND record_id < $record_id ORDER BY record_id DESC LIMIT $limit;");
+        command.Parameters.AddWithValue("$limit", pageSize + 1);
+        if (cursor is not null)
+        {
+            command.Parameters.AddWithValue("$record_id", cursor.RecordId);
+        }
+        var records = new List<ArtifactOutboxOperationsRecord>(pageSize + 1);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            records.Add(ReadOperationsRecord(reader));
+        }
+        var hasMore = records.Count > pageSize;
+        if (hasMore)
+        {
+            records.RemoveAt(records.Count - 1);
+        }
+        return new ArtifactOutboxOperationsPage(
+            records,
+            hasMore && records.Count > 0 ? records[^1].Cursor : null);
+    }
+
+    public async ValueTask<ArtifactOutboxOperationsRecord?> ReadOperationsDetailAsync(
+        string root,
+        string recordKey,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = string.Concat(
+            OperationsSelectColumns,
+            " WHERE idempotency_key = $key AND status = 'quarantined';");
+        command.Parameters.AddWithValue("$key", recordKey);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadOperationsRecord(reader) : null;
+    }
+
+    public async ValueTask<OutboxOperationsAuditPage> ReadOperationsAuditAsync(
+        string root,
+        string recordKey,
+        int pageSize,
+        OutboxOperationsAuditCursor? cursor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(pageSize, 100);
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = cursor is null
+            ? "SELECT audit_id, action, actor, reason, occurred_unix_ms FROM artifact_outbox_audit WHERE idempotency_key = $key ORDER BY audit_id DESC LIMIT $limit;"
+            : "SELECT audit_id, action, actor, reason, occurred_unix_ms FROM artifact_outbox_audit WHERE idempotency_key = $key AND audit_id < $sequence ORDER BY audit_id DESC LIMIT $limit;";
+        command.Parameters.AddWithValue("$key", recordKey);
+        command.Parameters.AddWithValue("$limit", pageSize + 1);
+        if (cursor is not null)
+        {
+            command.Parameters.AddWithValue("$sequence", cursor.Sequence);
+        }
+        var entries = new List<OutboxOperationsAuditRecord>(pageSize + 1);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            entries.Add(new OutboxOperationsAuditRecord(
+                reader.GetInt64(0),
+                BoundOutput(reader.GetString(1), 32),
+                string.Equals(reader.GetString(2), "owner", StringComparison.Ordinal) ? "owner" : "system",
+                OutboxOperationsReasonCodes.Sanitize(reader.GetString(3)),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4))));
+        }
+        var hasMore = entries.Count > pageSize;
+        if (hasMore)
+        {
+            entries.RemoveAt(entries.Count - 1);
+        }
+        return new OutboxOperationsAuditPage(
+            entries,
+            hasMore && entries.Count > 0 ? new OutboxOperationsAuditCursor(entries[^1].Sequence) : null);
+    }
+
+    public async ValueTask<OutboxOperationDisposition> ResolveOperationsAsync(
+        string root,
+        string recordKey,
+        OutboxOperationAction action,
+        string operationKey,
+        string actorKind,
+        string reasonCode,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
+        ValidateOperation(operationKey, actorKind, reasonCode);
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        var existing = await ReadOperationAsync(root, operationKey, cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return MatchOperation(existing, recordKey, action, actorKind, reasonCode);
+        }
+        if (action == OutboxOperationAction.Replay)
+        {
+            var record = await ReadAsync(root, recordKey, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Artifact outbox resolution requires one quarantined record.");
+            await ValidateReplayEvidenceAsync(root, record, cancellationToken).ConfigureAwait(false);
+        }
+
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginImmediate(connection);
+        existing = await ReadOperationAsync(connection, transaction, operationKey, cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            var disposition = MatchOperation(existing, recordKey, action, actorKind, reasonCode);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return disposition;
+        }
+
+        var now = _timeProvider.GetUtcNow();
+        using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText = action == OutboxOperationAction.Abandon
+                ? "UPDATE artifact_outbox_records SET status = 'abandoned', terminal_actor = $actor, terminal_reason = $reason, terminal_unix_ms = $now, updated_unix_ms = $now WHERE idempotency_key = $key AND status = 'quarantined';"
+                : "UPDATE artifact_outbox_records SET status = 'pending', next_attempt_unix_ms = $now, last_reason = NULL, lease_owner = NULL, lease_token = NULL, lease_expires_unix_ms = NULL, updated_unix_ms = $now WHERE idempotency_key = $key AND status = 'quarantined' AND manifest_kind != 'malformed-legacy';";
+            update.Parameters.AddWithValue("$actor", actorKind);
+            update.Parameters.AddWithValue("$reason", reasonCode);
+            update.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
+            update.Parameters.AddWithValue("$key", recordKey);
+            if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                throw new InvalidOperationException("Artifact outbox resolution requires one quarantined record.");
+            }
+        }
+        using (var operation = connection.CreateCommand())
+        {
+            operation.Transaction = transaction;
+            operation.CommandText = "INSERT INTO artifact_outbox_operations(operation_key, idempotency_key, action, actor_kind, reason, occurred_unix_ms) VALUES($operation, $key, $action, $actor, $reason, $now);";
+            operation.Parameters.AddWithValue("$operation", operationKey);
+            operation.Parameters.AddWithValue("$key", recordKey);
+            operation.Parameters.AddWithValue("$action", FormatAction(action));
+            operation.Parameters.AddWithValue("$actor", actorKind);
+            operation.Parameters.AddWithValue("$reason", reasonCode);
+            operation.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
+            await operation.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await InsertOperationsAuditAsync(
+            connection, transaction, recordKey, operationKey, FormatAction(action), actorKind, reasonCode, cancellationToken)
+            .ConfigureAwait(false);
+        await PruneOperationReceiptsAsync(connection, transaction, now, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return OutboxOperationDisposition.Applied;
+    }
+
     public async ValueTask<IReadOnlyList<ArtifactOutboxRetentionHold>> GetRetentionHoldsAsync(
         string root,
         CancellationToken cancellationToken)
@@ -527,7 +723,7 @@ public sealed class SqliteArtifactOutbox(
             ReadCount(reader, 1),
             reader.IsDBNull(2) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
             ReadCount(reader, 3), ReadCount(reader, 4), ReadCount(reader, 5),
-            ReadCount(reader, 6), ReadCount(reader, 7), ReadCount(reader, 8));
+            ReadCount(reader, 6), ReadCount(reader, 7), ReadCount(reader, 8), _timeProvider.GetUtcNow());
     }
 
     public async ValueTask<bool> HasUnknownRetentionHoldsAsync(
@@ -1102,6 +1298,159 @@ public sealed class SqliteArtifactOutbox(
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private async ValueTask InsertOperationsAuditAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string recordKey,
+        string operationKey,
+        string action,
+        string actorKind,
+        string reasonCode,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "INSERT INTO artifact_outbox_audit(idempotency_key, action, actor, reason, occurred_unix_ms, operation_key) VALUES($key, $action, $actor, $reason, $now, $operation);";
+        command.Parameters.AddWithValue("$key", recordKey);
+        command.Parameters.AddWithValue("$action", action);
+        command.Parameters.AddWithValue("$actor", actorKind);
+        command.Parameters.AddWithValue("$reason", reasonCode);
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$operation", operationKey);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask PruneOperationReceiptsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            DELETE FROM artifact_outbox_audit
+            WHERE operation_key IN (
+                SELECT operation_key FROM artifact_outbox_operations
+                WHERE occurred_unix_ms < $cutoff
+                   OR operation_key IN (
+                       SELECT operation_key FROM artifact_outbox_operations
+                       ORDER BY occurred_unix_ms DESC, operation_key DESC
+                       LIMIT -1 OFFSET $maximum));
+            DELETE FROM artifact_outbox_operations
+            WHERE occurred_unix_ms < $cutoff
+               OR operation_key IN (
+                   SELECT operation_key FROM artifact_outbox_operations
+                   ORDER BY occurred_unix_ms DESC, operation_key DESC
+                   LIMIT -1 OFFSET $maximum);
+            DELETE FROM artifact_outbox_audit
+            WHERE audit_id IN (
+                SELECT audit_id FROM artifact_outbox_audit
+                ORDER BY audit_id DESC LIMIT -1 OFFSET $maximum);
+            """;
+        command.Parameters.AddWithValue("$cutoff", now.AddDays(-OperationReceiptRetentionDays).ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$maximum", MaximumOperationReceipts);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<CommittedOperation?> ReadOperationAsync(
+        string root,
+        string operationKey,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        return await ReadOperationAsync(connection, transaction: null, operationKey, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<CommittedOperation?> ReadOperationAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string operationKey,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT idempotency_key, action, actor_kind, reason FROM artifact_outbox_operations WHERE operation_key = $operation;";
+        command.Parameters.AddWithValue("$operation", operationKey);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new CommittedOperation(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3))
+            : null;
+    }
+
+    private static OutboxOperationDisposition MatchOperation(
+        CommittedOperation existing,
+        string recordKey,
+        OutboxOperationAction action,
+        string actorKind,
+        string reasonCode)
+    {
+        if (!string.Equals(existing.RecordKey, recordKey, StringComparison.Ordinal) ||
+            !string.Equals(existing.Action, FormatAction(action), StringComparison.Ordinal) ||
+            !string.Equals(existing.ActorKind, actorKind, StringComparison.Ordinal) ||
+            !string.Equals(existing.ReasonCode, reasonCode, StringComparison.Ordinal))
+        {
+            throw new OutboxOperationCollisionException("The operation key is already bound to a different request.");
+        }
+        return OutboxOperationDisposition.Duplicate;
+    }
+
+    private static void ValidateOperation(string operationKey, string actorKind, string reasonCode)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationKey);
+        if (operationKey.Length > 128 || operationKey.Any(static character => char.IsControl(character)))
+        {
+            throw new ArgumentException("Operation key is invalid.", nameof(operationKey));
+        }
+        if (actorKind is not ("owner" or "system"))
+        {
+            throw new ArgumentException("Actor kind is invalid.", nameof(actorKind));
+        }
+        ArgumentException.ThrowIfNullOrWhiteSpace(reasonCode);
+        if (reasonCode.Length > 64)
+        {
+            throw new ArgumentException("Reason code is invalid.", nameof(reasonCode));
+        }
+    }
+
+    private static ArtifactOutboxOperationsRecord ReadOperationsRecord(SqliteDataReader reader)
+    {
+        var kind = ParseKind(reader.GetString(2));
+        var status = ParseStatus(reader.GetString(6));
+        var updatedUnixMilliseconds = reader.GetInt64(10);
+        FrameArtifactRole? role = null;
+        if (!reader.IsDBNull(3) && Enum.TryParse<FrameArtifactRole>(reader.GetString(3), out var parsedRole))
+        {
+            role = parsedRole;
+        }
+        var isQuarantined = status == ArtifactOutboxStatus.Quarantined;
+        return new ArtifactOutboxOperationsRecord(
+            reader.GetString(1),
+            kind,
+            status,
+            reader.GetInt32(7),
+            reader.IsDBNull(4) ? null : reader.GetInt64(4),
+            reader.IsDBNull(5) ? null : BoundOutput(reader.GetString(5), 128),
+            role,
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(9)),
+            DateTimeOffset.FromUnixTimeMilliseconds(updatedUnixMilliseconds),
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(8)),
+            reader.IsDBNull(11) ? null : OutboxOperationsReasonCodes.Sanitize(reader.GetString(11)),
+            isQuarantined && kind != ArtifactOutboxManifestKind.MalformedLegacy,
+            isQuarantined,
+            new ArtifactOutboxOperationsCursor(reader.GetInt64(0)));
+    }
+
+    private static string FormatAction(OutboxOperationAction action) => action switch
+    {
+        OutboxOperationAction.Replay => "replay",
+        OutboxOperationAction.Abandon => "abandon",
+        _ => throw new ArgumentOutOfRangeException(nameof(action))
+    };
+
+    private static string BoundOutput(string value, int maximumLength)
+        => value.Length <= maximumLength ? value : value[..maximumLength];
+
     private async ValueTask InsertConflictAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -1362,6 +1711,18 @@ public sealed class SqliteArtifactOutbox(
         string? CompletionToken,
         byte[]? Acknowledgement);
 
+    private sealed record CommittedOperation(
+        string RecordKey,
+        string Action,
+        string ActorKind,
+        string ReasonCode);
+
+    private const string OperationsSelectColumns = """
+        SELECT record_id, idempotency_key, manifest_kind, role, payload_length, media_type,
+               status, attempt_count, next_attempt_unix_ms, created_unix_ms, updated_unix_ms, last_reason
+        FROM artifact_outbox_records
+        """;
+
     private const string SelectColumns = """
         SELECT record_id, idempotency_key, manifest_kind, manifest_bytes, artifact_id, role,
                relative_artifact_path, payload_sha256, payload_length, media_type, status,
@@ -1431,5 +1792,27 @@ public sealed class SqliteArtifactOutbox(
             observed_unix_ms INTEGER NOT NULL,
             FOREIGN KEY(idempotency_key) REFERENCES artifact_outbox_records(idempotency_key)
         ) STRICT;
+        """;
+
+    private const string MigrationV2Sql = """
+        ALTER TABLE artifact_outbox_audit ADD COLUMN operation_key TEXT NULL;
+        CREATE UNIQUE INDEX ux_artifact_outbox_audit_operation
+            ON artifact_outbox_audit(operation_key) WHERE operation_key IS NOT NULL;
+        CREATE TABLE artifact_outbox_operations(
+            operation_key TEXT NOT NULL PRIMARY KEY CHECK(length(operation_key) BETWEEN 1 AND 128),
+            idempotency_key TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('replay','abandon')),
+            actor_kind TEXT NOT NULL CHECK(actor_kind IN ('owner','system')),
+            reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 64),
+            occurred_unix_ms INTEGER NOT NULL,
+            FOREIGN KEY(idempotency_key) REFERENCES artifact_outbox_records(idempotency_key)
+        ) STRICT;
+        CREATE TABLE artifact_outbox_schema_v2(
+            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
+            version INTEGER NOT NULL CHECK(version = 2)
+        ) STRICT;
+        INSERT INTO artifact_outbox_schema_v2(schema_key, version) VALUES(1, 2);
+        DROP TABLE artifact_outbox_schema;
+        ALTER TABLE artifact_outbox_schema_v2 RENAME TO artifact_outbox_schema;
         """;
 }

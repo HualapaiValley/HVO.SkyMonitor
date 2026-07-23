@@ -1,0 +1,225 @@
+@page "/"
+@page "/operations"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Operations
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Operations</PageTitle>
+
+<div class="operations-page">
+    <header class="operations-heading">
+        <div>
+            <p class="eyebrow">Protected local operations</p>
+            <h1>Capture operations</h1>
+            <p>Durable acquisition, processing, delivery, and storage facts from this CameraAgent.</p>
+        </div>
+        <div class="heading-status" aria-live="polite">
+            <span class="state-chip @OverallStateClass">@OverallStateText</span>
+            @if (_view is not null)
+            {
+                <span>Updated <time datetime="@_view.Summary.CapturedUtc.ToString("O")">@FormatAge(_view.Summary.CapturedUtc)</time></span>
+            }
+            <button type="button" class="refresh-link" disabled="@_isSubmitting" @onclick="RefreshNowAsync">Refresh now</button>
+        </div>
+    </header>
+
+    @if (_isInitialLoading)
+    {
+        <section class="state-banner" role="status" aria-label="Loading operations">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <div><strong>Loading current operations</strong><p>Reading durable and runtime sources.</p></div>
+        </section>
+    }
+    else if (_view is null)
+    {
+        <section class="state-banner state-banner--error" role="alert">
+            <div><strong>Operations unavailable</strong><p>@(_errorMessage ?? "Current operations data could not be read.")</p></div>
+            <button type="button" class="btn btn-outline-light" @onclick="RefreshNowAsync">Try again</button>
+        </section>
+    }
+    else
+    {
+        @if (_errorMessage is not null)
+        {
+            <section class="state-banner state-banner--warning" role="alert">
+                <div><strong>Showing last valid data</strong><p>@_errorMessage Automatic refresh will retry.</p></div>
+            </section>
+        }
+        @if (IsEmpty)
+        {
+            <section class="state-banner" role="status">
+                <div><strong>No capture activity yet</strong><p>Queues are empty and no telemetry samples have been observed.</p></div>
+            </section>
+        }
+        @if (IsDisconnected)
+        {
+            <section class="state-banner state-banner--error" role="alert">
+                <div><strong>LogicHost connectivity is unavailable</strong><p>Local capture and durable queues continue independently.</p></div>
+            </section>
+        }
+        @if (HasPressure)
+        {
+            <section class="state-banner state-banner--warning" role="alert">
+                <div><strong>Storage or lane pressure detected</strong><p>Review the pressure-marked facts and backlogs below.</p></div>
+            </section>
+        }
+
+        <section class="instrument-grid" aria-label="Primary operations facts">
+            <article class="instrument-card instrument-card--control">
+                <header>
+                    <div><p class="eyebrow">Durable capture control</p><h2>Acquisition</h2></div>
+                    <span class="state-chip @StateClass(_view.Summary.CaptureControl.Value.State)">@SplitWords(_view.Summary.CaptureControl.Value.State)</span>
+                </header>
+                <dl class="fact-grid">
+                    <div><dt>State version</dt><dd>@_view.Summary.CaptureControl.Value.Version</dd></div>
+                    <div><dt>Initialized</dt><dd>@YesNo(_view.Summary.CaptureControl.Value.IsInitialized)</dd></div>
+                    <div><dt>Runtime</dt><dd>@SplitWords(_view.Summary.CaptureRuntime.Value.Availability)</dd></div>
+                    <div><dt>Last success</dt><dd>@FormatTime(_view.Summary.CaptureRuntime.Value.LastSucceededUtc)</dd></div>
+                </dl>
+                <div class="card-actions">
+                    @if (CanPause)
+                    {
+                        <button id="capture-action" type="button" class="btn btn-outline-warning" disabled="@_isSubmitting" @onclick="BeginPause">Review pause</button>
+                    }
+                    else if (CanResume)
+                    {
+                        <button id="capture-action" type="button" class="btn btn-primary" disabled="@_isSubmitting" @onclick="BeginResume">Review resume</button>
+                    }
+                    else
+                    {
+                        <span class="muted">A capture command is already settling.</span>
+                    }
+                </div>
+            </article>
+
+            <article class="instrument-card">
+                <header><div><p class="eyebrow">Durable boundary</p><h2>Raw ingress</h2></div><FreshnessBadge Value="_view.Summary.RawIngress.Freshness" /></header>
+                <OperationsQueueFacts Queue="_view.Summary.RawIngress.Value" />
+            </article>
+
+            <article class="instrument-card instrument-card--wide">
+                <header><div><p class="eyebrow">Per-lane durable backlog</p><h2>Capture lanes</h2></div><FreshnessBadge Value="_view.Summary.CaptureLanes.Freshness" /></header>
+                @if (_view.Summary.CaptureLanes.Value.Lanes.Count == 0)
+                {
+                    <p class="empty-copy">No capture lanes have reported state.</p>
+                }
+                else
+                {
+                    <div class="lane-grid">
+                        @foreach (var lane in _view.Summary.CaptureLanes.Value.Lanes)
+                        {
+                            <section class="lane @PressureClass(lane.PressureLevel)" aria-label="@lane.Name lane">
+                                <header><h3>@SplitWords(lane.Name)</h3><span>@(lane.Required ? "Required" : "Optional")</span></header>
+                                <dl><div><dt>Pending</dt><dd>@lane.PendingCount</dd></div><div><dt>Size</dt><dd>@FormatBytes(lane.PendingBytes)</dd></div><div><dt>Leased</dt><dd>@lane.LeasedCount</dd></div><div><dt>Quarantine</dt><dd>@lane.QuarantineCount</dd></div></dl>
+                                <p>@PressureText(lane.PressureLevel)</p>
+                            </section>
+                        }
+                    </div>
+                }
+            </article>
+
+            <article class="instrument-card">
+                <header><div><p class="eyebrow">Capture-derived work</p><h2>Processing</h2></div><FreshnessBadge Value="_view.Summary.CaptureProcessing.Freshness" /></header>
+                <OperationsQueueFacts Queue="_view.Summary.CaptureProcessing.Value" />
+            </article>
+
+            <article class="instrument-card">
+                <header><div><p class="eyebrow">Central delivery</p><h2>Artifact outbox</h2></div><FreshnessBadge Value="_view.Summary.ArtifactOutbox.Freshness" /></header>
+                <OperationsQueueFacts Queue="_view.Summary.ArtifactOutbox.Value" />
+            </article>
+
+            <article class="instrument-card instrument-card--wide">
+                <header><div><p class="eyebrow">Container-visible filesystems</p><h2>Storage</h2></div><FreshnessBadge Value="_view.Summary.Storage.Freshness" /></header>
+                @if (_view.Summary.Storage.Value.Count == 0)
+                {
+                    <p class="empty-copy">No storage probe has reported a validated location.</p>
+                }
+                else
+                {
+                    <div class="storage-grid">
+                        @foreach (var storage in _view.Summary.Storage.Value)
+                        {
+                            <section class="storage-item @(storage.IsUnderPressure ? "storage-item--pressure" : null)">
+                                <div><h3>@SplitWords(storage.Alias)</h3><span>@(storage.IsUnderPressure ? "Under pressure" : storage.ProbeSucceeded ? "Normal" : "Probe unavailable")</span></div>
+                                <meter min="0" max="@storage.TotalBytes" value="@(storage.TotalBytes - storage.AvailableBytes)">@FormatBytes(storage.AvailableBytes) available</meter>
+                                <p>@FormatBytes(storage.AvailableBytes) available of @FormatBytes(storage.TotalBytes) / @storage.EffectiveRetentionDays day effective retention</p>
+                            </section>
+                        }
+                    </div>
+                }
+            </article>
+
+            <article class="instrument-card">
+                <header><div><p class="eyebrow">LogicHost connectivity</p><h2>Heartbeat</h2></div><FreshnessBadge Value="_view.Summary.Heartbeat.Freshness" /></header>
+                <dl class="fact-grid"><div><dt>Availability</dt><dd>@SplitWords(_view.Summary.Heartbeat.Value.Availability)</dd></div><div><dt>Last acknowledged</dt><dd>@FormatTime(_view.Summary.Heartbeat.Value.LastAcknowledgedUtc)</dd></div><div><dt>Pending</dt><dd>@_view.Summary.Heartbeat.Value.PendingCount</dd></div><div><dt>Blocked</dt><dd>@_view.Summary.Heartbeat.Value.BlockedCount</dd></div><div><dt>Retry</dt><dd>@_view.Summary.Heartbeat.Value.RetryCount</dd></div><div><dt>Quarantine</dt><dd>@_view.Summary.Heartbeat.Value.QuarantineCount</dd></div></dl>
+            </article>
+
+            <article class="instrument-card">
+                <header><div><p class="eyebrow">Observation delivery</p><h2>Environmental</h2></div><FreshnessBadge Value="_view.Summary.EnvironmentalDelivery.Freshness" /></header>
+                <dl class="fact-grid"><div><dt>Availability</dt><dd>@SplitWords(_view.Summary.EnvironmentalDelivery.Value.Availability)</dd></div><div><dt>Last acknowledged</dt><dd>@FormatTime(_view.Summary.EnvironmentalDelivery.Value.LastAcknowledgedUtc)</dd></div><div><dt>Pending</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.PendingCount</dd></div><div><dt>Stored</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.StoredCount</dd></div><div><dt>Retry</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.RetryCount</dd></div><div><dt>Terminal</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.TerminalCount</dd></div></dl>
+            </article>
+
+            <article class="instrument-card">
+                <header><div><p class="eyebrow">Local candidate work</p><h2>Transient</h2></div><FreshnessBadge Value="_view.Summary.TransientWorker.Freshness" /></header>
+                <dl class="fact-grid"><div><dt>Availability</dt><dd>@SplitWords(_view.Summary.TransientWorker.Value.Availability)</dd></div><div><dt>Pending frames</dt><dd>@_view.Summary.TransientWorker.Value.PendingFrames</dd></div><div><dt>Pending candidates</dt><dd>@_view.Summary.TransientWorker.Value.PendingCandidates</dd></div></dl>
+            </article>
+
+            <article class="instrument-card instrument-card--wide telemetry-card">
+                <header><div><p class="eyebrow">Bounded runtime window</p><h2>Capture telemetry</h2></div><FreshnessBadge Value="_view.Summary.CaptureTelemetry.Freshness" /></header>
+                <dl class="telemetry-facts"><div><dt>Samples</dt><dd>@_view.Summary.CaptureTelemetry.Value.SampleCount</dd></div><div><dt>Latest capture</dt><dd>@FormatTime(_view.Summary.CaptureTelemetry.Value.LatestCaptureStartedUtc)</dd></div><div><dt>Mode</dt><dd>@(_view.Summary.CaptureTelemetry.Value.LatestMode ?? "Unavailable")</dd></div><div><dt>Exposure</dt><dd>@FormatMilliseconds(_view.Summary.CaptureTelemetry.Value.LatestExposureMilliseconds)</dd></div><div><dt>Gain</dt><dd>@FormatNumber(_view.Summary.CaptureTelemetry.Value.LatestGain)</dd></div><div><dt>Frames/min</dt><dd>@FormatNumber(_view.Summary.CaptureTelemetry.Value.CapturesPerMinute)</dd></div><div><dt>Loop average</dt><dd>@FormatMilliseconds(_view.Summary.CaptureTelemetry.Value.AverageLoopMilliseconds)</dd></div><div><dt>Stored</dt><dd>@_view.Summary.CaptureTelemetry.Value.FramesStored</dd></div></dl>
+            </article>
+
+            <article class="instrument-card instrument-card--wide">
+                <header><div><p class="eyebrow">Startup snapshot</p><h2>Configuration status</h2></div><FreshnessBadge Value="_view.Summary.Configuration.Freshness" /></header>
+                <dl class="fact-grid"><div><dt>Validation</dt><dd>@SplitWords(_view.Summary.Configuration.Value.ValidationStatus)</dd></div><div><dt>Current</dt><dd>@YesNo(_view.Summary.Configuration.Value.IsCurrent)</dd></div><div><dt>Agent</dt><dd>@(_view.Summary.Configuration.Value.AgentId ?? "Unavailable")</dd></div><div><dt>Module</dt><dd>@(_view.Summary.Configuration.Value.ModuleType ?? "Unavailable")</dd></div></dl>
+                <a class="inline-link" href="/system">Inspect allowlisted startup configuration</a>
+            </article>
+        </section>
+
+        <section class="quarantine-section" aria-labelledby="quarantine-heading">
+            <header><div><p class="eyebrow">Bounded recovery lists</p><h2 id="quarantine-heading">Quarantine</h2></div><span>Latest @MaximumQuarantineDisplay per source</span></header>
+            <div class="quarantine-grid">
+                <QuarantineList Title="Artifact quarantine" Items="_view.ArtifactQuarantine" BeginAction="BeginOutboxAction" />
+                <QuarantineList Title="Environmental quarantine" Items="_view.EnvironmentalQuarantine" BeginAction="BeginOutboxAction" />
+            </div>
+            <a class="inline-link" href="/operations/quarantine">Browse complete quarantine history</a>
+        </section>
+    }
+
+    @if (_statusMessage is not null)
+    {
+        <p class="receipt receipt--success" role="status">@_statusMessage</p>
+    }
+    @if (_pendingCommand is not null)
+    {
+        <dialog @ref="_confirmationDialog" class="confirmation" aria-labelledby="operation-confirm-heading" aria-describedby="operation-confirm-description" @oncancel="CancelConfirmationAsync" @oncancel:preventDefault>
+            <p class="eyebrow">Explicit confirmation</p>
+            <h2 id="operation-confirm-heading">@_pendingCommand.Heading</h2>
+            <p id="operation-confirm-description">@_pendingCommand.Description</p>
+            <dl><div><dt>Action</dt><dd>@_pendingCommand.ActionLabel</dd></div><div><dt>Expected state</dt><dd>@_pendingCommand.ExpectedState</dd></div>@if (_pendingCommand.ExpectedVersion is not null) { <div><dt>Expected version</dt><dd>@_pendingCommand.ExpectedVersion</dd></div> }</dl>
+            @if (_pendingCommand.IsOutbox)
+            {
+                <label for="reason-code">Controlled reason</label>
+                <select id="reason-code" class="form-select" @bind="_pendingReasonCode">
+                    @foreach (var reason in PendingReasonCodes)
+                    {
+                        <option value="@reason.Code">@reason.Label</option>
+                    }
+                </select>
+            }
+            @if (_commandError is not null)
+            {
+                <p class="dialog-error" role="alert">@_commandError</p>
+            }
+            <div class="confirmation-actions">
+                <button type="button" class="btn btn-outline-light" disabled="@_isSubmitting" @onclick="CancelConfirmationAsync">Cancel action</button>
+                <button type="button" class="btn @(_pendingCommand.IsAbandon ? "btn-danger" : "btn-primary")" disabled="@_isSubmitting" @onclick="ConfirmCommandAsync">
+                    @(_isSubmitting ? "Submitting..." : $"Confirm {_pendingCommand.ActionLabel.ToLowerInvariant()}")
+                </button>
+            </div>
+        </dialog>
+    }
+</div>

@@ -722,7 +722,7 @@ public sealed class SqliteTransientCandidateJournalTests
 
         await fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: false).ConfigureAwait(false);
 
-        Assert.AreEqual(5L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual(6L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(
             "edge",
             await fixture.ScalarStringAsync(

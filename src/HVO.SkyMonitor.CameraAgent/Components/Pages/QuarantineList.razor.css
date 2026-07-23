@@ -1,0 +1,10 @@
+.quarantine-list { min-width: 0; padding: .8rem; background: rgba(2, 6, 23, .42); }
+.quarantine-list h3 { margin: 0 0 .7rem; font-size: .95rem; }
+.quarantine-list > p { color: var(--hvo-muted); }
+.quarantine-list ol { display: grid; gap: .6rem; margin: 0; padding: 0; list-style: none; }
+.quarantine-list li { padding: .7rem; border-left: 3px solid var(--hvo-danger-strong); background: rgba(15, 23, 42, .75); }
+.quarantine-list dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .45rem; margin: 0; }
+.quarantine-list dd { margin: .1rem 0 0; overflow-wrap: anywhere; font-size: .78rem; }
+.quarantine-list .wide { grid-column: 1 / -1; }
+.actions { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .65rem; }
+@media (max-width: 480px) { .quarantine-list dl { grid-template-columns: repeat(2, minmax(0, 1fr)); } .actions { display: grid; } }

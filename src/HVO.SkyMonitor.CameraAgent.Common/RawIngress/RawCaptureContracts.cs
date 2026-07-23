@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -64,7 +65,8 @@ internal sealed record RawIngressJournalEntry(
     DateTimeOffset ExposureStartedUtc,
     DateTimeOffset DurableIngressUtc,
     string State = "committed",
-    bool RetentionHold = true);
+    bool RetentionHold = true,
+    GalleryEvidenceOrigin EvidenceOrigin = GalleryEvidenceOrigin.Unknown);
 
 internal sealed record RawIngressReconciliationSummary(
     int Inspected,

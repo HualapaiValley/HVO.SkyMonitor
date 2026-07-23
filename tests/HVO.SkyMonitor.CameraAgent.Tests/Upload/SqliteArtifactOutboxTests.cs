@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Upload;
@@ -197,6 +198,206 @@ public sealed class SqliteArtifactOutboxTests
     }
 
     [TestMethod]
+    public async Task OperationsProjection_UsesBoundedKeysetQueriesWithoutReadingEvidenceBlobs()
+    {
+        using var root = new TemporaryRoot();
+        using var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        var manifests = Enumerable.Range(0, 3)
+            .Select(index => CreateManifest(root.Path, $"frames/page-{index}.bin", StartUtc.AddMinutes(index), index + 1))
+            .ToArray();
+        foreach (var manifest in manifests)
+        {
+            await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+        }
+        foreach (var index in Enumerable.Range(0, 55))
+        {
+            var pending = CreateManifest(
+                root.Path, $"frames/newer-pending-{index}.bin", StartUtc.AddHours(1).AddMinutes(index), index + 10);
+            await outbox.EnqueueAsync(root.Path, pending, CancellationToken.None).ConfigureAwait(false);
+        }
+        using (var connection = OpenDatabase(root.Path))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE artifact_outbox_records SET status = 'quarantined', last_reason = 'test-quarantine' WHERE idempotency_key IN ($key0, $key1, $key2); UPDATE artifact_outbox_records SET manifest_bytes = zeroblob(1048576), acknowledgement = zeroblob(1048576), lease_token = printf('%.*c', 100000, 'x'), media_type = printf('%.*c', 1000, 'm'), role = 'not-a-role' WHERE idempotency_key = $key0;";
+            command.Parameters.AddWithValue("$key0", manifests[0].IdempotencyKey);
+            command.Parameters.AddWithValue("$key1", manifests[1].IdempotencyKey);
+            command.Parameters.AddWithValue("$key2", manifests[2].IdempotencyKey);
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+
+        var first = await outbox.ReadOperationsPageAsync(root.Path, 2, null, CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(2, first.Items);
+        Assert.IsNotNull(first.NextCursor);
+        using (var connection = OpenDatabase(root.Path))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE artifact_outbox_records SET updated_unix_ms = updated_unix_ms + 100000 WHERE idempotency_key = $key;";
+            command.Parameters.AddWithValue("$key", first.Items[0].RecordKey);
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+        var second = await outbox.ReadOperationsPageAsync(
+            root.Path, 2, first.NextCursor, CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, second.Items);
+        Assert.IsNull(second.NextCursor);
+        Assert.AreEqual(3, first.Items.Concat(second.Items).Select(static item => item.RecordKey).Distinct().Count());
+        var detail = await outbox.ReadOperationsDetailAsync(
+            root.Path, manifests[0].IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(detail);
+        Assert.HasCount(128, detail.MediaType!);
+        Assert.IsNull(detail.Role);
+    }
+
+    [TestMethod]
+    public async Task OperationsProjection_PagesBeyondFiftyQuarantinedRecordsAsync()
+    {
+        using var root = new TemporaryRoot();
+        using var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        foreach (var index in Enumerable.Range(0, 55))
+        {
+            await outbox.EnqueueAsync(
+                root.Path,
+                CreateManifest(root.Path, $"frames/quarantine-{index}.bin", StartUtc.AddMinutes(index), index + 1),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        using (var connection = OpenDatabase(root.Path))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE artifact_outbox_records SET status = 'quarantined', last_reason = 'test-quarantine';";
+            Assert.AreEqual(55, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+
+        var first = await outbox.ReadOperationsPageAsync(
+            root.Path, 50, null, CancellationToken.None).ConfigureAwait(false);
+        var second = await outbox.ReadOperationsPageAsync(
+            root.Path, 50, first.NextCursor, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(50, first.Items);
+        Assert.IsNotNull(first.NextCursor);
+        Assert.HasCount(5, second.Items);
+        Assert.IsNull(second.NextCursor);
+        Assert.AreEqual(55, first.Items.Concat(second.Items).Select(static item => item.RecordKey).Distinct().Count());
+    }
+
+    [TestMethod]
+    public async Task OperationsResolution_IsDurablyIdempotentAndReplayRevalidatesChecksum()
+    {
+        using var root = new TemporaryRoot();
+        var manifest = CreateManifest(root.Path, "frames/operation.bin", StartUtc, 1);
+        const string operationKey = "artifact-operation-1";
+        using (var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc)))
+        {
+            await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+            var lease = await outbox.ClaimAsync(
+                root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            await outbox.QuarantineAsync(root.Path, lease, "upstream-rejected", CancellationToken.None).ConfigureAwait(false);
+            var concurrent = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ =>
+                outbox.ResolveOperationsAsync(
+                    root.Path, manifest.IdempotencyKey, OutboxOperationAction.Replay, operationKey,
+                    "owner", "upstream-recovered", CancellationToken.None).AsTask())).ConfigureAwait(false);
+            Assert.AreEqual(1, concurrent.Count(static result => result == OutboxOperationDisposition.Applied));
+            Assert.AreEqual(7, concurrent.Count(static result => result == OutboxOperationDisposition.Duplicate));
+        }
+
+        using (var restarted = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc)))
+        {
+            Assert.AreEqual(
+                OutboxOperationDisposition.Duplicate,
+                await restarted.ResolveOperationsAsync(
+                    root.Path, manifest.IdempotencyKey, OutboxOperationAction.Replay, operationKey,
+                    "owner", "upstream-recovered", CancellationToken.None).ConfigureAwait(false));
+            await Assert.ThrowsExactlyAsync<OutboxOperationCollisionException>(async () =>
+                await restarted.ResolveOperationsAsync(
+                    root.Path, manifest.IdempotencyKey, OutboxOperationAction.Replay, operationKey,
+                    "owner", "configuration-corrected", CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            var lease = await restarted.ClaimAsync(
+                root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            await restarted.QuarantineAsync(root.Path, lease, "still-invalid", CancellationToken.None).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(
+                Path.Combine(root.Path, manifest.RelativeArtifactPath.Replace('/', Path.DirectorySeparatorChar)),
+                [9, 9, 9, 9]).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                await restarted.ResolveOperationsAsync(
+                    root.Path, manifest.IdempotencyKey, OutboxOperationAction.Replay, "artifact-operation-2",
+                    "owner", "evidence-restored", CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            var detail = await restarted.ReadOperationsDetailAsync(
+                root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(detail);
+            Assert.AreEqual(ArtifactOutboxStatus.Quarantined, detail.Status);
+            var audit = await restarted.ReadOperationsAuditAsync(
+                root.Path, manifest.IdempotencyKey, 10, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(audit.Items.Any(static item => item is
+            { Action: "replay", ActorKind: "owner", ReasonCode: "upstream-recovered" }));
+        }
+    }
+
+    [TestMethod]
+    public async Task OperationReceiptsAreTransactionallyCappedAndRecentReplaySurvivesAsync()
+    {
+        using var root = new TemporaryRoot();
+        var clock = new MutableTimeProvider(StartUtc.AddDays(31));
+        using var outbox = new SqliteArtifactOutbox(clock);
+        var manifest = CreateManifest(root.Path, "frames/receipt-cap.bin", StartUtc, 1);
+        await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+        var lease = await outbox.ClaimAsync(
+            root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        await outbox.QuarantineAsync(root.Path, lease!, "upstream-rejected", CancellationToken.None).ConfigureAwait(false);
+
+        using (var connection = OpenDatabase(root.Path))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var seed = connection.CreateCommand();
+            seed.CommandText = """
+                WITH RECURSIVE values_to_seed(value) AS (
+                    SELECT 0 UNION ALL SELECT value + 1 FROM values_to_seed WHERE value < $maximum)
+                INSERT INTO artifact_outbox_operations(
+                    operation_key, idempotency_key, action, actor_kind, reason, occurred_unix_ms)
+                SELECT printf('seed-%05d', value), $record, 'replay', 'owner', 'upstream-recovered',
+                       CASE WHEN value = 0 THEN $start ELSE $recent + value END
+                FROM values_to_seed;
+                INSERT INTO artifact_outbox_audit(
+                    idempotency_key, action, actor, reason, occurred_unix_ms, operation_key)
+                SELECT idempotency_key, action, actor_kind, reason, occurred_unix_ms, operation_key
+                FROM artifact_outbox_operations;
+                """;
+            seed.Parameters.AddWithValue("$maximum", SqliteArtifactOutbox.MaximumOperationReceipts);
+            seed.Parameters.AddWithValue("$record", manifest.IdempotencyKey);
+            seed.Parameters.AddWithValue("$start", StartUtc.ToUnixTimeMilliseconds());
+            seed.Parameters.AddWithValue("$recent", StartUtc.AddDays(30).ToUnixTimeMilliseconds());
+            await seed.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+
+        Assert.AreEqual(OutboxOperationDisposition.Applied, await outbox.ResolveOperationsAsync(
+            root.Path, manifest.IdempotencyKey, OutboxOperationAction.Replay, "newest-operation",
+            "owner", "upstream-recovered", CancellationToken.None).ConfigureAwait(false));
+
+        using var verify = OpenDatabase(root.Path);
+        await verify.OpenAsync().ConfigureAwait(false);
+        using var counts = verify.CreateCommand();
+        counts.CommandText = """
+            SELECT
+                (SELECT COUNT(*) FROM artifact_outbox_operations),
+                (SELECT COUNT(*) FROM artifact_outbox_audit WHERE operation_key IS NOT NULL),
+                (SELECT COUNT(*) FROM artifact_outbox_operations WHERE operation_key = 'seed-00000');
+            """;
+        using var reader = await counts.ExecuteReaderAsync().ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+        Assert.AreEqual(SqliteArtifactOutbox.MaximumOperationReceipts, reader.GetInt32(0));
+        Assert.AreEqual(SqliteArtifactOutbox.MaximumOperationReceipts, reader.GetInt32(1));
+        Assert.AreEqual(0, reader.GetInt32(2));
+        await reader.DisposeAsync().ConfigureAwait(false);
+        Assert.AreEqual(OutboxOperationDisposition.Duplicate, await outbox.ResolveOperationsAsync(
+            root.Path, manifest.IdempotencyKey, OutboxOperationAction.Replay,
+            $"seed-{SqliteArtifactOutbox.MaximumOperationReceipts:D5}",
+            "owner", "upstream-recovered", CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task Initialize_ImportsValidLegacyAndQuarantinesMalformedWithoutChangingEitherFile()
     {
         using var root = new TemporaryRoot();
@@ -224,6 +425,10 @@ public sealed class SqliteArtifactOutboxTests
             Assert.AreEqual(2, snapshot.HeldCount);
             Assert.AreEqual(1, snapshot.QuarantinedCount);
             Assert.HasCount(1, await outbox.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false));
+            var operations = await outbox.ReadOperationsPageAsync(root.Path, 10, null, CancellationToken.None).ConfigureAwait(false);
+            var malformed = operations.Items.Single(item => item.ManifestKind == ArtifactOutboxManifestKind.MalformedLegacy);
+            Assert.IsFalse(malformed.CanReplay);
+            Assert.IsTrue(malformed.CanAbandon);
         }
 
         using (var restarted = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc)))

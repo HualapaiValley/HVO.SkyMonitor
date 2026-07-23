@@ -3,6 +3,8 @@ using System.Diagnostics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Imaging;
+using HVO.SkyMonitor.CameraAgent.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -12,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Controllers.v1;
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/frames")]
+[Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 public sealed class FramesController : ControllerBase
 {
     private readonly ILatestFrameAccessor _latestFrameAccessor;

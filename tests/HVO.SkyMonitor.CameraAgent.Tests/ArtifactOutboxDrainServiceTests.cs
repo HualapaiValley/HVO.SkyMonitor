@@ -2,6 +2,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
@@ -88,6 +89,43 @@ public sealed class ArtifactOutboxDrainServiceTests
 
         Assert.HasCount(1, roots);
         Assert.AreEqual(Path.GetFullPath(root), roots[0]);
+    }
+
+    [TestMethod]
+    public void StorageResolver_AssignsStableAliasesWithoutExposingRoots()
+    {
+        var rawRoot = Path.Combine(Path.GetTempPath(), "private-raw");
+        var archiveRoot = Path.Combine(Path.GetTempPath(), "private-archive");
+        var config = new CameraModuleConfig(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            new CameraModuleDescriptor("Test"),
+            new CameraRigConfig(
+                new SensorProfile("Test", 1, 1, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+                new OpticsProfile("EquidistantFisheye", 0, 180, 0),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
+            [new CaptureProcessingStepConfig(
+                nameof(NoOpFileStorageProcessingStep),
+                Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                {
+                    StorageRoot = archiveRoot,
+                    QueueForUpload = true
+                }))],
+            AgentId: "agent");
+        var options = new CameraAgentHostOptions
+        {
+            RawIngressRoot = rawRoot,
+            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = true }
+        };
+
+        var locations = CameraAgentStorageResolver.Resolve(config, options);
+
+        Assert.HasCount(2, locations);
+        Assert.AreEqual("raw-ingress", locations[0].Alias);
+        Assert.AreEqual("storage-1", locations[1].Alias);
+        Assert.AreEqual(Path.GetFullPath(rawRoot), locations[0].Root);
+        Assert.AreEqual(Path.GetFullPath(archiveRoot), locations[1].Root);
+        Assert.IsFalse(locations.Any(location => location.Alias.Contains("private", StringComparison.OrdinalIgnoreCase)));
     }
 
     [TestMethod]

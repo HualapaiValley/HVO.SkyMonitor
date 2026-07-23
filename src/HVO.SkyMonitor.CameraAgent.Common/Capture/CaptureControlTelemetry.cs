@@ -20,6 +20,7 @@ public sealed class CaptureControlTelemetry : IDisposable
     private readonly Histogram<double> _segmentDuration;
     private readonly Histogram<double> _meteringDuration;
     private readonly Histogram<double> _controlDuration;
+    private readonly Counter<long> _admissionCommands;
 
     public CaptureControlTelemetry()
     {
@@ -32,6 +33,7 @@ public sealed class CaptureControlTelemetry : IDisposable
         _segmentDuration = _meter.CreateHistogram<double>("camera_agent.capture_control.segment.duration", "s");
         _meteringDuration = _meter.CreateHistogram<double>("camera_agent.capture_control.metering.duration", "s");
         _controlDuration = _meter.CreateHistogram<double>("camera_agent.capture_control.decision.duration", "s");
+        _admissionCommands = _meter.CreateCounter<long>("camera_agent.capture_control.admission.commands", "{command}");
     }
 
     internal void RecordMetering(CaptureMeteringEvidence evidence, TimeSpan duration)
@@ -41,6 +43,12 @@ public sealed class CaptureControlTelemetry : IDisposable
         _meteringBytes.Add(evidence.ScannedBytes, outcome);
         _meteringDuration.Record(Math.Max(0, duration.TotalSeconds), outcome);
     }
+
+    internal void RecordAdmissionCommand(string target, string outcome)
+        => _admissionCommands.Add(
+            1,
+            new KeyValuePair<string, object?>("target", target),
+            new KeyValuePair<string, object?>("outcome", outcome));
 
     internal void RecordCycle(
         CaptureCycleEvidence evidence,

@@ -1,0 +1,154 @@
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Services;
+
+namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
+
+internal static class OperatorUiTestData
+{
+    internal static readonly DateTimeOffset Now = new(2026, 7, 23, 12, 0, 0, TimeSpan.Zero);
+
+    internal static CameraAgentOperationsView Operations(
+        int samples = 1,
+        string heartbeat = "Available",
+        int lanePressure = 0,
+        bool storagePressure = false,
+        IReadOnlyList<OperatorOutboxItem>? artifactQuarantine = null)
+    {
+        var queue = new OperationsQueueState("Healthy", 0, 0, 0, 0, 0, 0, null);
+        var lanes = new OperationsCaptureLanesState(
+            lanePressure == 0 ? "Healthy" : "Degraded",
+            [new OperationsLaneState("standard", true, lanePressure == 0 ? 0 : 12, 4096, 0, 0, lanePressure, null)],
+            lanePressure == 0 ? 0 : 12,
+            4096,
+            0,
+            0,
+            null);
+        var summary = new CameraAgentOperationsSummary(
+            Now,
+            Section(new OperationsCaptureControlState("Running", 7, true)),
+            Section(queue with { Availability = "Accepting" }),
+            Section(lanes),
+            Section(queue),
+            Section(queue),
+            Section<IReadOnlyList<OperationsStorageState>>([
+                new OperationsStorageState("raw-ingress", 1_000_000, 500_000, storagePressure, 3, true)
+            ]),
+            Section(new OperationsCaptureRuntimeState("Available", Now.AddSeconds(-1), null, null, [])),
+            Section(new OperationsHeartbeatState(heartbeat, Now.AddSeconds(-2), 0, 0, 0, 0, 0, 0, 0, null)),
+            Section(new OperationsEnvironmentalDeliveryState("Available", Now.AddSeconds(-2), 0, 0, 0, 0, 0, 0, 0, 0, 0, null)),
+            Section(new OperationsTransientWorkerState("Available", 0, 0)),
+            Section(new OperationsCaptureTelemetryState(
+                samples,
+                samples == 0 ? null : Now.AddSeconds(-1),
+                samples == 0 ? null : "Still",
+                samples == 0 ? null : 1000,
+                samples == 0 ? null : 2,
+                5000,
+                1000,
+                50,
+                1200,
+                samples == 0 ? 0 : 12,
+                .2,
+                samples,
+                0)),
+            Section(new OperationsConfigurationState(true, "validated", "agent-test", "VirtualSky")));
+        return new CameraAgentOperationsView(summary, artifactQuarantine ?? [], []);
+    }
+
+    internal static CameraAgentGalleryCapture Capture(
+        Guid? captureId = null,
+        GalleryEvidenceOrigin origin = GalleryEvidenceOrigin.Simulated,
+        bool annotated = true)
+    {
+        var rawId = Guid.Parse("00000000-0000-0000-0000-000000000101");
+        var previewId = Guid.Parse("00000000-0000-0000-0000-000000000102");
+        var artifacts = new List<CameraAgentGalleryArtifact>
+        {
+            new(rawId, FrameArtifactRole.Raw, "source-1", null, Now, "application/x-hvo-raw", new string('A', 64), 2048, null, [], null),
+            new(previewId, annotated ? FrameArtifactRole.AnnotatedPreview : FrameArtifactRole.Preview, "source-2", "display", Now,
+                "image/jpeg", new string('B', 64), 1024,
+                new CameraAgentGalleryRecipe("preview", "1.0.0", "build-7", new string('C', 64), new string('D', 64)),
+                [rawId], "preview-node")
+        };
+        var nodeCompleted = Now.AddSeconds(-3);
+        var detail = new CameraAgentGalleryCaptureDetail(
+            "Available",
+            "artifact-manifest-v2",
+            new CameraAgentGalleryLayout(640, 480, 1280, "Mono16", "LittleEndian", 16, 16, "Unpacked", "None", 0, 65535, 614400),
+            new CameraAgentGalleryTiming(Now.AddSeconds(-6), Now.AddSeconds(-5), Now.AddSeconds(-4), Now.AddSeconds(-4), Now.AddSeconds(-4), null),
+            new CameraAgentGalleryControls(1000, 1000, 2, 2, null, null, null, 8.5),
+            true,
+            [
+                new CameraAgentGalleryArtifactState(rawId, "Held", "Available", [new("raw-ingress", "Pending")]),
+                new CameraAgentGalleryArtifactState(previewId, "Retained", "Available", [new("raw-ingress", "Acknowledged")])
+            ],
+            [new CameraAgentGalleryProcessingNodeDetail("preview-node", ["source"], 1, nodeCompleted, null)],
+            new CameraAgentGalleryCloudAssessment(
+                "Available", "Quantified", "Degraded", 250000, 900000, ["environment-missing"], true, 640, 480, new string('E', 64)));
+        return new CameraAgentGalleryCapture(
+            captureId ?? Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            "agent-test",
+            "rig-test",
+            42,
+            Now.AddSeconds(-5),
+            Now.AddSeconds(-4),
+            "durable",
+            origin,
+            artifacts,
+            [new CameraAgentGalleryProcessingNode("preview-node", true, "completed", "preview", FrameArtifactRole.Preview, "display", [previewId])],
+            detail);
+    }
+
+    internal static CameraAgentSystemStatus SystemStatus() => new(
+        "Unversioned startup snapshot",
+        "Unavailable",
+        "Validated at startup",
+        "agent-test",
+        "VirtualSky",
+        new CameraAgentSensorStatus("Virtual sensor", 640, 480, 5.86, "Mono", "Mono16", "Monochrome", "unversioned", "test-v1"),
+        new CameraAgentOpticsStatus("Fisheye", "Equidistant", 3, 180, 140, "cal-v1", false, "Full sensor"),
+        new CameraAgentCapturePolicyStatus("MinimumStartInterval", 5, 10, 1000, 1, 2, 1, 2000, 0, 10, "ExposureFirst"),
+        [new CameraAgentPipelineNodeStatus("preview", "Preview", true, ["calibrate"])],
+        new CameraAgentRetentionStatus(30, 10, 15, 1, 1024),
+        new CameraAgentUploadStatus(true, 10, 10, 10, 300, 0, 100, 1000, 50, 500),
+        new CameraAgentEnvironmentalPolicyStatus(true, 100, 10, 10, 1000, 4096),
+        new CameraAgentTransientPolicyStatus("Edge", true, 10, 1000, 5, 30, 2000));
+
+    private static OperationsSection<T> Section<T>(T value) => new("test-source", Now, "fresh", value);
+}
+
+internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService
+{
+    internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentOperationsView>>> OperationsHandler { get; set; } =
+        _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(OperatorUiTestData.Operations()));
+    internal Func<CameraAgentGalleryQuery, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryPage>>> GalleryHandler { get; set; } =
+        (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryPage>.Success(new CameraAgentGalleryPage([], null)));
+    internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryCapture>>> DetailHandler { get; set; } =
+        (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(OperatorUiTestData.Capture()));
+    internal Func<string, string?, string?, int, CancellationToken, ValueTask<OperatorUiResult<OperatorOutboxPage>>> QuarantineHandler { get; set; } =
+        (kind, alias, _, _, _) => ValueTask.FromResult(OperatorUiResult<OperatorOutboxPage>.Success(new(
+            kind, alias is null ? [] : [alias], alias, [], null)));
+    internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentSystemStatus>>> SystemHandler { get; set; } =
+        _ => ValueTask.FromResult(OperatorUiResult<CameraAgentSystemStatus>.Success(OperatorUiTestData.SystemStatus()));
+    internal Func<bool, long, string, CancellationToken, Task<OperatorUiResult<OperatorCommandReceipt>>> CaptureHandler { get; set; } =
+        (paused, _, _, _) => Task.FromResult(OperatorUiResult<OperatorCommandReceipt>.Success(new(
+            paused ? "Pause capture" : "Resume capture", "Applied", paused ? "Paused" : "Running", 8, OperatorUiTestData.Now)));
+    internal Func<string, OutboxOperationAction, string, string, string, CancellationToken, ValueTask<OperatorUiResult<OperatorCommandReceipt>>> OutboxHandler { get; set; } =
+        (kind, action, _, _, _, _) => ValueTask.FromResult(OperatorUiResult<OperatorCommandReceipt>.Success(new(
+            $"{action} {kind}", "Applied", action == OutboxOperationAction.Replay ? "Pending" : "Abandoned", null, OperatorUiTestData.Now)));
+
+    public ValueTask<OperatorUiResult<CameraAgentOperationsView>> GetOperationsAsync(CancellationToken cancellationToken) => OperationsHandler(cancellationToken);
+    public ValueTask<OperatorUiResult<CameraAgentGalleryPage>> GetGalleryPageAsync(CameraAgentGalleryQuery query, CancellationToken cancellationToken) => GalleryHandler(query, cancellationToken);
+    public ValueTask<OperatorUiResult<CameraAgentGalleryCapture>> GetGalleryCaptureAsync(Guid captureId, CancellationToken cancellationToken) => DetailHandler(captureId, cancellationToken);
+    public ValueTask<OperatorUiResult<OperatorOutboxPage>> GetQuarantinePageAsync(string kind, string? storageAlias, string? cursor, int pageSize, CancellationToken cancellationToken) => QuarantineHandler(kind, storageAlias, cursor, pageSize, cancellationToken);
+    public ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken) => SystemHandler(cancellationToken);
+    public Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(bool paused, long expectedVersion, string idempotencyKey, CancellationToken cancellationToken) => CaptureHandler(paused, expectedVersion, idempotencyKey, cancellationToken);
+    public ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveOutboxAsync(string kind, OutboxOperationAction action, string actionToken, string reasonCode, string idempotencyKey, CancellationToken cancellationToken) => OutboxHandler(kind, action, actionToken, reasonCode, idempotencyKey, cancellationToken);
+}
+
+internal sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+{
+    public override DateTimeOffset GetUtcNow() => now;
+}

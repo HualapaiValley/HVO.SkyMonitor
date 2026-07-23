@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -18,7 +19,7 @@ internal sealed class SqliteRawCaptureJournal(
     Func<DateTimeOffset>? utcNow = null,
     TransientDetectionOptions? transientOptions = null)
 {
-    internal const int CurrentSchemaVersion = 5;
+    internal const int CurrentSchemaVersion = 6;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly int _busyTimeoutSeconds = busyTimeoutSeconds;
     private readonly Action<TimeSpan>? _lockWaitRecorder = lockWaitRecorder;
@@ -60,8 +61,20 @@ internal sealed class SqliteRawCaptureJournal(
                 _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
                 if (version == 0)
                 {
+                    var hasLegacyRawCaptures = await HasTableAsync(
+                        connection, transaction, "raw_captures", cancellationToken).ConfigureAwait(false);
+                    if (hasLegacyRawCaptures && !await HasColumnAsync(
+                            connection, transaction, "raw_captures", "evidence_origin", cancellationToken).ConfigureAwait(false))
+                    {
+                        await ExecuteNonQueryAsync(
+                            connection, transaction, GalleryV6ColumnMigrationSql, cancellationToken).ConfigureAwait(false);
+                    }
                     await ExecuteNonQueryAsync(connection, transaction, SchemaSql, cancellationToken).ConfigureAwait(false);
                     await ExecuteNonQueryAsync(connection, transaction, TransientSchemaSql, cancellationToken).ConfigureAwait(false);
+                    if (hasLegacyRawCaptures)
+                    {
+                        await BackfillEvidenceOriginsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                    }
                 }
                 else if (version == 1)
                 {
@@ -86,6 +99,17 @@ internal sealed class SqliteRawCaptureJournal(
                     await ExecuteNonQueryAsync(
                         connection, transaction, TransientCaptureWorkV5MigrationSql, cancellationToken).ConfigureAwait(false);
                 }
+                if (version is > 0 and < 6)
+                {
+                    if (!await HasColumnAsync(
+                            connection, transaction, "raw_captures", "evidence_origin", cancellationToken).ConfigureAwait(false))
+                    {
+                        await ExecuteNonQueryAsync(
+                            connection, transaction, GalleryV6ColumnMigrationSql, cancellationToken).ConfigureAwait(false);
+                    }
+                    await ExecuteNonQueryAsync(
+                        connection, transaction, GalleryV6MigrationSql, cancellationToken).ConfigureAwait(false);
+                }
                 if (version == 1)
                 {
                     await UpsertTransientPolicyMarkerAsync(
@@ -94,6 +118,10 @@ internal sealed class SqliteRawCaptureJournal(
                 if (version is 1 or 2)
                 {
                     await RehashCommittedManifestBytesAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                }
+                if (version is > 0 and < 6)
+                {
+                    await BackfillEvidenceOriginsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 }
                 await ExecuteNonQueryAsync(connection, transaction, $"PRAGMA user_version = {CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
@@ -119,21 +147,28 @@ internal sealed class SqliteRawCaptureJournal(
             SELECT COUNT(*) FROM sqlite_master
             WHERE name IN (
                 'raw_capture_sequences', 'raw_capture_assignments', 'raw_captures', 'raw_ingress_reconciliation',
-                'ix_raw_captures_discovery', 'ix_raw_captures_backlog', 'ix_raw_captures_retention',
+                 'ix_raw_captures_discovery', 'ix_raw_captures_backlog', 'ix_raw_captures_retention',
+                 'ix_raw_captures_gallery_time', 'ix_raw_captures_gallery_sequence',
+                 'ix_raw_captures_gallery_state', 'ix_raw_captures_gallery_origin',
                 'capture_lane_definitions', 'capture_lane_contexts', 'capture_lane_work',
                 'ix_capture_lane_work_claim', 'ix_capture_lane_work_lease',
                 'ix_capture_lane_work_backlog', 'ix_capture_lane_work_raw', 'ix_capture_lane_work_ordered',
                 'transient_event_identities', 'transient_candidates', 'transient_candidate_sources',
                 'ix_transient_candidates_backlog', 'ix_transient_candidate_sources_raw',
                 'transient_runtime_policy', 'transient_capture_work', 'transient_candidate_conflicts',
-                'ix_transient_capture_work_backlog', 'ix_transient_candidate_conflicts_observed',
-                'ix_transient_candidate_conflicts_candidate');
+                 'ix_transient_capture_work_backlog', 'ix_transient_candidate_conflicts_observed',
+                 'ix_transient_candidate_conflicts_candidate',
+                 'capture_control_state', 'capture_control_commands');
             """, cancellationToken).ConfigureAwait(false);
-        if (schemaObjectCount != 26)
+        if (schemaObjectCount != 32)
         {
             throw new InvalidDataException("Raw ingress SQLite schema is incomplete or drifted.");
         }
         await VerifyColumnsAsync(connection, "raw_captures", RawCaptureColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_raw_captures_gallery_time", "exposure_started_unix_ms,capture_sequence,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_raw_captures_gallery_sequence", "capture_sequence,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_raw_captures_gallery_state", "state,capture_sequence,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_raw_captures_gallery_origin", "evidence_origin,capture_sequence,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_lane_definitions", LaneDefinitionColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_lane_contexts", LaneContextColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_lane_work", LaneWorkColumns, cancellationToken).ConfigureAwait(false);
@@ -143,6 +178,8 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyColumnsAsync(connection, "transient_runtime_policy", TransientRuntimePolicyColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "transient_capture_work", TransientCaptureWorkColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "transient_candidate_conflicts", TransientCandidateConflictColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_control_state", CaptureControlStateColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_control_commands", CaptureControlCommandColumns, cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_claim", "lane_name,state,available_unix_ms,work_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_lease", "state,lease_expires_unix_ms", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_backlog", "lane_name,state,created_unix_ms", cancellationToken).ConfigureAwait(false);
@@ -203,6 +240,41 @@ internal sealed class SqliteRawCaptureJournal(
         }
     }
 
+    private static async Task BackfillEvidenceOriginsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var origins = new List<(long RawRowId, GalleryEvidenceOrigin Origin)>();
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = "SELECT raw_capture_row_id, manifest_json, manifest_sha256, descriptor_sha256 FROM raw_captures;";
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var json = await reader.GetFieldValueAsync<byte[]>(1, cancellationToken).ConfigureAwait(false);
+                var parsed = CaptureContractJson.ParseManifest(json);
+                var manifest = parsed.Document?.Manifest;
+                var origin = parsed.IsValid && manifest is not null &&
+                    string.Equals(CaptureContractJson.ComputeManifestSha256(json), reader.GetString(2), StringComparison.Ordinal) &&
+                    string.Equals(CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor), reader.GetString(3), StringComparison.Ordinal)
+                        ? GalleryEvidenceClassifier.Classify(manifest)
+                        : GalleryEvidenceOrigin.Unknown;
+                origins.Add((reader.GetInt64(0), origin));
+            }
+        }
+        foreach (var origin in origins)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "UPDATE raw_captures SET evidence_origin = $origin WHERE raw_capture_row_id = $raw;";
+            command.Parameters.AddWithValue("$origin", origin.Origin.ToString());
+            command.Parameters.AddWithValue("$raw", origin.RawRowId);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     private static async Task<bool> HasActiveLegacyTransientLaneAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -216,6 +288,38 @@ internal sealed class SqliteRawCaptureJournal(
                 FROM capture_lane_work
                 WHERE lane_name = 'transient' AND state NOT IN ('completed', 'abandoned'));
             """;
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) == 1;
+    }
+
+    private static async Task<bool> HasColumnAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string table,
+        string column,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM pragma_table_info($table) WHERE name = $column);";
+        command.Parameters.AddWithValue("$table", table);
+        command.Parameters.AddWithValue("$column", column);
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) == 1;
+    }
+
+    private static async Task<bool> HasTableAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $table);";
+        command.Parameters.AddWithValue("$table", table);
         return Convert.ToInt64(
             await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture) == 1;
@@ -390,7 +494,7 @@ internal sealed class SqliteRawCaptureJournal(
             SELECT agent_id, capture_sequence, capture_id, raw_artifact_id,
                    descriptor_sha256, manifest_sha256, payload_sha256, payload_length,
                    payload_relative_path, sidecar_relative_path, manifest_json,
-                   exposure_started_unix_ms, durable_ingress_unix_ms, state, retention_hold
+                   exposure_started_unix_ms, durable_ingress_unix_ms, state, retention_hold, evidence_origin
             FROM raw_captures
             ORDER BY agent_id, capture_sequence;
             """;
@@ -1377,7 +1481,7 @@ internal sealed class SqliteRawCaptureJournal(
             SELECT agent_id, capture_sequence, capture_id, raw_artifact_id,
                    descriptor_sha256, manifest_sha256, payload_sha256, payload_length,
                    payload_relative_path, sidecar_relative_path, manifest_json,
-                   exposure_started_unix_ms, durable_ingress_unix_ms, state, retention_hold
+                   exposure_started_unix_ms, durable_ingress_unix_ms, state, retention_hold, evidence_origin
             FROM raw_captures
             WHERE capture_id = $capture_id
                OR raw_artifact_id = $artifact_id
@@ -1401,7 +1505,8 @@ internal sealed class SqliteRawCaptureJournal(
             Guid.ParseExact(reader.GetString(3), "N"), reader.GetString(4), reader.GetString(5),
             reader.GetString(6), reader.GetInt64(7), reader.GetString(8), reader.GetString(9),
             (byte[])reader[10], DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(11)),
-            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(12)), reader.GetString(13), reader.GetBoolean(14));
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(12)), reader.GetString(13), reader.GetBoolean(14),
+            Enum.Parse<GalleryEvidenceOrigin>(reader.GetString(15)));
 
     private static bool IsExact(RawIngressJournalEntry left, RawIngressJournalEntry right)
         => left == right ||
@@ -1412,7 +1517,7 @@ internal sealed class SqliteRawCaptureJournal(
            left.PayloadRelativePath == right.PayloadRelativePath && left.SidecarRelativePath == right.SidecarRelativePath &&
            left.ManifestJson.AsSpan().SequenceEqual(right.ManifestJson) &&
            left.ExposureStartedUtc == right.ExposureStartedUtc && left.DurableIngressUtc == right.DurableIngressUtc &&
-           left.State == right.State;
+            left.State == right.State && left.EvidenceOrigin == right.EvidenceOrigin;
 
     private static void AddEntryParameters(SqliteCommand command, RawIngressJournalEntry entry)
     {
@@ -1430,6 +1535,7 @@ internal sealed class SqliteRawCaptureJournal(
         command.Parameters.AddWithValue("$exposure_started", entry.ExposureStartedUtc.ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$durable_ingress", entry.DurableIngressUtc.ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$state", entry.State);
+        command.Parameters.AddWithValue("$evidence_origin", entry.EvidenceOrigin.ToString());
     }
 
     private static async Task<long> ExecuteScalarLongAsync(SqliteConnection connection, string sql, CancellationToken cancellationToken)
@@ -1507,7 +1613,7 @@ internal sealed class SqliteRawCaptureJournal(
     ];
 
     private const string RawCaptureColumns =
-        "raw_capture_row_id,capture_id,raw_artifact_id,agent_id,capture_sequence,descriptor_sha256,manifest_sha256,payload_sha256,payload_length,payload_relative_path,sidecar_relative_path,manifest_json,exposure_started_unix_ms,durable_ingress_unix_ms,committed_unix_ms,state,retention_hold,failure_reason";
+        "raw_capture_row_id,capture_id,raw_artifact_id,agent_id,capture_sequence,descriptor_sha256,manifest_sha256,payload_sha256,payload_length,payload_relative_path,sidecar_relative_path,manifest_json,exposure_started_unix_ms,durable_ingress_unix_ms,committed_unix_ms,state,retention_hold,failure_reason,evidence_origin";
     private const string LaneDefinitionColumns =
         "lane_name,enabled,required,ordered,policy_sha256,pressure_state,created_unix_ms,updated_unix_ms";
     private const string LaneContextColumns =
@@ -1526,6 +1632,10 @@ internal sealed class SqliteRawCaptureJournal(
         "raw_capture_row_id,lane_work_id,mode,required,state,artifact_id,manifest_sha256,created_unix_ms,updated_unix_ms";
     private const string TransientCandidateConflictColumns =
         "conflict_id,candidate_id,event_id,reason,observed_unix_ms";
+    private const string CaptureControlStateColumns =
+        "state_key,state,version,updated_unix_ms";
+    private const string CaptureControlCommandColumns =
+        "idempotency_key,target_state,expected_version,actor,reason,payload_sha256,status,result_state,result_version,changed,requested_unix_ms,completed_unix_ms";
 
     private const string SchemaSql = """
         CREATE TABLE IF NOT EXISTS raw_capture_sequences (
@@ -1558,12 +1668,21 @@ internal sealed class SqliteRawCaptureJournal(
             state TEXT NOT NULL CHECK (state IN ('committed', 'missing_evidence', 'quarantined')),
             retention_hold INTEGER NOT NULL DEFAULT 1 CHECK (retention_hold IN (0, 1)),
             failure_reason TEXT,
+            evidence_origin TEXT NOT NULL DEFAULT 'Unknown' CHECK (evidence_origin IN ('Unknown', 'Simulated', 'DeveloperFixture')),
             UNIQUE (agent_id, capture_sequence),
             FOREIGN KEY (capture_id) REFERENCES raw_capture_assignments(capture_id)
         ) STRICT;
         CREATE INDEX IF NOT EXISTS ix_raw_captures_discovery ON raw_captures(state, agent_id, capture_sequence);
         CREATE INDEX IF NOT EXISTS ix_raw_captures_backlog ON raw_captures(state, durable_ingress_unix_ms);
         CREATE INDEX IF NOT EXISTS ix_raw_captures_retention ON raw_captures(retention_hold, exposure_started_unix_ms);
+        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_time
+            ON raw_captures(exposure_started_unix_ms DESC, capture_sequence DESC, raw_capture_row_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_sequence
+            ON raw_captures(capture_sequence DESC, raw_capture_row_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_state
+            ON raw_captures(state, capture_sequence DESC, raw_capture_row_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_origin
+            ON raw_captures(evidence_origin, capture_sequence DESC, raw_capture_row_id DESC);
         CREATE TABLE IF NOT EXISTS raw_ingress_reconciliation (
             reconciliation_id INTEGER PRIMARY KEY,
             evidence_key TEXT NOT NULL UNIQUE,
@@ -1628,6 +1747,29 @@ internal sealed class SqliteRawCaptureJournal(
         CREATE INDEX IF NOT EXISTS ix_capture_lane_work_ordered
             ON capture_lane_work(lane_name, agent_id, capture_sequence)
             WHERE state NOT IN ('completed', 'abandoned');
+        CREATE TABLE IF NOT EXISTS capture_control_state (
+            state_key INTEGER PRIMARY KEY CHECK (state_key = 1),
+            state TEXT NOT NULL CHECK (state IN ('running', 'pause_requested', 'paused')),
+            version INTEGER NOT NULL CHECK (version >= 0),
+            updated_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        INSERT INTO capture_control_state(state_key, state, version, updated_unix_ms)
+        VALUES (1, 'running', 0, unixepoch('subsec') * 1000)
+        ON CONFLICT(state_key) DO NOTHING;
+        CREATE TABLE IF NOT EXISTS capture_control_commands (
+            idempotency_key TEXT PRIMARY KEY CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+            target_state TEXT NOT NULL CHECK (target_state IN ('running', 'paused')),
+            expected_version INTEGER CHECK (expected_version IS NULL OR expected_version >= 0),
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 128),
+            reason TEXT CHECK (reason IS NULL OR length(reason) <= 512),
+            payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
+            status TEXT NOT NULL CHECK (status IN ('pending', 'completed')),
+            result_state TEXT CHECK (result_state IS NULL OR result_state IN ('running', 'paused')),
+            result_version INTEGER CHECK (result_version IS NULL OR result_version >= 0),
+            changed INTEGER NOT NULL CHECK (changed IN (0, 1)),
+            requested_unix_ms INTEGER NOT NULL,
+            completed_unix_ms INTEGER
+        ) STRICT;
         """;
 
     private const string LaneSchemaSql = """
@@ -1803,19 +1945,59 @@ internal sealed class SqliteRawCaptureJournal(
             ON transient_capture_work(state, created_unix_ms, raw_capture_row_id);
         """;
 
+    private const string GalleryV6ColumnMigrationSql = """
+        ALTER TABLE raw_captures
+            ADD COLUMN evidence_origin TEXT NOT NULL DEFAULT 'Unknown'
+                CHECK (evidence_origin IN ('Unknown', 'Simulated', 'DeveloperFixture'));
+        """;
+
+    private const string GalleryV6MigrationSql = """
+        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_time
+            ON raw_captures(exposure_started_unix_ms DESC, capture_sequence DESC, raw_capture_row_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_sequence
+            ON raw_captures(capture_sequence DESC, raw_capture_row_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_state
+            ON raw_captures(state, capture_sequence DESC, raw_capture_row_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_origin
+            ON raw_captures(evidence_origin, capture_sequence DESC, raw_capture_row_id DESC);
+        CREATE TABLE IF NOT EXISTS capture_control_state (
+            state_key INTEGER PRIMARY KEY CHECK (state_key = 1),
+            state TEXT NOT NULL CHECK (state IN ('running', 'pause_requested', 'paused')),
+            version INTEGER NOT NULL CHECK (version >= 0),
+            updated_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        INSERT INTO capture_control_state(state_key, state, version, updated_unix_ms)
+        VALUES (1, 'running', 0, unixepoch('subsec') * 1000)
+        ON CONFLICT(state_key) DO NOTHING;
+        CREATE TABLE IF NOT EXISTS capture_control_commands (
+            idempotency_key TEXT PRIMARY KEY CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+            target_state TEXT NOT NULL CHECK (target_state IN ('running', 'paused')),
+            expected_version INTEGER CHECK (expected_version IS NULL OR expected_version >= 0),
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 128),
+            reason TEXT CHECK (reason IS NULL OR length(reason) <= 512),
+            payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
+            status TEXT NOT NULL CHECK (status IN ('pending', 'completed')),
+            result_state TEXT CHECK (result_state IS NULL OR result_state IN ('running', 'paused')),
+            result_version INTEGER CHECK (result_version IS NULL OR result_version >= 0),
+            changed INTEGER NOT NULL CHECK (changed IN (0, 1)),
+            requested_unix_ms INTEGER NOT NULL,
+            completed_unix_ms INTEGER
+        ) STRICT;
+        """;
+
     private const string InsertCaptureSql = """
         INSERT INTO raw_captures(
             capture_id, raw_artifact_id, agent_id, capture_sequence,
             descriptor_sha256, manifest_sha256, payload_sha256, payload_length,
             payload_relative_path, sidecar_relative_path, manifest_json,
             exposure_started_unix_ms, durable_ingress_unix_ms, committed_unix_ms,
-            state, retention_hold)
+            state, retention_hold, evidence_origin)
         VALUES (
             $capture_id, $artifact_id, $agent_id, $capture_sequence,
             $descriptor_sha256, $manifest_sha256, $payload_sha256, $payload_length,
             $payload_path, $sidecar_path, $manifest_json,
             $exposure_started, $durable_ingress, $committed,
-            $state, 1);
+            $state, 1, $evidence_origin);
         """;
 }
 
