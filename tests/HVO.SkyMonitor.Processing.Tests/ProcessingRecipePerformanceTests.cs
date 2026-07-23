@@ -345,27 +345,27 @@ public sealed class ProcessingRecipePerformanceTests
             Payload = corrupted,
             Conditions = new ProcessingCaptureConditions(model.Gain, 0, model.TemperatureC)
         };
-        var referenceFrames = new Dictionary<string, (Linear16Frame Frame, TimeSpan Exposure)>(StringComparer.Ordinal)
+        var referenceFrames = new[]
         {
-            [CalibrationReferenceKinds.Bias] = (references.Bias, model.BiasExposure),
-            [CalibrationReferenceKinds.Dark] = (references.Dark, model.DarkExposure),
-            [CalibrationReferenceKinds.Flat] = (references.Flat, model.FlatExposure),
-            [CalibrationReferenceKinds.Defect] = (references.DefectMask, model.BiasExposure)
+            (Kind: CalibrationReferenceKinds.Bias, Frame: references.Bias, Exposure: model.BiasExposure),
+            (Kind: CalibrationReferenceKinds.Dark, Frame: references.Dark, Exposure: model.DarkExposure),
+            (Kind: CalibrationReferenceKinds.Flat, Frame: references.Flat, Exposure: model.FlatExposure),
+            (Kind: CalibrationReferenceKinds.Defect, Frame: references.DefectMask, Exposure: model.BiasExposure)
         };
         var artifacts = referenceFrames.Select((pair, index) => new ProcessingArtifact(
             CreateGuid(workload.Id, index + 10),
             FrameArtifactRole.Raw,
-            pair.Key,
+            pair.Kind,
             new string('C', 64),
             "application/x-hvo-linear-frame",
             workload.Artifact.Layout! with
             {
-                StrideBytes = pair.Value.Frame.StrideBytes,
-                ByteLength = pair.Value.Frame.PixelData.Length
+                StrideBytes = pair.Frame.StrideBytes,
+                ByteLength = pair.Frame.PixelData.Length
             },
-            pair.Value.Frame.PixelData,
+            pair.Frame.PixelData,
             workload.Artifact.CreatedUtc,
-            pair.Value.Exposure,
+            pair.Exposure,
             workload.Artifact.Compatibility,
             Conditions: new ProcessingCaptureConditions(model.Gain, 0, model.TemperatureC))).ToArray();
         var descriptors = artifacts.Select(artifact => new CalibrationReferenceDescriptorV1(

@@ -35,6 +35,28 @@ public sealed class SyntheticCalibrationReferenceGeneratorTests
         Assert.AreEqual(1000, Values(corrected.PixelData.Span)[12]);
     }
 
+    [TestMethod]
+    public void ApplyToLightWithStatistics_RecordsSyntheticClipping()
+    {
+        var model = new SyntheticCalibrationModelV1
+        {
+            BiasPedestalAdu = 100,
+            PixelResponseVariationFraction = 0,
+            VignettingStrength = 0,
+            DarkCurrentAduPerSecond = 0
+        };
+        var ideal = new Linear16Frame(
+            1, 1, 2, CameraPixelFormat.Mono16, Bytes([ushort.MaxValue]));
+
+        var result = SyntheticCalibrationReferenceGenerator.ApplyToLightWithStatistics(
+            ideal, TimeSpan.FromSeconds(1), model);
+
+        Assert.AreEqual(1, result.Statistics.ActivePixelCount);
+        Assert.AreEqual(0, result.Statistics.ClippedLow);
+        Assert.AreEqual(1, result.Statistics.ClippedHigh);
+        Assert.AreEqual(ushort.MaxValue, Values(result.PixelData.Span).Single());
+    }
+
     private static double MeanAbsoluteResidual(ushort[] actual, ushort[] expected)
         => actual.Select((value, index) => Math.Abs((double)value - expected[index])).Average();
 

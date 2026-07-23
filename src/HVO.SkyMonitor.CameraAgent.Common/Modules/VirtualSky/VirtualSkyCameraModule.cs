@@ -168,7 +168,7 @@ public sealed class VirtualSkyCameraModule(
         };
         if (_options.SyntheticCalibration is { } syntheticCalibration)
         {
-            var affected = SyntheticCalibrationReferenceGenerator.ApplyToLight(
+            var affected = SyntheticCalibrationReferenceGenerator.ApplyToLightWithStatistics(
                 new Linear16Frame(
                     layout.Width,
                     layout.Height,
@@ -180,9 +180,9 @@ public sealed class VirtualSkyCameraModule(
                 cancellationToken);
             render = render with
             {
-                Pixels = affected,
+                Pixels = affected.PixelData,
                 AlgorithmVersion = $"{render.AlgorithmVersion}+{SyntheticCalibrationReferenceGenerator.AlgorithmVersion}",
-                Statistics = ComputeStatistics(affected.Span, layout)
+                Statistics = affected.Statistics
             };
         }
         sceneStore.Put(sceneId, scene);
@@ -413,26 +413,6 @@ public sealed class VirtualSkyCameraModule(
                         CompatibilityLabel = "Synthetic calibration ideal RGGB16 input"
                     }
         };
-
-    private static RenderStatistics ComputeStatistics(ReadOnlySpan<byte> pixels, ImageLayout layout)
-    {
-        long total = 0;
-        var minimum = ushort.MaxValue;
-        var maximum = ushort.MinValue;
-        for (var y = 0; y < layout.Height; y++)
-        {
-            for (var x = 0; x < layout.Width; x++)
-            {
-                var offset = y * layout.StrideBytes + x * 2;
-                var value = (ushort)(pixels[offset] | pixels[offset + 1] << 8);
-                minimum = Math.Min(minimum, value);
-                maximum = Math.Max(maximum, value);
-                total += value;
-            }
-        }
-        var count = checked((long)layout.Width * layout.Height);
-        return new RenderStatistics(count, minimum, maximum, total / (double)count, 0, 0);
-    }
 
     private static void ValidateRig(CameraRigConfig rig)
     {

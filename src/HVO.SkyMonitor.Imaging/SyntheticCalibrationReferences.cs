@@ -53,6 +53,10 @@ public sealed record SyntheticCalibrationReferenceSet(
     ushort FlatNormalizationAdu,
     string AlgorithmVersion);
 
+public sealed record SyntheticCalibrationLightResult(
+    ReadOnlyMemory<byte> PixelData,
+    RenderStatistics Statistics);
+
 /// <summary>Generates deterministic software references and applies the same hidden sensor effects to virtual lights.</summary>
 public static class SyntheticCalibrationReferenceGenerator
 {
@@ -108,6 +112,13 @@ public static class SyntheticCalibrationReferenceGenerator
         TimeSpan exposure,
         SyntheticCalibrationModelV1 model,
         CancellationToken cancellationToken = default)
+        => ApplyToLightWithStatistics(idealLight, exposure, model, cancellationToken).PixelData;
+
+    public static SyntheticCalibrationLightResult ApplyToLightWithStatistics(
+        Linear16Frame idealLight,
+        TimeSpan exposure,
+        SyntheticCalibrationModelV1 model,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(idealLight);
         ArgumentNullException.ThrowIfNull(model);
@@ -115,6 +126,7 @@ public static class SyntheticCalibrationReferenceGenerator
         model.Validate(idealLight.Width, idealLight.Height);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(exposure, TimeSpan.Zero);
         var output = new byte[checked(idealLight.StrideBytes * idealLight.Height)];
+        var statistics = new StatisticsAccumulator();
         var defectMap = model.Defects.ToDictionary(static defect => (defect.X, defect.Y));
         for (var y = 0; y < idealLight.Height; y++)
         {
@@ -124,17 +136,17 @@ public static class SyntheticCalibrationReferenceGenerator
                 var destinationOffset = checked(y * idealLight.StrideBytes + x * 2);
                 if (defectMap.TryGetValue((x, y), out var defect))
                 {
-                    Write(output, destinationOffset, defect.FixedValueAdu);
+                    Write(output, destinationOffset, statistics.AddAndQuantize(defect.FixedValueAdu, ushort.MaxValue));
                     continue;
                 }
                 var sourceOffset = checked(y * idealLight.StrideBytes + x * 2);
                 var ideal = Read(idealLight.PixelData.Span, sourceOffset);
                 var value = ideal * Response(model, x, y, idealLight.Width, idealLight.Height) +
                     Bias(model, x, y) + DarkRate(model, x, y) * exposure.TotalSeconds;
-                Write(output, destinationOffset, Quantize(value));
+                Write(output, destinationOffset, statistics.AddAndQuantize(value, ushort.MaxValue));
             }
         }
-        return output;
+        return new(output, statistics.Create());
     }
 
     private static double Bias(SyntheticCalibrationModelV1 model, int x, int y)
