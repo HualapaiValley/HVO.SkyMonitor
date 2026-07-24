@@ -688,27 +688,29 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
             planCommand.CommandText = "SET SHOWPLAN_XML ON;";
             await planCommand.ExecuteNonQueryAsync().ConfigureAwait(false);
             planCommand.CommandText = queryText;
-            await using var planReader = await planCommand.ExecuteReaderAsync().ConfigureAwait(false);
-            do
+            await using (var planReader = await planCommand.ExecuteReaderAsync().ConfigureAwait(false))
             {
-                while (await planReader.ReadAsync().ConfigureAwait(false))
+                do
                 {
-                    for (var ordinal = 0; ordinal < planReader.FieldCount; ordinal++)
+                    while (await planReader.ReadAsync().ConfigureAwait(false))
                     {
-                        if (planReader.IsDBNull(ordinal))
+                        for (var ordinal = 0; ordinal < planReader.FieldCount; ordinal++)
                         {
-                            continue;
-                        }
-                        var value = Convert.ToString(
-                            planReader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture);
-                        if (value?.Contains("ShowPlanXML", StringComparison.Ordinal) == true)
-                        {
-                            plans.Add(value);
+                            if (planReader.IsDBNull(ordinal))
+                            {
+                                continue;
+                            }
+                            var value = Convert.ToString(
+                                planReader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture);
+                            if (value?.Contains("ShowPlanXML", StringComparison.Ordinal) == true)
+                            {
+                                plans.Add(value);
+                            }
                         }
                     }
                 }
+                while (await planReader.NextResultAsync().ConfigureAwait(false));
             }
-            while (await planReader.NextResultAsync().ConfigureAwait(false));
             planCommand.CommandText = "SET SHOWPLAN_XML OFF;";
             await planCommand.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
