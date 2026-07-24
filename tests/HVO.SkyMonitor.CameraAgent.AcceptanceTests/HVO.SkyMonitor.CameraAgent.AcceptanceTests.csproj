@@ -27,6 +27,9 @@
     <None Include="..\fixtures\cameraagent.integration.json" Link="Fixtures\cameraagent.integration.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.standalone-production-smoke.json" Link="cameraagent.standalone-production-smoke.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

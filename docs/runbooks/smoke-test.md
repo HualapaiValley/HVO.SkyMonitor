@@ -115,3 +115,63 @@ The tests use temporary files and mocked connectivity. They verify owner-only
 permissions, generated run-scoped credentials, required fields, coordinate and
 reset guards, exclusion of generated bootstrap state, production catalog
 identity/checksum checks, and output redaction.
+
+## Full-Resolution Standalone CameraAgent
+
+Issue #171 has a separate opt-in smoke that does not start LogicHost or shared
+services. It loads `cameraagent.standalone-production-smoke.json`, rejects all
+central HTTP traffic, and requires an installed Production HYG 4.2 catalog. The
+checked-in `appsettings.StandaloneProductionSmoke.json` supplies the standalone
+host boundary when running the CameraAgent directly with
+`DOTNET_ENVIRONMENT=StandaloneProductionSmoke`. The checked-in deployment pair
+uses `/var/lib/hvo/data/agent` for both raw ingress and derivative storage and
+`/var/lib/hvo/data/catalog` for the catalog. If an operator changes the storage
+location, both `CameraAgent__RawIngressRoot` and the deployment copy's
+`LocalStorage.options.storageRoot` must resolve to the same directory.
+
+Direct-host startup also requires an owner password and writable identity,
+provisioning, and Data Protection state. Keep the password out of source and
+provide it through environment configuration, user secrets, or the host's
+secret manager. Identity and provisioning paths are configurable as shown
+below; Data Protection keys are written to `DataProtection-Keys` below the
+CameraAgent content root, which must therefore be writable and persistent. A
+representative direct launch is:
+
+```bash
+DOTNET_ENVIRONMENT=StandaloneProductionSmoke \
+LocalIdentity__AdminPassword='OperatorSecret!171' \
+LocalIdentity__DatabasePath=/var/lib/hvo/data/agent/identity/cameraagent_identity.db \
+DeviceProvisioning__StateDirectory=/var/lib/hvo/data/agent/provisioning \
+  dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
+```
+
+Build and install the pinned catalog only when the approved package is not
+already present:
+
+```bash
+./scripts/catalog/build-hyg-v42.sh --fetch \
+  --install-root /var/lib/hvo/data/catalog \
+  /var/lib/hvo/catalog-build
+```
+
+Run the smoke against the installation root, not a bundle or SQLite file:
+
+```bash
+HVO_CATALOG_PERF_ROOT=/var/lib/hvo/data/catalog \
+  ./scripts/test:cameraagent-standalone-171
+```
+
+The gate fails closed on package kind, version, manifest/schema/preprocessing
+versions, database SHA-256/length, and 119,625-row identity. It retains a
+sanitized full-frame annotated JPEG and JSON manifest for each of five
+independent, approximately one-minute trials below
+`TestResults/issue-171/production-smoke`, including the
+fixed `2026-01-15T08:00:00Z` astronomy scene epoch and run clock anchor,
+selected catalog row IDs, deployment location, recipes/lineage, actual
+module-start five-second cadence, CPU, RSS/LOH, allocations, retained/download I/O, throughput, latency,
+queue/backlog/drain, restart, and central-traffic evidence. The UTC anchor is
+fixed once at the start of each run and then advances with real elapsed time so
+all five trials render the same sky while durable lease and retention clocks
+remain on operational wall time. The runner also executes the 5-warmup/30-sample
+W1 and W2 reference-calibration gates and the representative durable local-graph
+gate into the same result root.

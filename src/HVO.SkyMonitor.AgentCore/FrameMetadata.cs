@@ -45,7 +45,8 @@ public sealed record SceneProvenance(
     string? RigProfileHashSha256 = null,
     string? ProjectionCalibrationVersion = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CloudScenarioProvenance? CloudScenario = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TransientScenarioProvenance? TransientScenario = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TransientScenarioProvenance? TransientScenario = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? SceneUtc = null);
 
 /// <summary>Versioned cloud inputs and logical interval needed to reproduce a simulated frame.</summary>
 public sealed record CloudScenarioProvenance(

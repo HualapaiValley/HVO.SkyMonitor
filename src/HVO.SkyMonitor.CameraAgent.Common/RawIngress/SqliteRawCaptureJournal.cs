@@ -642,11 +642,14 @@ internal sealed class SqliteRawCaptureJournal(
         try
         {
             using var transaction = BeginImmediate(connection);
-            await ExecuteNonQueryAsync(
-                connection,
-                transaction,
-                "UPDATE capture_lane_definitions SET enabled = 0, updated_unix_ms = unixepoch('subsec') * 1000;",
-                cancellationToken).ConfigureAwait(false);
+            using (var disableDefinitions = connection.CreateCommand())
+            {
+                disableDefinitions.Transaction = transaction;
+                disableDefinitions.CommandText =
+                    "UPDATE capture_lane_definitions SET enabled = 0, updated_unix_ms = $now;";
+                disableDefinitions.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
+                await disableDefinitions.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
             await UpsertLaneDefinitionsAsync(connection, transaction, laneDefinitions, cancellationToken).ConfigureAwait(false);
             using (var orphaned = connection.CreateCommand())
             {
@@ -667,17 +670,19 @@ internal sealed class SqliteRawCaptureJournal(
                         $"Required capture lane '{orphanedLane}' has unfinished durable work and cannot be removed.");
                 }
             }
-            await ExecuteNonQueryAsync(
-                connection,
-                transaction,
-                """
+            using (var abandonDisabled = connection.CreateCommand())
+            {
+                abandonDisabled.Transaction = transaction;
+                abandonDisabled.CommandText = """
                 UPDATE capture_lane_work
-                SET state = 'abandoned', failure_reason = 'disabled', updated_unix_ms = unixepoch('subsec') * 1000,
+                SET state = 'abandoned', failure_reason = 'disabled', updated_unix_ms = $now,
                     lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL
                 WHERE required = 0 AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                   AND lane_name IN (SELECT lane_name FROM capture_lane_definitions WHERE enabled = 0);
-                """,
-                cancellationToken).ConfigureAwait(false);
+                """;
+                abandonDisabled.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
+                await abandonDisabled.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
             await ExecuteNonQueryAsync(
                 connection,
                 transaction,
@@ -828,7 +833,7 @@ internal sealed class SqliteRawCaptureJournal(
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task UpsertLaneDefinitionsAsync(
+    private async Task UpsertLaneDefinitionsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
@@ -854,12 +859,12 @@ internal sealed class SqliteRawCaptureJournal(
             command.Parameters.AddWithValue("$required", lane.Required ? 1 : 0);
             command.Parameters.AddWithValue("$ordered", lane.Ordered ? 1 : 0);
             command.Parameters.AddWithValue("$policy", lane.PolicySha256);
-            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            command.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private static async Task BackfillLaneWorkAsync(
+    private async Task BackfillLaneWorkAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
@@ -888,7 +893,7 @@ internal sealed class SqliteRawCaptureJournal(
             command.Parameters.AddWithValue("$lane", lane.Name);
             command.Parameters.AddWithValue("$required", lane.Required ? 1 : 0);
             command.Parameters.AddWithValue("$ordered", lane.Ordered ? 1 : 0);
-            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            command.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             if (!lane.Required)
             {
@@ -898,7 +903,7 @@ internal sealed class SqliteRawCaptureJournal(
         }
     }
 
-    private static async Task ApplyOptionalBackfillPressureAsync(
+    private async Task ApplyOptionalBackfillPressureAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         CaptureLaneDefinition lane,
@@ -935,10 +940,11 @@ internal sealed class SqliteRawCaptureJournal(
         command.Parameters.AddWithValue("$lane", lane.Name);
         command.Parameters.AddWithValue("$maximum_count", options.OptionalMaximumPendingCount);
         command.Parameters.AddWithValue("$maximum_bytes", options.OptionalMaximumPendingBytes);
+        var now = _utcNow();
         command.Parameters.AddWithValue(
             "$oldest_allowed",
-            DateTimeOffset.UtcNow.AddMinutes(-options.OptionalMaximumOldestAgeMinutes).ToUnixTimeMilliseconds());
-        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            now.AddMinutes(-options.OptionalMaximumOldestAgeMinutes).ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         using var pressure = connection.CreateCommand();
         pressure.Transaction = transaction;
@@ -1067,7 +1073,7 @@ internal sealed class SqliteRawCaptureJournal(
             command.Parameters.AddWithValue("$state", abandon ? "abandoned" : "pending");
             command.Parameters.AddWithValue("$available", entry.DurableIngressUtc.ToUnixTimeMilliseconds());
             command.Parameters.AddWithValue("$reason", abandon ? "optional-pressure" : DBNull.Value);
-            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            command.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
     }
@@ -1363,7 +1369,7 @@ internal sealed class SqliteRawCaptureJournal(
         command.Parameters.AddWithValue("$quarantine", operation.QuarantineRelativePath);
         command.Parameters.AddWithValue("$reason", operation.Reason);
         command.Parameters.AddWithValue("$bytes", operation.ObservedBytes);
-        command.Parameters.AddWithValue("$observed", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$observed", _utcNow().ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -1393,7 +1399,7 @@ internal sealed class SqliteRawCaptureJournal(
         command.Parameters.AddWithValue("$key", evidenceKey);
         command.Parameters.AddWithValue("$source", sourceRelativePath);
         command.Parameters.AddWithValue("$bytes", observedBytes);
-        command.Parameters.AddWithValue("$observed", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$observed", _utcNow().ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -1457,7 +1463,7 @@ internal sealed class SqliteRawCaptureJournal(
             WHERE evidence_key = $key AND operation_state = 'planned';
             """;
         command.Parameters.AddWithValue("$key", evidenceKey);
-        command.Parameters.AddWithValue("$completed", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$completed", _utcNow().ToUnixTimeMilliseconds());
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
         {
             throw new InvalidOperationException("Planned raw ingress reconciliation operation was not completed exactly once.");

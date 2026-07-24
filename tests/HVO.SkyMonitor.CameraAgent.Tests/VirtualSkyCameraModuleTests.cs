@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
@@ -53,6 +54,93 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(152d, optics.GetProperty("principalPointY").GetDouble());
         Assert.AreEqual(148.96, optics.GetProperty("imageCircleRadiusPixels").GetDouble(), 1e-12);
         Assert.IsFalse(optics.GetProperty("horizontalFlip").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task StandaloneProductionSmokeProfilePinsFullResolutionLocalGraphAsync()
+    {
+        const string fileName = "cameraagent.standalone-production-smoke.json";
+        var config = await LoadProfileAsync(fileName).ConfigureAwait(false);
+        var sensor = config.Rig.Sensor;
+        var pipeline = config.Rig.Pipeline;
+        var envelope = pipeline.Envelope;
+
+        Assert.AreEqual(1936, sensor.WidthPixels);
+        Assert.AreEqual(1216, sensor.HeightPixels);
+        Assert.AreEqual(CameraPixelFormat.Mono16, sensor.PixelFormat);
+        Assert.AreEqual(SensorResponseMode.Monochrome, sensor.ResponseMode);
+        Assert.AreEqual(3872, sensor.StrideBytes);
+        Assert.AreEqual(4_708_352, sensor.StrideBytes * sensor.HeightPixels);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), pipeline.CaptureInterval);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), pipeline.DayExposure);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), pipeline.NightExposure);
+        Assert.AreEqual(CaptureCadenceMode.MinimumStartInterval, pipeline.CadenceMode);
+        Assert.AreEqual(1d, pipeline.DayGain);
+        Assert.AreEqual(1d, pipeline.NightGain);
+        Assert.IsNotNull(envelope);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), envelope.DayDefaults.Exposure);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), envelope.NightDefaults.Exposure);
+        Assert.AreEqual(1d, envelope.DayDefaults.Gain);
+        Assert.AreEqual(1d, envelope.NightDefaults.Gain);
+
+        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var moduleModel = config.ModuleOptions!.Value.GetProperty("syntheticCalibration")
+            .Deserialize<SyntheticCalibrationModelV1>(jsonOptions);
+        Assert.AreEqual(
+            new DateTimeOffset(2026, 1, 15, 8, 0, 0, TimeSpan.Zero),
+            config.ModuleOptions.Value.GetProperty("fixedSceneUtc").GetDateTimeOffset());
+        var calibrationConfig = config.ResolveProcessingSteps()
+            .Single(static step => step.Id == "Calibration");
+        var calibrationOptions = calibrationConfig.Options!.Value
+            .Deserialize<CalibrationProcessingStepOptions>(jsonOptions);
+        Assert.IsNotNull(moduleModel);
+        Assert.IsNotNull(calibrationOptions?.SyntheticCalibration);
+        moduleModel.Validate(sensor.WidthPixels, sensor.HeightPixels);
+        calibrationOptions.SyntheticCalibration.Validate(sensor.WidthPixels, sensor.HeightPixels);
+        Assert.AreEqual(
+            SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(moduleModel),
+            SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(calibrationOptions.SyntheticCalibration));
+        Assert.IsFalse(config.ModuleOptions.Value.GetProperty("asi174Sensor").GetProperty("enabled").GetBoolean());
+
+        var steps = config.ResolveProcessingSteps();
+        CollectionAssert.AreEqual(
+            ExpectedStandaloneGraph,
+            steps.OrderBy(static step => step.Order).Select(static step => step.Id).ToArray());
+        Assert.IsFalse(steps.Any(static step =>
+            step.Id is "Upload" or "ArchiveStorage" || step.Type.Contains("Upload", StringComparison.Ordinal)));
+        var storage = steps.Single(static step => step.Id == "LocalStorage");
+        Assert.AreEqual(false, storage.Options!.Value.GetProperty("queueForUpload").GetBoolean());
+        Assert.AreEqual(7, storage.Options.Value.GetProperty("retentionDays").GetInt32());
+
+        var deployment = new ConfigurationBuilder()
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json")
+            .AddJsonFile("appsettings.StandaloneProductionSmoke.json")
+            .Build();
+        Assert.AreEqual(fileName, deployment["CameraAgent:ConfigFilePath"]);
+        Assert.AreEqual("Disabled", deployment["CameraAgent:CentralIntegration:Mode"]);
+        Assert.IsFalse(deployment.GetValue<bool>("CameraAgent:CaptureDistribution:UploadEnabled"));
+        Assert.IsFalse(deployment.GetValue<bool>("CameraAgent:EnvironmentalDelivery:Enabled"));
+        Assert.AreEqual("Production", deployment["Catalog:RequiredPackageKind"]);
+        Assert.AreEqual("/var/lib/hvo/data/catalog", deployment["Catalog:Root"]);
+        Assert.AreEqual(
+            deployment["CameraAgent:RawIngressRoot"],
+            storage.Options.Value.GetProperty("storageRoot").GetString());
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
+            })
+            .Build());
+        using var provider = services.BuildServiceProvider();
+        var graph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config);
+        CollectionAssert.AreEqual(
+            ExpectedStandaloneGraph,
+            graph.Nodes.Select(static node => node.Id).ToArray());
+        graph.DisposeSteps();
     }
 
     [TestMethod]
@@ -265,6 +353,8 @@ public sealed class VirtualSkyCameraModuleTests
     private static readonly DateTimeOffset FixtureUtc = DateTimeOffset.Parse(
         "2025-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
     private static readonly string[] ExpectedRgbGraph = ["Preview", "Annotation"];
+    private static readonly string[] ExpectedStandaloneGraph =
+        ["Calibration", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage", "Telemetry"];
     private static readonly string[] ExpectedTestConstellationIds = ["TST"];
     private static readonly CanonicalAsi174Expectation[] CanonicalAsi174Expectations =
         LoadCanonicalAsi174Expectations();
@@ -470,6 +560,42 @@ public sealed class VirtualSkyCameraModuleTests
             new CaptureRequest(FixtureUtc.AddHours(1), TimeSpan.FromSeconds(1), CaptureMode.Still), CancellationToken.None).ConfigureAwait(false);
 
         CollectionAssert.AreNotEqual(first.Frame!.PixelData.ToArray(), later.Frame!.PixelData.ToArray());
+    }
+
+    [TestMethod]
+    public async Task CaptureAsyncWithFixedSceneUtcKeepsAstronomyFixedAndOperationalTimingCurrent()
+    {
+        var fixedSceneUtc = FixtureUtc.AddDays(-30);
+        using var options = JsonDocument.Parse($$"""
+            {
+              "fixedSceneUtc": "{{fixedSceneUtc:O}}"
+            }
+            """);
+        var config = CreateConfig() with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", options.RootElement.Clone())
+        };
+        var module = CreateModule(FixtureUtc);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var firstRequestedUtc = FixtureUtc;
+        var laterRequestedUtc = FixtureUtc.AddHours(1);
+
+        var first = await module.CaptureAsync(
+            new CaptureRequest(firstRequestedUtc, TimeSpan.FromSeconds(1), CaptureMode.Still),
+            CancellationToken.None).ConfigureAwait(false);
+        var later = await module.CaptureAsync(
+            new CaptureRequest(laterRequestedUtc, TimeSpan.FromSeconds(1), CaptureMode.Still),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(fixedSceneUtc, first.Frame!.Metadata.Scene!.SceneUtc);
+        Assert.AreEqual(fixedSceneUtc, later.Frame!.Metadata.Scene!.SceneUtc);
+        CollectionAssert.AreEqual(
+            first.Frame.Metadata.Scene.Objects!.ToArray(),
+            later.Frame.Metadata.Scene.Objects!.ToArray());
+        Assert.AreEqual(firstRequestedUtc, first.Frame.TimestampUtc);
+        Assert.AreEqual(laterRequestedUtc, later.Frame.TimestampUtc);
+        Assert.AreEqual(firstRequestedUtc, first.AcquisitionTiming!.ExposureStartedUtc);
+        Assert.AreEqual(laterRequestedUtc, later.AcquisitionTiming!.ExposureStartedUtc);
     }
 
     [TestMethod]

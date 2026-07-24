@@ -205,8 +205,15 @@ public sealed class CaptureProcessingGraphPerformanceTests
             FrameByteOrder.LittleEndian, 16, 16, FrameSamplePacking.ByteAligned,
             format == CameraPixelFormat.BayerRggb16 ? ColorFilterArrayPattern.Rggb : ColorFilterArrayPattern.None,
             0, 4095, byteLength);
+        var profileSha256 = new string('A', 64);
         var compatibility = new ProcessingCompatibilityIdentity(
-            "rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile");
+            profileSha256,
+            profileSha256,
+            profileSha256,
+            profileSha256,
+            profileSha256,
+            "setpoint",
+            profileSha256);
         var raw = new ProcessingArtifact(
             format == CameraPixelFormat.Mono16
                 ? Guid.Parse("10000000-0000-0000-0000-000000000001")

@@ -42,6 +42,8 @@ internal sealed class NoOpFileStorageProcessingStep(
         }
 
         _logger.NoOpStoragePlanned(Name, artifacts.Raw.Frame.TimestampUtc, Options.StorageRoot, Options.RetentionDays);
+        var durableGraphOwnsStorage = !_centralIntegrationEnabled && context.RawCapture is { } durableRaw &&
+            IsStoredUnderRoot(durableRaw.StoredFrame, Options.StorageRoot);
         var lifecycleGate = StorageLifecycleLock.ForRoot(Options.StorageRoot);
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -63,6 +65,10 @@ internal sealed class NoOpFileStorageProcessingStep(
                 }
                 else
                 {
+                    if (durableGraphOwnsStorage && product is not null)
+                    {
+                        continue;
+                    }
                     if (product is not null && context.RawCapture is { } rawCapture)
                     {
                         var descriptor = DerivativeDescriptorFactory.Create(

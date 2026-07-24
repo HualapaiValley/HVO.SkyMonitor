@@ -87,16 +87,20 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
+    private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _initializeGate = new(1, 1);
     private bool _initialized;
 
-    public SqliteCaptureProcessingStore(IOptions<CameraAgentHostOptions> options)
+    public SqliteCaptureProcessingStore(
+        IOptions<CameraAgentHostOptions> options,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         var values = options.Value;
         _root = Path.GetFullPath(values.RawIngressRoot);
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
         _busyTimeoutSeconds = values.RawIngressSqliteBusyTimeoutSeconds;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The migration statement is selected only from internal constants.")]
@@ -261,12 +265,12 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$status", status.ToString());
         command.Parameters.AddWithValue("$reason", (object?)reason ?? DBNull.Value);
         command.Parameters.AddWithValue("$attempt", attempt);
-        command.Parameters.AddWithValue("$completed_unix_ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$completed_unix_ms", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask EnsureLeaseAsync(
+    private async ValueTask EnsureLeaseAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         long workId,
@@ -290,7 +294,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             """;
         command.Parameters.AddWithValue("$work_id", workId);
         command.Parameters.AddWithValue("$lease_token", leaseToken);
-        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         var count = Convert.ToInt64(
             await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture);
@@ -624,7 +628,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         return entries;
     }
 
-    private static async Task QuarantineRawInputAsync(
+    private async Task QuarantineRawInputAsync(
         SqliteConnection connection,
         long rawRowId,
         CancellationToken cancellationToken)
@@ -639,10 +643,11 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 UPDATE capture_lane_work
                 SET state = 'quarantined', failure_reason = 'evidence-invalid',
                     lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL,
-                    updated_unix_ms = unixepoch('subsec') * 1000
+                    updated_unix_ms = $now
                 WHERE raw_capture_row_id = $raw AND lane_name = 'standard';
                 """;
             command.Parameters.AddWithValue("$raw", rawRowId);
+            command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         using (var command = connection.CreateCommand())
@@ -682,7 +687,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         return new CaptureProcessingOperationalState(pending, retry, terminal, oldest);
     }
 
-    private static async ValueTask InsertOutputAsync(
+    private async ValueTask InsertOutputAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         Guid captureId,
@@ -708,7 +713,15 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 $legacy_recipe_version, $committed_unix_ms)
             ON CONFLICT(output_identity_sha256) DO NOTHING;
             """;
-        AddOutputParameters(command, captureId, nodeId, output, descriptorJson, algorithmsJson, compatibilityJson);
+        AddOutputParameters(
+            command,
+            captureId,
+            nodeId,
+            output,
+            descriptorJson,
+            algorithmsJson,
+            compatibilityJson,
+            _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         using var verify = connection.CreateCommand();
@@ -755,7 +768,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         DurableProcessingOutput output,
         byte[] descriptorJson,
         byte[] algorithmsJson,
-        byte[] compatibilityJson)
+        byte[] compatibilityJson,
+        long committedUnixMilliseconds)
     {
         command.Parameters.AddWithValue("$output_identity_sha256", output.OutputIdentitySha256);
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
@@ -773,7 +787,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$total_integration_ticks", output.TotalIntegration.Ticks);
         command.Parameters.AddWithValue("$capture_sequence", output.CaptureSequence);
         command.Parameters.AddWithValue("$legacy_recipe_version", (object?)output.LegacyRecipeVersion ?? DBNull.Value);
-        command.Parameters.AddWithValue("$committed_unix_ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$committed_unix_ms", committedUnixMilliseconds);
     }
 
     private static async ValueTask<IReadOnlyList<DurableProcessingOutput>> ReadOutputsAsync(
