@@ -90,6 +90,7 @@ public class Program
         builder.Services.AddHostedService<DeviceRigProfileSynchronizationService>();
         builder.Services.AddScoped<DeviceBootstrapWorkflow>();
 
+        ApplyLocalIdentityPasswordFile(builder.Configuration);
         var localIdentitySection = builder.Configuration.GetSection("LocalIdentity");
         builder.Services.AddOptions<LocalIdentityOptions>()
             .Bind(localIdentitySection)
@@ -165,6 +166,7 @@ public class Program
             .WithMetrics(metrics =>
             {
                 metrics.AddPrometheusExporter();
+                metrics.AddRuntimeInstrumentation();
                 metrics.AddMeter(FleetHeartbeatTelemetry.MeterName);
                 metrics.AddMeter(EnvironmentalObservationDeliveryTelemetry.MeterName);
                 metrics.AddMeter(TransientWorkerTelemetry.MeterName);
@@ -332,6 +334,30 @@ public class Program
             context.Response.Redirect(context.RedirectUri);
             return Task.CompletedTask;
         };
+    }
+
+    internal static void ApplyLocalIdentityPasswordFile(ConfigurationManager configuration)
+    {
+        var passwordFile = configuration["LocalIdentity:AdminPasswordFile"];
+        if (string.IsNullOrWhiteSpace(passwordFile))
+        {
+            return;
+        }
+        if (!Path.IsPathFullyQualified(passwordFile))
+        {
+            throw new InvalidOperationException("LocalIdentity:AdminPasswordFile must be an absolute path.");
+        }
+        var passwordFileInfo = new FileInfo(passwordFile);
+        if (!passwordFileInfo.Exists || passwordFileInfo.Length is < 1 or > 4096)
+        {
+            throw new InvalidOperationException("LocalIdentity:AdminPasswordFile must be a non-empty regular file no larger than 4096 bytes.");
+        }
+        var password = File.ReadAllText(passwordFile).TrimEnd('\r', '\n');
+        if (password.Length == 0)
+        {
+            throw new InvalidOperationException("LocalIdentity:AdminPasswordFile is empty.");
+        }
+        configuration["LocalIdentity:AdminPassword"] = password;
     }
 
     private static string ResolveIdentityDatabasePath(string? configuredPath, string contentRoot)

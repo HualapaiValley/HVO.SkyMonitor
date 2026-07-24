@@ -1,0 +1,630 @@
+#!/usr/bin/env bash
+# Run the opt-in two-container standalone CameraAgent proof for issue #197.
+
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
+readonly COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/issue-197/compose.yml"
+readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/issue-197/otel-collector.yml"
+readonly CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-production-smoke.json"
+readonly SITING_FIXTURE="$REPO_ROOT/tests/fixtures/locations/siding-spring-synthetic-deployment-v1.json"
+readonly RESULTS="$REPO_ROOT/TestResults/issue-197/dual-agent"
+readonly COLLECTOR_DIGEST='sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6'
+readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b'
+readonly EXPECTED_CATALOG_SHA256='B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2'
+readonly LOCAL_UID="$(id -u)"
+readonly LOCAL_GID="$(id -g)"
+readonly HUALAPAI_PORT="${HVO_ISSUE_197_HUALAPAI_PORT:-51971}"
+readonly SIDING_PORT="${HVO_ISSUE_197_SIDING_PORT:-51972}"
+readonly TRIAL_COUNT="${HVO_ISSUE_197_TRIAL_COUNT:-5}"
+readonly WARMUP_CAPTURE_COUNT="${HVO_ISSUE_197_WARMUP_CAPTURES:-5}"
+readonly MEASURED_CAPTURE_COUNT="${HVO_ISSUE_197_MEASURED_CAPTURES:-30}"
+if [[ "$TRIAL_COUNT" == 5 && "$WARMUP_CAPTURE_COUNT" == 5 && "$MEASURED_CAPTURE_COUNT" == 30 ]]; then
+    readonly EVIDENCE_MODE='final'
+    readonly SUMMARY_SCHEMA='issue-197-five-trial-summary-v2'
+    readonly SUMMARY_FILE='five-trial-summary.json'
+else
+    readonly EVIDENCE_MODE='diagnostic'
+    readonly SUMMARY_SCHEMA='issue-197-reduced-diagnostic-summary-v1'
+    readonly SUMMARY_FILE='diagnostic-summary.json'
+fi
+
+resolve_bind_roots() {
+    if [[ -n "${HVO_ISSUE_197_BIND_LOCAL_ROOT:-}" || -n "${HVO_ISSUE_197_BIND_HOST_ROOT:-}" ]]; then
+        [[ -n "${HVO_ISSUE_197_BIND_LOCAL_ROOT:-}" && -n "${HVO_ISSUE_197_BIND_HOST_ROOT:-}" ]] || {
+            printf 'HVO_ISSUE_197_BIND_LOCAL_ROOT and HVO_ISSUE_197_BIND_HOST_ROOT must be set together.\n' >&2
+            exit 2
+        }
+        BIND_LOCAL_ROOT="$(realpath -m "$HVO_ISSUE_197_BIND_LOCAL_ROOT")"
+        BIND_HOST_ROOT="$(realpath -m "$HVO_ISSUE_197_BIND_HOST_ROOT")"
+        return
+    fi
+
+    local git_common_directory
+    local container_workspace
+    local host_workspace=""
+    git_common_directory="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+    container_workspace="$(dirname "$git_common_directory")"
+    if [[ -d "$container_workspace" ]] && docker inspect "$(hostname)" >/dev/null 2>&1; then
+        host_workspace="$(docker inspect "$(hostname)" --format '{{json .Mounts}}' |
+            jq -r --arg destination "$container_workspace" '.[] | select(.Destination == $destination and .Type == "bind") | .Source')"
+    fi
+    if [[ -n "$host_workspace" ]]; then
+        BIND_LOCAL_ROOT="$container_workspace/data/agent/issue-197"
+        BIND_HOST_ROOT="$host_workspace/data/agent/issue-197"
+        DOCKER_HOST_ADDRESS="${HVO_ISSUE_197_DOCKER_HOST_ADDRESS:-$(docker inspect "$(hostname)" --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}')}"
+    else
+        BIND_LOCAL_ROOT="$container_workspace/data/agent/issue-197"
+        BIND_HOST_ROOT="$BIND_LOCAL_ROOT"
+        DOCKER_HOST_ADDRESS="${HVO_ISSUE_197_DOCKER_HOST_ADDRESS:-127.0.0.1}"
+    fi
+}
+
+resolve_bind_roots
+readonly BIND_LOCAL_ROOT BIND_HOST_ROOT DOCKER_HOST_ADDRESS
+
+if [[ $# -ne 0 || -z "${HVO_CATALOG_PERF_ROOT:-}" || -z "${HVO_OTEL_COLLECTOR_IMAGE:-}" ]]; then
+    printf 'Usage: HVO_CATALOG_PERF_ROOT=INSTALLED_PRODUCTION_CATALOG_ROOT HVO_OTEL_COLLECTOR_IMAGE=IMAGE@sha256:DIGEST %s\n' "${0##*/}" >&2
+    exit 2
+fi
+if [[ ! -d "$HVO_CATALOG_PERF_ROOT" ]]; then
+    printf 'Production catalog installation root does not exist: %s\n' "$HVO_CATALOG_PERF_ROOT" >&2
+    exit 2
+fi
+if [[ "$HVO_OTEL_COLLECTOR_IMAGE" != *@"$COLLECTOR_DIGEST" ]]; then
+    printf 'Collector image must use the reviewed digest %s.\n' "$COLLECTOR_DIGEST" >&2
+    exit 2
+fi
+if [[ ! "$TRIAL_COUNT" =~ ^[1-5]$ || ! "$WARMUP_CAPTURE_COUNT" =~ ^[1-9][0-9]*$ ||
+      ! "$MEASURED_CAPTURE_COUNT" =~ ^[3-9][0-9]*$ ]]; then
+    printf 'Trial count must be 1-5, warm-up captures positive, and measured captures at least 3.\n' >&2
+    exit 2
+fi
+if [[ "$(uname -s)" != Linux ]]; then
+    printf 'The issue #197 container and inode proof currently requires a Linux control host.\n' >&2
+    exit 2
+fi
+for command in curl date dd docker dotnet flock git grep id jq mktemp sed sha256sum stat uname; do
+    command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
+done
+running_containers="$(docker ps --format '{{.Names}} {{.Image}}')"
+while IFS= read -r running; do
+    case "${running,,}" in
+        *logichost*|*mssql*|*sqlserver*|*redis*|*minio*|*mailpit*)
+            printf 'Central/shared service must be stopped before the issue #197 standalone proof: %s\n' "$running" >&2
+            exit 2
+            ;;
+    esac
+done <<< "$running_containers"
+stale_issue_containers="$(docker ps --all --filter 'name=^/hvo197-' --format '{{.Names}}')"
+if [[ -n "$stale_issue_containers" ]]; then
+    printf 'Stale issue #197 containers must be removed before bind state can be reset:\n%s\n' "$stale_issue_containers" >&2
+    exit 2
+fi
+
+git_common_directory="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+control_repository="$(dirname "$git_common_directory")"
+expected_local_root="$control_repository/data/agent/issue-197"
+if [[ "$BIND_LOCAL_ROOT" != "$expected_local_root" || "$BIND_HOST_ROOT" != */data/agent/issue-197 ]]; then
+    printf 'Issue #197 bind roots must map the dedicated repository data/agent/issue-197 subtree.\n' >&2
+    exit 2
+fi
+mkdir -p "$(dirname "$BIND_LOCAL_ROOT")"
+exec 8> "$(dirname "$BIND_LOCAL_ROOT")/.issue-197.lock"
+flock -n 8 || { printf 'Another issue #197 runner owns the bind root.\n' >&2; exit 2; }
+
+if ! docker image inspect "$CENTRAL_DENY_IMAGE" >/dev/null 2>&1; then
+    probe_docker_config="$(mktemp -d)"
+    printf '{"auths":{}}\n' > "$probe_docker_config/config.json"
+    DOCKER_CONFIG="$probe_docker_config" docker pull "$CENTRAL_DENY_IMAGE" 8>&-
+    rm -rf -- "$probe_docker_config"
+fi
+bind_probe="hvo-issue-197-bind-probe-$(dd if=/dev/urandom bs=24 count=1 status=none | sha256sum | { read -r hash _; printf '%s' "$hash"; })"
+printf '%s\n' "$bind_probe" > "$(dirname "$BIND_LOCAL_ROOT")/.issue-197-bind-probe"
+if ! docker run --rm --entrypoint /bin/sh \
+    --mount "type=bind,source=$(dirname "$BIND_HOST_ROOT"),target=/probe,readonly" \
+    "$CENTRAL_DENY_IMAGE" -c 'test "$(cat /probe/.issue-197-bind-probe)" = "$1"' -- "$bind_probe" 8>&-; then
+    rm -f -- "$(dirname "$BIND_LOCAL_ROOT")/.issue-197-bind-probe"
+    printf 'Docker daemon bind-root round-trip failed.\n' >&2
+    exit 2
+fi
+rm -f -- "$(dirname "$BIND_LOCAL_ROOT")/.issue-197-bind-probe"
+
+if [[ -e "$RESULTS" ]]; then
+    chmod -R u+w "$RESULTS" 2>/dev/null || true
+    rm -rf -- "$RESULTS"
+fi
+mkdir -p "$RESULTS"
+if [[ -e "$BIND_LOCAL_ROOT" ]]; then
+    [[ -f "$BIND_LOCAL_ROOT/.hvo-issue-197-owned" &&
+       "$(<"$BIND_LOCAL_ROOT/.hvo-issue-197-owned")" == 'hvo-issue-197-owned-v1' ]] || {
+        printf 'Refusing to delete an unmarked issue #197 bind root: %s\n' "$BIND_LOCAL_ROOT" >&2
+        exit 2
+    }
+    chmod -R u+w "$BIND_LOCAL_ROOT" 2>/dev/null || true
+    rm -rf -- "$BIND_LOCAL_ROOT"
+fi
+mkdir -p "$BIND_LOCAL_ROOT"
+printf '%s\n' 'hvo-issue-197-owned-v1' > "$BIND_LOCAL_ROOT/.hvo-issue-197-owned"
+
+readonly REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+readonly BRANCH="$(git -C "$REPO_ROOT" branch --show-current)"
+readonly DIRTY_SHA256="$({
+    git -C "$REPO_ROOT" status --porcelain=v1
+    git -C "$REPO_ROOT" diff --binary
+    while IFS= read -r path; do sha256sum "$REPO_ROOT/$path"; done < <(git -C "$REPO_ROOT" ls-files --others --exclude-standard)
+} | sha256sum | { read -r hash _; printf '%s' "$hash"; })"
+readonly TREE_CLEAN="$([[ -z "$(git -C "$REPO_ROOT" status --porcelain=v1)" ]] && printf true || printf false)"
+
+collector_config="$RESULTS/docker-config"
+mkdir -p "$collector_config"
+printf '{"auths":{}}\n' > "$collector_config/config.json"
+if ! docker image inspect "$HVO_OTEL_COLLECTOR_IMAGE" >/dev/null 2>&1; then
+    DOCKER_CONFIG="$collector_config" docker pull "$HVO_OTEL_COLLECTOR_IMAGE"
+fi
+if ! docker image inspect "$CENTRAL_DENY_IMAGE" >/dev/null 2>&1; then
+    DOCKER_CONFIG="$collector_config" docker pull "$CENTRAL_DENY_IMAGE"
+fi
+
+image_iid_file="$RESULTS/cameraagent-image-id"
+docker build --iidfile "$image_iid_file" -f "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT" 8>&-
+readonly CAMERA_AGENT_IMAGE="$(<"$image_iid_file")"
+if [[ "$CAMERA_AGENT_IMAGE" != sha256:* ]]; then
+    printf 'CameraAgent build did not produce a content-addressed image ID: %s\n' "$CAMERA_AGENT_IMAGE" >&2
+    exit 1
+fi
+
+dotnet build "$PROJECT" --configuration Release -warnaserror 8>&-
+
+baseline_json='null'
+if [[ "$EVIDENCE_MODE" == final ]]; then
+    HVO_CATALOG_PERF_ROOT="$HVO_CATALOG_PERF_ROOT" "$REPO_ROOT/scripts/test:cameraagent-standalone-171" 8>&-
+    baseline_file="$REPO_ROOT/TestResults/issue-171/production-smoke/five-trial-summary.json"
+    [[ -s "$baseline_file" ]] || { printf 'Issue #171 comparator evidence is missing.\n' >&2; exit 1; }
+    baseline_json="$(jq -s --slurpfile summary "$baseline_file" '
+        def stats: sort | {minimum: .[0], median: .[(length / 2 | floor)], maximum: .[-1]};
+        def p95: sort | .[((length * 0.95 | ceil) - 1)];
+        {
+          summary: $summary[0],
+          normalized: {
+            cpuSecondsPerCompletedCapture: (map((.performance.cpuMilliseconds / 1000) / .performance.completedCaptureCount) | stats),
+            storageBytesPerCompletedCapture: (map(.performance.retainedFilesystemBytes / .performance.completedCaptureCount) | stats),
+            peakRssBytes: (map(.performance.peakObservedRssBytes) | stats),
+            completionLatencyP95Milliseconds: (map(.performance.completionLatencyMilliseconds) | add | p95),
+            cadenceP95Milliseconds: (map(.performance.captureStartIntervalMilliseconds) | add | p95),
+            throughputCapturesPerSecond: (map(.performance.completedCaptureCount / (.performance.elapsedMilliseconds / 1000)) | stats),
+            completedCapturesPerTrial: (map(.performance.completedCaptureCount) | stats)
+          }
+        }
+      ' "$REPO_ROOT"/TestResults/issue-171/production-smoke/trial-*/evidence/issue-171-standalone-smoke.json)"
+fi
+
+active_projects=()
+cleanup() {
+    local project
+    local env_file
+    for entry in "${active_projects[@]}"; do
+        project="${entry%%:*}"
+        env_file="${entry#*:}"
+        docker compose --env-file "$env_file" --project-name "$project" --file "$COMPOSE_FILE" logs --no-color --tail 10000 \
+            > "$RESULTS/failure-$project.log" 2>&1 || true
+        docker compose --env-file "$env_file" --project-name "$project" --file "$COMPOSE_FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true
+    done
+}
+trap cleanup EXIT
+
+copy_catalog() {
+    local destination="$1"
+    mkdir -p "$destination"
+    cp -a "$HVO_CATALOG_PERF_ROOT/." "$destination/"
+    while IFS= read -r path; do chmod a-w "$path"; done < <(find "$destination" -type f)
+    while IFS= read -r path; do chmod a-w "$path"; done < <(find "$destination" -type d)
+}
+
+write_camera_config() {
+    local output="$1"
+    local agent_id="$2"
+    local seed="$3"
+    local fixed_scene_utc="$4"
+    local storage_root="$5"
+    jq --arg agentId "$agent_id" \
+       --argjson seed "$seed" \
+       --arg fixedSceneUtc "$fixed_scene_utc" \
+       --arg storageRoot "$storage_root" '
+        .agentId = $agentId |
+        .module.options.seed = $seed |
+        .module.options.fixedSceneUtc = $fixedSceneUtc |
+        (.processingSteps[] | select(.id == "LocalStorage").options.storageRoot) = $storageRoot
+       ' "$CONFIG_TEMPLATE" > "$output"
+}
+
+write_agent_env() {
+    local output="$1"
+    local project="$2"
+    local agent="$3"
+    local port="$4"
+    local host_root="$5"
+    local local_root="$6"
+    local runtime_target="$7"
+    local latitude="$8"
+    local longitude="$9"
+    local elevation="${10}"
+    shift 10
+    local timezone="$1"
+    local location_id="$2"
+    local location_source="$3"
+    local effective_utc="$4"
+    local owner_email="$5"
+    local cookie_name="$6"
+    cat > "$output" <<EOF
+CAMERA_AGENT_IMAGE=$CAMERA_AGENT_IMAGE
+CAMERA_AGENT_CONTAINER=hvo197-$agent-camera
+CAMERA_AGENT_HOSTNAME=$agent-camera
+CAMERA_AGENT_ID=cameraagent-$agent-197
+CAMERA_AGENT_BIND_ADDRESS=$DOCKER_HOST_ADDRESS
+CAMERA_AGENT_HTTP_PORT=$port
+CAMERA_AGENT_RUNTIME_SOURCE=$host_root/runtime
+CAMERA_AGENT_RUNTIME_TARGET=$runtime_target
+CAMERA_AGENT_DATA_PROTECTION_SOURCE=$host_root/dataprotection
+CAMERA_AGENT_CONFIG_SOURCE=$host_root/config/cameraagent.json
+CAMERA_AGENT_CATALOG_SOURCE=$host_root/catalog
+CAMERA_AGENT_CATALOG_TARGET=/var/lib/hvo/$agent-catalog
+CAMERA_AGENT_LATITUDE=$latitude
+CAMERA_AGENT_LONGITUDE=$longitude
+CAMERA_AGENT_ELEVATION=$elevation
+CAMERA_AGENT_TIME_ZONE=$timezone
+CAMERA_AGENT_LOCATION_ID=$location_id
+CAMERA_AGENT_LOCATION_SOURCE="$location_source"
+CAMERA_AGENT_LOCATION_EFFECTIVE_UTC=$effective_utc
+CAMERA_AGENT_OWNER_EMAIL=$owner_email
+CAMERA_AGENT_COOKIE_NAME=CameraAgent.$cookie_name.Auth
+CAMERA_AGENT_SERVICE_INSTANCE_ID=cameraagent-$agent-197
+CAMERA_AGENT_OTEL_SERVICE_NAME=hvo-camera-$agent
+CAMERA_AGENT_OWNER_PASSWORD_FILE=$host_root/secrets/owner-password
+OTEL_COLLECTOR_IMAGE=$HVO_OTEL_COLLECTOR_IMAGE
+OTEL_COLLECTOR_CONTAINER=hvo197-$agent-collector
+OTEL_COLLECTOR_HOSTNAME=$agent-collector
+OTEL_COLLECTOR_CONFIG_SOURCE=$host_root/config/otel-collector.yml
+OTEL_EVIDENCE_SOURCE=$host_root/telemetry
+CENTRAL_DENY_IMAGE=$CENTRAL_DENY_IMAGE
+CENTRAL_DENY_CONTAINER=hvo197-$agent-central-deny
+CENTRAL_DENY_HOSTNAME=$agent-central-deny
+LOCAL_UID=$LOCAL_UID
+LOCAL_GID=$LOCAL_GID
+COMPOSE_PROJECT_NAME=$project
+EOF
+}
+
+for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
+    trial="trial-$trial_number"
+    trial_root="$RESULTS/$trial"
+    bind_trial_root="$BIND_LOCAL_ROOT/$trial"
+    bind_trial_host_root="$BIND_HOST_ROOT/$trial"
+    hualapai_root="$bind_trial_root/hualapai"
+    siding_root="$bind_trial_root/siding-spring"
+    hualapai_host_root="$bind_trial_host_root/hualapai"
+    siding_host_root="$bind_trial_host_root/siding-spring"
+    mkdir -p "$trial_root/evidence"
+    mkdir -p "$hualapai_root"/{config,runtime/home,dataprotection,secrets,telemetry,evidence} \
+             "$siding_root"/{config,runtime/home,dataprotection,secrets,telemetry,evidence}
+    hualapai_secret="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | { read -r hash _; printf 'Aa!%s' "$hash"; })"
+    siding_secret="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | { read -r hash _; printf 'Aa!%s' "$hash"; })"
+    printf '%s\n' "$hualapai_secret" > "$hualapai_root/secrets/owner-password"
+    printf '%s\n' "$siding_secret" > "$siding_root/secrets/owner-password"
+    unset hualapai_secret siding_secret
+    chmod 600 "$hualapai_root/secrets/owner-password" "$siding_root/secrets/owner-password"
+    cp "$COLLECTOR_CONFIG" "$hualapai_root/config/otel-collector.yml"
+    cp "$COLLECTOR_CONFIG" "$siding_root/config/otel-collector.yml"
+    copy_catalog "$hualapai_root/catalog"
+    copy_catalog "$siding_root/catalog"
+
+    hualapai_runtime_target='/var/lib/hvo/hualapai-197'
+    siding_runtime_target='/var/lib/hvo/siding-spring-197'
+    write_camera_config "$hualapai_root/config/cameraagent.json" 'cameraagent-hualapai-197' 2025 '2026-01-15T08:00:00Z' "$hualapai_runtime_target"
+    write_camera_config "$siding_root/config/cameraagent.json" 'cameraagent-siding-spring-197' 197 '2026-01-15T13:00:00Z' "$siding_runtime_target"
+
+    suffix="${REVISION:0:8}-$trial_number-$$"
+    hualapai_project="hvo197-hualapai-$suffix"
+    siding_project="hvo197-siding-$suffix"
+    hualapai_env="$hualapai_root/compose.env"
+    siding_env="$siding_root/compose.env"
+    write_agent_env "$hualapai_env" "$hualapai_project" hualapai "$HUALAPAI_PORT" "$hualapai_host_root" "$hualapai_root" "$hualapai_runtime_target" \
+        '35.5599378' '-113.9119818' '520' 'America/Phoenix' 'hualapai-cameraagent-standalone-full' \
+        'issue-171-operator-pinned-smoke-configuration' '2025-01-01T00:00:00Z' 'hualapai-owner@cameraagent.test' 'Hualapai197'
+    write_agent_env "$siding_env" "$siding_project" siding-spring "$SIDING_PORT" "$siding_host_root" "$siding_root" "$siding_runtime_target" \
+        "$(jq -r .latitudeDegrees "$SITING_FIXTURE")" "$(jq -r .longitudeDegreesEastPositive "$SITING_FIXTURE")" \
+        "$(jq -r .elevationMeters "$SITING_FIXTURE")" "$(jq -r .timeZoneId "$SITING_FIXTURE")" \
+        "$(jq -r .locationId "$SITING_FIXTURE")" "$(jq -r .source "$SITING_FIXTURE")" \
+        "$(jq -r .effectiveFromUtc "$SITING_FIXTURE")" 'siding-owner@cameraagent.test' 'SidingSpring197'
+
+    docker compose --env-file "$hualapai_env" --project-name "$hualapai_project" --file "$COMPOSE_FILE" config --quiet
+    docker compose --env-file "$siding_env" --project-name "$siding_project" --file "$COMPOSE_FILE" config --quiet
+    hualapai_config_sha256="$(docker compose --env-file "$hualapai_env" --project-name "$hualapai_project" --file "$COMPOSE_FILE" config |
+        sha256sum | { read -r hash _; printf '%s' "$hash"; })"
+    siding_config_sha256="$(docker compose --env-file "$siding_env" --project-name "$siding_project" --file "$COMPOSE_FILE" config |
+        sha256sum | { read -r hash _; printf '%s' "$hash"; })"
+    collector_config_sha256="$(sha256sum "$COLLECTOR_CONFIG" | { read -r hash _; printf '%s' "$hash"; })"
+    hualapai_camera_config_sha256="$(sha256sum "$hualapai_root/config/cameraagent.json" | { read -r hash _; printf '%s' "$hash"; })"
+    siding_camera_config_sha256="$(sha256sum "$siding_root/config/cameraagent.json" | { read -r hash _; printf '%s' "$hash"; })"
+    siding_fixture_sha256="$(sha256sum "$SITING_FIXTURE" | { read -r hash _; printf '%s' "$hash"; })"
+    active_projects+=("$hualapai_project:$hualapai_env")
+    active_projects+=("$siding_project:$siding_env")
+    docker compose --env-file "$hualapai_env" --project-name "$hualapai_project" --file "$COMPOSE_FILE" up --detach
+    docker compose --env-file "$siding_env" --project-name "$siding_project" --file "$COMPOSE_FILE" up --detach
+
+    HVO_ISSUE_197_TRIAL="$trial" \
+    HVO_ISSUE_197_EVIDENCE_MODE="$EVIDENCE_MODE" \
+    HVO_ISSUE_197_REVISION="$REVISION" \
+    HVO_ISSUE_197_BRANCH="$BRANCH" \
+    HVO_ISSUE_197_DIRTY_SHA256="$DIRTY_SHA256" \
+    HVO_ISSUE_197_TREE_CLEAN="$TREE_CLEAN" \
+    HVO_ISSUE_197_HUALAPAI_CONFIG_SHA256="$hualapai_config_sha256" \
+    HVO_ISSUE_197_SIDING_CONFIG_SHA256="$siding_config_sha256" \
+    HVO_ISSUE_197_COLLECTOR_CONFIG_SHA256="$collector_config_sha256" \
+    HVO_ISSUE_197_HUALAPAI_CAMERA_CONFIG_SHA256="$hualapai_camera_config_sha256" \
+    HVO_ISSUE_197_SIDING_CAMERA_CONFIG_SHA256="$siding_camera_config_sha256" \
+    HVO_ISSUE_197_SIDING_FIXTURE_SHA256="$siding_fixture_sha256" \
+    HVO_ISSUE_197_CAMERA_IMAGE="$CAMERA_AGENT_IMAGE" \
+    HVO_ISSUE_197_CENTRAL_DENY_IMAGE="$CENTRAL_DENY_IMAGE" \
+    HVO_ISSUE_197_SDK_VERSION="$(dotnet --version)" \
+    HVO_ISSUE_197_WARMUP_CAPTURES="$WARMUP_CAPTURE_COUNT" \
+    HVO_ISSUE_197_MEASURED_CAPTURES="$MEASURED_CAPTURE_COUNT" \
+    HVO_ISSUE_197_EVIDENCE_ROOT="$trial_root/evidence" \
+    HVO_ISSUE_197_HUALAPAI_BASE_URI="http://$DOCKER_HOST_ADDRESS:$HUALAPAI_PORT" \
+    HVO_ISSUE_197_HUALAPAI_ROOT="$hualapai_root" \
+    HVO_ISSUE_197_HUALAPAI_CONTAINER="hvo197-hualapai-camera" \
+    HVO_ISSUE_197_HUALAPAI_PROJECT="$hualapai_project" \
+    HVO_ISSUE_197_SIDING_BASE_URI="http://$DOCKER_HOST_ADDRESS:$SIDING_PORT" \
+    HVO_ISSUE_197_SIDING_ROOT="$siding_root" \
+    HVO_ISSUE_197_SIDING_CONTAINER="hvo197-siding-spring-camera" \
+    HVO_ISSUE_197_SIDING_PROJECT="$siding_project" \
+        dotnet test "$PROJECT" --no-build --configuration Release \
+        --filter 'FullyQualifiedName~TwoStandaloneCameraAgentDockerAcceptanceTests.TwoIsolatedAgentsRemainIndependentAsync' \
+        --results-directory "$trial_root" \
+        --logger 'trx;LogFileName=issue-197-dual-agent.trx' \
+        --logger 'console;verbosity=normal' 8>&-
+
+    docker logs --timestamps --tail 10000 "hvo197-hualapai-camera" > "$trial_root/evidence/hualapai-container.log" 2>&1
+    docker logs --timestamps --tail 10000 "hvo197-siding-spring-camera" > "$trial_root/evidence/siding-spring-container.log" 2>&1
+    docker stop --timeout 10 \
+        "hvo197-hualapai-collector" "hvo197-siding-spring-collector" \
+        "hvo197-hualapai-central-deny" "hvo197-siding-spring-central-deny" >/dev/null
+    cp -a "$hualapai_root/telemetry" "$trial_root/evidence/hualapai-telemetry"
+    cp -a "$siding_root/telemetry" "$trial_root/evidence/siding-spring-telemetry"
+    sed -i "s|$REPO_ROOT|<REPOSITORY>|g; s|$BIND_LOCAL_ROOT|<BIND_ROOT>|g; s|$BIND_HOST_ROOT|<BIND_ROOT>|g" \
+        "$trial_root/issue-197-dual-agent.trx"
+    for sensitive_value in \
+        "$(<"$hualapai_root/secrets/owner-password")" \
+        "$(<"$siding_root/secrets/owner-password")" \
+        "$BIND_LOCAL_ROOT" \
+        "$BIND_HOST_ROOT"; do
+        if grep --recursive --files-with-matches --fixed-strings -- "$sensitive_value" "$trial_root" >/dev/null; then
+            printf 'Retained evidence contains a secret or control-host path.\n' >&2
+            exit 1
+        fi
+    done
+    docker compose --env-file "$hualapai_env" --project-name "$hualapai_project" --file "$COMPOSE_FILE" down --volumes --remove-orphans
+    docker compose --env-file "$siding_env" --project-name "$siding_project" --file "$COMPOSE_FILE" down --volumes --remove-orphans
+    active_projects=()
+    chmod -R u+w "$bind_trial_root" 2>/dev/null || true
+    rm -rf -- "$bind_trial_root"
+
+    manifest="$trial_root/evidence/issue-197-dual-agent.json"
+    if [[ ! -s "$manifest" ]]; then
+        printf 'Trial %s did not produce current evidence: %s\n' "$trial" "$manifest" >&2
+        exit 1
+    fi
+    jq --exit-status --arg trial "$trial" --arg revision "$REVISION" --arg dirty "$DIRTY_SHA256" \
+        '.trial == $trial and .revision.commit == $revision and .revision.dirtyStateSha256 == $dirty and .result.passed == true' \
+        "$manifest" >/dev/null
+done
+
+jq -s --arg schema "$SUMMARY_SCHEMA" --arg mode "$EVIDENCE_MODE" --argjson baseline "$baseline_json" '
+  def stats: sort | {minimum: .[0], median: .[(length / 2 | floor)], maximum: .[-1]};
+  def samples:
+    sort |
+    {minimum: .[0], median: .[(length / 2 | floor)], p95: (if length >= 30 then .[((length * 0.95 | ceil) - 1)] else null end), maximum: .[-1]};
+  def p95: sort | .[((length * 0.95 | ceil) - 1)];
+  def change($candidate; $reference): (($candidate / $reference) - 1) * 100;
+  def throughput_regression($candidate; $reference): (($reference - $candidate) / $reference) * 100;
+  def comparison($agent):
+    if $baseline == null then null else
+      {
+        blockingComparable: {
+          storageBytesPerCapturePercent: change(
+            (if $agent == "hualapai" then map(.performance.hualapaiRetainedFilesystemBytes / .durable.hualapai.rawCaptureCount)
+              else map(.performance.sidingRetainedFilesystemBytes / .durable.sidingSpring.rawCaptureCount) end | sort | .[length / 2 | floor]);
+            $baseline.normalized.storageBytesPerCompletedCapture.median),
+          cadencePercent: change(
+            (if $agent == "hualapai" then map(.agents.hualapai.startIntervalsMilliseconds) else map(.agents.sidingSpring.startIntervalsMilliseconds) end | add | p95);
+            $baseline.normalized.cadenceP95Milliseconds)
+        },
+        observationalNonEquivalent: {
+          processResources: {
+            comparable: false,
+            reason: "#171 CPU/RSS covers the combined VSTest and in-process host; #197 covers each container PID 1 and excludes the VSTest harness and collectors",
+            cpuPerCapturePercent: change(
+              (if $agent == "hualapai" then map(.performance.hualapaiCpuSeconds / .durable.hualapai.rawCaptureCount)
+                else map(.performance.sidingCpuSeconds / .durable.sidingSpring.rawCaptureCount) end | sort | .[length / 2 | floor]);
+              $baseline.normalized.cpuSecondsPerCompletedCapture.median),
+            peakRssPercent: change(
+              (map(.performance[($agent + "PeakRssBytes")]) | sort | .[length / 2 | floor]);
+              $baseline.normalized.peakRssBytes.median)
+          },
+          completionLatency: {
+            comparable: false,
+            reason: "#171 ends at retention-visible gallery completion; #197 ends at the latest processing-node completion timestamp",
+            percent: change(
+              (if $agent == "hualapai" then map(.agents.hualapai.completionLatenciesMilliseconds) else map(.agents.sidingSpring.completionLatenciesMilliseconds) end | add | p95);
+              $baseline.normalized.completionLatencyP95Milliseconds)
+          },
+          throughput: {
+            comparable: false,
+            reason: "#197 full-lifecycle throughput includes two independent crash recoveries and two 20-second isolation pauses; #171 does not run that dual-agent fault workload",
+            regressionPercent: throughput_regression(
+              (if $agent == "hualapai" then map(.durable.hualapai.rawCaptureCount / (.performance.elapsedMilliseconds / 1000))
+                else map(.durable.sidingSpring.rawCaptureCount / (.performance.elapsedMilliseconds / 1000)) end | sort | .[length / 2 | floor]);
+              $baseline.normalized.throughputCapturesPerSecond.median)
+          }
+        }
+      }
+    end;
+  {
+    schemaVersion: $schema,
+    evidenceMode: $mode,
+    trialCount: length,
+    workload: .[0].workload,
+    environment: (map(.environment) | unique | if length == 1 then .[0] else error("environment changed") end),
+    revision: {
+      commit: (map(.revision.commit) | unique | if length == 1 then .[0] else error("revision changed") end),
+      branch: (map(.revision.branch) | unique | if length == 1 then .[0] else error("branch changed") end),
+      clean: all(.revision.clean),
+      dirtyStateSha256: (map(.revision.dirtyStateSha256) | unique | if length == 1 then .[0] else error("dirty state changed") end)
+    },
+    cameraImage: (map(.topology.cameraImage) | unique | if length == 1 then .[0] else error("image changed") end),
+    configurationSha256: {
+      hualapaiCamera: (map(.topology.hualapaiCameraConfigurationSha256) | unique | if length == 1 then .[0] else error("Hualapai camera config changed") end),
+      sidingSpringCamera: (map(.topology.sidingSpringCameraConfigurationSha256) | unique | if length == 1 then .[0] else error("Siding Spring camera config changed") end),
+      sidingSpringFixture: (map(.topology.sidingSpringFixtureSha256) | unique | if length == 1 then .[0] else error("Siding fixture changed") end),
+      collector: (map(.topology.collectorConfigurationSha256) | unique | if length == 1 then .[0] else error("collector config changed") end),
+      renderedHualapaiCompose: (map(.topology.hualapaiConfigurationSha256)),
+      renderedSidingSpringCompose: (map(.topology.sidingSpringConfigurationSha256))
+    },
+    catalogSha256: (map(.agents.hualapai.catalogSha256, .agents.sidingSpring.catalogSha256) | unique |
+      if length == 1 then .[0] else error("catalog identity changed") end),
+    recipeIdentities: {
+      hualapai: (map(.agents.hualapai.recipeIdentities) | unique | if length == 1 then .[0] else error("Hualapai recipes changed") end),
+      sidingSpring: (map(.agents.sidingSpring.recipeIdentities) | unique | if length == 1 then .[0] else error("Siding recipes changed") end)
+    },
+    retentionDays: (map(.agents.hualapai.retentionDays, .agents.sidingSpring.retentionDays) | unique |
+      if length == 1 then .[0] else error("retention policy changed") end),
+    artifactSha256: (map([.agents.hualapai.artifacts[].sha256, .agents.sidingSpring.artifacts[].sha256]) | add | unique),
+    lineageEdgeCount: (map(
+      ([.agents.hualapai.artifacts[].sourceArtifactIds, .agents.sidingSpring.artifacts[].sourceArtifactIds] | flatten | length)) | add),
+    hualapaiJpegSha256: (map(.agents.hualapai.retainedJpeg.sha256) | unique | if length == 1 then .[0] else error("Hualapai JPEG changed") end),
+    sidingSpringJpegSha256: (map(.agents.sidingSpring.retainedJpeg.sha256) | unique | if length == 1 then .[0] else error("Siding Spring JPEG changed") end),
+    elapsedMilliseconds: (map(.performance.elapsedMilliseconds) | stats),
+    hualapaiCpuSeconds: (map(.performance.hualapaiCpuSeconds) | stats),
+    sidingSpringCpuSeconds: (map(.performance.sidingCpuSeconds) | stats),
+    hualapaiCollectorEstimatedCpuSeconds: (map(.performance.hualapaiCollectorEstimatedCpuSeconds) | stats),
+    sidingSpringCollectorEstimatedCpuSeconds: (map(.performance.sidingCollectorEstimatedCpuSeconds) | stats),
+    hualapaiPeakRssBytes: (map(.performance.hualapaiPeakRssBytes) | stats),
+    sidingSpringPeakRssBytes: (map(.performance.sidingPeakRssBytes) | stats),
+    combinedPeakRssBytes: (map(.performance.combinedPeakRssBytes) | stats),
+    combinedCollectorPeakMemoryBytes: (map(.performance.combinedCollectorPeakMemoryBytes) | stats),
+    combinedTopologyPeakMemoryBytes: (map(.performance.combinedTopologyPeakMemoryBytes) | stats),
+    hualapaiStorageBytesWritten: (map(.performance.hualapaiStorageBytesWritten) | stats),
+    sidingSpringStorageBytesWritten: (map(.performance.sidingStorageBytesWritten) | stats),
+    retainedFilesystemBytes: {
+      hualapai: (map(.performance.hualapaiRetainedFilesystemBytes) | stats),
+      sidingSpring: (map(.performance.sidingRetainedFilesystemBytes) | stats)
+    },
+    collectorBlockIoBytesWritten: {
+      hualapai: (map(.performance.hualapaiCollectorBlockIoBytesWritten) | stats),
+      sidingSpring: (map(.performance.sidingCollectorBlockIoBytesWritten) | stats)
+    },
+    networkBytes: {
+      hualapaiCameraRead: (map(.performance.hualapaiContainerNetworkBytesRead) | stats),
+      hualapaiCameraWritten: (map(.performance.hualapaiContainerNetworkBytesWritten) | stats),
+      sidingCameraRead: (map(.performance.sidingContainerNetworkBytesRead) | stats),
+      sidingCameraWritten: (map(.performance.sidingContainerNetworkBytesWritten) | stats),
+      hualapaiCollectorRead: (map(.performance.hualapaiCollectorNetworkBytesRead) | stats),
+      hualapaiCollectorWritten: (map(.performance.hualapaiCollectorNetworkBytesWritten) | stats),
+      sidingCollectorRead: (map(.performance.sidingCollectorNetworkBytesRead) | stats),
+      sidingCollectorWritten: (map(.performance.sidingCollectorNetworkBytesWritten) | stats)
+    },
+    hualapaiMeasuredAllocatedBytes: (map(.performance.hualapaiMeasuredRuntime.allocatedBytes) | stats),
+    sidingSpringMeasuredAllocatedBytes: (map(.performance.sidingMeasuredRuntime.allocatedBytes) | stats),
+    hualapaiMeasuredLohAfterBytes: (map(.performance.hualapaiMeasuredRuntime.largeObjectHeapAfterBytes) | stats),
+    sidingSpringMeasuredLohAfterBytes: (map(.performance.sidingMeasuredRuntime.largeObjectHeapAfterBytes) | stats),
+    measuredRuntime: {
+      hualapaiGcPauseSeconds: (map(.performance.hualapaiMeasuredRuntime.garbageCollectionPauseSeconds) | stats),
+      sidingGcPauseSeconds: (map(.performance.sidingMeasuredRuntime.garbageCollectionPauseSeconds) | stats),
+      hualapaiLohFragmentationAfterBytes: (map(.performance.hualapaiMeasuredRuntime.largeObjectHeapFragmentationAfterBytes) | stats),
+      sidingLohFragmentationAfterBytes: (map(.performance.sidingMeasuredRuntime.largeObjectHeapFragmentationAfterBytes) | stats),
+      hualapaiPohAfterBytes: (map(.performance.hualapaiMeasuredRuntime.pinnedObjectHeapAfterBytes) | stats),
+      sidingPohAfterBytes: (map(.performance.sidingMeasuredRuntime.pinnedObjectHeapAfterBytes) | stats)
+    },
+    combinedMeasuredThroughputCapturesPerSecond: (map(
+      ((.workload.measuredCapturesPerAgent * 2) / (.performance.hualapaiMeasuredRuntime.elapsedMilliseconds / 1000))) | stats),
+    hualapaiMaximumBacklogCount: (map(.performance.hualapaiBacklog.maximumPendingCount) | max),
+    sidingSpringMaximumBacklogCount: (map(.performance.sidingBacklog.maximumPendingCount) | max),
+    hualapaiMaximumBacklogBytes: (map(.performance.hualapaiBacklog.maximumPendingBytes) | max),
+    sidingSpringMaximumBacklogBytes: (map(.performance.sidingBacklog.maximumPendingBytes) | max),
+    backlog: {
+      hualapaiMaximumOldestAgeSeconds: (map(.performance.hualapaiBacklog.maximumOldestAgeSeconds) | max),
+      sidingMaximumOldestAgeSeconds: (map(.performance.sidingBacklog.maximumOldestAgeSeconds) | max),
+      hualapaiFinal: (map(.performance.hualapaiBacklog.final)),
+      sidingFinal: (map(.performance.sidingBacklog.final))
+    },
+    hualapaiStartIntervalMilliseconds: (map(.agents.hualapai.startIntervalsMilliseconds) | add | samples),
+    sidingSpringStartIntervalMilliseconds: (map(.agents.sidingSpring.startIntervalsMilliseconds) | add | samples),
+    hualapaiCompletionLatencyMilliseconds: (map(.agents.hualapai.completionLatenciesMilliseconds) | add | samples),
+    sidingSpringCompletionLatencyMilliseconds: (map(.agents.sidingSpring.completionLatenciesMilliseconds) | add | samples),
+    hualapaiCrashToRecoveryMilliseconds: (map(.restart.hualapaiCrashToRecoveryMilliseconds) | stats),
+    sidingSpringCrashToRecoveryMilliseconds: (map(.restart.sidingSpringCrashToRecoveryMilliseconds) | stats),
+    crashTimings: {
+      hualapaiKillMilliseconds: (map(.restart.hualapaiKillMilliseconds) | stats),
+      sidingKillMilliseconds: (map(.restart.sidingSpringKillMilliseconds) | stats),
+      hualapaiCrashToHealthyMilliseconds: (map(.restart.hualapaiCrashToHealthyMilliseconds) | stats),
+      sidingCrashToHealthyMilliseconds: (map(.restart.sidingSpringCrashToHealthyMilliseconds) | stats),
+      hualapaiStartToHealthyMilliseconds: (map(.restart.hualapaiStartToHealthyMilliseconds) | stats),
+      sidingStartToHealthyMilliseconds: (map(.restart.sidingSpringStartToHealthyMilliseconds) | stats)
+    },
+    pauseDurationMilliseconds: {
+      hualapai: (map(.fault.hualapaiPaused.durationMilliseconds) | stats),
+      sidingSpring: (map(.fault.sidingSpringPaused.durationMilliseconds) | stats)
+    },
+    pauseRecovery: {
+      hualapaiUnpauseToHealthyMilliseconds: (map(.fault.hualapaiPaused.unpauseToHealthyMilliseconds) | stats),
+      hualapaiUnpauseToNextGraphMilliseconds: (map(.fault.hualapaiPaused.unpauseToNextGraphMilliseconds) | stats),
+      sidingUnpauseToHealthyMilliseconds: (map(.fault.sidingSpringPaused.unpauseToHealthyMilliseconds) | stats),
+      sidingUnpauseToNextGraphMilliseconds: (map(.fault.sidingSpringPaused.unpauseToNextGraphMilliseconds) | stats)
+    },
+    finalDrainMilliseconds: (map(.performance.finalDrainMilliseconds) | stats),
+    issue171Comparison: (
+      if $baseline == null then null else
+        {
+          baseline: $baseline,
+          hualapai: comparison("hualapai"),
+          sidingSpring: comparison("siding")
+        } |
+        . + {comparableWithinTwentyPercent: ([.hualapai.blockingComparable[], .sidingSpring.blockingComparable[]] | all(. <= 20))}
+      end),
+    medianSamplingIntervalMilliseconds: (map(.performance.medianSamplingIntervalMilliseconds) | stats),
+    maximumSamplingIntervalMilliseconds: (map(.performance.maximumSamplingIntervalMilliseconds) | max),
+    unavailableSampleAttempts: (map(.performance.unavailableSampleAttempts) | add),
+    maximumDuplicateLogicalOutputs: (map(.result.duplicateLogicalOutputs) | max),
+    totalCentralTrafficAttempts: (map(.result.centralTrafficAttempts) | add),
+    totalCanaryProbeAttempts: (map(.topology.canaryProbeAttempts) | add),
+    retainedArtifactIndexEntries: (map((.agents.hualapai.artifacts | length) + (.agents.sidingSpring.artifacts | length)) | add),
+    allImageIdsEqual: all(.topology.imageIdsEqual),
+    allMutableStateIsolated: all(.topology.mutableStateIsolated),
+    allDrained: all(.result.drained),
+    allPassed: all(.result.passed),
+    citable: ($mode == "final" and length == 5 and all(.revision.clean) and all(.result.passed) and
+      all(.performance.maximumSamplingIntervalMilliseconds <= 5000) and
+      all(.performance.phases["measured-workload"].sampleCount >= 2) and
+      all(.performance.phases["crash-recovery"].sampleCount >= 2) and
+      all(.performance.phases["pause-isolation"].sampleCount >= 10) and
+      all(.performance.hualapaiBacklog.final.pendingCount == 0) and
+      all(.performance.sidingBacklog.final.pendingCount == 0) and
+      all(.restart.hualapaiSequenceAfterSidingRestart > .restart.hualapaiUnaffectedBaselineAfterSidingKill) and
+      all(.restart.sidingSequenceAfterHualapaiRestart > .restart.sidingUnaffectedBaselineAfterHualapaiKill) and
+      all(.fault.hualapaiPaused.unpauseToHealthyMilliseconds > 0) and
+      all(.fault.sidingSpringPaused.unpauseToHealthyMilliseconds > 0) and
+      all(.fault.hualapaiPaused.unpauseToNextGraphMilliseconds > 0) and
+      all(.fault.sidingSpringPaused.unpauseToNextGraphMilliseconds > 0) and
+      all(.performance.finalDrainMilliseconds > 0) and
+      all((.agents.hualapai.artifacts | length) == (.workload.measuredCapturesPerAgent * 6)) and
+      all((.agents.sidingSpring.artifacts | length) == (.workload.measuredCapturesPerAgent * 6)) and
+      (map(.result.centralTrafficAttempts) | add) == 0 and
+      (map(.topology.canaryProbeAttempts) | add) == length and
+      ($baseline != null) and
+      ([comparison("hualapai").blockingComparable[], comparison("siding").blockingComparable[]] | all(. <= 20)))
+  }
+' "$RESULTS"/trial-*/evidence/issue-197-dual-agent.json > "$RESULTS/$SUMMARY_FILE"

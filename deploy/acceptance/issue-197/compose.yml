@@ -1,0 +1,112 @@
+services:
+  cameraagent:
+    image: ${CAMERA_AGENT_IMAGE:?CAMERA_AGENT_IMAGE must be a content-addressed image ID}
+    pull_policy: never
+    container_name: ${CAMERA_AGENT_CONTAINER:?CAMERA_AGENT_CONTAINER must be set}
+    hostname: ${CAMERA_AGENT_HOSTNAME:?CAMERA_AGENT_HOSTNAME must be set}
+    user: "${LOCAL_UID:?LOCAL_UID must be set}:${LOCAL_GID:?LOCAL_GID must be set}"
+    read_only: true
+    environment:
+      ASPNETCORE_ENVIRONMENT: StandaloneProductionSmoke
+      ASPNETCORE_URLS: http://+:8080
+      HOME: ${CAMERA_AGENT_RUNTIME_TARGET:?CAMERA_AGENT_RUNTIME_TARGET must be set}/home
+      TMPDIR: /tmp
+      CameraAgent__AgentId: ${CAMERA_AGENT_ID:?CAMERA_AGENT_ID must be set}
+      CameraAgent__ConfigFilePath: /run/hvo/cameraagent.json
+      CameraAgent__RawIngressRoot: ${CAMERA_AGENT_RUNTIME_TARGET}
+      CameraAgent__CentralIntegration__Mode: Disabled
+      CameraAgent__CaptureDistribution__UploadEnabled: "false"
+      CameraAgent__CaptureDistribution__LeaseSeconds: "10"
+      CameraAgent__CaptureDistribution__LeaseRenewalSeconds: "4"
+      CameraAgent__EnvironmentalDelivery__Enabled: "false"
+      CameraAgent__TransientDetection__Mode: "Off"
+      CameraAgent__Observatory__LatitudeDegrees: ${CAMERA_AGENT_LATITUDE:?CAMERA_AGENT_LATITUDE must be set}
+      CameraAgent__Observatory__LongitudeDegrees: ${CAMERA_AGENT_LONGITUDE:?CAMERA_AGENT_LONGITUDE must be set}
+      CameraAgent__Observatory__ElevationMeters: ${CAMERA_AGENT_ELEVATION:?CAMERA_AGENT_ELEVATION must be set}
+      CameraAgent__Observatory__TimeZoneId: ${CAMERA_AGENT_TIME_ZONE:?CAMERA_AGENT_TIME_ZONE must be set}
+      CameraAgent__DeploymentLocation__LocationId: ${CAMERA_AGENT_LOCATION_ID:?CAMERA_AGENT_LOCATION_ID must be set}
+      CameraAgent__DeploymentLocation__Source: ${CAMERA_AGENT_LOCATION_SOURCE:?CAMERA_AGENT_LOCATION_SOURCE must be set}
+      CameraAgent__DeploymentLocation__EffectiveFromUtc: ${CAMERA_AGENT_LOCATION_EFFECTIVE_UTC:?CAMERA_AGENT_LOCATION_EFFECTIVE_UTC must be set}
+      Catalog__Root: ${CAMERA_AGENT_CATALOG_TARGET:?CAMERA_AGENT_CATALOG_TARGET must be set}
+      Catalog__RequiredPackageKind: Production
+      LocalIdentity__AdminEmail: ${CAMERA_AGENT_OWNER_EMAIL:?CAMERA_AGENT_OWNER_EMAIL must be set}
+      LocalIdentity__CookieName: ${CAMERA_AGENT_COOKIE_NAME:?CAMERA_AGENT_COOKIE_NAME must be set}
+      LocalIdentity__DatabasePath: ${CAMERA_AGENT_RUNTIME_TARGET}/identity/cameraagent_identity.db
+      LocalIdentity__AdminPasswordFile: /run/secrets/owner_password
+      DeviceProvisioning__StateDirectory: ${CAMERA_AGENT_RUNTIME_TARGET}/provisioning
+      CentralIdentity__ServiceUrl: http://central-deny:8080/
+      SkyMonitor__BaseUrl: http://central-deny:8080
+      OTEL_SERVICE_NAME: ${CAMERA_AGENT_OTEL_SERVICE_NAME:?CAMERA_AGENT_OTEL_SERVICE_NAME must be set}
+      OTEL_RESOURCE_ATTRIBUTES: service.instance.id=${CAMERA_AGENT_SERVICE_INSTANCE_ID:?CAMERA_AGENT_SERVICE_INSTANCE_ID must be set}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    ports:
+      - "${CAMERA_AGENT_BIND_ADDRESS:?CAMERA_AGENT_BIND_ADDRESS must be set}:${CAMERA_AGENT_HTTP_PORT:?CAMERA_AGENT_HTTP_PORT must be set}:8080"
+    volumes:
+      - type: bind
+        source: ${CAMERA_AGENT_CONFIG_SOURCE:?CAMERA_AGENT_CONFIG_SOURCE must be set}
+        target: /run/hvo/cameraagent.json
+        read_only: true
+      - type: bind
+        source: ${CAMERA_AGENT_RUNTIME_SOURCE:?CAMERA_AGENT_RUNTIME_SOURCE must be set}
+        target: ${CAMERA_AGENT_RUNTIME_TARGET}
+      - type: bind
+        source: ${CAMERA_AGENT_DATA_PROTECTION_SOURCE:?CAMERA_AGENT_DATA_PROTECTION_SOURCE must be set}
+        target: /app/DataProtection-Keys
+      - type: bind
+        source: ${CAMERA_AGENT_CATALOG_SOURCE:?CAMERA_AGENT_CATALOG_SOURCE must be set}
+        target: ${CAMERA_AGENT_CATALOG_TARGET}
+        read_only: true
+      - type: bind
+        source: ${CAMERA_AGENT_OWNER_PASSWORD_FILE:?CAMERA_AGENT_OWNER_PASSWORD_FILE must be set}
+        target: /run/secrets/owner_password
+        read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    depends_on:
+      collector:
+        condition: service_started
+      central-deny:
+        condition: service_started
+    stop_grace_period: 45s
+    networks:
+      - isolated
+
+  collector:
+    image: ${OTEL_COLLECTOR_IMAGE:?OTEL_COLLECTOR_IMAGE must be pinned by digest}
+    pull_policy: missing
+    container_name: ${OTEL_COLLECTOR_CONTAINER:?OTEL_COLLECTOR_CONTAINER must be set}
+    hostname: ${OTEL_COLLECTOR_HOSTNAME:?OTEL_COLLECTOR_HOSTNAME must be set}
+    user: "${LOCAL_UID}:${LOCAL_GID}"
+    read_only: true
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - type: bind
+        source: ${OTEL_COLLECTOR_CONFIG_SOURCE:?OTEL_COLLECTOR_CONFIG_SOURCE must be set}
+        target: /etc/otelcol/config.yml
+        read_only: true
+      - type: bind
+        source: ${OTEL_EVIDENCE_SOURCE:?OTEL_EVIDENCE_SOURCE must be set}
+        target: /evidence
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    networks:
+      - isolated
+
+  central-deny:
+    image: ${CENTRAL_DENY_IMAGE:?CENTRAL_DENY_IMAGE must be pinned by digest}
+    pull_policy: missing
+    container_name: ${CENTRAL_DENY_CONTAINER:?CENTRAL_DENY_CONTAINER must be set}
+    hostname: ${CENTRAL_DENY_HOSTNAME:?CENTRAL_DENY_HOSTNAME must be set}
+    read_only: true
+    command:
+      - TCP-LISTEN:8080,fork,reuseaddr
+      - SYSTEM:echo HVO197_DENY_HIT >&2; exit 1
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    networks:
+      - isolated
+
+networks:
+  isolated:
+    driver: bridge
