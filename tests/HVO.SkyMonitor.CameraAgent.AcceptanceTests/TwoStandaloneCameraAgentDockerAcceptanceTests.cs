@@ -47,6 +47,10 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
     [Timeout(1_800_000)]
     public async Task TwoIsolatedAgentsRemainIndependentAsync()
     {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Issue #197 requires Linux process and filesystem evidence.");
+        }
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HVO_ISSUE_197_HUALAPAI_BASE_URI")))
         {
             Assert.Inconclusive("Run through scripts/test:cameraagent-dual-197.");
