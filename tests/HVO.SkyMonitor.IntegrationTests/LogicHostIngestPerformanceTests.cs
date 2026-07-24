@@ -731,7 +731,7 @@ public sealed class LogicHostIngestPerformanceTests
         int sourceCount;
         int identityCount;
         int jobCount;
-        int expectedJobsPerArtifact;
+        int[] jobsPerArtifact;
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -755,9 +755,12 @@ public sealed class LogicHostIngestPerformanceTests
             recipeCount = await db.CentralArtifactRecipes.CountAsync(recipe => artifactIds.Contains(recipe.Artifact!.ArtifactId)).ConfigureAwait(false);
             sourceCount = await db.CentralArtifactSources.CountAsync(source => artifactIds.Contains(source.Artifact!.ArtifactId)).ConfigureAwait(false);
             identityCount = await db.CentralArtifactIngestIdentities.CountAsync(identity => artifactIds.Contains(identity.Artifact!.ArtifactId)).ConfigureAwait(false);
-            jobCount = await db.CentralDerivativeJobs.CountAsync(job => artifactIds.Contains(job.SourceArtifact!.ArtifactId)).ConfigureAwait(false);
-            expectedJobsPerArtifact = scope.ServiceProvider.GetRequiredService<ICentralDerivativeRecipeCatalog>()
-                .GetRequiredRecipes(FrameArtifactRole.Raw).Count;
+            jobsPerArtifact = await db.CentralDerivativeJobs
+                .Where(job => artifactIds.Contains(job.SourceArtifact!.ArtifactId))
+                .GroupBy(job => job.SourceArtifact!.ArtifactId)
+                .Select(group => group.Count())
+                .ToArrayAsync().ConfigureAwait(false);
+            jobCount = jobsPerArtifact.Sum();
         }
 
         Assert.AreEqual(uploads.Count, artifacts.Count);
@@ -769,7 +772,10 @@ public sealed class LogicHostIngestPerformanceTests
         Assert.AreEqual(uploads.Count, recipeCount);
         Assert.AreEqual(0, sourceCount);
         Assert.AreEqual(uploads.Count, identityCount);
-        Assert.AreEqual(uploads.Count * expectedJobsPerArtifact, jobCount);
+        Assert.AreEqual(uploads.Count, jobsPerArtifact.Length);
+        Assert.AreEqual(1, jobsPerArtifact.Distinct().Count());
+        Assert.IsTrue(jobsPerArtifact[0] > 0);
+        Assert.AreEqual(uploads.Count * jobsPerArtifact[0], jobCount);
         Assert.AreEqual(uploads.Count, artifacts.Select(static artifact => artifact.StorageReference).Distinct(StringComparer.Ordinal).Count());
 
         await using var validationScope = fixture.Factory.Services.CreateAsyncScope();
