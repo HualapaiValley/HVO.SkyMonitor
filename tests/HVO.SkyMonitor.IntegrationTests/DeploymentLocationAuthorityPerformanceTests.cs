@@ -238,6 +238,7 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
         await db.SaveChangesAsync().ConfigureAwait(false);
         var backfilled = await ObservatoryLocationBackfill.RunAsync(db, TimeProvider.System).ConfigureAwait(false);
         Assert.AreEqual(ObservatoryCount, backfilled);
+        var captureStartUtc = DateTimeOffset.UtcNow;
 
         var agents = new List<ScaleAgent>(AgentCount);
         var registrations = new List<DeviceRegistration>(AgentCount);
@@ -290,8 +291,8 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
                         ObservatoryId = registration.ObservatoryId,
                         AgentId = registration.DeviceId,
                         FrameId = Guid.NewGuid(),
-                        CapturedAtUtc = now.AddSeconds(frameIndex),
-                        FirstReceivedAtUtc = now.AddSeconds(frameIndex),
+                        CapturedAtUtc = captureStartUtc.AddSeconds(frameIndex),
+                        FirstReceivedAtUtc = captureStartUtc.AddSeconds(frameIndex),
                         LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedUnresolved
                     };
                     frame.Location = new CentralCaptureLocation
