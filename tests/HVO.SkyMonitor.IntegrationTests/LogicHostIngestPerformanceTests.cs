@@ -39,20 +39,16 @@ public sealed class LogicHostIngestPerformanceTests
     private const int ConcurrentWarmups = 20;
     private const int ConcurrentMeasurements = 200;
     private const int ProfilesPerFrame = 5;
-    private const int DerivativeJobsPerRawArtifact = 3;
     private const string ArtifactBucket = "skymonitor-artifacts";
     private static readonly int[] ConcurrencyLevels = [1, 4, 8];
     private static readonly DateTimeOffset CaptureStartUtc = new(2026, 7, 15, 12, 0, 0, TimeSpan.Zero);
-    private static readonly JsonSerializerOptions EvidenceJsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
-    private static readonly AllocationRateObserver AllocationObserver = new();
 
     [TestMethod]
     public async Task NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence()
     {
+        var evidenceRun = Issue170PerformanceEvidence.Create();
         var harnessStarted = Stopwatch.GetTimestamp();
         var fixture = AssemblyHooks.Fixture;
-        var revision = GetEvidenceRevision();
-        var repositoryRoot = GetRepositoryRoot();
         var w1 = CreateWorkload("W1", 1936, 1216, CameraPixelFormat.Mono16);
         var w2 = CreateWorkload("W2", 3096, 2080, CameraPixelFormat.BayerRggb16);
         await SeedWorkloadAsync(fixture, w1).ConfigureAwait(false);
@@ -176,61 +172,35 @@ public sealed class LogicHostIngestPerformanceTests
         successfulUploads.AddRange(restartUploads);
 
         var correctness = await ValidatePersistedResultsAsync(fixture, successfulUploads, w1, w2).ConfigureAwait(false);
-        var git = ReadGitEvidence(repositoryRoot);
-        var command = "PATH=/tmp/opencode/dotnet-10.0.100:$PATH DOTNET_ROOT=/tmp/opencode/dotnet-10.0.100 " +
-            $"TESTCONTAINERS_HOST_OVERRIDE=172.17.0.1 DOTNET_gcServer=1 HVO_EVIDENCE_REVISION={revision} " +
-            "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj " +
-            "--no-build --configuration Release --filter \"FullyQualifiedName~LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence\"";
+        var locationBindingMethod = typeof(ArtifactIngestService).GetMethod(
+            "BindCaptureLocationAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        var locationBindingCanAccessPayload = locationBindingMethod?.GetParameters().Any(parameter =>
+            parameter.ParameterType == typeof(byte[])
+            || typeof(Stream).IsAssignableFrom(parameter.ParameterType)
+            || parameter.ParameterType == typeof(Memory<byte>)
+            || parameter.ParameterType == typeof(ReadOnlyMemory<byte>)) == true;
+        Assert.IsFalse(locationBindingCanAccessPayload);
+        var command = evidenceRun.CreateTestCommand(
+            "LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence");
         var evidence = new
         {
-            Schema = "hvo-logichost-ingest-performance-v2",
-            Issue = 98,
-            Revision = new
-            {
-                Candidate = new { EvidenceRevision = revision, git.Commit, git.Branch, git.Dirty },
-                Baseline = new
-                {
-                    Commit = "5cd85ab2326e797c56e63f7f3b4730135ed9c1e0",
-                    Workload = "Existing ArtifactIngestTests v1 class run",
-                    Equivalent = false,
-                    Observed = new
-                    {
-                        PassedTests = 15,
-                        TestDurationSeconds = 21.0,
-                        CommandWallSeconds = 34.37,
-                        UserCpuSeconds = 8.37,
-                        SystemCpuSeconds = 0.73,
-                        PeakRssKiB = 248336
-                    },
-                    PerUploadMetrics = "Unavailable: the baseline was a heterogeneous class-level startup/behavior run and did not emit per-upload samples.",
-                    Comparison = "Non-equivalent startup/behavior evidence only; no latency, throughput, I/O, CPU, allocation, RSS, or percentage change is inferred."
-                }
-            },
+            Schema = "hvo-logichost-ingest-performance-v3",
+            Issue = 170,
+            Revision = evidenceRun.Revision,
             Environment = new
             {
-                Observed = new
-                {
-                    OperatingSystem = RuntimeInformation.OSDescription,
-                    Architecture = RuntimeInformation.ProcessArchitecture.ToString(),
-                    Cpu = ReadCpuModel(),
-                    Environment.ProcessorCount,
-                    TotalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
-                    StorageFormat = new DriveInfo(Path.GetPathRoot(repositoryRoot)!).DriveFormat,
-                    Framework = RuntimeInformation.FrameworkDescription,
-                    RuntimeVersion = Environment.Version.ToString(),
-                    ServerGarbageCollection = GCSettings.IsServerGC
-                },
+                Observed = evidenceRun.Environment,
                 Declared = new
                 {
-                    Sdk = ReadPinnedSdkVersion(repositoryRoot),
+                    Sdk = ReadPinnedSdkVersion(evidenceRun.RepositoryRoot),
                     Configuration = "Release",
                     SqlServer = "SQL Server 2022 CU14 Ubuntu 22.04 Testcontainer",
                     Minio = "MinIO RELEASE.2025-09-07T16-13-09Z Testcontainer",
-                    Http = "ASP.NET Core TestServer",
-                    fixture.RedisConnectionString,
-                    fixture.MinioEndpoint
+                    Http = "ASP.NET Core TestServer"
                 }
             },
+            BuildCommand = Issue170PerformanceEvidence.BuildCommand,
             Command = command,
             Workload = new
             {
@@ -251,12 +221,13 @@ public sealed class LogicHostIngestPerformanceTests
             Method = new
             {
                 Latency = "Nearest-rank median/p95/maximum over 30 independent measured logical operations after five warmups; W4 uses 200 measured operations after 20 warmups.",
-                Resources = "Process.TotalProcessorTime, one full-harness System.Runtime alloc-rate EventCounter sampled at 100 ms, supplemental GC.GetTotalAllocatedBytes(false) start/end observations, and 10 ms Process.WorkingSet64 sampling. Allocation is null if no positive EventCounter increment arrives in a phase.",
+                Resources = "Process.TotalProcessorTime, monotonic GC.GetTotalAllocatedBytes(true), and 10 ms Process.WorkingSet64 sampling for the test process including TestServer.",
                 Sql = "EF Core diagnostic events observe commands and transaction start/commit/rollback/failure. SQL wire bytes are unavailable from the provider and are reported as unavailable, not estimated.",
                 ObjectStore = "System.Net.Http diagnostics and the deterministic boundary handler observe MinIO methods and request/response Content-Length when supplied. Content-Length is a header observation, not a claim that HEAD response bodies transferred; missing values remain unavailable.",
                 Faults = "Object faults return HTTP 503 from a delegating handler at the MinIO S3 PUT boundary. SQL faults throw at EF TransactionCommittingAsync on each second ingest transaction, after the durable intent commit and object publication.",
                 HttpBytes = "Logical payload bytes are fixture-derived application bytes. Exact request-content body bytes, including multipart framing, are counted separately for every multipart and manifest-only status POST; TestServer transport headers are excluded.",
-                Correctness = "Acknowledgement identity/checksum/length, normalized SQL state/profile/layout/recipe/empty ordered lineage, reconstruction, and every final object SHA-256 are asserted."
+                Correctness = "Acknowledgement identity/checksum/length, normalized SQL state/profile/layout/recipe/empty ordered lineage, reconstruction, and every final object SHA-256 are asserted.",
+                PayloadMemory = "N/A: phase-isolated object-type and copy attribution requires profiler instrumentation disproportionate to this metadata-only change."
             },
             Measurements = new
             {
@@ -276,8 +247,13 @@ public sealed class LogicHostIngestPerformanceTests
             Correctness = correctness,
             Result = new
             {
-                Candidate = "Absolute native manifest-v2 baseline recorded in Measurements.",
-                BaselineChange = "N/A: the retained v1 class run is non-equivalent and has no per-upload metrics; no fabricated percentage change is reported.",
+                Candidate = "Location-bound native manifest-v2 measurements are recorded in Measurements.",
+                BaselineChange = "A reviewed summary must first verify five clean baseline and candidate trials have matching workload and environment fingerprints.",
+                LocationBindingPayloadAccess = locationBindingCanAccessPayload,
+                LocationBindingFullFrameCopies = locationBindingCanAccessPayload
+                    ? "Unproven"
+                    : "Structurally zero within location binding: the method accepts only frame metadata, coordinate-free provenance, and cancellation; no payload, stream, or memory buffer is in scope.",
+                LohInterpretation = "Payload arrays are LOH-sized. Process allocation and 10 ms RSS peaks include LOH effects, but System.Runtime does not provide a phase-isolated LOH byte counter; no separate LOH byte value is claimed.",
                 W4Scaling = CreateW4ScalingEvidence(steadyState),
                 Interpretation = "Physical timing is environment-specific; durable state, identity, lineage, and checksums are pass/fail.",
                 ResidualRisk = "TestServer excludes kernel TCP/TLS and process counters exclude SQL Server/MinIO containers. SQL wire bytes and absent HTTP Content-Length values are unavailable."
@@ -286,11 +262,7 @@ public sealed class LogicHostIngestPerformanceTests
             RecordedAtUtc = DateTimeOffset.UtcNow
         };
 
-        var outputDirectory = Path.Combine(repositoryRoot, "TestResults", "issue-98", revision);
-        Directory.CreateDirectory(outputDirectory);
-        await File.WriteAllTextAsync(
-            Path.Combine(outputDirectory, "logichost-ingest-performance.json"),
-            JsonSerializer.Serialize(evidence, EvidenceJsonOptions)).ConfigureAwait(false);
+        await evidenceRun.WriteTrialAsync("logichost-ingest-performance.json", evidence).ConfigureAwait(false);
     }
 
     private static async Task<IngestMeasurement> MeasureAcceptedAsync(
@@ -329,10 +301,12 @@ public sealed class LogicHostIngestPerformanceTests
             concurrency,
             warmupCount,
             measured.Length,
+            sorted,
             payloadBytes,
             elapsed.TotalMilliseconds,
             Percentile(sorted, 0.50),
             Percentile(sorted, 0.95),
+            Percentile(sorted, 0.99),
             sorted[^1],
             measured.Length / elapsed.TotalSeconds,
             payloadBytes / elapsed.TotalSeconds,
@@ -757,6 +731,7 @@ public sealed class LogicHostIngestPerformanceTests
         int sourceCount;
         int identityCount;
         int jobCount;
+        int expectedJobsPerArtifact;
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -781,6 +756,8 @@ public sealed class LogicHostIngestPerformanceTests
             sourceCount = await db.CentralArtifactSources.CountAsync(source => artifactIds.Contains(source.Artifact!.ArtifactId)).ConfigureAwait(false);
             identityCount = await db.CentralArtifactIngestIdentities.CountAsync(identity => artifactIds.Contains(identity.Artifact!.ArtifactId)).ConfigureAwait(false);
             jobCount = await db.CentralDerivativeJobs.CountAsync(job => artifactIds.Contains(job.SourceArtifact!.ArtifactId)).ConfigureAwait(false);
+            expectedJobsPerArtifact = scope.ServiceProvider.GetRequiredService<ICentralDerivativeRecipeCatalog>()
+                .GetRequiredRecipes(FrameArtifactRole.Raw).Count;
         }
 
         Assert.AreEqual(uploads.Count, artifacts.Count);
@@ -792,7 +769,7 @@ public sealed class LogicHostIngestPerformanceTests
         Assert.AreEqual(uploads.Count, recipeCount);
         Assert.AreEqual(0, sourceCount);
         Assert.AreEqual(uploads.Count, identityCount);
-        Assert.AreEqual(uploads.Count * DerivativeJobsPerRawArtifact, jobCount);
+        Assert.AreEqual(uploads.Count * expectedJobsPerArtifact, jobCount);
         Assert.AreEqual(uploads.Count, artifacts.Select(static artifact => artifact.StorageReference).Distinct(StringComparer.Ordinal).Count());
 
         await using var validationScope = fixture.Factory.Services.CreateAsyncScope();
@@ -829,6 +806,23 @@ public sealed class LogicHostIngestPerformanceTests
             Assert.IsNotNull(artifact.Frame.Timing);
             Assert.IsNotNull(artifact.Frame.Control);
             Assert.AreEqual(ProfilesPerFrame, artifact.Frame.Profiles.Count);
+            var locationProperty = artifact.Frame.GetType().GetProperty("Location");
+            if (expected.Workload.Location is not null && locationProperty is not null)
+            {
+                var persistedLocation = locationProperty.GetValue(artifact.Frame);
+                Assert.IsNotNull(persistedLocation);
+                var state = artifact.Frame.GetType().GetProperty("LocationEvidenceState")?.GetValue(artifact.Frame);
+                Assert.AreEqual("ReportedResolved", state?.ToString());
+                Assert.AreEqual(
+                    expected.Workload.Location,
+                    new CaptureLocationProvenance(
+                        (string)persistedLocation.GetType().GetProperty("LocationId")!.GetValue(persistedLocation)!,
+                        (long)persistedLocation.GetType().GetProperty("Version")!.GetValue(persistedLocation)!,
+                        (string)persistedLocation.GetType().GetProperty("Source")!.GetValue(persistedLocation)!,
+                        (double?)persistedLocation.GetType().GetProperty("HorizontalAccuracyMeters")!.GetValue(persistedLocation),
+                        (DateTimeOffset)persistedLocation.GetType().GetProperty("EffectiveFromUtc")!.GetValue(persistedLocation)!,
+                        (DateTimeOffset?)persistedLocation.GetType().GetProperty("EffectiveUntilUtc")!.GetValue(persistedLocation)));
+            }
             Assert.IsTrue(artifact.Frame.Profiles.Any(profile =>
                 profile.Kind == CentralProfileKind.Rig
                 && profile.DeviceRigProfileId == expected.Workload.RigProfileId
@@ -855,7 +849,6 @@ public sealed class LogicHostIngestPerformanceTests
         }
 
         return new(
-            true,
             uploads.Count,
             artifacts.Count,
             frameCount,
@@ -963,7 +956,10 @@ public sealed class LogicHostIngestPerformanceTests
                     "capture-raw", "1.0.0", "raw-ingress-v1",
                     JsonSerializer.SerializeToElement(new { normalization = "none" })),
                 workload.MediaType,
-                workload.ChecksumSha256));
+                workload.ChecksumSha256))
+        {
+            Location = workload.Location
+        };
         var manifest = new ArtifactManifestV2(
             ArtifactManifestV2.CurrentSchemaVersion, descriptor, $"frames/{sequence:D6}.raw");
         Assert.IsTrue(manifest.Validate().IsValid);
@@ -981,6 +977,38 @@ public sealed class LogicHostIngestPerformanceTests
             && item.ProfileSha256 == workload.RigSha256).ConfigureAwait(false);
         workload.RigProfileId = profile.Id;
         workload.DevicePublicId = profile.DevicePublicId;
+        var registration = await db.DeviceRegistrations.Include(item => item.Observatory)
+            .SingleAsync(item => item.Id == profile.RegistrationId).ConfigureAwait(false);
+        var observatory = registration.Observatory!;
+        var deployment = DeploymentLocationSnapshot.Create(
+            $"issue-170-{workload.Id}",
+            1,
+            "performance-observatory-fallback",
+            null,
+            CaptureStartUtc.AddDays(-1),
+            null,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId);
+        var authorityType = typeof(HVO.SkyMonitor.LogicHost.Program).Assembly.GetType(
+            "HVO.SkyMonitor.LogicHost.Services.IDeploymentLocationAuthorityService");
+        if (authorityType is not null)
+        {
+            var propose = authorityType.GetMethod("ProposeAsync")
+                ?? throw new InvalidOperationException("Deployment-location authority proposal method is unavailable.");
+            var sourceKind = Enum.Parse(propose.GetParameters()[2].ParameterType, "Inherited");
+            var task = (Task)(propose.Invoke(
+                scope.ServiceProvider.GetRequiredService(authorityType),
+                [registration, deployment, sourceKind, "performance-harness", CancellationToken.None])
+                ?? throw new InvalidOperationException("Deployment-location authority did not return a task."));
+            await task.ConfigureAwait(false);
+            var acknowledgment = task.GetType().GetProperty("Result")?.GetValue(task)
+                ?? throw new InvalidOperationException("Deployment-location authority omitted its acknowledgment.");
+            Assert.AreEqual("Acknowledged", acknowledgment.GetType().GetProperty("Status")?.GetValue(acknowledgment)?.ToString());
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            workload.Location = deployment.ToProvenance();
+        }
     }
 
     private static object WorkloadMetadata(Workload workload, int warmups, int measurements, int[] concurrency)
@@ -995,6 +1023,7 @@ public sealed class LogicHostIngestPerformanceTests
             workload.Layout.StrideBytes,
             PayloadBytes = workload.Payload.LongLength,
             workload.ChecksumSha256,
+            IntentionalLocationMode = workload.Location is null ? "location-null" : "location-bound",
             Recipe = "capture-raw/1.0.0/raw-ingress-v1; canonical options {normalization:none}",
             PayloadGenerator = workload.Layout.PixelFormat == CameraPixelFormat.Mono16
                 ? "little-endian ushort ((2025 + 257 * linearPixelIndex) & 0xFFFF)"
@@ -1014,8 +1043,10 @@ public sealed class LogicHostIngestPerformanceTests
         long payloadBytes)
         => new(
             elapsed.TotalMilliseconds,
+            sorted,
             Percentile(sorted, 0.50),
             Percentile(sorted, 0.95),
+            Percentile(sorted, 0.99),
             sorted[^1],
             sorted.Length / elapsed.TotalSeconds,
             CreateProtocolEvidence(attempts, protocols, payloadBytes));
@@ -1042,17 +1073,23 @@ public sealed class LogicHostIngestPerformanceTests
     private static object CreateW4ScalingEvidence(IReadOnlyList<IngestMeasurement> measurements)
     {
         var c1 = measurements.Single(static measurement => measurement.Scenario == "W4-W1-C1");
+        var c4 = measurements.Single(static measurement => measurement.Scenario == "W4-W1-C4");
         var c8 = measurements.Single(static measurement => measurement.Scenario == "W4-W1-C8");
         return new
         {
             C1CapturesPerSecond = c1.CapturesPerSecond,
+            C4CapturesPerSecond = c4.CapturesPerSecond,
             C8CapturesPerSecond = c8.CapturesPerSecond,
+            C4ThroughputChangePercent = (c4.CapturesPerSecond / c1.CapturesPerSecond - 1) * 100,
             ThroughputChangePercent = (c8.CapturesPerSecond / c1.CapturesPerSecond - 1) * 100,
             C1P95Milliseconds = c1.P95Milliseconds,
+            C4P95Milliseconds = c4.P95Milliseconds,
             C8P95Milliseconds = c8.P95Milliseconds,
+            C4ServerErrorRetries = c4.Protocol.Http.ServerErrorRetries,
+            C4PendingReferenceRetries = c4.Protocol.Http.PendingReferenceRetries,
             C8ServerErrorRetries = c8.Protocol.Http.ServerErrorRetries,
             C8PendingReferenceRetries = c8.Protocol.Http.PendingReferenceRetries,
-            Interpretation = "C8 contention is explained by observed serializable-transaction deadlock and pending-reference retries; it is not presented as an improvement or compared with the non-equivalent v1 baseline."
+            Interpretation = "C1, C4, and C8 are all retained; reviewed baseline/candidate comparisons come from the five-trial summary rather than this within-trial scaling view."
         };
     }
 
@@ -1490,7 +1527,6 @@ public sealed class LogicHostIngestPerformanceTests
         private readonly Process _process = Process.GetCurrentProcess();
         private readonly TimeSpan _cpuStart;
         private readonly long _runtimeAllocatedStart;
-        private readonly AllocationCounterResult _allocationStart;
         private readonly RssSampler _rss;
         private bool _stopped;
 
@@ -1498,36 +1534,31 @@ public sealed class LogicHostIngestPerformanceTests
         {
             _process.Refresh();
             _cpuStart = _process.TotalProcessorTime;
-            _runtimeAllocatedStart = GC.GetTotalAllocatedBytes(precise: false);
-            _allocationStart = AllocationObserver.Snapshot();
+            _runtimeAllocatedStart = GC.GetTotalAllocatedBytes(precise: true);
             _rss = new RssSampler(_process.WorkingSet64);
         }
 
         public async Task<ResourceEvidence> StopAsync()
         {
             _stopped = true;
-            var allocationEnd = AllocationObserver.Snapshot();
-            var allocationSamples = allocationEnd.Samples - _allocationStart.Samples;
-            var allocatedBytes = allocationEnd.Bytes > _allocationStart.Bytes
-                ? allocationEnd.Bytes - _allocationStart.Bytes
-                : (long?)null;
-            var peak = await _rss.StopAsync().ConfigureAwait(false);
             _process.Refresh();
-            var runtimeAllocatedEnd = GC.GetTotalAllocatedBytes(precise: false);
-            var runtimeAllocatedDelta = runtimeAllocatedEnd > _runtimeAllocatedStart
-                ? runtimeAllocatedEnd - _runtimeAllocatedStart
-                : (long?)null;
+            var cpuMilliseconds = (_process.TotalProcessorTime - _cpuStart).TotalMilliseconds;
+            var runtimeAllocatedEnd = GC.GetTotalAllocatedBytes(precise: true);
+            var runtimeAllocatedDelta = runtimeAllocatedEnd - _runtimeAllocatedStart;
+            var rssEnd = _process.WorkingSet64;
+            var peak = Math.Max(
+                Math.Max(_rss.Initial, rssEnd),
+                await _rss.StopAsync().ConfigureAwait(false));
             return new(
-                (_process.TotalProcessorTime - _cpuStart).TotalMilliseconds,
-                allocatedBytes,
-                allocationSamples,
+                cpuMilliseconds,
+                runtimeAllocatedDelta,
                 _runtimeAllocatedStart,
                 runtimeAllocatedEnd,
                 runtimeAllocatedDelta,
-                "Primary allocation bytes sum process-wide System.Runtime alloc-rate EventCounter increments; supplemental runtime totals are retained and their delta is null when the total does not advance.",
+                "Monotonic process-wide GC.GetTotalAllocatedBytes(true) delta for the measured phase.",
                 _rss.Initial,
                 peak,
-                _process.WorkingSet64);
+                rssEnd);
         }
 
         public void Dispose()
@@ -1538,41 +1569,6 @@ public sealed class LogicHostIngestPerformanceTests
             }
             _rss.DisposeAsync().AsTask().GetAwaiter().GetResult();
             _process.Dispose();
-        }
-    }
-
-    private sealed class AllocationRateObserver : EventListener
-    {
-        private long _allocatedBytes;
-        private long _samples;
-        public AllocationCounterResult Snapshot()
-            => new(Interlocked.Read(ref _allocatedBytes), Interlocked.Read(ref _samples));
-
-        protected override void OnEventSourceCreated(EventSource eventSource)
-        {
-            if (eventSource.Name == "System.Runtime")
-            {
-                EnableEvents(
-                    eventSource,
-                    EventLevel.Informational,
-                    EventKeywords.All,
-                    new Dictionary<string, string?> { ["EventCounterIntervalSec"] = "0.1" });
-            }
-        }
-
-        protected override void OnEventWritten(EventWrittenEventArgs eventData)
-        {
-            if (eventData.EventName != "EventCounters"
-                || eventData.Payload is not [IDictionary<string, object?> payload, ..]
-                || !payload.TryGetValue("Name", out var name)
-                || !string.Equals(name as string, "alloc-rate", StringComparison.Ordinal)
-                || !payload.TryGetValue("Increment", out var increment)
-                || increment is null)
-            {
-                return;
-            }
-            Interlocked.Add(ref _allocatedBytes, Convert.ToInt64(increment, System.Globalization.CultureInfo.InvariantCulture));
-            Interlocked.Increment(ref _samples);
         }
     }
 
@@ -1659,6 +1655,7 @@ public sealed class LogicHostIngestPerformanceTests
     {
         public Guid RigProfileId { get; set; }
         public Guid DevicePublicId { get; set; }
+        public CaptureLocationProvenance? Location { get; set; }
     }
 
     private sealed record BacklogSnapshot(
@@ -1672,7 +1669,6 @@ public sealed class LogicHostIngestPerformanceTests
     private sealed record ResourceEvidence(
         double CpuMilliseconds,
         long? AllocatedBytes,
-        long AllocationCounterSamples,
         long RuntimeAllocationCounterStartBytes,
         long RuntimeAllocationCounterEndBytes,
         long? RuntimeAllocationCounterDeltaBytes,
@@ -1680,7 +1676,6 @@ public sealed class LogicHostIngestPerformanceTests
         long RssStartBytes,
         long RssPeakBytes,
         long RssEndBytes);
-    private sealed record AllocationCounterResult(long Bytes, long Samples);
     private sealed record HttpEvidence(
         long MultipartPosts,
         long MultipartRequestBodyBytes,
@@ -1723,8 +1718,10 @@ public sealed class LogicHostIngestPerformanceTests
     private sealed record ProtocolEvidence(HttpEvidence Http, ProtocolSnapshot Observed, string SqlWireBytes);
     private sealed record PhaseEvidence(
         double ElapsedMilliseconds,
+        IReadOnlyList<double> LatencySamplesMilliseconds,
         double MedianMilliseconds,
         double P95Milliseconds,
+        double P99Milliseconds,
         double MaximumMilliseconds,
         double OperationsPerSecond,
         ProtocolEvidence Protocol);
@@ -1734,10 +1731,12 @@ public sealed class LogicHostIngestPerformanceTests
         int Concurrency,
         int WarmupOperations,
         int MeasuredOperations,
+        double[] LatencySamplesMilliseconds,
         long PayloadBytes,
         double ElapsedMilliseconds,
         double MedianMilliseconds,
         double P95Milliseconds,
+        double P99Milliseconds,
         double MaximumMilliseconds,
         double CapturesPerSecond,
         double BytesPerSecond,
@@ -1774,7 +1773,6 @@ public sealed class LogicHostIngestPerformanceTests
         ObjectBoundarySnapshot ObservedRecoveryObjectBoundary,
         string StateInvariant);
     private sealed record CorrectnessEvidence(
-        bool Passed,
         int AcknowledgementsValidated,
         int SqlArtifacts,
         int SqlFrames,
