@@ -735,7 +735,7 @@ public sealed class LogicHostIngestPerformanceTests
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            artifacts = await db.CentralArtifacts
+            IQueryable<CentralArtifact> artifactQuery = db.CentralArtifacts
                 .Include(static artifact => artifact.Layout)
                 .Include(static artifact => artifact.Recipe)
                 .Include(static artifact => artifact.Sources)
@@ -743,7 +743,12 @@ public sealed class LogicHostIngestPerformanceTests
                 .Include(static artifact => artifact.Frame)!.ThenInclude(static frame => frame!.Timing)
                 .Include(static artifact => artifact.Frame)!.ThenInclude(static frame => frame!.Control)
                 .Include(static artifact => artifact.Frame)!.ThenInclude(static frame => frame!.Profiles)
-                .AsSplitQuery()
+                .AsSplitQuery();
+            if (typeof(CentralFrame).GetProperty("Location") is not null)
+            {
+                artifactQuery = artifactQuery.Include("Frame.Location");
+            }
+            artifacts = await artifactQuery
                 .Where(artifact => artifactIds.Contains(artifact.ArtifactId))
                 .ToListAsync().ConfigureAwait(false);
             var frameIds = artifacts.Select(static artifact => artifact.CentralFrameId).ToArray();
