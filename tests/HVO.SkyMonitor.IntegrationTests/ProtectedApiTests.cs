@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -138,6 +139,95 @@ public sealed class ProtectedApiTests
 
         Assert.IsTrue(await lifecycle.DeleteAsync(owner.Id, first.Entity.Id, CancellationToken.None).ConfigureAwait(false));
         Assert.AreEqual(HttpStatusCode.Unauthorized, await GetDetailedStatusAsync(first.PlaintextKey).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task ObservatoryReadWithMergedBearerAndApiKeyIdentitiesIsUnauthorizedAsync()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var owner = await db.Users.SingleAsync(user => user.Email == TestUsers.Operator.Email).ConfigureAwait(false);
+        var key = await scope.ServiceProvider.GetRequiredService<IApiKeyLifecycleService>().CreateAsync(
+            owner.Id,
+            owner.Email!,
+            "Merged identity test",
+            ApiKeyAccessLevel.Read,
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            CancellationToken.None).ConfigureAwait(false);
+        var token = await HttpHelpers.GetPasswordTokenAsync(
+            _client!,
+            "/connect/token",
+            TestUsers.Operator.Username,
+            TestUsers.Operator.Password,
+            TestClients.WebUI.ClientId,
+            "openid profile api.viewer").ConfigureAwait(false);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get, new Uri("/api/internal/observatories", UriKind.Relative));
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.AccessToken);
+        request.Headers.Add(ApiKeyAuthenticationOptions.HeaderName, key.PlaintextKey);
+
+        using var response = await _client!.SendAsync(request).ConfigureAwait(false);
+
+        Assert.AreEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task ObservatoryUpdateRequiresCurrentStrongEtagAsync()
+    {
+        using var ownerClient = await ArtifactRetrievalTests.CreateUserClientAsync(
+            TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
+        var request = new
+        {
+            id = (Guid?)null,
+            name = $"ETag Observatory {Guid.NewGuid():N}",
+            latitudeDegrees = 35.347,
+            longitudeDegrees = -113.878,
+            elevationMeters = 520,
+            timeZoneId = "America/Phoenix",
+            isActive = true,
+            allowedDeploymentRadiusMeters = (double?)1000
+        };
+        using var created = await ownerClient.PostAsJsonAsync(
+            new Uri("/api/internal/observatories", UriKind.Relative), request).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, created.StatusCode);
+        Assert.IsNotNull(created.Headers.ETag);
+        var body = await created.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var id = body.EnumerateObject().Single(property =>
+            property.Name.Equals("id", StringComparison.OrdinalIgnoreCase)).Value.GetGuid();
+        var update = new
+        {
+            id = (Guid?)id,
+            request.name,
+            latitudeDegrees = 35.348,
+            request.longitudeDegrees,
+            request.elevationMeters,
+            request.timeZoneId,
+            request.isActive,
+            request.allowedDeploymentRadiusMeters
+        };
+        using var missing = await ownerClient.PostAsJsonAsync(
+            new Uri("/api/internal/observatories", UriKind.Relative), update).ConfigureAwait(false);
+        Assert.AreEqual((HttpStatusCode)428, missing.StatusCode);
+        using var staleRequest = new HttpRequestMessage(
+            HttpMethod.Post, new Uri("/api/internal/observatories", UriKind.Relative))
+        {
+            Content = JsonContent.Create(update)
+        };
+        staleRequest.Headers.TryAddWithoutValidation("If-Match", $"\"{new string('A', 64)}\"");
+        using var stale = await ownerClient.SendAsync(staleRequest).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.PreconditionFailed, stale.StatusCode);
+        using var currentRequest = new HttpRequestMessage(
+            HttpMethod.Post, new Uri("/api/internal/observatories", UriKind.Relative))
+        {
+            Content = JsonContent.Create(update)
+        };
+        currentRequest.Headers.TryAddWithoutValidation("If-Match", created.Headers.ETag!.Tag);
+        using var current = await ownerClient.SendAsync(currentRequest).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, current.StatusCode);
+        Assert.AreNotEqual(created.Headers.ETag.Tag, current.Headers.ETag?.Tag);
+        using var deleted = await ownerClient.DeleteAsync(
+            new Uri($"/api/internal/observatories/{id:D}", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NoContent, deleted.StatusCode);
     }
 
     private async Task<HttpStatusCode> GetDetailedStatusAsync(string apiKey)

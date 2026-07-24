@@ -2,6 +2,7 @@ using System.Data;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.Common.Identity;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.AspNetCore.DataProtection;
@@ -19,7 +20,9 @@ public interface IDeviceBootstrapService
 public sealed record DeviceBootstrapRequest(
     string DeviceId,
     string Envelope,
-    string? Nonce = null);
+    string? Nonce = null,
+    DeploymentLocationSnapshot? DeploymentLocation = null,
+    DeploymentLocationSourceKind DeploymentLocationSourceKind = DeploymentLocationSourceKind.Unspecified);
 
 public sealed record DeviceBootstrapResult(
     Guid RegistrationId,
@@ -45,6 +48,7 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
     private readonly ILogger<DeviceBootstrapService> logger;
     private readonly CentralIdentityOptions centralIdentityOptions;
     private readonly DeviceBootstrapSecretsOptions bootstrapOptions;
+    private readonly IDeploymentLocationAuthorityService deploymentLocationAuthority;
 
     public DeviceBootstrapService(
         ApplicationDbContext dbContext,
@@ -52,7 +56,8 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
         IDataProtectionProvider dataProtectionProvider,
         ILogger<DeviceBootstrapService> logger,
         IOptions<CentralIdentityOptions> centralIdentityOptions,
-        IOptions<DeviceBootstrapSecretsOptions> bootstrapOptions)
+        IOptions<DeviceBootstrapSecretsOptions> bootstrapOptions,
+        IDeploymentLocationAuthorityService deploymentLocationAuthority)
     {
         this.dbContext = dbContext;
         this.timeProvider = timeProvider;
@@ -60,6 +65,7 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
         this.logger = logger;
         this.centralIdentityOptions = centralIdentityOptions.Value;
         this.bootstrapOptions = bootstrapOptions.Value;
+        this.deploymentLocationAuthority = deploymentLocationAuthority;
     }
 
     public async Task<DeviceBootstrapResult> BootstrapAsync(DeviceBootstrapRequest request, CancellationToken cancellationToken = default)
@@ -86,10 +92,9 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
                 WHERE [Id] = {envelope.ObservatoryId}
                 """)
             : dbContext.Observatories.Where(observatory => observatory.Id == envelope.ObservatoryId);
-        var observatoryIsActive = await observatoryQuery
-            .AnyAsync(observatory => observatory.IsActive, cancellationToken)
-            .ConfigureAwait(false);
-        if (!observatoryIsActive)
+        var observatory = await observatoryQuery
+            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (observatory is not { IsActive: true })
         {
             throw new DeviceRegistrationException("Observatory is not active.");
         }
@@ -124,6 +129,46 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
             throw new DeviceRegistrationException("Registration token is invalid or has already been used.");
         }
 
+        var observatoryLocation = await ObservatoryLocationAuthority.EnsureCurrentVersionAsync(
+            dbContext,
+            observatory,
+            now,
+            registration.OwnerUserId,
+            cancellationToken).ConfigureAwait(false);
+        if (string.Equals(envelope.EnvelopeVersion, "v2", StringComparison.Ordinal) &&
+            (envelope.ObservatoryLocationVersion != observatoryLocation.Version ||
+             !string.Equals(
+                 envelope.ObservatoryLocationCanonicalSha256,
+                 observatoryLocation.CanonicalSha256,
+                 StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new DeviceRegistrationException(
+                "The Observatory location changed after envelope issuance. Restart registration.");
+        }
+        if (string.Equals(envelope.EnvelopeVersion, "v2", StringComparison.Ordinal)
+            && request.DeploymentLocation is null)
+        {
+            throw new DeviceRegistrationException("A v2 registration requires the protected deployment location.");
+        }
+        var supportsDeploymentLocation = !string.Equals(
+            envelope.EnvelopeVersion, "v1", StringComparison.Ordinal);
+        if (supportsDeploymentLocation && request.DeploymentLocation is not null
+            && (!Enum.IsDefined(request.DeploymentLocationSourceKind)
+                || request.DeploymentLocationSourceKind == DeploymentLocationSourceKind.Unspecified))
+        {
+            throw new DeviceRegistrationException("Deployment location source kind is invalid.");
+        }
+
+        registration.DevicePublicId ??= envelope.DevicePublicId;
+        var locationAcknowledgment = !supportsDeploymentLocation || request.DeploymentLocation is null
+            ? null
+            : await deploymentLocationAuthority.ProposeAsync(
+                registration,
+                request.DeploymentLocation,
+                request.DeploymentLocationSourceKind,
+                $"bootstrap:{registration.DeviceId}",
+                cancellationToken).ConfigureAwait(false);
+
         var secrets = new DeviceBootstrapSecretPayload(
             registration.DevicePublicId ?? envelope.DevicePublicId,
             registration.ObservatoryId,
@@ -135,12 +180,12 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
             DefaultHeartbeatIntervalSeconds,
             now,
             now + DefaultSecretLifetime,
-            CloneCentralIdentityOptions());
+            CloneCentralIdentityOptions(),
+            locationAcknowledgment);
 
         var encryptedPayload = EncryptSecrets(envelope.DeviceKey, secrets);
 
         registration.Status = DeviceRegistrationStatus.Active;
-        registration.DevicePublicId ??= envelope.DevicePublicId;
         registration.ActivatedAtUtc = now;
         registration.LastSeenUtc = now;
         registration.ExpiresAtUtc = secrets.ExpiresAtUtc;
@@ -263,5 +308,6 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
         int HeartbeatIntervalSeconds,
         DateTimeOffset IssuedAtUtc,
         DateTimeOffset ExpiresAtUtc,
-        CentralIdentityOptions CentralIdentity);
+        CentralIdentityOptions CentralIdentity,
+        DeploymentLocationAcknowledgment? DeploymentLocationAcknowledgment = null);
 }

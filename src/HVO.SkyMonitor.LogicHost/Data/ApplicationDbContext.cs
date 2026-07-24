@@ -66,6 +66,10 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralTransientValidationOutcomeVersion> CentralTransientValidationOutcomeVersions => Set<CentralTransientValidationOutcomeVersion>();
     internal DbSet<CentralTransientSubmissionAudit> CentralTransientSubmissionAudits => Set<CentralTransientSubmissionAudit>();
     internal DbSet<Observatory> Observatories => Set<Observatory>();
+    internal DbSet<ObservatoryLocationVersion> ObservatoryLocationVersions => Set<ObservatoryLocationVersion>();
+    internal DbSet<DeviceDeploymentLocationVersion> DeviceDeploymentLocationVersions => Set<DeviceDeploymentLocationVersion>();
+    internal DbSet<DeploymentLocationResolutionAudit> DeploymentLocationResolutionAudits => Set<DeploymentLocationResolutionAudit>();
+    internal DbSet<CentralCaptureLocation> CentralCaptureLocations => Set<CentralCaptureLocation>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -92,6 +96,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         CentralTransientReprocessingConfiguration.Configure(builder);
         CentralTransientPayloadReleaseConfiguration.Configure(builder);
         builder.ApplyConfiguration(new ObservatoryConfiguration());
+        DeploymentLocationAuthorityConfiguration.Configure(builder);
 
         // Configure OpenIddict entities to use the default Entity Framework Core conventions
         builder.UseOpenIddict();

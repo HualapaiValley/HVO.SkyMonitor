@@ -1,5 +1,4 @@
 using System.ComponentModel.DataAnnotations;
-using System.Security.Claims;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
@@ -10,10 +9,10 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 
 [ApiController]
 [Route("api/internal/observatories")]
-[Authorize(Policy = AuthorizationPolicyNames.ApiKeyReadWrite)]
 internal sealed class ObservatoriesController(IObservatoryService observatoryService) : ControllerBase
 {
     [HttpGet]
+    [Authorize(Policy = AuthorizationPolicyNames.ApiKeyRead)]
     public async Task<ActionResult<IReadOnlyList<ObservatoryResponse>>> GetAsync(CancellationToken cancellationToken)
     {
         var ownerId = GetOwnerId();
@@ -28,6 +27,7 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
     }
 
     [HttpPost]
+    [Authorize(Policy = "OwnerLocationWrite")]
     public async Task<ActionResult<ObservatoryResponse>> UpsertAsync(
         ObservatoryRequest request,
         CancellationToken cancellationToken)
@@ -36,6 +36,22 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
         {
             return ValidationProblem(ModelState);
         }
+        string? expectedRepresentationSha256 = null;
+        if (request.Id.HasValue)
+        {
+            if (Request.Headers.IfMatch.Count == 0)
+            {
+                return StatusCode(StatusCodes.Status428PreconditionRequired,
+                    new ProblemDetails { Title = "If-Match is required when updating an Observatory." });
+            }
+            if (!TryParseEtag(Request.Headers.IfMatch.ToString(), out expectedRepresentationSha256))
+            {
+                return BadRequest(new ProblemDetails
+                {
+                    Title = "If-Match must contain one current strong Observatory location ETag."
+                });
+            }
+        }
 
         var ownerId = GetOwnerId();
         if (string.IsNullOrEmpty(ownerId))
@@ -43,20 +59,38 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
             return Unauthorized();
         }
 
-        var entity = await observatoryService.CreateOrUpdateAsync(new ObservatoryUpsertRequest(
-            request.Id,
-            ownerId,
-            request.Name,
-            request.LatitudeDegrees,
-            request.LongitudeDegrees,
-            request.ElevationMeters,
-            request.TimeZoneId,
-            request.IsActive), cancellationToken).ConfigureAwait(false);
+        Observatory entity;
+        try
+        {
+            entity = await observatoryService.CreateOrUpdateAsync(new ObservatoryUpsertRequest(
+                request.Id,
+                ownerId,
+                request.Name,
+                request.LatitudeDegrees,
+                request.LongitudeDegrees,
+                request.ElevationMeters,
+                request.TimeZoneId,
+                request.IsActive,
+                request.AllowedDeploymentRadiusMeters,
+                expectedRepresentationSha256), cancellationToken).ConfigureAwait(false);
+        }
+        catch (ArgumentException exception)
+        {
+            ModelState.AddModelError(nameof(request.TimeZoneId), exception.Message);
+            return ValidationProblem(ModelState);
+        }
+        catch (ObservatoryConcurrencyException)
+        {
+            return StatusCode(StatusCodes.Status412PreconditionFailed,
+                new ProblemDetails { Title = "The Observatory location ETag is stale." });
+        }
 
+        Response.Headers.ETag = CreateEtag(ObservatoryService.CreateRepresentationSha256(entity));
         return Ok(ToResponse(entity));
     }
 
     [HttpDelete("{id:guid}")]
+    [Authorize(Policy = "OwnerLocationWrite")]
     public async Task<IActionResult> DeleteAsync(Guid id, CancellationToken cancellationToken)
     {
         var ownerId = GetOwnerId();
@@ -78,6 +112,10 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
             summary.LongitudeDegrees,
             summary.ElevationMeters,
             summary.TimeZoneId,
+            summary.AllowedDeploymentRadiusMeters,
+            summary.CurrentLocationVersion,
+            summary.CurrentLocationCanonicalSha256,
+            CreateEtag(ObservatoryService.CreateRepresentationSha256(summary)),
             summary.IsActive,
             summary.CreatedAtUtc,
             summary.UpdatedAtUtc);
@@ -92,6 +130,10 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
             entity.LongitudeDegrees,
             entity.ElevationMeters,
             entity.TimeZoneId,
+            entity.AllowedDeploymentRadiusMeters,
+            entity.CurrentLocationVersion,
+            entity.CurrentLocationCanonicalSha256,
+            CreateEtag(ObservatoryService.CreateRepresentationSha256(entity)),
             entity.IsActive,
             entity.CreatedAtUtc,
             entity.UpdatedAtUtc);
@@ -99,8 +141,30 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
 
     private string? GetOwnerId()
     {
-        return User?.FindFirstValue(ClaimTypes.NameIdentifier)
-            ?? User?.Identity?.Name;
+        if (CentralArtifactCredentialAccess.GetSingleCredentialIdentity(User) is null
+            || CentralArtifactCredentialAccess.IsSystem(User))
+        {
+            return null;
+        }
+        return CentralArtifactCredentialAccess.GetOwnerId(User);
+    }
+
+    private static string CreateEtag(string sha256) => $"\"{sha256.ToUpperInvariant()}\"";
+
+    private static bool TryParseEtag(string value, out string? sha256)
+    {
+        sha256 = null;
+        if (value.Length != 66 || value[0] != '"' || value[^1] != '"')
+        {
+            return false;
+        }
+        var hash = value[1..^1];
+        if (hash.Length != 64 || hash.Any(character => !Uri.IsHexDigit(character)))
+        {
+            return false;
+        }
+        sha256 = hash;
+        return true;
     }
 
     internal sealed record ObservatoryRequest(
@@ -110,7 +174,8 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
         [Range(-180, 180)] double LongitudeDegrees,
         [Range(-1000, 10000)] double ElevationMeters,
         [Required, StringLength(128)] string TimeZoneId,
-        bool IsActive = true);
+        bool IsActive = true,
+        [Range(0, 1000000)] double? AllowedDeploymentRadiusMeters = null);
 
     internal sealed record ObservatoryResponse(
         Guid Id,
@@ -119,6 +184,10 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
         double LongitudeDegrees,
         double ElevationMeters,
         string TimeZoneId,
+        double? AllowedDeploymentRadiusMeters,
+        long? CurrentLocationVersion,
+        string? CurrentLocationCanonicalSha256,
+        string ETag,
         bool IsActive,
         DateTimeOffset CreatedAtUtc,
         DateTimeOffset? UpdatedAtUtc);

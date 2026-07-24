@@ -366,6 +366,564 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
+    public async Task MultipartIngestV2_WithAcknowledgedLocation_PersistsAndReconstructsExactProvenance()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("location-resolved-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var location = await SeedAcknowledgedDeploymentLocationAsync(registrationId).ConfigureAwait(false);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(
+            deviceId, rig, payload, 170, location: location, capturedAtUtc: DateTimeOffset.UtcNow);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var db = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var artifact = await db.CentralArtifacts
+            .Include(item => item.Layout)
+            .Include(item => item.Recipe)
+            .Include(item => item.Sources)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Timing)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Control)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
+            .AsSplitQuery()
+            .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+            .ConfigureAwait(false);
+        artifact.Frame!.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.ReportedResolved);
+        artifact.Frame.Location!.DeviceDeploymentLocationVersionId.Should().NotBeNull();
+        var persistedDescriptor = CentralReconstructionDescriptorFactory.Create(artifact.Frame, artifact);
+        persistedDescriptor.Location.Should().Be(location);
+        var compatibility = CentralDerivativeWindowCompatibility.CreateSnapshot(persistedDescriptor);
+        CentralDerivativeWindowCompatibility.CreateSnapshot(persistedDescriptor).Sha256.Should().Be(compatibility.Sha256);
+        CentralDerivativeWindowCompatibility.CreateSnapshot(persistedDescriptor with
+        {
+            Location = location with { Version = location.Version + 1 }
+        }).Sha256.Should().NotBe(compatibility.Sha256);
+        CentralDerivativeWindowCompatibility.CreateSnapshot(persistedDescriptor with { Location = null }).Sha256
+            .Should().NotBe(compatibility.Sha256);
+        var annotation = await db.CentralDerivativeJobs.SingleAsync(job =>
+            job.SourceCentralArtifactId == artifact.Id && job.RecipeName == BuiltInProcessingRecipes.Annotation)
+            .ConfigureAwait(false);
+        annotation.Status.Should().NotBe(CentralDerivativeJobStatus.Quarantined);
+    }
+
+    [TestMethod]
+    public async Task MultipartIngestV2_WithUnknownLocation_QuarantinesOnlyLocationDependentWork()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("location-unresolved-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        await EnsureObservatoryLocationVersionAsync(registrationId).ConfigureAwait(false);
+        var location = new CaptureLocationProvenance(
+            "unreported-deployment", 1, "gps-receiver", 4, DateTimeOffset.UnixEpoch.AddDays(-1), null);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(
+            deviceId, rig, payload, 171, location: location, capturedAtUtc: DateTimeOffset.UtcNow);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var db = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var artifact = await db.CentralArtifacts
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
+            .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+            .ConfigureAwait(false);
+        artifact.Frame!.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.ReportedUnresolved);
+        artifact.Frame.Location!.DeviceDeploymentLocationVersionId.Should().BeNull();
+        var jobs = await db.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == artifact.Id)
+            .ToListAsync().ConfigureAwait(false);
+        var quarantinedAnnotation = jobs.Single(job => job.RecipeName == BuiltInProcessingRecipes.Annotation);
+        quarantinedAnnotation.Should().Match<CentralDerivativeJob>(job =>
+            job.Status == CentralDerivativeJobStatus.Quarantined
+            && job.StateReasonCode == CentralDerivativeJobScheduler.LocationUnresolvedReason);
+        quarantinedAnnotation.CompletedAtUtc.Should().BeNull();
+        quarantinedAnnotation.ResolutionCompletedAtUtc.Should().NotBeNull();
+        jobs.Where(job => job.RecipeName != BuiltInProcessingRecipes.Annotation)
+            .Should().OnlyContain(job => job.Status != CentralDerivativeJobStatus.Quarantined);
+
+        var registration = await db.DeviceRegistrations.Include(item => item.Observatory)
+            .SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
+        var observatory = registration.Observatory!;
+        var deployment = DeploymentLocationSnapshot.Create(
+            location.LocationId,
+            location.Version,
+            location.Source,
+            location.HorizontalAccuracyMeters,
+            location.EffectiveFromUtc,
+            location.EffectiveUntilUtc,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId);
+        var authority = assertionScope.ServiceProvider.GetRequiredService<IDeploymentLocationAuthorityService>();
+        var acknowledgment = await authority.ProposeAsync(
+            registration,
+            deployment,
+            DeploymentLocationSourceKind.Inherited,
+            "integration-test").ConfigureAwait(false);
+        acknowledgment.Status.Should().Be(DeploymentLocationResolutionStatus.Acknowledged);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        db.ChangeTracker.Clear();
+        var reconciledFrame = await db.CentralFrames.Include(item => item.Location)
+            .SingleAsync(item => item.Id == artifact.CentralFrameId).ConfigureAwait(false);
+        var restoredAnnotation = await db.CentralDerivativeJobs.SingleAsync(job =>
+            job.SourceCentralArtifactId == artifact.Id && job.RecipeName == BuiltInProcessingRecipes.Annotation)
+            .ConfigureAwait(false);
+        reconciledFrame.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.ReportedResolved);
+        reconciledFrame.Location!.DeviceDeploymentLocationVersionId.Should().NotBeNull();
+        restoredAnnotation.Status.Should().Be(CentralDerivativeJobStatus.Pending);
+        restoredAnnotation.AvailableAtUtc.Should().NotBeNull();
+        restoredAnnotation.StateReasonCode.Should().BeNull();
+        restoredAnnotation.CompletedAtUtc.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task LocationMismatch_QuarantinesLeasedAttemptAndRestorationCreatesNewAttempt()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("location-leased-annotation-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var location = await SeedAcknowledgedDeploymentLocationAsync(registrationId).ConfigureAwait(false);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(
+            deviceId, rig, payload, 174, location: location, capturedAtUtc: DateTimeOffset.UtcNow);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        Guid annotationJobId;
+        Guid devicePublicId;
+        await using (var setupScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var source = await db.CentralArtifacts.SingleAsync(item =>
+                item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
+            devicePublicId = source.DevicePublicId!.Value;
+            var annotation = await db.CentralDerivativeJobs.SingleAsync(item =>
+                item.SourceCentralArtifactId == source.Id
+                && item.RecipeName == BuiltInProcessingRecipes.Annotation).ConfigureAwait(false);
+            annotationJobId = annotation.Id;
+            await db.CentralDerivativeJobs.Where(item => item.Id != annotationJobId
+                    && (item.Status == CentralDerivativeJobStatus.Pending
+                        || item.Status == CentralDerivativeJobStatus.RetryableFailure))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(item => item.AvailableAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+        }
+
+        CentralDerivativeJobLease lease;
+        await using (var claimScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            lease = (await claimScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                .ClaimNextAsync("location-lease-worker", TimeSpan.FromMinutes(2), CancellationToken.None)
+                .ConfigureAwait(false))!;
+            lease.JobId.Should().Be(annotationJobId);
+            lease.AttemptCount.Should().Be(1);
+        }
+
+        await using (var quarantineScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = quarantineScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var artifact = await db.CentralArtifacts
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
+                .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+                .ConfigureAwait(false);
+            artifact.Frame!.LocationEvidenceState = CentralCaptureLocationEvidenceState.Mismatch;
+            await quarantineScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>()
+                .EnsureRequiredJobsAsync(artifact, DateTimeOffset.UtcNow, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            var job = await db.CentralDerivativeJobs.SingleAsync(item => item.Id == annotationJobId)
+                .ConfigureAwait(false);
+            var attempt = await db.CentralDerivativeJobAttempts.SingleAsync(item =>
+                item.CentralDerivativeJobId == annotationJobId && item.AttemptNumber == 1).ConfigureAwait(false);
+            job.Status.Should().Be(CentralDerivativeJobStatus.Quarantined);
+            job.LeaseToken.Should().BeNull();
+            job.CompletedAtUtc.Should().BeNull();
+            attempt.Outcome.Should().Be(CentralDerivativeAttemptOutcome.Quarantined);
+            attempt.ReasonCode.Should().Be(CentralDerivativeJobScheduler.LocationMismatchReason);
+            attempt.EndedAtUtc.Should().NotBeNull();
+        }
+
+        await using (var staleScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var jobs = staleScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+            Func<Task> staleCompletion = () => jobs.CompleteWithoutArtifactAsync(
+                lease.JobId, lease.LeaseToken, "stale-worker", CancellationToken.None);
+            await staleCompletion.Should().ThrowAsync<CentralDerivativeJobStateException>();
+        }
+
+        await using (var restoreScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = restoreScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var artifact = await db.CentralArtifacts
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
+                .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+                .ConfigureAwait(false);
+            artifact.Frame!.LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved;
+            await restoreScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>()
+                .EnsureRequiredJobsAsync(artifact, DateTimeOffset.UtcNow, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        await using (var reclaimScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var replacement = await reclaimScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                .ClaimNextAsync("location-retry-worker", TimeSpan.FromMinutes(2), CancellationToken.None)
+                .ConfigureAwait(false);
+            replacement.Should().NotBeNull();
+            replacement!.JobId.Should().Be(annotationJobId);
+            replacement.AttemptCount.Should().Be(2);
+            replacement.SourceDevicePublicId.Should().Be(devicePublicId);
+            await reclaimScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                .CompleteWithoutArtifactAsync(
+                    replacement.JobId,
+                    replacement.LeaseToken,
+                    "location-reconciliation-test-complete",
+                    CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task ObservatoryChange_PreservesHistoricalCaptureAndCompletedAnnotation()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("location-completed-annotation-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var location = await SeedAcknowledgedDeploymentLocationAsync(registrationId).ConfigureAwait(false);
+        var payload = new byte[] { 1, 32, 128, 255 };
+        var historicalCapturedAtUtc = DateTimeOffset.UtcNow;
+        var manifest = CreateManifestV2(
+            deviceId, rig, payload, 172, location: location, capturedAtUtc: historicalCapturedAtUtc) with
+        {
+            Scene = CreateSceneProvenance()
+        };
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var ingestResponse = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        ingestResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        Guid sourceId;
+        Guid devicePublicId;
+        await using (var schedulingScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var schedulingDb = schedulingScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var sourceIdentity = await schedulingDb.CentralArtifacts
+                .Where(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+                .Select(item => new { item.Id, item.DevicePublicId })
+                .SingleAsync().ConfigureAwait(false);
+            sourceId = sourceIdentity.Id;
+            devicePublicId = sourceIdentity.DevicePublicId!.Value;
+            await schedulingDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId != sourceId
+                    && (job.Status == CentralDerivativeJobStatus.Pending
+                        || job.Status == CentralDerivativeJobStatus.RetryableFailure))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+        }
+
+        CentralDerivativeExecutionResult? annotationExecution = null;
+        for (var index = 0; index < 3 && annotationExecution is null; index++)
+        {
+            await using var workerScope = fixture.Factory.Services.CreateAsyncScope();
+            var jobs = workerScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+            var lease = await jobs.ClaimNextAsync(
+                "location-quarantine-worker", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            lease!.SourceArtifactId.Should().Be(manifest.Descriptor.Artifact.ArtifactId);
+            var execution = await workerScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+            execution.Status.Should().Be(ProcessingOutcomeStatus.Produced);
+            if (lease.RecipeName == BuiltInProcessingRecipes.Annotation)
+            {
+                annotationExecution = execution;
+            }
+        }
+        annotationExecution.Should().NotBeNull();
+
+        DateTimeOffset completedAtUtc;
+        Guid pendingEvaluationId;
+        Guid pendingToken;
+        await using (var mismatchScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = mismatchScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var registration = await db.DeviceRegistrations.Include(item => item.Observatory)
+                .SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
+            var observatory = registration.Observatory!;
+            var service = mismatchScope.ServiceProvider.GetRequiredService<IObservatoryService>();
+            await service.CreateOrUpdateAsync(new ObservatoryUpsertRequest(
+                observatory.Id,
+                registration.OwnerUserId,
+                observatory.Name,
+                observatory.LatitudeDegrees + 0.001,
+                observatory.LongitudeDegrees,
+                observatory.ElevationMeters,
+                observatory.TimeZoneId,
+                observatory.IsActive,
+                observatory.AllowedDeploymentRadiusMeters)).ConfigureAwait(false);
+
+            var annotation = await db.CentralDerivativeJobs.SingleAsync(job =>
+                job.SourceCentralArtifactId == sourceId && job.RecipeName == BuiltInProcessingRecipes.Annotation)
+                .ConfigureAwait(false);
+            var result = await db.CentralArtifacts.SingleAsync(item => item.Id == annotation.ResultCentralArtifactId)
+                .ConfigureAwait(false);
+            annotation.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+            annotation.StateReasonCode.Should().BeNull();
+            result.StateReasonCode.Should().BeNull();
+            completedAtUtc = annotation.CompletedAtUtc!.Value;
+            var pending = await db.DeviceDeploymentLocationVersions.SingleAsync(item =>
+                item.RegistrationId == registrationId
+                && item.Status == DeploymentLocationResolutionStatus.Pending).ConfigureAwait(false);
+            pendingEvaluationId = pending.Id;
+            pendingToken = pending.ConcurrencyToken;
+        }
+
+        var delayedManifest = CreateManifestV2(
+            deviceId, rig, payload, 173, location: location, capturedAtUtc: historicalCapturedAtUtc);
+        using (var delayedResponse = await PostAsync(client, delayedManifest, payload).ConfigureAwait(false))
+        {
+            delayedResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        }
+        await using (var delayedScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var delayedFrame = await delayedScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .CentralFrames.Include(item => item.Location)!.ThenInclude(item => item!.DeploymentLocation)
+                .SingleAsync(item => item.FrameId == delayedManifest.Descriptor.Capture.CaptureId)
+                .ConfigureAwait(false);
+            delayedFrame.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.ReportedResolved);
+            delayedFrame.Location!.DeploymentLocation!.ObservatoryLocationVersionNumber.Should().Be(1);
+        }
+        var currentManifest = CreateManifestV2(
+            deviceId, rig, payload, 175, location: location, capturedAtUtc: DateTimeOffset.UtcNow);
+        using (var currentResponse = await PostAsync(client, currentManifest, payload).ConfigureAwait(false))
+        {
+            currentResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        }
+        await using (var currentScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var currentFrame = await currentScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .CentralFrames.Include(item => item.Location)!.ThenInclude(item => item!.DeploymentLocation)
+                .SingleAsync(item => item.FrameId == currentManifest.Descriptor.Capture.CaptureId)
+                .ConfigureAwait(false);
+            currentFrame.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.Mismatch);
+            currentFrame.Location!.DeploymentLocation!.ObservatoryLocationVersionNumber.Should().Be(2);
+        }
+
+        using var ownerClient = await ArtifactRetrievalTests.CreateUserClientAsync(
+            TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
+        var annotationArtifactId = annotationExecution!.ArtifactId!.Value;
+        using (var available = await ownerClient.GetAsync(new Uri(
+                   $"/api/v1.0/devices/{devicePublicId:D}/artifacts/{annotationArtifactId:D}/content",
+                   UriKind.Relative)).ConfigureAwait(false))
+        {
+            available.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+
+        await using (var resolutionScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var authority = resolutionScope.ServiceProvider.GetRequiredService<IDeploymentLocationAuthorityService>();
+            var resolved = await authority.ResolveAsync(
+                pendingEvaluationId,
+                (await resolutionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>().DeviceRegistrations
+                    .Where(item => item.Id == registrationId)
+                    .Select(item => item.OwnerUserId)
+                    .SingleAsync().ConfigureAwait(false)),
+                DeploymentLocationResolutionStatus.Acknowledged,
+                "owner-approved-current-observatory",
+                pendingToken).ConfigureAwait(false);
+            resolved.Status.Should().Be(DeploymentLocationMutationStatus.Applied);
+        }
+
+        await using (var restoredScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = restoredScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var annotation = await db.CentralDerivativeJobs.SingleAsync(job =>
+                job.SourceCentralArtifactId == sourceId && job.RecipeName == BuiltInProcessingRecipes.Annotation)
+                .ConfigureAwait(false);
+            var result = await db.CentralArtifacts.SingleAsync(item => item.Id == annotation.ResultCentralArtifactId)
+                .ConfigureAwait(false);
+            annotation.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+            annotation.CompletedAtUtc.Should().Be(completedAtUtc);
+            result.StateReasonCode.Should().BeNull();
+            var centralFrameId = await db.CentralArtifacts.Where(item => item.Id == sourceId)
+                .Select(item => item.CentralFrameId).SingleAsync().ConfigureAwait(false);
+            var frame = await db.CentralFrames.Include(item => item.Location)!.ThenInclude(item => item!.DeploymentLocation)
+                .SingleAsync(item => item.Id == centralFrameId).ConfigureAwait(false);
+            frame.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.ReportedResolved);
+            frame.Location!.DeploymentLocation!.ObservatoryLocationVersionNumber.Should().Be(1);
+            var currentFrame = await db.CentralFrames.Include(item => item.Location)
+                .SingleAsync(item => item.FrameId == currentManifest.Descriptor.Capture.CaptureId)
+                .ConfigureAwait(false);
+            currentFrame.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.ReportedResolved);
+        }
+        _ = await ReadDerivativeAsync(
+            ownerClient, devicePublicId, annotationArtifactId).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task MultipartIngestV2_WithDifferentLocationForSameFrame_RejectsCaptureFactConflict()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("location-conflict-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var captureId = Guid.NewGuid();
+        var location = new CaptureLocationProvenance(
+            "deployment-conflict", 1, "gps-receiver", 4, DateTimeOffset.UnixEpoch.AddDays(-1), null);
+        var first = CreateManifestV2(deviceId, rig, payload, 172, captureId: captureId, location: location);
+        var conflict = CreateManifestV2(
+            deviceId,
+            rig,
+            payload,
+            172,
+            role: FrameArtifactRole.Preview,
+            sourceArtifactIds: [first.Descriptor.Artifact.ArtifactId],
+            captureId: captureId,
+            location: location with { Source = "operator-edited" });
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var firstResponse = await PostAsync(client, first, payload).ConfigureAwait(false);
+        using var conflictResponse = await PostAsync(client, conflict, payload).ConfigureAwait(false);
+
+        firstResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        conflictResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [TestMethod]
+    public async Task MultipartIngestV2_AfterReassignmentFreezesDeploymentObservatoryForLateFrameArtifacts()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("location-reassignment-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var location = await SeedAcknowledgedDeploymentLocationAsync(registrationId).ConfigureAwait(false);
+        var historicalCapturedAtUtc = DateTimeOffset.UtcNow;
+        Guid historicalObservatoryId;
+        Guid reassignedObservatoryId;
+        await using (var reassignmentScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = reassignmentScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var registration = await db.DeviceRegistrations.SingleAsync(item => item.Id == registrationId)
+                .ConfigureAwait(false);
+            historicalObservatoryId = registration.ObservatoryId;
+            var current = new Observatory
+            {
+                OwnerUserId = registration.OwnerUserId,
+                Name = "Reassigned Observatory",
+                TimeZoneId = "UTC",
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                IsActive = true
+            };
+            reassignedObservatoryId = current.Id;
+            db.Observatories.Add(current);
+            registration.ObservatoryId = current.Id;
+            registration.ObservatoryName = current.Name;
+            await db.SaveChangesAsync().ConfigureAwait(false);
+        }
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var captureId = Guid.NewGuid();
+        var raw = CreateManifestV2(
+            deviceId,
+            rig,
+            payload,
+            173,
+            captureId: captureId,
+            location: location,
+            capturedAtUtc: historicalCapturedAtUtc);
+        var preview = CreateManifestV2(
+            deviceId,
+            rig,
+            payload,
+            173,
+            role: FrameArtifactRole.Preview,
+            sourceArtifactIds: [raw.Descriptor.Artifact.ArtifactId],
+            captureId: captureId,
+            location: location,
+            capturedAtUtc: historicalCapturedAtUtc);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var rawResponse = await PostAsync(client, raw, payload).ConfigureAwait(false);
+        using var previewResponse = await PostAsync(client, preview, payload).ConfigureAwait(false);
+
+        rawResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var frame = await assertionDb.CentralFrames.Include(item => item.Artifacts)
+            .SingleAsync(item => item.FrameId == captureId).ConfigureAwait(false);
+        frame.ObservatoryId.Should().Be(historicalObservatoryId);
+        frame.Artifacts.Should().HaveCount(2);
+        var restoredRegistration = await assertionDb.DeviceRegistrations.SingleAsync(item => item.Id == registrationId)
+            .ConfigureAwait(false);
+        restoredRegistration.ObservatoryId = historicalObservatoryId;
+        assertionDb.Observatories.Remove(await assertionDb.Observatories.SingleAsync(item =>
+            item.Id == reassignedObservatoryId).ConfigureAwait(false));
+        await assertionDb.SaveChangesAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task MultipartIngestV2_SameArtifactWithDifferentLocationRejectsWithoutDuplicate()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("location-artifact-replay-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var artifactId = Guid.NewGuid();
+        var captureId = Guid.NewGuid();
+        var location = new CaptureLocationProvenance(
+            "deployment-replay", 1, "gps-receiver", 4, DateTimeOffset.UnixEpoch.AddDays(-1), null);
+        var first = CreateManifestV2(
+            deviceId, rig, payload, 174, artifactId: artifactId, captureId: captureId, location: location);
+        var conflict = CreateManifestV2(
+            deviceId,
+            rig,
+            payload,
+            174,
+            artifactId: artifactId,
+            captureId: captureId,
+            location: location with { HorizontalAccuracyMeters = 5 });
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var firstResponse = await PostAsync(client, first, payload).ConfigureAwait(false);
+        using var conflictResponse = await PostAsync(client, conflict, payload).ConfigureAwait(false);
+
+        firstResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        conflictResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var db = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await db.CentralArtifacts.CountAsync(item => item.DevicePublicId != null && item.ArtifactId == artifactId)
+            .ConfigureAwait(false)).Should().Be(1);
+    }
+
+    [TestMethod]
     public async Task MultipartIngestV2_AllCentralRecipesConformToSharedExecution()
     {
         var fixture = AssemblyHooks.Fixture;
@@ -2504,9 +3062,11 @@ public sealed class ArtifactIngestTests
         Guid? artifactId = null,
         FrameArtifactRole role = FrameArtifactRole.Raw,
         IReadOnlyList<Guid>? sourceArtifactIds = null,
-        Guid? captureId = null)
+        Guid? captureId = null,
+        CaptureLocationProvenance? location = null,
+        DateTimeOffset? capturedAtUtc = null)
     {
-        var capturedAt = DateTimeOffset.UnixEpoch;
+        var capturedAt = capturedAtUtc ?? DateTimeOffset.UnixEpoch;
         var profileHash = CameraRigProfileIdentity.ComputeSha256(rig);
         var otherProfileHash = new string('A', 64);
         var descriptor = new ReconstructionDescriptor(
@@ -2527,7 +3087,10 @@ public sealed class ArtifactIngestTests
             new ArtifactDescriptor(
                 artifactId ?? Guid.NewGuid(), role, "virtual-test", "source", capturedAt.AddMilliseconds(2), sourceArtifactIds ?? [],
                 RecipeIdentityDescriptor.Create("capture-raw", "1.0.0", "raw-ingress-v1", JsonSerializer.SerializeToElement(new { normalization = "none" })),
-                "application/x-skymonitor-mono8", Convert.ToHexString(SHA256.HashData(payload))));
+                "application/x-skymonitor-mono8", Convert.ToHexString(SHA256.HashData(payload))))
+        {
+            Location = location
+        };
         return new ArtifactManifestV2("v2", descriptor, "frames/raw.bin");
     }
 
@@ -2616,6 +3179,50 @@ public sealed class ArtifactIngestTests
             EffectiveFromUtc = DateTimeOffset.UnixEpoch.AddDays(-1)
         });
         registration.CurrentRigProfileVersion = 1;
+        await db.SaveChangesAsync().ConfigureAwait(false);
+    }
+
+    private static async Task<CaptureLocationProvenance> SeedAcknowledgedDeploymentLocationAsync(Guid registrationId)
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var registration = await db.DeviceRegistrations.Include(item => item.Observatory)
+            .SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
+        var observatory = registration.Observatory!;
+        var deployment = DeploymentLocationSnapshot.Create(
+            "inherited-observatory",
+            1,
+            "observatory-fallback",
+            null,
+            DateTimeOffset.UnixEpoch.AddDays(-1),
+            null,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId);
+        var service = scope.ServiceProvider.GetRequiredService<IDeploymentLocationAuthorityService>();
+        var acknowledgment = await service.ProposeAsync(
+            registration,
+            deployment,
+            DeploymentLocationSourceKind.Inherited,
+            "integration-test").ConfigureAwait(false);
+        acknowledgment.Status.Should().Be(DeploymentLocationResolutionStatus.Acknowledged);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        return deployment.ToProvenance();
+    }
+
+    private static async Task EnsureObservatoryLocationVersionAsync(Guid registrationId)
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var registration = await db.DeviceRegistrations.Include(item => item.Observatory)
+            .SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
+        _ = await ObservatoryLocationAuthority.EnsureCurrentVersionAsync(
+            db,
+            registration.Observatory!,
+            DateTimeOffset.UtcNow,
+            "integration-test",
+            CancellationToken.None).ConfigureAwait(false);
         await db.SaveChangesAsync().ConfigureAwait(false);
     }
 

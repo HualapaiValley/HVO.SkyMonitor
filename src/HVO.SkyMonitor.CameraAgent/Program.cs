@@ -186,6 +186,8 @@ public class Program
         builder.Services.AddSingleton<IConfigureOptions<CentralIdentityOptions>, DeviceSecretsCentralIdentityConfigurator>();
         builder.Services.AddSkyMonitorApiClient(builder.Configuration);
         builder.Services.AddSingleton<IFleetHeartbeatTransport, CameraAgentFleetHeartbeatTransport>();
+        builder.Services.AddSingleton<DeploymentLocationReconciliationState>();
+        builder.Services.AddHostedService<DeploymentLocationReconciliationWorker>();
         builder.Services.AddSingleton<CameraAgentEnvironmentalObservationBridge>();
         builder.Services.AddSingleton<IEnvironmentalObservationTargetResolver>(provider =>
             provider.GetRequiredService<CameraAgentEnvironmentalObservationBridge>());
@@ -219,6 +221,8 @@ public class Program
         healthChecks.AddCheck<CaptureProcessingHealthCheck>("capture-processing", tags: ["dependency"]);
         healthChecks.AddCheck<ArtifactOutboxHealthCheck>("artifact-outbox", tags: ["dependency"]);
         healthChecks.AddCheck<FleetHeartbeatHealthCheck>("fleet-heartbeat", tags: ["dependency"]);
+        healthChecks.AddCheck<DeploymentLocationReconciliationHealthCheck>(
+            "deployment-location-reconciliation", tags: ["dependency"]);
         healthChecks.AddCheck<EnvironmentalObservationDeliveryHealthCheck>("environmental-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureAdmissionHealthCheck>("capture-admission", tags: ["dependency"]);

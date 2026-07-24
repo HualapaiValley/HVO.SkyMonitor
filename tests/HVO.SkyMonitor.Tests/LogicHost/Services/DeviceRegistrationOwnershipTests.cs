@@ -34,7 +34,11 @@ public sealed class DeviceRegistrationOwnershipTests
             missingObservatoryRegistration);
         await context.SaveChangesAsync().ConfigureAwait(false);
 
-        var observatoryService = new ObservatoryService(context, new TestTimeProvider());
+        var clock = new TestTimeProvider();
+        var observatoryService = new ObservatoryService(
+            context,
+            clock,
+            new DeploymentLocationAuthorityService(context, clock));
         var registrationService = new DeviceRegistrationReadService(context);
 
         var firstObservatories = await observatoryService.GetObservatoriesAsync("owner-1").ConfigureAwait(false);

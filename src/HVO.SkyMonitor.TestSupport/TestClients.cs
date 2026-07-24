@@ -34,7 +34,7 @@ public static class TestClients
     {
         public const string ClientId = "web-ui";
         public const string DisplayName = "Web UI Client";
-        public static readonly string[] Scopes = ["openid", "profile", "email", "api.viewer"];
+        public static readonly string[] Scopes = ["openid", "profile", "email", "api.viewer", "api.owner.write"];
         // Note: No client secret - uses PKCE for public clients
     }
 
@@ -45,7 +45,7 @@ public static class TestClients
     {
         public const string ClientId = "mobile-app";
         public const string DisplayName = "Mobile Application Client";
-        public static readonly string[] Scopes = ["openid", "profile", "email", "api.viewer", "offline_access"];
+        public static readonly string[] Scopes = ["openid", "profile", "email", "api.viewer", "api.owner.write", "offline_access"];
         // Note: No client secret - uses PKCE for public clients
     }
 }

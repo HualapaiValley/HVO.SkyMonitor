@@ -87,6 +87,71 @@ public sealed class DeploymentLocationContractTests
     }
 
     [TestMethod]
+    public void ObservatorySnapshot_CreateProducesStableValidatedIdentity()
+    {
+        var observatoryId = Guid.Parse("31d47ac0-80c0-43ca-88c0-1e5b39bc58ac");
+        var effectiveFromUtc = new DateTimeOffset(2026, 7, 24, 0, 0, 0, TimeSpan.Zero);
+        var first = ObservatoryLocationSnapshot.Create(
+            observatoryId, 1, effectiveFromUtc, 35.347, -113.878, 520, "America/Phoenix", 2500);
+        var second = ObservatoryLocationSnapshot.Create(
+            observatoryId, 1, effectiveFromUtc, 35.347, -113.878, 520, "America/Phoenix", 2500);
+
+        Assert.IsTrue(first.Validate().IsValid);
+        Assert.AreEqual(first, second);
+        Assert.AreEqual(64, first.CanonicalSha256.Length);
+        var changed = ObservatoryLocationSnapshot.Create(
+            observatoryId, 1, effectiveFromUtc, 35.347, -113.878, 520, "America/Phoenix", 2501);
+        Assert.AreNotEqual(first.CanonicalSha256, changed.CanonicalSha256);
+        Assert.AreEqual(CaptureContractReasonCodes.LocationHashMismatch,
+            (first with { AllowedDeploymentRadiusMeters = 2501 }).Validate().ReasonCode);
+    }
+
+    [TestMethod]
+    public void ObservatorySnapshot_RejectsNonPortableTimezoneAndInvalidRadius()
+    {
+        var valid = ObservatoryLocationSnapshot.Create(
+            Guid.NewGuid(), 1, DateTimeOffset.UnixEpoch, 0, 0, 0, "UTC", null);
+
+        Assert.AreEqual(CaptureContractReasonCodes.InvalidLocationTimeZone,
+            ObservatoryLocationSnapshot.Create(
+                valid.ObservatoryId, 1, DateTimeOffset.UnixEpoch, 0, 0, 0, "Pacific Standard Time", null)
+                .Validate().ReasonCode);
+        Assert.AreEqual(CaptureContractReasonCodes.InvalidLocation,
+            (valid with { AllowedDeploymentRadiusMeters = -1 }).Validate().ReasonCode);
+    }
+
+    [TestMethod]
+    public void Acknowledgment_RequiresResolutionTimeForTerminalState()
+    {
+        var evaluatedAtUtc = new DateTimeOffset(2026, 7, 24, 1, 0, 0, TimeSpan.Zero);
+        var observatory = ObservatoryLocationSnapshot.Create(
+            Guid.NewGuid(), 1, evaluatedAtUtc, 35.347, -113.878, 520, "America/Phoenix", null);
+        var pending = new DeploymentLocationAcknowledgment(
+            observatory,
+            CreateHualapai(),
+            DeploymentLocationSourceKind.Manual,
+            DeploymentLocationResolutionStatus.Pending,
+            "boundary-unconfigured",
+            evaluatedAtUtc,
+            null);
+
+        Assert.IsTrue(pending.Validate().IsValid);
+        Assert.IsFalse((pending with
+        {
+            Status = DeploymentLocationResolutionStatus.Acknowledged
+        }).Validate().IsValid);
+        Assert.IsTrue((pending with
+        {
+            Status = DeploymentLocationResolutionStatus.Acknowledged,
+            ReasonCode = "within-boundary",
+            ResolvedAtUtc = evaluatedAtUtc
+        }).Validate().IsValid);
+        Assert.IsFalse((pending with { Observatory = null! }).Validate().IsValid);
+        Assert.IsFalse((pending with { Deployment = null! }).Validate().IsValid);
+        Assert.IsFalse((pending with { Status = (DeploymentLocationResolutionStatus)99 }).Validate().IsValid);
+    }
+
+    [TestMethod]
     public void ManifestV2_LocationProvenanceIsAdditiveAndCoordinateFree()
     {
         var original = ReconstructableCaptureContractTests.CreateManifest(

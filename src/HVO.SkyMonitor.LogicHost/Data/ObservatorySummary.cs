@@ -7,6 +7,9 @@ internal sealed record ObservatorySummary(
     double LongitudeDegrees,
     double ElevationMeters,
     string TimeZoneId,
+    double? AllowedDeploymentRadiusMeters,
+    long? CurrentLocationVersion,
+    string? CurrentLocationCanonicalSha256,
     bool IsActive,
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset? UpdatedAtUtc);

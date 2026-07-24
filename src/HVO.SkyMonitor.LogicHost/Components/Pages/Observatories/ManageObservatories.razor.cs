@@ -75,7 +75,9 @@ public partial class ManageObservatories : ComponentBase
                 formModel.LongitudeDegrees,
                 formModel.ElevationMeters,
                 formModel.TimeZoneId,
-                formModel.IsActive));
+                formModel.IsActive,
+                formModel.AllowedDeploymentRadiusMeters,
+                formModel.ExpectedRepresentationSha256));
 
             statusMessage = "Observatory saved.";
             await LoadObservatoriesAsync();
@@ -111,6 +113,9 @@ public partial class ManageObservatories : ComponentBase
         formModel.LongitudeDegrees = summary.LongitudeDegrees;
         formModel.ElevationMeters = summary.ElevationMeters;
         formModel.TimeZoneId = summary.TimeZoneId;
+        formModel.AllowedDeploymentRadiusMeters = summary.AllowedDeploymentRadiusMeters;
+        formModel.ExpectedRepresentationSha256 =
+            HVO.SkyMonitor.LogicHost.Services.ObservatoryService.CreateRepresentationSha256(summary);
         formModel.IsActive = summary.IsActive;
         formTitle = "Edit Observatory";
         RequestRender();
@@ -254,7 +259,12 @@ public partial class ManageObservatories : ComponentBase
         [Required, StringLength(128)]
         public string TimeZoneId { get; set; } = "Pacific/Honolulu";
 
+        [Range(0, 1000000)]
+        public double? AllowedDeploymentRadiusMeters { get; set; }
+
         public bool IsActive { get; set; } = true;
+
+        public string? ExpectedRepresentationSha256 { get; set; }
 
         public void Reset()
         {
@@ -264,7 +274,9 @@ public partial class ManageObservatories : ComponentBase
             LongitudeDegrees = 0;
             ElevationMeters = 0;
             TimeZoneId = TimeZoneInfo.Local?.Id ?? "UTC";
+            AllowedDeploymentRadiusMeters = null;
             IsActive = true;
+            ExpectedRepresentationSha256 = null;
         }
     }
 }

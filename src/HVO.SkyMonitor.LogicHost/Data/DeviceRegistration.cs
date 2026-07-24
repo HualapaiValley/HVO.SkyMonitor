@@ -27,6 +27,12 @@ internal sealed class DeviceRegistration
 
     public string ObservatoryTimeZoneId { get; set; } = "UTC";
 
+    public long? ObservatoryLocationVersion { get; set; }
+
+    public string? ObservatoryLocationCanonicalSha256 { get; set; }
+
+    public RegistrationLocationEvidenceState LocationEvidenceState { get; set; } = RegistrationLocationEvidenceState.LegacyIncomplete;
+
     public string OwnerUserId { get; set; } = string.Empty;
 
     public string OwnerDisplayName { get; set; } = string.Empty;
@@ -65,7 +71,9 @@ internal sealed class DeviceRegistration
 
     public DateTimeOffset? CurrentRigProfileUpdatedAtUtc { get; set; }
 
-    public string EnvelopeVersion { get; set; } = "v1";
+    public string EnvelopeVersion { get; set; } = "v2";
+
+    public ICollection<DeviceDeploymentLocationVersion> DeploymentLocations { get; } = [];
 }
 
 internal enum DeviceRegistrationStatus
@@ -73,4 +81,13 @@ internal enum DeviceRegistrationStatus
     Pending = 0,
     Active = 1,
     Revoked = 2
+}
+
+internal enum RegistrationLocationEvidenceState
+{
+    LegacyIncomplete = 0,
+    ObservatoryPinned = 1,
+    DeploymentPending = 2,
+    DeploymentAcknowledged = 3,
+    DeploymentRejected = 4
 }

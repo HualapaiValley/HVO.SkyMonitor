@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using HVO.SkyMonitor.AgentCore;
@@ -20,7 +21,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.DeploymentLocation;
 public sealed class ProtectedDeploymentLocationStoreTests
 {
     private string _root = null!;
-    private IDeploymentLocationProtector _protector = null!;
+    private DataProtectionDeploymentLocationProtector _protector = null!;
     private IOptions<CameraAgentHostOptions> _options = null!;
     private MutableTimeProvider _timeProvider = null!;
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse(
@@ -34,7 +35,11 @@ public sealed class ProtectedDeploymentLocationStoreTests
         var keyDirectory = Path.Combine(_root, "keys");
         Directory.CreateDirectory(keyDirectory);
         _protector = new DataProtectionDeploymentLocationProtector(DataProtectionProvider.Create(keyDirectory));
-        _options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = Path.Combine(_root, "data") });
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = Path.Combine(_root, "data"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+        });
         _timeProvider = new MutableTimeProvider(Now);
     }
 
@@ -80,6 +85,164 @@ public sealed class ProtectedDeploymentLocationStoreTests
         Assert.AreEqual(firstProvenance, restarted.Resolve(firstProvenance, Now).ToProvenance());
         Assert.ThrowsExactly<InvalidDataException>(() =>
             restarted.Resolve(firstProvenance, Now.AddSeconds(1)));
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_PreservesLegacyProtectedHistoryWithoutInventingClassification()
+    {
+        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix") with
+        {
+            SourceKind = DeploymentLocationSourceKind.Gps
+        };
+        using (var initial = CreateStore())
+        {
+            _ = await initial.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        }
+        var statePath = Path.Combine(
+            _options.Value.RawIngressRoot, ".location", "deployment-location.v1.protected");
+        var plaintext = _protector.Unprotect(await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
+        var legacy = JsonNode.Parse(plaintext)!.AsObject();
+        legacy["schemaVersion"] = 1;
+        legacy.Remove("sourceKinds");
+        legacy["configurationSeed"]?.AsObject().Remove("sourceKind");
+        await File.WriteAllBytesAsync(
+            statePath,
+            _protector.Protect(Encoding.UTF8.GetBytes(legacy.ToJsonString()))).ConfigureAwait(false);
+        var legacyProtectedPayload = await File.ReadAllBytesAsync(statePath).ConfigureAwait(false);
+
+        using var restarted = CreateStore();
+        var active = await restarted.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(DeploymentLocationSourceKind.Unspecified, restarted.ResolveSourceKind(active));
+        CollectionAssert.AreEqual(
+            legacyProtectedPayload,
+            await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task StageAsync_DoesNotChangeLiveGeometryAndActivatesOnlyOnRestart()
+    {
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = Path.Combine(_root, "data"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
+        });
+        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        DeploymentLocationSnapshot staged;
+        using (var running = CreateStore())
+        {
+            var active = await running.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+            _timeProvider.UtcNow = Now.AddSeconds(1);
+            var configuredSuccessor = seed with
+            {
+                Source = "centrally-approved",
+                HorizontalAccuracyMeters = 2,
+                Coordinates = seed.Coordinates with { LatitudeDegrees = 35.348, ElevationMeters = 521 }
+            };
+            var stillActive = await running.InitializeAsync(
+                configuredSuccessor, CancellationToken.None).ConfigureAwait(false);
+            staged = running.Candidate!;
+
+            await running.StageAsync(staged, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(active, stillActive);
+            Assert.AreEqual(active, running.Active);
+            Assert.AreEqual(staged, running.Staged);
+        }
+
+        _timeProvider.UtcNow = Now.AddSeconds(10);
+        var successorSeed = seed with
+        {
+            Source = "centrally-approved",
+            HorizontalAccuracyMeters = 2,
+            Coordinates = seed.Coordinates with { LatitudeDegrees = 35.348, ElevationMeters = 521 }
+        };
+        using (var restarted = CreateStore())
+        {
+            var activated = await restarted.InitializeAsync(successorSeed, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(staged, activated);
+            Assert.IsNull(restarted.Staged);
+        }
+
+        using var repeatedRestart = CreateStore();
+        var retained = await repeatedRestart.InitializeAsync(successorSeed, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(staged, retained);
+
+        _timeProvider.UtcNow = Now.AddSeconds(11);
+        var newerSeed = successorSeed with
+        {
+            Coordinates = successorSeed.Coordinates with { LatitudeDegrees = 35.349 }
+        };
+        var unchangedUntilApproval = await repeatedRestart.InitializeAsync(
+            newerSeed, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(staged, unchangedUntilApproval);
+        Assert.AreEqual(3L, repeatedRestart.Candidate!.Version);
+
+        var sourceKindCorrection = newerSeed with { SourceKind = DeploymentLocationSourceKind.Gps };
+        _ = await repeatedRestart.InitializeAsync(sourceKindCorrection, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(4L, repeatedRestart.Candidate!.Version);
+        Assert.AreEqual(
+            DeploymentLocationSourceKind.Gps,
+            repeatedRestart.ResolveSourceKind(repeatedRestart.Candidate));
+        Assert.AreEqual(
+            DeploymentLocationSourceKind.Unspecified,
+            repeatedRestart.ResolveSourceKind(repeatedRestart.Active!));
+        await repeatedRestart.StageAsync(repeatedRestart.Candidate, CancellationToken.None).ConfigureAwait(false);
+        _timeProvider.UtcNow = Now.AddSeconds(12);
+        using var classificationRestart = CreateStore();
+        var classificationActive = await classificationRestart.InitializeAsync(
+            sourceKindCorrection, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(4L, classificationActive.Version);
+        Assert.AreEqual(DeploymentLocationSourceKind.Gps, classificationRestart.ResolveSourceKind(classificationActive));
+    }
+
+    [TestMethod]
+    public async Task StagedActivation_PreservesOldCaptureEvidenceUntilActualRestartBoundary()
+    {
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = Path.Combine(_root, "data"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
+        });
+        var firstSeed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        var nextSeed = firstSeed with
+        {
+            Source = "approved-successor",
+            Coordinates = firstSeed.Coordinates with { LatitudeDegrees = 35.348 }
+        };
+        DeploymentLocationSnapshot active;
+        using (var running = CreateStore())
+        {
+            active = await running.InitializeAsync(firstSeed, CancellationToken.None).ConfigureAwait(false);
+            _timeProvider.UtcNow = Now.AddSeconds(1);
+            _ = await running.InitializeAsync(nextSeed, CancellationToken.None).ConfigureAwait(false);
+            await running.StageAsync(running.Candidate!, CancellationToken.None).ConfigureAwait(false);
+        }
+        var captureTime = Now.AddSeconds(5);
+        var manifest = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        manifest = manifest with
+        {
+            Descriptor = manifest.Descriptor with
+            {
+                Timing = manifest.Descriptor.Timing with { ExposureStartedUtc = captureTime },
+                Location = active.ToProvenance()
+            }
+        };
+        var evidenceDirectory = Path.Combine(_options.Value.RawIngressRoot, "evidence");
+        Directory.CreateDirectory(evidenceDirectory);
+        await File.WriteAllBytesAsync(
+            Path.Combine(evidenceDirectory, "pre-restart-capture.json"),
+            CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
+
+        _timeProvider.UtcNow = Now.AddSeconds(10);
+        using var restarted = CreateStore();
+        var activated = await restarted.InitializeAsync(nextSeed, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(2L, activated.Version);
+        Assert.AreEqual(active, restarted.Resolve(active.ToProvenance(), captureTime));
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            restarted.Resolve(activated.ToProvenance(), captureTime));
     }
 
     [TestMethod]

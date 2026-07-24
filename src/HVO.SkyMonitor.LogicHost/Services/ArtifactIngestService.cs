@@ -6,6 +6,7 @@ using Minio.DataModel.Args;
 using Minio.Exceptions;
 using System.Data;
 using System.Data.Common;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -75,12 +76,14 @@ internal sealed record ArtifactIngestManifest(
 }
 
 /// <summary>Streams a versioned artifact into MinIO and records an idempotent metadata row.</summary>
-internal sealed class ArtifactIngestService(
+internal sealed partial class ArtifactIngestService(
     ApplicationDbContext dbContext,
     IMinioClient minio,
     TimeProvider timeProvider,
     ICentralDerivativeJobScheduler derivativeJobScheduler,
-    CentralIngestTelemetry telemetry) : IArtifactIngestService
+    CentralIngestTelemetry telemetry,
+    DeploymentLocationTelemetry deploymentLocationTelemetry,
+    ILogger<ArtifactIngestService> logger) : IArtifactIngestService
 {
     private const string Bucket = "skymonitor-artifacts";
     private const string CaptureSequenceIdentityIndex = "IX_CentralFrames_DevicePublicId_CaptureSequence";
@@ -278,6 +281,11 @@ internal sealed class ArtifactIngestService(
 
         var existingFrame = await dbContext.CentralFrames
             .Include(frame => frame.Artifacts).ThenInclude(artifact => artifact.IngestIdentities)
+            .Include(frame => frame.Timing)
+            .Include(frame => frame.Control)
+            .Include(frame => frame.Profiles)
+            .Include(frame => frame.Location)
+            .AsSplitQuery()
             .SingleOrDefaultAsync(
             frame => frame.DevicePublicId == devicePublicId && frame.FrameId == manifest.FrameId,
             cancellationToken).ConfigureAwait(false);
@@ -382,6 +390,7 @@ internal sealed class ArtifactIngestService(
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Timing)
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Control)
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
             .Include(item => item.Sources)
             .AsSplitQuery()
             .SingleAsync(item => item.ArtifactId == manifest.ArtifactId
@@ -514,6 +523,7 @@ internal sealed class ArtifactIngestService(
             .Include(item => item.Timing)
             .Include(item => item.Control)
             .Include(item => item.Profiles)
+            .Include(item => item.Location)
             .AsSplitQuery()
             .SingleOrDefaultAsync(item => item.DevicePublicId == devicePublicId && item.FrameId == manifest.FrameId, cancellationToken)
             .ConfigureAwait(false);
@@ -618,6 +628,7 @@ internal sealed class ArtifactIngestService(
                     .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
                     .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
                     .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
+                    .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Location)
                     .AsSplitQuery()
                     .SingleAsync(
                         artifact => artifact.IdempotencyKey == manifest.IdempotencyKey
@@ -697,6 +708,7 @@ internal sealed class ArtifactIngestService(
                     .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
                     .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
                     .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
+                    .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Location)
                     .AsSplitQuery()
                     .SingleOrDefaultAsync(
                         artifact => artifact.IdempotencyKey == manifest.IdempotencyKey
@@ -738,6 +750,7 @@ internal sealed class ArtifactIngestService(
                     .Include(item => item.Timing)
                     .Include(item => item.Control)
                     .Include(item => item.Profiles)
+                    .Include(item => item.Location)
                     .SingleOrDefaultAsync(
                     item => item.DevicePublicId == devicePublicId && item.FrameId == manifest.FrameId,
                     cancellationToken).ConfigureAwait(false);
@@ -914,11 +927,21 @@ internal sealed class ArtifactIngestService(
         var cycleEvidenceJson = descriptor.CycleEvidence is null ? null : JsonSerializer.Serialize(descriptor.CycleEvidence);
         if (frame.CaptureSequence.HasValue)
         {
+            if (frame.Location is null
+                && frame.LocationEvidenceState != CentralCaptureLocationEvidenceState.LegacyIncomplete)
+            {
+                await dbContext.Entry(frame).Reference(item => item.Location).LoadAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
             EnsureCaptureFactsMatch(frame, descriptor, cycleEvidenceJson);
         }
         frame.RigId = capture.RigId;
         frame.CaptureSequence = capture.CaptureSequence;
         frame.CycleEvidenceJson ??= cycleEvidenceJson;
+        if (frame.Location is null && descriptor.Location is { } location)
+        {
+            await BindCaptureLocationAsync(frame, location, cancellationToken).ConfigureAwait(false);
+        }
         frame.Timing ??= new CentralCaptureTiming
         {
             RequestedStartUtc = descriptor.Timing.RequestedStartUtc,
@@ -1007,6 +1030,7 @@ internal sealed class ArtifactIngestService(
         SetReconstructionState(artifact, rigProfile is not null);
         AddIfDetached(frame.Timing);
         AddIfDetached(frame.Control);
+        AddIfDetached(frame.Location);
         foreach (var profile in frame.Profiles)
         {
             AddIfDetached(profile);
@@ -1061,6 +1085,11 @@ internal sealed class ArtifactIngestService(
         ReconstructionDescriptor descriptor,
         string? cycleEvidenceJson)
     {
+        if (!LocationMatches(frame.Location, descriptor.Location))
+        {
+            throw new ArtifactIngestConflictException(
+                $"The frame identity is already associated with different capture-time location facts ({LocationMismatchField(frame.Location, descriptor.Location)}-{frame.LocationEvidenceState}).");
+        }
         var timing = frame.Timing;
         var control = frame.Control;
         var profiles = frame.Profiles.ToDictionary(profile => profile.Kind);
@@ -1092,6 +1121,128 @@ internal sealed class ArtifactIngestService(
             throw new ArtifactIngestConflictException("The frame identity is already associated with different capture-time facts.");
         }
     }
+
+    private async Task BindCaptureLocationAsync(
+        CentralFrame frame,
+        CaptureLocationProvenance location,
+        CancellationToken cancellationToken)
+    {
+        var started = timeProvider.GetTimestamp();
+        using var activity = DeploymentLocationTelemetry.ActivitySource.StartActivity(
+            "deployment-location.ingest-bind");
+        var localDeployments = dbContext.DeviceDeploymentLocationVersions.Local
+            .Where(item =>
+                item.RegistrationId == frame.RegistrationId
+                && item.LocationId == location.LocationId
+                && item.Version == location.Version)
+            .ToArray();
+        var deployments = await dbContext.DeviceDeploymentLocationVersions
+            .Include(item => item.ObservatoryLocationVersion)
+            .Where(item =>
+                item.RegistrationId == frame.RegistrationId
+                && item.LocationId == location.LocationId
+                && item.Version == location.Version)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        deployments.AddRange(localDeployments.Where(local => deployments.All(item => item.Id != local.Id)));
+        var deployment = deployments
+            .Where(item => item.ObservatoryLocationVersion is { } version
+                && ObservatoryLocationAuthority.AppliesAt(version, frame.CapturedAtUtc))
+            .OrderByDescending(item => item.ObservatoryLocationVersionNumber)
+            .FirstOrDefault();
+        var exactMatch = deployment is not null && LocationMatches(deployment, location);
+        frame.Location = new CentralCaptureLocation
+        {
+            CentralFrame = frame,
+            CentralFrameId = frame.Id,
+            DeviceDeploymentLocationVersionId = exactMatch ? deployment!.Id : null,
+            DeploymentLocation = exactMatch ? deployment : null,
+            LocationId = location.LocationId,
+            Version = location.Version,
+            Source = location.Source,
+            HorizontalAccuracyMeters = location.HorizontalAccuracyMeters,
+            EffectiveFromUtc = location.EffectiveFromUtc,
+            EffectiveUntilUtc = location.EffectiveUntilUtc
+        };
+        frame.LocationEvidenceState = deployment switch
+        {
+            null => CentralCaptureLocationEvidenceState.ReportedUnresolved,
+            _ when !exactMatch => CentralCaptureLocationEvidenceState.Mismatch,
+            { Status: DeploymentLocationResolutionStatus.Acknowledged } =>
+                CentralCaptureLocationEvidenceState.ReportedResolved,
+            _ => CentralCaptureLocationEvidenceState.Mismatch
+        };
+        if (exactMatch)
+        {
+            frame.ObservatoryId = deployment!.ObservatoryId;
+        }
+        var versionRelation = deployment is null ? "unknown" : exactMatch ? "exact" : "conflict";
+        var outcome = frame.LocationEvidenceState.ToString();
+        activity?.SetTag("deployment.outcome", outcome);
+        activity?.SetTag("deployment.reason", versionRelation);
+        activity?.SetTag("deployment.source_kind", deployment?.SourceKind.ToString() ?? "Unknown");
+        activity?.SetTag("deployment.version_relation", versionRelation);
+        deploymentLocationTelemetry.RecordOperation(
+            "ingest-bind", outcome, versionRelation, "capture", timeProvider.GetElapsedTime(started));
+        LocationLog.IngestBinding(logger, outcome, versionRelation, deployment?.SourceKind.ToString() ?? "Unknown");
+    }
+
+    private static partial class LocationLog
+    {
+        [LoggerMessage(7410, LogLevel.Information,
+            "Deployment location ingest binding completed: Outcome={Outcome}, VersionRelation={VersionRelation}, SourceKind={SourceKind}")]
+        internal static partial void IngestBinding(
+            ILogger logger,
+            string outcome,
+            string versionRelation,
+            string sourceKind);
+    }
+
+    private static bool LocationMatches(CentralCaptureLocation? persisted, CaptureLocationProvenance? reported)
+        => persisted is null && reported is null
+            || persisted is not null && reported is not null
+            && persisted.LocationId == reported.LocationId
+            && persisted.Version == reported.Version
+            && string.Equals(persisted.Source, reported.Source, StringComparison.Ordinal)
+            && persisted.HorizontalAccuracyMeters == reported.HorizontalAccuracyMeters
+            && persisted.EffectiveFromUtc == reported.EffectiveFromUtc
+            && persisted.EffectiveUntilUtc == reported.EffectiveUntilUtc;
+
+    private static string LocationMismatchField(
+        CentralCaptureLocation? persisted,
+        CaptureLocationProvenance? reported)
+    {
+        if (persisted is null || reported is null)
+        {
+            return persisted is null ? "persisted-missing" : "reported-missing";
+        }
+        if (persisted.LocationId != reported.LocationId)
+        {
+            return "identity";
+        }
+        if (persisted.Version != reported.Version)
+        {
+            return "version";
+        }
+        if (!string.Equals(persisted.Source, reported.Source, StringComparison.Ordinal))
+        {
+            return "source";
+        }
+        if (persisted.HorizontalAccuracyMeters != reported.HorizontalAccuracyMeters)
+        {
+            return "accuracy";
+        }
+        return persisted.EffectiveFromUtc != reported.EffectiveFromUtc ? "effective-from" : "effective-until";
+    }
+
+    private static bool LocationMatches(
+        DeviceDeploymentLocationVersion persisted,
+        CaptureLocationProvenance reported)
+        => persisted.LocationId == reported.LocationId
+            && persisted.Version == reported.Version
+            && string.Equals(persisted.Source, reported.Source, StringComparison.Ordinal)
+            && persisted.HorizontalAccuracyMeters == reported.HorizontalAccuracyMeters
+            && persisted.EffectiveFromUtc == reported.EffectiveFromUtc
+            && persisted.EffectiveUntilUtc == reported.EffectiveUntilUtc;
 
     private static bool ProfileMatches(
         Dictionary<CentralProfileKind, CentralCaptureProfile> profiles,
@@ -1566,7 +1717,6 @@ internal sealed class ArtifactIngestService(
     {
         if (frame.RegistrationId != registration.Id
             || frame.DevicePublicId != registration.DevicePublicId
-            || frame.ObservatoryId != registration.ObservatoryId
             || frame.AgentId != manifest.AgentId
             || frame.FrameId != manifest.FrameId
             || frame.CapturedAtUtc != manifest.CapturedAtUtc)
@@ -1591,6 +1741,13 @@ internal sealed class ArtifactIngestService(
         if (manifest.IsReconstructable && existing.ArtifactId == manifest.ArtifactId)
         {
             EnsureCompatibleArtifactMatches(existing, manifest);
+            if (frame.CaptureSequence.HasValue && manifest.Descriptor is { } descriptor)
+            {
+                var cycleEvidenceJson = descriptor.CycleEvidence is null
+                    ? null
+                    : JsonSerializer.Serialize(descriptor.CycleEvidence);
+                EnsureCaptureFactsMatch(frame, descriptor, cycleEvidenceJson);
+            }
         }
         else
         {

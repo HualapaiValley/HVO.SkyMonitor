@@ -61,6 +61,10 @@ public static class SkyMonitorObservabilityExtensions
         "SourceCount", "ObservationCount", "NewestReceivedAgeSeconds", "RetentionEligibleCount",
         "RetentionOldestAgeSeconds", "RetentionLastSucceededUtc"
     };
+    private static readonly HashSet<string> DeploymentLocationHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "PendingCount", "OldestAgeSeconds"
+    };
     private static readonly HashSet<string> EnvironmentalDeliveryHealthDataKeys = new(StringComparer.Ordinal)
     {
         "Availability", "PendingCount", "PendingBytes", "LeasedCount", "RetryCount", "QuarantineCount",
@@ -87,22 +91,26 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.CaptureControl");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.DeploymentLocation");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Outbox");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Ingest");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Retrieval");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.DerivativeWorker");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.EnvironmentalObservations");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.DeploymentLocation");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Transients");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureControl");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.DeploymentLocation");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Outbox");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.DerivativeWorker");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.EnvironmentalObservations");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.DeploymentLocation");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Transients");
             options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
@@ -118,12 +126,14 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.CameraAgent.CaptureControl")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.RawIngress")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.CaptureLanes")
+                    .AddMeter("HVO.SkyMonitor.CameraAgent.DeploymentLocation")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.ProcessingGraph")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Outbox")
                     .AddMeter("HVO.SkyMonitor.LogicHost.Ingest")
                     .AddMeter("HVO.SkyMonitor.LogicHost.Retrieval")
                     .AddMeter("HVO.SkyMonitor.LogicHost.DerivativeWorker")
                     .AddMeter("HVO.SkyMonitor.LogicHost.EnvironmentalObservations")
+                    .AddMeter("HVO.SkyMonitor.LogicHost.DeploymentLocation")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Transients")
                     .AddOtlpExporter());
@@ -201,6 +211,7 @@ public static class SkyMonitorObservabilityExtensions
             "central-derivative-worker" => CentralDerivativeWorkerHealthDataKeys,
             "environmental-observations" => EnvironmentalObservationHealthDataKeys,
             "environmental-delivery" => EnvironmentalDeliveryHealthDataKeys,
+            "deployment-location" => DeploymentLocationHealthDataKeys,
             _ => null
         };
         return allowedKeys is null

@@ -405,6 +405,7 @@ internal sealed class CentralTransientSubmissionService(
                 .Include(item => item.Frame)!.ThenInclude(frame => frame!.Timing)
                 .Include(item => item.Frame)!.ThenInclude(frame => frame!.Control)
                 .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
                 .Where(item => item.DevicePublicId == devicePublicId && item.Frame!.AgentId == registration.DeviceId &&
                     item.Frame.CaptureSequence == expectedSequence && item.Frame.RigId == center.Artifact.Frame!.RigId &&
                     item.Role == center.Artifact.Role)

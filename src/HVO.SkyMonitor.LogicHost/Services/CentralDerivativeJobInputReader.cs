@@ -223,6 +223,7 @@ internal sealed class CentralDerivativeJobInputReader(
                 .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
                 .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
                 .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
+                .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Location)
                 .AsSplitQuery()
                 .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
                 ?? throw new CentralDerivativeJobStateException("The derivative source or lease is stale or invalid.");
@@ -245,6 +246,7 @@ internal sealed class CentralDerivativeJobInputReader(
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Location)
             .AsSplitQuery()
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
             ?? throw new CentralDerivativeJobStateException("The derivative source or lease is stale or invalid.");

@@ -161,7 +161,8 @@ public sealed partial class Program
             .AddCheck<CentralDerivativeWorkerHealthCheck>("central-derivative-worker", tags: ["worker"])
             .AddCheck<CentralTransientLifecycleHealthCheck>("central-transient-lifecycle", tags: ["worker"])
             .AddCheck<FleetStatusHealthCheck>("fleet-status", tags: ["worker"])
-            .AddCheck<EnvironmentalObservationHealthCheck>("environmental-observations", tags: ["worker"]);
+            .AddCheck<EnvironmentalObservationHealthCheck>("environmental-observations", tags: ["worker"])
+            .AddCheck<DeploymentLocationHealthCheck>("deployment-location", tags: ["consistency"]);
         healthChecks.AddInstalledCelestialCatalogHealthCheck();
 
         if (!string.IsNullOrWhiteSpace(redisConfiguration))
@@ -213,9 +214,12 @@ public sealed partial class Program
                 metrics.AddMeter(CentralTransientLifecycleTelemetry.MeterName);
                 metrics.AddMeter(FleetStatusTelemetry.MeterName);
                 metrics.AddMeter(EnvironmentalObservationTelemetry.MeterName);
+                metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             })
-            .WithTracing(tracing => tracing.AddSource(CentralTransientLifecycleTelemetry.ActivitySourceName));
+            .WithTracing(tracing => tracing
+                .AddSource(CentralTransientLifecycleTelemetry.ActivitySourceName)
+                .AddSource(DeploymentLocationTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
@@ -372,7 +376,9 @@ public sealed partial class Program
         }
 
         builder.Services.AddSingleton<IEmailNotificationService, SmtpEmailNotificationService>();
+        builder.Services.AddSingleton<DeploymentLocationTelemetry>();
         builder.Services.AddScoped<IObservatoryService, ObservatoryService>();
+        builder.Services.AddScoped<IDeploymentLocationAuthorityService, DeploymentLocationAuthorityService>();
 
         // This host owns only the SkyMonitor database; do not point this context at shared identity databases.
         // Database - require an explicit SQL Server connection string.
@@ -448,6 +454,7 @@ public sealed partial class Program
                     "api.camera",
                     "api.frames",
                     "api.images",
+                    "api.owner.write",
                     "api.viewer",
                     "api.webhooks");
 
@@ -571,6 +578,30 @@ public sealed partial class Program
                     }
                     var accessLevel = context.User.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
                     return accessLevel == ApiKeyAccessLevel.ReadWrite.ToString();
+                });
+            });
+
+            options.AddPolicy("OwnerLocationWrite", policy =>
+            {
+                policy.AddAuthenticationSchemes(
+                    IdentityConstants.ApplicationScheme,
+                    ApiKeyAuthenticationOptions.AuthenticationScheme,
+                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                {
+                    var identity = CentralArtifactCredentialAccess.GetSingleCredentialIdentity(context.User);
+                    if (identity is null || CentralArtifactCredentialAccess.IsSystem(context.User))
+                    {
+                        return false;
+                    }
+                    if (identity.FindFirst(ApiKeyClaims.AuthenticationType) is not null)
+                    {
+                        return identity.FindFirst(ApiKeyClaims.AccessLevel)?.Value == nameof(ApiKeyAccessLevel.ReadWrite);
+                    }
+                    return !identity.Claims.Any(claim => claim.Type == "scope")
+                        || CentralArtifactCredentialAccess.HasScope(context.User, "api.owner.write")
+                        || CentralArtifactCredentialAccess.HasScope(context.User, "api.admin");
                 });
             });
 
@@ -821,6 +852,12 @@ public sealed partial class Program
                 Log.SeedingDatabase(logger);
                 await DatabaseSeeder.SeedAsync(scope.ServiceProvider, logger).ConfigureAwait(false);
                 Log.SeedingCompleted(logger);
+                var backfilledObservatories = await ObservatoryLocationBackfill.RunAsync(
+                    db,
+                    scope.ServiceProvider.GetRequiredService<TimeProvider>(),
+                    logger).ConfigureAwait(false);
+                scope.ServiceProvider.GetRequiredService<DeploymentLocationTelemetry>()
+                    .RecordBackfill(backfilledObservatories);
             }
             catch (Exception ex)
             {

@@ -1,0 +1,63 @@
+{
+  "schema": "hvo-runtime-signal-manifest-v1",
+  "issue": 170,
+  "components": [
+    "LogicHost deployment-location authority",
+    "CameraAgent central reconciliation"
+  ],
+  "meters": [
+    {
+      "name": "HVO.SkyMonitor.LogicHost.DeploymentLocation",
+      "instruments": [
+        { "name": "skymonitor.deployment_location.operations", "unit": "{operation}", "labels": ["operation", "outcome", "reason", "entity"] },
+        { "name": "skymonitor.deployment_location.duration", "unit": "ms", "labels": ["operation", "outcome", "reason", "entity"] },
+        { "name": "skymonitor.deployment_location.backfill", "unit": "{entity}", "labels": ["entity"] },
+        { "name": "skymonitor.deployment_location.pending", "unit": "{location}", "labels": [] },
+        { "name": "skymonitor.deployment_location.oldest_age", "unit": "s", "labels": [] }
+      ]
+    },
+    {
+      "name": "HVO.SkyMonitor.CameraAgent.DeploymentLocation",
+      "instruments": [
+        { "name": "skymonitor.cameraagent.deployment_location.operations", "unit": "{operation}", "labels": ["operation", "outcome"] },
+        { "name": "skymonitor.cameraagent.deployment_location.duration", "unit": "ms", "labels": ["operation", "outcome"] }
+      ]
+    }
+  ],
+  "spans": [
+    { "source": "HVO.SkyMonitor.LogicHost.DeploymentLocation", "name": "deployment-location.bootstrap.resolve", "tags": ["deployment.outcome", "deployment.reason", "deployment.source_kind", "deployment.status", "deployment.version_relation"] },
+    { "source": "HVO.SkyMonitor.LogicHost.DeploymentLocation", "name": "deployment-location.operator-resolve", "tags": ["deployment.outcome", "deployment.reason", "deployment.source_kind", "deployment.status", "deployment.version_relation"] },
+    { "source": "HVO.SkyMonitor.LogicHost.DeploymentLocation", "name": "deployment-location.reconcile", "tags": ["deployment.outcome", "deployment.reason", "deployment.source_kind", "deployment.status", "deployment.version_relation"] },
+    { "source": "HVO.SkyMonitor.LogicHost.DeploymentLocation", "name": "deployment-location.ingest-bind", "tags": ["deployment.outcome", "deployment.reason", "deployment.source_kind", "deployment.version_relation"] },
+    { "source": "HVO.SkyMonitor.CameraAgent.DeploymentLocation", "name": "deployment-location.reconcile", "tags": ["deployment.outcome", "deployment.reason", "deployment.source_kind", "deployment.version_relation"] }
+  ],
+  "events": [
+    { "eventId": 7303, "level": "Information", "fields": ["Outcome", "SourceKind", "VersionRelation"] },
+    { "eventId": 7304, "level": "Warning", "fields": ["Exception"] },
+    { "eventId": 7401, "level": "Information", "fields": ["Operation", "Outcome", "Reason", "SourceKind", "Status", "VersionRelation"] },
+    { "eventId": 7402, "level": "Information", "fields": ["Outcome", "Reason", "SourceKind", "VersionRelation", "CaptureCount"] },
+    { "eventId": 7403, "level": "Information", "fields": ["Version", "Reason"] },
+    { "eventId": 7404, "level": "Error", "fields": [] },
+    { "eventId": 7405, "level": "Information", "fields": ["ObservatoryCount"] },
+    { "eventId": 7406, "level": "Error", "fields": ["Exception", "Reason", "SourceKind", "VersionRelation"] },
+    { "eventId": 7410, "level": "Information", "fields": ["Outcome", "VersionRelation", "SourceKind"] }
+  ],
+  "health": [
+    { "host": "LogicHost", "check": "deployment-location", "healthy": "no pending evaluations or mismatches and persistence invariants hold", "degraded": "pending evaluations or mismatches", "unhealthy": "persistence invariant or store failure" },
+    { "host": "CameraAgent", "check": "deployment-location-reconciliation", "healthy": "central integration disabled or last outcome acknowledged", "degraded": "not attempted, pending, rejected, restart required, or offline" }
+  ],
+  "sqlInvariants": [
+    "exactly one unsuperseded ObservatoryLocationVersion per Observatory",
+    "resolved frames reference an acknowledged current evaluation with exact coordinate-free provenance",
+    "deployment evaluation identity is unique per registration, location, deployment version, and Observatory version"
+  ],
+  "privacy": {
+    "forbiddenInMetricAndSpanValues": ["coordinates", "elevation", "timezone", "canonical hash", "location ID", "owner text", "device ID"],
+    "boundedValues": ["operation", "outcome", "reason code", "source kind", "status", "version relation", "entity kind"]
+  },
+  "validation": {
+    "unit": "dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj --filter FullyQualifiedName~DeploymentLocationTelemetryTests",
+    "edge": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --filter FullyQualifiedName~DeploymentLocationReconciliationWorkerTests",
+    "integration": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --filter FullyQualifiedName~ArtifactIngestTests.ObservatoryChange_QuarantinesCompletedAnnotationUntilCurrentEvaluationIsResolved"
+  }
+}

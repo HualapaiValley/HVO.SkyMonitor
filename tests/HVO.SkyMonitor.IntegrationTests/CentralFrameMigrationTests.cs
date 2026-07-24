@@ -56,8 +56,30 @@ public sealed class CentralFrameMigrationTests
                 DeviceKeyHash = DeviceRegistrationService.ComputeSha256("migration-key")
             };
             var frameId = Guid.NewGuid();
-            db.Observatories.Add(observatory);
-            db.DeviceRegistrations.Add(registration);
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO [Observatories]
+                    ([Id], [OwnerUserId], [Name], [LatitudeDegrees], [LongitudeDegrees], [ElevationMeters],
+                     [TimeZoneId], [CreatedAtUtc], [UpdatedAtUtc], [IsActive])
+                VALUES
+                    ({observatory.Id}, {observatory.OwnerUserId}, {observatory.Name}, {observatory.LatitudeDegrees},
+                     {observatory.LongitudeDegrees}, {observatory.ElevationMeters}, {observatory.TimeZoneId},
+                     {observatory.CreatedAtUtc}, NULL, {observatory.IsActive});
+
+                INSERT INTO [DeviceRegistrations]
+                    ([Id], [DeviceId], [ObservatoryId], [FriendlyName], [ObservatoryName],
+                     [ObservatoryLatitudeDegrees], [ObservatoryLongitudeDegrees], [ObservatoryElevationMeters],
+                     [ObservatoryTimeZoneId], [OwnerUserId], [OwnerDisplayName], [OwnerConfirmationMethod],
+                     [Status], [VerificationCodeHash], [DevicePublicId], [DeviceKeyHash], [IssuedAtUtc])
+                VALUES
+                    ({registration.Id}, {registration.DeviceId}, {registration.ObservatoryId},
+                     {registration.FriendlyName}, {registration.ObservatoryName},
+                     {registration.ObservatoryLatitudeDegrees}, {registration.ObservatoryLongitudeDegrees},
+                     {registration.ObservatoryElevationMeters}, {registration.ObservatoryTimeZoneId},
+                     {registration.OwnerUserId}, {registration.OwnerDisplayName},
+                     {registration.OwnerConfirmationMethod}, {registration.Status.ToString()},
+                     {registration.VerificationCodeHash}, {registration.DevicePublicId},
+                     {registration.DeviceKeyHash}, {registration.IssuedAtUtc});
+                """).ConfigureAwait(false);
             var duplicateArtifactId = Guid.NewGuid();
             var duplicateA = CreateCompleteUpload(
                 registration, Guid.NewGuid(), "Raw", "raw-v1", "minio://artifacts/duplicate-a.bin");

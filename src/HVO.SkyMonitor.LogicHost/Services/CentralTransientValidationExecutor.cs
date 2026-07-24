@@ -362,6 +362,7 @@ internal sealed partial class CentralTransientValidationExecutor(
             .Include(item => item.Frame)!.ThenInclude(item => item!.Timing)
             .Include(item => item.Frame)!.ThenInclude(item => item!.Control)
             .Include(item => item.Frame)!.ThenInclude(item => item!.Profiles)
+            .Include(item => item.Frame)!.ThenInclude(item => item!.Location)
             .AsSplitQuery()
             .ToDictionaryAsync(item => item.Id, cancellationToken).ConfigureAwait(false);
         var matchesByCandidate = new Dictionary<Guid, List<PriorEvent>>();

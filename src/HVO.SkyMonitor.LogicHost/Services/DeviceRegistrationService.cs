@@ -64,33 +64,41 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
                 WHERE [Id] = {request.ObservatoryId}
                 """)
             : dbContext.Observatories.Where(observatory => observatory.Id == request.ObservatoryId);
-        var observatory = await observatoryQuery
-            .Select(o => new ObservatorySnapshot(
-                o.Id,
-                o.OwnerUserId,
-                o.Name,
-                o.LatitudeDegrees,
-                o.LongitudeDegrees,
-                o.ElevationMeters,
-                o.TimeZoneId,
-                o.IsActive))
+        var observatoryEntity = await observatoryQuery
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false)
             ?? throw new DeviceRegistrationException(
                 "Device registration not found or access denied.",
                 DeviceRegistrationException.NotFoundReasonCode);
 
-        if (!string.Equals(observatory.OwnerUserId, request.OwnerUserId, StringComparison.Ordinal))
+        if (!string.Equals(observatoryEntity.OwnerUserId, request.OwnerUserId, StringComparison.Ordinal))
         {
             throw new DeviceRegistrationException(
                 "Device registration not found or access denied.",
                 DeviceRegistrationException.NotFoundReasonCode);
         }
 
-        if (!observatory.IsActive)
+        if (!observatoryEntity.IsActive)
         {
             throw new InvalidOperationException("Observatory must be active to register devices.");
         }
+        var observatoryLocation = await ObservatoryLocationAuthority.EnsureCurrentVersionAsync(
+            dbContext,
+            observatoryEntity,
+            now,
+            request.OwnerUserId,
+            cancellationToken).ConfigureAwait(false);
+        var observatory = new ObservatorySnapshot(
+            observatoryEntity.Id,
+            observatoryEntity.OwnerUserId,
+            observatoryEntity.Name,
+            observatoryEntity.LatitudeDegrees,
+            observatoryEntity.LongitudeDegrees,
+            observatoryEntity.ElevationMeters,
+            observatoryEntity.TimeZoneId,
+            observatoryEntity.IsActive,
+            observatoryLocation.Version,
+            observatoryLocation.CanonicalSha256);
 
         IQueryable<DeviceRegistration> registrationQuery = isRelational
             ? dbContext.DeviceRegistrations.FromSqlInterpolated($"""
@@ -217,6 +225,10 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
         registration.ObservatoryLongitudeDegrees = observatory.LongitudeDegrees;
         registration.ObservatoryElevationMeters = observatory.ElevationMeters;
         registration.ObservatoryTimeZoneId = observatory.TimeZoneId;
+        registration.ObservatoryLocationVersion = observatory.LocationVersion;
+        registration.ObservatoryLocationCanonicalSha256 = observatory.LocationCanonicalSha256;
+        registration.LocationEvidenceState = RegistrationLocationEvidenceState.ObservatoryPinned;
+        registration.EnvelopeVersion = "v2";
         registration.OwnerUserId = request.OwnerUserId;
         registration.OwnerDisplayName = request.OwnerDisplayName.Trim();
         registration.OwnerEmail = string.IsNullOrWhiteSpace(request.OwnerEmail)
@@ -237,5 +249,7 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
         double LongitudeDegrees,
         double ElevationMeters,
         string TimeZoneId,
-        bool IsActive);
+        bool IsActive,
+        long LocationVersion,
+        string LocationCanonicalSha256);
 }

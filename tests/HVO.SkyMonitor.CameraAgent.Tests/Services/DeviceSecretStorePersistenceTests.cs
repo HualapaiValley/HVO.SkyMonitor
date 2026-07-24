@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
@@ -12,6 +13,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 [TestCategory("Unit")]
 public sealed class DeviceSecretStorePersistenceTests
 {
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+
     [TestMethod]
     public async Task SaveAndReload_WithPersistedKeyRing_SurvivesProviderRestart()
     {
@@ -74,6 +77,54 @@ public sealed class DeviceSecretStorePersistenceTests
                     UnixFileMode.UserRead | UnixFileMode.UserWrite,
                     File.GetUnixFileMode(Path.Combine(stateDirectory, "device-secrets.dat")));
             }
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task GetAsync_PreChangeProtectedSecretsLoadsWithNullLocationAcknowledgment()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-device-secrets-legacy-{Guid.NewGuid():N}");
+        var keyDirectory = Path.Combine(root, "keys");
+        var stateDirectory = Path.Combine(root, "state");
+        try
+        {
+            var options = Options.Create(new DeviceProvisioningOptions { StateDirectory = stateDirectory });
+            using var services = CreateProvider(keyDirectory);
+            var provider = services.GetRequiredService<IDataProtectionProvider>();
+            var protector = provider.CreateProtector("CameraAgent", "DeviceSecrets", "v1");
+            Directory.CreateDirectory(stateDirectory);
+            var legacy = new
+            {
+                devicePublicId = Guid.NewGuid(),
+                observatoryId = Guid.NewGuid(),
+                friendlyName = "Legacy camera",
+                registrationToken = "registration-token",
+                heartbeatEndpoint = "/api/device/heartbeat",
+                uploadEndpoint = "/api/device/upload",
+                heartbeatIntervalSeconds = 60,
+                issuedAtUtc = DateTimeOffset.UtcNow,
+                expiresAtUtc = DateTimeOffset.UtcNow.AddDays(1),
+                deviceKey = "device-key",
+                centralIdentity = new CentralIdentityOptions(),
+                rigProfileEndpoint = "/api/device/profile/rig"
+            };
+            await File.WriteAllTextAsync(
+                options.Value.GetSecretsPath(),
+                protector.Protect(JsonSerializer.Serialize(legacy, SerializerOptions)))
+                .ConfigureAwait(false);
+            var store = new DeviceSecretStore(provider, options, NullLogger<DeviceSecretStore>.Instance);
+
+            var loaded = await store.GetAsync().ConfigureAwait(false);
+
+            Assert.IsNotNull(loaded);
+            Assert.IsNull(loaded.DeploymentLocationAcknowledgment);
         }
         finally
         {

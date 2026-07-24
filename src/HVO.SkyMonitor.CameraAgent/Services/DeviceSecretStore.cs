@@ -3,6 +3,7 @@ using System.IO;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.Common.Identity;
+using HVO.SkyMonitor.AgentCore;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -30,7 +31,8 @@ internal sealed record DeviceSecrets(
     DateTimeOffset ExpiresAtUtc,
     string DeviceKey,
     CentralIdentityOptions CentralIdentity,
-    string RigProfileEndpoint = "/api/device/profile/rig");
+    string RigProfileEndpoint = "/api/device/profile/rig",
+    DeploymentLocationAcknowledgment? DeploymentLocationAcknowledgment = null);
 
 internal sealed class DeviceSecretStore(
     IDataProtectionProvider dataProtectionProvider,

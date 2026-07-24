@@ -35,6 +35,10 @@ internal sealed class DeviceRegistrationConfiguration : IEntityTypeConfiguration
         builder.Property(registration => registration.ObservatoryLatitudeDegrees);
         builder.Property(registration => registration.ObservatoryLongitudeDegrees);
         builder.Property(registration => registration.ObservatoryElevationMeters);
+        builder.Property(registration => registration.ObservatoryLocationCanonicalSha256).HasMaxLength(64);
+        builder.Property(registration => registration.LocationEvidenceState)
+            .HasConversion<string>().HasMaxLength(32)
+            .HasDefaultValue(RegistrationLocationEvidenceState.LegacyIncomplete).IsRequired();
 
         builder.Property(registration => registration.OwnerUserId)
             .HasMaxLength(450)
@@ -93,7 +97,7 @@ internal sealed class DeviceRegistrationConfiguration : IEntityTypeConfiguration
 
         builder.Property(registration => registration.EnvelopeVersion)
             .HasMaxLength(16)
-            .HasDefaultValue("v1")
+            .HasDefaultValue("v2")
             .IsRequired();
 
         builder.HasIndex(registration => registration.DeviceId);

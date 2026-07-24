@@ -14,22 +14,53 @@ architecture. Live sequencing and completion remain owned by
    proves the code came from that device.
 3. LogicHost issues a short-lived, Data Protection-protected envelope containing
    a unique 256-bit device key, registration token, endpoints, and the
-   configured fleet OAuth client.
+   configured fleet OAuth client. New envelopes also pin the current immutable
+   Observatory location version and hash.
 4. The operator imports the envelope at CameraAgent `/devices/bootstrap`.
    CameraAgent posts it to LogicHost `/api/device/bootstrap`, decrypts the
    AES-256-GCM response, and writes `device-secrets.dat` with ASP.NET Data
    Protection.
-5. Successful sequential redemption changes the registration from Pending to
+5. CameraAgent sends its protected deployment-location snapshot during new
+   bootstrap. LogicHost records the exact version as acknowledged or pending;
+   pending resolution never blocks activation or replaces local capture geometry.
+6. Successful sequential redemption changes the registration from Pending to
    Active, so later redemption fails. Concurrent redemption is not guarded by a
    database concurrency token and must be treated as an implementation gap. The
    device key then authenticates heartbeat, upload, and rig-profile requests.
-6. LogicHost can revoke the device at `/devices`. Device-key renewal and overlap
+7. An active CameraAgent idempotently retries its protected location version at
+   `/api/device/deployment-location`. LogicHost returns the current acknowledgment,
+   which CameraAgent stores in its protected secrets without changing the active
+   local snapshot.
+8. LogicHost can revoke the device at `/devices`. Device-key renewal and overlap
    are not currently implemented; recovery after revocation is a new
    registration.
 
 The device key is per-device. The OAuth client credentials embedded in the
 current payload are shared `DeviceBootstrap:CentralIdentity` configuration, not
 a separately generated client for every device.
+
+## Observatory and Deployment Authority
+
+An Observatory is a LogicHost-owned nominal physical site, timezone, and optional
+horizontal geodesic deployment radius. Multiple cameras may share it only when
+they are co-located within that site boundary. A geographically remote camera is
+a different Observatory. Longitude is decimal degrees east-positive in the
+closed interval `[-180, 180]`; west longitude is negative. Elevation is metadata
+and is not part of the horizontal boundary decision.
+
+Each camera has a separate immutable deployment-location history containing its
+precise coordinates, source classification, accuracy, and effective interval.
+The protected CameraAgent version is authoritative for capture geometry while
+offline. LogicHost is authoritative for Observatory membership and fallback,
+records proposals, and requires explicit owner resolution for mismatches. It
+never silently switches CameraAgent geometry.
+
+Capture manifests carry only coordinate-free deployment ID, version, source,
+accuracy, and interval. LogicHost freezes those facts and the matching historical
+Observatory membership on the central frame. Unknown or pending versions remain
+retrievable, but location-dependent central annotation work is quarantined until
+acknowledgment. Legacy frames remain explicitly incomplete and are never assigned
+current coordinates.
 
 ## CameraAgent Local Identity
 
@@ -108,3 +139,4 @@ still be treated as trusted until those controls are added.
 | [Secrets](../security/secrets.md) | Consumed secret catalog, providers, scope, rotation capability, and leakage controls. |
 | [Local development](../runbooks/local-dev.md) | Supported direct-host and application-container workflows. |
 | [Infrastructure operations](../runbooks/infra-operations.md) | Shared-service ownership, persistent mounts, reset, and recovery boundaries. |
+| [Deployment-location reconciliation](../runbooks/deployment-location-reconciliation.md) | Inspect, acknowledge, reject, and troubleshoot deployment-location proposals. |
