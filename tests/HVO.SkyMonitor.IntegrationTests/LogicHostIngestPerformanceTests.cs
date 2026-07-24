@@ -1001,6 +1001,23 @@ public sealed class LogicHostIngestPerformanceTests
             "HVO.SkyMonitor.LogicHost.Services.IDeploymentLocationAuthorityService");
         if (authorityType is not null)
         {
+            var locationAuthorityType = typeof(HVO.SkyMonitor.LogicHost.Program).Assembly.GetType(
+                "HVO.SkyMonitor.LogicHost.Services.ObservatoryLocationAuthority")
+                ?? throw new InvalidOperationException("Observatory location authority is unavailable.");
+            var ensureCurrent = locationAuthorityType.GetMethod(
+                "EnsureCurrentVersionAsync",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("Observatory location authority initialization is unavailable.");
+            var authorityInitialization = (Task)(ensureCurrent.Invoke(
+                null,
+                [
+                    db,
+                    observatory,
+                    CaptureStartUtc.AddDays(-1),
+                    "performance-harness",
+                    CancellationToken.None
+                ]) ?? throw new InvalidOperationException("Observatory authority initialization returned no task."));
+            await authorityInitialization.ConfigureAwait(false);
             var propose = authorityType.GetMethod("ProposeAsync")
                 ?? throw new InvalidOperationException("Deployment-location authority proposal method is unavailable.");
             var sourceKind = Enum.Parse(propose.GetParameters()[2].ParameterType, "Inherited");
