@@ -43,6 +43,9 @@
     <None Update="cameraagent.sample.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="cameraagent.standalone-production-smoke.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="cameraagent.asi178mc-comparison.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

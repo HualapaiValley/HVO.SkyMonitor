@@ -66,6 +66,26 @@ public sealed class DurableCaptureDistributionTests
     }
 
     [TestMethod]
+    public async Task AcceptAsync_UsesInjectedClockForLaneDefinitionAndWorkTimestamps()
+    {
+        using var fixture = CreateFixture(new CaptureDistributionOptions { UploadEnabled = true });
+        var expectedUnixMilliseconds = fixture.Time.GetUtcNow().ToUnixTimeMilliseconds();
+
+        await fixture.AcceptAsync(0).ConfigureAwait(false);
+        using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
+
+        Assert.AreEqual(expectedUnixMilliseconds, await ScalarLongAsync(
+            connection,
+            "SELECT MIN(created_unix_ms) FROM capture_lane_definitions;").ConfigureAwait(false));
+        Assert.AreEqual(expectedUnixMilliseconds, await ScalarLongAsync(
+            connection,
+            "SELECT MIN(created_unix_ms) FROM capture_lane_work;").ConfigureAwait(false));
+        Assert.AreEqual(expectedUnixMilliseconds, await ScalarLongAsync(
+            connection,
+            "SELECT MAX(updated_unix_ms) FROM capture_lane_work;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task OrderedLane_RetryBlocksLaterCaptureAndSurvivesTimeAdvance()
     {
         using var fixture = CreateFixture(new CaptureDistributionOptions());

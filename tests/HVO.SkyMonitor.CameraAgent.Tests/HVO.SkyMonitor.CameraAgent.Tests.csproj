@@ -38,6 +38,9 @@
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.sample.json" Link="cameraagent.sample.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.standalone-production-smoke.json" Link="cameraagent.standalone-production-smoke.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi174.full.json" Link="virtual-asi174.full.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

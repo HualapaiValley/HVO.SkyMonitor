@@ -3,6 +3,7 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
@@ -12,6 +13,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Http;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
@@ -23,19 +25,25 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     internal const string OwnerPassword = "StandaloneOwner!194";
 
     private readonly string _root;
-    private readonly CatalogFixtureInstallation _catalog;
+    private readonly CatalogFixtureInstallation? _catalog;
     private readonly IReadOnlyDictionary<string, string?> _overrides;
+    private readonly TimeProvider? _timeProvider;
+    private readonly ControllableLaneFaultInjector? _laneFaultInjector;
     private readonly ConcurrentQueue<OutboundHttpAttempt> _outboundAttempts = new();
     private HostInstance? _host;
 
     private StandaloneCameraAgentKestrelFixture(
         string root,
-        CatalogFixtureInstallation catalog,
-        IReadOnlyDictionary<string, string?> overrides)
+        CatalogFixtureInstallation? catalog,
+        IReadOnlyDictionary<string, string?> overrides,
+        TimeProvider? timeProvider = null,
+        ControllableLaneFaultInjector? laneFaultInjector = null)
     {
         _root = root;
         _catalog = catalog;
         _overrides = overrides;
+        _timeProvider = timeProvider;
+        _laneFaultInjector = laneFaultInjector;
     }
 
     internal Uri BaseAddress => Host.LifetimeClient.BaseAddress
@@ -45,7 +53,11 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
 
     internal string Root => _root;
 
+    internal DateTimeOffset UtcNow => (_timeProvider ?? TimeProvider.System).GetUtcNow();
+
     internal IReadOnlyCollection<OutboundHttpAttempt> OutboundAttempts => _outboundAttempts.ToArray();
+
+    internal int LaneInterruptionCount => _laneFaultInjector?.InjectedCount ?? 0;
 
     private HostInstance Host => _host
         ?? throw new InvalidOperationException("The standalone CameraAgent host is not running.");
@@ -109,11 +121,85 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         }
     }
 
+    internal static async Task<StandaloneCameraAgentKestrelFixture> CreateProductionSmokeAsync(
+        string catalogRoot,
+        DateTimeOffset fixedStartUtc)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(catalogRoot);
+        if (fixedStartUtc.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentException("The production smoke start must be UTC.", nameof(fixedStartUtc));
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-production-smoke-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var configPath = Path.Combine(root, "cameraagent.standalone-production-smoke.json");
+            await WriteProductionSmokeConfigurationAsync(configPath, root).ConfigureAwait(false);
+            var overrides = new Dictionary<string, string?>
+            {
+                ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
+                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
+                ["CameraAgent:CaptureDistribution:ShutdownDrainSeconds"] = "1",
+                ["CameraAgent:EnvironmentalDelivery:Enabled"] = "false",
+                ["CameraAgent:ConfigFilePath"] = configPath,
+                ["CameraAgent:RawIngressRoot"] = root,
+                ["CameraAgent:RawIngressReserveBytes"] = "0",
+                ["CameraAgent:TransientDetection:Mode"] = "Off",
+                ["CameraAgent:Observatory:LatitudeDegrees"] = "35.5599378",
+                ["CameraAgent:Observatory:LongitudeDegrees"] = "-113.9119818",
+                ["CameraAgent:Observatory:ElevationMeters"] = "520",
+                ["CameraAgent:Observatory:TimeZoneId"] = "America/Phoenix",
+                ["CameraAgent:DeploymentLocation:LocationId"] = "hualapai-cameraagent-standalone-full",
+                ["CameraAgent:DeploymentLocation:Source"] = "issue-171-operator-pinned-smoke-configuration",
+                ["CameraAgent:DeploymentLocation:EffectiveFromUtc"] = "2025-01-01T00:00:00Z",
+                ["LocalIdentity:AdminEmail"] = OwnerEmail,
+                ["LocalIdentity:AdminPassword"] = OwnerPassword,
+                ["LocalIdentity:DatabasePath"] = Path.Combine(root, "identity", "cameraagent_identity.db"),
+                ["LocalIdentity:CookieName"] = "CameraAgent.Standalone171.Auth",
+                ["DeviceProvisioning:StateDirectory"] = Path.Combine(root, "provisioning"),
+                ["Catalog:Root"] = Path.GetFullPath(catalogRoot),
+                ["Catalog:RequiredPackageKind"] = "Production",
+                ["CentralIdentity:ServiceUrl"] = "http://central-forbidden.invalid/",
+                ["SkyMonitor:BaseUrl"] = "http://central-forbidden.invalid",
+                ["OTEL_EXPORTER_OTLP_ENDPOINT"] = string.Empty,
+                ["Logging:LogLevel:Default"] = "Warning",
+                ["Serilog:MinimumLevel:Default"] = "Warning"
+            };
+            var timeProvider = new AnchoredTimeProvider(fixedStartUtc);
+            var laneFaultInjector = new ControllableLaneFaultInjector();
+            var fixture = new StandaloneCameraAgentKestrelFixture(
+                root,
+                null,
+                overrides,
+                timeProvider,
+                laneFaultInjector);
+            await fixture.StartHostAsync().ConfigureAwait(false);
+            return fixture;
+        }
+        catch
+        {
+            await DeleteWithRetriesAsync(root).ConfigureAwait(false);
+            throw;
+        }
+    }
+
     internal async Task RestartHostAsync()
     {
         await StopHostAsync().ConfigureAwait(false);
         await StartHostAsync().ConfigureAwait(false);
     }
+
+    internal void ArmLaneInterruption() => (_laneFaultInjector
+        ?? throw new InvalidOperationException("The standalone fixture has no controllable lane fault injector."))
+        .Arm();
+
+    internal void DisarmLaneInterruption() => (_laneFaultInjector
+        ?? throw new InvalidOperationException("The standalone fixture has no controllable lane fault injector."))
+        .Disarm();
+
+    internal Task StartStoppedHostAsync() => StartHostAsync();
 
     internal async Task StopHostAsync()
     {
@@ -168,7 +254,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopHostAsync().ConfigureAwait(false);
-        _catalog.Dispose();
+        _catalog?.Dispose();
         await DeleteWithRetriesAsync(_root).ConfigureAwait(false);
     }
 
@@ -180,7 +266,12 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
             throw new InvalidOperationException("The standalone CameraAgent host is already running.");
         }
 
-        var factory = new StandaloneWebApplicationFactory(_root, _overrides, _outboundAttempts);
+        var factory = new StandaloneWebApplicationFactory(
+            _root,
+            _overrides,
+            _outboundAttempts,
+            _timeProvider,
+            _laneFaultInjector);
         factory.UseKestrel(0);
         try
         {
@@ -264,6 +355,21 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
             configuration.ToJsonString(new JsonSerializerOptions { WriteIndented = true })).ConfigureAwait(false);
     }
 
+    private static async Task WriteProductionSmokeConfigurationAsync(string configPath, string root)
+    {
+        var configuration = JsonNode.Parse(await File.ReadAllTextAsync(
+            Path.Combine(AppContext.BaseDirectory, "cameraagent.standalone-production-smoke.json")).ConfigureAwait(false))?.AsObject()
+            ?? throw new InvalidDataException("The production smoke CameraAgent configuration is invalid.");
+        configuration["agentId"] = AgentId;
+        var localStorage = configuration["processingSteps"]!.AsArray()
+            .Select(static node => node!.AsObject())
+            .Single(static step => step["id"]!.GetValue<string>() == "LocalStorage");
+        localStorage["options"]!["storageRoot"] = root;
+        await File.WriteAllTextAsync(
+            configPath,
+            configuration.ToJsonString(new JsonSerializerOptions { WriteIndented = true })).ConfigureAwait(false);
+    }
+
     private static async Task DeleteWithRetriesAsync(string path)
     {
         SqliteConnection.ClearAllPools();
@@ -306,15 +412,26 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     private sealed class StandaloneWebApplicationFactory(
         string root,
         IReadOnlyDictionary<string, string?> overrides,
-        ConcurrentQueue<OutboundHttpAttempt> outboundAttempts) : WebApplicationFactory<Program>
+        ConcurrentQueue<OutboundHttpAttempt> outboundAttempts,
+        TimeProvider? timeProvider,
+        ControllableLaneFaultInjector? laneFaultInjector) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
-            builder.UseEnvironment("Development");
+            builder.UseEnvironment(timeProvider is null ? "Development" : "StandaloneProductionSmoke");
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(overrides));
             builder.ConfigureServices(services =>
             {
+                if (timeProvider is not null)
+                {
+                    services.AddSingleton(timeProvider);
+                }
+                if (laneFaultInjector is not null)
+                {
+                    services.RemoveAll<ICaptureLaneFaultInjector>();
+                    services.AddSingleton<ICaptureLaneFaultInjector>(laneFaultInjector);
+                }
                 services.AddDataProtection()
                     .SetApplicationName("HVO.SkyMonitor.CameraAgent.StandaloneAcceptanceTests")
                     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(root, "dataprotection")));
@@ -325,6 +442,47 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                             new RejectingOutboundHttpHandler(outboundAttempts))));
             });
         }
+    }
+
+    private sealed class ControllableLaneFaultInjector : ICaptureLaneFaultInjector
+    {
+        private volatile bool _armed;
+        private int _injectedCount;
+
+        internal int InjectedCount => Volatile.Read(ref _injectedCount);
+
+        internal void Arm() => _armed = true;
+
+        internal void Disarm() => _armed = false;
+
+        public void Inject(CaptureLaneFaultPoint point)
+        {
+            if (_armed && point == CaptureLaneFaultPoint.BeforeHandler)
+            {
+                Interlocked.Increment(ref _injectedCount);
+                throw new InvalidOperationException("Issue #171 injected a restart interruption before lane handling.");
+            }
+        }
+    }
+
+    private sealed class AnchoredTimeProvider(DateTimeOffset originUtc) : TimeProvider
+    {
+        private readonly long _originTimestamp = TimeProvider.System.GetTimestamp();
+
+        public override DateTimeOffset GetUtcNow() =>
+            originUtc + TimeProvider.System.GetElapsedTime(_originTimestamp, TimeProvider.System.GetTimestamp());
+
+        public override TimeZoneInfo LocalTimeZone => TimeZoneInfo.Utc;
+
+        public override long TimestampFrequency => TimeProvider.System.TimestampFrequency;
+
+        public override long GetTimestamp() => TimeProvider.System.GetTimestamp();
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period) => TimeProvider.System.CreateTimer(callback, state, dueTime, period);
     }
 
     private sealed class RejectingOutboundHttpHandler(

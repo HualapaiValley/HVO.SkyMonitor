@@ -120,9 +120,10 @@ public sealed class VirtualSkyCameraModule(
             _options.CatalogLicense,
             _options.CatalogSchemaVersion);
         var metadata = (catalog as ICelestialCatalogMetadataSource)?.Metadata ?? configuredMetadata;
-        var observatory = config.ResolveObservatory(request.RequestedStartUtc);
+        var sceneUtc = _options.FixedSceneUtc ?? request.RequestedStartUtc;
+        var observatory = config.ResolveObservatory(sceneUtc);
         var sceneRequest = new VisibleSceneRequest(
-            request.RequestedStartUtc,
+            sceneUtc,
             new ObserverLocation(observatory.LatitudeDegrees, observatory.LongitudeDegrees,
                 observatory.ElevationMeters),
             projection,
@@ -219,7 +220,8 @@ public sealed class VirtualSkyCameraModule(
             RigProfileHashSha256: RigProjectionContextFactory.CreateProfileHashSha256(config.Rig),
             ProjectionCalibrationVersion: config.Rig.Optics.CalibrationVersion,
             CloudScenario: cloudProvenance,
-            TransientScenario: transientProvenance);
+            TransientScenario: transientProvenance,
+            SceneUtc: sceneRequest.Utc);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sceneId"] = sceneId,
@@ -552,6 +554,8 @@ public sealed class VirtualSkyCameraModule(
 public sealed class VirtualSkyCameraModuleOptions
 {
     public int Seed { get; init; } = 2025;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? FixedSceneUtc { get; init; }
     public double MaximumMagnitude { get; init; } = 6.5;
     public int MaximumResults { get; init; } = 2000;
     public double MagnitudeZeroElectronsPerSecond { get; init; } = 1000;
@@ -592,6 +596,7 @@ public sealed class VirtualSkyCameraModuleOptions
             BackgroundElectronsPerSecond is { } background && (!double.IsFinite(background) || background < 0) ||
             !double.IsFinite(BortleThreeBackgroundElectronsPerSecond) || BortleThreeBackgroundElectronsPerSecond < 0 ||
             CatalogSourceUrl is null || !CatalogSourceUrl.IsAbsoluteUri || CatalogChecksumSha256.Length != 64 ||
+            FixedSceneUtc is { Offset: var offset } && offset != TimeSpan.Zero ||
             Asi174Sensor is null || Asi178Sensor is null ||
             (Asi174Sensor.Enabled ? 1 : 0) + (Asi178Sensor.Enabled ? 1 : 0) +
             (Asi676Enabled ? 1 : 0) > 1 ||

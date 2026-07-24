@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Run the opt-in full-resolution production-catalog standalone smoke for issue #171.
+
+set -euo pipefail
+export LC_ALL=C
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
+readonly PROCESSING_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
+readonly CAMERA_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
+readonly RESULTS="$REPO_ROOT/TestResults/issue-171/production-smoke"
+
+if [[ $# -ne 0 || -z "${HVO_CATALOG_PERF_ROOT:-}" ]]; then
+    printf 'Usage: HVO_CATALOG_PERF_ROOT=INSTALLED_PRODUCTION_CATALOG_ROOT %s\n' "${0##*/}" >&2
+    exit 2
+fi
+if [[ ! -d "$HVO_CATALOG_PERF_ROOT" ]]; then
+    printf 'Production catalog installation root does not exist: %s\n' "$HVO_CATALOG_PERF_ROOT" >&2
+    exit 2
+fi
+for command in date dotnet git jq sha256sum stat; do
+    command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
+done
+
+rm -rf -- "$RESULTS"
+mkdir -p "$RESULTS"
+export HVO_ISSUE_171_FIXED_UTC="$(date -u '+%Y-%m-%dT%H:%M:00Z')"
+export HVO_ISSUE_171_REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+export HVO_ISSUE_171_BRANCH="$(git -C "$REPO_ROOT" branch --show-current)"
+export HVO_ISSUE_171_DIRTY_SHA256="$(
+    {
+        git -C "$REPO_ROOT" status --porcelain=v1
+        git -C "$REPO_ROOT" diff --binary
+        while IFS= read -r path; do
+            sha256sum "$REPO_ROOT/$path"
+        done < <(git -C "$REPO_ROOT" ls-files --others --exclude-standard)
+    } | sha256sum | { read -r hash _; printf '%s' "$hash"; }
+)"
+export HVO_ISSUE_171_SDK_VERSION="$(dotnet --version)"
+export HVO_ISSUE_171_STORAGE_TYPE="$(stat -f -c %T "$RESULTS")"
+dotnet build "$PROJECT" --configuration Release -warnaserror
+expected_jpeg_sha256=""
+for trial in 1 2 3 4 5; do
+    export HVO_ISSUE_171_TRIAL="trial-$trial"
+    export HVO_ISSUE_171_EVIDENCE_ROOT="$RESULTS/$HVO_ISSUE_171_TRIAL/evidence"
+    started_epoch="$(date +%s)"
+    dotnet test "$PROJECT" \
+        --no-build \
+        --configuration Release \
+        --filter "FullyQualifiedName~FullResolutionProductionCatalogStandaloneSmokeTests.FullResolutionProductionCatalogStandaloneSmokeAsync" \
+        --results-directory "$RESULTS/$HVO_ISSUE_171_TRIAL" \
+        --logger "trx;LogFileName=issue-171-standalone-smoke.trx" \
+        --logger "console;verbosity=normal"
+    for evidence in issue-171-standalone-smoke.json issue-171-full-resolution-annotated.jpg; do
+        evidence_path="$HVO_ISSUE_171_EVIDENCE_ROOT/$evidence"
+        if [[ ! -s "$evidence_path" || "$(stat -c %Y "$evidence_path")" -lt "$started_epoch" ]]; then
+            printf 'Trial %s did not produce current evidence: %s\n' "$trial" "$evidence_path" >&2
+            exit 1
+        fi
+    done
+    jq --exit-status \
+        --arg trial "$HVO_ISSUE_171_TRIAL" \
+        --arg revision "$HVO_ISSUE_171_REVISION" \
+        --arg dirtySha256 "$HVO_ISSUE_171_DIRTY_SHA256" \
+        '.trial == $trial and .revision.commit == $revision and .revision.dirtyStateSha256 == $dirtySha256' \
+        "$HVO_ISSUE_171_EVIDENCE_ROOT/issue-171-standalone-smoke.json" >/dev/null
+    read -r jpeg_sha256 _ < <(sha256sum "$HVO_ISSUE_171_EVIDENCE_ROOT/issue-171-full-resolution-annotated.jpg")
+    if [[ -z "$expected_jpeg_sha256" ]]; then
+        expected_jpeg_sha256="$jpeg_sha256"
+    elif [[ "$jpeg_sha256" != "$expected_jpeg_sha256" ]]; then
+        printf 'Trial %s fixed-scene JPEG SHA-256 changed: expected %s, got %s\n' \
+            "$trial" "$expected_jpeg_sha256" "$jpeg_sha256" >&2
+        exit 1
+    fi
+done
+
+jq -s \
+    --arg revision "$HVO_ISSUE_171_REVISION" \
+    --arg branch "$HVO_ISSUE_171_BRANCH" \
+    --arg dirtySha256 "$HVO_ISSUE_171_DIRTY_SHA256" '
+    def stats: sort | { minimum: .[0], median: .[2], maximum: .[4] };
+    {
+      schemaVersion: "issue-171-five-trial-summary-v1",
+      revision: $revision,
+      branch: $branch,
+      dirtyStateSha256: $dirtySha256,
+      trialCount: length,
+      measuredCadenceCaptureCount: (map(.workload.preRestartCaptures) | unique | if length == 1 then .[0] else error("measured capture count changed across trials") end),
+      fixedSceneUtc: (map(.workload.fixedSceneUtc) | unique | if length == 1 then .[0] else error("scene UTC changed across trials") end),
+      annotatedJpegSha256: (map(.retainedAnnotatedJpeg.sha256) | unique | if length == 1 then .[0] else error("JPEG SHA-256 changed across trials") end),
+      elapsedMilliseconds: (map(.performance.elapsedMilliseconds) | stats),
+      cpuMilliseconds: (map(.performance.cpuMilliseconds) | stats),
+      allocationsBytes: (map(.performance.allocationsBytes) | stats),
+      peakObservedRssBytes: (map(.performance.peakObservedRssBytes) | stats),
+      maximumObservedLohSizeAfterGcBytes: (map(.performance.maximumObservedLohSizeAfterGcBytes) | stats),
+      storageBytesWritten: (map(.performance.processIo.storageBytesWritten) | stats),
+      retainedFilesystemBytes: (map(.performance.retainedFilesystemBytes) | stats),
+      workflowThroughputCapturesPerSecond: (map(.performance.workflowThroughputCapturesPerSecond) | stats),
+      sustainedCadenceCapturesPerSecond: (map(.performance.sustainedCadenceCapturesPerSecond) | stats),
+      maximumStartIntervalMilliseconds: (map(.performance.captureStartIntervalMilliseconds | max) | stats),
+      maximumCompletionLatencyMilliseconds: (map(.performance.completionLatencyMilliseconds | max) | stats),
+      maximumLaneBacklogCount: (map(.performance.peakLaneBacklog) | max),
+      maximumLaneBacklogBytes: (map(.performance.peakLaneBacklogBytes) | max),
+      maximumLaneBacklogAgeMilliseconds: (map(.performance.maximumObservedLaneBacklogAgeMilliseconds) | max),
+      allDrained: (all(.performance.drained)),
+      allSustainedArrivalBudget: (all(.result.sustainedArrivalBudget)),
+      minimumPendingDurableWorkBeforeRestart: (map(.restart.pendingDurableWorkBeforeRestart) | min),
+      duplicateLogicalOutputs: (map(.restart.duplicateLogicalOutputs) | add),
+      centralTrafficAttempts: (map(.centralTrafficAttempts) | add)
+    }
+    ' "$RESULTS"/trial-{1,2,3,4,5}/evidence/issue-171-standalone-smoke.json \
+    > "$RESULTS/five-trial-summary.json"
+
+for workload in W1 W2; do
+    output="$RESULTS/reference-calibration-$workload"
+    started_epoch="$(date +%s)"
+    HVO_PERF_WORKLOAD="$workload" \
+    HVO_PERF_RECIPE=reference-calibration \
+    HVO_PERF_OUTPUT="$output" \
+    HVO_PERF_REVISION="$HVO_ISSUE_171_REVISION" \
+    HVO_PERF_TRIAL=issue-171-candidate \
+        dotnet test "$PROCESSING_PROJECT" \
+        --configuration Release \
+        --filter "FullyQualifiedName~ProcessingRecipePerformanceTests.WarmSelectedRecipeEvidence" \
+        --logger "console;verbosity=normal"
+    output_file="$output/processing-performance-$workload-reference-calibration.json"
+    if [[ ! -s "$output_file" || "$(stat -c %Y "$output_file")" -lt "$started_epoch" ]]; then
+        printf '%s reference-calibration gate did not produce current evidence: %s\n' "$workload" "$output_file" >&2
+        exit 1
+    fi
+done
+
+local_graph_started_epoch="$(date +%s)"
+HVO_ISSUE96_EVIDENCE_ROOT="$RESULTS/local-graph" \
+HVO_EVIDENCE_REVISION="$HVO_ISSUE_171_REVISION" \
+    dotnet test "$CAMERA_PROJECT" \
+    --configuration Release \
+    --filter "FullyQualifiedName~CaptureProcessingGraphPerformanceTests.WritesIssue96PerformanceAndRuntimeEvidence" \
+    --logger "console;verbosity=normal"
+for evidence in local-processing-performance.json fault-recovery.json runtime-signals.json; do
+    evidence_path="$RESULTS/local-graph/$evidence"
+    if [[ ! -s "$evidence_path" || "$(stat -c %Y "$evidence_path")" -lt "$local_graph_started_epoch" ]]; then
+        printf 'Local-graph gate did not produce current evidence: %s\n' "$evidence_path" >&2
+        exit 1
+    fi
+done
