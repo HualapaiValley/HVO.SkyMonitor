@@ -1,0 +1,30 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  file/logs:
+    path: /evidence/logs.json
+  file/metrics:
+    path: /evidence/metrics.json
+  file/traces:
+    path: /evidence/traces.json
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [file/logs]
+    metrics:
+      receivers: [otlp]
+      exporters: [file/metrics]
+    traces:
+      receivers: [otlp]
+      exporters: [file/traces]
+  telemetry:
+    logs:
+      level: info

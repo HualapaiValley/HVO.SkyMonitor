@@ -132,7 +132,9 @@ location, both `CameraAgent__RawIngressRoot` and the deployment copy's
 Direct-host startup also requires an owner password and writable identity,
 provisioning, and Data Protection state. Keep the password out of source and
 provide it through environment configuration, user secrets, or the host's
-secret manager. Identity and provisioning paths are configurable as shown
+secret manager. `LocalIdentity__AdminPasswordFile` accepts an absolute path to
+a newline-terminated secret file when the password must not be placed in the
+process environment. Identity and provisioning paths are configurable as shown
 below; Data Protection keys are written to `DataProtection-Keys` below the
 CameraAgent content root, which must therefore be writable and persistent. A
 representative direct launch is:
@@ -175,3 +177,68 @@ all five trials render the same sky while durable lease and retention clocks
 remain on operational wall time. The runner also executes the 5-warmup/30-sample
 W1 and W2 reference-calibration gates and the representative durable local-graph
 gate into the same result root.
+
+## Two Isolated Standalone CameraAgents
+
+Issue #197 extends the standalone proof to concurrent Hualapai and explicitly
+synthetic Siding Spring CameraAgents. The opt-in runner builds CameraAgent once,
+uses that content-addressed image ID for both containers, and invokes
+`deploy/acceptance/issue-197/compose.yml` under two project names. Each project
+owns a separate bridge, runtime root, catalog copy, owner secret, local Identity
+database, Data Protection directory, provisioning state, cookie, AgentId, and
+OTLP file collector. LogicHost and the shared SQL Server, Redis, MinIO, and
+Mailpit services must be absent.
+
+Stop LogicHost, install the approved Production HYG package, and run:
+
+```bash
+HVO_CATALOG_PERF_ROOT=/var/lib/hvo/data/catalog \
+HVO_OTEL_COLLECTOR_IMAGE=otel/opentelemetry-collector-contrib@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6 \
+  ./scripts/test:cameraagent-dual-197
+```
+
+On a direct Docker host, bind roots and published endpoints use the repository
+path and loopback. In a devcontainer, the runner discovers the repository bind
+as seen by both the control container and Docker daemon, stages runtime state
+below the primary checkout's ignored `data/agent/issue-197`, and publishes only
+on the Docker bridge gateway used by the control container. Explicit
+`HVO_ISSUE_197_BIND_LOCAL_ROOT`, `HVO_ISSUE_197_BIND_HOST_ROOT`, and
+`HVO_ISSUE_197_DOCKER_HOST_ADDRESS` overrides are available when automatic bind
+discovery is not possible. Bind-root overrides are constrained to the dedicated
+repository `data/agent/issue-197` subtree; the runner requires its ownership
+marker and serializes executions with a PID lock directory before deleting any
+state.
+
+The default workload runs five independent trials with five warm-up and 30
+measured W1 captures per agent at five-second cadence. Each trial verifies
+authenticated operations/gallery access, exact configuration/recipe/retention
+identity, artifact hashes and lineage, distinct catalog and mutable-state
+inodes, both independent SIGKILL recoveries during known pending durable work,
+bidirectional 20-second pause isolation, deny-sink central-attempt counts,
+health, Prometheus runtime allocation/LOH metrics, OTLP logs/metrics/traces,
+fixed-period CameraAgent process and collector container resource evidence, and
+final durable drain.
+Transient evidence is written to
+`TestResults/issue-197/dual-agent`; only sanitized annotated images and reviewed
+summary evidence belong in `docs/validation`.
+
+Only the default 5-trial, 5-warm-up, 30-measured workload emits
+`five-trial-summary.json`; overrides emit a non-citable
+`diagnostic-summary.json` and suppress p95 below 30 samples. CameraAgent process
+CPU, RSS, and storage I/O use two-second Linux `/proc/1` counters. Cumulative
+CPU and I/O include each PID 1 lifetime through a final pre-stop sample and use
+process start ticks to separate deliberate restarts. Docker runtime samples
+separately report collector CPU estimates, container memory, block I/O, and
+network I/O. Managed allocation is a measured-window counter delta; LOH/POH size
+and fragmentation are explicitly last-GC before/after observations, not
+continuous heap peaks.
+Final mode also runs the unchanged #171 standalone gate and blocks citation if
+the equivalent normalized retained bytes/capture or cadence has an unexplained
+positive regression above 20 percent. CPU/capture and peak RSS are retained as
+non-blocking observations with an explicit boundary warning because #171
+combines VSTest and its in-process host while #197 measures each container PID 1
+without the harness or collectors. Completion latency is also non-blocking
+because #171 waits for retention-visible gallery completion while #197 records
+processing-node completion. Full-lifecycle throughput remains non-blocking
+because #197 includes two crashes and two 20-second isolation pauses that are
+not part of #171's single-agent workload.

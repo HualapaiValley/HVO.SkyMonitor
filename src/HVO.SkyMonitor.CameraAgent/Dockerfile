@@ -39,6 +39,7 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 # Copy published application
 COPY --from=build /app/publish .
+RUN chmod 0644 appsettings*.json
 
 # Set environment
 ENV ASPNETCORE_ENVIRONMENT=Production \
