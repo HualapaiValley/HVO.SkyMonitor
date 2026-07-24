@@ -80,6 +80,7 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         await using var fixture = await StandaloneCameraAgentKestrelFixture.CreateProductionSmokeAsync(
             catalogRoot,
             FixedStartUtc).ConfigureAwait(false);
+        var manifests = new ManifestReader(fixture.Root);
         var sampler = new RuntimeSampler(fixture.Root, process, () => fixture.UtcNow);
 
         var config = await fixture.Services.GetRequiredService<ICameraAgentConfigurationAccessor>()
@@ -91,25 +92,28 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
             PreRestartCaptureCount,
             0,
             sampler).ConfigureAwait(false);
-        var first = observations[^1].Capture;
+        var evidenceCapture = observations[^1].Capture;
         var rawManifests = observations
-            .Select(observation => ReadManifest(
-                fixture.Root,
+            .Select(observation => manifests.Read(
                 observation.Capture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw).ArtifactId))
             .OrderBy(static manifest => manifest.Descriptor.Capture.CaptureSequence)
             .ToArray();
         var cadence = AssertCadence(rawManifests);
         var evidenceManifest = rawManifests[^1];
         AssertProductionCaptureProvenance(evidenceManifest, snapshot);
-        AssertArtifactContracts(fixture.Root, first);
+        AssertArtifactContracts(fixture.Root, evidenceCapture, manifests);
 
         byte[] annotatedJpeg;
         string annotatedJpegSha256;
         long downloadedBytes;
         using (var ownerClient = await fixture.CreateOwnerClientAsync().ConfigureAwait(false))
         {
-            downloadedBytes = await AssertHttpAndUiEvidenceAsync(ownerClient, fixture.Root, first).ConfigureAwait(false);
-            var annotated = first.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.AnnotatedPreview);
+            downloadedBytes = await AssertHttpAndUiEvidenceAsync(
+                ownerClient,
+                fixture.Root,
+                evidenceCapture,
+                manifests).ConfigureAwait(false);
+            var annotated = evidenceCapture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.AnnotatedPreview);
             using var response = await ownerClient.GetAsync(new Uri(
                 $"/api/v1/operations/artifacts/{annotated.ArtifactId:D}/preview",
                 UriKind.Relative)).ConfigureAwait(false);
@@ -122,9 +126,9 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
             Assert.AreEqual(1216, decoded.Height);
             Assert.AreEqual(CameraPixelFormat.Mono8, decoded.PixelFormat);
             Assert.IsGreaterThan(1, decoded.PixelData.Span.ToArray().Distinct().Count());
-            AssertOverlayPixels(fixture.Root, first);
-            var annotatedManifest = ReadManifest(fixture.Root, annotated.ArtifactId);
-            var preview = first.Artifacts.Single(artifact =>
+            AssertOverlayPixels(fixture.Root, evidenceCapture, manifests);
+            var annotatedManifest = manifests.Read(annotated.ArtifactId);
+            var preview = evidenceCapture.Artifacts.Single(artifact =>
                 artifact.ArtifactId == annotatedManifest.Descriptor.Artifact.SourceArtifactIds.Single());
             using var previewResponse = await ownerClient.GetAsync(new Uri(
                 $"/api/v1/operations/artifacts/{preview.ArtifactId:D}/preview",
@@ -169,7 +173,7 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
                 preRestartMaximumSequence)
             .ToDictionary(
                 static artifactId => artifactId,
-                artifactId => ReadManifest(fixture.Root, artifactId).Descriptor.Artifact.ChecksumSha256);
+                artifactId => manifests.Read(artifactId).Descriptor.Artifact.ChecksumSha256);
         Assert.HasCount(interruptedCaptureCount, interruptedRawChecksums);
         var beforeRestart = ReadDurableSnapshot(fixture.Root);
         Assert.IsGreaterThan(0L, beforeRestart.PendingLaneWork + beforeRestart.PendingProcessingNodes,
@@ -193,8 +197,8 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         Assert.AreEqual(beforeRestart.RawCaptureCount, afterRestart.RawCaptureCount);
         Assert.IsGreaterThanOrEqualTo(beforeRestart.ProcessingOutputCount, afterRestart.ProcessingOutputCount);
         Assert.AreEqual(0L, afterRestart.DuplicateLogicalOutputs);
-        AssertArtifactChecksums(fixture.Root, completedArtifactChecksums);
-        AssertArtifactChecksums(fixture.Root, interruptedRawChecksums);
+        AssertArtifactChecksums(fixture.Root, completedArtifactChecksums, manifests);
+        AssertArtifactChecksums(fixture.Root, interruptedRawChecksums, manifests);
         var recoveredInterruptedCaptures = await WaitForCompleteCapturesAsync(
             fixture,
             interruptedCaptureCount,
@@ -203,17 +207,18 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         Assert.AreEqual(preRestartMaximumSequence, recoveredInterruptedCaptures[^1].Capture.CaptureSequence);
         foreach (var recoveredCapture in recoveredInterruptedCaptures)
         {
-            AssertArtifactContracts(fixture.Root, recoveredCapture.Capture);
+            AssertArtifactContracts(fixture.Root, recoveredCapture.Capture, manifests);
         }
         AssertArtifactChecksums(
             fixture.Root,
             recoveredInterruptedCaptures
                 .SelectMany(static observation => observation.Capture.Artifacts)
-                .ToDictionary(static artifact => artifact.ArtifactId, static artifact => artifact.ChecksumSha256));
+                .ToDictionary(static artifact => artifact.ArtifactId, static artifact => artifact.ChecksumSha256),
+            manifests);
 
         using (var recoveredClient = await fixture.CreateOwnerClientAsync().ConfigureAwait(false))
         {
-            var annotated = first.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.AnnotatedPreview);
+            var annotated = evidenceCapture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.AnnotatedPreview);
             using var recovered = await recoveredClient.GetAsync(new Uri(
                 $"/api/v1/operations/artifacts/{annotated.ArtifactId:D}/preview",
                 UriKind.Relative)).ConfigureAwait(false);
@@ -270,8 +275,7 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
             .ToArray();
         Assert.IsNotEmpty(selectedCatalogRowIds);
         var completionLatencies = observations.Select(observation =>
-            (observation.ObservedCompleteUtc - ReadManifest(
-                fixture.Root,
+            (observation.ObservedCompleteUtc - manifests.Read(
                 observation.Capture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw).ArtifactId)
                 .Descriptor.Timing.ExposureStartedUtc).TotalMilliseconds).ToArray();
         var captureStartIntervals = cadence.ActualStartIntervalMilliseconds;
@@ -556,7 +560,10 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         Assert.AreEqual(rowIds.Length, rowIds.Distinct(StringComparer.Ordinal).Count());
     }
 
-    private static void AssertArtifactContracts(string root, CameraAgentGalleryCapture capture)
+    private static void AssertArtifactContracts(
+        string root,
+        CameraAgentGalleryCapture capture,
+        ManifestReader manifests)
     {
         CollectionAssert.IsSubsetOf(ExpectedRoles, capture.Artifacts.Select(static artifact => artifact.Role).Distinct().ToArray());
         Assert.AreEqual(2, capture.Artifacts.Count(static artifact => artifact.Role == FrameArtifactRole.Preview));
@@ -565,26 +572,26 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
             .ArtifactId;
         foreach (var artifact in capture.Artifacts)
         {
-            var manifest = ReadManifest(root, artifact.ArtifactId);
+            var manifest = manifests.Read(artifact.ArtifactId);
             Assert.IsTrue(manifest.Descriptor.Validate().IsValid);
             Assert.AreEqual(artifact.ChecksumSha256, manifest.Descriptor.Artifact.ChecksumSha256, ignoreCase: true);
             Assert.AreEqual(capture.CaptureId, manifest.Descriptor.Capture.CaptureId);
             if (artifact.Role != FrameArtifactRole.Raw)
             {
                 Assert.IsNotNull(artifact.Recipe);
-                AssertLineageReachesRaw(root, artifact, acquisitionRawArtifactId);
+                AssertLineageReachesRaw(artifact, acquisitionRawArtifactId, manifests);
             }
         }
 
         var calibrated = capture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Calibrated);
-        var calibratedManifest = ReadManifest(root, calibrated.ArtifactId);
+        var calibratedManifest = manifests.Read(calibrated.ArtifactId);
         Assert.AreEqual(BuiltInProcessingRecipes.ReferenceCalibration, calibratedManifest.Descriptor.Artifact.Recipe.Name);
         Assert.AreEqual("synthetic-corrected", calibratedManifest.Descriptor.Artifact.Variant);
         Assert.HasCount(5, calibratedManifest.Descriptor.Artifact.SourceArtifactIds);
         Assert.HasCount(4, Directory.EnumerateFiles(
             Path.Combine(root, "calibration", "synthetic"), "*.bin", SearchOption.AllDirectories).ToArray());
         var combined = capture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Combined);
-        var combinedManifest = ReadManifest(root, combined.ArtifactId);
+        var combinedManifest = manifests.Read(combined.ArtifactId);
         Assert.HasCount(5, combinedManifest.Descriptor.Artifact.SourceArtifactIds);
         Assert.AreEqual(TimeSpan.FromSeconds(25).Ticks, ReadOutputTotalIntegrationTicks(root, combined.ArtifactId));
     }
@@ -592,7 +599,8 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
     private static async Task<long> AssertHttpAndUiEvidenceAsync(
         HttpClient client,
         string root,
-        CameraAgentGalleryCapture expected)
+        CameraAgentGalleryCapture expected,
+        ManifestReader manifests)
     {
         using var health = await client.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, health.StatusCode);
@@ -632,7 +640,10 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
             using var response = await client.GetAsync(new Uri(
                 $"/api/v1/operations/artifacts/{artifact.ArtifactId:D}/content",
                 UriKind.Relative)).ConfigureAwait(false);
-            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, DescribeArtifactEvidence(root, artifact.ArtifactId));
+            Assert.AreEqual(
+                HttpStatusCode.OK,
+                response.StatusCode,
+                DescribeArtifactEvidence(root, artifact.ArtifactId, manifests));
             var payload = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
             downloadedBytes += payload.LongLength;
             Assert.AreEqual(artifact.ByteLength, payload.LongLength);
@@ -659,14 +670,17 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         return downloadedBytes;
     }
 
-    private static void AssertOverlayPixels(string root, CameraAgentGalleryCapture capture)
+    private static void AssertOverlayPixels(
+        string root,
+        CameraAgentGalleryCapture capture,
+        ManifestReader manifests)
     {
         var annotated = capture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.AnnotatedPreview);
-        var annotatedManifest = ReadManifest(root, annotated.ArtifactId);
+        var annotatedManifest = manifests.Read(annotated.ArtifactId);
         var sourceId = annotatedManifest.Descriptor.Artifact.SourceArtifactIds.Single();
         var preview = capture.Artifacts.Single(artifact => artifact.ArtifactId == sourceId);
         var annotatedPixels = ReadPayload(root, annotatedManifest);
-        var previewPixels = ReadPayload(root, ReadManifest(root, preview.ArtifactId));
+        var previewPixels = ReadPayload(root, manifests.Read(preview.ArtifactId));
         Assert.AreEqual(1936 * 1216, annotatedPixels.Length);
         Assert.AreEqual(annotatedPixels.Length, previewPixels.Length);
         CollectionAssert.AreNotEqual(previewPixels, annotatedPixels);
@@ -897,28 +911,17 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         return connection;
     }
 
-    private static ArtifactManifestV2 ReadManifest(string root, Guid artifactId)
-    {
-        foreach (var sidecarPath in Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories))
-        {
-            var parsed = CaptureContractJson.ParseManifest(File.ReadAllBytes(sidecarPath));
-            if (parsed.Document?.Manifest is { } manifest &&
-                manifest.Descriptor.Artifact.ArtifactId == artifactId)
-            {
-                return manifest;
-            }
-        }
-        throw new AssertFailedException($"Artifact {artifactId:D} has no local manifest.");
-    }
-
     private static byte[] ReadPayload(string root, ArtifactManifestV2 manifest) => File.ReadAllBytes(
         Path.Combine(root, manifest.RelativeArtifactPath.Replace('/', Path.DirectorySeparatorChar)));
 
-    private static void AssertArtifactChecksums(string root, IReadOnlyDictionary<Guid, string> expected)
+    private static void AssertArtifactChecksums(
+        string root,
+        IReadOnlyDictionary<Guid, string> expected,
+        ManifestReader manifests)
     {
         foreach (var (artifactId, checksum) in expected)
         {
-            var manifest = ReadManifest(root, artifactId);
+            var manifest = manifests.Read(artifactId);
             Assert.AreEqual(checksum, manifest.Descriptor.Artifact.ChecksumSha256, ignoreCase: true);
             Assert.AreEqual(
                 checksum,
@@ -928,9 +931,9 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
     }
 
     private static void AssertLineageReachesRaw(
-        string root,
         CameraAgentGalleryArtifact artifact,
-        Guid acquisitionRawArtifactId)
+        Guid acquisitionRawArtifactId,
+        ManifestReader manifests)
     {
         var pending = new Queue<Guid>(artifact.SourceArtifactIds);
         var visited = new HashSet<Guid>();
@@ -941,7 +944,7 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
             {
                 continue;
             }
-            var source = ReadManifest(root, artifactId);
+            var source = manifests.Read(artifactId);
             if (artifactId == acquisitionRawArtifactId)
             {
                 reachesRaw = true;
@@ -955,11 +958,11 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
             $"Artifact {artifact.ArtifactId:D} lineage did not reach acquisition raw {acquisitionRawArtifactId:D}.");
     }
 
-    private static string DescribeArtifactEvidence(string root, Guid artifactId)
+    private static string DescribeArtifactEvidence(string root, Guid artifactId, ManifestReader manifests)
     {
         try
         {
-            var manifest = ReadManifest(root, artifactId);
+            var manifest = manifests.Read(artifactId);
             var reconstruction = FrameReconstructor.TryReconstruct(
                 manifest.Descriptor,
                 ReadPayload(root, manifest),
@@ -1038,6 +1041,88 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
     private static long DirectoryBytes(string root) => Directory
         .EnumerateFiles(root, "*", SearchOption.AllDirectories)
         .Sum(static path => new FileInfo(path).Length);
+
+    private sealed class ManifestReader(string root)
+    {
+        private readonly Dictionary<Guid, ArtifactManifestV2> _syntheticReferenceCache = [];
+        private bool _syntheticReferencesLoaded;
+
+        internal ArtifactManifestV2 Read(Guid artifactId)
+        {
+            if (_syntheticReferenceCache.TryGetValue(artifactId, out var syntheticReference))
+            {
+                return syntheticReference;
+            }
+
+            using (var connection = OpenJournal(root))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    SELECT sidecar_relative_path
+                    FROM raw_captures
+                    WHERE raw_artifact_id = $artifact_id
+                    UNION ALL
+                    SELECT sidecar_relative_path
+                    FROM processing_outputs
+                    WHERE artifact_id = $artifact_id
+                    LIMIT 1;
+                    """;
+                command.Parameters.AddWithValue("$artifact_id", artifactId.ToString("N"));
+                if (command.ExecuteScalar() is string relativePath)
+                {
+                    var manifest = ParseManifest(Path.Combine(
+                        root,
+                        relativePath.Replace('/', Path.DirectorySeparatorChar)),
+                        requireManifest: true)!;
+                    Assert.AreEqual(artifactId, manifest.Descriptor.Artifact.ArtifactId);
+                    return manifest;
+                }
+            }
+
+            LoadSyntheticReferences();
+            return _syntheticReferenceCache.TryGetValue(artifactId, out syntheticReference)
+                ? syntheticReference
+                : throw new AssertFailedException($"Artifact {artifactId:D} has no local manifest.");
+        }
+
+        private void LoadSyntheticReferences()
+        {
+            if (_syntheticReferencesLoaded)
+            {
+                return;
+            }
+            _syntheticReferencesLoaded = true;
+            var syntheticRoot = Path.Combine(root, "calibration", "synthetic");
+            if (!Directory.Exists(syntheticRoot))
+            {
+                return;
+            }
+            foreach (var sidecarPath in Directory.EnumerateFiles(
+                         syntheticRoot,
+                         "*.json",
+                         SearchOption.AllDirectories))
+            {
+                if (ParseManifest(sidecarPath, requireManifest: false) is { } manifest)
+                {
+                    _syntheticReferenceCache[manifest.Descriptor.Artifact.ArtifactId] = manifest;
+                }
+            }
+        }
+
+        private static ArtifactManifestV2? ParseManifest(string path, bool requireManifest)
+        {
+            var parsed = CaptureContractJson.ParseManifest(File.ReadAllBytes(path));
+            if (parsed.Document?.Manifest is { } manifest)
+            {
+                return manifest;
+            }
+            if (requireManifest)
+            {
+                throw new AssertFailedException($"Expected artifact sidecar is not a valid manifest: {path}");
+            }
+            return null;
+        }
+    }
 
     private sealed class RuntimeSampler(string root, Process process, Func<DateTimeOffset> utcNow)
     {
