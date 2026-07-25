@@ -26,6 +26,7 @@ public static class MonoDigitalReadoutRenderer
             readout.Packing != FrameSamplePacking.ByteAligned ||
             readout.BinningAlgorithm == FrameBinningAlgorithm.ChargeSumV1 ||
             nativeSampleDepthBits is < 1 or > 16 || nativeSampleDepthBits < readout.SampleDepthBits ||
+            nativeLayout.Width % readout.BinX != 0 || nativeLayout.Height % readout.BinY != 0 ||
             outputLayout.Width != nativeLayout.Width / readout.BinX ||
             outputLayout.Height != nativeLayout.Height / readout.BinY)
         {

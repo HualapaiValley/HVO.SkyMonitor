@@ -907,9 +907,7 @@ internal sealed partial class ArtifactIngestService(
     private static bool ShouldScheduleDerivatives(CentralArtifact artifact)
         => artifact.ReconstructionState == CentralReconstructionState.Complete &&
             (artifact.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion ||
-                artifact.Role == FrameArtifactRole.Raw) ||
-            artifact.ReconstructionState == CentralReconstructionState.LegacyIncomplete &&
-            artifact.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion;
+                artifact.Role == FrameArtifactRole.Raw);
 
     private async Task ApplyReconstructionAsync(
         CentralFrame frame,

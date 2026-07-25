@@ -3098,7 +3098,13 @@ public sealed class ArtifactIngestTests
                     FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 0, ushort.MaxValue, payload.LongLength)
             }
         };
-        using var client = fixture.Factory.CreateClient();
+        var scheduler = new RecordingScheduler(manifest.Descriptor.Artifact.ArtifactId);
+        using var factory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<ICentralDerivativeJobScheduler>();
+            services.AddScoped<ICentralDerivativeJobScheduler>(_ => scheduler);
+        }));
+        using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
 
@@ -3119,6 +3125,7 @@ public sealed class ArtifactIngestTests
         artifact.Layout.LevelCodeSpace.Should().BeNull();
         (await db.CentralDerivativeJobs.CountAsync(job => job.SourceCentralArtifactId == artifact.Id)
             .ConfigureAwait(false)).Should().Be(0);
+        scheduler.InvocationCount.Should().Be(0);
     }
 
     private static async Task<HttpResponseMessage> PostAsync(
@@ -3603,6 +3610,25 @@ public sealed class ArtifactIngestTests
             }
             Interlocked.Increment(ref injectionCount);
             return true;
+        }
+    }
+
+    private sealed class RecordingScheduler(Guid targetArtifactId) : ICentralDerivativeJobScheduler
+    {
+        private int invocationCount;
+
+        public int InvocationCount => Volatile.Read(ref invocationCount);
+
+        public Task EnsureRequiredJobsAsync(
+            CentralArtifact artifact,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+        {
+            if (artifact.ArtifactId == targetArtifactId)
+            {
+                Interlocked.Increment(ref invocationCount);
+            }
+            return Task.CompletedTask;
         }
     }
 

@@ -22,6 +22,13 @@ public sealed class MonoDigitalReadoutRendererTests
         StringAssert.Contains(result.AlgorithmVersion, "digital-average-v1", StringComparison.Ordinal);
         Assert.AreEqual(3d, result.Statistics.Minimum);
         Assert.AreEqual(5d, result.Statistics.Maximum);
+
+        Assert.ThrowsExactly<NotSupportedException>(() => MonoDigitalReadoutRenderer.Apply(
+            Result(U16(0, 16, 32, 48, 64, 80)),
+            new ImageLayout(3, 2, CameraPixelFormat.Mono16, 6),
+            new ImageLayout(1, 1, CameraPixelFormat.Mono8, 1),
+            readout,
+            12));
     }
 
     [TestMethod]
