@@ -42,7 +42,8 @@ public sealed class Issue170PerformanceSummaryTests
     private static readonly string[] CountMetricSuffixes =
     [
         "logicalReads", "sqlCommands", "firstPageSqlCommands", "traversalSqlCommands",
-        "deadlockRetries", "serverErrorRetries", "pendingReferenceRetries", "requests",
+        "deadlockRetries", "deadlockRetriesIdentifiedFromResponse", "serverErrorRetries",
+        "pendingReferenceRetries", "requests",
         "multipartPosts", "statusPosts", "minioRequestsObserved", "minioGetObserved",
         "minioPutObserved", "minioPostObserved", "minioDeleteObserved", "minioHeadObserved",
         "requestsWithoutContentLength", "responsesWithoutContentLength",
@@ -462,6 +463,7 @@ public sealed class Issue170PerformanceSummaryTests
         if (path.EndsWith("rssStartBytes", StringComparison.Ordinal)
             || path.EndsWith("sampledAllocationRateBytes", StringComparison.OrdinalIgnoreCase)
             || path.EndsWith("allocationRateSamples", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("Retries", StringComparison.OrdinalIgnoreCase)
             || path.EndsWith("serverErrorRetries", StringComparison.Ordinal)
             || path.EndsWith("deadlockRetries", StringComparison.Ordinal)
             || path.EndsWith("pendingReferenceRetries", StringComparison.Ordinal)
