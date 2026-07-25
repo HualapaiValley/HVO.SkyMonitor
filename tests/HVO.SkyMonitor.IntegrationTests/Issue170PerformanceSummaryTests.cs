@@ -214,7 +214,9 @@ public sealed class Issue170PerformanceSummaryTests
             documents,
             hashes,
             roots.Select(rootElement => Property(rootElement, "correctness").Clone()).ToArray(),
-            roots.Select(rootElement => Property(rootElement, "io").Clone()).ToArray(),
+            roots.Select(rootElement => TryProperty(rootElement, "io", out var io)
+                ? io.Clone()
+                : JsonSerializer.SerializeToElement(new { })).ToArray(),
             environmentFingerprint,
             workloadFingerprint,
             assemblyFingerprint,
