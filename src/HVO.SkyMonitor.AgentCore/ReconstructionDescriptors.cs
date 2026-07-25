@@ -22,6 +22,45 @@ public enum ColorFilterArrayPattern
     Rggb
 }
 
+/// <summary>Versioned mapping from meaningful sample codes to stored container codes.</summary>
+public enum FrameStoredCodeTransform
+{
+    IdentityV1,
+    RightAlignedV1,
+    LeftShiftedV1,
+    FullRangeScaledV1
+}
+
+/// <summary>Code space used by layout black and white levels.</summary>
+public enum FrameLevelCodeSpace
+{
+    NativeSample,
+    StoredContainer
+}
+
+/// <summary>Versioned operation used to combine native photosites into one output sample.</summary>
+public enum FrameBinningAlgorithm
+{
+    IdentityV1,
+    ChargeSumV1,
+    DigitalSumV1,
+    DigitalAverageV1
+}
+
+/// <summary>Native photosite geometry and the ROI/bin operation that produced an output frame.</summary>
+public sealed record FrameReadoutDescriptor(
+    [property: JsonRequired] int NativeWidth,
+    [property: JsonRequired] int NativeHeight,
+    [property: JsonRequired] int RoiX,
+    [property: JsonRequired] int RoiY,
+    [property: JsonRequired] int RoiWidth,
+    [property: JsonRequired] int RoiHeight,
+    [property: JsonRequired] int BinX,
+    [property: JsonRequired] int BinY,
+    [property: JsonRequired] FrameBinningAlgorithm BinningAlgorithm,
+    [property: JsonRequired] int? CfaOriginX,
+    [property: JsonRequired] int? CfaOriginY);
+
 /// <summary>Stable agent, rig, sequence, and capture identity assigned before optional processing.</summary>
 public sealed record CaptureIdentityDescriptor(
     [property: JsonRequired] string AgentId,
@@ -83,7 +122,28 @@ public sealed record FrameLayoutDescriptor(
     [property: JsonRequired] ColorFilterArrayPattern CfaPattern,
     [property: JsonRequired] double? BlackLevel,
     [property: JsonRequired] double? WhiteLevel,
-    [property: JsonRequired] long ByteLength);
+    [property: JsonRequired] long ByteLength)
+{
+    /// <summary>Gets native geometry and the readout operation, when explicitly recorded.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FrameReadoutDescriptor? Readout { get; init; }
+
+    /// <summary>Gets the versioned mapping from meaningful sample codes to stored container codes.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FrameStoredCodeTransform? StoredCodeTransform { get; init; }
+
+    /// <summary>Gets the code space used by <see cref="BlackLevel"/> and <see cref="WhiteLevel"/>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FrameLevelCodeSpace? LevelCodeSpace { get; init; }
+
+    internal CaptureManifestCompleteness GetManifestCompleteness()
+        => StoredCodeTransform.HasValue && LevelCodeSpace.HasValue || SampleDepthBits == ContainerDepthBits
+            ? CaptureManifestCompleteness.Complete
+            : CaptureManifestCompleteness.LegacyIncomplete;
+
+    public CaptureContractValidationResult Validate()
+        => ReconstructionDescriptorValidator.ValidateLayout(this);
+}
 
 /// <summary>Canonical descriptive identity of a recipe; it contains no executable behavior.</summary>
 public sealed record RecipeIdentityDescriptor(
@@ -439,7 +499,7 @@ internal static class ReconstructionDescriptorValidator
         return CaptureContractValidationResult.Success;
     }
 
-    private static CaptureContractValidationResult ValidateLayout(FrameLayoutDescriptor? layout)
+    internal static CaptureContractValidationResult ValidateLayout(FrameLayoutDescriptor? layout)
     {
         if (layout is null || layout.Width < 1 || layout.Height < 1)
         {
@@ -450,15 +510,23 @@ internal static class ReconstructionDescriptorValidator
             return Failure(CaptureContractReasonCodes.UnsupportedFormat, "descriptor.layout.pixelFormat");
         }
 
-        var (bytesPerPixel, sampleDepth, containerDepth, byteOrder, cfa) = layout.PixelFormat switch
+        var (bytesPerPixel, containerDepth, byteOrder, cfa) = layout.PixelFormat switch
         {
-            CameraPixelFormat.Mono8 => (1, 8, 8, FrameByteOrder.NotApplicable, ColorFilterArrayPattern.None),
-            CameraPixelFormat.Mono16 => (2, 16, 16, FrameByteOrder.LittleEndian, ColorFilterArrayPattern.None),
-            CameraPixelFormat.Rgb24 => (3, 8, 8, FrameByteOrder.NotApplicable, ColorFilterArrayPattern.None),
-            CameraPixelFormat.BayerRggb16 => (2, 16, 16, FrameByteOrder.LittleEndian, ColorFilterArrayPattern.Rggb),
-            _ => (0, 0, 0, FrameByteOrder.NotApplicable, ColorFilterArrayPattern.None)
+            CameraPixelFormat.Mono8 => (1, 8, FrameByteOrder.NotApplicable, ColorFilterArrayPattern.None),
+            CameraPixelFormat.Mono16 => (2, 16, FrameByteOrder.LittleEndian, ColorFilterArrayPattern.None),
+            CameraPixelFormat.Rgb24 => (3, 8, FrameByteOrder.NotApplicable, ColorFilterArrayPattern.None),
+            CameraPixelFormat.BayerRggb16 => (2, 16, FrameByteOrder.LittleEndian, ColorFilterArrayPattern.Rggb),
+            _ => (0, 0, FrameByteOrder.NotApplicable, ColorFilterArrayPattern.None)
         };
-        if (layout.SampleDepthBits != sampleDepth || layout.ContainerDepthBits != containerDepth)
+        var sampleDepthIsSupported = layout.SampleDepthBits is 8 or 10 or 12 or 14 or 16;
+        var formatDepthIsValid = layout.PixelFormat switch
+        {
+            CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24 => layout.SampleDepthBits == 8,
+            CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 =>
+                layout.SampleDepthBits <= layout.ContainerDepthBits,
+            _ => false
+        };
+        if (!sampleDepthIsSupported || !formatDepthIsValid || layout.ContainerDepthBits != containerDepth)
         {
             return Failure(CaptureContractReasonCodes.InvalidSampleDepth, "descriptor.layout.sampleDepthBits");
         }
@@ -477,7 +545,25 @@ internal static class ReconstructionDescriptorValidator
         {
             return Failure(CaptureContractReasonCodes.InvalidCfa, "descriptor.layout.cfaPattern");
         }
-        var maximumLevel = Math.Pow(2, layout.SampleDepthBits) - 1;
+
+        var storedCodeResult = ValidateStoredCodeSemantics(layout);
+        if (!storedCodeResult.IsValid)
+        {
+            return storedCodeResult;
+        }
+        var readoutResult = ValidateReadout(layout);
+        if (!readoutResult.IsValid)
+        {
+            return readoutResult;
+        }
+
+        var levelDepth = layout.LevelCodeSpace switch
+        {
+            FrameLevelCodeSpace.NativeSample => layout.SampleDepthBits,
+            FrameLevelCodeSpace.StoredContainer => layout.ContainerDepthBits,
+            _ => layout.ContainerDepthBits
+        };
+        var maximumLevel = Math.Pow(2, levelDepth) - 1;
         if (!IsFinite(layout.BlackLevel) || !IsFinite(layout.WhiteLevel) ||
             layout.BlackLevel is < 0 || layout.WhiteLevel is < 0 ||
             layout.BlackLevel > maximumLevel || layout.WhiteLevel > maximumLevel ||
@@ -491,6 +577,71 @@ internal static class ReconstructionDescriptorValidator
         if (layout.StrideBytes < minimumStride || layout.ByteLength != expectedLength)
         {
             return Failure(CaptureContractReasonCodes.InvalidStride, "descriptor.layout.strideBytes");
+        }
+        return CaptureContractValidationResult.Success;
+    }
+
+    private static CaptureContractValidationResult ValidateStoredCodeSemantics(FrameLayoutDescriptor layout)
+    {
+        if (layout.StoredCodeTransform.HasValue != layout.LevelCodeSpace.HasValue ||
+            layout.StoredCodeTransform.HasValue && !Enum.IsDefined(layout.StoredCodeTransform.Value) ||
+            layout.LevelCodeSpace.HasValue && !Enum.IsDefined(layout.LevelCodeSpace.Value))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidStoredCode, "descriptor.layout.storedCodeTransform");
+        }
+        if (layout.StoredCodeTransform is not { } transform)
+        {
+            return CaptureContractValidationResult.Success;
+        }
+
+        var transformIsValid = transform switch
+        {
+            FrameStoredCodeTransform.IdentityV1 => layout.SampleDepthBits == layout.ContainerDepthBits,
+            FrameStoredCodeTransform.RightAlignedV1 => layout.SampleDepthBits <= layout.ContainerDepthBits,
+            FrameStoredCodeTransform.LeftShiftedV1 or FrameStoredCodeTransform.FullRangeScaledV1 =>
+                layout.SampleDepthBits < layout.ContainerDepthBits,
+            _ => false
+        };
+        return transformIsValid
+            ? CaptureContractValidationResult.Success
+            : Failure(CaptureContractReasonCodes.InvalidStoredCode, "descriptor.layout.storedCodeTransform");
+    }
+
+    private static CaptureContractValidationResult ValidateReadout(FrameLayoutDescriptor layout)
+    {
+        if (layout.Readout is not { } readout)
+        {
+            return CaptureContractValidationResult.Success;
+        }
+        if (readout.NativeWidth < 1 || readout.NativeHeight < 1 ||
+            readout.RoiX < 0 || readout.RoiY < 0 || readout.RoiWidth < 1 || readout.RoiHeight < 1 ||
+            readout.BinX < 1 || readout.BinY < 1 || !Enum.IsDefined(readout.BinningAlgorithm) ||
+            (long)readout.RoiX + readout.RoiWidth > readout.NativeWidth ||
+            (long)readout.RoiY + readout.RoiHeight > readout.NativeHeight ||
+            readout.RoiWidth % readout.BinX != 0 || readout.RoiHeight % readout.BinY != 0 ||
+            layout.Width != readout.RoiWidth / readout.BinX || layout.Height != readout.RoiHeight / readout.BinY)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidReadout, "descriptor.layout.readout");
+        }
+
+        var isBinned = readout.BinX != 1 || readout.BinY != 1;
+        if (isBinned && readout.BinningAlgorithm == FrameBinningAlgorithm.IdentityV1 ||
+            !isBinned && readout.BinningAlgorithm != FrameBinningAlgorithm.IdentityV1)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidReadout, "descriptor.layout.readout.binningAlgorithm");
+        }
+
+        var hasCfa = layout.CfaPattern != ColorFilterArrayPattern.None;
+        var hasCompleteCfaOrigin = readout.CfaOriginX.HasValue && readout.CfaOriginY.HasValue;
+        if (hasCfa != hasCompleteCfaOrigin ||
+            readout.CfaOriginX is < 0 or > 1 || readout.CfaOriginY is < 0 or > 1)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidCfa, "descriptor.layout.readout.cfaOrigin");
+        }
+        if (hasCfa && (isBinned || (readout.RoiX - readout.CfaOriginX!.Value) % 2 != 0 ||
+            (readout.RoiY - readout.CfaOriginY!.Value) % 2 != 0))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidCfa, "descriptor.layout.readout.cfaOrigin");
         }
         return CaptureContractValidationResult.Success;
     }

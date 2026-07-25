@@ -44,7 +44,13 @@
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi174.full.json" Link="virtual-asi174.full.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi174-mono8-roi-bin4.json" Link="virtual-asi174-mono8-roi-bin4.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi174mc.full.json" Link="virtual-asi174mc.full.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi178mc.full.json" Link="virtual-asi178mc.full.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi676mm.full.json" Link="virtual-asi676mm.full.json">

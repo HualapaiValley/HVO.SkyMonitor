@@ -62,8 +62,10 @@ public static class VirtualTransientSignalRenderer
         double magnitudeZeroElectronsPerSecond,
         double minimumPsfSigmaPixels,
         double minimumPsfRadiusPixels,
-        VirtualCloudRenderContext? cloud = null)
+        VirtualCloudRenderContext? cloud = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(scene);
         ArgumentNullException.ThrowIfNull(context);
         layout.Validate();
@@ -101,13 +103,16 @@ public static class VirtualTransientSignalRenderer
         var projector = ProjectorFactory.Create(scene.Request.Projection);
         foreach (var track in definition.SkyTracks)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             geometry.Add(RenderSkyTrack(
                 track, definition, context, cloud, scene.Request.Projection, projector, layout, pixels,
-                magnitudeZeroElectronsPerSecond, minimumPsfSigmaPixels, minimumPsfRadiusPixels));
+                magnitudeZeroElectronsPerSecond, minimumPsfSigmaPixels, minimumPsfRadiusPixels,
+                cancellationToken));
         }
         foreach (var track in definition.SensorTracks)
         {
-            geometry.Add(RenderSensorTrack(track, definition, context, layout, pixels));
+            cancellationToken.ThrowIfCancellationRequested();
+            geometry.Add(RenderSensorTrack(track, definition, context, layout, pixels, cancellationToken));
         }
         return new VirtualTransientFrameSignal(pixels, geometry);
     }
@@ -123,7 +128,8 @@ public static class VirtualTransientSignalRenderer
         Dictionary<int, VirtualTransientPixelSignal> pixels,
         double magnitudeZeroElectronsPerSecond,
         double minimumPsfSigmaPixels,
-        double minimumPsfRadiusPixels)
+        double minimumPsfRadiusPixels,
+        CancellationToken cancellationToken)
     {
         var overlap = ResolveOverlap(track.Keyframes[0].OffsetSeconds, track.Keyframes[^1].OffsetSeconds,
             definition.EpochUtc, context);
@@ -136,6 +142,7 @@ public static class VirtualTransientSignalRenderer
         var sampleSeconds = overlap.Value.Duration.TotalSeconds / definition.TemporalSampleCount;
         for (var sample = 0; sample < definition.TemporalSampleCount; sample++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var utc = Midpoint(overlap.Value.StartUtc, overlap.Value.Duration, sample, definition.TemporalSampleCount);
             var state = ResolveSkyState(track.Keyframes, (utc - definition.EpochUtc).TotalSeconds);
             var pixel = projector.Project(state.Direction);
@@ -167,7 +174,8 @@ public static class VirtualTransientSignalRenderer
                     0),
                 sensorStage: false,
                 out var centroid,
-                out var bounds);
+                out var bounds,
+                cancellationToken);
             accumulator.AddSample(expected, deposited, centroid, bounds);
         }
         return accumulator.Create();
@@ -178,7 +186,8 @@ public static class VirtualTransientSignalRenderer
         VirtualTransientScenarioDefinition definition,
         VirtualTransientRenderContext context,
         ImageLayout layout,
-        Dictionary<int, VirtualTransientPixelSignal> pixels)
+        Dictionary<int, VirtualTransientPixelSignal> pixels,
+        CancellationToken cancellationToken)
     {
         var overlap = ResolveOverlap(track.Keyframes[0].OffsetSeconds, track.Keyframes[^1].OffsetSeconds,
             definition.EpochUtc, context);
@@ -191,6 +200,7 @@ public static class VirtualTransientSignalRenderer
         var sampleSeconds = overlap.Value.Duration.TotalSeconds / definition.TemporalSampleCount;
         for (var sample = 0; sample < definition.TemporalSampleCount; sample++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var utc = Midpoint(overlap.Value.StartUtc, overlap.Value.Duration, sample, definition.TemporalSampleCount);
             var state = ResolveSensorState(track.Keyframes, (utc - definition.EpochUtc).TotalSeconds);
             var electrons = state.ElectronsPerSecond * sampleSeconds;
@@ -204,7 +214,8 @@ public static class VirtualTransientSignalRenderer
                 new VirtualTransientPixelSignal(0, 0, 0, electrons),
                 sensorStage: true,
                 out var centroid,
-                out var bounds);
+                out var bounds,
+                cancellationToken);
             accumulator.AddSample(electrons, deposited, centroid, bounds);
         }
         return accumulator.Create();
@@ -220,7 +231,8 @@ public static class VirtualTransientSignalRenderer
         VirtualTransientPixelSignal signal,
         bool sensorStage,
         out PixelPoint? centroid,
-        out (int MinimumX, int MinimumY, int MaximumX, int MaximumY) bounds)
+        out (int MinimumX, int MinimumY, int MaximumX, int MaximumY) bounds,
+        CancellationToken cancellationToken)
     {
         var minimumX = (int)Math.Ceiling(center.X - radius - 0.5);
         var maximumX = (int)Math.Floor(center.X + radius - 0.5);
@@ -230,6 +242,7 @@ public static class VirtualTransientSignalRenderer
         var denominator = 0d;
         for (var y = minimumY; y <= maximumY; y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = minimumX; x <= maximumX; x++)
             {
                 var distanceSquared = Square(x + 0.5 - center.X) + Square(y + 0.5 - center.Y);
@@ -249,6 +262,7 @@ public static class VirtualTransientSignalRenderer
         var boundedMaximumY = -1;
         for (var y = Math.Max(0, minimumY); y <= Math.Min(layout.Height - 1, maximumY); y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = Math.Max(0, minimumX); x <= Math.Min(layout.Width - 1, maximumX); x++)
             {
                 var distanceSquared = Square(x + 0.5 - center.X) + Square(y + 0.5 - center.Y);

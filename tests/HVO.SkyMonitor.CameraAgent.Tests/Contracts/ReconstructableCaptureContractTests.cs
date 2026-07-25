@@ -12,6 +12,44 @@ public sealed class ReconstructableCaptureContractTests
     private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
+    public void SensorReadoutResolver_DerivesAsi174RoiAndRejectsImpossibleGeometry()
+    {
+        var sensor = new SensorProfile(
+            "ASI174", 1936, 1216, 5.86, SensorColorMode.Mono, CameraPixelFormat.Mono16,
+            SensorResponseMode.Monochrome, 3872);
+        var profile = new SensorReadoutProfile(
+            new SensorCrop(648, 368, 640, 480),
+            4,
+            4,
+            FrameBinningAlgorithm.DigitalAverageV1,
+            CameraPixelFormat.Mono8,
+            8,
+            8,
+            FrameSamplePacking.ByteAligned,
+            FrameStoredCodeTransform.IdentityV1,
+            FrameLevelCodeSpace.StoredContainer,
+            4,
+            255);
+
+        var resolved = SensorReadoutResolver.Resolve(sensor, profile);
+
+        Assert.AreEqual(160, resolved.Layout.Width);
+        Assert.AreEqual(120, resolved.Layout.Height);
+        Assert.AreEqual(160, resolved.Layout.StrideBytes);
+        Assert.AreEqual(19_200, resolved.Layout.ByteLength);
+        Assert.AreEqual(1936, resolved.Geometry.NativeWidth);
+        Assert.ThrowsExactly<ArgumentException>(() => SensorReadoutResolver.Resolve(
+            sensor,
+            profile with { Roi = new SensorCrop(0, 0, 640, 480), BinX = 1, BinY = 1 }));
+        Assert.ThrowsExactly<ArgumentException>(() => SensorReadoutResolver.Resolve(
+            sensor,
+            profile with { Roi = new SensorCrop(1500, 900, 640, 480) }));
+        Assert.ThrowsExactly<ArgumentException>(() => SensorReadoutResolver.Resolve(
+            sensor,
+            profile with { ByteOrder = (SampleByteOrder)int.MaxValue }));
+    }
+
+    [TestMethod]
     public void ManifestV2_CloudScenarioProvenanceRoundTripsWithoutChangingDescriptorIdentity()
     {
         var original = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
@@ -1234,7 +1272,7 @@ public sealed class ReconstructableCaptureContractTests
         var descriptor = CreateManifest(CameraPixelFormat.BayerRggb16, 2, 2, 4, new byte[8]).Descriptor;
 
         Assert.AreEqual(CaptureContractReasonCodes.InvalidSampleDepth,
-            (descriptor with { Layout = descriptor.Layout with { SampleDepthBits = 12 } }).Validate().ReasonCode);
+            (descriptor with { Layout = descriptor.Layout with { SampleDepthBits = 11 } }).Validate().ReasonCode);
         Assert.AreEqual(CaptureContractReasonCodes.InvalidByteOrder,
             (descriptor with { Layout = descriptor.Layout with { ByteOrder = FrameByteOrder.NotApplicable } }).Validate().ReasonCode);
         Assert.IsTrue((descriptor with { Layout = descriptor.Layout with { ByteOrder = FrameByteOrder.BigEndian } }).Validate().IsValid);
@@ -1244,6 +1282,107 @@ public sealed class ReconstructableCaptureContractTests
             (descriptor with { Layout = descriptor.Layout with { CfaPattern = ColorFilterArrayPattern.None } }).Validate().ReasonCode);
         Assert.AreEqual(CaptureContractReasonCodes.InvalidLevels,
             (descriptor with { Layout = descriptor.Layout with { BlackLevel = 10, WhiteLevel = 5 } }).Validate().ReasonCode);
+    }
+
+    [TestMethod]
+    public void ManifestV2_WithExplicitLowerDepthReadout_RoundTripsAsComplete()
+    {
+        var payload = new byte[160 * 120 * 2];
+        var legacy = CreateManifest(CameraPixelFormat.Mono16, 160, 120, 320, payload);
+        var layout = legacy.Descriptor.Layout with
+        {
+            SampleDepthBits = 10,
+            WhiteLevel = 1023,
+            StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+            LevelCodeSpace = FrameLevelCodeSpace.NativeSample,
+            Readout = new FrameReadoutDescriptor(
+                1936,
+                1216,
+                648,
+                368,
+                640,
+                480,
+                4,
+                4,
+                FrameBinningAlgorithm.DigitalAverageV1,
+                null,
+                null)
+        };
+        var manifest = legacy with { Descriptor = legacy.Descriptor with { Layout = layout } };
+
+        var encoded = CaptureContractJson.Serialize(manifest);
+        var parsed = CaptureContractJson.ParseManifest(encoded);
+        var result = FrameReconstructor.TryReconstruct(parsed.Document!.Manifest!.Descriptor, payload, out var frame);
+
+        Assert.IsTrue(parsed.IsValid);
+        Assert.AreEqual(CaptureManifestCompleteness.Complete, parsed.Document.Completeness);
+        Assert.AreEqual(layout, parsed.Document.Manifest.Descriptor.Layout);
+        Assert.IsTrue(result.IsValid);
+        Assert.AreEqual(layout, frame!.Layout);
+        CollectionAssert.AreEqual(encoded, CaptureContractJson.Serialize(parsed.Document.Manifest));
+    }
+
+    [TestMethod]
+    public void ParseManifest_WithAmbiguousLowerDepthV2_PreservesBytesAsLegacyIncomplete()
+    {
+        var payload = new byte[8];
+        var legacy = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, payload);
+        var manifest = legacy with
+        {
+            Descriptor = legacy.Descriptor with
+            {
+                Layout = legacy.Descriptor.Layout with { SampleDepthBits = 12, WhiteLevel = 65535 }
+            }
+        };
+        var encoded = CaptureContractJson.Serialize(manifest);
+
+        var parsed = CaptureContractJson.ParseManifest(encoded);
+        var result = FrameReconstructor.TryReconstruct(parsed.Document!.Manifest!.Descriptor, payload, out var frame);
+
+        Assert.IsTrue(parsed.IsValid);
+        Assert.AreEqual(CaptureManifestCompleteness.LegacyIncomplete, parsed.Document.Completeness);
+        Assert.IsTrue(result.IsValid);
+        CollectionAssert.AreEqual(payload, frame!.PixelData.ToArray());
+        CollectionAssert.AreEqual(encoded, CaptureContractJson.Serialize(parsed.Document.Manifest));
+    }
+
+    [TestMethod]
+    public void Validate_WithPartialOrIncompatibleStoredCodeSemantics_ReturnsStableReason()
+    {
+        var descriptor = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor;
+
+        var missingLevelSpace = descriptor.Layout with
+        {
+            SampleDepthBits = 12,
+            WhiteLevel = 4095,
+            StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1
+        };
+        var invalidIdentity = missingLevelSpace with
+        {
+            LevelCodeSpace = FrameLevelCodeSpace.NativeSample,
+            StoredCodeTransform = FrameStoredCodeTransform.IdentityV1
+        };
+
+        Assert.AreEqual(CaptureContractReasonCodes.InvalidStoredCode,
+            (descriptor with { Layout = missingLevelSpace }).Validate().ReasonCode);
+        Assert.AreEqual(CaptureContractReasonCodes.InvalidStoredCode,
+            (descriptor with { Layout = invalidIdentity }).Validate().ReasonCode);
+    }
+
+    [TestMethod]
+    public void Validate_WithInvalidReadoutGeometryOrCfaPhase_ReturnsStableReason()
+    {
+        var mono = CreateManifest(CameraPixelFormat.Mono16, 160, 120, 320, new byte[38400]).Descriptor;
+        var readout = new FrameReadoutDescriptor(
+            1936, 1216, 648, 368, 640, 480, 4, 4, FrameBinningAlgorithm.DigitalAverageV1, null, null);
+        var bayer = CreateManifest(CameraPixelFormat.BayerRggb16, 2, 2, 4, new byte[8]).Descriptor;
+        var shiftedCfa = new FrameReadoutDescriptor(
+            4, 4, 1, 0, 2, 2, 1, 1, FrameBinningAlgorithm.IdentityV1, 0, 0);
+
+        Assert.AreEqual(CaptureContractReasonCodes.InvalidReadout,
+            (mono with { Layout = mono.Layout with { Readout = readout with { RoiWidth = 641 } } }).Validate().ReasonCode);
+        Assert.AreEqual(CaptureContractReasonCodes.InvalidCfa,
+            (bayer with { Layout = bayer.Layout with { Readout = shiftedCfa } }).Validate().ReasonCode);
     }
 
     [TestMethod]

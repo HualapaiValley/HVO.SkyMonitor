@@ -263,6 +263,24 @@ internal sealed class RawCaptureIngress :
                         Timing = expectedDescriptor.Timing with { SetpointAppliedUtc = null }
                     };
                 }
+                var existingLayout = manifest.Descriptor.Layout;
+                var expectedLayout = expectedDescriptor.Layout;
+                expectedDescriptor = expectedDescriptor with
+                {
+                    Layout = expectedLayout with
+                    {
+                        SampleDepthBits = existingLayout.StoredCodeTransform is null
+                            ? existingLayout.SampleDepthBits
+                            : expectedLayout.SampleDepthBits,
+                        Readout = existingLayout.Readout is null ? null : expectedLayout.Readout,
+                        StoredCodeTransform = existingLayout.StoredCodeTransform is null
+                            ? null
+                            : expectedLayout.StoredCodeTransform,
+                        LevelCodeSpace = existingLayout.LevelCodeSpace is null
+                            ? null
+                            : expectedLayout.LevelCodeSpace
+                    }
+                };
                 if (!string.Equals(
                         CaptureContractJson.ComputeDescriptorSha256(expectedDescriptor),
                         CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor),

@@ -4,15 +4,11 @@
     "type": "VirtualSky",
     "options": {
       "seed": 2025,
-      "rigProfileVersion": "virtual-asi178mc-fujinon-unverified-v5",
+      "rigProfileVersion": "virtual-asi178mc-fujinon-unverified-v6",
       "maximumMagnitude": 6.5,
       "maximumResults": 300,
       "magnitudeZeroElectronsPerSecond": 18000.0,
-      "bortleClass": 3,
-      "asi178Sensor": {
-        "enabled": true,
-        "blackLevelContainerAdu": 64.0
-      }
+      "bortleClass": 3
     }
   },
   "rig": {
@@ -26,7 +22,57 @@
       "responseMode": "BayerRaw",
       "strideBytes": 6192,
       "byteOrder": "LittleEndian",
-      "sensorRecipeVersion": "virtual-asi178mc-rggb16-v1"
+      "sensorRecipeVersion": "virtual-asi178mc-rggb16-v2",
+      "simulationResponse": {
+        "modelVersion": "zwo-asi178mc-14bit-raw16-v2",
+        "adcBitDepth": 14,
+        "minimumGainControl": 0.0,
+        "maximumGainControl": 400.0,
+        "electronsPerAduAtZeroGain": 0.916,
+        "gainControlDivisor": 200.0,
+        "maximumFullWellElectrons": 15000.0,
+        "readNoisePoints": [
+          { "gainControl": 0.0, "readNoiseElectrons": 2.25 },
+          { "gainControl": 50.0, "readNoiseElectrons": 1.92 },
+          { "gainControl": 100.0, "readNoiseElectrons": 1.72 },
+          { "gainControl": 150.0, "readNoiseElectrons": 1.57 },
+          { "gainControl": 200.0, "readNoiseElectrons": 1.44 },
+          { "gainControl": 270.0, "readNoiseElectrons": 1.37 },
+          { "gainControl": 300.0, "readNoiseElectrons": 1.37 },
+          { "gainControl": 400.0, "readNoiseElectrons": 1.35 }
+        ],
+        "blackLevelAdu": 16.0,
+        "gainUnits": "ZWO 0.1 dB",
+        "compatibilityLabel": "ASI178MC native 14-bit ADU in full-range RAW16",
+        "shotNoiseEnabled": true,
+        "darkNoiseEnabled": true,
+        "clampFullWellToAdcRange": true,
+        "colorResponse": {
+          "red": 0.94,
+          "green": 1.0,
+          "blue": 0.8,
+          "model": "legacy-asi178-relative-response"
+        }
+      }
+    },
+    "readout": {
+      "roi": { "x": 0, "y": 0, "width": 3096, "height": 2080 },
+      "binX": 1,
+      "binY": 1,
+      "binningAlgorithm": "IdentityV1",
+      "pixelFormat": "BayerRggb16",
+      "sampleDepthBits": 14,
+      "containerDepthBits": 16,
+      "packing": "ByteAligned",
+      "storedCodeTransform": "FullRangeScaledV1",
+      "levelCodeSpace": "StoredContainer",
+      "blackLevel": 64.0,
+      "whiteLevel": 65535.0,
+      "strideBytes": 6192,
+      "byteOrder": "LittleEndian",
+      "cfaPattern": "Rggb",
+      "cfaOriginX": 0,
+      "cfaOriginY": 0
     },
     "optics": {
       "projectionModel": "EquidistantFisheye",
@@ -54,6 +100,6 @@
       "dayGain": 0.0,
       "nightGain": 150.0
     },
-    "profileVersion": "virtual-asi178mc-fujinon-unverified-v5"
+    "profileVersion": "virtual-asi178mc-fujinon-unverified-v6"
   }
 }

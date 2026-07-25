@@ -450,6 +450,19 @@ internal sealed partial class CentralDerivativeOutputWriter(
         CfaPattern = layout.CfaPattern.ToString(),
         BlackLevel = layout.BlackLevel,
         WhiteLevel = layout.WhiteLevel,
+        StoredCodeTransform = layout.StoredCodeTransform?.ToString(),
+        LevelCodeSpace = layout.LevelCodeSpace?.ToString(),
+        NativeWidth = layout.Readout?.NativeWidth,
+        NativeHeight = layout.Readout?.NativeHeight,
+        RoiX = layout.Readout?.RoiX,
+        RoiY = layout.Readout?.RoiY,
+        RoiWidth = layout.Readout?.RoiWidth,
+        RoiHeight = layout.Readout?.RoiHeight,
+        BinX = layout.Readout?.BinX,
+        BinY = layout.Readout?.BinY,
+        BinningAlgorithm = layout.Readout?.BinningAlgorithm.ToString(),
+        CfaOriginX = layout.Readout?.CfaOriginX,
+        CfaOriginY = layout.Readout?.CfaOriginY,
         ByteLength = layout.ByteLength
     };
 

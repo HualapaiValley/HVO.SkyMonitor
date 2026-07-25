@@ -14,8 +14,20 @@ public static class RigProjectionContextFactory
         return CameraRigProfileIdentity.ComputeSha256(rig);
     }
 
-    /// <summary>Creates and validates the projection defined by the supplied rig.</summary>
+    /// <summary>Creates the effective output projection after the configured ROI/bin transform.</summary>
     public static ProjectionContext Create(CameraRigConfig rig)
+    {
+        var native = CreateNative(rig);
+        if (rig.Readout is null)
+        {
+            return native;
+        }
+        var readout = SensorReadoutResolver.Resolve(rig.Sensor, rig.Readout).Geometry;
+        return TransformReadout(native, readout, divideByBins: true);
+    }
+
+    /// <summary>Creates the calibrated native-sensor projection before readout.</summary>
+    public static ProjectionContext CreateNative(CameraRigConfig rig)
     {
         ArgumentNullException.ThrowIfNull(rig);
         var sensor = rig.Sensor ?? throw new ArgumentException("The rig sensor profile is required.", nameof(rig));
@@ -71,6 +83,19 @@ public static class RigProjectionContextFactory
         return projection;
     }
 
+    /// <summary>Creates native photosite projection coordinates relative to the configured ROI.</summary>
+    public static ProjectionContext CreateNativeRoi(CameraRigConfig rig)
+    {
+        ArgumentNullException.ThrowIfNull(rig);
+        if (rig.Readout is null)
+        {
+            return CreateNative(rig);
+        }
+        var native = CreateNative(rig);
+        var readout = SensorReadoutResolver.Resolve(rig.Sensor, rig.Readout).Geometry;
+        return TransformReadout(native, readout, divideByBins: false);
+    }
+
     /// <summary>Parses supported projection names, including rectilinear and gnomonic aliases.</summary>
     public static ProjectionModel ParseModel(string value)
     {
@@ -113,4 +138,30 @@ public static class RigProjectionContextFactory
     }
 
     private static double DegreesToRadians(double degrees) => degrees * Math.PI / 180d;
+
+    private static ProjectionContext TransformReadout(
+        ProjectionContext native,
+        FrameReadoutDescriptor readout,
+        bool divideByBins)
+    {
+        var radial = native.Model != ProjectionModel.Perspective;
+        if (radial && readout.BinX != readout.BinY)
+        {
+            throw new NotSupportedException("Radial fisheye readout requires equal X and Y bin factors.");
+        }
+        var binX = divideByBins ? readout.BinX : 1;
+        var binY = divideByBins ? readout.BinY : 1;
+        var transformed = native with
+        {
+            PrincipalPointX = (native.PrincipalPointX - readout.RoiX) / binX,
+            PrincipalPointY = (native.PrincipalPointY - readout.RoiY) / binY,
+            FocalLengthXPixels = native.FocalLengthXPixels / binX,
+            FocalLengthYPixels = native.FocalLengthYPixels / binY,
+            WidthPixels = divideByBins ? readout.RoiWidth / readout.BinX : readout.RoiWidth,
+            HeightPixels = divideByBins ? readout.RoiHeight / readout.BinY : readout.RoiHeight,
+            ImageCircleRadiusPixels = native.ImageCircleRadiusPixels / (radial ? binX : 1)
+        };
+        transformed.Validate();
+        return transformed;
+    }
 }

@@ -26,6 +26,7 @@ public sealed class VirtualSkyCameraModule(
     private VirtualSkyCameraModuleOptions _options = new();
     private VirtualCloudField? _cloudField;
     private VirtualTransientScenario? _transientScenario;
+    private ResolvedSensorReadout? _resolvedReadout;
     private long _captureSequence;
 
     public string Id { get; } = Guid.NewGuid().ToString("N");
@@ -37,8 +38,6 @@ public sealed class VirtualSkyCameraModule(
     {
         ArgumentNullException.ThrowIfNull(config);
         cancellationToken.ThrowIfCancellationRequested();
-        ValidateRig(config.Rig);
-        _config = config;
         if (config.ModuleOptions is { } options)
         {
             _options = JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(options.GetRawText(), SerializerOptions)
@@ -46,9 +45,16 @@ public sealed class VirtualSkyCameraModule(
         }
 
         _options.Validate();
+        ValidateRig(config.Rig, _options);
+        _resolvedReadout = config.Rig.Readout is null
+            ? null
+            : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout);
+        _config = config;
+        var outputWidth = _resolvedReadout?.Layout.Width ?? config.Rig.Sensor.WidthPixels;
+        var outputHeight = _resolvedReadout?.Layout.Height ?? config.Rig.Sensor.HeightPixels;
         if (_options.SyntheticCalibration is { } syntheticCalibration)
         {
-            syntheticCalibration.Validate(config.Rig.Sensor.WidthPixels, config.Rig.Sensor.HeightPixels);
+            syntheticCalibration.Validate(outputWidth, outputHeight);
         }
         if (_options.CloudScenario is { } configuredCloud)
         {
@@ -74,7 +80,8 @@ public sealed class VirtualSkyCameraModule(
             _options.Asi178Sensor.Enabled && pixelFormat != CameraPixelFormat.BayerRggb16 ||
             _options.Asi676Enabled && pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
             pixelFormat == CameraPixelFormat.BayerRggb16 &&
-            !_options.Asi178Sensor.Enabled && !_options.Asi676Enabled && _options.SyntheticCalibration is null ||
+            !_options.Asi178Sensor.Enabled && !_options.Asi676Enabled && _options.SyntheticCalibration is null &&
+            config.Rig.Sensor.SimulationResponse is null ||
             _options.SyntheticCalibration is not null &&
             (pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
                 _options.Asi174Sensor.Enabled || _options.Asi178Sensor.Enabled || _options.Asi676Enabled))
@@ -111,7 +118,11 @@ public sealed class VirtualSkyCameraModule(
         var setpoint = request.RequestedSetpoint ?? new CaptureSetpoint(
             config.Rig.Pipeline.NightExposure, config.Rig.Pipeline.NightGain, null, null);
         var sensor = config.Rig.Sensor;
-        var projection = RigProjectionContextFactory.Create(config.Rig);
+        var outputProjection = RigProjectionContextFactory.Create(config.Rig);
+        var useNativeReadout = RequiresNativeReadout(config.Rig, _resolvedReadout);
+        var renderProjection = useNativeReadout
+            ? RigProjectionContextFactory.CreateNativeRoi(config.Rig)
+            : outputProjection;
         var configuredMetadata = new CatalogMetadata(
             _options.CatalogName,
             _options.CatalogVersion,
@@ -126,7 +137,7 @@ public sealed class VirtualSkyCameraModule(
             sceneUtc,
             new ObserverLocation(observatory.LatitudeDegrees, observatory.LongitudeDegrees,
                 observatory.ElevationMeters),
-            projection,
+            renderProjection,
             new CatalogQuery(_options.MaximumMagnitude, _options.MaximumResults),
             metadata,
             horizonPolicy: HorizonPolicy.GeometricHorizon,
@@ -135,10 +146,20 @@ public sealed class VirtualSkyCameraModule(
             constellationIds: _options.ConstellationIds,
             solarSystemBodies: ParseSolarSystemBodies(_options.SolarSystemBodies),
             includeConstellationEndpointStars: _options.IncludeConstellationEndpointStars);
-        var scene = await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
+        var renderScene = await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
             .BuildAsync(sceneRequest, cancellationToken).ConfigureAwait(false);
-        var layout = new ImageLayout(sensor.WidthPixels, sensor.HeightPixels, sensor.PixelFormat,
-            sensor.StrideBytes ?? checked(sensor.WidthPixels * ImageLayout.BytesPerPixel(sensor.PixelFormat)));
+        var scene = useNativeReadout
+            ? VisibleSceneReadoutTransform.ToOutput(
+                renderScene, outputProjection, _resolvedReadout!.Geometry.BinX, _resolvedReadout.Geometry.BinY)
+            : renderScene;
+        var layout = _resolvedReadout is null
+            ? new ImageLayout(sensor.WidthPixels, sensor.HeightPixels, sensor.PixelFormat,
+                sensor.StrideBytes ?? checked(sensor.WidthPixels * ImageLayout.BytesPerPixel(sensor.PixelFormat)))
+            : new ImageLayout(
+                _resolvedReadout.Layout.Width,
+                _resolvedReadout.Layout.Height,
+                _resolvedReadout.Layout.PixelFormat,
+                _resolvedReadout.Layout.StrideBytes);
         var start = timeProvider.GetTimestamp();
         var sceneId = CreateSceneId(
             sceneRequest,
@@ -147,6 +168,13 @@ public sealed class VirtualSkyCameraModule(
             sensor,
             planetEphemeris?.ModelVersion,
             constellationTopology?.Metadata);
+        if (config.Rig.Readout is not null)
+        {
+            sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(
+                sceneId,
+                "\n",
+                CaptureContractJson.ComputeCanonicalJsonSha256(config.Rig.Readout)))));
+        }
         var captureSequence = _cloudField is null && _transientScenario is null
             ? Interlocked.Increment(ref _captureSequence) - 1
             : CreateDeterministicCaptureSequence(sceneId);
@@ -157,16 +185,21 @@ public sealed class VirtualSkyCameraModule(
             ? null
             : new VirtualTransientRenderContext(
                 _transientScenario, request.RequestedStartUtc, setpoint.Exposure);
-        var render = sensor.PixelFormat switch
-        {
-            CameraPixelFormat.Mono16 => Mono16SceneRenderer.Render(
-                scene, layout, CreateMonoOptions(setpoint, captureSequence, projection, cloud, transient)),
-            CameraPixelFormat.Rgb24 => Rgb24CompatibilityRenderer.Render(
-                scene, layout, CreateRgbOptions(setpoint, cloud, transient)),
-            CameraPixelFormat.BayerRggb16 => BayerRggb16Renderer.Render(
-                scene, layout, CreateBayerOptions(setpoint, captureSequence, projection, cloud, transient)),
-            _ => throw new UnreachableException()
-        };
+        var render = useNativeReadout
+            ? RenderNativeReadout(
+                renderScene, layout, setpoint, captureSequence, renderProjection, cloud, transient, cancellationToken)
+            : sensor.PixelFormat switch
+            {
+                CameraPixelFormat.Mono16 => Mono16SceneRenderer.Render(
+                    scene, layout, CreateMonoOptions(setpoint, captureSequence, outputProjection, cloud, transient),
+                    cancellationToken),
+                CameraPixelFormat.Rgb24 => Rgb24CompatibilityRenderer.Render(
+                    scene, layout, CreateRgbOptions(setpoint, cloud, transient), cancellationToken),
+                CameraPixelFormat.BayerRggb16 => BayerRggb16Renderer.Render(
+                    scene, layout, CreateBayerOptions(setpoint, captureSequence, outputProjection, cloud, transient),
+                    cancellationToken),
+                _ => throw new UnreachableException()
+            };
         if (_options.SyntheticCalibration is { } syntheticCalibration)
         {
             var affected = SyntheticCalibrationReferenceGenerator.ApplyToLightWithStatistics(
@@ -192,7 +225,7 @@ public sealed class VirtualSkyCameraModule(
             _options.TransientScenario, request.RequestedStartUtc, setpoint.Exposure);
         var provenance = new SceneProvenance(
             sceneId,
-            _options.RigProfileVersion,
+            config.Rig.ProfileVersion,
             metadata.Name,
             metadata.Version,
             metadata.Checksum,
@@ -252,7 +285,30 @@ public sealed class VirtualSkyCameraModule(
             extra["blackLevelAdu"] = calibration.BiasPedestalAdu.ToString(CultureInfo.InvariantCulture);
             extra["whiteLevelAdu"] = ushort.MaxValue.ToString(CultureInfo.InvariantCulture);
         }
-        if (_options.Asi174Sensor.Enabled)
+        if (sensor.SimulationResponse is { } configuredResponse)
+        {
+            var response = ConfiguredSensorResponseResolver.Resolve(configuredResponse, setpoint.Gain);
+            extra["sensorModel"] = configuredResponse.ModelVersion;
+            extra["gainUnits"] = configuredResponse.GainUnits;
+            extra["electronsPerAdu"] = response.ElectronsPerAdu.ToString("R", CultureInfo.InvariantCulture);
+            extra["readNoiseElectrons"] = response.ReadNoiseElectrons.ToString("R", CultureInfo.InvariantCulture);
+            extra["fullWellElectrons"] = response.FullWellElectrons.ToString("R", CultureInfo.InvariantCulture);
+            extra["sensorAdcBitDepth"] = response.AdcBitDepth.ToString(CultureInfo.InvariantCulture);
+            extra["blackLevelAdu"] = response.BlackLevelAdu.ToString("R", CultureInfo.InvariantCulture);
+            extra["whiteLevelAdu"] = ((1 << response.AdcBitDepth) - 1).ToString(CultureInfo.InvariantCulture);
+            extra["captureSequence"] = captureSequence.ToString(CultureInfo.InvariantCulture);
+            if (configuredResponse.CalibrationStatus is { } calibrationStatus)
+            {
+                extra["responseCalibrationStatus"] = calibrationStatus;
+            }
+            if (sensor.PixelFormat == CameraPixelFormat.BayerRggb16)
+            {
+                extra["containerBitDepth"] = "16";
+                extra["cfaPattern"] = "RGGB";
+                extra["channelResponseModel"] = configuredResponse.ColorResponse!.Model;
+            }
+        }
+        else if (_options.Asi174Sensor.Enabled)
         {
             var response = Asi174MmSensorModel.Resolve(setpoint.Gain, _options.Asi174Sensor.BlackLevelAdu);
             extra["sensorModel"] = Asi174MmSensorModel.Version;
@@ -276,7 +332,7 @@ public sealed class VirtualSkyCameraModule(
             extra["sensorAdcBitDepth"] = "14";
             extra["containerBitDepth"] = "16";
             extra["cfaPattern"] = "RGGB";
-            extra["blackLevelAdu"] = response.BlackLevelAdu.ToString("R", CultureInfo.InvariantCulture);
+            extra["blackLevelAdu"] = MapAsi178NativeCodeToRaw16(response.BlackLevelAdu).ToString(CultureInfo.InvariantCulture);
             extra["whiteLevelAdu"] = ushort.MaxValue.ToString(CultureInfo.InvariantCulture);
             extra["captureSequence"] = captureSequence.ToString(CultureInfo.InvariantCulture);
         }
@@ -300,8 +356,25 @@ public sealed class VirtualSkyCameraModule(
                 extra["channelResponseModel"] = "neutral-uncharacterized";
             }
         }
+        if (_resolvedReadout is { } configuredReadout)
+        {
+            if (configuredReadout.Layout.BlackLevel is { } blackLevel)
+            {
+                extra["blackLevelAdu"] = blackLevel.ToString("R", CultureInfo.InvariantCulture);
+            }
+            if (configuredReadout.Layout.WhiteLevel is { } whiteLevel)
+            {
+                extra["whiteLevelAdu"] = whiteLevel.ToString("R", CultureInfo.InvariantCulture);
+            }
+        }
+        var frameLayout = _resolvedReadout?.Layout ?? CreateFrameLayout(sensor, layout, extra);
+        var layoutValidation = frameLayout.Validate();
+        if (!layoutValidation.IsValid)
+        {
+            throw new InvalidOperationException($"VirtualSky produced an invalid frame layout ({layoutValidation.ReasonCode}).");
+        }
         var frame = new CameraFrame(
-            request.RequestedStartUtc.ToUniversalTime(), sensor.WidthPixels, sensor.HeightPixels, sensor.PixelFormat,
+            request.RequestedStartUtc.ToUniversalTime(), layout.Width, layout.Height, layout.PixelFormat,
             render.Pixels,
             new FrameMetadata(
                 setpoint.Exposure,
@@ -310,7 +383,10 @@ public sealed class VirtualSkyCameraModule(
                 "VirtualSky",
                 extra,
                 Scene: provenance),
-            layout.StrideBytes);
+            layout.StrideBytes)
+        {
+            Layout = frameLayout
+        };
         return new CaptureResult(frame, setpoint, timeProvider.GetElapsedTime(start), request.Mode, false)
         {
             // VirtualSky models exposure energy without waiting wall-clock exposure time.
@@ -328,34 +404,48 @@ public sealed class VirtualSkyCameraModule(
         long captureSequence,
         ProjectionContext projection,
         VirtualCloudRenderContext? cloud,
-        VirtualTransientRenderContext? transient) => new()
+        VirtualTransientRenderContext? transient)
+    {
+        var configured = _config!.Rig.Sensor.SimulationResponse;
+        var response = configured is not null
+            ? ConfiguredSensorResponseResolver.Resolve(configured, setpoint.Gain)
+            : _options.Asi174Sensor.Enabled
+                ? Asi174MmSensorModel.Resolve(setpoint.Gain, _options.Asi174Sensor.BlackLevelAdu)
+                : _options.Asi676Enabled
+                    ? Asi676SensorModel.Resolve(setpoint.Gain, _options.Asi676Sensor!.BlackLevelAdu)
+                    : null;
+        var electronDomain = response is not null;
+        return new Mono16SceneRenderOptions
         {
             ExposureSeconds = setpoint.Exposure.TotalSeconds,
             Gain = setpoint.Gain,
             MagnitudeZeroElectronsPerSecond = _options.MagnitudeZeroElectronsPerSecond,
-            BackgroundElectronsPerSecond = _options.ResolveBackgroundElectronsPerSecond(projection),
+            BackgroundElectronsPerSecond = _options.BackgroundElectronsPerSecond ?? (electronDomain
+                ? SkyBrightnessModel.PhotometricBackgroundElectronsPerSecond(
+                    _options.BortleClass,
+                    _options.MagnitudeZeroElectronsPerSecond,
+                    projection.FocalLengthXPixels,
+                    projection.FocalLengthYPixels)
+                : _options.ResolveBackgroundElectronsPerSecond()),
             PsfSigmaPixels = _options.PsfSigmaPixels,
             PsfRadiusPixels = _options.PsfRadiusPixels,
             VignettingStrength = _options.SyntheticCalibration is null ? _options.VignettingStrength : 0,
-            Bias = _options.SyntheticCalibration is not null || _options.Asi174Sensor.Enabled || _options.Asi676Enabled ? 0 : _options.Bias,
-            ReadNoiseStandardDeviation = _options.Asi174Sensor.Enabled || _options.Asi676Enabled
-                ? 0
-                : _options.ReadNoiseStandardDeviation,
-            ShotNoiseEnabled = _options.Asi174Sensor.Enabled || _options.Asi676Enabled || _options.ShotNoiseEnabled,
+            Bias = _options.SyntheticCalibration is not null || electronDomain ? 0 : _options.Bias,
+            ReadNoiseStandardDeviation = electronDomain ? 0 : _options.ReadNoiseStandardDeviation,
+            ShotNoiseEnabled = configured?.ShotNoiseEnabled ??
+                (_options.Asi174Sensor.Enabled || _options.Asi676Enabled || _options.ShotNoiseEnabled),
             DarkCurrentElectronsPerSecond = _options.SyntheticCalibration is null ? _options.DarkCurrentElectronsPerSecond : 0,
-            DarkNoiseEnabled = (_options.Asi174Sensor.Enabled || _options.Asi676Enabled) &&
+            DarkNoiseEnabled = (configured?.DarkNoiseEnabled ??
+                (_options.Asi174Sensor.Enabled || _options.Asi676Enabled)) &&
                 _options.DarkCurrentElectronsPerSecond > 0,
-            Seed = _options.Asi174Sensor.Enabled || _options.Asi676Enabled
+            Seed = electronDomain
                 ? unchecked(_options.Seed + (int)(captureSequence * 104729))
                 : _options.Seed,
             Cloud = cloud,
             Transient = transient,
-            SensorResponse = _options.Asi174Sensor.Enabled
-                ? Asi174MmSensorModel.Resolve(setpoint.Gain, _options.Asi174Sensor.BlackLevelAdu)
-                : _options.Asi676Enabled
-                    ? Asi676SensorModel.Resolve(setpoint.Gain, _options.Asi676Sensor!.BlackLevelAdu)
-                    : null
+            SensorResponse = response
         };
+    }
 
     private Rgb24CompatibilityRenderOptions CreateRgbOptions(
         CaptureSetpoint setpoint,
@@ -388,40 +478,233 @@ public sealed class VirtualSkyCameraModule(
             ExposureSeconds = setpoint.Exposure.TotalSeconds,
             Gain = setpoint.Gain,
             MagnitudeZeroElectronsPerSecond = _options.MagnitudeZeroElectronsPerSecond,
-            BackgroundElectronsPerSecond = _options.ResolveBackgroundElectronsPerSecond(projection),
+            BackgroundElectronsPerSecond = _config!.Rig.Sensor.SimulationResponse is not null
+                ? _options.BackgroundElectronsPerSecond ?? SkyBrightnessModel.PhotometricBackgroundElectronsPerSecond(
+                    _options.BortleClass,
+                    _options.MagnitudeZeroElectronsPerSecond,
+                    projection.FocalLengthXPixels,
+                    projection.FocalLengthYPixels)
+                : _options.ResolveBackgroundElectronsPerSecond(projection),
             PsfSigmaPixels = _options.PsfSigmaPixels,
             PsfRadiusPixels = _options.PsfRadiusPixels,
             VignettingStrength = _options.SyntheticCalibration is null ? _options.VignettingStrength : 0,
-            ShotNoiseEnabled = true,
+            ShotNoiseEnabled = _config.Rig.Sensor.SimulationResponse?.ShotNoiseEnabled ?? true,
             DarkCurrentElectronsPerSecond = _options.SyntheticCalibration is null ? _options.DarkCurrentElectronsPerSecond : 0,
-            DarkNoiseEnabled = _options.SyntheticCalibration is null && _options.DarkCurrentElectronsPerSecond > 0,
+            DarkNoiseEnabled = (_config.Rig.Sensor.SimulationResponse?.DarkNoiseEnabled ?? true) &&
+                _options.SyntheticCalibration is null && _options.DarkCurrentElectronsPerSecond > 0,
             Seed = unchecked(_options.Seed + (int)(captureSequence * 104729)),
             Cloud = cloud,
             Transient = transient,
-            ChannelResponse = _options.SyntheticCalibration is not null || _options.Asi676Enabled
-                ? new RgbChannelSettings(1, 1, 1)
-                : new RgbChannelSettings(0.94, 1, 0.8),
-            SensorResponse = _options.Asi178Sensor.Enabled
-                ? Asi178McSensorModel.Resolve(setpoint.Gain, _options.Asi178Sensor.BlackLevelContainerAdu)
-                : _options.Asi676Enabled
-                    ? Asi676SensorModel.Resolve(setpoint.Gain, _options.Asi676Sensor!.BlackLevelAdu)
-                    : new MonoSensorResponse
-                    {
-                        AdcBitDepth = 16,
-                        FullWellElectrons = ushort.MaxValue,
-                        ElectronsPerAdu = 1,
-                        ReadNoiseElectrons = 0,
-                        BlackLevelAdu = 0,
-                        CompatibilityLabel = "Synthetic calibration ideal RGGB16 input"
-                    }
+            ChannelResponse = _config.Rig.Sensor.SimulationResponse?.ColorResponse is { } configuredColor
+                ? new RgbChannelSettings(configuredColor.Red, configuredColor.Green, configuredColor.Blue)
+                : _options.SyntheticCalibration is not null || _options.Asi676Enabled
+                    ? new RgbChannelSettings(1, 1, 1)
+                    : new RgbChannelSettings(0.94, 1, 0.8),
+            SensorResponse = _config.Rig.Sensor.SimulationResponse is { } configuredResponse
+                ? ConfiguredSensorResponseResolver.Resolve(configuredResponse, setpoint.Gain)
+                : _options.Asi178Sensor.Enabled
+                    ? Asi178McSensorModel.Resolve(setpoint.Gain, _options.Asi178Sensor.BlackLevelContainerAdu)
+                    : _options.Asi676Enabled
+                        ? Asi676SensorModel.Resolve(setpoint.Gain, _options.Asi676Sensor!.BlackLevelAdu)
+                        : new MonoSensorResponse
+                        {
+                            AdcBitDepth = 16,
+                            FullWellElectrons = ushort.MaxValue,
+                            ElectronsPerAdu = 1,
+                            ReadNoiseElectrons = 0,
+                            BlackLevelAdu = 0,
+                            CompatibilityLabel = "Synthetic calibration ideal RGGB16 input"
+                        },
+            StoredCodeTransform = _resolvedReadout?.Layout.StoredCodeTransform ??
+                (_options.Asi178Sensor.Enabled
+                    ? FrameStoredCodeTransform.FullRangeScaledV1
+                    : FrameStoredCodeTransform.RightAlignedV1),
+            ContainerDepthBits = _resolvedReadout?.Layout.ContainerDepthBits ?? 16
         };
 
-    private static void ValidateRig(CameraRigConfig rig)
+    private FrameLayoutDescriptor CreateFrameLayout(
+        SensorProfile sensor,
+        ImageLayout imageLayout,
+        IReadOnlyDictionary<string, string> metadata)
+    {
+        var is16Bit = sensor.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16;
+        var (sampleDepth, containerDepth, packing, transform, levelSpace, blackLevel, whiteLevel) = _options switch
+        {
+            { Asi174Sensor.Enabled: true } =>
+                (12, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.RightAlignedV1,
+                    FrameLevelCodeSpace.NativeSample, ResolveMetadataLevel(metadata, "blackLevelAdu"), ResolveMetadataLevel(metadata, "whiteLevelAdu")),
+            { Asi178Sensor.Enabled: true } =>
+                (14, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.FullRangeScaledV1,
+                    FrameLevelCodeSpace.StoredContainer, ResolveMetadataLevel(metadata, "blackLevelAdu"), ResolveMetadataLevel(metadata, "whiteLevelAdu")),
+            { Asi676Enabled: true } =>
+                (12, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.RightAlignedV1,
+                    FrameLevelCodeSpace.NativeSample, ResolveMetadataLevel(metadata, "blackLevelAdu"), ResolveMetadataLevel(metadata, "whiteLevelAdu")),
+            _ => (is16Bit ? 16 : 8, is16Bit ? 16 : 8, FrameSamplePacking.ByteAligned,
+                FrameStoredCodeTransform.IdentityV1, FrameLevelCodeSpace.StoredContainer,
+                ResolveMetadataLevel(metadata, "blackLevelAdu"), ResolveMetadataLevel(metadata, "whiteLevelAdu"))
+        };
+        return new FrameLayoutDescriptor(
+            imageLayout.Width,
+            imageLayout.Height,
+            imageLayout.StrideBytes,
+            imageLayout.PixelFormat,
+            is16Bit ? FrameByteOrder.LittleEndian : FrameByteOrder.NotApplicable,
+            sampleDepth,
+            containerDepth,
+            packing,
+            sensor.PixelFormat == CameraPixelFormat.BayerRggb16
+                ? ColorFilterArrayPattern.Rggb
+                : ColorFilterArrayPattern.None,
+            blackLevel,
+            whiteLevel,
+            imageLayout.RequiredByteLength)
+        {
+            Readout = new FrameReadoutDescriptor(
+                imageLayout.Width,
+                imageLayout.Height,
+                0,
+                0,
+                imageLayout.Width,
+                imageLayout.Height,
+                1,
+                1,
+                FrameBinningAlgorithm.IdentityV1,
+                sensor.PixelFormat == CameraPixelFormat.BayerRggb16 ? 0 : null,
+                sensor.PixelFormat == CameraPixelFormat.BayerRggb16 ? 0 : null),
+            StoredCodeTransform = transform,
+            LevelCodeSpace = levelSpace
+        };
+    }
+
+    private SceneRenderResult RenderNativeReadout(
+        VisibleScene renderScene,
+        ImageLayout outputLayout,
+        CaptureSetpoint setpoint,
+        long captureSequence,
+        ProjectionContext renderProjection,
+        VirtualCloudRenderContext? cloud,
+        VirtualTransientRenderContext? transient,
+        CancellationToken cancellationToken)
+    {
+        var resolved = _resolvedReadout ?? throw new InvalidOperationException("A resolved readout is required.");
+        var nativeLayout = new ImageLayout(
+            resolved.Geometry.RoiWidth,
+            resolved.Geometry.RoiHeight,
+            CameraPixelFormat.Mono16,
+            checked(resolved.Geometry.RoiWidth * 2));
+        var options = CreateMonoOptions(setpoint, captureSequence, renderProjection, cloud, transient);
+        var native = Mono16SceneRenderer.Render(renderScene, nativeLayout, options, cancellationToken);
+        return MonoDigitalReadoutRenderer.Apply(
+            native,
+            nativeLayout,
+            outputLayout,
+            resolved.Profile,
+            options.SensorResponse?.AdcBitDepth ?? 16,
+            RigProjectionContextFactory.Create(_config!.Rig),
+            cancellationToken);
+    }
+
+    private static bool RequiresNativeReadout(CameraRigConfig rig, ResolvedSensorReadout? resolved)
+        => resolved is not null &&
+            (resolved.Geometry.RoiX != 0 || resolved.Geometry.RoiY != 0 ||
+             resolved.Geometry.RoiWidth != rig.Sensor.WidthPixels ||
+             resolved.Geometry.RoiHeight != rig.Sensor.HeightPixels ||
+              resolved.Geometry.BinX != 1 || resolved.Geometry.BinY != 1 ||
+              resolved.Layout.PixelFormat != rig.Sensor.PixelFormat ||
+              rig.Sensor.PixelFormat == CameraPixelFormat.Mono16 &&
+              resolved.Layout.SampleDepthBits != NominalSampleDepth(rig.Sensor.PixelFormat) ||
+              resolved.Layout.ByteOrder == FrameByteOrder.BigEndian);
+
+    private static int NominalSampleDepth(CameraPixelFormat format)
+        => format is CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24 ? 8 : 16;
+
+    private static double? ResolveMetadataLevel(IReadOnlyDictionary<string, string> metadata, string key)
+        => metadata.TryGetValue(key, out var value) && double.TryParse(
+            value, NumberStyles.Float, CultureInfo.InvariantCulture, out var level)
+            ? level
+            : null;
+
+    private static int MapAsi178NativeCodeToRaw16(double nativeCode)
+        => (int)Math.Round(nativeCode * ushort.MaxValue / 16_383, MidpointRounding.AwayFromZero);
+
+    private static void ValidateRig(CameraRigConfig rig, VirtualSkyCameraModuleOptions options)
     {
         ArgumentNullException.ThrowIfNull(rig);
         if (rig.Sensor.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.Rgb24 or CameraPixelFormat.BayerRggb16))
         {
             throw new NotSupportedException("VirtualSky supports Mono16, RGB24 compatibility, or BayerRggb16 output.");
+        }
+
+        if (rig.Sensor.SimulationResponse is { } simulationResponse)
+        {
+            ConfiguredSensorResponseResolver.Validate(simulationResponse);
+            var configuredMono = rig.Sensor.PixelFormat == CameraPixelFormat.Mono16 &&
+                rig.Sensor.ColorMode == SensorColorMode.Mono &&
+                rig.Sensor.ResponseMode == SensorResponseMode.Monochrome;
+            var configuredBayer = rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16 &&
+                rig.Sensor.ColorMode == SensorColorMode.Color &&
+                rig.Sensor.ResponseMode == SensorResponseMode.BayerRaw &&
+                simulationResponse.ColorResponse is not null;
+            if (rig.Readout is null || !configuredMono && !configuredBayer)
+            {
+                throw new NotSupportedException(
+                    "A configured sensor response requires a supported native sensor and an explicit readout descriptor.");
+            }
+            var pipeline = rig.Pipeline;
+            var gainsAreSupported = pipeline.Envelope is { } envelope
+                ? IsSupportedGain(envelope.MinGain, simulationResponse) &&
+                  IsSupportedGain(envelope.MaxGain, simulationResponse)
+                : IsSupportedGain(pipeline.DayGain, simulationResponse) &&
+                  IsSupportedGain(pipeline.NightGain, simulationResponse);
+            if (!gainsAreSupported)
+            {
+                throw new NotSupportedException(
+                    "The pipeline gain range must be contained by the configured sensor response.");
+            }
+        }
+
+        var resolved = rig.Readout is null ? null : SensorReadoutResolver.Resolve(rig.Sensor, rig.Readout);
+        var requiresNativeReadout = RequiresNativeReadout(rig, resolved);
+        if (requiresNativeReadout &&
+            (rig.Sensor.PixelFormat != CameraPixelFormat.Mono16 ||
+             resolved!.Layout.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16) ||
+             resolved.Profile.BinningAlgorithm == FrameBinningAlgorithm.ChargeSumV1 ||
+             resolved.Profile.Packing != FrameSamplePacking.ByteAligned ||
+             options.SyntheticCalibration is not null || options.CloudScenario is not null || options.TransientScenario is not null))
+        {
+            throw new NotSupportedException(
+                "VirtualSky native readout currently supports byte-aligned monochrome identity, digital-sum, and digital-average modes without scenarios or synthetic calibration.");
+        }
+        var nativeSampleDepth = rig.Sensor.SimulationResponse?.AdcBitDepth ?? options switch
+        {
+            { Asi174Sensor.Enabled: true } => 12,
+            { Asi676Enabled: true } => 12,
+            { Asi178Sensor.Enabled: true } => 14,
+            _ => 16
+        };
+        if (resolved is not null && resolved.Layout.SampleDepthBits > nativeSampleDepth)
+        {
+            throw new NotSupportedException("The output sample depth exceeds the configured native sensor response.");
+        }
+        if (resolved is not null && rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16 &&
+            resolved.Layout.SampleDepthBits != nativeSampleDepth)
+        {
+            throw new NotSupportedException("VirtualSky Bayer output currently requires the native sensor sample depth.");
+        }
+        if (rig.Sensor.SimulationResponse is { } configuredResponse)
+        {
+            if (rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16 &&
+                (requiresNativeReadout || resolved!.Layout.PixelFormat != CameraPixelFormat.BayerRggb16 ||
+                 resolved.Layout.SampleDepthBits != configuredResponse.AdcBitDepth ||
+                 resolved.Profile.BinningAlgorithm != FrameBinningAlgorithm.IdentityV1 ||
+                 resolved.Profile.Packing != FrameSamplePacking.ByteAligned ||
+                 resolved.Profile.StoredCodeTransform is not
+                     (FrameStoredCodeTransform.RightAlignedV1 or FrameStoredCodeTransform.FullRangeScaledV1)))
+            {
+                throw new NotSupportedException(
+                    "Configured Bayer response currently requires a full-frame, unbinned, little-endian Bayer readout at native sample depth.");
+            }
+            ValidateConfiguredReadoutLevels(configuredResponse, resolved!);
         }
 
         var model = RigProjectionContextFactory.ParseModel(rig.Optics.ProjectionModel);
@@ -460,6 +743,52 @@ public sealed class VirtualSkyCameraModule(
 
         _ = RigProjectionContextFactory.Create(rig);
     }
+
+    private static bool IsSupportedGain(double gain, ConfiguredSensorResponseProfile response)
+        => double.IsFinite(gain) && gain >= response.MinimumGainControl && gain <= response.MaximumGainControl;
+
+    private static void ValidateConfiguredReadoutLevels(
+        ConfiguredSensorResponseProfile response,
+        ResolvedSensorReadout readout)
+    {
+        var profile = readout.Profile;
+        var nativeBlack = checked((int)Math.Round(response.BlackLevelAdu, MidpointRounding.AwayFromZero));
+        var shift = response.AdcBitDepth - profile.SampleDepthBits;
+        var meaningfulBlack = shift == 0
+            ? nativeBlack
+            : (nativeBlack + (1 << (shift - 1))) >> shift;
+        var meaningfulMaximum = (1 << profile.SampleDepthBits) - 1;
+        if (profile.BinningAlgorithm == FrameBinningAlgorithm.DigitalSumV1)
+        {
+            meaningfulBlack = Math.Min(
+                checked(meaningfulBlack * profile.BinX * profile.BinY),
+                meaningfulMaximum);
+        }
+        var expectedBlack = profile.LevelCodeSpace == FrameLevelCodeSpace.NativeSample
+            ? meaningfulBlack
+            : MapStoredCode(meaningfulBlack, profile);
+        var expectedWhite = profile.LevelCodeSpace == FrameLevelCodeSpace.NativeSample
+            ? meaningfulMaximum
+            : MapStoredCode(meaningfulMaximum, profile);
+        if (profile.BlackLevel != expectedBlack || profile.WhiteLevel != expectedWhite)
+        {
+            throw new NotSupportedException(
+                "Configured readout levels must match the sensor response, binning, and stored-code transform.");
+        }
+    }
+
+    private static int MapStoredCode(int meaningfulCode, SensorReadoutProfile readout)
+        => readout.StoredCodeTransform switch
+        {
+            FrameStoredCodeTransform.IdentityV1 or FrameStoredCodeTransform.RightAlignedV1 => meaningfulCode,
+            FrameStoredCodeTransform.LeftShiftedV1 => meaningfulCode <<
+                (readout.ContainerDepthBits - readout.SampleDepthBits),
+            FrameStoredCodeTransform.FullRangeScaledV1 => checked((int)Math.Round(
+                meaningfulCode * ((1 << readout.ContainerDepthBits) - 1d) /
+                ((1 << readout.SampleDepthBits) - 1d),
+                MidpointRounding.AwayFromZero)),
+            _ => throw new ArgumentOutOfRangeException(nameof(readout))
+        };
 
     private static string CreateSceneId(
         VisibleSceneRequest request,

@@ -38,6 +38,9 @@ internal static class CentralReconstructionConfiguration
         layout.Property(item => item.ByteOrder).HasMaxLength(32).IsRequired();
         layout.Property(item => item.Packing).HasMaxLength(32).IsRequired();
         layout.Property(item => item.CfaPattern).HasMaxLength(32).IsRequired();
+        layout.Property(item => item.StoredCodeTransform).HasMaxLength(64);
+        layout.Property(item => item.LevelCodeSpace).HasMaxLength(32);
+        layout.Property(item => item.BinningAlgorithm).HasMaxLength(64);
         layout.HasOne(item => item.Artifact).WithOne(item => item.Layout)
             .HasForeignKey<CentralArtifactLayout>(item => item.CentralArtifactId).OnDelete(DeleteBehavior.Cascade);
 

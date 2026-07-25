@@ -87,6 +87,8 @@ public sealed class VirtualTransientScenarioTests
         var absent = VirtualTransientSignalRenderer.Render(
             scene, layout, new VirtualTransientRenderContext(scenario, Epoch.AddSeconds(2), TimeSpan.FromSeconds(1)),
             10_000, 0.6, 3);
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync().ConfigureAwait(false);
 
         Assert.IsTrue(first.ActivePixelCount > 0);
         Assert.IsTrue(second.ActivePixelCount > 0);
@@ -94,6 +96,14 @@ public sealed class VirtualTransientScenarioTests
         Assert.IsTrue(first.Geometry[0].DepositedCentroid!.Value.X < second.Geometry[0].DepositedCentroid!.Value.X);
         Assert.IsTrue(first.Pixels[0].SensorElectrons > 0, "Sensor-stage charge must bypass the optical aperture.");
         Assert.AreEqual(0, first.Pixels[0].RedSkyElectrons);
+        Assert.ThrowsExactly<OperationCanceledException>(() => VirtualTransientSignalRenderer.Render(
+            scene,
+            layout,
+            new VirtualTransientRenderContext(scenario, Epoch, TimeSpan.FromSeconds(1)),
+            10_000,
+            0.6,
+            3,
+            cancellationToken: cancellation.Token));
     }
 
     [TestMethod]

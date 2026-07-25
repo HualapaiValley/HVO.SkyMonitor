@@ -61,7 +61,10 @@ public static class FrameReconstructor
                 descriptor.Controls.EffectiveTemperatureC ?? double.NaN,
                 descriptor.Artifact.SourceId,
                 Offset: descriptor.Controls.EffectiveOffset),
-            descriptor.Layout.StrideBytes);
+            descriptor.Layout.StrideBytes)
+        {
+            Layout = descriptor.Layout
+        };
         return CaptureContractValidationResult.Success;
     }
 }

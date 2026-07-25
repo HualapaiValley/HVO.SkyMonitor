@@ -53,10 +53,7 @@ internal static class RawCaptureDescriptorFactory
             ? NoneOptions
             : JsonSerializer.SerializeToElement(calibrationSteps);
         var rigHash = CameraRigProfileIdentity.ComputeSha256(configuration.Rig);
-        var stride = frame.StrideBytes ?? GetPackedStride(frame.Width, frame.PixelFormat);
-        var (byteOrder, sampleDepth, containerDepth, cfa) = LayoutFacts(
-            frame.PixelFormat,
-            configuration.Rig.Sensor.ByteOrder);
+        var layout = ResolveLayout(configuration, frame);
 
         var syntheticCalibrationIdentity = ResolveIdentity(frame, "syntheticCalibrationModelSha256");
         var syntheticCalibrationSchema = ResolveText(frame, "syntheticCalibrationSchema");
@@ -88,19 +85,7 @@ internal static class RawCaptureDescriptorFactory
                 Profile("mask", "none-v1", NoneOptions),
                 Profile(configuration.Rig.Sensor.Name, configuration.Rig.Sensor.SensorRecipeVersion, sensorElement),
                 Profile("processing", "configured-v1", processingElement)),
-            new FrameLayoutDescriptor(
-                frame.Width,
-                frame.Height,
-                stride,
-                frame.PixelFormat,
-                byteOrder,
-                sampleDepth,
-                containerDepth,
-                FrameSamplePacking.ByteAligned,
-                cfa,
-                ResolveLevel(frame, "blackLevelAdu"),
-                ResolveLevel(frame, "whiteLevelAdu"),
-                frame.PixelData.Length),
+            layout,
             new ArtifactDescriptor(
                 identity.ArtifactId,
                 FrameArtifactRole.Raw,
@@ -192,10 +177,48 @@ internal static class RawCaptureDescriptorFactory
             _ => throw new ArgumentOutOfRangeException(nameof(pixelFormat))
         }));
 
+    private static FrameLayoutDescriptor ResolveLayout(CameraModuleConfig configuration, CameraFrame frame)
+    {
+        if (frame.Layout is { } authoritative)
+        {
+            var effectiveStride = frame.StrideBytes ?? authoritative.StrideBytes;
+            if (authoritative.Width != frame.Width || authoritative.Height != frame.Height ||
+                authoritative.PixelFormat != frame.PixelFormat || authoritative.StrideBytes != effectiveStride ||
+                authoritative.ByteLength != frame.PixelData.Length)
+            {
+                throw new InvalidOperationException("Camera frame fields do not match its authoritative layout.");
+            }
+            var validation = authoritative.Validate();
+            if (!validation.IsValid)
+            {
+                throw new InvalidOperationException(
+                    $"Camera frame authoritative layout is invalid ({validation.ReasonCode}).");
+            }
+            return authoritative;
+        }
+
+        var stride = frame.StrideBytes ?? GetPackedStride(frame.Width, frame.PixelFormat);
+        var (byteOrder, sampleDepth, containerDepth, cfa) = LayoutFacts(
+            frame.PixelFormat,
+            configuration.Rig.Sensor.ByteOrder);
+        return new FrameLayoutDescriptor(
+            frame.Width,
+            frame.Height,
+            stride,
+            frame.PixelFormat,
+            byteOrder,
+            sampleDepth,
+            containerDepth,
+            FrameSamplePacking.ByteAligned,
+            cfa,
+            ResolveLevel(frame, "blackLevelAdu"),
+            ResolveLevel(frame, "whiteLevelAdu"),
+            frame.PixelData.Length);
+    }
+
     private static (FrameByteOrder, int, int, ColorFilterArrayPattern) LayoutFacts(
         CameraPixelFormat pixelFormat,
         SampleByteOrder configuredByteOrder)
-        // Layout describes persisted samples; virtual native ADC values are scaled into the declared frame container.
         => pixelFormat switch
         {
             CameraPixelFormat.Mono8 => (FrameByteOrder.NotApplicable, 8, 8, ColorFilterArrayPattern.None),

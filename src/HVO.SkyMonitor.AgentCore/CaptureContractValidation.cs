@@ -23,6 +23,8 @@ public static class CaptureContractReasonCodes
     public const string InvalidPacking = "layout.invalid-packing";
     public const string InvalidCfa = "layout.invalid-cfa";
     public const string InvalidLevels = "layout.invalid-levels";
+    public const string InvalidStoredCode = "layout.invalid-stored-code";
+    public const string InvalidReadout = "layout.invalid-readout";
     public const string InvalidArtifactRole = "artifact.invalid-role";
     public const string InvalidArtifactVariant = "artifact.invalid-variant";
     public const string InvalidLineage = "lineage.invalid";

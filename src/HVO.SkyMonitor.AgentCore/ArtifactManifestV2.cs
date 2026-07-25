@@ -56,7 +56,10 @@ public sealed record ArtifactManifestDocument(
         => new(CaptureManifestCompleteness.LegacyIncomplete, manifest, null);
 
     public static ArtifactManifestDocument FromCurrent(ArtifactManifestV2 manifest)
-        => new(CaptureManifestCompleteness.Complete, null, manifest);
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        return new(manifest.Descriptor.Layout.GetManifestCompleteness(), null, manifest);
+    }
 }
 
 /// <summary>Manifest parse result with a stable validation failure when parsing does not succeed.</summary>

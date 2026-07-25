@@ -1017,6 +1017,52 @@ public sealed class ProcessingRecipeTests
             Assert.AreEqual(ProcessingReasonCodes.InvalidLayout, invalidLayout.ReasonCode);
         }
 
+        var lowerDepth = input.Layout! with
+        {
+            SampleDepthBits = 12,
+            WhiteLevel = 4095,
+            StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+            LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+        };
+        var lowerDepthResult = await executor.ExecuteAsync(Request(
+            BuiltInProcessingRecipes.ImageQuality,
+            EmptyOptions(),
+            ProcessingInputSelector.Raw(),
+            [input with { Layout = lowerDepth }],
+            "lower-depth")).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, lowerDepthResult.Status);
+
+        foreach (var unsupportedTransform in new[]
+        {
+            FrameStoredCodeTransform.LeftShiftedV1,
+            FrameStoredCodeTransform.FullRangeScaledV1
+        })
+        {
+            var unsupportedLayout = lowerDepth with { StoredCodeTransform = unsupportedTransform };
+            var unsupportedResult = await executor.ExecuteAsync(Request(
+                BuiltInProcessingRecipes.ImageQuality,
+                EmptyOptions(),
+                ProcessingInputSelector.Raw(),
+                [input with { Layout = unsupportedLayout }],
+                "unsupported-native-level-space")).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, unsupportedResult.Status);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidLayout, unsupportedResult.ReasonCode);
+        }
+
+        var shiftedStored = lowerDepth with
+        {
+            StoredCodeTransform = FrameStoredCodeTransform.LeftShiftedV1,
+            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer,
+            WhiteLevel = 65_520
+        };
+        var shiftedStoredResult = await executor.ExecuteAsync(Request(
+            BuiltInProcessingRecipes.ImageQuality,
+            EmptyOptions(),
+            ProcessingInputSelector.Raw(),
+            [input with { Layout = shiftedStored }],
+            "shifted-stored-level-space")).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, shiftedStoredResult.Status);
+
         var malformedFormatArtifacts = new[]
         {
             input with { Layout = null },

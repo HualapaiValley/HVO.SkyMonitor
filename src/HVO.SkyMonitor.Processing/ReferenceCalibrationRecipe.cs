@@ -206,7 +206,14 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
             FrameArtifactRole.Calibrated,
             request.OutputVariant,
             "application/x-hvo-linear-frame",
-            ProcessingRecipeSupport.CreatePackedLayout(lightLayout) with { BlackLevel = 0, WhiteLevel = ushort.MaxValue },
+            ProcessingRecipeSupport.CreatePackedLayout(lightLayout) with
+            {
+                SampleDepthBits = 16,
+                BlackLevel = 0,
+                WhiteLevel = ushort.MaxValue,
+                StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+                LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+            },
             correction.PixelData,
             identity,
             [new("linear16-reference-calibration", correction.AlgorithmVersion)],
@@ -272,7 +279,9 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
         => expected.Width == actual.Width && expected.Height == actual.Height &&
            expected.PixelFormat == actual.PixelFormat && expected.ByteOrder == actual.ByteOrder &&
            expected.SampleDepthBits == actual.SampleDepthBits && expected.ContainerDepthBits == actual.ContainerDepthBits &&
-           expected.Packing == actual.Packing && expected.CfaPattern == actual.CfaPattern;
+           expected.Packing == actual.Packing && expected.CfaPattern == actual.CfaPattern &&
+           expected.StoredCodeTransform == actual.StoredCodeTransform &&
+           expected.LevelCodeSpace == actual.LevelCodeSpace && expected.Readout == actual.Readout;
 
     private static Linear16Frame ToFrame(ProcessingArtifact artifact)
         => new(

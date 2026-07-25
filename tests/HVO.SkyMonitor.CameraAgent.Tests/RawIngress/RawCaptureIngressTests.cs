@@ -248,6 +248,98 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
+    public async Task AcceptAsync_PersistsAuthoritativeLowerDepthLayoutWithoutInference()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var payload = new byte[8];
+            var layout = CreateLowerDepthLayout() with
+            {
+                Readout = new FrameReadoutDescriptor(
+                    4, 4, 0, 0, 4, 4, 2, 2, FrameBinningAlgorithm.DigitalAverageV1, null, null)
+            };
+            var submission = WithFrameLayout(CreateSubmission(Timestamp(3), payload), layout);
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+
+            var receipt = await ingress.AcceptAsync(
+                CreateMono16Configuration(), submission, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNotNull(receipt);
+            Assert.AreEqual(layout, receipt.Manifest.Descriptor.Layout);
+            var sidecar = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(
+                Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")).ConfigureAwait(false));
+            Assert.IsTrue(sidecar.IsValid, sidecar.Validation.ReasonCode);
+            Assert.AreEqual(CaptureManifestCompleteness.Complete, sidecar.Document!.Completeness);
+            Assert.AreEqual(layout, sidecar.Document.Manifest!.Descriptor.Layout);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_RetryDoesNotRewriteLegacyLayoutMissingAdditiveFacts()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var payload = new byte[8];
+            var completeLayout = CreateLowerDepthLayout() with
+            {
+                Readout = new FrameReadoutDescriptor(
+                    2, 2, 0, 0, 2, 2, 1, 1, FrameBinningAlgorithm.IdentityV1, null, null)
+            };
+            var legacyLayout = completeLayout with
+            {
+                SampleDepthBits = 16,
+                Readout = null,
+                StoredCodeTransform = null,
+                LevelCodeSpace = null
+            };
+            var legacySubmission = WithFrameLayout(CreateSubmission(Timestamp(4), payload), legacyLayout);
+            var enrichedSubmission = WithFrameLayout(CreateSubmission(Timestamp(4), payload), completeLayout);
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+
+            var first = await ingress.AcceptAsync(
+                CreateMono16Configuration(), legacySubmission, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(first);
+            var sidecarPath = Path.ChangeExtension(first.StoredFrame.AbsolutePath, ".json");
+            var sidecarBefore = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+
+            var retry = await ingress.AcceptAsync(
+                CreateMono16Configuration(), enrichedSubmission, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNotNull(retry);
+            Assert.AreEqual(RawIngressOutcome.Existing, retry.Outcome);
+            Assert.IsNull(retry.Manifest.Descriptor.Layout.StoredCodeTransform);
+            Assert.IsNull(retry.Manifest.Descriptor.Layout.LevelCodeSpace);
+            Assert.IsNull(retry.Manifest.Descriptor.Layout.Readout);
+            CollectionAssert.AreEqual(sidecarBefore, await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public void DescriptorFactory_RejectsFrameAndAuthoritativeLayoutMismatch()
+    {
+        var submission = WithFrameLayout(
+            CreateSubmission(Timestamp(5), new byte[8]),
+            CreateLowerDepthLayout() with { Width = 1 });
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => RawCaptureDescriptorFactory.Create(
+            CreateMono16Configuration(),
+            submission,
+            new RawCaptureIdentity("agent-94", 1, Guid.NewGuid(), Guid.NewGuid()),
+            new string('A', 64),
+            Timestamp(6)));
+    }
+
+    [TestMethod]
     public async Task AcceptAsync_FailedOrInvalidCycleEvidenceDoesNotPublishDurableSuccess()
     {
         var root = CreateRoot();
@@ -1619,6 +1711,50 @@ public sealed class RawCaptureIngressTests
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1),
                 ProfileVersion: "rig-v1"),
             AgentId: "agent-94");
+
+    private static CameraModuleConfig CreateMono16Configuration()
+    {
+        var configuration = CreateConfiguration();
+        return configuration with
+        {
+            Rig = configuration.Rig with
+            {
+                Sensor = configuration.Rig.Sensor with { PixelFormat = CameraPixelFormat.Mono16, StrideBytes = 4 }
+            }
+        };
+    }
+
+    private static FrameLayoutDescriptor CreateLowerDepthLayout()
+        => new(
+            2,
+            2,
+            4,
+            CameraPixelFormat.Mono16,
+            FrameByteOrder.LittleEndian,
+            10,
+            16,
+            FrameSamplePacking.ByteAligned,
+            ColorFilterArrayPattern.None,
+            0,
+            1023,
+            8)
+        {
+            StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+            LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+        };
+
+    private static CaptureLoopSubmission WithFrameLayout(
+        CaptureLoopSubmission submission,
+        FrameLayoutDescriptor layout)
+    {
+        var frame = submission.Result.Frame! with
+        {
+            PixelFormat = layout.PixelFormat,
+            StrideBytes = layout.StrideBytes,
+            Layout = layout
+        };
+        return submission with { Result = submission.Result with { Frame = frame } };
+    }
 
     private static CaptureLoopSubmission CreateSubmission(DateTimeOffset timestamp, byte[] payload)
     {

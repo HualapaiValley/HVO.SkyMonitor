@@ -72,6 +72,87 @@ public sealed class RigProjectionContextFactoryTests
         Assert.ThrowsExactly<NotSupportedException>(() => RigProjectionContextFactory.ParseModel("unknown"));
     }
 
+    [TestMethod]
+    public void Create_TransformsAsi174NativeRoiAndFullFrameBinning()
+    {
+        var rig = CreateRig(new OpticsProfile(
+            "EquidistantFisheye", 0, 180, 0, LensKind.Fisheye,
+            PrincipalPointX: 968, PrincipalPointY: 608, ImageCircleRadiusPixels: 595.84,
+            FocalLengthXPixels: 379.323, FocalLengthYPixels: 379.323));
+        var readout = new SensorReadoutProfile(
+            new SensorCrop(648, 368, 640, 480), 4, 4, FrameBinningAlgorithm.DigitalAverageV1,
+            CameraPixelFormat.Mono8, 8, 8, FrameSamplePacking.ByteAligned,
+            FrameStoredCodeTransform.IdentityV1, FrameLevelCodeSpace.StoredContainer, 4, 255);
+
+        var roiProjection = RigProjectionContextFactory.Create(rig with { Readout = readout });
+        var nativeRoiProjection = RigProjectionContextFactory.CreateNativeRoi(rig with { Readout = readout });
+
+        Assert.AreEqual(160, roiProjection.WidthPixels);
+        Assert.AreEqual(120, roiProjection.HeightPixels);
+        Assert.AreEqual(80, roiProjection.PrincipalPointX);
+        Assert.AreEqual(60, roiProjection.PrincipalPointY);
+        Assert.AreEqual(148.96, roiProjection.ImageCircleRadiusPixels);
+        Assert.AreEqual(379.323 / 4, roiProjection.FocalLengthXPixels, 1e-12);
+        Assert.AreEqual(320, nativeRoiProjection.PrincipalPointX);
+        Assert.AreEqual(240, nativeRoiProjection.PrincipalPointY);
+
+        var full = RigProjectionContextFactory.Create(rig with
+        {
+            Readout = readout with { Roi = new SensorCrop(0, 0, 1936, 1216) }
+        });
+        Assert.AreEqual(484, full.WidthPixels);
+        Assert.AreEqual(304, full.HeightPixels);
+        Assert.AreEqual(242, full.PrincipalPointX);
+        Assert.AreEqual(152, full.PrincipalPointY);
+        Assert.AreEqual(148.96, full.ImageCircleRadiusPixels);
+    }
+
+    [TestMethod]
+    public void Create_AllowsCroppedFisheyeWithPrincipalPointOutsideReadout()
+    {
+        var rig = CreateRig(new OpticsProfile(
+            "EquidistantFisheye", 0, 180, 0, LensKind.Fisheye,
+            PrincipalPointX: 968, PrincipalPointY: 608, ImageCircleRadiusPixels: 595.84,
+            FocalLengthXPixels: 379.323, FocalLengthYPixels: 379.323)) with
+        {
+            Readout = new SensorReadoutProfile(
+                new SensorCrop(400, 368, 480, 480), 4, 4, FrameBinningAlgorithm.DigitalAverageV1,
+                CameraPixelFormat.Mono8, 8, 8, FrameSamplePacking.ByteAligned,
+                FrameStoredCodeTransform.IdentityV1, FrameLevelCodeSpace.StoredContainer, 4, 255)
+        };
+
+        var projection = RigProjectionContextFactory.Create(rig);
+        var projector = ProjectorFactory.Create(projection);
+
+        Assert.AreEqual(142, projection.PrincipalPointX);
+        Assert.AreEqual(60, projection.PrincipalPointY);
+        Assert.IsNotNull(projector.Unproject(new PixelPoint(119, 60)));
+    }
+
+    [TestMethod]
+    public void Create_RejectsUnequalRadialBinsButAllowsRectilinearScale()
+    {
+        var readout = new SensorReadoutProfile(
+            new SensorCrop(0, 0, 640, 480), 4, 2, FrameBinningAlgorithm.DigitalAverageV1,
+            CameraPixelFormat.Mono8, 8, 8, FrameSamplePacking.ByteAligned,
+            FrameStoredCodeTransform.IdentityV1, FrameLevelCodeSpace.StoredContainer, 0, 255);
+        var fisheye = CreateRig(new OpticsProfile("EquidistantFisheye", 0, 180, 0, LensKind.Fisheye)) with
+        {
+            Readout = readout
+        };
+        Assert.ThrowsExactly<NotSupportedException>(() => RigProjectionContextFactory.Create(fisheye));
+
+        var rectilinear = CreateRig(new OpticsProfile(
+            "Rectilinear", 0, 90, 0, LensKind.Rectilinear,
+            FocalLengthXPixels: 800, FocalLengthYPixels: 600)) with
+        {
+            Readout = readout
+        };
+        var transformed = RigProjectionContextFactory.Create(rectilinear);
+        Assert.AreEqual(200, transformed.FocalLengthXPixels);
+        Assert.AreEqual(300, transformed.FocalLengthYPixels);
+    }
+
     private static CameraRigConfig CreateRig(OpticsProfile optics, RigOrientation? orientation = null)
         => new(
             new SensorProfile(

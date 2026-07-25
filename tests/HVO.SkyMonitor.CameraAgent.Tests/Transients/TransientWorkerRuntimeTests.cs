@@ -978,7 +978,14 @@ public sealed class TransientWorkerRuntimeTests
                 ["whiteLevelAdu"] = ushort.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["sensorAdcBitDepth"] = "16"
             };
-            capture = capture with { Frame = frame with { Metadata = frame.Metadata with { Extra = extra } } };
+            capture = capture with
+            {
+                Frame = frame with
+                {
+                    Metadata = frame.Metadata with { Extra = extra },
+                    Layout = frame.Layout! with { BlackLevel = 0, WhiteLevel = ushort.MaxValue }
+                }
+            };
             var submission = new CaptureLoopSubmission(
                 request,
                 capture,
