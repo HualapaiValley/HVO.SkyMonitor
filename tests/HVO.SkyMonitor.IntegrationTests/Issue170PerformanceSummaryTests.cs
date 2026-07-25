@@ -56,10 +56,6 @@ public sealed class Issue170PerformanceSummaryTests
     {
         var run = Issue170PerformanceEvidence.Create();
         var candidateCommit = RequiredCommit("HVO_EVIDENCE_CANDIDATE_REVISION");
-        if (!string.Equals(candidateCommit, run.Commit, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("The candidate summary must run from the candidate commit.");
-        }
         var baselineCommit = RequiredCommit("HVO_EVIDENCE_BASELINE_REVISION");
         var candidateProductionCommit = RequiredCommit("HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION");
         var baselineProductionCommit = RequiredCommit("HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION");
@@ -104,13 +100,14 @@ public sealed class Issue170PerformanceSummaryTests
         var summary = new ReviewedSummary(
             "hvo-issue-170-five-trial-summary-v1",
             170,
+            run.Commit,
             candidateCommit,
             baselineCommit,
             candidateProductionCommit,
             baselineProductionCommit,
             "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror",
-            $"HVO_EVIDENCE_REVISION={candidateCommit} HVO_EVIDENCE_PRODUCTION_REVISION={candidateProductionCommit} HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_CANDIDATE_REVISION={candidateCommit} HVO_EVIDENCE_BASELINE_REVISION={baselineCommit} HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION={candidateProductionCommit} HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION={baselineProductionCommit} dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~Issue170PerformanceSummaryTests.FiveTrialEvidence_WritesDeterministicReviewedSummary",
-            "Minimum/median/maximum use five independent processes. Pooled latency uses all retained samples. Paired deltas require matching immutable harness, normalized invariant workload, method, environment, scenario, metric, and sample shapes. The ingest workload normalization excludes only the explicitly recorded location-null baseline versus location-bound candidate mode required by issue #170.",
+            $"HVO_EVIDENCE_REVISION={run.Commit} HVO_EVIDENCE_PRODUCTION_REVISION={candidateProductionCommit} HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_CANDIDATE_REVISION={candidateCommit} HVO_EVIDENCE_BASELINE_REVISION={baselineCommit} HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION={candidateProductionCommit} HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION={baselineProductionCommit} dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~Issue170PerformanceSummaryTests.FiveTrialEvidence_WritesDeterministicReviewedSummary",
+            "The attributed summary revision validates immutable commit-scoped evidence revisions. Minimum/median/maximum use five independent processes. Pooled latency uses all retained samples. Paired deltas require matching immutable harness, normalized invariant workload, method, environment, scenario, metric, and sample shapes. The ingest workload normalization excludes only the explicitly recorded location-null baseline versus location-bound candidate mode required by issue #170.",
             workloads);
         var path = Path.Combine(run.RepositoryRoot, "docs", "validation", "issue-170-performance-summary.json");
         var bytes = JsonSerializer.SerializeToUtf8Bytes(summary, JsonOptions);
@@ -554,6 +551,10 @@ public sealed class Issue170PerformanceSummaryTests
 
     private static string ObjectIdentity(JsonElement item, int index)
     {
+        if (item.ValueKind != JsonValueKind.Object)
+        {
+            return index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
         var parts = new List<string>();
         foreach (var name in new[] { "scenario", "concurrency" })
         {
@@ -776,6 +777,7 @@ public sealed class Issue170PerformanceSummaryTests
     private sealed record ReviewedSummary(
         string Schema,
         int Issue,
+        string SummaryCommit,
         string CandidateCommit,
         string? BaselineCommit,
         string CandidateProductionCommit,
