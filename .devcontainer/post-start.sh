@@ -32,3 +32,7 @@ if command -v docker >/dev/null 2>&1; then
         fi
     done
 fi
+
+if ! "$REPO_ROOT/scripts/opencode:enable"; then
+    echo "[post-start] OpenCode was not started; run scripts/opencode:enable for diagnostics." >&2
+fi
