@@ -954,8 +954,9 @@ Exit gate `GATE-P14`:
 #94 + #97 + #98 --> #114 persistent state
 #91 --> #120 operations guidance
 #166 + #211 --> #151 split-host deployment
+#211 --> close #205 standalone CameraAgent epic
 #151 + #107 + all required backend/UI/readiness children --> #108 E2E
-#108 --> close #65, #109, #205, and #89
+#108 --> close #65, #109, and #89
 ```
 
 Parallel work is allowed only when contracts and migration order are stable.
