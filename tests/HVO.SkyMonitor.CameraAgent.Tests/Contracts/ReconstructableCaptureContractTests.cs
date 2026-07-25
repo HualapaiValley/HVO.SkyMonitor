@@ -1057,6 +1057,73 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
+    public void ValidateCycleEvidence_WithScheduleAdmission_BindsIntervalAndLocation()
+    {
+        var descriptor = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor;
+        var hash = new string('A', 64);
+        var location = new CaptureLocationProvenance(
+            "location-a",
+            3,
+            "test",
+            null,
+            DateTimeOffset.UnixEpoch,
+            null);
+        var admission = new CaptureScheduleAdmissionEvidence(
+            CaptureScheduleAdmissionEvidence.CurrentSchemaVersion,
+            "revision-7",
+            hash,
+            "night",
+            CaptureScheduleAdmissionReason.WeeklyWindow,
+            CaptureScheduleIntervalSource.WeeklyWindow,
+            descriptor.Timing.RequestedStartUtc,
+            descriptor.Timing.RequestedStartUtc,
+            descriptor.Timing.RequestedStartUtc.AddHours(1),
+            "monday-night",
+            "capture-schedule-expand-v1",
+            hash,
+            hash,
+            location.LocationId,
+            location.Version);
+        var scheduled = descriptor with
+        {
+            Location = location,
+            CycleEvidence = CreateCycleEvidence(descriptor) with { ScheduleAdmission = admission }
+        };
+
+        Assert.IsTrue(scheduled.Validate().IsValid);
+        Assert.AreEqual(
+            CaptureContractReasonCodes.InvalidSchedule,
+            (scheduled with
+            {
+                Location = location with { LocationId = "location-b" }
+            }).Validate().ReasonCode);
+        Assert.AreEqual(
+            CaptureContractReasonCodes.InvalidSchedule,
+            (scheduled with
+            {
+                CycleEvidence = scheduled.CycleEvidence! with
+                {
+                    ScheduleAdmission = admission with
+                    {
+                        DecisionUtc = scheduled.CycleEvidence.ModuleCallStartedUtc.AddTicks(1)
+                    }
+                }
+            }).Validate().ReasonCode);
+        Assert.AreEqual(
+            CaptureContractReasonCodes.InvalidSchedule,
+            (scheduled with
+            {
+                CycleEvidence = scheduled.CycleEvidence! with
+                {
+                    ScheduleAdmission = admission with
+                    {
+                        EffectiveEndUtc = descriptor.Timing.ExposureStartedUtc
+                    }
+                }
+            }).Validate().ReasonCode);
+    }
+
+    [TestMethod]
     public void ParseManifest_WithV1_ReturnsLegacyIncompleteWithoutDescriptor()
     {
         var legacy = new ArtifactUploadManifest(

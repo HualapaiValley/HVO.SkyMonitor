@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.Fleet.Contracts;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Fleet;
@@ -21,7 +22,8 @@ public sealed class FleetStatusCollector(
     StoragePressureState storagePressureState,
     ICaptureTelemetryProvider captureTelemetryProvider,
     FleetRuntimeState runtimeState,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null)
 {
     private readonly object _processGate = new();
     private TimeSpan _lastProcessCpu;
@@ -38,6 +40,8 @@ public sealed class FleetStatusCollector(
     {
         ArgumentNullException.ThrowIfNull(heartbeatOutbox);
         var configuration = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+        var scheduleRuntime = scheduleRuntimeCoordinator?.Snapshot;
+        configuration = scheduleRuntime?.Configuration ?? configuration;
         var now = timeProvider.GetUtcNow();
         var runtime = runtimeState.Snapshot;
         var ingress = rawIngressState.Snapshot;
@@ -107,18 +111,20 @@ public sealed class FleetStatusCollector(
                 ?? "unknown",
             new FleetConfigurationIdentity(
                 "1",
-                CaptureContractJson.ComputeCanonicalJsonSha256(new
-                {
-                    configuration.AgentId,
-                    configuration.Module,
-                    configuration.Rig,
-                    ProcessingSteps = configuration.ResolveProcessingSteps(),
-                    Location = configuration.DeploymentLocation?.ToProvenance()
-                }),
+                ComputeConfigurationSha256(configuration),
                 Bound(configuration.ModuleType, 64),
                 Bound(configuration.Rig.ProfileVersion, 64),
                 CameraRigProfileIdentity.ComputeSha256(configuration.Rig),
-                CaptureContractJson.ComputeCanonicalJsonSha256(configuration.ResolveProcessingSteps())),
+                CaptureContractJson.ComputeCanonicalJsonSha256(configuration.ResolveProcessingSteps()))
+            {
+                ActiveLocalProfileRevisionId = scheduleRuntime?.Revision.RevisionId,
+                ActiveLocalProfileSha256 = scheduleRuntime?.Revision.ProfileSha256,
+                ActiveScheduleSha256 = scheduleRuntime?.Revision.ScheduleSha256,
+                PendingLocalProfileRevisionId = scheduleRuntime?.PendingRevisionId,
+                ScheduleAdmitted = scheduleRuntime?.CurrentDecision?.Admitted,
+                ScheduleAdmissionReason = scheduleRuntime?.CurrentDecision?.Reason.ToString(),
+                ScheduleNextTransitionUtc = scheduleRuntime?.CurrentDecision?.NextTransitionUtc
+            },
             runtime.Capture,
             new FleetRuntimeSummary(
                 processRuntime.CpuPercent,
@@ -142,6 +148,26 @@ public sealed class FleetStatusCollector(
             overall,
             checks);
     }
+
+    private static string ComputeConfigurationSha256(CameraModuleConfig configuration)
+        => configuration.Schedule is null
+            ? CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                configuration.AgentId,
+                configuration.Module,
+                configuration.Rig,
+                ProcessingSteps = configuration.ResolveProcessingSteps(),
+                Location = configuration.DeploymentLocation?.ToProvenance()
+            })
+            : CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                configuration.AgentId,
+                configuration.Module,
+                configuration.Rig,
+                ProcessingSteps = configuration.ResolveProcessingSteps(),
+                Location = configuration.DeploymentLocation?.ToProvenance(),
+                ScheduleSha256 = CaptureScheduleContract.ComputeSha256(configuration.Schedule)
+            });
 
     private (double? CpuPercent, long WorkingSetBytes) SampleProcessRuntime()
     {
@@ -176,6 +202,13 @@ public sealed class FleetStatusCollector(
         var categorical = new
         {
             report.Configuration.ConfigurationSha256,
+            report.Configuration.ActiveLocalProfileRevisionId,
+            report.Configuration.ActiveLocalProfileSha256,
+            report.Configuration.ActiveScheduleSha256,
+            report.Configuration.PendingLocalProfileRevisionId,
+            report.Configuration.ScheduleAdmitted,
+            report.Configuration.ScheduleAdmissionReason,
+            report.Configuration.ScheduleNextTransitionUtc,
             report.Capture.Availability,
             report.Capture.Reason,
             report.OverallHealth,

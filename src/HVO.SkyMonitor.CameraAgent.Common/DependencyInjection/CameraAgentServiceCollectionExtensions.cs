@@ -21,6 +21,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -62,6 +63,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IRawCaptureIngress>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<ICaptureLaneStore>(provider => provider.GetRequiredService<RawCaptureIngress>());
+        services.AddSingleton<SqliteCaptureScheduleStore>();
         services.AddSingleton<SqliteTransientCandidateJournal>();
         services.AddSingleton<ITransientCandidateJournal>(provider =>
             provider.GetRequiredService<SqliteTransientCandidateJournal>());
@@ -107,6 +109,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IEnvironmentalObservationPublisher, EnvironmentalObservationPublisher>();
         services.AddSingleton<CaptureControlTelemetry>();
         services.AddSingleton<CaptureAdmissionCoordinator>();
+        services.AddSingleton<CaptureScheduleRuntimeCoordinator>();
         services.AddSingleton<CameraAgentStorageResolver>();
         services.AddSingleton<ICameraAgentStorageResolver>(static provider =>
             provider.GetRequiredService<CameraAgentStorageResolver>());

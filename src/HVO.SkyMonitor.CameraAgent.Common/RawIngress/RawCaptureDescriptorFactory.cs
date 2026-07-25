@@ -138,6 +138,14 @@ internal static class RawCaptureDescriptorFactory
                 StartedUtc = ToMilliseconds(evidence.Metering.StartedUtc),
                 CompletedUtc = ToMilliseconds(evidence.Metering.CompletedUtc)
             };
+        var scheduleAdmission = evidence.ScheduleAdmission is null
+            ? null
+            : evidence.ScheduleAdmission with
+            {
+                DecisionUtc = ToMilliseconds(evidence.ScheduleAdmission.DecisionUtc),
+                EffectiveStartUtc = ToMilliseconds(evidence.ScheduleAdmission.EffectiveStartUtc),
+                EffectiveEndUtc = ToMilliseconds(evidence.ScheduleAdmission.EffectiveEndUtc)
+            };
         return evidence with
         {
             ModuleCallStartedUtc = ToMilliseconds(evidence.ModuleCallStartedUtc),
@@ -150,7 +158,8 @@ internal static class RawCaptureDescriptorFactory
                     ? ToMilliseconds(applied)
                     : null
             },
-            IngressHandoffStartedUtc = ToMilliseconds(evidence.IngressHandoffStartedUtc)
+            IngressHandoffStartedUtc = ToMilliseconds(evidence.IngressHandoffStartedUtc),
+            ScheduleAdmission = scheduleAdmission
         };
     }
 

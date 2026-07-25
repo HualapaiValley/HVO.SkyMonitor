@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -83,7 +84,8 @@ public sealed class FileCameraAgentConfigurationLoader(
             Pipeline: document.Pipeline,
             AgentId: agentId)
         {
-            DeploymentLocation = location
+            DeploymentLocation = location,
+            Schedule = document.Schedule
         };
 
         ValidateConfig(config);
@@ -91,12 +93,16 @@ public sealed class FileCameraAgentConfigurationLoader(
         {
             location = await _deploymentLocationStore.InitializeAsync(locationSeed, cancellationToken).ConfigureAwait(false);
             config = config with { DeploymentLocation = location };
+            if (config.Schedule is not null)
+            {
+                ValidateScheduleCompatibility(config);
+            }
         }
         _logger.ConfigurationLoaded(path);
         return config;
     }
 
-    private static void ValidateConfig(CameraModuleConfig config)
+    internal static void ValidateConfig(CameraModuleConfig config)
     {
         if (config.Module is null || string.IsNullOrWhiteSpace(config.Module.Type))
         {
@@ -114,6 +120,19 @@ public sealed class FileCameraAgentConfigurationLoader(
         {
             throw new InvalidOperationException(
                 $"Deployment location is invalid ({locationValidation.ReasonCode}, {locationValidation.FieldPath}).");
+        }
+
+        var scheduleValidation = config.Schedule is null
+            ? CaptureContractValidationResult.Success
+            : CaptureScheduleContract.Validate(config.Schedule);
+        if (!scheduleValidation.IsValid)
+        {
+            throw new InvalidOperationException(
+                $"Capture schedule is invalid ({scheduleValidation.ReasonCode}, {scheduleValidation.FieldPath}).");
+        }
+        if (config.Schedule is not null)
+        {
+            ValidateScheduleCompatibility(config);
         }
 
         if (config.Rig.Sensor.WidthPixels <= 0 || config.Rig.Sensor.HeightPixels <= 0)
@@ -151,6 +170,53 @@ public sealed class FileCameraAgentConfigurationLoader(
         }
 
         ValidateControlPolicy(config.Rig);
+    }
+
+    private static void ValidateScheduleCompatibility(CameraModuleConfig config)
+    {
+        var schedule = config.Schedule!;
+        var envelope = config.Rig.Pipeline.Envelope;
+        if (envelope is not null && schedule.SetpointProfiles.Any(profile =>
+                profile.Exposure < envelope.MinExposure || profile.Exposure > envelope.MaxExposure ||
+                profile.Gain < envelope.MinGain || profile.Gain > envelope.MaxGain))
+        {
+            throw new InvalidOperationException("Capture schedule setpoints must be within the rig exposure envelope.");
+        }
+        var sensorResponse = config.Rig.Sensor.SimulationResponse;
+        if (sensorResponse is not null && schedule.SetpointProfiles.Any(profile =>
+                profile.Gain < sensorResponse.MinimumGainControl ||
+                profile.Gain > sensorResponse.MaximumGainControl))
+        {
+            throw new InvalidOperationException("Capture schedule gains must be within the sensor response range.");
+        }
+
+        try
+        {
+            var observer = config.ResolveObservatory();
+            var timeZone = TimeZoneInfo.FindSystemTimeZoneById(observer.TimeZoneId);
+            var solarEvents = new AstronomyEngineSolarEventCalculator();
+            _ = CaptureScheduleIntervalExpander.Expand(
+                schedule,
+                new DateOnly(2024, 1, 1),
+                366,
+                timeZone,
+                observer,
+                solarEvents);
+            foreach (var date in (schedule.DateExceptions ?? []).Select(static rule => rule.Date).Distinct())
+            {
+                _ = CaptureScheduleIntervalExpander.Expand(
+                    schedule,
+                    date,
+                    1,
+                    timeZone,
+                    observer,
+                    solarEvents);
+            }
+        }
+        catch (Exception exception) when (exception is ArgumentException or TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            throw new InvalidOperationException("Capture schedule expansion is invalid.", exception);
+        }
     }
 
     private static void ValidateControlPolicy(CameraRigConfig rig)
@@ -247,4 +313,5 @@ internal sealed record CameraModuleDocument(
     CameraModuleDescriptor Module,
     CameraRigConfig Rig,
     IReadOnlyList<CaptureProcessingStepConfig>? ProcessingSteps = null,
-    CapturePipelineConfig? Pipeline = null);
+    CapturePipelineConfig? Pipeline = null,
+    CaptureScheduleDefinition? Schedule = null);

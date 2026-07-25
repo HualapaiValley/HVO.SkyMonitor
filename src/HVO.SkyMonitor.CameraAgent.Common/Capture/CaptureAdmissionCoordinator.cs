@@ -209,6 +209,42 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             reason,
             cancellationToken);
 
+    internal async Task<T> ExecuteCaptureBoundaryAsync<T>(
+        Func<CancellationToken, Task<T>> action,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _commandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var reopen = Snapshot.State == CaptureAdmissionState.Running;
+        try
+        {
+            Interlocked.Exchange(ref _failedPublicationDuringDrain, 0);
+            CloseGate();
+            await WaitForDrainAsync(CancellationToken.None).ConfigureAwait(false);
+            if (Volatile.Read(ref _failedPublicationDuringDrain) != 0)
+            {
+                var current = Snapshot;
+                SetSnapshot(current with
+                {
+                    State = CaptureAdmissionState.Unavailable,
+                    UpdatedUtc = DateTimeOffset.UtcNow
+                });
+                _fleetRuntimeState?.CaptureFailed("activation-publication-failed");
+                throw new CaptureAdmissionUnavailableException();
+            }
+            return await action(CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (reopen && Snapshot.State == CaptureAdmissionState.Running)
+            {
+                OpenGate();
+            }
+            _commandGate.Release();
+        }
+    }
+
     private async Task<CaptureControlCommandResult> ExecuteCommandAsync(
         CaptureControlTarget target,
         string idempotencyKey,

@@ -1,0 +1,156 @@
+@page "/schedule"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Schedule</PageTitle>
+
+<main class="schedule-console">
+    <header class="schedule-header">
+        <div>
+            <p class="eyebrow">Local acquisition authority</p>
+            <h1>Schedule control</h1>
+            <p>Durable profile revisions, effective UTC windows, and standalone admission state.</p>
+        </div>
+        <button class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+    </header>
+
+    @if (_loading)
+    {
+        <section class="schedule-banner" role="status">Loading durable schedule state.</section>
+    }
+    else if (_state is null)
+    {
+        <section class="schedule-banner schedule-banner--error" role="alert">
+            <strong>Schedule unavailable</strong><span>@_message</span>
+        </section>
+    }
+    else
+    {
+        @if (_message is not null)
+        {
+            <section class="schedule-banner @(_messageIsError ? "schedule-banner--error" : null)" role="status">@_message</section>
+        }
+
+        <section class="schedule-grid" aria-label="Current schedule state">
+            <article class="schedule-card schedule-card--hero">
+                <p class="eyebrow">Current admission</p>
+                <div class="decision-line">
+                    <h2>@(_state.Decision.Admitted ? "Open" : "Closed")</h2>
+                    <span class="decision-chip @(_state.Decision.Admitted ? "decision-chip--open" : "decision-chip--closed")">@Split(_state.Decision.Reason.ToString())</span>
+                </div>
+                <dl>
+                    <div><dt>Setpoint</dt><dd>@(_state.Decision.SetpointProfileId ?? "None")</dd></div>
+                    <div><dt>Effective interval</dt><dd>@FormatInterval(_state.Decision.Interval?.StartUtc, _state.Decision.Interval?.EndUtc)</dd></div>
+                    <div><dt>Next transition</dt><dd>@FormatUtc(_state.Decision.NextTransitionUtc)</dd></div>
+                    <div><dt>State version</dt><dd>@_state.StateVersion</dd></div>
+                </dl>
+            </article>
+
+            <article class="schedule-card">
+                <p class="eyebrow">Active immutable profile</p>
+                <h2>Revision @_state.ActiveRevision.RevisionNumber</h2>
+                <code>@ShortHash(_state.ActiveRevision.ProfileSha256)</code>
+                <p>@_state.ActiveRevision.Source / @_state.ActiveRevision.CreatedUtc.ToString("u")</p>
+            </article>
+
+            <article class="schedule-card">
+                <p class="eyebrow">Pending candidate</p>
+                @if (_state.PendingRevision is null)
+                {
+                    <h2>No draft</h2><p>Active state changes only after a validated draft is explicitly applied.</p>
+                }
+                else
+                {
+                    <h2>Revision @_state.PendingRevision.RevisionNumber</h2>
+                    <code>@ShortHash(_state.PendingRevision.ProfileSha256)</code>
+                    <button class="btn btn-primary" disabled="@_busy" @onclick="() => BeginActivation(_state.PendingRevision.RevisionId)">Review apply</button>
+                }
+            </article>
+        </section>
+
+        @if (_confirmRevisionId is not null)
+        {
+            <section class="confirmation-panel" role="alertdialog" aria-labelledby="apply-heading">
+                <div><p class="eyebrow">Capture-boundary confirmation</p><h2 id="apply-heading">Apply revision?</h2><p>The current admitted capture will finish durable publication before this revision becomes active.</p></div>
+                <div><button class="btn btn-primary" disabled="@_busy" @onclick="ConfirmActivationAsync">Confirm apply</button><button class="btn btn-outline-light" @onclick="CancelActivation">Cancel</button></div>
+            </section>
+        }
+
+        <section class="editor-layout">
+            <article class="schedule-card editor-card">
+                <header><div><p class="eyebrow">Validated profile editor</p><h2>Canonical JSON</h2></div><span>@_editorJson.Length chars</span></header>
+                <textarea aria-label="Local profile JSON" @bind="_editorJson" spellcheck="false"></textarea>
+                <div class="editor-actions">
+                    <button class="btn btn-outline-light" disabled="@_busy" @onclick="PreviewAsync">Validate and preview</button>
+                    <button class="btn btn-primary" disabled="@_busy" @onclick="StageAsync">Save immutable draft</button>
+                </div>
+            </article>
+
+            <article class="schedule-card preview-card">
+                <p class="eyebrow">Future UTC expansion</p><h2>Preview</h2>
+                @if (_preview is null)
+                {
+                    <p>Validate the editor to inspect effective windows before staging.</p>
+                }
+                else if (_preview.Intervals.Count == 0)
+                {
+                    <p>No open or closed intervals occur in this preview range.</p>
+                }
+                else
+                {
+                    <ol>
+                        @foreach (var interval in _preview.Intervals.Take(20))
+                        {
+                            <li><span>@Split(interval.Source.ToString())</span><strong>@(interval.SetpointProfileId ?? "Closed")</strong><time>@interval.StartUtc.ToString("u")</time><time>@interval.EndUtc.ToString("u")</time></li>
+                        }
+                    </ol>
+                }
+            </article>
+        </section>
+
+        <section class="schedule-grid lower-grid">
+            <article class="schedule-card">
+                <p class="eyebrow">Bounded operator override</p><h2>Create override</h2>
+                <label>Mode<select class="form-select" @bind="_overrideMode"><option value="ForceClosed">Force closed</option><option value="ForceOpen">Force open</option></select></label>
+                <label>Start UTC<input class="form-control" @bind="_overrideStart" /></label>
+                <label>End UTC<input class="form-control" @bind="_overrideEnd" /></label>
+                @if (_overrideMode == "ForceOpen")
+                {
+                    <label>Setpoint profile<input class="form-control" @bind="_overrideProfile" /></label>
+                    <label class="check"><input type="checkbox" @bind="_overrideOneShot" /> Consume on first admission</label>
+                }
+                <button class="btn btn-outline-warning" disabled="@_busy" @onclick="AddOverrideAsync">Create durable override</button>
+            </article>
+
+            <article class="schedule-card">
+                <p class="eyebrow">Active and upcoming</p><h2>Overrides</h2>
+                @if (_state.Overrides.Count == 0)
+                {
+                    <p>No durable overrides are active or upcoming.</p>
+                }
+                else
+                {
+                    <ul class="override-list">
+                        @foreach (var item in _state.Overrides)
+                        {
+                            <li><div><strong>@Split(item.Mode.ToString())</strong><span>@item.StartUtc.ToString("u") to @item.EndUtc.ToString("u")</span></div><button class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => ClearOverrideAsync(item.Id)">Clear</button></li>
+                        }
+                    </ul>
+                }
+            </article>
+
+            <article class="schedule-card history-card">
+                <p class="eyebrow">Immutable history</p><h2>Rollback targets</h2>
+                <ol>
+                    @foreach (var revision in _state.History)
+                    {
+                        <li><div><strong>Revision @revision.RevisionNumber</strong><code>@ShortHash(revision.ProfileSha256)</code><span>@revision.CreatedUtc.ToString("u")</span></div>@if (revision.RevisionId != _state.ActiveRevision.RevisionId) { <button class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => BeginActivation(revision.RevisionId)">Review rollback</button> }</li>
+                    }
+                </ol>
+            </article>
+        </section>
+    }
+</main>

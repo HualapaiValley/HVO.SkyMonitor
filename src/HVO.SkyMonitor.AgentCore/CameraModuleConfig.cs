@@ -21,6 +21,10 @@ public sealed record CameraModuleConfig(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool DeploymentLocationRedacted { get; init; }
 
+    /// <summary>Gets the optional local capture schedule carried by this immutable configuration revision.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CaptureScheduleDefinition? Schedule { get; init; }
+
     /// <summary>Gets the active coordinates, preferring the validated versioned snapshot.</summary>
     public ObservatoryLocation ResolveObservatory(DateTimeOffset? effectiveUtc = null)
     {
