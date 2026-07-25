@@ -453,6 +453,12 @@ public sealed class Issue170PerformanceSummaryTests
     {
         if (path.Contains("faultBacklog", StringComparison.OrdinalIgnoreCase))
         {
+            if (path.EndsWith("oldestAgeMilliseconds", StringComparison.OrdinalIgnoreCase))
+            {
+                return new MetricDisposition(path, "N/A comparative gate; injected backlog age is timing-derived",
+                    comparison.BaselineMedian, comparison.CandidateMedian, comparison.MedianChangePercent, false,
+                    "Backlog count/bytes and final convergence are gated; intermediate age is reported for diagnosis.");
+            }
             if (comparison.AbsoluteMedianChange != 0)
             {
                 throw new InvalidDataException($"{path} changed across the fixed fault workload.");
