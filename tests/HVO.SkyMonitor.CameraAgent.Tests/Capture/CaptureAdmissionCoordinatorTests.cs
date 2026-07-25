@@ -107,6 +107,51 @@ public sealed class CaptureAdmissionCoordinatorTests
     }
 
     [TestMethod]
+    public async Task CaptureBoundaryCancellationReopensAdmissionAfterInterruptedDrainAsync()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var fixture = await CoordinatorFixture.CreateAsync(root).ConfigureAwait(false);
+            var admission = await fixture.Coordinator.EnterAsync(CancellationToken.None).ConfigureAwait(false);
+            using var cancellation = new CancellationTokenSource();
+            var boundary = fixture.Coordinator.ExecuteCaptureBoundaryAsync(
+                _ => Task.FromResult(true), cancellation.Token);
+            await Task.Delay(50).ConfigureAwait(false);
+            Assert.IsFalse(boundary.IsCompleted);
+
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            _ = await Assert.ThrowsAsync<OperationCanceledException>(() => boundary).ConfigureAwait(false);
+            admission.MarkNoPublicationRequired();
+            admission.Dispose();
+
+            using (var reopened = await fixture.Coordinator.EnterAsync(CancellationToken.None)
+                .AsTask().WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false))
+            {
+            }
+            Assert.AreEqual(CaptureAdmissionState.Running, fixture.Coordinator.Snapshot.State);
+
+            using var actionCancellation = new CancellationTokenSource();
+            var actionStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var action = fixture.Coordinator.ExecuteCaptureBoundaryAsync(
+                async token =>
+                {
+                    actionStarted.SetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+                    return true;
+                },
+                actionCancellation.Token);
+            await actionStarted.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            await actionCancellation.CancelAsync().ConfigureAwait(false);
+            _ = await Assert.ThrowsAsync<OperationCanceledException>(() => action).ConfigureAwait(false);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task CommandsEnforceReplayCollisionVersionAndAuditedNoOpAsync()
     {
         var root = CreateRoot();

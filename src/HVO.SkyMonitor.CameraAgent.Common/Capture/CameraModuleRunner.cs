@@ -430,7 +430,6 @@ internal sealed class CameraModuleRunner
                         submission,
                         setpointFailure is null ? cancellationToken : CancellationToken.None).ConfigureAwait(false);
                     acceptedAdmission.MarkPublished();
-                    acceptedAdmission.Dispose();
                     ingressActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 }
                 catch (Exception exception)

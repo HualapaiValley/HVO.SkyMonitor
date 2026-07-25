@@ -221,7 +221,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         {
             Interlocked.Exchange(ref _failedPublicationDuringDrain, 0);
             CloseGate();
-            await WaitForDrainAsync(CancellationToken.None).ConfigureAwait(false);
+            await WaitForDrainAsync(cancellationToken).ConfigureAwait(false);
             if (Volatile.Read(ref _failedPublicationDuringDrain) != 0)
             {
                 var current = Snapshot;
@@ -233,7 +233,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
                 _fleetRuntimeState?.CaptureFailed("activation-publication-failed");
                 throw new CaptureAdmissionUnavailableException();
             }
-            return await action(CancellationToken.None).ConfigureAwait(false);
+            return await action(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
