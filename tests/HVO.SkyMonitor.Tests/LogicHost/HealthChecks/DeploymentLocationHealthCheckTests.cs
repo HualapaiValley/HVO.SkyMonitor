@@ -51,6 +51,53 @@ public sealed class DeploymentLocationHealthCheckTests
     }
 
     [TestMethod]
+    [DataRow(-1, HealthStatus.Unhealthy)]
+    [DataRow(0, HealthStatus.Healthy)]
+    [DataRow(999, HealthStatus.Healthy)]
+    [DataRow(1000, HealthStatus.Unhealthy)]
+    public async Task CheckHealthAsync_ResolvedFrameRequiresHalfOpenDeploymentInterval(
+        int capturedOffsetMilliseconds,
+        HealthStatus expected)
+    {
+        await using var context = CreateContext();
+        var effectiveFromUtc = UtcNow;
+        var deployment = new DeviceDeploymentLocationVersion
+        {
+            LocationId = "health-location",
+            Version = 1,
+            Source = "health-test",
+            EffectiveFromUtc = effectiveFromUtc,
+            EffectiveUntilUtc = effectiveFromUtc.AddSeconds(1),
+            Status = DeploymentLocationResolutionStatus.Acknowledged
+        };
+        var frame = new CentralFrame
+        {
+            CapturedAtUtc = effectiveFromUtc.AddMilliseconds(capturedOffsetMilliseconds),
+            LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved
+        };
+        frame.Location = new CentralCaptureLocation
+        {
+            CentralFrame = frame,
+            CentralFrameId = frame.Id,
+            DeploymentLocation = deployment,
+            DeviceDeploymentLocationVersionId = deployment.Id,
+            LocationId = deployment.LocationId,
+            Version = deployment.Version,
+            Source = deployment.Source,
+            EffectiveFromUtc = deployment.EffectiveFromUtc,
+            EffectiveUntilUtc = deployment.EffectiveUntilUtc
+        };
+        context.CentralFrames.Add(frame);
+        await context.SaveChangesAsync();
+        using var telemetry = new DeploymentLocationTelemetry();
+
+        var result = await new DeploymentLocationHealthCheck(
+            context, new FixedTimeProvider(UtcNow), telemetry).CheckHealthAsync(new HealthCheckContext());
+
+        result.Status.Should().Be(expected);
+    }
+
+    [TestMethod]
     public async Task CheckHealthAsync_CurrentObservatoryVersionWithoutBacklogIsHealthy()
     {
         await using var context = CreateContext();

@@ -11,6 +11,28 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 public sealed class ObservatoryLocationAuthorityTests
 {
     [TestMethod]
+    public void RepresentationHash_ChangesWhenAuthorityGenerationChanges()
+    {
+        var observatory = new Observatory
+        {
+            Name = "Hash generation",
+            LatitudeDegrees = 35.347,
+            LongitudeDegrees = -113.878,
+            ElevationMeters = 520,
+            TimeZoneId = "America/Phoenix",
+            CurrentLocationVersion = 1,
+            CurrentLocationCanonicalSha256 = new string('A', 64),
+            IsActive = true
+        };
+        var original = ObservatoryService.CreateRepresentationSha256(observatory);
+
+        observatory.CurrentLocationVersion = 3;
+        observatory.CurrentLocationCanonicalSha256 = new string('B', 64);
+
+        ObservatoryService.CreateRepresentationSha256(observatory).Should().NotBe(original);
+    }
+
+    [TestMethod]
     public void AppliesAt_DoesNotFabricateAuthorityBeforeFirstRecordedVersion()
     {
         var effectiveFrom = new DateTimeOffset(2026, 7, 24, 0, 0, 0, TimeSpan.Zero);

@@ -1149,7 +1149,9 @@ internal sealed partial class ArtifactIngestService(
                 && ObservatoryLocationAuthority.AppliesAt(version, frame.CapturedAtUtc))
             .OrderByDescending(item => item.ObservatoryLocationVersionNumber)
             .FirstOrDefault();
-        var exactMatch = deployment is not null && LocationMatches(deployment, location);
+        var appliesAtCapture = deployment is not null
+            && DeploymentLocationAuthorityService.AppliesAt(deployment, frame.CapturedAtUtc);
+        var exactMatch = appliesAtCapture && LocationMatches(deployment!, location);
         frame.Location = new CentralCaptureLocation
         {
             CentralFrame = frame,
@@ -1175,7 +1177,9 @@ internal sealed partial class ArtifactIngestService(
         {
             frame.ObservatoryId = deployment!.ObservatoryId;
         }
-        var versionRelation = deployment is null ? "unknown" : exactMatch ? "exact" : "conflict";
+        var versionRelation = deployment is null
+            ? "unknown"
+            : !appliesAtCapture ? "outside-interval" : exactMatch ? "exact" : "conflict";
         var outcome = frame.LocationEvidenceState.ToString();
         activity?.SetTag("deployment.outcome", outcome);
         activity?.SetTag("deployment.reason", versionRelation);

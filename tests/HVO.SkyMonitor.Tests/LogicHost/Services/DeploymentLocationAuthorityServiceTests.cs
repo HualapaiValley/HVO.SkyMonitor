@@ -93,6 +93,24 @@ public sealed class DeploymentLocationAuthorityServiceTests
     }
 
     [TestMethod]
+    [DataRow(-1, false)]
+    [DataRow(0, true)]
+    [DataRow(119_999, true)]
+    [DataRow(120_000, false)]
+    public void AppliesAt_UsesHalfOpenDeploymentInterval(int offsetMilliseconds, bool expected)
+    {
+        var effectiveFromUtc = ProposalUtc.AddMinutes(1);
+        var deployment = new DeviceDeploymentLocationVersion
+        {
+            EffectiveFromUtc = effectiveFromUtc,
+            EffectiveUntilUtc = effectiveFromUtc.AddMinutes(2)
+        };
+
+        DeploymentLocationAuthorityService.AppliesAt(
+            deployment, effectiveFromUtc.AddMilliseconds(offsetMilliseconds)).Should().Be(expected);
+    }
+
+    [TestMethod]
     public async Task ResolveAsync_EnforcesOwnerAndRetainsAudit()
     {
         var databaseName = Guid.NewGuid().ToString();

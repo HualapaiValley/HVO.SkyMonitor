@@ -39,7 +39,10 @@ internal sealed class DeploymentLocationHealthCheck(
                     || item.Location.Source != item.Location.DeploymentLocation.Source
                     || item.Location.HorizontalAccuracyMeters != item.Location.DeploymentLocation.HorizontalAccuracyMeters
                     || item.Location.EffectiveFromUtc != item.Location.DeploymentLocation.EffectiveFromUtc
-                    || item.Location.EffectiveUntilUtc != item.Location.DeploymentLocation.EffectiveUntilUtc),
+                    || item.Location.EffectiveUntilUtc != item.Location.DeploymentLocation.EffectiveUntilUtc
+                    || item.CapturedAtUtc < item.Location.DeploymentLocation.EffectiveFromUtc
+                    || item.Location.DeploymentLocation.EffectiveUntilUtc != null
+                        && item.CapturedAtUtc >= item.Location.DeploymentLocation.EffectiveUntilUtc),
                 cancellationToken).ConfigureAwait(false)
                 || await dbContext.Observatories.AsNoTracking().AnyAsync(item =>
                     item.CurrentLocationVersion == null

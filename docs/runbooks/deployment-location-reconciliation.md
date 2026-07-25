@@ -67,8 +67,9 @@ location or Observatory assignment and submit a new location version instead.
   duration, pending-count, oldest-age, and backfill instruments.
 - Meter `HVO.SkyMonitor.CameraAgent.DeploymentLocation` reports bounded local and
   reconciliation outcomes.
-- Logs, metrics, and spans never include coordinates, hashes, credentials,
-  protected payloads, owner reasons, or entity IDs.
+- Deployment-location authority logs, metrics, and spans never include
+  coordinates, hashes, credentials, protected payloads, owner reasons, or entity
+  IDs. General bootstrap audit logs retain bounded device and registration IDs.
 
 ## Troubleshooting
 
@@ -82,3 +83,9 @@ location or Observatory assignment and submit a new location version instead.
    deciding; do not retry a stale decision blindly.
 5. Confirm LogicHost health returns to healthy and the annotation job leaves
    `Quarantined`. Non-location-dependent evidence should have remained available.
+6. A future acknowledged successor reports `restart-scheduled` and remains staged
+   while the current geometry stays active. If its interval expires before a
+   restart, the next startup preserves the active snapshot, clears the unusable
+   stage, and exposes the protected candidate for reproposal or replacement.
+   Correct an expired configured interval before reproposing; an expired central
+   acknowledgment reports `acknowledgment-expired` and is never activated.

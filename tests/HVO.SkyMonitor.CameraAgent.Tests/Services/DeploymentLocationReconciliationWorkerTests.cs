@@ -92,14 +92,18 @@ public sealed class DeploymentLocationReconciliationWorkerTests
     }
 
     [TestMethod]
-    public async Task ReconcileOnceAsync_StagesDifferingAcknowledgmentWithoutChangingActiveLocation()
+    [DataRow(0, "restart-required")]
+    [DataRow(1, "restart-scheduled")]
+    public async Task ReconcileOnceAsync_StagesDifferingAcknowledgmentWithoutChangingActiveLocation(
+        int effectiveFromMinutes,
+        string expectedOutcome)
     {
         var now = new DateTimeOffset(2026, 7, 24, 12, 0, 0, TimeSpan.Zero);
         var active = DeploymentLocationSnapshot.Create(
             "worker-location", 1, "local", 3, DateTimeOffset.UnixEpoch, null,
             35.347, -113.878, 520, "America/Phoenix");
         var approved = DeploymentLocationSnapshot.Create(
-            active.LocationId, 2, "approved", 2, now, null,
+            active.LocationId, 2, "approved", 2, now.AddMinutes(effectiveFromMinutes), null,
             35.348, -113.878, 521, "America/Phoenix");
         var observatory = ObservatoryLocationSnapshot.Create(
             Guid.NewGuid(), 1, DateTimeOffset.UnixEpoch, 35.348, -113.878, 521,
@@ -153,17 +157,64 @@ public sealed class DeploymentLocationReconciliationWorkerTests
 
         Assert.AreEqual(approved, staged);
         Assert.AreEqual(active, locationStore.Object.Active);
-        Assert.AreEqual("restart-required", state.Outcome);
+        Assert.AreEqual(expectedOutcome, state.Outcome);
         var activity = stopped.Single(item => item.OperationName == "deployment-location.reconcile"
-            && item.GetTagItem("deployment.outcome")?.ToString() == "restart-required");
+            && item.GetTagItem("deployment.outcome")?.ToString() == expectedOutcome);
         var tags = activity.TagObjects.ToDictionary(item => item.Key, item => item.Value?.ToString());
-        Assert.AreEqual("restart-required", tags["deployment.outcome"]);
+        Assert.AreEqual(expectedOutcome, tags["deployment.outcome"]);
         Assert.AreEqual("Gps", tags["deployment.source_kind"]);
         Assert.AreEqual("successor", tags["deployment.version_relation"]);
         Assert.IsFalse(string.Join(';', tags.Values).Contains("35.348", StringComparison.Ordinal));
         var health = await new DeploymentLocationReconciliationHealthCheck(state, options)
             .CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
         Assert.AreEqual(HealthStatus.Degraded, health.Status);
+    }
+
+    [TestMethod]
+    [DataRow(1, null, "restart-scheduled")]
+    [DataRow(-2, -1, "staged-expired")]
+    public async Task ReconcileOnceAsync_ReportsStagedIntervalState(
+        int effectiveFromMinutes,
+        int? effectiveUntilMinutes,
+        string expectedOutcome)
+    {
+        var now = new DateTimeOffset(2026, 7, 24, 12, 0, 0, TimeSpan.Zero);
+        var staged = DeploymentLocationSnapshot.Create(
+            "worker-location",
+            2,
+            "approved",
+            2,
+            now.AddMinutes(effectiveFromMinutes),
+            effectiveUntilMinutes.HasValue ? now.AddMinutes(effectiveUntilMinutes.Value) : null,
+            35.348,
+            -113.878,
+            521,
+            "America/Phoenix");
+        var locationStore = new Mock<IDeploymentLocationStore>();
+        locationStore.SetupGet(item => item.Staged).Returns(staged);
+        locationStore.Setup(item => item.ResolveSourceKind(staged)).Returns(DeploymentLocationSourceKind.Gps);
+        var secretStore = new Mock<IDeviceSecretStore>();
+        secretStore.Setup(item => item.GetAsync(It.IsAny<CancellationToken>())).ReturnsAsync((DeviceSecrets?)null);
+        using var telemetry = new DeploymentLocationTelemetry();
+        var state = new DeploymentLocationReconciliationState();
+        var worker = new DeploymentLocationReconciliationWorker(
+            Mock.Of<IDeviceIdentityStore>(),
+            secretStore.Object,
+            locationStore.Object,
+            Mock.Of<IHttpClientFactory>(),
+            Options.Create(new CameraAgentHostOptions
+            {
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled },
+                DeploymentLocation = new DeploymentLocationOptions { SourceKind = DeploymentLocationSourceKind.Gps }
+            }),
+            state,
+            telemetry,
+            new FixedTimeProvider(now),
+            NullLogger<DeploymentLocationReconciliationWorker>.Instance);
+
+        await worker.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(expectedOutcome, state.Outcome);
     }
 
     [TestMethod]
@@ -175,6 +226,22 @@ public sealed class DeploymentLocationReconciliationWorkerTests
         });
         var result = await new DeploymentLocationReconciliationHealthCheck(
                 new DeploymentLocationReconciliationState(), options)
+            .CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+
+        Assert.AreEqual(HealthStatus.Degraded, result.Status);
+    }
+
+    [TestMethod]
+    public async Task DeploymentLocationHealthCheck_ExpiredActiveVersionIsDegraded()
+    {
+        var now = new DateTimeOffset(2026, 7, 24, 12, 0, 0, TimeSpan.Zero);
+        var active = DeploymentLocationSnapshot.Create(
+            "expired-location", 1, "manual", null, now.AddHours(-2), now.AddHours(-1),
+            35.347, -113.878, 520, "America/Phoenix");
+        var store = new Mock<IDeploymentLocationStore>();
+        store.SetupGet(item => item.Active).Returns(active);
+
+        var result = await new DeploymentLocationHealthCheck(store.Object, new FixedTimeProvider(now))
             .CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
 
         Assert.AreEqual(HealthStatus.Degraded, result.Status);

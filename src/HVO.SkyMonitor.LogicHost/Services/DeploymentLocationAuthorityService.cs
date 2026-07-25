@@ -454,7 +454,8 @@ internal sealed partial class DeploymentLocationAuthorityService(
                 .ToListAsync(cancellationToken).ConfigureAwait(false);
             foreach (var capture in captures)
             {
-                var exactMatch = LocationMatches(deployment, capture);
+                var exactMatch = AppliesAt(deployment, capture.CentralFrame!.CapturedAtUtc)
+                    && LocationMatches(deployment, capture);
                 capture.DeviceDeploymentLocationVersionId = exactMatch ? deployment.Id : null;
                 capture.DeploymentLocation = exactMatch ? deployment : null;
                 capture.CentralFrame!.LocationEvidenceState = exactMatch
@@ -560,6 +561,15 @@ internal sealed partial class DeploymentLocationAuthorityService(
             && deployment.HorizontalAccuracyMeters == capture.HorizontalAccuracyMeters
             && deployment.EffectiveFromUtc == capture.EffectiveFromUtc
             && deployment.EffectiveUntilUtc == capture.EffectiveUntilUtc;
+
+    internal static bool AppliesAt(
+        DeviceDeploymentLocationVersion deployment,
+        DateTimeOffset capturedAtUtc)
+    {
+        capturedAtUtc = capturedAtUtc.ToUniversalTime();
+        return capturedAtUtc >= deployment.EffectiveFromUtc
+            && (deployment.EffectiveUntilUtc is null || capturedAtUtc < deployment.EffectiveUntilUtc.Value);
+    }
 
     private static void ValidateHistoryOrder(
         IReadOnlyCollection<DeviceDeploymentLocationVersion> existing,

@@ -259,6 +259,8 @@ internal sealed partial class ObservatoryService(
             observatory.ElevationMeters,
             observatory.TimeZoneId,
             observatory.AllowedDeploymentRadiusMeters,
+            observatory.CurrentLocationVersion,
+            observatory.CurrentLocationCanonicalSha256,
             observatory.IsActive);
 
     internal static string CreateRepresentationSha256(ObservatorySummary observatory)
@@ -270,6 +272,8 @@ internal sealed partial class ObservatoryService(
             observatory.ElevationMeters,
             observatory.TimeZoneId,
             observatory.AllowedDeploymentRadiusMeters,
+            observatory.CurrentLocationVersion,
+            observatory.CurrentLocationCanonicalSha256,
             observatory.IsActive);
 
     private static string CreateRepresentationSha256(
@@ -280,6 +284,8 @@ internal sealed partial class ObservatoryService(
         double elevationMeters,
         string timeZoneId,
         double? allowedDeploymentRadiusMeters,
+        long? currentLocationVersion,
+        string? currentLocationCanonicalSha256,
         bool isActive)
         => CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
@@ -290,6 +296,8 @@ internal sealed partial class ObservatoryService(
             ElevationMeters = elevationMeters,
             TimeZoneId = timeZoneId,
             AllowedDeploymentRadiusMeters = allowedDeploymentRadiusMeters,
+            CurrentLocationVersion = currentLocationVersion,
+            CurrentLocationCanonicalSha256 = currentLocationCanonicalSha256,
             IsActive = isActive
         });
 

@@ -69,12 +69,18 @@ internal sealed partial class DeploymentLocationReconciliationWorker(
         {
             var secrets = await secretStore.GetAsync(cancellationToken).ConfigureAwait(false);
             var activeDeployment = deploymentLocationStore.Active;
-            if (deploymentLocationStore.Staged is not null)
+            if (deploymentLocationStore.Staged is { } staged)
             {
-                sourceKind = deploymentLocationStore.ResolveSourceKind(deploymentLocationStore.Staged);
+                sourceKind = deploymentLocationStore.ResolveSourceKind(staged);
                 state.Status = DeploymentLocationResolutionStatus.Acknowledged;
-                state.LastSuccessUtc = timeProvider.GetUtcNow();
-                Record("restart-required", "successor");
+                var now = timeProvider.GetUtcNow();
+                if (staged.EffectiveUntilUtc is { } until && until <= now)
+                {
+                    Record("staged-expired", "successor");
+                    return;
+                }
+                state.LastSuccessUtc = now;
+                Record(staged.EffectiveFromUtc > now ? "restart-scheduled" : "restart-required", "successor");
                 return;
             }
             var deployment = deploymentLocationStore.Candidate ?? activeDeployment;
@@ -130,6 +136,12 @@ internal sealed partial class DeploymentLocationReconciliationWorker(
                 && acknowledgment.Deployment.CanonicalSha256 != activeDeployment.CanonicalSha256;
             if (restartRequired)
             {
+                if (acknowledgment.Deployment.EffectiveUntilUtc is { } until
+                    && until <= timeProvider.GetUtcNow())
+                {
+                    Record("acknowledgment-expired", "successor");
+                    return;
+                }
                 if (acknowledgment.Deployment.CanonicalSha256 != deployment.CanonicalSha256)
                 {
                     Record("invalid-acknowledgment");
@@ -147,7 +159,9 @@ internal sealed partial class DeploymentLocationReconciliationWorker(
             state.Status = acknowledgment.Status;
             state.LastSuccessUtc = timeProvider.GetUtcNow();
             var reconciliationOutcome = restartRequired
-                ? "restart-required"
+                ? acknowledgment.Deployment.EffectiveFromUtc > state.LastSuccessUtc
+                    ? "restart-scheduled"
+                    : "restart-required"
                 : acknowledgment.Status switch
                 {
                     DeploymentLocationResolutionStatus.Acknowledged => "acknowledged",

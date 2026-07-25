@@ -92,7 +92,8 @@ public sealed class ProtectedDeploymentLocationStoreTests
     {
         var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix") with
         {
-            SourceKind = DeploymentLocationSourceKind.Gps
+            SourceKind = DeploymentLocationSourceKind.Gps,
+            EffectiveFromUtc = Now.AddMinutes(-1)
         };
         using (var initial = CreateStore())
         {
@@ -117,6 +118,51 @@ public sealed class ProtectedDeploymentLocationStoreTests
         CollectionAssert.AreEqual(
             legacyProtectedPayload,
             await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_CentralUpgradeCreatesClassifiedSuccessorForLegacyHistory()
+    {
+        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix") with
+        {
+            SourceKind = DeploymentLocationSourceKind.Gps,
+            EffectiveFromUtc = Now.AddMinutes(-1)
+        };
+        using (var initial = CreateStore())
+        {
+            _ = await initial.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        }
+        var statePath = Path.Combine(
+            _options.Value.RawIngressRoot, ".location", "deployment-location.v1.protected");
+        var plaintext = _protector.Unprotect(await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
+        var legacy = JsonNode.Parse(plaintext)!.AsObject();
+        legacy.Remove("sourceKinds");
+        legacy["configurationSeed"]?.AsObject().Remove("sourceKind");
+        await File.WriteAllBytesAsync(
+            statePath,
+            _protector.Protect(Encoding.UTF8.GetBytes(legacy.ToJsonString()))).ConfigureAwait(false);
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = _options.Value.RawIngressRoot,
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
+        });
+
+        using var restarted = CreateStore();
+        var active = await restarted.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(1L, active.Version);
+        Assert.AreEqual(DeploymentLocationSourceKind.Unspecified, restarted.ResolveSourceKind(active));
+        Assert.AreEqual(2L, restarted.Candidate!.Version);
+        Assert.AreEqual(DeploymentLocationSourceKind.Gps, restarted.ResolveSourceKind(restarted.Candidate));
+        Assert.IsTrue(restarted.Candidate.EffectiveFromUtc > active.EffectiveFromUtc);
+        Assert.AreEqual(seed.EffectiveUntilUtc, restarted.Candidate.EffectiveUntilUtc);
+        await restarted.StageAsync(restarted.Candidate, CancellationToken.None).ConfigureAwait(false);
+
+        _timeProvider.UtcNow = Now.AddSeconds(1);
+        using var activatedStore = CreateStore();
+        var activated = await activatedStore.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(2L, activated.Version);
+        Assert.AreEqual(DeploymentLocationSourceKind.Gps, activatedStore.ResolveSourceKind(activated));
     }
 
     [TestMethod]
@@ -194,6 +240,99 @@ public sealed class ProtectedDeploymentLocationStoreTests
             sourceKindCorrection, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(4L, classificationActive.Version);
         Assert.AreEqual(DeploymentLocationSourceKind.Gps, classificationRestart.ResolveSourceKind(classificationActive));
+    }
+
+    [TestMethod]
+    public async Task StagedActivation_ReconcilesConfigurationChangedBeforeRestart()
+    {
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = Path.Combine(_root, "data"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
+        });
+        var initialSeed = CreateSeed(35.347, -113.878, 0, "America/Phoenix") with
+        {
+            SourceKind = DeploymentLocationSourceKind.Manual
+        };
+        var approvedSeed = initialSeed with
+        {
+            Source = "approved",
+            Coordinates = initialSeed.Coordinates with { LatitudeDegrees = 35.348 }
+        };
+        DeploymentLocationSnapshot approved;
+        using (var running = CreateStore())
+        {
+            _ = await running.InitializeAsync(initialSeed, CancellationToken.None).ConfigureAwait(false);
+            _timeProvider.UtcNow = Now.AddSeconds(1);
+            _ = await running.InitializeAsync(approvedSeed, CancellationToken.None).ConfigureAwait(false);
+            approved = running.Candidate!;
+            await running.StageAsync(approved, CancellationToken.None).ConfigureAwait(false);
+        }
+        var changedBeforeRestart = approvedSeed with
+        {
+            Coordinates = approvedSeed.Coordinates with { LatitudeDegrees = 35.349 }
+        };
+        _timeProvider.UtcNow = Now.AddSeconds(10);
+
+        using var restarted = CreateStore();
+        var active = await restarted.InitializeAsync(changedBeforeRestart, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(approved, active);
+        Assert.AreEqual(3L, restarted.Candidate!.Version);
+        Assert.AreEqual(35.349, restarted.Candidate.LatitudeDegrees);
+        Assert.IsNull(restarted.Staged);
+    }
+
+    [TestMethod]
+    public async Task StagedActivation_FutureOrExpiredIntervalDoesNotPreventStartup()
+    {
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = Path.Combine(_root, "data"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
+        });
+        var initialSeed = CreateSeed(35.347, -113.878, 0, "America/Phoenix") with
+        {
+            SourceKind = DeploymentLocationSourceKind.Manual
+        };
+        var futureSeed = initialSeed with
+        {
+            Source = "scheduled",
+            EffectiveFromUtc = Now.AddSeconds(10),
+            EffectiveUntilUtc = Now.AddSeconds(20),
+            Coordinates = initialSeed.Coordinates with { LatitudeDegrees = 35.348 }
+        };
+        DeploymentLocationSnapshot initial;
+        DeploymentLocationSnapshot staged;
+        using (var running = CreateStore())
+        {
+            initial = await running.InitializeAsync(initialSeed, CancellationToken.None).ConfigureAwait(false);
+            _timeProvider.UtcNow = Now.AddSeconds(1);
+            _ = await running.InitializeAsync(futureSeed, CancellationToken.None).ConfigureAwait(false);
+            staged = running.Candidate!;
+            await running.StageAsync(staged, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        _timeProvider.UtcNow = Now.AddSeconds(5);
+        using (var beforeInterval = CreateStore())
+        {
+            Assert.AreEqual(initial, await beforeInterval.InitializeAsync(futureSeed, CancellationToken.None).ConfigureAwait(false));
+            Assert.AreEqual(staged, beforeInterval.Staged);
+        }
+
+        _timeProvider.UtcNow = Now.AddSeconds(21);
+        var replacementSeed = futureSeed with
+        {
+            EffectiveFromUtc = null,
+            EffectiveUntilUtc = null,
+            Coordinates = futureSeed.Coordinates with { LatitudeDegrees = 35.349 }
+        };
+        using var afterInterval = CreateStore();
+        Assert.AreEqual(initial, await afterInterval.InitializeAsync(
+            replacementSeed, CancellationToken.None).ConfigureAwait(false));
+        Assert.IsNull(afterInterval.Staged);
+        Assert.AreEqual(3L, afterInterval.Candidate!.Version);
+        Assert.AreEqual(35.349, afterInterval.Candidate.LatitudeDegrees);
     }
 
     [TestMethod]

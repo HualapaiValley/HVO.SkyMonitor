@@ -415,6 +415,50 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
+    [DataRow(-1, false)]
+    [DataRow(0, true)]
+    [DataRow(119_999, true)]
+    [DataRow(120_000, false)]
+    public async Task MultipartIngestV2_ManifestLocationInterval_UsesHalfOpenBoundaries(
+        int offsetMilliseconds,
+        bool expectedAccepted)
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig($"location-interval-{offsetMilliseconds}");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var effectiveFromUtc = DateTimeOffset.UtcNow.AddMinutes(1);
+        var effectiveUntilUtc = effectiveFromUtc.AddMinutes(2);
+        var location = await SeedAcknowledgedDeploymentLocationAsync(
+            registrationId, effectiveFromUtc, effectiveUntilUtc).ConfigureAwait(false);
+        var manifest = CreateManifestV2(
+            deviceId,
+            rig,
+            [1, 2, 3, 4],
+            176 + offsetMilliseconds,
+            location: location,
+            capturedAtUtc: effectiveFromUtc.AddMilliseconds(offsetMilliseconds));
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var response = await PostAsync(client, manifest, [1, 2, 3, 4]).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(expectedAccepted ? HttpStatusCode.Accepted : HttpStatusCode.BadRequest);
+        if (!expectedAccepted)
+        {
+            return;
+        }
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var frame = await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+            .CentralFrames.Include(item => item.Location)
+            .SingleAsync(item => item.FrameId == manifest.Descriptor.Capture.CaptureId)
+            .ConfigureAwait(false);
+        frame.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.ReportedResolved);
+        frame.Location!.DeviceDeploymentLocationVersionId.Should().NotBeNull();
+    }
+
+    [TestMethod]
     public async Task MultipartIngestV2_WithUnknownLocation_QuarantinesOnlyLocationDependentWork()
     {
         var fixture = AssemblyHooks.Fixture;
@@ -661,6 +705,68 @@ public sealed class ArtifactIngestTests
         }
         annotationExecution.Should().NotBeNull();
 
+        await using (var quarantineScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = quarantineScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var source = await db.CentralArtifacts
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
+                .SingleAsync(item => item.Id == sourceId).ConfigureAwait(false);
+            var annotation = await db.CentralDerivativeJobs.SingleAsync(job =>
+                job.SourceCentralArtifactId == sourceId && job.RecipeName == BuiltInProcessingRecipes.Annotation)
+                .ConfigureAwait(false);
+            var result = source.Frame!.Artifacts.Single(item => item.Id == annotation.ResultCentralArtifactId);
+            var retainedCompletedAtUtc = annotation.CompletedAtUtc;
+            source.Frame.LocationEvidenceState = CentralCaptureLocationEvidenceState.Mismatch;
+            var scheduler = quarantineScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>();
+
+            await scheduler.EnsureRequiredJobsAsync(source, DateTimeOffset.UtcNow, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            annotation.Status.Should().Be(CentralDerivativeJobStatus.Quarantined);
+            result.StateReasonCode.Should().Be(CentralDerivativeJobScheduler.LocationMismatchReason);
+            result.ReconstructionState.Should().Be(CentralReconstructionState.Quarantined);
+
+            using (var telemetry = new CentralIngestTelemetry())
+            {
+                var reconciler = new CentralArtifactReconciliationService(
+                    fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
+                    TimeProvider.System,
+                    telemetry,
+                    NullLogger<CentralArtifactReconciliationService>.Instance);
+                await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            db.ChangeTracker.Clear();
+            var retainedResult = await db.CentralArtifacts.AsNoTracking()
+                .SingleAsync(item => item.Id == result.Id).ConfigureAwait(false);
+            retainedResult.StateReasonCode.Should().Be(CentralDerivativeJobScheduler.LocationMismatchReason);
+            retainedResult.ReconstructionState.Should().Be(CentralReconstructionState.Quarantined);
+
+            annotation.LastError.Should().Be(CentralDerivativeJobScheduler.LocationMismatchReason);
+            annotation.ResultCentralArtifactId.Should().Be(result.Id);
+            await db.CentralFrames.Where(frame => frame.Id == source.CentralFrameId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    frame => frame.LocationEvidenceState,
+                    CentralCaptureLocationEvidenceState.ReportedResolved))
+                .ConfigureAwait(false);
+            db.ChangeTracker.Clear();
+            var resolvedSource = await db.CentralArtifacts
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
+                .SingleAsync(item => item.Id == sourceId).ConfigureAwait(false);
+
+            await scheduler.EnsureRequiredJobsAsync(resolvedSource, DateTimeOffset.UtcNow, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            var restoredAnnotation = await db.CentralDerivativeJobs.AsNoTracking().SingleAsync(job =>
+                job.SourceCentralArtifactId == sourceId && job.RecipeName == BuiltInProcessingRecipes.Annotation)
+                .ConfigureAwait(false);
+            var restoredResult = await db.CentralArtifacts.AsNoTracking()
+                .SingleAsync(item => item.Id == result.Id).ConfigureAwait(false);
+            restoredResult.StateReasonCode.Should().BeNull();
+            restoredResult.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+            restoredAnnotation.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+            restoredAnnotation.CompletedAtUtc.Should().Be(retainedCompletedAtUtc);
+        }
+
         DateTimeOffset completedAtUtc;
         Guid pendingEvaluationId;
         Guid pendingToken;
@@ -690,6 +796,7 @@ public sealed class ArtifactIngestTests
             annotation.Status.Should().Be(CentralDerivativeJobStatus.Completed);
             annotation.StateReasonCode.Should().BeNull();
             result.StateReasonCode.Should().BeNull();
+            result.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
             completedAtUtc = annotation.CompletedAtUtc!.Value;
             var pending = await db.DeviceDeploymentLocationVersions.SingleAsync(item =>
                 item.RegistrationId == registrationId
@@ -765,6 +872,7 @@ public sealed class ArtifactIngestTests
             annotation.Status.Should().Be(CentralDerivativeJobStatus.Completed);
             annotation.CompletedAtUtc.Should().Be(completedAtUtc);
             result.StateReasonCode.Should().BeNull();
+            result.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
             var centralFrameId = await db.CentralArtifacts.Where(item => item.Id == sourceId)
                 .Select(item => item.CentralFrameId).SingleAsync().ConfigureAwait(false);
             var frame = await db.CentralFrames.Include(item => item.Location)!.ThenInclude(item => item!.DeploymentLocation)
@@ -3182,7 +3290,10 @@ public sealed class ArtifactIngestTests
         await db.SaveChangesAsync().ConfigureAwait(false);
     }
 
-    private static async Task<CaptureLocationProvenance> SeedAcknowledgedDeploymentLocationAsync(Guid registrationId)
+    private static async Task<CaptureLocationProvenance> SeedAcknowledgedDeploymentLocationAsync(
+        Guid registrationId,
+        DateTimeOffset? effectiveFromUtc = null,
+        DateTimeOffset? effectiveUntilUtc = null)
     {
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -3194,8 +3305,8 @@ public sealed class ArtifactIngestTests
             1,
             "observatory-fallback",
             null,
-            DateTimeOffset.UnixEpoch.AddDays(-1),
-            null,
+            effectiveFromUtc ?? DateTimeOffset.UnixEpoch.AddDays(-1),
+            effectiveUntilUtc,
             observatory.LatitudeDegrees,
             observatory.LongitudeDegrees,
             observatory.ElevationMeters,

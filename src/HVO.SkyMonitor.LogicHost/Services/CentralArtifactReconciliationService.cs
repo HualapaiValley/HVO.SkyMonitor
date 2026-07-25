@@ -1169,7 +1169,9 @@ internal sealed partial class CentralArtifactReconciliationService(
             }
         }
         else if (artifact.ObjectState == CentralArtifactObjectState.Available
-            && artifact.ReconstructionState == CentralReconstructionState.Quarantined)
+            && artifact.ReconstructionState == CentralReconstructionState.Quarantined
+            && artifact.StateReasonCode != CentralDerivativeJobScheduler.LocationUnresolvedReason
+            && artifact.StateReasonCode != CentralDerivativeJobScheduler.LocationMismatchReason)
         {
             await ResolveReferencesAsync(db, artifact, cancellationToken).ConfigureAwait(false);
         }

@@ -307,6 +307,26 @@ internal sealed class CentralDerivativeJobScheduler(
                     recipe.RecipeName, BuiltInProcessingRecipes.CloudAssessment, StringComparison.Ordinal);
                 var requiresResolvedLocation = string.Equals(
                     recipe.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal);
+                if (requiresResolvedLocation
+                    && frame.LocationEvidenceState == CentralCaptureLocationEvidenceState.ReportedResolved
+                    && existing is not null
+                    && IsLocationResolutionFailure(existing)
+                    && existing.ResultCentralArtifactId is { } retainedResultId
+                    && frame.Artifacts.FirstOrDefault(candidate => candidate.Id == retainedResultId) is
+                    {
+                        ObjectState: CentralArtifactObjectState.Available,
+                        ReconstructionState: CentralReconstructionState.Quarantined
+                    } retainedResult
+                    && (retainedResult.StateReasonCode == LocationUnresolvedReason
+                        || retainedResult.StateReasonCode == LocationMismatchReason)
+                    && await IsCanonicalTargetAsync(artifact, retainedResult, recipe, cancellationToken)
+                        .ConfigureAwait(false))
+                {
+                    retainedResult.StateReasonCode = null;
+                    retainedResult.ReconstructionState = CentralReconstructionState.Complete;
+                    Complete(existing, retainedResult, now);
+                    continue;
+                }
                 var target = recipe.Window is null && !isCloudAssessment ? frame.Artifacts.FirstOrDefault(candidate =>
                     candidate.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion
                     && candidate.Role == recipe.TargetRole
@@ -338,15 +358,6 @@ internal sealed class CentralDerivativeJobScheduler(
                         cancellationToken).ConfigureAwait(false);
                     continue;
                 }
-                if (existing is not null
-                    && IsLocationResolutionFailure(existing)
-                    && existing.ResultCentralArtifactId is { } retainedResultId
-                    && frame.Artifacts.FirstOrDefault(candidate => candidate.Id == retainedResultId) is { } retainedResult)
-                {
-                    retainedResult.StateReasonCode = null;
-                    Complete(existing, retainedResult, now);
-                    continue;
-                }
                 if (existing is null)
                 {
                     var job = isCloudAssessment
@@ -364,6 +375,7 @@ internal sealed class CentralDerivativeJobScheduler(
                     if (IsLocationResolutionFailure(existing))
                     {
                         target.StateReasonCode = null;
+                        target.ReconstructionState = CentralReconstructionState.Complete;
                     }
                     Complete(existing, target, now);
                 }
@@ -938,6 +950,7 @@ internal sealed class CentralDerivativeJobScheduler(
         job.LeaseOwner = null;
         job.LeaseAcquiredAtUtc = null;
         job.LeaseExpiresAtUtc = null;
+        job.StateReasonCode = null;
         job.LastError = null;
     }
 
@@ -995,9 +1008,14 @@ internal sealed class CentralDerivativeJobScheduler(
             attempt.ReasonCode = reason;
             attempt.EndedAtUtc = now;
         }
-        if (result is not null)
+        if (result is
+            {
+                ObjectState: CentralArtifactObjectState.Available,
+                ReconstructionState: CentralReconstructionState.Complete
+            })
         {
             result.StateReasonCode = reason;
+            result.ReconstructionState = CentralReconstructionState.Quarantined;
         }
         job.Status = CentralDerivativeJobStatus.Quarantined;
         job.AvailableAtUtc = null;

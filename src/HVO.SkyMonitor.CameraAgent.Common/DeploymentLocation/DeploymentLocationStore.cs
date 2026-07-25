@@ -124,15 +124,30 @@ public sealed class ProtectedDeploymentLocationStore(
                 ValidateRetainedEvidence(history);
             }
             ReconciledLocation snapshot;
-            if (history?.Staged is not null)
+            var startupUtc = ToMilliseconds(_timeProvider.GetUtcNow());
+            if (history?.Staged is not null && history.Staged.IsEffectiveAt(startupUtc))
             {
-                snapshot = ActivateStaged(history);
+                var activated = ActivateStaged(history, startupUtc);
+                snapshot = Reconcile(activated.History, seed) with { Appended = true };
+            }
+            else if (history?.Staged?.EffectiveUntilUtc is { } stagedUntil && stagedUntil <= startupUtc)
+            {
+                var retryable = history with
+                {
+                    Staged = null
+                };
+                snapshot = Reconcile(retryable, seed);
+            }
+            else if (history?.Staged is not null)
+            {
+                EnsureEffectiveAtStartup(history.Snapshots[^1], startupUtc);
+                snapshot = new ReconciledLocation(history, history.Snapshots[^1], Appended: false);
             }
             else if (history is not null
                 && history.CentrallyActivatedCanonicalSha256 == history.Snapshots[^1].CanonicalSha256
                 && (history.ConfigurationSeed is null || history.ConfigurationSeed == seed))
             {
-                EnsureEffectiveAtStartup(history.Snapshots[^1], ToMilliseconds(_timeProvider.GetUtcNow()));
+                EnsureEffectiveAtStartup(history.Snapshots[^1], startupUtc);
                 var updated = history.ConfigurationSeed is null ? history with { ConfigurationSeed = seed } : history;
                 snapshot = new ReconciledLocation(updated, updated.Snapshots[^1], Appended: false);
             }
@@ -259,6 +274,12 @@ public sealed class ProtectedDeploymentLocationStore(
         }
 
         var latest = history?.Snapshots[^1];
+        if (latest is not null
+            && history!.CentrallyActivatedCanonicalSha256 == latest.CanonicalSha256
+            && history.ConfigurationSeed == seed)
+        {
+            return new ReconciledLocation(history, latest, Appended: false);
+        }
         if (history is not null && history.ConfigurationSeed == seed && history.Candidate is not null)
         {
             return new ReconciledLocation(history, latest!, Appended: false);
@@ -274,13 +295,17 @@ public sealed class ProtectedDeploymentLocationStore(
         }
 
         var now = ToMilliseconds(_timeProvider.GetUtcNow());
-        var effectiveFrom = seed.EffectiveFromUtc.HasValue
+        var classificationUpgrade = history?.SourceKinds is null
+            && _options.CentralIntegration.Mode == CentralIntegrationMode.Enabled
+            && latest is not null
+            && SameConfiguredLocationIgnoringSourceKind(latest, seed);
+        var effectiveFrom = seed.EffectiveFromUtc.HasValue && !classificationUpgrade
             ? ToMilliseconds(seed.EffectiveFromUtc.Value)
             : now;
         var latestProposedEffectiveFrom = history?.Candidate?.EffectiveFromUtc > latest?.EffectiveFromUtc
             ? history.Candidate.EffectiveFromUtc
             : latest?.EffectiveFromUtc;
-        if (!seed.EffectiveFromUtc.HasValue
+        if ((!seed.EffectiveFromUtc.HasValue || classificationUpgrade)
             && latestProposedEffectiveFrom.HasValue
             && effectiveFrom <= latestProposedEffectiveFrom.Value)
         {
@@ -360,12 +385,13 @@ public sealed class ProtectedDeploymentLocationStore(
         return new ReconciledLocation(updated, snapshot, Appended: true);
     }
 
-    private ReconciledLocation ActivateStaged(DeploymentLocationHistory history)
+    private static ReconciledLocation ActivateStaged(
+        DeploymentLocationHistory history,
+        DateTimeOffset activatedAtUtc)
     {
         var staged = history.Staged!;
         var latest = history.Snapshots[^1];
         ValidateSuccessor(latest, staged);
-        var activatedAtUtc = ToMilliseconds(_timeProvider.GetUtcNow());
         EnsureEffectiveAtStartup(staged, activatedAtUtc);
         var updated = history with
         {
@@ -401,14 +427,16 @@ public sealed class ProtectedDeploymentLocationStore(
         }
     }
 
-    private static bool SameConfiguredLocation(
+    private bool SameConfiguredLocation(
         DeploymentLocationHistory history,
         DeploymentLocationSnapshot snapshot,
         DeploymentLocationSeed seed)
         => string.Equals(snapshot.LocationId, seed.LocationId, StringComparison.Ordinal) &&
            string.Equals(snapshot.Source, seed.Source, StringComparison.Ordinal) &&
-           (history.SourceKinds is null
-               || history.SourceKinds.TryGetValue(snapshot.Version, out var sourceKind) && sourceKind == seed.SourceKind) &&
+           (history.SourceKinds is null && _options.CentralIntegration.Mode == CentralIntegrationMode.Disabled
+                || history.SourceKinds is not null
+                && history.SourceKinds.TryGetValue(snapshot.Version, out var sourceKind)
+                && sourceKind == seed.SourceKind) &&
            snapshot.HorizontalAccuracyMeters == seed.HorizontalAccuracyMeters &&
            snapshot.LatitudeDegrees == seed.Coordinates.LatitudeDegrees &&
            snapshot.LongitudeDegrees == seed.Coordinates.LongitudeDegrees &&
@@ -416,6 +444,21 @@ public sealed class ProtectedDeploymentLocationStore(
            string.Equals(snapshot.TimeZoneId, seed.Coordinates.TimeZoneId, StringComparison.Ordinal) &&
            (!seed.EffectiveFromUtc.HasValue || snapshot.EffectiveFromUtc == ToMilliseconds(seed.EffectiveFromUtc.Value)) &&
            (!seed.EffectiveUntilUtc.HasValue || snapshot.EffectiveUntilUtc == ToMilliseconds(seed.EffectiveUntilUtc.Value));
+
+    private static bool SameConfiguredLocationIgnoringSourceKind(
+        DeploymentLocationSnapshot snapshot,
+        DeploymentLocationSeed seed)
+        => string.Equals(snapshot.LocationId, seed.LocationId, StringComparison.Ordinal)
+           && string.Equals(snapshot.Source, seed.Source, StringComparison.Ordinal)
+           && snapshot.HorizontalAccuracyMeters == seed.HorizontalAccuracyMeters
+           && snapshot.LatitudeDegrees == seed.Coordinates.LatitudeDegrees
+           && snapshot.LongitudeDegrees == seed.Coordinates.LongitudeDegrees
+           && snapshot.ElevationMeters == seed.Coordinates.ElevationMeters
+           && string.Equals(snapshot.TimeZoneId, seed.Coordinates.TimeZoneId, StringComparison.Ordinal)
+           && (!seed.EffectiveFromUtc.HasValue
+               || snapshot.EffectiveFromUtc == ToMilliseconds(seed.EffectiveFromUtc.Value))
+           && (!seed.EffectiveUntilUtc.HasValue
+               || snapshot.EffectiveUntilUtc == ToMilliseconds(seed.EffectiveUntilUtc.Value));
 
     private static DeploymentLocationSeed NormalizeSeed(DeploymentLocationSeed seed)
         => seed with
