@@ -217,6 +217,7 @@ internal sealed class Issue170PerformanceEvidence
         var observedContainers = RunOptionalCommand(
                 root, "docker", "ps", "--format", "{{.Image}}")
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
             .ToArray();
         if (!string.Equals(declaredSdk, executingSdk, StringComparison.Ordinal)
