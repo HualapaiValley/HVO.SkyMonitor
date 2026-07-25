@@ -3,30 +3,68 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
+using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class SchedulePage : ComponentBase
+public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 {
     private CaptureScheduleOperatorState? _state;
     private CaptureSchedulePreview? _preview;
     private string _editorJson = string.Empty;
     private string _overrideMode = "ForceClosed";
-    private string _overrideStart = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture);
-    private string _overrideEnd = DateTimeOffset.UtcNow.AddHours(1).ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture);
+    private string _overrideStart = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+    private string _overrideEnd = DateTimeOffset.UtcNow.AddHours(1).ToString("O", CultureInfo.InvariantCulture);
     private string _overrideProfile = string.Empty;
     private string? _confirmRevisionId;
+    private string? _editorBasisRevisionId;
     private string? _message;
     private bool _messageIsError;
     private bool _overrideOneShot;
     private bool _loading = true;
     private bool _busy;
+    private string? _stageKey;
+    private string? _stagePayload;
+    private long _stageExpectedVersion;
+    private string? _activationKey;
+    private string? _activationRevisionId;
+    private long _activationExpectedVersion;
+    private string? _overrideKey;
+    private string? _overrideSignature;
+    private CaptureScheduleOverride? _pendingOverride;
+    private long _overrideExpectedVersion;
+    private IJSObjectReference? _module;
+    private ElementReference _confirmationPanel;
+    private string? _activationTriggerId;
+    private bool _focusConfirmation;
+    private bool _restoreActivationFocus;
+    private readonly Dictionary<string, (string Key, long ExpectedVersion)> _clearOverrideKeys = new(StringComparer.Ordinal);
 
     [Inject] internal ICameraAgentScheduleUiService ScheduleService { get; set; } = default!;
 
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
 
+    [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
+
     protected override async Task OnInitializedAsync() => await RefreshAsync().ConfigureAwait(false);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusConfirmation)
+        {
+            _focusConfirmation = false;
+            await _confirmationPanel.FocusAsync().ConfigureAwait(false);
+        }
+        else if (_restoreActivationFocus)
+        {
+            _restoreActivationFocus = false;
+            _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
+                "import", "./Components/Pages/SchedulePage.razor.js").ConfigureAwait(false);
+            await _module.InvokeVoidAsync(
+                "focusById", _activationTriggerId, "schedule-heading").ConfigureAwait(false);
+        }
+    }
 
     private async Task RefreshAsync()
     {
@@ -42,7 +80,10 @@ public sealed partial class SchedulePage : ComponentBase
             if (result.IsSuccess && result.Value is not null)
             {
                 _state = result.Value;
-                _editorJson = CameraAgentScheduleUiService.SerializeProfile(_state.PendingRevision?.Profile ?? _state.ActiveRevision.Profile);
+                var editorRevision = _state.PendingRevision ?? _state.ActiveRevision;
+                _editorJson = CameraAgentScheduleUiService.SerializeProfile(editorRevision.Profile);
+                _editorBasisRevisionId = editorRevision.RevisionId;
+                _preview = null;
                 _overrideProfile = _state.Decision.SetpointProfileId ?? _state.ActiveRevision.Definition.SetpointProfiles[0].Id;
                 _message = null;
             }
@@ -60,9 +101,28 @@ public sealed partial class SchedulePage : ComponentBase
 
     private async Task PreviewAsync()
     {
+        if (_editorBasisRevisionId is null)
+        {
+            return;
+        }
+        var editorJson = _editorJson;
+        var basisRevisionId = _editorBasisRevisionId;
         _busy = true;
-        var result = await ScheduleService.PreviewAsync(_editorJson, 7, CancellationToken.None).ConfigureAwait(false);
-        _busy = false;
+        OperatorUiResult<CaptureSchedulePreview> result;
+        try
+        {
+            result = await ScheduleService.PreviewAsync(
+                editorJson, basisRevisionId, 7, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _busy = false;
+        }
+        if (!string.Equals(editorJson, _editorJson, StringComparison.Ordinal) ||
+            !string.Equals(basisRevisionId, _editorBasisRevisionId, StringComparison.Ordinal))
+        {
+            return;
+        }
         if (result.IsSuccess)
         {
             _preview = result.Value;
@@ -70,26 +130,53 @@ public sealed partial class SchedulePage : ComponentBase
         }
         else
         {
+            _preview = null;
             SetMessage(result.Message ?? "Preview validation failed.", error: true);
         }
     }
 
     private async Task StageAsync()
     {
-        if (_state is null)
+        if (_state is null || _editorBasisRevisionId is null)
         {
             return;
         }
+        var stageSignature = string.Concat(_editorBasisRevisionId, "\n", _editorJson);
+        if (!string.Equals(_stagePayload, stageSignature, StringComparison.Ordinal))
+        {
+            _stagePayload = stageSignature;
+            _stageKey = NewKey();
+            _stageExpectedVersion = _state.StateVersion;
+        }
         _busy = true;
         var result = await ScheduleService.StageAsync(
-            _editorJson, _state.StateVersion, NewKey(), "operator draft", CancellationToken.None).ConfigureAwait(false);
+            _editorJson,
+            _editorBasisRevisionId,
+            _stageExpectedVersion,
+            _stageKey!,
+            "operator draft",
+            CancellationToken.None).ConfigureAwait(false);
         _busy = false;
+        if (result.Kind != OperatorUiResultKind.Unavailable)
+        {
+            _stageKey = null;
+            _stagePayload = null;
+        }
         await CompleteMutationAsync(result, "Draft saved.").ConfigureAwait(false);
     }
 
-    private void BeginActivation(string revisionId) => _confirmRevisionId = revisionId;
+    private void BeginActivation(string revisionId, string triggerId)
+    {
+        _confirmRevisionId = revisionId;
+        _activationTriggerId = triggerId;
+        _focusConfirmation = true;
+    }
 
-    private void CancelActivation() => _confirmRevisionId = null;
+    private void CancelActivation()
+    {
+        _confirmRevisionId = null;
+        _restoreActivationFocus = true;
+    }
 
     private async Task ConfirmActivationAsync()
     {
@@ -98,11 +185,27 @@ public sealed partial class SchedulePage : ComponentBase
             return;
         }
         var revisionId = _confirmRevisionId;
+        if (!string.Equals(_activationRevisionId, revisionId, StringComparison.Ordinal))
+        {
+            _activationRevisionId = revisionId;
+            _activationKey = NewKey();
+            _activationExpectedVersion = _state.StateVersion;
+        }
         _busy = true;
         var result = await ScheduleService.ActivateAsync(
-            revisionId, _state.StateVersion, NewKey(), "operator apply", CancellationToken.None).ConfigureAwait(false);
+            revisionId,
+            _activationExpectedVersion,
+            _activationKey!,
+            "operator apply",
+            CancellationToken.None).ConfigureAwait(false);
         _busy = false;
-        _confirmRevisionId = null;
+        if (result.Kind != OperatorUiResultKind.Unavailable)
+        {
+            _confirmRevisionId = null;
+            _restoreActivationFocus = true;
+            _activationKey = null;
+            _activationRevisionId = null;
+        }
         await CompleteMutationAsync(result, "Revision applied at the capture boundary.").ConfigureAwait(false);
     }
 
@@ -122,19 +225,42 @@ public sealed partial class SchedulePage : ComponentBase
         var mode = _overrideMode == "ForceOpen"
             ? CaptureScheduleOverrideMode.ForceOpen
             : CaptureScheduleOverrideMode.ForceClosed;
-        var scheduleOverride = new CaptureScheduleOverride(
-            $"override-{Guid.NewGuid():N}",
+        var signature = string.Join('|',
             _state.ActiveRevision.RevisionId,
-            _state.ActiveRevision.ScheduleSha256,
             mode,
-            start,
-            end,
-            mode == CaptureScheduleOverrideMode.ForceOpen ? _overrideProfile : null,
-            mode == CaptureScheduleOverrideMode.ForceOpen && _overrideOneShot);
+            start.ToString("O", CultureInfo.InvariantCulture),
+            end.ToString("O", CultureInfo.InvariantCulture),
+            _overrideProfile,
+            _overrideOneShot);
+        if (!string.Equals(_overrideSignature, signature, StringComparison.Ordinal))
+        {
+            _overrideSignature = signature;
+            _overrideKey = NewKey();
+            _overrideExpectedVersion = _state.StateVersion;
+            _pendingOverride = new CaptureScheduleOverride(
+                $"override-{Guid.NewGuid():N}",
+                _state.ActiveRevision.RevisionId,
+                _state.ActiveRevision.ScheduleSha256,
+                mode,
+                start,
+                end,
+                mode == CaptureScheduleOverrideMode.ForceOpen ? _overrideProfile : null,
+                mode == CaptureScheduleOverrideMode.ForceOpen && _overrideOneShot);
+        }
         _busy = true;
         var result = await ScheduleService.AddOverrideAsync(
-            scheduleOverride, _state.StateVersion, NewKey(), "operator override", CancellationToken.None).ConfigureAwait(false);
+            _pendingOverride!,
+            _overrideExpectedVersion,
+            _overrideKey!,
+            "operator override",
+            CancellationToken.None).ConfigureAwait(false);
         _busy = false;
+        if (result.Kind != OperatorUiResultKind.Unavailable)
+        {
+            _overrideKey = null;
+            _overrideSignature = null;
+            _pendingOverride = null;
+        }
         await CompleteMutationAsync(result, "Override created.").ConfigureAwait(false);
     }
 
@@ -144,10 +270,23 @@ public sealed partial class SchedulePage : ComponentBase
         {
             return;
         }
+        if (!_clearOverrideKeys.TryGetValue(overrideId, out var pendingCommand))
+        {
+            pendingCommand = (NewKey(), _state.StateVersion);
+            _clearOverrideKeys.Add(overrideId, pendingCommand);
+        }
         _busy = true;
         var result = await ScheduleService.ClearOverrideAsync(
-            overrideId, _state.StateVersion, NewKey(), "operator clear", CancellationToken.None).ConfigureAwait(false);
+            overrideId,
+            pendingCommand.ExpectedVersion,
+            pendingCommand.Key,
+            "operator clear",
+            CancellationToken.None).ConfigureAwait(false);
         _busy = false;
+        if (result.Kind != OperatorUiResultKind.Unavailable)
+        {
+            _clearOverrideKeys.Remove(overrideId);
+        }
         await CompleteMutationAsync(result, "Override cleared.").ConfigureAwait(false);
     }
 
@@ -175,9 +314,24 @@ public sealed partial class SchedulePage : ComponentBase
         _messageIsError = error;
     }
 
+    private void EditorChanged()
+    {
+        _preview = null;
+        _message = null;
+    }
+
     private static string NewKey() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
 
     private static string ShortHash(string value) => value.Length <= 12 ? value : value[..12];
+
+    private static string ActivationTriggerId(string revisionId, string origin)
+        => $"schedule-activation-{origin}-{revisionId}";
+
+    private static string PendingActivationTriggerId(string revisionId)
+        => ActivationTriggerId(revisionId, "pending");
+
+    private static string HistoryActivationTriggerId(CaptureScheduleRevisionSnapshot revision)
+        => ActivationTriggerId(revision.RevisionId, $"history-{revision.RevisionNumber}");
 
     private static string FormatUtc(DateTimeOffset? value) => value?.ToString("u") ?? "No known transition";
 
@@ -187,4 +341,18 @@ public sealed partial class SchedulePage : ComponentBase
     private static string Split(string value)
         => string.Concat(value.Select((character, index) =>
             index > 0 && char.IsUpper(character) ? $" {character}" : character.ToString()));
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+        }
+    }
 }

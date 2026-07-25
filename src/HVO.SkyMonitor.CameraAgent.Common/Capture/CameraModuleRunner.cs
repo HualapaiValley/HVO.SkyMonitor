@@ -110,6 +110,15 @@ internal sealed class CameraModuleRunner
                 {
                     break;
                 }
+                var profileChanged = activeProfileKey is not null && !string.Equals(
+                    activeProfileKey, scheduleGrant.ProfileKey, StringComparison.Ordinal);
+                if (scheduleGrant.AdmissionWasInterrupted || profileChanged)
+                {
+                    previousStartTimestamp = null;
+                    previousStartUtc = null;
+                    recovering = false;
+                    moduleDelayOverride = null;
+                }
                 cadenceMode = scheduleGrant.Profile.CadenceMode;
                 targetInterval = cadenceMode == CaptureCadenceMode.MinimumStartInterval
                     ? Max(scheduleGrant.Profile.CaptureInterval, moduleDelayOverride ?? TimeSpan.Zero)
@@ -141,6 +150,9 @@ internal sealed class CameraModuleRunner
             }
             if (schedule is null)
             {
+                previousStartTimestamp = null;
+                previousStartUtc = null;
+                recovering = false;
                 continue;
             }
             var effectiveSchedule = schedule.Value;
@@ -162,9 +174,21 @@ internal sealed class CameraModuleRunner
                     {
                         admission.MarkNoPublicationRequired();
                         admission.Dispose();
+                        previousStartTimestamp = null;
+                        previousStartUtc = null;
+                        recovering = false;
                         continue;
                     }
                     scheduleGrant = confirmed;
+                    if (confirmed.AdmissionWasInterrupted)
+                    {
+                        previousStartTimestamp = null;
+                        previousStartUtc = null;
+                        recovering = false;
+                        moduleDelayOverride = null;
+                        targetInterval = confirmed.Profile.CaptureInterval;
+                        effectiveSchedule = new CaptureSchedule(UtcNow(), CaptureStartReason.Initial);
+                    }
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

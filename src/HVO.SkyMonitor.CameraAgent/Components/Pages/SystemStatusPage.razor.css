@@ -6,6 +6,7 @@
 .snapshot-badges { display: grid; justify-items: end; gap: .4rem; }
 .snapshot-badges span { padding: .25rem .65rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; color: var(--hvo-info-fg); background: var(--hvo-info-bg); font-size: .68rem; font-weight: 750; }
 .truth-note { margin: 1rem 0; padding: .8rem 1rem; border-left: 3px solid var(--hvo-warning-strong); color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
+.truth-note a { color: #f8fafc; text-decoration-thickness: 2px; }
 .system-state { display: flex; justify-content: space-between; align-items: center; min-height: 8rem; padding: 1rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-surface); }
 .system-state--error { border-color: var(--hvo-danger-strong); background: var(--hvo-danger-bg); }
 .system-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; }

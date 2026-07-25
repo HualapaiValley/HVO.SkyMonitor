@@ -41,6 +41,7 @@ internal static class RawCaptureDescriptorFactory
         var frame = submission.Result.Frame ?? throw new ArgumentException("A raw frame is required.", nameof(submission));
         var timing = ResolveTiming(submission, frame, durableIngressUtc);
         _ = configuration.ResolveObservatory(timing.ExposureStartedUtc);
+        ValidateScheduleEvidence(configuration, submission.CycleEvidence?.ScheduleAdmission);
         var requestedSetpoint = submission.Request.RequestedSetpoint;
         var rigElement = CaptureContractJson.SerializeToElement(configuration.Rig);
         var sensorElement = JsonSerializer.SerializeToElement(configuration.Rig.Sensor);
@@ -102,6 +103,26 @@ internal static class RawCaptureDescriptorFactory
         };
     }
 
+    private static void ValidateScheduleEvidence(
+        CameraModuleConfig configuration,
+        CaptureScheduleAdmissionEvidence? evidence)
+    {
+        if (evidence is null)
+        {
+            return;
+        }
+        var schedule = configuration.Schedule ?? throw new InvalidDataException(
+            "Schedule admission evidence requires an effective local schedule.");
+        var profileSha256 = LocalCaptureProfileContract.ComputeSha256(
+            LocalCaptureProfileDefinition.Create(configuration, schedule));
+        var scheduleSha256 = CaptureScheduleContract.ComputeSha256(schedule);
+        if (!string.Equals(evidence.LocalProfileSha256, profileSha256, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(evidence.ScheduleRevisionSha256, scheduleSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Schedule admission evidence does not match the effective local profile.");
+        }
+    }
+
     private static CaptureTimingDescriptor ResolveTiming(
         CaptureLoopSubmission submission,
         CameraFrame frame,
@@ -142,6 +163,10 @@ internal static class RawCaptureDescriptorFactory
             ? null
             : evidence.ScheduleAdmission with
             {
+                ScheduleRevisionSha256 = evidence.ScheduleAdmission.ScheduleRevisionSha256.ToUpperInvariant(),
+                LocalProfileSha256 = evidence.ScheduleAdmission.LocalProfileSha256.ToUpperInvariant(),
+                ExpansionSha256 = evidence.ScheduleAdmission.ExpansionSha256.ToUpperInvariant(),
+                TimeZoneRuleSha256 = evidence.ScheduleAdmission.TimeZoneRuleSha256.ToUpperInvariant(),
                 DecisionUtc = ToMilliseconds(evidence.ScheduleAdmission.DecisionUtc),
                 EffectiveStartUtc = ToMilliseconds(evidence.ScheduleAdmission.EffectiveStartUtc),
                 EffectiveEndUtc = ToMilliseconds(evidence.ScheduleAdmission.EffectiveEndUtc)

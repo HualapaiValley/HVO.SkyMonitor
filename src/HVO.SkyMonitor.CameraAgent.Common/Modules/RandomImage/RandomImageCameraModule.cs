@@ -5,7 +5,9 @@ using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 
-public sealed class RandomImageCameraModule(TimeProvider timeProvider) : ICameraModule
+public sealed class RandomImageCameraModule(TimeProvider timeProvider) :
+    ICameraModule,
+    ICameraModuleConfigurationPreflight
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -50,6 +52,16 @@ public sealed class RandomImageCameraModule(TimeProvider timeProvider) : ICamera
         _reportedTemperatureC = config.Rig.ControlPolicy.ResolveTemperatureSetpoint(double.NaN);
         _random = RandomNumberGenerator.Create();
         return Task.CompletedTask;
+    }
+
+    void ICameraModuleConfigurationPreflight.ValidateConfiguration(CameraModuleConfig configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (configuration.ModuleOptions is { } options)
+        {
+            _ = options.Deserialize<RandomImageCameraModuleOptions>(SerializerOptions)
+                ?? throw new ArgumentException("Random image module options are invalid.", nameof(configuration));
+        }
     }
 
     public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)

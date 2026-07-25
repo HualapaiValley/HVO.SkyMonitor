@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -30,8 +31,75 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
         Assert.AreEqual(fixture.Location.LocationId, confirmed.Evidence.DeploymentLocationId);
         Assert.AreEqual(fixture.Location.Version, confirmed.Evidence.DeploymentLocationVersion);
         Assert.AreEqual(confirmed.Revision.ScheduleSha256, confirmed.Evidence.ScheduleRevisionSha256);
+        Assert.AreEqual(confirmed.Revision.ProfileSha256, confirmed.Evidence.LocalProfileSha256);
         Assert.AreEqual(confirmed.Profile.Id, confirmed.Evidence.SetpointProfileId);
         Assert.IsTrue(CaptureScheduleContract.ValidateAdmissionEvidence(confirmed.Evidence).IsValid);
+    }
+
+    [TestMethod]
+    public async Task WaitForGrant_AfterManualPause_ReportsAdmissionInterruption()
+    {
+        using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
+        _ = await fixture.Runtime.WaitForGrantAsync(CancellationToken.None).ConfigureAwait(false);
+        var version = fixture.Admission.Snapshot.Version;
+        _ = await fixture.Admission.PauseAsync(
+            "pause-schedule", version, "owner", "test", CancellationToken.None).ConfigureAwait(false);
+
+        var pendingGrant = fixture.Runtime.WaitForGrantAsync(CancellationToken.None);
+        await Task.Delay(50).ConfigureAwait(false);
+        Assert.IsFalse(pendingGrant.IsCompleted);
+        _ = await fixture.Admission.ResumeAsync(
+            "resume-schedule", fixture.Admission.Snapshot.Version, "owner", "test", CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var resumedGrant = await pendingGrant.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        Assert.IsTrue(resumedGrant.AdmissionWasInterrupted);
+    }
+
+    [TestMethod]
+    public async Task ConfirmGrant_WhenPauseAndResumeOccurredAfterGrant_ReportsAdmissionInterruption()
+    {
+        using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
+        var grant = await fixture.Runtime.WaitForGrantAsync(CancellationToken.None).ConfigureAwait(false);
+        _ = await fixture.Admission.PauseAsync(
+            "pause-after-grant",
+            fixture.Admission.Snapshot.Version,
+            "owner",
+            "test",
+            CancellationToken.None).ConfigureAwait(false);
+        _ = await fixture.Admission.ResumeAsync(
+            "resume-after-grant",
+            fixture.Admission.Snapshot.Version,
+            "owner",
+            "test",
+            CancellationToken.None).ConfigureAwait(false);
+
+        var confirmed = await fixture.Runtime.ConfirmGrantAsync(
+            grant, "admission-after-pause", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(confirmed);
+        Assert.IsTrue(confirmed.AdmissionWasInterrupted);
+    }
+
+    [TestMethod]
+    public async Task Stage_WhenModulePreflightRejects_DoesNotChangeDurableState()
+    {
+        using var fixture = await RuntimeFixture.CreateAsync(new RejectingModuleValidator()).ConfigureAwait(false);
+        var initial = await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+
+        _ = await Assert.ThrowsAsync<CaptureProfileCompatibilityException>(() => fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.Create(
+                fixture.Configuration, AlwaysOpenDefinition("invalid", gain: 2)),
+            "stage-invalid",
+            initial.Version,
+            "owner",
+            null,
+            CancellationToken.None)).ConfigureAwait(false);
+
+        var current = await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(initial.Version, current.Version);
+        Assert.IsNull(current.PendingRevision);
+        Assert.AreEqual(initial.ActiveRevision.RevisionId, current.ActiveRevision.RevisionId);
     }
 
     [TestMethod]
@@ -142,6 +210,32 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
             (await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevision.RevisionId);
     }
 
+    [TestMethod]
+    public async Task LateStageReplay_DoesNotReplaceNewerPendingRuntimeRevision()
+    {
+        using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
+        var initial = await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var first = await fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.Create(
+                fixture.Configuration, AlwaysOpenDefinition("first-stage", gain: 2)),
+            "stage-replay-first", initial.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+        var second = await fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.Create(
+                fixture.Configuration, AlwaysOpenDefinition("second-stage", gain: 3)),
+            "stage-replay-second", first.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+
+        var replay = await fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.Create(
+                fixture.Configuration, AlwaysOpenDefinition("first-stage", gain: 2)),
+            "stage-replay-first", initial.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(first.Version, replay.Version);
+        Assert.AreEqual(second.PendingRevision!.RevisionId, fixture.Runtime.Snapshot!.PendingRevisionId);
+        Assert.AreEqual(
+            second.PendingRevision.RevisionId,
+            (await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).PendingRevision!.RevisionId);
+    }
+
     private static CaptureScheduleDefinition AlwaysOpenDefinition(string profileId, double gain = 1)
         => new(
             "capture-schedule-v1",
@@ -191,7 +285,8 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
 
         internal TimeProvider TimeProvider { get; }
 
-        internal static async Task<RuntimeFixture> CreateAsync()
+        internal static async Task<RuntimeFixture> CreateAsync(
+            ICameraModuleConfigurationValidator? moduleConfigurationValidator = null)
         {
             var root = Path.Combine(Path.GetTempPath(), "hvo-schedule-runtime", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
@@ -225,7 +320,13 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
                 Schedule = AlwaysOpenDefinition("initial")
             };
             var runtime = new CaptureScheduleRuntimeCoordinator(
-                store, admission, rawState, laneState, new EmptyPipelineFactory(), timeProvider);
+                store,
+                admission,
+                rawState,
+                laneState,
+                new EmptyPipelineFactory(),
+                timeProvider,
+                moduleConfigurationValidator: moduleConfigurationValidator);
             await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await runtime.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
             return new RuntimeFixture(
@@ -239,6 +340,17 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
             Store.Dispose();
             _telemetry.Dispose();
             Directory.Delete(_root, recursive: true);
+        }
+    }
+
+    private sealed class RejectingModuleValidator : ICameraModuleConfigurationValidator
+    {
+        public void Validate(CameraModuleConfig configuration)
+        {
+            if (configuration.Schedule?.SetpointProfiles.Any(profile => profile.Id == "invalid") == true)
+            {
+                throw new ArgumentException("Unsupported test module.", nameof(configuration));
+            }
         }
     }
 

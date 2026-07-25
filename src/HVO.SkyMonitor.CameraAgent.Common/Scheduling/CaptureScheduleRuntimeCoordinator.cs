@@ -4,8 +4,10 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 
@@ -24,7 +26,12 @@ public sealed record CaptureScheduleGrant(
     CaptureScheduleSetpointProfile Profile,
     string ProfileKey,
     CaptureScheduleDecision Decision,
-    CaptureScheduleAdmissionEvidence Evidence);
+    CaptureScheduleAdmissionEvidence Evidence)
+{
+    public bool AdmissionWasInterrupted { get; init; }
+
+    public long AdmissionStateVersion { get; init; }
+}
 
 public readonly record struct CaptureScheduleCaptureContext(
     CaptureScheduleRuntimeSnapshot Snapshot,
@@ -46,7 +53,8 @@ public sealed class CaptureScheduleRuntimeCoordinator(
     CaptureLaneState captureLaneState,
     ICaptureProcessingPipelineFactory pipelineFactory,
     TimeProvider timeProvider,
-    ISolarEventCalculator? solarEventCalculator = null) : IDisposable
+    ISolarEventCalculator? solarEventCalculator = null,
+    ICameraModuleConfigurationValidator? moduleConfigurationValidator = null) : IDisposable
 {
     private static readonly TimeSpan MaximumClosedPoll = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MinimumPoll = TimeSpan.FromMilliseconds(1);
@@ -61,6 +69,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
     private readonly ICaptureProcessingPipelineFactory _pipelineFactory = pipelineFactory;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ISolarEventCalculator _solarEvents = solarEventCalculator ?? new AstronomyEngineSolarEventCalculator();
+    private readonly ICameraModuleConfigurationValidator? _moduleConfigurationValidator = moduleConfigurationValidator;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _stateGate = new();
     private CaptureScheduleRuntimeSnapshot? _snapshot;
@@ -123,6 +132,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
 
     public async Task<CaptureScheduleGrant> WaitForGrantAsync(CancellationToken cancellationToken)
     {
+        var admissionWasInterrupted = false;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -131,13 +141,14 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             snapshot = await EnsurePreviewAsync(snapshot, now, cancellationToken).ConfigureAwait(false);
             var overrides = await _store.GetActiveOverridesAsync(
                 snapshot.Revision.RevisionId, now, cancellationToken).ConfigureAwait(false);
+            var admissionSnapshot = _admissionCoordinator.Snapshot;
             var decision = CaptureScheduleEvaluator.Evaluate(
                 snapshot.Revision.Definition,
                 snapshot.Preview,
                 new CaptureScheduleEvaluationRequest(
                     now,
                     ResolveSafetyState(_rawIngressState.Snapshot, _captureLaneState.Snapshot),
-                    _admissionCoordinator.Snapshot.State != CaptureAdmissionState.Running,
+                    admissionSnapshot.State != CaptureAdmissionState.Running,
                     overrides));
             if (!await RecordDecisionAsync(snapshot, decision, cancellationToken).ConfigureAwait(false))
             {
@@ -145,8 +156,12 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             }
             if (decision.Admitted)
             {
-                return CreateGrant(snapshot, decision);
+                return CreateGrant(snapshot, decision, admissionSnapshot.Version) with
+                {
+                    AdmissionWasInterrupted = admissionWasInterrupted
+                };
             }
+            admissionWasInterrupted = true;
             var delay = decision.NextTransitionUtc is { } transition
                 ? transition - now
                 : MaximumClosedPoll;
@@ -171,13 +186,14 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         snapshot = await EnsurePreviewAsync(snapshot, now, cancellationToken).ConfigureAwait(false);
         var overrides = await _store.GetActiveOverridesAsync(
             snapshot.Revision.RevisionId, now, cancellationToken).ConfigureAwait(false);
+        var admissionSnapshot = _admissionCoordinator.Snapshot;
         var decision = CaptureScheduleEvaluator.Evaluate(
             snapshot.Revision.Definition,
             snapshot.Preview,
             new CaptureScheduleEvaluationRequest(
                 now,
                 ResolveSafetyState(_rawIngressState.Snapshot, _captureLaneState.Snapshot),
-                _admissionCoordinator.Snapshot.State != CaptureAdmissionState.Running,
+                admissionSnapshot.State != CaptureAdmissionState.Running,
                 overrides));
         if (!await RecordDecisionAsync(snapshot, decision, cancellationToken).ConfigureAwait(false))
         {
@@ -196,7 +212,13 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             decision.ConsumeOneShotOverride ? decision.OverrideId : null,
             decision.DecisionUtc,
             cancellationToken).ConfigureAwait(false);
-        return consumed ? CreateGrant(snapshot, decision) : null;
+        return consumed
+            ? CreateGrant(snapshot, decision, admissionSnapshot.Version) with
+            {
+                AdmissionWasInterrupted = grant.AdmissionWasInterrupted ||
+                    grant.AdmissionStateVersion != admissionSnapshot.Version
+            }
+            : null;
     }
 
     public async Task<CaptureScheduleStoreSnapshot> StageAsync(
@@ -214,16 +236,16 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             var current = Snapshot ?? throw new InvalidOperationException("Capture schedule runtime is not initialized.");
             var candidateConfiguration = profile.ApplyTo(current.Configuration);
             ValidateConfiguration(candidateConfiguration);
-            var durable = await _store.StageAsync(
+            var result = await _store.StageWithCurrentAsync(
                 profile, idempotencyKey, expectedVersion, actor, reason, cancellationToken).ConfigureAwait(false);
             lock (_stateGate)
             {
                 Volatile.Write(ref _snapshot, current with
                 {
-                    PendingRevisionId = durable.PendingRevision?.RevisionId
+                    PendingRevisionId = result.Current.PendingRevision?.RevisionId
                 });
             }
-            return durable;
+            return result.Receipt;
         }
         finally
         {
@@ -234,30 +256,48 @@ public sealed class CaptureScheduleRuntimeCoordinator(
     public async Task<CaptureScheduleOperatorState> GetOperatorStateAsync(
         CancellationToken cancellationToken)
     {
-        var current = Snapshot ?? throw new InvalidOperationException("Capture schedule runtime is not initialized.");
-        var now = _timeProvider.GetUtcNow().ToUniversalTime();
-        current = await EnsurePreviewAsync(current, now, cancellationToken).ConfigureAwait(false);
-        var overrides = await _store.GetActiveOverridesAsync(
-            current.Revision.RevisionId, now, cancellationToken).ConfigureAwait(false);
-        var decision = CaptureScheduleEvaluator.Evaluate(
-            current.Revision.Definition,
-            current.Preview,
-            new CaptureScheduleEvaluationRequest(
-                now,
-                ResolveSafetyState(_rawIngressState.Snapshot, _captureLaneState.Snapshot),
-                _admissionCoordinator.Snapshot.State != CaptureAdmissionState.Running,
-                overrides));
-        _ = await RecordDecisionAsync(current, decision, cancellationToken).ConfigureAwait(false);
-        var durable = await _store.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
-        var history = await _store.GetHistoryAsync(20, cancellationToken).ConfigureAwait(false);
-        return new CaptureScheduleOperatorState(
-            durable.Version,
-            durable.ActiveRevision,
-            durable.PendingRevision,
-            history,
-            decision,
-            current.Preview,
-            overrides);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = Snapshot ?? throw new InvalidOperationException("Capture schedule runtime is not initialized.");
+            var now = _timeProvider.GetUtcNow().ToUniversalTime();
+            current = await EnsurePreviewAsync(current, now, cancellationToken).ConfigureAwait(false);
+            var overrides = await _store.GetActiveOverridesAsync(
+                current.Revision.RevisionId, now, cancellationToken).ConfigureAwait(false);
+            var decision = CaptureScheduleEvaluator.Evaluate(
+                current.Revision.Definition,
+                current.Preview,
+                new CaptureScheduleEvaluationRequest(
+                    now,
+                    ResolveSafetyState(_rawIngressState.Snapshot, _captureLaneState.Snapshot),
+                    _admissionCoordinator.Snapshot.State != CaptureAdmissionState.Running,
+                    overrides));
+            if (!await RecordDecisionAsync(current, decision, cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+            var durable = await _store.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            var history = await _store.GetHistoryAsync(20, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(
+                    durable.ActiveRevision.RevisionId,
+                    current.Revision.RevisionId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    Snapshot?.Revision.RevisionId,
+                    current.Revision.RevisionId,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+            return new CaptureScheduleOperatorState(
+                durable.Version,
+                durable.ActiveRevision,
+                durable.PendingRevision,
+                history,
+                decision,
+                current.Preview,
+                overrides);
+        }
     }
 
     public CaptureSchedulePreview Preview(LocalCaptureProfileDefinition profile, int dayCount)
@@ -302,9 +342,9 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             return await _admissionCoordinator.ExecuteCaptureBoundaryAsync(
                 async boundaryToken =>
                 {
-                    var receipt = await _store.ActivateAsync(
+                    var result = await _store.ActivateWithCurrentAsync(
                         revisionId, idempotencyKey, expectedVersion, actor, reason, boundaryToken).ConfigureAwait(false);
-                    var actual = await _store.GetSnapshotAsync(boundaryToken).ConfigureAwait(false);
+                    var actual = result.Current;
                     if (string.Equals(actual.ActiveRevision.RevisionId, target.RevisionId, StringComparison.Ordinal) &&
                         !string.Equals(current.Revision.RevisionId, target.RevisionId, StringComparison.Ordinal))
                     {
@@ -318,10 +358,16 @@ public sealed class CaptureScheduleRuntimeCoordinator(
                             priorSignal = Interlocked.Exchange(
                                 ref _revisionChanged, new CancellationTokenSource());
                         }
-                        await priorSignal.CancelAsync().ConfigureAwait(false);
-                        priorSignal.Dispose();
+                        try
+                        {
+                            await priorSignal.CancelAsync().ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            priorSignal.Dispose();
+                        }
                     }
-                    return receipt;
+                    return result.Receipt;
                 },
                 cancellationToken).ConfigureAwait(false);
         }
@@ -427,9 +473,23 @@ public sealed class CaptureScheduleRuntimeCoordinator(
 
     private void ValidateConfiguration(CameraModuleConfig configuration)
     {
-        FileCameraAgentConfigurationLoader.ValidateConfig(configuration);
-        var graph = _pipelineFactory.CreateGraph(configuration);
-        graph.DisposeSteps();
+        try
+        {
+            FileCameraAgentConfigurationLoader.ValidateConfig(configuration);
+            _moduleConfigurationValidator?.Validate(configuration);
+            var graph = _pipelineFactory.CreateGraph(configuration);
+            graph.DisposeSteps();
+        }
+        catch (CaptureProfileCompatibilityException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
+            JsonException or NotSupportedException)
+        {
+            throw new CaptureProfileCompatibilityException(
+                "The local capture profile is incompatible with this CameraAgent.", exception);
+        }
     }
 
     private async Task<bool> RecordDecisionAsync(
@@ -460,7 +520,8 @@ public sealed class CaptureScheduleRuntimeCoordinator(
 
     private static CaptureScheduleGrant CreateGrant(
         CaptureScheduleRuntimeSnapshot snapshot,
-        CaptureScheduleDecision decision)
+        CaptureScheduleDecision decision,
+        long admissionStateVersion)
     {
         var interval = decision.Interval ?? throw new InvalidOperationException("An admitted schedule decision needs an interval.");
         var profile = snapshot.Revision.Definition.SetpointProfiles.Single(item =>
@@ -469,6 +530,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             CaptureScheduleAdmissionEvidence.CurrentSchemaVersion,
             snapshot.Revision.RevisionId,
             snapshot.Revision.ScheduleSha256,
+            snapshot.Revision.ProfileSha256,
             profile.Id,
             decision.Reason,
             interval.Source,
@@ -489,7 +551,10 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             profile,
             string.Concat(snapshot.Revision.RevisionId, ":", profile.Id),
             decision,
-            evidence);
+            evidence)
+        {
+            AdmissionStateVersion = admissionStateVersion
+        };
     }
 
     private static TimeSpan Max(TimeSpan left, TimeSpan right) => left >= right ? left : right;

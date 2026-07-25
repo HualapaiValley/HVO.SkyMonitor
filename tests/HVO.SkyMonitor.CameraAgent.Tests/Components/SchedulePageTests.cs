@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Extensions.DependencyInjection;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -39,6 +40,47 @@ public sealed class SchedulePageTests
 
         Assert.IsTrue(context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>()
             .Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SerializeProfile_RemovesOpaqueModuleAndProcessingOptions()
+    {
+        var profile = Profile() with
+        {
+            Module = new CameraModuleDescriptor(
+                "test",
+                JsonSerializer.SerializeToElement(new { secret = "module-secret" })),
+            ProcessingSteps =
+            [
+                new CaptureProcessingStepConfig(
+                    "test-step",
+                    Options: JsonSerializer.SerializeToElement(new { storageRoot = "/private/root" }))
+            ]
+        };
+
+        var serialized = CameraAgentScheduleUiService.SerializeProfile(profile);
+
+        Assert.IsFalse(serialized.Contains("module-secret", StringComparison.Ordinal));
+        Assert.IsFalse(serialized.Contains("/private/root", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void StageRetry_AfterUnavailable_ReusesIdempotencyKeyAndPayload()
+    {
+        using var context = new BunitContext();
+        var service = new RetryingScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        var save = cut.FindAll("button").Single(button =>
+            button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal));
+
+        save.Click();
+        save.Click();
+
+        Assert.HasCount(2, service.StageCommands);
+        Assert.AreEqual(service.StageCommands[0].Key, service.StageCommands[1].Key);
+        Assert.AreEqual(service.StageCommands[0].Payload, service.StageCommands[1].Payload);
+        Assert.AreEqual(service.StageCommands[0].ExpectedVersion, service.StageCommands[1].ExpectedVersion);
     }
 
     private static CaptureScheduleOperatorState State()
@@ -114,13 +156,49 @@ public sealed class SchedulePageTests
                 : OperatorUiResult<CaptureScheduleOperatorState>.Success(state));
 
         public ValueTask<OperatorUiResult<CaptureSchedulePreview>> PreviewAsync(
-            string profileJson, int dayCount, CancellationToken cancellationToken)
+            string profileJson, string basisRevisionId, int dayCount, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
         public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> StageAsync(
-            string profileJson, long expectedVersion, string idempotencyKey, string? reason,
+            string profileJson, string basisRevisionId, long expectedVersion, string idempotencyKey, string? reason,
             CancellationToken cancellationToken)
             => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ActivateAsync(
+            string revisionId, long expectedVersion, string idempotencyKey, string? reason,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> AddOverrideAsync(
+            CaptureScheduleOverride scheduleOverride, long expectedVersion, string idempotencyKey,
+            string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ClearOverrideAsync(
+            string overrideId, long expectedVersion, string idempotencyKey, string? reason,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class RetryingScheduleUiService(CaptureScheduleOperatorState state) : ICameraAgentScheduleUiService
+    {
+        internal List<(string Payload, string Key, long ExpectedVersion)> StageCommands { get; } = [];
+
+        public ValueTask<OperatorUiResult<CaptureScheduleOperatorState>> GetAsync(CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<CaptureScheduleOperatorState>.Success(state));
+
+        public ValueTask<OperatorUiResult<CaptureSchedulePreview>> PreviewAsync(
+            string profileJson, string basisRevisionId, int dayCount, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> StageAsync(
+            string profileJson, string basisRevisionId, long expectedVersion, string idempotencyKey, string? reason,
+            CancellationToken cancellationToken)
+        {
+            StageCommands.Add((profileJson, idempotencyKey, expectedVersion));
+            return ValueTask.FromResult(OperatorUiResult<CaptureScheduleStoreSnapshot>.Failure(
+                OperatorUiResultKind.Unavailable, "Response was unavailable."));
+        }
 
         public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ActivateAsync(
             string revisionId, long expectedVersion, string idempotencyKey, string? reason,

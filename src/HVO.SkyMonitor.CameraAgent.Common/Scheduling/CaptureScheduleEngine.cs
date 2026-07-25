@@ -321,17 +321,15 @@ public static class CaptureScheduleIntervalExpander
             .ThenBy(static item => item.Id, StringComparer.Ordinal)
             .ToArray();
         var timeZoneRuleSha256 = CaptureScheduleTimeZone.ComputeRuleSha256(timeZone);
-        var expansionSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(new
-        {
+        var expansionSha256 = ComputeExpansionSha256(
             revisionSha256,
             AlgorithmVersion,
             timeZoneRuleSha256,
             solarVersion,
             previewStart,
             previewEnd,
-            Intervals = orderedIntervals,
-            Unavailable = orderedUnavailable
-        });
+            orderedIntervals,
+            orderedUnavailable);
         return new CaptureSchedulePreview(
             revisionSha256,
             expansionSha256,
@@ -343,6 +341,41 @@ public static class CaptureScheduleIntervalExpander
             orderedIntervals,
             orderedUnavailable);
     }
+
+    internal static string ComputeExpansionSha256(CaptureSchedulePreview preview)
+    {
+        ArgumentNullException.ThrowIfNull(preview);
+        return ComputeExpansionSha256(
+            preview.ScheduleRevisionSha256,
+            preview.ExpansionAlgorithmVersion,
+            preview.TimeZoneRuleSha256,
+            preview.SolarAlgorithmVersion,
+            preview.PreviewStartUtc,
+            preview.PreviewEndUtc,
+            preview.Intervals,
+            preview.UnavailableWindows);
+    }
+
+    private static string ComputeExpansionSha256(
+        string revisionSha256,
+        string algorithmVersion,
+        string timeZoneRuleSha256,
+        string solarVersion,
+        DateTimeOffset previewStart,
+        DateTimeOffset previewEnd,
+        IReadOnlyList<ExpandedScheduleInterval> intervals,
+        IReadOnlyList<UnavailableScheduleWindow> unavailable)
+        => CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            revisionSha256,
+            AlgorithmVersion = algorithmVersion,
+            timeZoneRuleSha256,
+            solarVersion,
+            previewStart,
+            previewEnd,
+            Intervals = intervals,
+            Unavailable = unavailable
+        });
 
     private static void ExpandWindow(
         string id,

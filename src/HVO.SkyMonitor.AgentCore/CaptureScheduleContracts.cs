@@ -108,6 +108,7 @@ public sealed record CaptureScheduleAdmissionEvidence(
     [property: JsonRequired] string SchemaVersion,
     [property: JsonRequired] string ScheduleRevisionId,
     [property: JsonRequired] string ScheduleRevisionSha256,
+    [property: JsonRequired] string LocalProfileSha256,
     [property: JsonRequired] string SetpointProfileId,
     [property: JsonRequired] CaptureScheduleAdmissionReason Reason,
     [property: JsonRequired] CaptureScheduleIntervalSource Source,
@@ -218,7 +219,8 @@ public static class CaptureScheduleContract
         if (!ValidId(evidence.ScheduleRevisionId) || !ValidId(evidence.SetpointProfileId) ||
             !ValidId(evidence.IntervalId) || !ValidId(evidence.ExpansionAlgorithmVersion) ||
             !ValidId(evidence.DeploymentLocationId) || evidence.DeploymentLocationVersion < 1 ||
-            !ValidSha256(evidence.ScheduleRevisionSha256) || !ValidSha256(evidence.ExpansionSha256) ||
+            !ValidSha256(evidence.ScheduleRevisionSha256) || !ValidSha256(evidence.LocalProfileSha256) ||
+            !ValidSha256(evidence.ExpansionSha256) ||
             !ValidSha256(evidence.TimeZoneRuleSha256) ||
             evidence.SolarAlgorithmVersion is { } solarVersion && !ValidId(solarVersion) ||
             evidence.OverrideId is { } overrideId && !ValidId(overrideId))

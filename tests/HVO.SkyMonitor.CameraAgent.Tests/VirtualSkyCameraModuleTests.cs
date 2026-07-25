@@ -23,6 +23,21 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed class VirtualSkyCameraModuleTests
 {
     [TestMethod]
+    public void ConfigurationPreflight_RejectsUnmappedVirtualSkyOptions()
+    {
+        var module = CreateModule(FixtureUtc);
+        var preflight = (ICameraModuleConfigurationPreflight)module;
+        var config = CreateConfig() with
+        {
+            Module = new CameraModuleDescriptor(
+                "VirtualSky",
+                JsonSerializer.SerializeToElement(new { unsupportedOption = true }))
+        };
+
+        _ = Assert.Throws<JsonException>(() => preflight.ValidateConfiguration(config));
+    }
+
+    [TestMethod]
     public void AddCameraAgentInfrastructure_RegistersConstellationTopologyByInterface()
     {
         var services = new ServiceCollection();

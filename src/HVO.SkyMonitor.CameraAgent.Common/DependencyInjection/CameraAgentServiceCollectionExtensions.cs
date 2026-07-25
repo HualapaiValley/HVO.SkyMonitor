@@ -78,7 +78,10 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<TransientWorkerWakeup>();
         services.AddSingleton<TransientWorkerState>();
         services.AddSingleton<TransientWorkerTelemetry>();
-        services.AddSingleton<ICameraModuleFactory, CameraModuleFactory>();
+        services.AddSingleton<CameraModuleFactory>();
+        services.AddSingleton<ICameraModuleFactory>(provider => provider.GetRequiredService<CameraModuleFactory>());
+        services.AddSingleton<ICameraModuleConfigurationValidator>(provider =>
+            provider.GetRequiredService<CameraModuleFactory>());
         services.AddSingleton<IProjectedSceneStore, ProjectedSceneStore>();
         services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());
         services.AddSingleton<IAnnotationSceneProvider>(provider => new AnnotationSceneProvider(

@@ -69,9 +69,10 @@ public sealed class CameraCaptureService(
                 stoppingToken,
                 captureContext?.RevisionChanged ?? CancellationToken.None);
             var captureToken = revisionCancellation.Token;
-            var module = _moduleFactory.Create(config.ModuleType);
+            ICameraModule? module = null;
             try
             {
+                module = _moduleFactory.Create(config.ModuleType);
                 await _rawCaptureIngress.InitializeAsync(captureToken).ConfigureAwait(false);
                 await _captureAdmissionCoordinator.InitializeAsync(captureToken).ConfigureAwait(false);
                 await module.InitializeAsync(config, captureToken).ConfigureAwait(false);
@@ -136,7 +137,10 @@ public sealed class CameraCaptureService(
             }
             finally
             {
-                await module.DisposeAsync().ConfigureAwait(false);
+                if (module is not null)
+                {
+                    await module.DisposeAsync().ConfigureAwait(false);
+                }
             }
         }
     }

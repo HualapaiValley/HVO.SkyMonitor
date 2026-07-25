@@ -7,11 +7,11 @@
 
 <PageTitle>Schedule</PageTitle>
 
-<main class="schedule-console">
+<div class="schedule-console">
     <header class="schedule-header">
         <div>
             <p class="eyebrow">Local acquisition authority</p>
-            <h1>Schedule control</h1>
+            <h1 id="schedule-heading" tabindex="-1">Schedule control</h1>
             <p>Durable profile revisions, effective UTC windows, and standalone admission state.</p>
         </div>
         <button class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
@@ -31,7 +31,7 @@
     {
         @if (_message is not null)
         {
-            <section class="schedule-banner @(_messageIsError ? "schedule-banner--error" : null)" role="status">@_message</section>
+            <section class="schedule-banner @(_messageIsError ? "schedule-banner--error" : null)" role="@(_messageIsError ? "alert" : "status")">@_message</section>
         }
 
         <section class="schedule-grid" aria-label="Current schedule state">
@@ -66,31 +66,31 @@
                 {
                     <h2>Revision @_state.PendingRevision.RevisionNumber</h2>
                     <code>@ShortHash(_state.PendingRevision.ProfileSha256)</code>
-                    <button class="btn btn-primary" disabled="@_busy" @onclick="() => BeginActivation(_state.PendingRevision.RevisionId)">Review apply</button>
+                    <button id="@PendingActivationTriggerId(_state.PendingRevision.RevisionId)" class="btn btn-primary" disabled="@_busy" @onclick="() => BeginActivation(_state.PendingRevision.RevisionId, PendingActivationTriggerId(_state.PendingRevision.RevisionId))">Review apply</button>
                 }
             </article>
         </section>
 
         @if (_confirmRevisionId is not null)
         {
-            <section class="confirmation-panel" role="alertdialog" aria-labelledby="apply-heading">
+            <section class="confirmation-panel" role="alertdialog" aria-labelledby="apply-heading" tabindex="-1" @ref="_confirmationPanel">
                 <div><p class="eyebrow">Capture-boundary confirmation</p><h2 id="apply-heading">Apply revision?</h2><p>The current admitted capture will finish durable publication before this revision becomes active.</p></div>
-                <div><button class="btn btn-primary" disabled="@_busy" @onclick="ConfirmActivationAsync">Confirm apply</button><button class="btn btn-outline-light" @onclick="CancelActivation">Cancel</button></div>
+                <div><button class="btn btn-primary" disabled="@_busy" @onclick="ConfirmActivationAsync">Confirm apply</button><button class="btn btn-outline-light" disabled="@_busy" @onclick="CancelActivation">Cancel</button></div>
             </section>
         }
 
         <section class="editor-layout">
             <article class="schedule-card editor-card">
                 <header><div><p class="eyebrow">Validated profile editor</p><h2>Canonical JSON</h2></div><span>@_editorJson.Length chars</span></header>
-                <textarea aria-label="Local profile JSON" @bind="_editorJson" spellcheck="false"></textarea>
+                <textarea aria-label="Local profile JSON" @bind="_editorJson" @bind:event="oninput" @bind:after="EditorChanged" disabled="@_busy" spellcheck="false"></textarea>
                 <div class="editor-actions">
                     <button class="btn btn-outline-light" disabled="@_busy" @onclick="PreviewAsync">Validate and preview</button>
                     <button class="btn btn-primary" disabled="@_busy" @onclick="StageAsync">Save immutable draft</button>
                 </div>
             </article>
 
-            <article class="schedule-card preview-card">
-                <p class="eyebrow">Future UTC expansion</p><h2>Preview</h2>
+            <article class="schedule-card preview-card" aria-labelledby="schedule-preview-heading" aria-live="polite">
+                <p class="eyebrow">Future UTC expansion</p><h2 id="schedule-preview-heading">Preview</h2>
                 @if (_preview is null)
                 {
                     <p>Validate the editor to inspect effective windows before staging.</p>
@@ -104,9 +104,19 @@
                     <ol>
                         @foreach (var interval in _preview.Intervals.Take(20))
                         {
-                            <li><span>@Split(interval.Source.ToString())</span><strong>@(interval.SetpointProfileId ?? "Closed")</strong><time>@interval.StartUtc.ToString("u")</time><time>@interval.EndUtc.ToString("u")</time></li>
+                            <li><span>@Split(interval.Source.ToString())</span><strong>@(interval.SetpointProfileId ?? "Closed")</strong><span>Start <time datetime="@interval.StartUtc.ToString("O")">@interval.StartUtc.ToString("u")</time></span><span>End <time datetime="@interval.EndUtc.ToString("O")">@interval.EndUtc.ToString("u")</time></span></li>
                         }
                     </ol>
+                }
+                @if (_preview is not null && _preview.UnavailableWindows.Count > 0)
+                {
+                    <h3>Unavailable solar windows</h3>
+                    <ul class="unavailable-list">
+                        @foreach (var window in _preview.UnavailableWindows)
+                        {
+                            <li><strong>@window.LocalDate: closed</strong><span>@Split(window.Source.ToString())</span><span>@Split(window.ReasonCode)</span><span>Start <time datetime="@window.LocalDayStartUtc.ToString("O")">@window.LocalDayStartUtc.ToString("u")</time></span><span>End <time datetime="@window.LocalDayEndUtc.ToString("O")">@window.LocalDayEndUtc.ToString("u")</time></span></li>
+                        }
+                    </ul>
                 }
             </article>
         </section>
@@ -147,10 +157,10 @@
                 <ol>
                     @foreach (var revision in _state.History)
                     {
-                        <li><div><strong>Revision @revision.RevisionNumber</strong><code>@ShortHash(revision.ProfileSha256)</code><span>@revision.CreatedUtc.ToString("u")</span></div>@if (revision.RevisionId != _state.ActiveRevision.RevisionId) { <button class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => BeginActivation(revision.RevisionId)">Review rollback</button> }</li>
+                        <li><div><strong>Revision @revision.RevisionNumber</strong><code>@ShortHash(revision.ProfileSha256)</code><span>@revision.CreatedUtc.ToString("u")</span></div>@if (revision.RevisionId != _state.ActiveRevision.RevisionId) { <button id="@HistoryActivationTriggerId(revision)" class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => BeginActivation(revision.RevisionId, HistoryActivationTriggerId(revision))">Review rollback</button> }</li>
                     }
                 </ol>
             </article>
         </section>
     }
-</main>
+</div>

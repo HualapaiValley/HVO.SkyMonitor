@@ -17,11 +17,13 @@ internal interface ICameraAgentScheduleUiService
 
     ValueTask<OperatorUiResult<CaptureSchedulePreview>> PreviewAsync(
         string profileJson,
+        string basisRevisionId,
         int dayCount,
         CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> StageAsync(
         string profileJson,
+        string basisRevisionId,
         long expectedVersion,
         string idempotencyKey,
         string? reason,
@@ -76,7 +78,8 @@ internal sealed class CameraAgentScheduleUiService(
         {
             await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
             return OperatorUiResult<CaptureScheduleOperatorState>.Success(
-                await runtime.GetOperatorStateAsync(cancellationToken).ConfigureAwait(false));
+                CameraAgentScheduleOperatorProjection.Sanitize(
+                    await runtime.GetOperatorStateAsync(cancellationToken).ConfigureAwait(false)));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -91,21 +94,25 @@ internal sealed class CameraAgentScheduleUiService(
 
     public ValueTask<OperatorUiResult<CaptureSchedulePreview>> PreviewAsync(
         string profileJson,
+        string basisRevisionId,
         int dayCount,
         CancellationToken cancellationToken)
         => ExecuteReadAsync(
             profileJson,
+            basisRevisionId,
             profile => runtime.Preview(profile, dayCount),
             cancellationToken);
 
     public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> StageAsync(
         string profileJson,
+        string basisRevisionId,
         long expectedVersion,
         string idempotencyKey,
         string? reason,
         CancellationToken cancellationToken)
         => ExecuteMutationAsync(
             profileJson,
+            basisRevisionId,
             (profile, actor, token) => runtime.StageAsync(
                 profile!, idempotencyKey, expectedVersion, actor, reason, token),
             cancellationToken);
@@ -118,6 +125,7 @@ internal sealed class CameraAgentScheduleUiService(
         CancellationToken cancellationToken)
         => ExecuteMutationAsync(
             profileJson: null,
+            basisRevisionId: null,
             (_, actor, token) => runtime.ActivateAsync(
                 revisionId, idempotencyKey, expectedVersion, actor, reason, token),
             cancellationToken);
@@ -130,6 +138,7 @@ internal sealed class CameraAgentScheduleUiService(
         CancellationToken cancellationToken)
         => ExecuteMutationAsync(
             profileJson: null,
+            basisRevisionId: null,
             (_, actor, token) => store.AddOverrideAsync(
                 scheduleOverride, idempotencyKey, expectedVersion, actor, reason, token),
             cancellationToken);
@@ -142,15 +151,19 @@ internal sealed class CameraAgentScheduleUiService(
         CancellationToken cancellationToken)
         => ExecuteMutationAsync(
             profileJson: null,
+            basisRevisionId: null,
             (_, actor, token) => store.ClearOverrideAsync(
                 overrideId, idempotencyKey, expectedVersion, actor, reason, token),
             cancellationToken);
 
     internal static string SerializeProfile(LocalCaptureProfileDefinition profile)
-        => JsonSerializer.Serialize(profile, SerializerOptions);
+        => JsonSerializer.Serialize(CameraAgentScheduleOperatorProjection.Sanitize(profile), SerializerOptions);
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
     private async ValueTask<OperatorUiResult<T>> ExecuteReadAsync<T>(
         string profileJson,
+        string basisRevisionId,
         Func<LocalCaptureProfileDefinition, T> operation,
         CancellationToken cancellationToken)
     {
@@ -161,11 +174,25 @@ internal sealed class CameraAgentScheduleUiService(
         try
         {
             await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-            return OperatorUiResult<T>.Success(operation(ParseProfile(profileJson)));
+            var basis = await store.GetRevisionAsync(basisRevisionId, cancellationToken).ConfigureAwait(false);
+            var profile = CameraAgentScheduleOperatorProjection.RestoreOpaqueOptions(
+                ParseProfile(profileJson),
+                basis.Profile);
+            return OperatorUiResult<T>.Success(operation(profile));
         }
-        catch (Exception exception) when (exception is JsonException or ArgumentException or InvalidOperationException)
+        catch (Exception exception) when (exception is JsonException or ArgumentException or InvalidOperationException or
+            KeyNotFoundException or CaptureProfileCompatibilityException)
         {
             return Invalid<T>("The local profile or schedule is invalid.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent schedule UI preview failed.");
+            return Unavailable<T>("The schedule preview could not be completed.");
         }
     }
 
@@ -173,6 +200,7 @@ internal sealed class CameraAgentScheduleUiService(
         Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
     private async ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ExecuteMutationAsync(
         string? profileJson,
+        string? basisRevisionId,
         Func<LocalCaptureProfileDefinition?, string, CancellationToken, Task<CaptureScheduleStoreSnapshot>> operation,
         CancellationToken cancellationToken)
     {
@@ -190,13 +218,29 @@ internal sealed class CameraAgentScheduleUiService(
         try
         {
             await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-            var profile = profileJson is null ? null : ParseProfile(profileJson);
+            LocalCaptureProfileDefinition? profile = null;
+            if (profileJson is not null)
+            {
+                var candidate = ParseProfile(profileJson);
+                var basis = await store.GetRevisionAsync(
+                    basisRevisionId ?? throw new ArgumentException("A basis revision is required."),
+                    cancellationToken).ConfigureAwait(false);
+                profile = CameraAgentScheduleOperatorProjection.RestoreOpaqueOptions(
+                    candidate,
+                    basis.Profile);
+            }
             return OperatorUiResult<CaptureScheduleStoreSnapshot>.Success(
-                await operation(profile, actor, cancellationToken).ConfigureAwait(false));
+                CameraAgentScheduleOperatorProjection.Sanitize(
+                    await operation(profile, actor, cancellationToken).ConfigureAwait(false)));
         }
         catch (ArgumentException)
         {
             return Invalid<CaptureScheduleStoreSnapshot>("The schedule command is invalid.");
+        }
+        catch (CaptureProfileCompatibilityException)
+        {
+            return Invalid<CaptureScheduleStoreSnapshot>(
+                "The local capture profile is incompatible with this CameraAgent.");
         }
         catch (KeyNotFoundException)
         {

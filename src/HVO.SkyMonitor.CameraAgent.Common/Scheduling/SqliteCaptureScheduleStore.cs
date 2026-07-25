@@ -31,6 +31,10 @@ public sealed record CaptureScheduleStoreSnapshot(
     DateTimeOffset? LastEvaluatedUtc,
     DateTimeOffset UpdatedUtc);
 
+internal sealed record CaptureScheduleMutationResult(
+    CaptureScheduleStoreSnapshot Receipt,
+    CaptureScheduleStoreSnapshot Current);
+
 public sealed class CaptureScheduleStoreConflictException : InvalidOperationException
 {
     public CaptureScheduleStoreConflictException()
@@ -63,7 +67,6 @@ public sealed class SqliteCaptureScheduleStore(
         DataSource = Path.Combine(
             Path.GetFullPath(options.Value.RawIngressRoot), "journal", "raw-ingress.db"),
         Mode = SqliteOpenMode.ReadWriteCreate,
-        Cache = SqliteCacheMode.Shared,
         Pooling = false,
         DefaultTimeout = options.Value.RawIngressSqliteBusyTimeoutSeconds
     }.ToString();
@@ -151,6 +154,17 @@ public sealed class SqliteCaptureScheduleStore(
         string actor,
         string? reason,
         CancellationToken cancellationToken)
+        => (await StageWithCurrentAsync(
+            profile, idempotencyKey, expectedVersion, actor, reason, cancellationToken)
+            .ConfigureAwait(false)).Receipt;
+
+    internal async Task<CaptureScheduleMutationResult> StageWithCurrentAsync(
+        LocalCaptureProfileDefinition profile,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
     {
         ValidateCommand(idempotencyKey, expectedVersion, actor, reason);
         var validation = LocalCaptureProfileContract.Validate(profile);
@@ -158,7 +172,7 @@ public sealed class SqliteCaptureScheduleStore(
         {
             throw new ArgumentException($"The local capture profile is invalid ({validation.FieldPath}).", nameof(profile));
         }
-        return await MutateAsync(idempotencyKey, "stage", profile, expectedVersion, actor, reason,
+        return await MutateWithCurrentAsync(idempotencyKey, "stage", profile, expectedVersion, actor, reason,
             async (connection, transaction, snapshot, now, token) =>
             {
                 var sha256 = LocalCaptureProfileContract.ComputeSha256(profile);
@@ -185,7 +199,7 @@ public sealed class SqliteCaptureScheduleStore(
     {
         await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginImmediate(connection);
+        using var transaction = BeginRead(connection);
         var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Capture schedule state has not been initialized.");
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -202,7 +216,7 @@ public sealed class SqliteCaptureScheduleStore(
         }
         await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginImmediate(connection);
+        using var transaction = BeginRead(connection);
         var revision = await ReadRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException("The capture schedule revision was not found.");
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -219,7 +233,7 @@ public sealed class SqliteCaptureScheduleStore(
         }
         await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginImmediate(connection);
+        using var transaction = BeginRead(connection);
         var revisionIds = new List<string>();
         using (var command = connection.CreateCommand())
         {
@@ -246,7 +260,18 @@ public sealed class SqliteCaptureScheduleStore(
         return revisions;
     }
 
-    internal Task<CaptureScheduleStoreSnapshot> ActivateAsync(
+    internal async Task<CaptureScheduleStoreSnapshot> ActivateAsync(
+        string revisionId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+        => (await ActivateWithCurrentAsync(
+            revisionId, idempotencyKey, expectedVersion, actor, reason, cancellationToken)
+            .ConfigureAwait(false)).Receipt;
+
+    internal Task<CaptureScheduleMutationResult> ActivateWithCurrentAsync(
         string revisionId,
         string idempotencyKey,
         long? expectedVersion,
@@ -259,7 +284,7 @@ public sealed class SqliteCaptureScheduleStore(
             throw new ArgumentException("A valid schedule revision identifier is required.", nameof(revisionId));
         }
         ValidateCommand(idempotencyKey, expectedVersion, actor, reason);
-        return MutateAsync(idempotencyKey, "activate", revisionId, expectedVersion, actor, reason,
+        return MutateWithCurrentAsync(idempotencyKey, "activate", revisionId, expectedVersion, actor, reason,
             async (connection, transaction, snapshot, now, token) =>
             {
                 var target = await ReadRevisionAsync(connection, transaction, revisionId, token).ConfigureAwait(false)
@@ -307,6 +332,10 @@ public sealed class SqliteCaptureScheduleStore(
         ArgumentNullException.ThrowIfNull(preview);
         if (!location.Validate().IsValid ||
             !string.Equals(revision.ScheduleSha256, preview.ScheduleRevisionSha256, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                preview.ExpansionSha256,
+                CaptureScheduleIntervalExpander.ComputeExpansionSha256(preview),
+                StringComparison.OrdinalIgnoreCase) ||
             preview.PreviewStartUtc.Offset != TimeSpan.Zero || preview.PreviewEndUtc.Offset != TimeSpan.Zero ||
             preview.PreviewEndUtc <= preview.PreviewStartUtc)
         {
@@ -410,6 +439,7 @@ public sealed class SqliteCaptureScheduleStore(
         ArgumentNullException.ThrowIfNull(revision);
         ArgumentNullException.ThrowIfNull(location);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
         string? expansionKey;
         string? expansionSha256;
         string? algorithmVersion;
@@ -419,6 +449,7 @@ public sealed class SqliteCaptureScheduleStore(
         DateTimeOffset previewEnd;
         using (var command = connection.CreateCommand())
         {
+            command.Transaction = transaction;
             command.CommandText = """
                 SELECT expansion_key, expansion_sha256, preview_start_unix_ms, preview_end_unix_ms,
                        expansion_algorithm_version, time_zone_rule_sha256, solar_algorithm_version
@@ -449,53 +480,70 @@ public sealed class SqliteCaptureScheduleStore(
         var intervals = new List<ExpandedScheduleInterval>();
         using (var command = connection.CreateCommand())
         {
+            command.Transaction = transaction;
             command.CommandText = """
-                SELECT interval_id, source, disposition, start_unix_ms, end_unix_ms,
+                SELECT ordinal, interval_id, source, disposition, start_unix_ms, end_unix_ms,
                        local_date, setpoint_profile_id, solar_algorithm_version
                 FROM capture_schedule_intervals
                 WHERE expansion_key = $key ORDER BY ordinal;
                 """;
             command.Parameters.AddWithValue("$key", expansionKey);
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            var expectedOrdinal = 0;
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
+                if (reader.GetInt32(0) != expectedOrdinal++ ||
+                    !Enum.TryParse<CaptureScheduleIntervalSource>(reader.GetString(2), out var source) ||
+                    !Enum.IsDefined(source) ||
+                    reader.GetString(3) is not ("open" or "closed"))
+                {
+                    throw new InvalidDataException("A persisted schedule interval is invalid.");
+                }
                 intervals.Add(new ExpandedScheduleInterval(
-                    reader.GetString(0),
-                    Enum.Parse<CaptureScheduleIntervalSource>(reader.GetString(1)),
-                    reader.GetString(2) == "open" ? ExpandedScheduleDisposition.Open : ExpandedScheduleDisposition.Closed,
-                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
+                    reader.GetString(1),
+                    source,
+                    reader.GetString(3) == "open" ? ExpandedScheduleDisposition.Open : ExpandedScheduleDisposition.Closed,
                     DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
-                    await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false)
+                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
+                    await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
                         ? null
-                        : DateOnly.ParseExact(reader.GetString(5), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
-                    await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6),
-                    await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(7)));
+                        : DateOnly.ParseExact(reader.GetString(6), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                    await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(7),
+                    await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(8)));
             }
         }
         var unavailable = new List<UnavailableScheduleWindow>();
         using (var command = connection.CreateCommand())
         {
+            command.Transaction = transaction;
             command.CommandText = """
-                SELECT window_id, source, local_date, start_unix_ms, end_unix_ms,
+                SELECT ordinal, window_id, source, local_date, start_unix_ms, end_unix_ms,
                        reason_code, solar_algorithm_version
                 FROM capture_schedule_unavailable
                 WHERE expansion_key = $key ORDER BY ordinal;
                 """;
             command.Parameters.AddWithValue("$key", expansionKey);
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            var expectedOrdinal = 0;
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
+                if (reader.GetInt32(0) != expectedOrdinal++ ||
+                    !Enum.TryParse<CaptureScheduleIntervalSource>(reader.GetString(2), out var source) ||
+                    !Enum.IsDefined(source))
+                {
+                    throw new InvalidDataException("A persisted unavailable schedule window is invalid.");
+                }
                 unavailable.Add(new UnavailableScheduleWindow(
-                    reader.GetString(0),
-                    Enum.Parse<CaptureScheduleIntervalSource>(reader.GetString(1)),
-                    DateOnly.ParseExact(reader.GetString(2), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
-                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
+                    reader.GetString(1),
+                    source,
+                    DateOnly.ParseExact(reader.GetString(3), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
                     DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
-                    reader.GetString(5),
-                    reader.GetString(6)));
+                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
+                    reader.GetString(6),
+                    reader.GetString(7)));
             }
         }
-        return new CaptureSchedulePreview(
+        var preview = new CaptureSchedulePreview(
             revision.ScheduleSha256,
             expansionSha256,
             algorithmVersion,
@@ -505,6 +553,24 @@ public sealed class SqliteCaptureScheduleStore(
             previewEnd,
             intervals,
             unavailable);
+        var expectedExpansionKey = CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            preview.ExpansionSha256,
+            revision.RevisionId,
+            location.LocationId,
+            location.Version
+        });
+        if (!string.Equals(algorithmVersion, CaptureScheduleIntervalExpander.AlgorithmVersion, StringComparison.Ordinal) ||
+            !string.Equals(expansionKey, expectedExpansionKey, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                expansionSha256,
+                CaptureScheduleIntervalExpander.ComputeExpansionSha256(preview),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("The persisted schedule expansion checksum is invalid.");
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return preview;
     }
 
     public async Task<bool> GrantAdmissionAsync(
@@ -717,28 +783,28 @@ public sealed class SqliteCaptureScheduleStore(
             reason,
             async (connection, transaction, snapshot, now, token) =>
             {
-            var revision = await ReadRevisionAsync(
-                connection, transaction, scheduleOverride.ScheduleRevisionId, token).ConfigureAwait(false)
-                ?? throw new KeyNotFoundException("The capture schedule revision was not found.");
-            if (!string.Equals(
-                    revision.ScheduleSha256,
-                    scheduleOverride.ScheduleRevisionSha256,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !ValidOverride(scheduleOverride, revision.Definition))
-            {
-                throw new ArgumentException("The capture schedule override is invalid.", nameof(scheduleOverride));
-            }
-            var existing = await ReadOverrideAsync(
-                connection, transaction, scheduleOverride.Id, token).ConfigureAwait(false);
-            if (existing is not null)
-            {
-                if (existing != scheduleOverride)
+                var revision = await ReadRevisionAsync(
+                    connection, transaction, scheduleOverride.ScheduleRevisionId, token).ConfigureAwait(false)
+                    ?? throw new KeyNotFoundException("The capture schedule revision was not found.");
+                if (!string.Equals(
+                        revision.ScheduleSha256,
+                        scheduleOverride.ScheduleRevisionSha256,
+                        StringComparison.OrdinalIgnoreCase) ||
+                    !ValidOverride(scheduleOverride, revision.Definition))
                 {
-                    throw new CaptureScheduleStoreConflictException("The override identifier has different durable content.");
+                    throw new ArgumentException("The capture schedule override is invalid.", nameof(scheduleOverride));
                 }
-                return snapshot;
-            }
-            await ExecuteAsync(connection, transaction, """
+                var existing = await ReadOverrideAsync(
+                    connection, transaction, scheduleOverride.Id, token).ConfigureAwait(false);
+                if (existing is not null)
+                {
+                    if (existing != scheduleOverride)
+                    {
+                        throw new CaptureScheduleStoreConflictException("The override identifier has different durable content.");
+                    }
+                    return snapshot;
+                }
+                await ExecuteAsync(connection, transaction, """
                 INSERT INTO capture_schedule_overrides(
                     override_id, schedule_revision_id, mode, start_unix_ms, end_unix_ms,
                     setpoint_profile_id, one_shot, consumed_unix_ms, cleared_unix_ms,
@@ -746,35 +812,35 @@ public sealed class SqliteCaptureScheduleStore(
                 VALUES ($id, $revision, $mode, $start, $end, $profile, $one_shot, $consumed,
                         NULL, $actor, $reason, $created);
                 """, token,
-                ("$id", scheduleOverride.Id),
-                ("$revision", scheduleOverride.ScheduleRevisionId),
-                ("$mode", scheduleOverride.Mode == CaptureScheduleOverrideMode.ForceClosed ? "force_closed" : "force_open"),
-                ("$start", scheduleOverride.StartUtc.ToUniversalTime().ToUnixTimeMilliseconds()),
-                ("$end", scheduleOverride.EndUtc.ToUniversalTime().ToUnixTimeMilliseconds()),
-                ("$profile", (object?)scheduleOverride.SetpointProfileId ?? DBNull.Value),
-                ("$one_shot", scheduleOverride.OneShot ? 1 : 0),
-                ("$consumed", scheduleOverride.ConsumedUtc is { } consumed
-                    ? consumed.ToUniversalTime().ToUnixTimeMilliseconds()
-                    : DBNull.Value),
-                ("$actor", actor),
-                ("$reason", (object?)reason ?? DBNull.Value),
-                ("$created", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, """
+                    ("$id", scheduleOverride.Id),
+                    ("$revision", scheduleOverride.ScheduleRevisionId),
+                    ("$mode", scheduleOverride.Mode == CaptureScheduleOverrideMode.ForceClosed ? "force_closed" : "force_open"),
+                    ("$start", scheduleOverride.StartUtc.ToUniversalTime().ToUnixTimeMilliseconds()),
+                    ("$end", scheduleOverride.EndUtc.ToUniversalTime().ToUnixTimeMilliseconds()),
+                    ("$profile", (object?)scheduleOverride.SetpointProfileId ?? DBNull.Value),
+                    ("$one_shot", scheduleOverride.OneShot ? 1 : 0),
+                    ("$consumed", scheduleOverride.ConsumedUtc is { } consumed
+                        ? consumed.ToUniversalTime().ToUnixTimeMilliseconds()
+                        : DBNull.Value),
+                    ("$actor", actor),
+                    ("$reason", (object?)reason ?? DBNull.Value),
+                    ("$created", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+                await ExecuteAsync(connection, transaction, """
                 INSERT INTO capture_schedule_override_events(
                     event_id, override_id, event_kind, actor, reason, occurred_unix_ms)
                 VALUES ($event, $override, 'created', $actor, $reason, $occurred);
                 """, token,
-                ("$event", idempotencyKey),
-                ("$override", scheduleOverride.Id),
-                ("$actor", actor),
-                ("$reason", (object?)reason ?? DBNull.Value),
-                ("$occurred", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, """
+                    ("$event", idempotencyKey),
+                    ("$override", scheduleOverride.Id),
+                    ("$actor", actor),
+                    ("$reason", (object?)reason ?? DBNull.Value),
+                    ("$occurred", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+                await ExecuteAsync(connection, transaction, """
                 UPDATE capture_schedule_state
                 SET version = version + 1, updated_unix_ms = $updated
                 WHERE state_key = 1;
                 """, token, ("$updated", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
-            return snapshot with { Version = snapshot.Version + 1, UpdatedUtc = now };
+                return snapshot with { Version = snapshot.Version + 1, UpdatedUtc = now };
             },
             cancellationToken);
     }
@@ -801,34 +867,34 @@ public sealed class SqliteCaptureScheduleStore(
             reason,
             async (connection, transaction, snapshot, now, token) =>
             {
-            var occurred = now.ToUnixTimeMilliseconds();
-            var changed = await ExecuteAsync(connection, transaction, """
+                var occurred = now.ToUnixTimeMilliseconds();
+                var changed = await ExecuteAsync(connection, transaction, """
                 UPDATE capture_schedule_overrides
                 SET cleared_unix_ms = $occurred
                 WHERE override_id = $override AND cleared_unix_ms IS NULL;
                 """, token,
-                ("$occurred", occurred),
-                ("$override", overrideId)).ConfigureAwait(false);
-            if (changed != 1)
-            {
-                throw new CaptureScheduleStoreConflictException("The capture schedule override is not active.");
-            }
-            await ExecuteAsync(connection, transaction, """
+                    ("$occurred", occurred),
+                    ("$override", overrideId)).ConfigureAwait(false);
+                if (changed != 1)
+                {
+                    throw new CaptureScheduleStoreConflictException("The capture schedule override is not active.");
+                }
+                await ExecuteAsync(connection, transaction, """
                 INSERT INTO capture_schedule_override_events(
                     event_id, override_id, event_kind, actor, reason, occurred_unix_ms)
                 VALUES ($event, $override, 'cleared', $actor, $reason, $occurred);
                 """, token,
-                ("$event", idempotencyKey),
-                ("$override", overrideId),
-                ("$actor", actor),
-                ("$reason", (object?)reason ?? DBNull.Value),
-                ("$occurred", occurred)).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, """
+                    ("$event", idempotencyKey),
+                    ("$override", overrideId),
+                    ("$actor", actor),
+                    ("$reason", (object?)reason ?? DBNull.Value),
+                    ("$occurred", occurred)).ConfigureAwait(false);
+                await ExecuteAsync(connection, transaction, """
                 UPDATE capture_schedule_state
                 SET version = version + 1, updated_unix_ms = $updated
                 WHERE state_key = 1;
                 """, token, ("$updated", occurred)).ConfigureAwait(false);
-            return snapshot with { Version = snapshot.Version + 1, UpdatedUtc = now };
+                return snapshot with { Version = snapshot.Version + 1, UpdatedUtc = now };
             },
             cancellationToken);
     }
@@ -836,6 +902,26 @@ public sealed class SqliteCaptureScheduleStore(
     public void Dispose() => _gate.Dispose();
 
     private async Task<CaptureScheduleStoreSnapshot> MutateAsync<TPayload>(
+        string idempotencyKey,
+        string commandKind,
+        TPayload payload,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        Func<SqliteConnection, SqliteTransaction, CaptureScheduleStoreSnapshot, DateTimeOffset,
+            CancellationToken, Task<CaptureScheduleStoreSnapshot>> mutation,
+        CancellationToken cancellationToken)
+        => (await MutateWithCurrentAsync(
+            idempotencyKey,
+            commandKind,
+            payload,
+            expectedVersion,
+            actor,
+            reason,
+            mutation,
+            cancellationToken).ConfigureAwait(false)).Receipt;
+
+    private async Task<CaptureScheduleMutationResult> MutateWithCurrentAsync<TPayload>(
         string idempotencyKey,
         string commandKind,
         TPayload payload,
@@ -882,8 +968,11 @@ public sealed class SqliteCaptureScheduleStore(
                     replay.Value.StateVersion,
                     replay.Value.LastEvaluatedUtc,
                     replay.Value.CompletedUtc);
+                var currentSnapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken)
+                    .ConfigureAwait(false)
+                    ?? throw new InvalidDataException("The current capture schedule state is missing.");
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return replaySnapshot;
+                return new CaptureScheduleMutationResult(replaySnapshot, currentSnapshot);
             }
 
             var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
@@ -914,7 +1003,7 @@ public sealed class SqliteCaptureScheduleStore(
                     : DBNull.Value),
                 ("$now", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return result;
+            return new CaptureScheduleMutationResult(result, result);
         }
         finally
         {
@@ -1173,7 +1262,11 @@ public sealed class SqliteCaptureScheduleStore(
         {
             throw new ArgumentException("A valid idempotency key is required.", nameof(idempotencyKey));
         }
-        if (expectedVersion is < 0)
+        if (!expectedVersion.HasValue)
+        {
+            throw new ArgumentException("The expected durable state version is required.", nameof(expectedVersion));
+        }
+        if (expectedVersion.Value < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(expectedVersion));
         }
@@ -1249,4 +1342,7 @@ public sealed class SqliteCaptureScheduleStore(
         Justification = "Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.")]
     private static SqliteTransaction BeginImmediate(SqliteConnection connection)
         => connection.BeginTransaction(deferred: false);
+
+    private static SqliteTransaction BeginRead(SqliteConnection connection)
+        => connection.BeginTransaction(deferred: true);
 }

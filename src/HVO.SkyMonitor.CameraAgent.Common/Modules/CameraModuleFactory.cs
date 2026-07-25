@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Modules;
 public sealed class CameraModuleFactory(
     IServiceProvider serviceProvider,
     IEnumerable<CameraModuleRegistration> registrations,
-    ILogger<CameraModuleFactory> logger) : ICameraModuleFactory
+    ILogger<CameraModuleFactory> logger) : ICameraModuleFactory, ICameraModuleConfigurationValidator
 {
     private readonly IServiceProvider _serviceProvider = serviceProvider;
     private readonly Dictionary<string, Type> _registrationMap = registrations
@@ -26,6 +26,38 @@ public sealed class CameraModuleFactory(
         _logger.CameraModuleCreated(moduleType, implementationType.FullName ?? implementationType.Name);
         return module;
     }
+
+    public void Validate(CameraModuleConfig configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        var module = Create(configuration.ModuleType);
+        try
+        {
+            if (module is ICameraModuleConfigurationPreflight preflight)
+            {
+                preflight.ValidateConfiguration(configuration);
+            }
+            var controlPolicy = configuration.Rig.ControlPolicy;
+            var automaticControl = IsEnabled(controlPolicy?.ExposureControl, controlPolicy?.AutoExposure) ||
+                IsEnabled(controlPolicy?.GainControl, controlPolicy?.AutoGain);
+            if (automaticControl && module is not ICameraSetpointController)
+            {
+                throw new InvalidOperationException(
+                    "Automatic camera control requires a module that supports capture setpoints.");
+            }
+        }
+        finally
+        {
+            module.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+    }
+
+    private static bool IsEnabled(
+        AutomaticControlOwnership? ownership,
+        CameraFeatureDirective? legacy)
+        => ownership is { } explicitOwnership && explicitOwnership != AutomaticControlOwnership.Unspecified
+            ? explicitOwnership != AutomaticControlOwnership.Disabled
+            : legacy == CameraFeatureDirective.Enabled;
 
     private Type ResolveModuleType(string moduleType)
     {

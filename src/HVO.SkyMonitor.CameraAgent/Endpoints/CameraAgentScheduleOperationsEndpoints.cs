@@ -4,6 +4,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Mvc;
 
@@ -46,29 +47,63 @@ internal static class CameraAgentScheduleOperationsEndpoints
         return endpoints;
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The authenticated operator boundary returns only fixed failure details.")]
     private static async Task<IResult> GetAsync(
         CaptureScheduleRuntimeCoordinator runtime,
         ICameraAgentConfigurationAccessor configurationAccessor,
         CancellationToken cancellationToken)
     {
-        await EnsureInitializedAsync(runtime, configurationAccessor, cancellationToken).ConfigureAwait(false);
-        return Results.Ok(await runtime.GetOperatorStateAsync(cancellationToken).ConfigureAwait(false));
+        try
+        {
+            await EnsureInitializedAsync(runtime, configurationAccessor, cancellationToken).ConfigureAwait(false);
+            return Results.Ok(CameraAgentScheduleOperatorProjection.Sanitize(
+                await runtime.GetOperatorStateAsync(cancellationToken).ConfigureAwait(false)));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status500InternalServerError,
+                title: "Current schedule data is unavailable.");
+        }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The authenticated operator boundary returns only fixed failure details.")]
     private static async Task<IResult> PreviewAsync(
         [FromBody] SchedulePreviewRequest request,
         CaptureScheduleRuntimeCoordinator runtime,
+        SqliteCaptureScheduleStore store,
         ICameraAgentConfigurationAccessor configurationAccessor,
         CancellationToken cancellationToken)
     {
-        await EnsureInitializedAsync(runtime, configurationAccessor, cancellationToken).ConfigureAwait(false);
         try
         {
-            return Results.Ok(runtime.Preview(request.Profile, request.DayCount));
+            await EnsureInitializedAsync(runtime, configurationAccessor, cancellationToken).ConfigureAwait(false);
+            var basis = await store.GetRevisionAsync(request.BasisRevisionId, cancellationToken).ConfigureAwait(false);
+            var profile = CameraAgentScheduleOperatorProjection.RestoreOpaqueOptions(
+                request.Profile,
+                basis.Profile);
+            return Results.Ok(runtime.Preview(profile, request.DayCount));
         }
-        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
+            KeyNotFoundException or CaptureProfileCompatibilityException)
         {
             return Invalid("The local profile or schedule preview is invalid.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status500InternalServerError,
+                title: "The schedule preview could not be completed.");
         }
     }
 
@@ -76,14 +111,24 @@ internal static class CameraAgentScheduleOperationsEndpoints
         HttpContext context,
         [FromBody] ScheduleStageRequest request,
         CaptureScheduleRuntimeCoordinator runtime,
+        SqliteCaptureScheduleStore store,
         ICameraAgentConfigurationAccessor configurationAccessor,
         CancellationToken cancellationToken)
-        => ExecuteMutationAsync(
+        => request.ExpectedVersion is not { } expectedVersion
+            ? Task.FromResult(Invalid("The expected durable state version is required."))
+            : ExecuteMutationAsync(
             context,
             runtime,
             configurationAccessor,
-            (key, actor, token) => runtime.StageAsync(
-                request.Profile, key, request.ExpectedVersion, actor, request.Reason, token),
+            async (key, actor, token) =>
+            {
+                var basis = await store.GetRevisionAsync(request.BasisRevisionId, token).ConfigureAwait(false);
+                var profile = CameraAgentScheduleOperatorProjection.RestoreOpaqueOptions(
+                    request.Profile,
+                    basis.Profile);
+                return await runtime.StageAsync(
+                    profile, key, expectedVersion, actor, request.Reason, token).ConfigureAwait(false);
+            },
             cancellationToken);
 
     private static Task<IResult> ActivateAsync(
@@ -92,12 +137,14 @@ internal static class CameraAgentScheduleOperationsEndpoints
         CaptureScheduleRuntimeCoordinator runtime,
         ICameraAgentConfigurationAccessor configurationAccessor,
         CancellationToken cancellationToken)
-        => ExecuteMutationAsync(
+        => request.ExpectedVersion is not { } expectedVersion
+            ? Task.FromResult(Invalid("The expected durable state version is required."))
+            : ExecuteMutationAsync(
             context,
             runtime,
             configurationAccessor,
             (key, actor, token) => runtime.ActivateAsync(
-                request.RevisionId, key, request.ExpectedVersion, actor, request.Reason, token),
+                request.RevisionId, key, expectedVersion, actor, request.Reason, token),
             cancellationToken);
 
     private static Task<IResult> AddOverrideAsync(
@@ -107,12 +154,14 @@ internal static class CameraAgentScheduleOperationsEndpoints
         SqliteCaptureScheduleStore store,
         ICameraAgentConfigurationAccessor configurationAccessor,
         CancellationToken cancellationToken)
-        => ExecuteMutationAsync(
+        => request.ExpectedVersion is not { } expectedVersion
+            ? Task.FromResult(Invalid("The expected durable state version is required."))
+            : ExecuteMutationAsync(
             context,
             runtime,
             configurationAccessor,
             (key, actor, token) => store.AddOverrideAsync(
-                request.Override, key, request.ExpectedVersion, actor, request.Reason, token),
+                request.Override, key, expectedVersion, actor, request.Reason, token),
             cancellationToken);
 
     private static Task<IResult> ClearOverrideAsync(
@@ -123,12 +172,14 @@ internal static class CameraAgentScheduleOperationsEndpoints
         SqliteCaptureScheduleStore store,
         ICameraAgentConfigurationAccessor configurationAccessor,
         CancellationToken cancellationToken)
-        => ExecuteMutationAsync(
+        => request.ExpectedVersion is not { } expectedVersion
+            ? Task.FromResult(Invalid("The expected durable state version is required."))
+            : ExecuteMutationAsync(
             context,
             runtime,
             configurationAccessor,
             (key, actor, token) => store.ClearOverrideAsync(
-                overrideId, key, request.ExpectedVersion, actor, request.Reason, token),
+                overrideId, key, expectedVersion, actor, request.Reason, token),
             cancellationToken);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -151,11 +202,16 @@ internal static class CameraAgentScheduleOperationsEndpoints
         try
         {
             await EnsureInitializedAsync(runtime, configurationAccessor, cancellationToken).ConfigureAwait(false);
-            return Results.Ok(await command(idempotencyKey, actor, cancellationToken).ConfigureAwait(false));
+            return Results.Ok(CameraAgentScheduleOperatorProjection.Sanitize(
+                await command(idempotencyKey, actor, cancellationToken).ConfigureAwait(false)));
         }
         catch (ArgumentException)
         {
             return Invalid("The schedule command is invalid.");
+        }
+        catch (CaptureProfileCompatibilityException)
+        {
+            return Invalid("The local capture profile is incompatible with this CameraAgent.");
         }
         catch (KeyNotFoundException)
         {
@@ -196,10 +252,14 @@ internal static class CameraAgentScheduleOperationsEndpoints
     private static IResult Invalid(string title)
         => Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: title);
 
-    private sealed record SchedulePreviewRequest(LocalCaptureProfileDefinition Profile, int DayCount = 7);
+    private sealed record SchedulePreviewRequest(
+        LocalCaptureProfileDefinition Profile,
+        string BasisRevisionId,
+        int DayCount = 7);
 
     private sealed record ScheduleStageRequest(
         LocalCaptureProfileDefinition Profile,
+        string BasisRevisionId,
         long? ExpectedVersion = null,
         string? Reason = null);
 

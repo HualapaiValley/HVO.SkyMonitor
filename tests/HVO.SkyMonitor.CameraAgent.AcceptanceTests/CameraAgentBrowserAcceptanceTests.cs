@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using Microsoft.Playwright;
@@ -49,9 +50,11 @@ public sealed class CameraAgentBrowserAcceptanceTests
         page.PageError += (_, error) => browserErrors.Add(error);
         page.Response += (_, response) =>
         {
-            if (response.Url.Contains("/preview", StringComparison.OrdinalIgnoreCase) && !response.Ok)
+            var path = new Uri(response.Url).AbsolutePath;
+            if (path.Contains("/api/v1/operations/artifacts/", StringComparison.OrdinalIgnoreCase) &&
+                path.EndsWith("/preview", StringComparison.OrdinalIgnoreCase) && !response.Ok)
             {
-                previewFailures.Add($"{response.Status}:{new Uri(response.Url).AbsolutePath}");
+                previewFailures.Add($"{response.Status}:{path}");
             }
         };
 
@@ -63,6 +66,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var detailUrl = await AssertGalleryAsync(page, context, host).ConfigureAwait(false);
         await AssertQuarantineAsync(page).ConfigureAwait(false);
         await AssertSystemNavigationAsync(page).ConfigureAwait(false);
+        await AssertSchedulePreviewAsync(page).ConfigureAwait(false);
         await AssertResponsiveAndAccessibleAsync(page, detailUrl).ConfigureAwait(false);
 
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
@@ -108,6 +112,100 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.AreEqual(
             "Access denied",
             await nonOwnerPage.GetByRole(AriaRole.Heading, new() { Level = 1 }).InnerTextAsync().ConfigureAwait(false));
+        await nonOwnerPage.GotoAsync("/schedule").ConfigureAwait(false);
+        await nonOwnerPage.WaitForURLAsync(url => url.Contains("/Account/AccessDenied", StringComparison.OrdinalIgnoreCase))
+            .ConfigureAwait(false);
+    }
+
+    private static async Task AssertSchedulePreviewAsync(IPage page)
+    {
+        await page.GotoAsync("/schedule").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Schedule control" })).ConfigureAwait(false);
+        var activeHash = page.Locator(".schedule-card:has-text('Active immutable profile') code");
+        var originalActiveHash = (await activeHash.InnerTextAsync().ConfigureAwait(false)).Trim();
+        var preview = page.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" });
+        await preview.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("Preview is valid. No durable state changed.", new() { Exact = true }))
+            .ConfigureAwait(false);
+        var previewTimes = page.Locator(".preview-card time");
+        Assert.IsGreaterThanOrEqualTo(2, await previewTimes.CountAsync().ConfigureAwait(false));
+        Assert.IsTrue(await previewTimes.EvaluateAllAsync<bool>(
+            "elements => elements.every(element => Boolean(element.getAttribute('datetime')))").ConfigureAwait(false));
+
+        var editor = page.GetByLabel("Local profile JSON");
+        var candidate = await editor.EvaluateAsync<string>("""
+            element => {
+                const profile = JSON.parse(element.value);
+                profile.schedule.setpointProfiles[0].gain += 0.125;
+                return JSON.stringify(profile, null, 2);
+            }
+            """).ConfigureAwait(false);
+        await editor.FillAsync(candidate).ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Save immutable draft" }).ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("Draft saved.", new() { Exact = true })).ConfigureAwait(false);
+        var reviewApply = page.GetByRole(AriaRole.Button, new() { Name = "Review apply" });
+        await reviewApply.ClickAsync().ConfigureAwait(false);
+        var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
+        await VisibleAsync(confirmation).ConfigureAwait(false);
+        Assert.AreEqual("Apply revision?", await confirmation.GetAttributeAsync("aria-labelledby").ConfigureAwait(false) is { } labelId
+            ? await page.Locator($"#{labelId}").InnerTextAsync().ConfigureAwait(false)
+            : null);
+        await page.WaitForFunctionAsync(
+            "element => element === document.activeElement", await confirmation.ElementHandleAsync().ConfigureAwait(false))
+            .ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Cancel" }).ClickAsync().ConfigureAwait(false);
+        await confirmation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            "element => element === document.activeElement", await reviewApply.ElementHandleAsync().ConfigureAwait(false))
+            .ConfigureAwait(false);
+        await reviewApply.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(confirmation).ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm apply" }).ClickAsync().ConfigureAwait(false);
+        await confirmation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.activeElement?.id === 'schedule-heading'").ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("No draft", new() { Exact = true })).ConfigureAwait(false);
+        Assert.AreNotEqual(originalActiveHash, (await activeHash.InnerTextAsync().ConfigureAwait(false)).Trim());
+
+        var overrideStart = DateTimeOffset.UtcNow.AddMinutes(10).ToString("O", CultureInfo.InvariantCulture);
+        var overrideEnd = DateTimeOffset.UtcNow.AddMinutes(20).ToString("O", CultureInfo.InvariantCulture);
+        await page.GetByLabel("Start UTC").FillAsync(overrideStart).ConfigureAwait(false);
+        await page.GetByLabel("End UTC").FillAsync(overrideEnd).ConfigureAwait(false);
+        var scheduleBanner = page.Locator(".schedule-banner");
+        var priorMessage = await scheduleBanner.InnerTextAsync().ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Create durable override" }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            """
+            previous => {
+                const banner = document.querySelector('.schedule-banner');
+                return banner && banner.textContent.trim() !== previous.trim();
+            }
+            """,
+            priorMessage).ConfigureAwait(false);
+        Assert.AreEqual("Override created.", (await scheduleBanner.InnerTextAsync().ConfigureAwait(false)).Trim());
+        await page.GetByRole(AriaRole.Button, new() { Name = "Clear", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("Override cleared.", new() { Exact = true })).ConfigureAwait(false);
+
+        await page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" }).First.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(confirmation).ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm apply" }).ClickAsync().ConfigureAwait(false);
+        await confirmation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            """
+            expected => [...document.querySelectorAll('.schedule-card')]
+                .find(card => card.textContent.includes('Active immutable profile'))
+                ?.querySelector('code')?.textContent.trim() === expected
+            """,
+            originalActiveHash).ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("Revision applied at the capture boundary.", new() { Exact = true }))
+            .ConfigureAwait(false);
+
+        await editor.FillAsync("{}").ConfigureAwait(false);
+        await preview.ClickAsync().ConfigureAwait(false);
+        var alert = page.Locator(".schedule-banner[role='alert']");
+        await VisibleAsync(alert).ConfigureAwait(false);
+        Assert.AreEqual(0, await page.Locator(".preview-card time").CountAsync().ConfigureAwait(false));
+        Assert.IsTrue((await alert.InnerTextAsync().ConfigureAwait(false)).Contains(
+            "invalid", StringComparison.OrdinalIgnoreCase));
     }
 
     private static async Task LoginAsync(IPage page, string email, string password)
@@ -165,7 +263,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         CameraAgentKestrelFixture host)
     {
         await WaitForGalleryCapturesAsync(page, minimumCards: 24).ConfigureAwait(false);
-        await AssertPageStructureAsync(page, requireForm: true).ConfigureAwait(false);
+        await AssertPageStructureAsync(page, "/gallery").ConfigureAwait(false);
         var evidenceBadge = page.Locator(".capture-card .evidence").First;
         await VisibleAsync(evidenceBadge).ConfigureAwait(false);
         Assert.AreEqual("Developer fixture", await evidenceBadge.InnerTextAsync().ConfigureAwait(false));
@@ -264,17 +362,21 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.GetByRole(AriaRole.Link, new() { Name = "System", Exact = true }).ClickAsync().ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "System snapshot", Level = 1 }))
             .ConfigureAwait(false);
-        await VisibleAsync(page.GetByText("Startup truth:", new() { Exact = true })).ConfigureAwait(false);
-        await AssertPageStructureAsync(page, requireForm: false).ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("Read-only system facts:", new() { Exact = true })).ConfigureAwait(false);
+        await AssertPageStructureAsync(page, "/system").ConfigureAwait(false);
     }
 
     private static async Task AssertQuarantineAsync(IPage page)
     {
         await page.GotoAsync("/operations/quarantine?kind=Artifact").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Quarantine", Level = 1 })).ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Button, new() { Name = "Older records" })).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Older records" }).ClickAsync().ConfigureAwait(false);
-        await page.WaitForURLAsync(url => new Uri(url).Query.Contains("cursor=", StringComparison.Ordinal)).ConfigureAwait(false);
+        var olderRecords = page.GetByRole(AriaRole.Button, new() { Name = "Older records" });
+        await VisibleAsync(olderRecords).ConfigureAwait(false);
+        if (await olderRecords.IsEnabledAsync().ConfigureAwait(false))
+        {
+            await olderRecords.ClickAsync().ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => new URL(location.href).searchParams.has('cursor')").ConfigureAwait(false);
+        }
 
         var action = page.GetByRole(AriaRole.Button, new() { Name = "Review abandon" }).First;
         await VisibleAsync(action).ConfigureAwait(false);
@@ -301,7 +403,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
             new ViewportSize { Width = 844, Height = 390 },
             new ViewportSize { Width = 320, Height = 700 }
         };
-        var routes = new[] { "/operations", "/operations/quarantine?kind=Artifact", "/gallery?pageSize=24", detailUrl, "/system" };
+        var routes = new[]
+        {
+            "/operations", "/operations/quarantine?kind=Artifact", "/gallery?pageSize=24", detailUrl, "/schedule", "/system"
+        };
         foreach (var viewport in viewports)
         {
             await page.SetViewportSizeAsync(viewport.Width, viewport.Height).ConfigureAwait(false);
@@ -312,33 +417,49 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 Assert.IsTrue(await page.EvaluateAsync<bool>(
                     "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1")
                     .ConfigureAwait(false), $"Horizontal overflow at {viewport.Width}x{viewport.Height} on {route}.");
-                await AssertPageStructureAsync(page, route.StartsWith("/gallery?", StringComparison.Ordinal))
+                await AssertPageStructureAsync(page, route)
                     .ConfigureAwait(false);
                 await AssertComputedContrastAsync(page, route, viewport).ConfigureAwait(false);
             }
         }
     }
 
-    private static async Task AssertPageStructureAsync(IPage page, bool requireForm)
+    private static async Task AssertPageStructureAsync(IPage page, string route)
     {
-        Assert.AreEqual(1, await page.Locator("main").CountAsync().ConfigureAwait(false));
+        Assert.AreEqual(
+            1,
+            await page.Locator("main").CountAsync().ConfigureAwait(false),
+            $"Unexpected main landmark count on {page.Url}.");
         Assert.AreEqual(1, await page.Locator("main h1").CountAsync().ConfigureAwait(false));
         Assert.IsGreaterThan(0, await page.Locator("header").CountAsync().ConfigureAwait(false));
         Assert.IsTrue(await page.EvaluateAsync<bool>("""
-            () => [...document.querySelectorAll('a[href], button, img')]
+            () => {
+              const name = element => {
+                const labelledBy = (element.getAttribute('aria-labelledby') || '')
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .map(id => document.getElementById(id)?.textContent || '')
+                  .join(' ');
+                const descendantAlt = [...element.querySelectorAll('img[alt]')]
+                  .map(image => image.getAttribute('alt') || '')
+                  .join(' ');
+                return (element.getAttribute('aria-label') || labelledBy ||
+                  (element.tagName === 'IMG' ? element.getAttribute('alt') : '') ||
+                  element.textContent || descendantAlt || '').trim();
+              };
+              return [...document.querySelectorAll('a[href], button, img')]
                 .filter(element => element.getClientRects().length > 0)
-                .every(element => {
-                    if (element.tagName === 'IMG') return Boolean(element.getAttribute('alt'));
-                    return Boolean((element.getAttribute('aria-label') || element.textContent || '').trim());
-                })
+                .every(element => Boolean(name(element)));
+            }
             """).ConfigureAwait(false));
-        if (requireForm)
+        Assert.IsTrue(await page.EvaluateAsync<bool>("""
+            () => [...document.querySelectorAll('main input, main select, main textarea')]
+                .filter(element => element.getClientRects().length > 0)
+                .every(element => element.labels?.length > 0 || Boolean(element.getAttribute('aria-label')))
+            """).ConfigureAwait(false));
+        if (route.StartsWith("/gallery?", StringComparison.Ordinal))
         {
             Assert.IsGreaterThan(0, await page.Locator("form[aria-label]").CountAsync().ConfigureAwait(false));
-            Assert.IsTrue(await page.EvaluateAsync<bool>("""
-                () => [...document.querySelectorAll('form[aria-label] input, form[aria-label] select')]
-                    .every(element => element.labels?.length > 0 || Boolean(element.getAttribute('aria-label')))
-                """).ConfigureAwait(false));
         }
     }
 
@@ -386,33 +507,47 @@ public sealed class CameraAgentBrowserAcceptanceTests
                   alpha
                 };
               };
-              const background = element => {
-                let color = { rgb: [0, 0, 0], alpha: 0 };
-                for (let current = element; current && color.alpha < 1; current = current.parentElement) {
-                  color = over(color, parse(getComputedStyle(current).backgroundColor));
+              const backgrounds = element => {
+                let colors = [{ rgb: [0, 0, 0], alpha: 0 }];
+                for (let current = element; current && colors.some(color => color.alpha < 1); current = current.parentElement) {
+                  const style = getComputedStyle(current);
+                  const solid = parse(style.backgroundColor);
+                  const gradientColors = (style.backgroundImage.match(/rgba?\([^)]+\)/g) || []).map(parse);
+                  const layers = gradientColors.length > 0
+                    ? gradientColors.map(gradient => over(gradient, solid))
+                    : [solid];
+                  colors = colors.flatMap(color => layers.map(layer => over(color, layer)));
                 }
-                return over(color, { rgb: [255, 255, 255], alpha: 1 });
+                return colors.map(color => over(color, { rgb: [255, 255, 255], alpha: 1 }));
               };
               const luminance = color => {
                 const linear = color.rgb.map(value => { const c = value / 255; return c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4; });
                 return .2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2];
               };
               const measure = element => {
-                const backdrop = background(element);
                 const style = getComputedStyle(element);
-                const foreground = over(parse(style.color), backdrop);
-                const foregroundLuminance = luminance(foreground);
-                const backgroundLuminance = luminance(backdrop);
+                const candidates = backgrounds(element).map(backdrop => {
+                  const foreground = over(parse(style.color), backdrop);
+                  const foregroundLuminance = luminance(foreground);
+                  const backgroundLuminance = luminance(backdrop);
+                  return {
+                    ratio: (Math.max(foregroundLuminance, backgroundLuminance) + .05) /
+                      (Math.min(foregroundLuminance, backgroundLuminance) + .05),
+                    backdrop
+                  };
+                }).sort((left, right) => left.ratio - right.ratio);
+                const worst = candidates[0];
                 return {
-                  ratio: (Math.max(foregroundLuminance, backgroundLuminance) + .05) /
-                    (Math.min(foregroundLuminance, backgroundLuminance) + .05),
+                  ratio: worst.ratio,
                   foreground: style.color,
                   background: style.backgroundColor,
-                  backdrop: backdrop.rgb.map(Math.round).join(',')
+                  backdrop: worst.backdrop.rgb.map(Math.round).join(',')
                 };
               };
-              const pairs = [...document.querySelectorAll('main p, main dd, main .state-chip, main button')]
-                .filter(element => element.getClientRects().length > 0);
+              const pairs = [...document.querySelectorAll(
+                'main h1, main h2, main h3, main h4, main a, main p, main dt, main dd, main label, main button:not(:disabled), main input, main select, main textarea, main code, main time, main strong, main span, main .state-chip, main .decision-chip')]
+                .filter(element => element.getClientRects().length > 0 &&
+                  (['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName) || (element.textContent || '').trim().length > 0));
               const measured = pairs.map(element => Object.assign(measure(element), {
                   element: `${element.tagName.toLowerCase()}.${[...element.classList].join('.')}`,
                   text: (element.textContent || '').trim().slice(0, 80)

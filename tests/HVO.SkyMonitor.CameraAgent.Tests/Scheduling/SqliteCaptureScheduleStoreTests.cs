@@ -3,6 +3,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
@@ -33,6 +34,72 @@ public sealed class SqliteCaptureScheduleStoreTests
             Assert.AreEqual(legacy.ActiveRevision.RevisionId, changed.ActiveRevision.RevisionId);
             Assert.IsNotNull(changed.PendingRevision);
             Assert.AreEqual("night", changed.PendingRevision.Definition.SetpointProfiles.Single().Id);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task Mutations_RequireExpectedDurableVersion()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            using var store = new SqliteCaptureScheduleStore(
+                new JournalInitializer(root), options, TimeProvider.System);
+            _ = await store.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+
+            _ = await Assert.ThrowsAsync<ArgumentException>(() => store.StageAsync(
+                LocalCaptureProfileDefinition.Create(Configuration(), Definition("night", 2)),
+                "missing-version",
+                null,
+                "owner",
+                null,
+                CancellationToken.None)).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task PersistedPreview_WhenChecksumIsCorrupted_FailsClosed()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            using var store = new SqliteCaptureScheduleStore(
+                new JournalInitializer(root), options, TimeProvider.System);
+            var state = await store.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+            var location = new CaptureLocationProvenance(
+                "test-location", 1, "test", null, DateTimeOffset.UnixEpoch, null);
+            var now = DateTimeOffset.UtcNow;
+            var preview = CaptureScheduleIntervalExpander.Expand(
+                state.ActiveRevision.Definition,
+                DateOnly.FromDateTime(now.UtcDateTime),
+                1,
+                TimeZoneInfo.Utc,
+                Configuration().Observatory,
+                new AstronomyEngineSolarEventCalculator());
+            await store.PersistPreviewAsync(
+                state.ActiveRevision, location, preview, CancellationToken.None).ConfigureAwait(false);
+            using (var connection = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = "UPDATE capture_schedule_expansions SET expansion_sha256 = $sha;";
+                command.Parameters.AddWithValue("$sha", new string('F', 64));
+                _ = await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            _ = await Assert.ThrowsAsync<InvalidDataException>(() => store.TryReadPreviewAsync(
+                state.ActiveRevision, location, now, CancellationToken.None)).ConfigureAwait(false);
         }
         finally
         {

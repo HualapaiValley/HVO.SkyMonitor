@@ -1072,6 +1072,7 @@ public sealed class ReconstructableCaptureContractTests
             CaptureScheduleAdmissionEvidence.CurrentSchemaVersion,
             "revision-7",
             hash,
+            hash,
             "night",
             CaptureScheduleAdmissionReason.WeeklyWindow,
             CaptureScheduleIntervalSource.WeeklyWindow,
