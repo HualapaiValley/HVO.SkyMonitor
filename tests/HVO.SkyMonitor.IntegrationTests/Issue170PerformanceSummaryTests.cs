@@ -32,6 +32,7 @@ public sealed class Issue170PerformanceSummaryTests
         "workingSetBeforeBytes", "workingSetAfterBytes", "rssStartBytes", "rssPeakBytes", "rssEndBytes",
         "runtimeAllocationCounterDeltaBytes",
         "sampledAllocationRateBytes",
+        "usedBytes",
         "payloadBytes",
         "dataAllocatedGrowthBytes", "logAllocatedGrowthBytes", "dataUsedGrowthBytes",
         "logUsedGrowthBytes", "requestBodyBytes", "responseBodyBytes", "multipartRequestBodyBytes",
