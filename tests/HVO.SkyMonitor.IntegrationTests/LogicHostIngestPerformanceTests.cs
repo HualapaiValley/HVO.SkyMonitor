@@ -221,7 +221,7 @@ public sealed class LogicHostIngestPerformanceTests
             Method = new
             {
                 Latency = "Nearest-rank median/p95/maximum over 30 independent measured logical operations after five warmups; W4 uses 200 measured operations after 20 warmups.",
-                Resources = "Process.TotalProcessorTime, monotonic GC.GetTotalAllocatedBytes(true), and 10 ms Process.WorkingSet64 sampling for the test process including TestServer.",
+                Resources = "Process.TotalProcessorTime, exact GC allocation-counter boundary snapshots, and 10 ms Process.WorkingSet64 sampling for the test process including TestServer.",
                 Sql = "EF Core diagnostic events observe commands and transaction start/commit/rollback/failure. SQL wire bytes are unavailable from the provider and are reported as unavailable, not estimated.",
                 ObjectStore = "System.Net.Http diagnostics and the deterministic boundary handler observe MinIO methods and request/response Content-Length when supplied. Content-Length is a header observation, not a claim that HEAD response bodies transferred; missing values remain unavailable.",
                 Faults = "Object faults return HTTP 503 from a delegating handler at the MinIO S3 PUT boundary. SQL faults throw at EF TransactionCommittingAsync on each second ingest transaction, after the durable intent commit and object publication.",
@@ -243,6 +243,13 @@ public sealed class LogicHostIngestPerformanceTests
                 },
                 SqlCommitFault = new { sqlFault.InjectedFailures, Evidence = sqlStoreFault },
                 RestartReconciliation = restart
+            },
+            IO = new
+            {
+                Scope = "Per-scenario HTTP, SQL transaction, and MinIO operation/byte counters are recorded under Measurements.Protocol.",
+                SqlWireBytes = "N/A: Microsoft.Data.SqlClient diagnostics do not expose wire bytes.",
+                FileSystemBytes = "N/A: container filesystem bytes are not instrumented.",
+                QueueState = "Durable count, bytes, age, object, and reconstruction backlog snapshots are recorded per scenario."
             },
             Correctness = correctness,
             Result = new
@@ -1554,7 +1561,7 @@ public sealed class LogicHostIngestPerformanceTests
     {
         private readonly Process _process = Process.GetCurrentProcess();
         private readonly TimeSpan _cpuStart;
-        private readonly long _runtimeAllocatedStart;
+        private readonly Issue170AllocationSampler _allocations;
         private readonly RssSampler _rss;
         private bool _stopped;
 
@@ -1562,28 +1569,28 @@ public sealed class LogicHostIngestPerformanceTests
         {
             _process.Refresh();
             _cpuStart = _process.TotalProcessorTime;
-            _runtimeAllocatedStart = GC.GetTotalAllocatedBytes(precise: true);
+            _allocations = new Issue170AllocationSampler();
             _rss = new RssSampler(_process.WorkingSet64);
+            _allocations.Start();
         }
 
         public async Task<ResourceEvidence> StopAsync()
         {
             _stopped = true;
+            var allocation = await _allocations.StopAsync().ConfigureAwait(false);
             _process.Refresh();
             var cpuMilliseconds = (_process.TotalProcessorTime - _cpuStart).TotalMilliseconds;
-            var runtimeAllocatedEnd = GC.GetTotalAllocatedBytes(precise: true);
-            var runtimeAllocatedDelta = runtimeAllocatedEnd - _runtimeAllocatedStart;
             var rssEnd = _process.WorkingSet64;
             var peak = Math.Max(
                 Math.Max(_rss.Initial, rssEnd),
                 await _rss.StopAsync().ConfigureAwait(false));
             return new(
                 cpuMilliseconds,
-                runtimeAllocatedDelta,
-                _runtimeAllocatedStart,
-                runtimeAllocatedEnd,
-                runtimeAllocatedDelta,
-                "Monotonic process-wide GC.GetTotalAllocatedBytes(true) delta for the measured phase.",
+                allocation.DeltaBytes,
+                allocation.StartBytes,
+                allocation.EndBytes,
+                allocation.DeltaBytes,
+                "Exact process-wide GC allocation counter snapshots at the measured phase boundaries; trials run in isolated processes.",
                 _rss.Initial,
                 peak,
                 rssEnd);
@@ -1593,6 +1600,7 @@ public sealed class LogicHostIngestPerformanceTests
         {
             if (!_stopped)
             {
+                _allocations.Dispose();
                 _rss.StopAsync().GetAwaiter().GetResult();
             }
             _rss.DisposeAsync().AsTask().GetAwaiter().GetResult();

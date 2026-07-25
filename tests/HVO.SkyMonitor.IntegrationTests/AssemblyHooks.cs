@@ -14,6 +14,10 @@ public sealed class AssemblyHooks
     [AssemblyInitialize]
     public static async Task AssemblyInitialize(TestContext context)
     {
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION")))
+        {
+            Issue170PerformanceEvidence.AcquireExclusiveProcessLock();
+        }
         Fixture = new IntegrationTestFixture();
         await Fixture.InitializeAsync().ConfigureAwait(false);
     }
