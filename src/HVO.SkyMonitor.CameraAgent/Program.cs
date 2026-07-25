@@ -207,6 +207,7 @@ public class Program
         builder.Services.AddCameraAgentAuthorization();
         builder.Services.AddCameraAgentOutboxOperations();
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
+        builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
 
         builder.Services.AddOptions<CapturePreviewOptions>()
             .Bind(builder.Configuration.GetSection("CapturePreview"))
@@ -289,6 +290,7 @@ public class Program
         app.MapCameraAgentGalleryEndpoints();
         app.MapCameraAgentArtifactEndpoints();
         app.MapCameraAgentOperationsEndpoints();
+        app.MapCameraAgentScheduleOperationsEndpoints();
         app.MapCameraAgentOutboxOperationsEndpoints();
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();

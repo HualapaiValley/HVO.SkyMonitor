@@ -126,6 +126,8 @@ public static class CaptureContractJson
         var profiles = descriptor.Profiles;
         var artifact = descriptor.Artifact;
         var recipe = artifact.Recipe;
+        var cycleEvidence = descriptor.CycleEvidence;
+        var scheduleAdmission = cycleEvidence?.ScheduleAdmission;
         return descriptor with
         {
             Profiles = profiles with
@@ -144,7 +146,19 @@ public static class CaptureContractJson
                     Options = Canonicalize(recipe.Options),
                     OptionsSha256 = recipe.OptionsSha256.ToUpperInvariant()
                 }
-            }
+            },
+            CycleEvidence = cycleEvidence is null || scheduleAdmission is null
+                ? cycleEvidence
+                : cycleEvidence with
+                {
+                    ScheduleAdmission = scheduleAdmission with
+                    {
+                        ScheduleRevisionSha256 = scheduleAdmission.ScheduleRevisionSha256.ToUpperInvariant(),
+                        LocalProfileSha256 = scheduleAdmission.LocalProfileSha256.ToUpperInvariant(),
+                        ExpansionSha256 = scheduleAdmission.ExpansionSha256.ToUpperInvariant(),
+                        TimeZoneRuleSha256 = scheduleAdmission.TimeZoneRuleSha256.ToUpperInvariant()
+                    }
+                }
         };
     }
 

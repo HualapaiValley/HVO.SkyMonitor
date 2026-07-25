@@ -16,7 +16,10 @@ public sealed class VirtualSkyCameraModule(
     ICelestialCatalog catalog,
     IProjectedSceneStore sceneStore,
     IConstellationTopology? constellationTopology = null,
-    IPlanetEphemeris? planetEphemeris = null) : ICameraModule, ICameraSetpointController
+    IPlanetEphemeris? planetEphemeris = null) :
+    ICameraModule,
+    ICameraSetpointController,
+    ICameraModuleConfigurationPreflight
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -75,21 +78,29 @@ public sealed class VirtualSkyCameraModule(
         _transientScenario = _options.TransientScenario is null
             ? null
             : new VirtualTransientScenario(_options.TransientScenario);
+        ValidatePixelFormat(config, _options);
+        _captureSequence = 0;
+        return Task.CompletedTask;
+    }
+
+    void ICameraModuleConfigurationPreflight.ValidateConfiguration(CameraModuleConfig config)
+        => _ = ValidateConfiguration(config);
+
+    private static void ValidatePixelFormat(CameraModuleConfig config, VirtualSkyCameraModuleOptions options)
+    {
         var pixelFormat = config.Rig.Sensor.PixelFormat;
-        if (_options.Asi174Sensor.Enabled && pixelFormat != CameraPixelFormat.Mono16 ||
-            _options.Asi178Sensor.Enabled && pixelFormat != CameraPixelFormat.BayerRggb16 ||
-            _options.Asi676Enabled && pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
+        if (options.Asi174Sensor.Enabled && pixelFormat != CameraPixelFormat.Mono16 ||
+            options.Asi178Sensor.Enabled && pixelFormat != CameraPixelFormat.BayerRggb16 ||
+            options.Asi676Enabled && pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
             pixelFormat == CameraPixelFormat.BayerRggb16 &&
-            !_options.Asi178Sensor.Enabled && !_options.Asi676Enabled && _options.SyntheticCalibration is null &&
+            !options.Asi178Sensor.Enabled && !options.Asi676Enabled && options.SyntheticCalibration is null &&
             config.Rig.Sensor.SimulationResponse is null ||
-            _options.SyntheticCalibration is not null &&
+            options.SyntheticCalibration is not null &&
             (pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
-                _options.Asi174Sensor.Enabled || _options.Asi178Sensor.Enabled || _options.Asi676Enabled))
+                options.Asi174Sensor.Enabled || options.Asi178Sensor.Enabled || options.Asi676Enabled))
         {
             throw new ArgumentException("The configured physical sensor model must match the raw pixel format.", nameof(config));
         }
-        _captureSequence = 0;
-        return Task.CompletedTask;
     }
 
     public ValueTask<DateTimeOffset> ApplySetpointAsync(
@@ -398,6 +409,41 @@ public sealed class VirtualSkyCameraModule(
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    private static (VirtualSkyCameraModuleOptions Options, ResolvedSensorReadout? Readout) ValidateConfiguration(
+        CameraModuleConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        var options = config.ModuleOptions is { } serialized
+            ? JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(serialized.GetRawText(), SerializerOptions)
+                ?? new VirtualSkyCameraModuleOptions()
+            : new VirtualSkyCameraModuleOptions();
+        options.Validate();
+        ValidateRig(config.Rig, options);
+        var readout = config.Rig.Readout is null
+            ? null
+            : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout);
+        var outputWidth = readout?.Layout.Width ?? config.Rig.Sensor.WidthPixels;
+        var outputHeight = readout?.Layout.Height ?? config.Rig.Sensor.HeightPixels;
+        options.SyntheticCalibration?.Validate(outputWidth, outputHeight);
+        options.TransientScenario?.ValidateSensorBounds(
+            config.Rig.Sensor.WidthPixels,
+            config.Rig.Sensor.HeightPixels);
+        var pixelFormat = config.Rig.Sensor.PixelFormat;
+        if (options.Asi174Sensor.Enabled && pixelFormat != CameraPixelFormat.Mono16 ||
+            options.Asi178Sensor.Enabled && pixelFormat != CameraPixelFormat.BayerRggb16 ||
+            options.Asi676Enabled && pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
+            pixelFormat == CameraPixelFormat.BayerRggb16 &&
+            !options.Asi178Sensor.Enabled && !options.Asi676Enabled && options.SyntheticCalibration is null &&
+            config.Rig.Sensor.SimulationResponse is null ||
+            options.SyntheticCalibration is not null &&
+            (pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
+                options.Asi174Sensor.Enabled || options.Asi178Sensor.Enabled || options.Asi676Enabled))
+        {
+            throw new ArgumentException("The configured physical sensor model must match the raw pixel format.", nameof(config));
+        }
+        return (options, readout);
+    }
 
     private Mono16SceneRenderOptions CreateMonoOptions(
         CaptureSetpoint setpoint,

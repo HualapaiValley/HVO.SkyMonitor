@@ -9,7 +9,9 @@ using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Modules.NoOp;
 
-internal sealed class NoOpCameraModule(ILogger<NoOpCameraModule> logger) : ICameraModule
+internal sealed class NoOpCameraModule(ILogger<NoOpCameraModule> logger) :
+    ICameraModule,
+    ICameraModuleConfigurationPreflight
 {
     private readonly ILogger<NoOpCameraModule> _logger = logger;
     private CameraModuleConfig? _config;
@@ -36,6 +38,12 @@ internal sealed class NoOpCameraModule(ILogger<NoOpCameraModule> logger) : ICame
         _reportedTemperatureC = config.Rig.ControlPolicy.ResolveTemperatureSetpoint(_options.SensorTemperatureC);
         _logger.CameraModuleInitialized(DisplayName);
         return Task.CompletedTask;
+    }
+
+    void ICameraModuleConfigurationPreflight.ValidateConfiguration(CameraModuleConfig configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ValidateOptions(BindOptions(configuration.ModuleOptions));
     }
 
     public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)

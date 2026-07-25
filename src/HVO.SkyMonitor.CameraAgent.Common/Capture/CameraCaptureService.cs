@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -26,7 +27,8 @@ public sealed class CameraCaptureService(
     CaptureControlTelemetry captureControlTelemetry,
     CaptureAdmissionCoordinator captureAdmissionCoordinator,
     FleetRuntimeState fleetRuntimeState,
-    ILogger<CameraCaptureService> logger) : BackgroundService
+    ILogger<CameraCaptureService> logger,
+    CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly ICameraModuleFactory _moduleFactory = moduleFactory;
@@ -40,21 +42,40 @@ public sealed class CameraCaptureService(
     private readonly CaptureAdmissionCoordinator _captureAdmissionCoordinator = captureAdmissionCoordinator;
     private readonly FleetRuntimeState _fleetRuntimeState = fleetRuntimeState;
     private readonly ILogger<CameraCaptureService> _logger = logger;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton coordinator.")]
+    private readonly CaptureScheduleRuntimeCoordinator? _scheduleRuntimeCoordinator = scheduleRuntimeCoordinator;
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var config = await _configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
+        var fileConfiguration = await _configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            var module = _moduleFactory.Create(config.ModuleType);
+            CaptureScheduleCaptureContext? captureContext = null;
+            CameraModuleConfig config;
+            if (_scheduleRuntimeCoordinator is null)
+            {
+                config = fileConfiguration;
+            }
+            else
+            {
+                _ = await _scheduleRuntimeCoordinator.InitializeAsync(fileConfiguration, stoppingToken).ConfigureAwait(false);
+                captureContext = _scheduleRuntimeCoordinator.CaptureContext;
+                config = captureContext.Value.Snapshot.Configuration;
+            }
+            using var revisionCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                stoppingToken,
+                captureContext?.RevisionChanged ?? CancellationToken.None);
+            var captureToken = revisionCancellation.Token;
+            ICameraModule? module = null;
             try
             {
-                await _rawCaptureIngress.InitializeAsync(stoppingToken).ConfigureAwait(false);
-                await _captureAdmissionCoordinator.InitializeAsync(stoppingToken).ConfigureAwait(false);
-                await module.InitializeAsync(config, stoppingToken).ConfigureAwait(false);
+                module = _moduleFactory.Create(config.ModuleType);
+                await _rawCaptureIngress.InitializeAsync(captureToken).ConfigureAwait(false);
+                await _captureAdmissionCoordinator.InitializeAsync(captureToken).ConfigureAwait(false);
+                await module.InitializeAsync(config, captureToken).ConfigureAwait(false);
                 _fleetRuntimeState.ModuleAvailable();
                 _logger.CameraModuleInitialized(module.DisplayName);
 
@@ -68,9 +89,21 @@ public sealed class CameraCaptureService(
                     _captureAdmissionCoordinator,
                     _planetEphemeris,
                     _captureControlTelemetry,
-                    _fleetRuntimeState);
-                await runner.RunAsync(stoppingToken).ConfigureAwait(false);
+                    _fleetRuntimeState,
+                    _scheduleRuntimeCoordinator);
+                await runner.RunAsync(captureToken).ConfigureAwait(false);
+                if (_scheduleRuntimeCoordinator is not null &&
+                    revisionCancellation.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+                {
+                    continue;
+                }
                 break;
+            }
+            catch (OperationCanceledException) when (
+                _scheduleRuntimeCoordinator is not null &&
+                revisionCancellation.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+            {
+                continue;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -104,7 +137,10 @@ public sealed class CameraCaptureService(
             }
             finally
             {
-                await module.DisposeAsync().ConfigureAwait(false);
+                if (module is not null)
+                {
+                    await module.DisposeAsync().ConfigureAwait(false);
+                }
             }
         }
     }

@@ -19,7 +19,8 @@ internal sealed class SqliteRawCaptureJournal(
     Func<DateTimeOffset>? utcNow = null,
     TransientDetectionOptions? transientOptions = null)
 {
-    internal const int CurrentSchemaVersion = 7;
+    internal const int CurrentSchemaVersion = 8;
+    private const int CoordinateScrubbedSchemaVersion = 7;
     private const int PendingCoordinateScrubSchemaVersion = -7;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly int _busyTimeoutSeconds = busyTimeoutSeconds;
@@ -52,8 +53,9 @@ internal sealed class SqliteRawCaptureJournal(
         var version = await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
         if (version == PendingCoordinateScrubSchemaVersion)
         {
-            await CompleteCoordinateScrubAsync(connection, cancellationToken).ConfigureAwait(false);
-            version = CurrentSchemaVersion;
+            await CompleteCoordinateScrubAsync(
+                connection, CoordinateScrubbedSchemaVersion, cancellationToken).ConfigureAwait(false);
+            version = CoordinateScrubbedSchemaVersion;
             _transactionRecorder?.Invoke("migration", true);
         }
         if (version > CurrentSchemaVersion)
@@ -137,13 +139,21 @@ internal sealed class SqliteRawCaptureJournal(
                     await RedactLaneContextsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 }
                 await ExecuteNonQueryAsync(
+                    connection, transaction, CaptureScheduleSchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(
                     connection,
                     transaction,
-                    $"PRAGMA user_version = {PendingCoordinateScrubSchemaVersion};",
+                    version < CoordinateScrubbedSchemaVersion
+                        ? $"PRAGMA user_version = {PendingCoordinateScrubSchemaVersion};"
+                        : $"PRAGMA user_version = {CurrentSchemaVersion};",
                     cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                await CompleteCoordinateScrubAsync(connection, cancellationToken).ConfigureAwait(false);
+                if (version < CoordinateScrubbedSchemaVersion)
+                {
+                    await CompleteCoordinateScrubAsync(
+                        connection, CurrentSchemaVersion, cancellationToken).ConfigureAwait(false);
+                }
                 _transactionRecorder?.Invoke("migration", true);
             }
             catch
@@ -176,9 +186,15 @@ internal sealed class SqliteRawCaptureJournal(
                 'transient_runtime_policy', 'transient_capture_work', 'transient_candidate_conflicts',
                  'ix_transient_capture_work_backlog', 'ix_transient_candidate_conflicts_observed',
                  'ix_transient_candidate_conflicts_candidate',
-                 'capture_control_state', 'capture_control_commands');
+                 'capture_control_state', 'capture_control_commands',
+                 'capture_schedule_revisions', 'capture_schedule_state', 'capture_schedule_activations',
+                 'capture_schedule_overrides', 'capture_schedule_commands',
+                 'capture_schedule_expansions', 'capture_schedule_intervals', 'capture_schedule_unavailable',
+                 'capture_schedule_admissions', 'capture_schedule_override_events',
+                 'ix_capture_schedule_revisions_created', 'ix_capture_schedule_overrides_active',
+                 'ix_capture_schedule_expansions_lookup', 'ix_capture_schedule_intervals_bounds');
             """, cancellationToken).ConfigureAwait(false);
-        if (schemaObjectCount != 32)
+        if (schemaObjectCount != 46)
         {
             throw new InvalidDataException("Raw ingress SQLite schema is incomplete or drifted.");
         }
@@ -198,6 +214,20 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyColumnsAsync(connection, "transient_candidate_conflicts", TransientCandidateConflictColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_control_state", CaptureControlStateColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_control_commands", CaptureControlCommandColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_schedule_revisions", CaptureScheduleRevisionColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_schedule_state", CaptureScheduleStateColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_schedule_activations", CaptureScheduleActivationColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_schedule_overrides", CaptureScheduleOverrideColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_schedule_commands", CaptureScheduleCommandColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_schedule_expansions", CaptureScheduleExpansionColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_schedule_intervals", CaptureScheduleIntervalColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_schedule_unavailable", CaptureScheduleUnavailableColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_schedule_admissions", CaptureScheduleAdmissionColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "capture_schedule_override_events", CaptureScheduleOverrideEventColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_capture_schedule_revisions_created", "created_unix_ms,revision_number", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_capture_schedule_overrides_active", "cleared_unix_ms,end_unix_ms,mode,override_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_capture_schedule_expansions_lookup", "revision_id,deployment_location_id,deployment_location_version,preview_start_unix_ms,preview_end_unix_ms", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_capture_schedule_intervals_bounds", "expansion_key,start_unix_ms,end_unix_ms,ordinal", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_claim", "lane_name,state,available_unix_ms,work_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_lease", "state,lease_expires_unix_ms", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_backlog", "lane_name,state,created_unix_ms", cancellationToken).ConfigureAwait(false);
@@ -284,6 +314,7 @@ internal sealed class SqliteRawCaptureJournal(
 
     private async Task CompleteCoordinateScrubAsync(
         SqliteConnection connection,
+        int completedSchemaVersion,
         CancellationToken cancellationToken)
     {
         await ExecuteNonQueryAsync(connection, transaction: null, "PRAGMA secure_delete = ON;", cancellationToken)
@@ -293,7 +324,7 @@ internal sealed class SqliteRawCaptureJournal(
         await ExecuteNonQueryAsync(
             connection,
             versionTransaction,
-            $"PRAGMA user_version = {CurrentSchemaVersion};",
+            $"PRAGMA user_version = {completedSchemaVersion};",
             cancellationToken).ConfigureAwait(false);
         await versionTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -1747,6 +1778,26 @@ internal sealed class SqliteRawCaptureJournal(
         "state_key,state,version,updated_unix_ms";
     private const string CaptureControlCommandColumns =
         "idempotency_key,target_state,expected_version,actor,reason,payload_sha256,status,result_state,result_version,changed,requested_unix_ms,completed_unix_ms";
+    private const string CaptureScheduleRevisionColumns =
+        "revision_id,revision_number,profile_json,profile_sha256,schedule_sha256,source,actor,reason,created_unix_ms";
+    private const string CaptureScheduleStateColumns =
+        "state_key,active_revision_id,pending_revision_id,version,last_evaluated_unix_ms,last_decision_unix_ms,last_decision_admitted,last_decision_reason,last_decision_profile_id,last_decision_interval_id,next_transition_unix_ms,updated_unix_ms";
+    private const string CaptureScheduleActivationColumns =
+        "activation_id,idempotency_key,from_revision_id,to_revision_id,actor,reason,state_version,activated_unix_ms";
+    private const string CaptureScheduleOverrideColumns =
+        "override_id,schedule_revision_id,mode,start_unix_ms,end_unix_ms,setpoint_profile_id,one_shot,consumed_unix_ms,cleared_unix_ms,actor,reason,created_unix_ms";
+    private const string CaptureScheduleCommandColumns =
+        "idempotency_key,command_kind,payload_sha256,result_active_revision_id,result_pending_revision_id,result_state_version,result_last_evaluated_unix_ms,created_unix_ms,completed_unix_ms";
+    private const string CaptureScheduleExpansionColumns =
+        "expansion_key,expansion_sha256,revision_id,deployment_location_id,deployment_location_version,preview_start_unix_ms,preview_end_unix_ms,expansion_algorithm_version,time_zone_rule_sha256,solar_algorithm_version,created_unix_ms";
+    private const string CaptureScheduleIntervalColumns =
+        "expansion_key,ordinal,interval_id,source,disposition,start_unix_ms,end_unix_ms,local_date,setpoint_profile_id,solar_algorithm_version";
+    private const string CaptureScheduleUnavailableColumns =
+        "expansion_key,ordinal,window_id,source,local_date,start_unix_ms,end_unix_ms,reason_code,solar_algorithm_version";
+    private const string CaptureScheduleAdmissionColumns =
+        "admission_id,revision_id,override_id,decision_unix_ms,created_unix_ms";
+    private const string CaptureScheduleOverrideEventColumns =
+        "event_id,override_id,event_kind,actor,reason,occurred_unix_ms";
 
     private const string SchemaSql = """
         CREATE TABLE IF NOT EXISTS raw_capture_sequences (
@@ -1880,6 +1931,148 @@ internal sealed class SqliteRawCaptureJournal(
             changed INTEGER NOT NULL CHECK (changed IN (0, 1)),
             requested_unix_ms INTEGER NOT NULL,
             completed_unix_ms INTEGER
+        ) STRICT;
+        """;
+
+    private const string CaptureScheduleSchemaSql = """
+        CREATE TABLE IF NOT EXISTS capture_schedule_revisions (
+            revision_id TEXT PRIMARY KEY CHECK (length(revision_id) BETWEEN 1 AND 128),
+            revision_number INTEGER NOT NULL UNIQUE CHECK (revision_number > 0),
+            profile_json BLOB NOT NULL,
+            profile_sha256 TEXT NOT NULL CHECK (length(profile_sha256) = 64),
+            schedule_sha256 TEXT NOT NULL CHECK (length(schedule_sha256) = 64),
+            source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 32),
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 128),
+            reason TEXT CHECK (reason IS NULL OR length(reason) <= 512),
+            created_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS ix_capture_schedule_revisions_created
+            ON capture_schedule_revisions(created_unix_ms, revision_number);
+        CREATE TABLE IF NOT EXISTS capture_schedule_state (
+            state_key INTEGER PRIMARY KEY CHECK (state_key = 1),
+            active_revision_id TEXT NOT NULL,
+            pending_revision_id TEXT,
+            version INTEGER NOT NULL CHECK (version >= 0),
+            last_evaluated_unix_ms INTEGER,
+            last_decision_unix_ms INTEGER,
+            last_decision_admitted INTEGER CHECK (last_decision_admitted IS NULL OR last_decision_admitted IN (0, 1)),
+            last_decision_reason TEXT,
+            last_decision_profile_id TEXT,
+            last_decision_interval_id TEXT,
+            next_transition_unix_ms INTEGER,
+            updated_unix_ms INTEGER NOT NULL,
+            FOREIGN KEY (active_revision_id) REFERENCES capture_schedule_revisions(revision_id),
+            FOREIGN KEY (pending_revision_id) REFERENCES capture_schedule_revisions(revision_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS capture_schedule_activations (
+            activation_id INTEGER PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+            from_revision_id TEXT,
+            to_revision_id TEXT NOT NULL,
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 128),
+            reason TEXT CHECK (reason IS NULL OR length(reason) <= 512),
+            state_version INTEGER NOT NULL CHECK (state_version > 0),
+            activated_unix_ms INTEGER NOT NULL,
+            FOREIGN KEY (from_revision_id) REFERENCES capture_schedule_revisions(revision_id),
+            FOREIGN KEY (to_revision_id) REFERENCES capture_schedule_revisions(revision_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS capture_schedule_overrides (
+            override_id TEXT PRIMARY KEY CHECK (length(override_id) BETWEEN 1 AND 128),
+            schedule_revision_id TEXT NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('force_closed', 'force_open')),
+            start_unix_ms INTEGER NOT NULL,
+            end_unix_ms INTEGER NOT NULL CHECK (end_unix_ms > start_unix_ms),
+            setpoint_profile_id TEXT,
+            one_shot INTEGER NOT NULL CHECK (one_shot IN (0, 1)),
+            consumed_unix_ms INTEGER,
+            cleared_unix_ms INTEGER,
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 128),
+            reason TEXT CHECK (reason IS NULL OR length(reason) <= 512),
+            created_unix_ms INTEGER NOT NULL,
+            CHECK ((mode = 'force_open' AND setpoint_profile_id IS NOT NULL) OR
+                   (mode = 'force_closed' AND setpoint_profile_id IS NULL)),
+            CHECK (one_shot = 0 OR mode = 'force_open'),
+            FOREIGN KEY (schedule_revision_id) REFERENCES capture_schedule_revisions(revision_id)
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS ix_capture_schedule_overrides_active
+            ON capture_schedule_overrides(cleared_unix_ms, end_unix_ms, mode, override_id);
+        CREATE TABLE IF NOT EXISTS capture_schedule_commands (
+            idempotency_key TEXT PRIMARY KEY CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+            command_kind TEXT NOT NULL CHECK (length(command_kind) BETWEEN 1 AND 32),
+            payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
+            result_active_revision_id TEXT NOT NULL,
+            result_pending_revision_id TEXT,
+            result_state_version INTEGER CHECK (result_state_version IS NULL OR result_state_version >= 0),
+            result_last_evaluated_unix_ms INTEGER,
+            created_unix_ms INTEGER NOT NULL,
+            completed_unix_ms INTEGER,
+            FOREIGN KEY (result_active_revision_id) REFERENCES capture_schedule_revisions(revision_id),
+            FOREIGN KEY (result_pending_revision_id) REFERENCES capture_schedule_revisions(revision_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS capture_schedule_expansions (
+            expansion_key TEXT PRIMARY KEY CHECK (length(expansion_key) = 64),
+            expansion_sha256 TEXT NOT NULL CHECK (length(expansion_sha256) = 64),
+            revision_id TEXT NOT NULL,
+            deployment_location_id TEXT NOT NULL CHECK (length(deployment_location_id) BETWEEN 1 AND 128),
+            deployment_location_version INTEGER NOT NULL CHECK (deployment_location_version > 0),
+            preview_start_unix_ms INTEGER NOT NULL,
+            preview_end_unix_ms INTEGER NOT NULL CHECK (preview_end_unix_ms > preview_start_unix_ms),
+            expansion_algorithm_version TEXT NOT NULL,
+            time_zone_rule_sha256 TEXT NOT NULL CHECK (length(time_zone_rule_sha256) = 64),
+            solar_algorithm_version TEXT NOT NULL,
+            created_unix_ms INTEGER NOT NULL,
+            FOREIGN KEY (revision_id) REFERENCES capture_schedule_revisions(revision_id)
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS ix_capture_schedule_expansions_lookup
+            ON capture_schedule_expansions(
+                revision_id, deployment_location_id, deployment_location_version,
+                preview_start_unix_ms, preview_end_unix_ms);
+        CREATE TABLE IF NOT EXISTS capture_schedule_intervals (
+            expansion_key TEXT NOT NULL,
+            ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+            interval_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            disposition TEXT NOT NULL CHECK (disposition IN ('open', 'closed')),
+            start_unix_ms INTEGER NOT NULL,
+            end_unix_ms INTEGER NOT NULL CHECK (end_unix_ms > start_unix_ms),
+            local_date TEXT,
+            setpoint_profile_id TEXT,
+            solar_algorithm_version TEXT,
+            PRIMARY KEY (expansion_key, ordinal),
+            FOREIGN KEY (expansion_key) REFERENCES capture_schedule_expansions(expansion_key) ON DELETE CASCADE
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS ix_capture_schedule_intervals_bounds
+            ON capture_schedule_intervals(expansion_key, start_unix_ms, end_unix_ms, ordinal);
+        CREATE TABLE IF NOT EXISTS capture_schedule_unavailable (
+            expansion_key TEXT NOT NULL,
+            ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+            window_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            local_date TEXT NOT NULL,
+            start_unix_ms INTEGER NOT NULL,
+            end_unix_ms INTEGER NOT NULL CHECK (end_unix_ms > start_unix_ms),
+            reason_code TEXT NOT NULL,
+            solar_algorithm_version TEXT NOT NULL,
+            PRIMARY KEY (expansion_key, ordinal),
+            FOREIGN KEY (expansion_key) REFERENCES capture_schedule_expansions(expansion_key) ON DELETE CASCADE
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS capture_schedule_admissions (
+            admission_id TEXT PRIMARY KEY CHECK (length(admission_id) BETWEEN 1 AND 128),
+            revision_id TEXT NOT NULL,
+            override_id TEXT,
+            decision_unix_ms INTEGER NOT NULL,
+            created_unix_ms INTEGER NOT NULL,
+            FOREIGN KEY (revision_id) REFERENCES capture_schedule_revisions(revision_id),
+            FOREIGN KEY (override_id) REFERENCES capture_schedule_overrides(override_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS capture_schedule_override_events (
+            event_id TEXT PRIMARY KEY CHECK (length(event_id) BETWEEN 1 AND 128),
+            override_id TEXT NOT NULL,
+            event_kind TEXT NOT NULL CHECK (event_kind IN ('created', 'consumed', 'cleared')),
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 128),
+            reason TEXT CHECK (reason IS NULL OR length(reason) <= 512),
+            occurred_unix_ms INTEGER NOT NULL,
+            FOREIGN KEY (override_id) REFERENCES capture_schedule_overrides(override_id)
         ) STRICT;
         """;
 

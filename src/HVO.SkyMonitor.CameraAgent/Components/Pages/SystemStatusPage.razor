@@ -11,7 +11,7 @@
         <div><p class="eyebrow">Protected read-only status</p><h1>System snapshot</h1><p>Allowlisted numeric and policy facts from the configuration validated when this process started.</p></div>
         @if (_status is not null) { <div class="snapshot-badges"><span>@_status.SnapshotLabel</span><span>@_status.ValidationStatus</span></div> }
     </header>
-    <p class="truth-note" role="note"><strong>Startup truth:</strong> this host has no configuration revision or live apply contract. This page is an unversioned snapshot and provides no edit, validate, apply, or mutation controls.</p>
+    <p class="truth-note" role="note"><strong>Read-only system facts:</strong> this page shows the active validated profile. Use <a href="/schedule">Schedule control</a> to preview, stage, apply, or roll back an immutable local revision.</p>
 
     @if (_isLoading)
     {

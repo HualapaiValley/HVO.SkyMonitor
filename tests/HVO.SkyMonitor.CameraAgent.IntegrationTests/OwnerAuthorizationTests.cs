@@ -160,12 +160,18 @@ public sealed class OwnerAuthorizationTests
         using var anonymousSummary = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousSummary.StatusCode);
+        using var anonymousSchedule = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/schedule", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousSchedule.StatusCode);
 
         using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
         using var nonOwnerSummary = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerSummary.StatusCode);
+        using var nonOwnerSchedule = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/schedule", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerSchedule.StatusCode);
         using var nonOwnerMutation = await nonOwnerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/capture/resume", UriKind.Relative),
             new { reason = "test" }).ConfigureAwait(false);
@@ -181,13 +187,38 @@ public sealed class OwnerAuthorizationTests
         Assert.IsFalse(summaryJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(summaryJson.Contains("leaseToken", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(summaryJson.Contains("deviceKey", StringComparison.OrdinalIgnoreCase));
+        using var ownerSchedule = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/schedule", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerSchedule.StatusCode);
+        var scheduleJson = await ownerSchedule.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.IsFalse(scheduleJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
 
         using var missingAntiforgery = await ownerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/capture/resume", UriKind.Relative),
             new { reason = "test" }).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, missingAntiforgery.StatusCode);
+        using var missingScheduleAntiforgery = await ownerClient.PostAsJsonAsync(
+            new Uri("/api/v1/operations/schedule/stage", UriKind.Relative),
+            new { }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, missingScheduleAntiforgery.StatusCode);
 
         var token = await GetAntiforgeryTokenAsync(ownerClient).ConfigureAwait(false);
+        using (var scheduleDocument = JsonDocument.Parse(scheduleJson))
+        using (var missingVersionRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/schedule/stage", UriKind.Relative)))
+        {
+            missingVersionRequest.Headers.Add("Idempotency-Key", $"integration-stage-{Guid.NewGuid():N}");
+            missingVersionRequest.Headers.Add("RequestVerificationToken", token);
+            missingVersionRequest.Content = JsonContent.Create(new
+            {
+                profile = scheduleDocument.RootElement.GetProperty("activeRevision").GetProperty("profile"),
+                basisRevisionId = scheduleDocument.RootElement.GetProperty("activeRevision").GetProperty("revisionId"),
+                reason = "missing concurrency version"
+            });
+            using var missingVersion = await ownerClient.SendAsync(missingVersionRequest).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.BadRequest, missingVersion.StatusCode);
+        }
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
             new Uri("/api/v1/operations/capture/resume", UriKind.Relative));
@@ -254,6 +285,7 @@ public sealed class OwnerAuthorizationTests
             (Path: "/", Expected: "Capture operations"),
             (Path: "/operations", Expected: "Capture operations"),
             (Path: "/gallery", Expected: "Capture gallery"),
+            (Path: "/schedule", Expected: "Schedule control"),
             (Path: "/system", Expected: "System snapshot"),
             (Path: "/devices/bootstrap", Expected: "Device Bootstrap")
         })

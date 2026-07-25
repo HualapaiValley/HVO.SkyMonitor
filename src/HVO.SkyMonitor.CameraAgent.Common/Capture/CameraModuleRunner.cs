@@ -6,6 +6,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Exposure;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Logging;
 
@@ -24,6 +25,7 @@ internal sealed class CameraModuleRunner
     private readonly IPlanetEphemeris? _planetEphemeris;
     private readonly CaptureControlTelemetry? _telemetry;
     private readonly FleetRuntimeState? _fleetRuntimeState;
+    private readonly CaptureScheduleRuntimeCoordinator? _scheduleRuntimeCoordinator;
 
     public CameraModuleRunner(
         ICameraModule module,
@@ -32,8 +34,11 @@ internal sealed class CameraModuleRunner
         ILogger logger,
         IPlanetEphemeris? planetEphemeris = null,
         CaptureControlTelemetry? telemetry = null,
-        FleetRuntimeState? fleetRuntimeState = null)
-        : this(module, hostContext, timeProvider, logger, null, planetEphemeris, telemetry, fleetRuntimeState)
+        FleetRuntimeState? fleetRuntimeState = null,
+        CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null)
+        : this(
+            module, hostContext, timeProvider, logger, null, planetEphemeris, telemetry,
+            fleetRuntimeState, scheduleRuntimeCoordinator)
     {
     }
 
@@ -45,7 +50,8 @@ internal sealed class CameraModuleRunner
         CaptureAdmissionCoordinator? captureAdmissionCoordinator,
         IPlanetEphemeris? planetEphemeris = null,
         CaptureControlTelemetry? telemetry = null,
-        FleetRuntimeState? fleetRuntimeState = null)
+        FleetRuntimeState? fleetRuntimeState = null,
+        CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null)
     {
         _module = module;
         _hostContext = hostContext;
@@ -55,6 +61,7 @@ internal sealed class CameraModuleRunner
         _planetEphemeris = planetEphemeris;
         _telemetry = telemetry;
         _fleetRuntimeState = fleetRuntimeState;
+        _scheduleRuntimeCoordinator = scheduleRuntimeCoordinator;
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
@@ -86,10 +93,46 @@ internal sealed class CameraModuleRunner
         long? previousStartTimestamp = null;
         DateTimeOffset? previousStartUtc = null;
         var recovering = false;
+        TimeSpan? moduleDelayOverride = null;
+        string? activeProfileKey = null;
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            CaptureSchedule schedule;
+            CaptureScheduleGrant? scheduleGrant = null;
+            if (_scheduleRuntimeCoordinator is not null)
+            {
+                try
+                {
+                    scheduleGrant = await _scheduleRuntimeCoordinator.WaitForGrantAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                var profileChanged = activeProfileKey is not null && !string.Equals(
+                    activeProfileKey, scheduleGrant.ProfileKey, StringComparison.Ordinal);
+                if (scheduleGrant.AdmissionWasInterrupted || profileChanged)
+                {
+                    previousStartTimestamp = null;
+                    previousStartUtc = null;
+                    recovering = false;
+                    moduleDelayOverride = null;
+                }
+                cadenceMode = scheduleGrant.Profile.CadenceMode;
+                targetInterval = cadenceMode == CaptureCadenceMode.MinimumStartInterval
+                    ? Max(scheduleGrant.Profile.CaptureInterval, moduleDelayOverride ?? TimeSpan.Zero)
+                    : scheduleGrant.Profile.CaptureInterval;
+                if (!string.Equals(activeProfileKey, scheduleGrant.ProfileKey, StringComparison.Ordinal))
+                {
+                    if (scheduleGrant.Decision.Reason != CaptureScheduleAdmissionReason.LegacyCompatibility)
+                    {
+                        nextSetpoint = ExposureController.Initial(scheduleGrant.Profile);
+                    }
+                    activeProfileKey = scheduleGrant.ProfileKey;
+                }
+            }
+            CaptureSchedule? schedule;
             try
             {
                 schedule = await WaitForScheduleAsync(
@@ -98,13 +141,73 @@ internal sealed class CameraModuleRunner
                     previousStartTimestamp,
                     previousStartUtc,
                     recovering,
+                    scheduleGrant?.Decision.NextTransitionUtc,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 break;
             }
+            if (schedule is null)
+            {
+                previousStartTimestamp = null;
+                previousStartUtc = null;
+                recovering = false;
+                continue;
+            }
+            var effectiveSchedule = schedule.Value;
 
+            CaptureAdmissionCoordinator.CaptureAdmissionLease admission = default;
+            try
+            {
+                if (_captureAdmissionCoordinator is not null)
+                {
+                    admission = await _captureAdmissionCoordinator.EnterAsync(cancellationToken).ConfigureAwait(false);
+                }
+                if (_scheduleRuntimeCoordinator is not null && scheduleGrant is not null)
+                {
+                    var confirmed = await _scheduleRuntimeCoordinator.ConfirmGrantAsync(
+                        scheduleGrant,
+                        Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture),
+                        cancellationToken).ConfigureAwait(false);
+                    if (confirmed is null)
+                    {
+                        admission.MarkNoPublicationRequired();
+                        admission.Dispose();
+                        previousStartTimestamp = null;
+                        previousStartUtc = null;
+                        recovering = false;
+                        continue;
+                    }
+                    scheduleGrant = confirmed;
+                    if (confirmed.AdmissionWasInterrupted)
+                    {
+                        previousStartTimestamp = null;
+                        previousStartUtc = null;
+                        recovering = false;
+                        moduleDelayOverride = null;
+                        targetInterval = confirmed.Profile.CaptureInterval;
+                        effectiveSchedule = new CaptureSchedule(UtcNow(), CaptureStartReason.Initial);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                admission.MarkNoPublicationRequired();
+                admission.Dispose();
+                break;
+            }
+            catch
+            {
+                admission.MarkNoPublicationRequired();
+                admission.Dispose();
+                throw;
+            }
+
+            if (_scheduleRuntimeCoordinator is not null)
+            {
+                moduleDelayOverride = null;
+            }
             var priorStartTimestamp = previousStartTimestamp;
             var moduleCallStartedUtc = UtcNow();
             var moduleCallStartedTimestamp = _timeProvider.GetTimestamp();
@@ -117,18 +220,13 @@ internal sealed class CameraModuleRunner
                     : TimeSpan.Zero;
             previousStartTimestamp = moduleCallStartedTimestamp;
             previousStartUtc = moduleCallStartedUtc;
-            var request = new CaptureRequest(schedule.RequestedStartUtc, targetInterval, captureMode, nextSetpoint);
+            var request = new CaptureRequest(effectiveSchedule.RequestedStartUtc, targetInterval, captureMode, nextSetpoint);
             CaptureResult? result;
             using var cycleActivity = CaptureControlTelemetry.ActivitySource.StartActivity("capture-cycle");
             cycleActivity?.SetTag("cadence.mode", cadenceMode.ToString());
-            cycleActivity?.SetTag("start.reason", schedule.StartReason.ToString());
-            CaptureAdmissionCoordinator.CaptureAdmissionLease admission = default;
+            cycleActivity?.SetTag("start.reason", effectiveSchedule.StartReason.ToString());
             try
             {
-                if (_captureAdmissionCoordinator is not null)
-                {
-                    admission = await _captureAdmissionCoordinator.EnterAsync(cancellationToken).ConfigureAwait(false);
-                }
                 result = await _module.CaptureAsync(request, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -190,7 +288,9 @@ internal sealed class CameraModuleRunner
             var readoutCompletedUtc = result.AcquisitionTiming?.ReadoutCompletedUtc.ToUniversalTime() ?? UtcNow();
             var active = ResolveActiveSetpoint(request.RequestedSetpoint!, result);
             var regime = hostMetered ? ResolveSolarRegime(config, readoutCompletedUtc) : (CaptureSolarRegime?)null;
-            var regimeChanged = regime.HasValue && previousRegime.HasValue && regime != previousRegime;
+            var regimeChanged = (scheduleGrant is null ||
+                    scheduleGrant.Decision.Reason == CaptureScheduleAdmissionReason.LegacyCompatibility) &&
+                regime.HasValue && previousRegime.HasValue && regime != previousRegime;
             var meteringStartedTimestamp = _timeProvider.GetTimestamp();
             var metering = hostMetered ? Measure(config, result.Frame, readoutCompletedUtc, excludedRegions) : null;
             var meteringDuration = hostMetered
@@ -265,7 +365,14 @@ internal sealed class CameraModuleRunner
                     controlActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 }
             }
-            targetInterval = result.NextSetpoint.NextIntervalOverride ?? targetInterval;
+            if (_scheduleRuntimeCoordinator is null)
+            {
+                targetInterval = result.NextSetpoint.NextIntervalOverride ?? targetInterval;
+            }
+            else
+            {
+                moduleDelayOverride = result.NextSetpoint.NextIntervalOverride;
+            }
             captureMode = result.Mode;
             previousRegime = regime;
 
@@ -277,7 +384,7 @@ internal sealed class CameraModuleRunner
                 setpointAppliedUtc ?? decisionCompletedUtc);
             var evidence = new CaptureCycleEvidence(
                 cadenceMode,
-                schedule.StartReason,
+                effectiveSchedule.StartReason,
                 exposureControl,
                 gainControl,
                 regime,
@@ -297,7 +404,8 @@ internal sealed class CameraModuleRunner
                     nextSetpoint.TargetFps),
                 ingressHandoffStartedUtc)
             {
-                MonotonicStartJitter = monotonicStartJitter
+                MonotonicStartJitter = monotonicStartJitter,
+                ScheduleAdmission = scheduleGrant?.Evidence
             };
 
             var elapsedBeforeIngress = _timeProvider.GetElapsedTime(
@@ -350,7 +458,7 @@ internal sealed class CameraModuleRunner
                 automatic.Reason.ToString(),
                 metering?.ConsideredSampleCount ?? 0,
                 metering?.ScannedBytes ?? 0);
-            if (schedule.StartReason == CaptureStartReason.DeadlineOverrun)
+            if (effectiveSchedule.StartReason == CaptureStartReason.DeadlineOverrun)
             {
                 _logger.CaptureDeadlineOverrun(monotonicStartJitter.TotalMilliseconds);
             }
@@ -365,12 +473,13 @@ internal sealed class CameraModuleRunner
         }
     }
 
-    private async ValueTask<CaptureSchedule> WaitForScheduleAsync(
+    private async ValueTask<CaptureSchedule?> WaitForScheduleAsync(
         CaptureCadenceMode cadenceMode,
         TimeSpan targetInterval,
         long? previousStartTimestamp,
         DateTimeOffset? previousStartUtc,
         bool recovering,
+        DateTimeOffset? reevaluateUtc,
         CancellationToken cancellationToken)
     {
         if (!previousStartTimestamp.HasValue || !previousStartUtc.HasValue)
@@ -390,10 +499,24 @@ internal sealed class CameraModuleRunner
         var waited = false;
         while (delay > TimeSpan.Zero)
         {
+            var timerDelay = delay;
+            if (reevaluateUtc is { } transition)
+            {
+                var transitionDelay = transition - UtcNow();
+                if (transitionDelay <= TimeSpan.Zero)
+                {
+                    return null;
+                }
+                timerDelay = Min(timerDelay, transitionDelay);
+            }
             await Task.Delay(
-                delay < MinimumTimerDelay ? MinimumTimerDelay : delay,
+                timerDelay < MinimumTimerDelay ? MinimumTimerDelay : timerDelay,
                 _timeProvider,
                 cancellationToken).ConfigureAwait(false);
+            if (reevaluateUtc is { } nextTransition && UtcNow() >= nextTransition)
+            {
+                return null;
+            }
             waited = true;
             elapsed = _timeProvider.GetElapsedTime(previousStartTimestamp.Value, _timeProvider.GetTimestamp());
             delay = targetInterval - elapsed;
@@ -716,6 +839,8 @@ internal sealed class CameraModuleRunner
     private static DateTimeOffset Max(DateTimeOffset left, DateTimeOffset right) => left >= right ? left : right;
 
     private static TimeSpan Max(TimeSpan left, TimeSpan right) => left >= right ? left : right;
+
+    private static TimeSpan Min(TimeSpan left, TimeSpan right) => left <= right ? left : right;
 
     private readonly record struct CaptureSchedule(DateTimeOffset RequestedStartUtc, CaptureStartReason StartReason);
 }

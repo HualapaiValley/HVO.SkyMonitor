@@ -136,4 +136,8 @@ public sealed record CaptureCycleEvidence(
     /// <summary>Gets monotonic actual-start lateness relative to the requested deadline.</summary>
     [JsonRequired]
     public TimeSpan MonotonicStartJitter { get; init; }
+
+    /// <summary>Gets the exact local schedule revision and interval that admitted this capture.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CaptureScheduleAdmissionEvidence? ScheduleAdmission { get; init; }
 }

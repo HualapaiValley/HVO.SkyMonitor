@@ -22,6 +22,7 @@ public sealed class OperatorRouteTests
             typeof(QuarantinePage),
             typeof(GalleryPage),
             typeof(GalleryDetail),
+            typeof(SchedulePage),
             typeof(SystemStatusPage),
             typeof(DeviceBootstrap),
             typeof(FramesController)
@@ -43,7 +44,11 @@ public sealed class OperatorRouteTests
 
         var links = cut.FindAll(".nav-badge").Select(link => (link.TextContent.Trim(), link.GetAttribute("href"))).ToArray();
         CollectionAssert.AreEqual(
-            new[] { ("Operations", "/"), ("Gallery", "/gallery"), ("System", "/system"), ("Device", "/devices/bootstrap") },
+            new[]
+            {
+                ("Operations", "/"), ("Gallery", "/gallery"), ("Schedule", "/schedule"),
+                ("System", "/system"), ("Device", "/devices/bootstrap")
+            },
             links);
         Assert.IsFalse(cut.Markup.Contains("Configuration", StringComparison.Ordinal));
         Assert.IsFalse(cut.Markup.Contains("Notifications", StringComparison.Ordinal));

@@ -29,6 +29,7 @@ public static class CaptureContractReasonCodes
     public const string InvalidArtifactVariant = "artifact.invalid-variant";
     public const string InvalidLineage = "lineage.invalid";
     public const string InvalidProfile = "profile.invalid";
+    public const string InvalidSchedule = "schedule.invalid";
     public const string InvalidRecipe = "recipe.invalid";
     public const string RecipeHashMismatch = "recipe.hash-mismatch";
     public const string InvalidChecksum = "checksum.invalid";

@@ -257,6 +257,19 @@ internal static class ReconstructionDescriptorValidator
         {
             return Failure(CaptureContractReasonCodes.InvalidLocationInterval, "descriptor.location.effectiveInterval");
         }
+        if (descriptor.CycleEvidence?.ScheduleAdmission is { } scheduleAdmission &&
+            (descriptor.Location is null ||
+             !string.Equals(
+                 scheduleAdmission.DeploymentLocationId,
+                 descriptor.Location.LocationId,
+                 StringComparison.Ordinal) ||
+             scheduleAdmission.DeploymentLocationVersion != descriptor.Location.Version ||
+             descriptor.Timing.ExposureStartedUtc < scheduleAdmission.EffectiveStartUtc ||
+             descriptor.Timing.ExposureStartedUtc >= scheduleAdmission.EffectiveEndUtc ||
+             scheduleAdmission.DecisionUtc > descriptor.CycleEvidence.ModuleCallStartedUtc))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidSchedule, "descriptor.cycleEvidence.scheduleAdmission");
+        }
 
         var profileResult = ValidateProfiles(descriptor.Profiles);
         if (!profileResult.IsValid)
@@ -300,6 +313,12 @@ internal static class ReconstructionDescriptorValidator
             evidence.ObservedInterExposureGap.Value < TimeSpan.Zero)
         {
             return Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.cycleEvidence.observedInterExposureGap");
+        }
+
+        var scheduleAdmissionResult = CaptureScheduleContract.ValidateAdmissionEvidence(evidence.ScheduleAdmission);
+        if (!scheduleAdmissionResult.IsValid)
+        {
+            return scheduleAdmissionResult;
         }
 
         var decision = evidence.Decision;

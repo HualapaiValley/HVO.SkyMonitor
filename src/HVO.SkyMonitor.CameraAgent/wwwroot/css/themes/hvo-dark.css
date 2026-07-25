@@ -13,7 +13,7 @@
     --hvo-border-strong: rgba(148, 163, 184, 0.2);
     --hvo-muted: rgba(226, 232, 240, 0.75);
     --hvo-muted-strong: rgba(226, 232, 240, 0.85);
-    --hvo-muted-weak: rgba(148, 163, 184, 0.75);
+    --hvo-muted-weak: #aeb9c8;
     --hvo-success-bg: rgba(34, 197, 94, 0.25);
     --hvo-success-fg: #bbf7d0;
     --hvo-danger-bg: rgba(248, 113, 113, 0.25);

@@ -509,6 +509,8 @@ public sealed class TransientWorkerRuntimeTests
             Assert.AreEqual("ok", await ScalarStringAsync(verified, "PRAGMA integrity_check;").ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarAsync(
                 verified, "SELECT COUNT(*) FROM transient_capture_work WHERE state = 'quarantined';").ConfigureAwait(false));
+            await StageVirtualFramesAsync(
+                recovered, cameraConfiguration, epoch.AddHours(1), frameCount: 1).ConfigureAwait(false);
             Assert.IsTrue(await recoveredWorker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
         }
         finally

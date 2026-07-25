@@ -41,7 +41,22 @@ public sealed record FleetConfigurationIdentity(
     string ModuleType,
     string RigProfileVersion,
     string RigProfileSha256,
-    string ProcessingProfileSha256);
+    string ProcessingProfileSha256)
+{
+    public string? ActiveLocalProfileRevisionId { get; init; }
+
+    public string? ActiveLocalProfileSha256 { get; init; }
+
+    public string? ActiveScheduleSha256 { get; init; }
+
+    public string? PendingLocalProfileRevisionId { get; init; }
+
+    public bool? ScheduleAdmitted { get; init; }
+
+    public string? ScheduleAdmissionReason { get; init; }
+
+    public DateTimeOffset? ScheduleNextTransitionUtc { get; init; }
+}
 
 public sealed record FleetCaptureSummary(
     FleetAvailability Availability,
@@ -262,7 +277,18 @@ public static class FleetContractJson
     private static bool ValidConfiguration(FleetConfigurationIdentity value)
         => Bounded(value.DeclaredVersion, 64) && Bounded(value.ModuleType, 64) &&
            Bounded(value.RigProfileVersion, 64) && Sha256(value.ConfigurationSha256) &&
-           Sha256(value.RigProfileSha256) && Sha256(value.ProcessingProfileSha256);
+           Sha256(value.RigProfileSha256) && Sha256(value.ProcessingProfileSha256) &&
+           (value.ActiveLocalProfileRevisionId is null || Bounded(value.ActiveLocalProfileRevisionId, 128)) &&
+           (value.PendingLocalProfileRevisionId is null || Bounded(value.PendingLocalProfileRevisionId, 128)) &&
+           (value.ActiveLocalProfileSha256 is null || Sha256(value.ActiveLocalProfileSha256)) &&
+           (value.ActiveScheduleSha256 is null || Sha256(value.ActiveScheduleSha256)) &&
+           (value.ActiveLocalProfileRevisionId is null
+               ? value.ActiveLocalProfileSha256 is null && value.ActiveScheduleSha256 is null &&
+                 value.PendingLocalProfileRevisionId is null
+               : value.ActiveLocalProfileSha256 is not null && value.ActiveScheduleSha256 is not null) &&
+           (value.ScheduleAdmissionReason is null || Bounded(value.ScheduleAdmissionReason, 64)) &&
+           (value.ScheduleAdmitted.HasValue == (value.ScheduleAdmissionReason is not null)) &&
+           (value.ScheduleNextTransitionUtc is null || value.ScheduleNextTransitionUtc.Value.Offset == TimeSpan.Zero);
 
     private static bool ValidCapture(FleetCaptureSummary value)
         => Bounded(value.Reason, 128);

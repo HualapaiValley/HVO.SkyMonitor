@@ -24,6 +24,13 @@ public static class ExposureController
         return Clamp(defaults, envelope);
     }
 
+    /// <summary>Gets the exact starting setpoint declared by a validated schedule profile.</summary>
+    public static CaptureSetpoint Initial(CaptureScheduleSetpointProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        return new CaptureSetpoint(profile.Exposure, profile.Gain, null, profile.TargetFps);
+    }
+
     /// <summary>Calculates the next setpoint from the active controls and a host measurement.</summary>
     public static ExposureDecision Next(
         PipelineExposureProfile profile,

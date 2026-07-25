@@ -252,6 +252,50 @@ public sealed class CaptureControlConfigurationTests
         Assert.AreEqual(0, locationStore.InitializeCalls);
     }
 
+    [TestMethod]
+    public async Task LoadAsync_ValidScheduleIsRetainedAndInvalidScheduleHasNoLocationSideEffect()
+    {
+        var config = await LoadAsync(root => root["schedule"] = JsonNode.Parse(ValidScheduleJson))
+            .ConfigureAwait(false);
+
+        Assert.IsNotNull(config.Schedule);
+        Assert.AreEqual("night", config.Schedule.SetpointProfiles.Single().Id);
+
+        var locationStore = new RecordingDeploymentLocationStore();
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(
+            root =>
+            {
+                root["schedule"] = JsonNode.Parse(ValidScheduleJson);
+                root["schedule"]!["setpointProfiles"]!.AsArray()[0]!["exposure"] = "00:00:11";
+            },
+            locationStore)).ConfigureAwait(false);
+        Assert.AreEqual(0, locationStore.InitializeCalls);
+    }
+
+    [TestMethod]
+    public async Task LoadAsync_ScheduleGainOutsideSensorResponseIsRejected()
+    {
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(root =>
+        {
+            root["schedule"] = JsonNode.Parse(ValidScheduleJson);
+            root["rig"]!["sensor"]!["simulationResponse"] = JsonNode.Parse("""
+                {
+                  "modelVersion": "test-v1",
+                  "adcBitDepth": 16,
+                  "minimumGainControl": 0,
+                  "maximumGainControl": 10,
+                  "electronsPerAduAtZeroGain": 1,
+                  "gainControlDivisor": 10,
+                  "maximumFullWellElectrons": 10000,
+                  "readNoisePoints": [],
+                  "blackLevelAdu": 0,
+                  "gainUnits": "test",
+                  "compatibilityLabel": "test"
+                }
+                """);
+        })).ConfigureAwait(false);
+    }
+
     private static async Task<CameraModuleConfig> LoadAsync(
         Action<JsonObject>? mutate = null,
         IDeploymentLocationStore? deploymentLocationStore = null)
@@ -393,6 +437,29 @@ public sealed class CaptureControlConfigurationTests
               }
             }
           }
+        }
+        """;
+
+    private const string ValidScheduleJson = """
+        {
+          "schemaVersion": "capture-schedule-v1",
+          "setpointProfiles": [
+            {
+              "id": "night",
+              "exposure": "00:00:05",
+              "gain": 100,
+              "captureInterval": "00:00:10"
+            }
+          ],
+          "weeklyWindows": [
+            {
+              "id": "monday-night",
+              "day": "Monday",
+              "start": { "kind": "FixedLocalTime", "localTime": "18:00:00" },
+              "end": { "kind": "FixedLocalTime", "localTime": "06:00:00", "dayOffset": 1 },
+              "setpointProfileId": "night"
+            }
+          ]
         }
         """;
 }
