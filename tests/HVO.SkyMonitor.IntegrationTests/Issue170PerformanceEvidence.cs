@@ -235,7 +235,8 @@ internal sealed class Issue170PerformanceEvidence
         if (!string.Equals(declaredSdk, executingSdk, StringComparison.Ordinal)
             || !GCSettings.IsServerGC
             || string.Equals(dockerVersion, "unavailable", StringComparison.Ordinal)
-            || containerImages.Any(image => !observedContainers.Contains(image, StringComparer.Ordinal)))
+            || containerImages.Any(image => !observedContainers.Contains(
+                image.Split('@', 2)[0], StringComparer.Ordinal)))
         {
             throw new InvalidOperationException(
                 "Reviewed evidence requires the pinned SDK, server GC, Docker, and all declared service containers.");
