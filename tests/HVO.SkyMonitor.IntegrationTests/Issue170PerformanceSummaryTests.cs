@@ -47,7 +47,10 @@ public sealed class Issue170PerformanceSummaryTests
         "requestsWithoutContentLength", "responsesWithoutContentLength",
         "sqlTransactionsStartedObserved", "sqlTransactionsCommittedObserved",
         "sqlTransactionsRolledBackObserved", "sqlTransactionsFailedObserved",
-        "allocationRateSamples"
+        "allocationRateSamples", "observatories", "registrations", "frames", "deployments", "audits",
+        "resolvedFrames", "pendingDeployments", "mismatchFrames", "exactBindingFrames",
+        "backfilledObservatories", "restartBackfilledObservatories", "measuredQueries", "pageSize",
+        "traversalPages", "uniqueRows", "warmups"
     ];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
