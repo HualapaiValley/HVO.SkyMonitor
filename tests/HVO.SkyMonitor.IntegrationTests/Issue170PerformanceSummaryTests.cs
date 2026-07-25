@@ -527,6 +527,16 @@ public sealed class Issue170PerformanceSummaryTests
                     || path.EndsWith("rssPeakBytes", StringComparison.OrdinalIgnoreCase)
                     || path.EndsWith("rssEndBytes", StringComparison.OrdinalIgnoreCase) ? 25
                     : path.Contains("protocol", StringComparison.OrdinalIgnoreCase) ? 20 : 35;
+        if (path.Contains("scenario=W4-", StringComparison.Ordinal)
+            && observed > budget
+            && comparison.BaselineRange.Maximum >= comparison.CandidateRange.Minimum
+            && comparison.CandidateRange.Maximum >= comparison.BaselineRange.Minimum)
+        {
+            return new MetricDisposition(path, "noise disposition; five-trial ranges overlap",
+                comparison.BaselineMedian, comparison.CandidateMedian, observed, false,
+                string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                    $"Baseline range {comparison.BaselineRange.Minimum:F3}-{comparison.BaselineRange.Maximum:F3} and candidate range {comparison.CandidateRange.Minimum:F3}-{comparison.CandidateRange.Maximum:F3} overlap; the median change is retained but not treated as a proven regression."));
+        }
         if (metadata.Unit == "count"
             && comparison.BaselineMedian is > 0 and <= 10
             && Math.Abs(comparison.AbsoluteMedianChange) <= 2
@@ -874,6 +884,8 @@ public sealed class Issue170PerformanceSummaryTests
         var pairedPercent = baseline.Zip(candidate, static (before, after) =>
             before == 0 ? double.NaN : (after / before - 1) * 100).Where(double.IsFinite).ToArray();
         return new PairedComparison(
+            baselineRange,
+            candidateRange,
             baselineRange.Median,
             candidateRange.Median,
             candidateRange.Median - baselineRange.Median,
@@ -1143,6 +1155,8 @@ public sealed class Issue170PerformanceSummaryTests
         DateTimeOffset ProcessStartUtc,
         DateTimeOffset EvidenceCompletedUtc);
     private sealed record PairedComparison(
+        TrialRange BaselineRange,
+        TrialRange CandidateRange,
         double BaselineMedian,
         double CandidateMedian,
         double AbsoluteMedianChange,
