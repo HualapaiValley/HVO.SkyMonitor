@@ -51,6 +51,32 @@ public sealed class DeploymentLocationHealthCheckTests
     }
 
     [TestMethod]
+    public async Task CheckHealthAsync_ResolvedFrameWithMissingDeploymentIsUnhealthy()
+    {
+        await using var context = CreateContext();
+        var frame = new CentralFrame
+        {
+            CapturedAtUtc = UtcNow,
+            LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved
+        };
+        frame.Location = new CentralCaptureLocation
+        {
+            CentralFrame = frame,
+            CentralFrameId = frame.Id,
+            DeviceDeploymentLocationVersionId = Guid.NewGuid(),
+            EffectiveFromUtc = UtcNow.AddMinutes(-1)
+        };
+        context.CentralFrames.Add(frame);
+        await context.SaveChangesAsync();
+        using var telemetry = new DeploymentLocationTelemetry();
+
+        var result = await new DeploymentLocationHealthCheck(
+            context, new FixedTimeProvider(UtcNow), telemetry).CheckHealthAsync(new HealthCheckContext());
+
+        result.Status.Should().Be(HealthStatus.Unhealthy);
+    }
+
+    [TestMethod]
     [DataRow(-1, HealthStatus.Unhealthy)]
     [DataRow(0, HealthStatus.Healthy)]
     [DataRow(999, HealthStatus.Healthy)]

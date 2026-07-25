@@ -76,7 +76,7 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
         }
         catch (ArgumentException exception)
         {
-            ModelState.AddModelError(nameof(request.TimeZoneId), exception.Message);
+            ModelState.AddModelError(string.Empty, exception.Message);
             return ValidationProblem(ModelState);
         }
         catch (ObservatoryConcurrencyException)

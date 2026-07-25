@@ -33,7 +33,8 @@ internal sealed class DeploymentLocationHealthCheck(
                 item.LocationEvidenceState == CentralCaptureLocationEvidenceState.ReportedResolved
                 && (item.Location == null
                     || item.Location.DeviceDeploymentLocationVersionId == null
-                    || item.Location.DeploymentLocation!.Status != DeploymentLocationResolutionStatus.Acknowledged
+                    || item.Location.DeploymentLocation == null
+                    || item.Location.DeploymentLocation.Status != DeploymentLocationResolutionStatus.Acknowledged
                     || item.Location.LocationId != item.Location.DeploymentLocation.LocationId
                     || item.Location.Version != item.Location.DeploymentLocation.Version
                     || item.Location.Source != item.Location.DeploymentLocation.Source
