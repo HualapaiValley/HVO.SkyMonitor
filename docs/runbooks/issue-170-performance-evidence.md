@@ -39,7 +39,7 @@ DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=<harness-commit> HVO_EVIDENCE_PRODUCTION
 DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_TRIAL=<trial> dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~DeploymentLocationAuthorityPerformanceTests.MigrationFleetReconciliationAndPaging_RecordPerformanceEvidence"
 ```
 
-Each raw file records branch, clean state, harness and production commits, assembly hashes, process start/completion bounds, environment, workload, method, I/O, CPU, exact GC allocation-counter boundaries, RSS, latency samples, throughput, backlog, and correctness. Copy the baseline `TestResults/issue-170/$BASELINE_HARNESS/` directory into the candidate worktree without changing its commit-scoped path.
+Each raw file records branch, clean state, harness and production commits, assembly hashes, process start/completion bounds, environment, workload, method, I/O, CPU, 100 ms sampled allocation-rate increments with boundary uncertainty, RSS, latency samples, throughput, backlog, and correctness. Copy the baseline `TestResults/issue-170/$BASELINE_HARNESS/` directory into the candidate worktree without changing its commit-scoped path.
 
 ## Summary
 

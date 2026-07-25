@@ -31,6 +31,7 @@ public sealed class Issue170PerformanceSummaryTests
         "allocatedBytes", "workingSetDeltaBytes", "workingSetObservedPeakBytes",
         "workingSetBeforeBytes", "workingSetAfterBytes", "rssStartBytes", "rssPeakBytes", "rssEndBytes",
         "runtimeAllocationCounterDeltaBytes",
+        "sampledAllocationRateBytes",
         "payloadBytes",
         "dataAllocatedGrowthBytes", "logAllocatedGrowthBytes", "dataUsedGrowthBytes",
         "logUsedGrowthBytes", "requestBodyBytes", "responseBodyBytes", "multipartRequestBodyBytes",
@@ -45,7 +46,8 @@ public sealed class Issue170PerformanceSummaryTests
         "minioPutObserved", "minioPostObserved", "minioDeleteObserved", "minioHeadObserved",
         "requestsWithoutContentLength", "responsesWithoutContentLength",
         "sqlTransactionsStartedObserved", "sqlTransactionsCommittedObserved",
-        "sqlTransactionsRolledBackObserved", "sqlTransactionsFailedObserved"
+        "sqlTransactionsRolledBackObserved", "sqlTransactionsFailedObserved",
+        "allocationRateSamples"
     ];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -432,8 +434,8 @@ public sealed class Issue170PerformanceSummaryTests
             .ToArray();
         return new PerformanceDisposition(
             fileName == "device-bootstrap-performance.json"
-                ? "Every comparable scalar and latency metric has an explicit budget, invariant, or N/A noise disposition; bootstrap allocations allow 50%, other resources and latency 35%, and structural I/O 50%."
-                : "Every comparable scalar and latency metric has an explicit budget, invariant, or N/A fault-noise disposition; normal/W4 throughput allow 10%/15%, allocations 25%, CPU/RSS 25%, structural I/O 20%, pooled p50/p95 35%, and p99/maximum 50%.",
+                ? "Every comparable scalar and latency metric has an explicit budget, invariant, or N/A noise disposition; sampled allocation rate is descriptive, other resources and latency allow 35%, and structural I/O 50%."
+                : "Every comparable scalar and latency metric has an explicit budget, invariant, or N/A fault-noise disposition; normal/W4 throughput allow 10%/15%, sampled allocation rate is descriptive, CPU/RSS allow 25%, structural I/O 20%, pooled p50/p95 35%, and p99/maximum 50%.",
             "accepted",
             metrics,
             acceptedRegressions,
@@ -457,6 +459,8 @@ public sealed class Issue170PerformanceSummaryTests
                 "Durable backlog is a correctness gate, not a tolerated regression.");
         }
         if (path.EndsWith("rssStartBytes", StringComparison.Ordinal)
+            || path.EndsWith("sampledAllocationRateBytes", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("allocationRateSamples", StringComparison.OrdinalIgnoreCase)
             || path.EndsWith("serverErrorRetries", StringComparison.Ordinal)
             || path.EndsWith("deadlockRetries", StringComparison.Ordinal)
             || path.EndsWith("pendingReferenceRetries", StringComparison.Ordinal)
@@ -733,7 +737,8 @@ public sealed class Issue170PerformanceSummaryTests
             || path.EndsWith("maximumMilliseconds", StringComparison.OrdinalIgnoreCase)
             || path.EndsWith("allocationCounterStartBytes", StringComparison.OrdinalIgnoreCase)
             || path.EndsWith("allocationCounterEndBytes", StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith("workingSetSamplingIntervalMilliseconds", StringComparison.OrdinalIgnoreCase);
+            || path.EndsWith("workingSetSamplingIntervalMilliseconds", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("allocationSamplingIntervalMilliseconds", StringComparison.OrdinalIgnoreCase);
 
     private static bool TryMetricMetadata(string path, out MetricMetadata metadata)
     {
