@@ -12,6 +12,7 @@ documents link back without maintaining a competing roadmap.
 | Agent prompts | `docs/planning/agent-prompts.md` | Reusable GPT-5.6 Sol, Terra, Luna, research, review, implementation, and handoff prompts. |
 | Performance validation | `docs/planning/performance-validation.md` | Canonical workloads, measurement record, phase gates, and evidence rule for justified complexity. |
 | Requirements crosswalk | `docs/planning/requirements-crosswalk.md` | Maps retained normative requirement groups to owning specifications, phases, issues, and deferred evidence. |
+| Standalone CameraAgent course correction | `docs/planning/standalone-cameraagent-course-correction.md` | Detailed phase-12A product outcome, work packages, dependency order, and tiered validation policy for issues #205-#211. |
 | Document migration | `docs/planning/document-migration.md` | Requirement destinations and safe retirement record for superseded plans. |
 | Project implementation prompt | `.github/prompts/implement-project-phase.prompt.md` | Executes one ready issue from epic #89 through the complete PR lifecycle. |
 | Pull request evidence template | `.github/pull_request_template.md` | Required scope, validation, output, performance, runtime, correction, and current-head green evidence. |

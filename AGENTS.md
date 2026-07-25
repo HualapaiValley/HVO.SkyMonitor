@@ -19,10 +19,13 @@
 - Unit selection is positive and passes with an invalid Docker endpoint. Integration selection is a separate required gate and requires Docker for the Testcontainers assemblies.
 - Run a focused MSTest with `dotnet test <project> --filter "FullyQualifiedName~Namespace.Class.Method"`.
 - `tests/coverage.runsettings` excludes test assemblies, `TestSupport`, migrations, and build output; keep coverage configuration aligned when adding projects.
-- Use the validation ladder in `docs/planning/agent-execution.md`: focused tests
-  in the inner loop, one complete local candidate gate before the first push,
-  affected gates for corrections, and complete replacement CI on the final head.
-  Do not repeatedly run unchanged long suites or performance harnesses.
+- Use the risk-tiered validation ladder in `docs/planning/agent-execution.md`:
+  focused tests in the inner loop, tier-appropriate local candidate evidence
+  before the first push, affected gates for corrections, and complete protected
+  replacement CI on the final head. Tier C/M work runs the complete local
+  candidate gate; Tier A/B work relies on focused/affected local evidence plus
+  protected CI. Do not repeatedly run unchanged long suites or performance
+  harnesses.
 
 ## Architecture Boundaries
 

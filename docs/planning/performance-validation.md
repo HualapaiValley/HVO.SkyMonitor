@@ -37,8 +37,10 @@ and specialized caches require issue-specific evidence before adoption.
 
 ## 2. Canonical Workloads
 
-Use the smallest workload that exposes the changed behavior, plus a realistic
-full-resolution workload for every full-frame path.
+Use the smallest workload that exposes the changed behavior. A new or changed
+full-frame algorithm gets a realistic output/resource check, but comparative
+canonical benchmarking belongs only to a tier C measured-path issue or tier M
+milestone. Do not rerun a phase benchmark for an unrelated tier A/B change.
 
 | ID | Workload | Reference input and default scale | Use |
 | --- | --- | --- | --- |
@@ -49,6 +51,15 @@ full-resolution workload for every full-frame path.
 | `W3P` | 100 `W2` payload-bearing captures | 1,287,936,000 raw bytes before derivatives, with metadata from `W3M` | Sustained file/object I/O, retention, and recovery without an unbounded 10,000-frame payload set |
 | `W4` | Concurrency 1, 4, and 8 | 20 warm-up plus 200 measured operations per level using the same `W1` or `W2` payload and service topology | Upload, ingest, SQL claim, retrieval, and worker contention |
 | `W5` | Existing 289-capture accelerated virtual day | `AcceleratedTwentyFourHours_ArtifactsAndBoundedOwnersRemainConsistent`; 64 x 48 correctness/retention workload | Sustained state, retention, cadence, and bounded-growth correctness, not a full-frame throughput claim |
+| `W6` | ASI676MC 3552 x 3552 Bayer12-in-16, 25,233,408 raw bytes | Full production catalog, provisional 2.5 mm fisheye, five-second logical light exposure, separately declared cadence, and the standalone CameraAgent graph | Tier M standalone composition, storage, recovery, rendered output, and resource evidence |
+
+Before `W6` is runnable, #211's readiness manifest pins the deployment location,
+scene UTCs, rig/profile hashes, expected catalog row IDs and coordinate
+tolerances, magnitude/result limits, cadence, operation count/duration,
+retention limits, storage headroom, each fault/outage duration, initial backlog,
+and drain budget. The full production catalog means the verified 119,625-row
+snapshot is installed and identified; scene queries remain bounded and do not
+render every catalog row.
 
 The existing reference commands are:
 
@@ -76,9 +87,12 @@ it.
 
 ## 3. Evidence Record
 
-Every implementation issue labeled `performance` records each applicable field.
-Use `N/A` with a reason when a field has no meaningful value. Coordination
-epics link child evidence rather than repeating it.
+Every tier C/M implementation issue records each applicable field. Use `N/A`
+with a reason when a field has no meaningful value. The `performance` label
+identifies work requiring a comparative baseline/regression disposition, not
+whether a tier C measurement is reproducible. Tier A/B issues do not produce
+this record unless their scope is explicitly promoted. Coordination epics link
+child evidence rather than repeating it.
 
 | Field | Required content |
 | --- | --- |
@@ -151,6 +165,7 @@ recording a baseline.
 | 10: windows | 1K/10K/100K history, `N-2..N+2` | Resolution latency, SQL statements/rows/plans, pinned bytes, object reads, wait age | Selection cost follows window size, not history size; restart/out-of-order work remains bounded and idempotent |
 | 11: weather/cloud | `W1`, `W2`, temporal fixtures | Render/assessment CPU, allocations, peak memory, mask/output bytes, frames/s | Edge/central outputs match; deterministic checksums/ranges pass; more complex mask storage requires measured benefit |
 | 12: transients | `W1`, `W2`, scenario matrix | CPU/frame, allocations/RSS, source bytes, window state, candidate rate, latency, confusion matrix | `Off` allocates no detector state; edge lane does not materially regress acquisition; virtual sensitivity/cost is reported without physical claims |
+| 12A: standalone CameraAgent | `W6`, ASI174 Mono8 ROI/bin conformance, schedule/environment/calibration/transient faults | Per-stage/end-to-end CPU, RSS/LOH, allocations, filesystem/SQLite I/O, latency, throughput, backlog/drain, storage growth, rendered outputs, central-attempt count | Complete local flow meets declared cadence/retention budgets, recovers without loss/duplicates, and makes zero central attempts |
 | 13: UI | 1K/10K history, 1/10/50 clients | SQL statements/rows, API latency/bytes, encoding CPU, render latency, per-session memory | Paging is bounded; unchanged images are not repeatedly re-encoded when evidence justifies caching; no unbounded polling/query behavior |
 | 14: E2E/readiness | Normal, outage, each fault, recovery | Stage and end-to-end latency, exact bytes/counts, per-host CPU/RSS/LOH, backlog age/drain, trace coverage, metric cardinality | Every fault converges; no acknowledged loss/duplicate logical output; recovery drains finite backlog; no unexplained regression |
 

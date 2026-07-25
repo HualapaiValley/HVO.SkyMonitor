@@ -114,17 +114,33 @@ reason.
 Record commands and the source commit or worktree fingerprint they validate.
 Invalidate evidence only when a later change can affect that boundary.
 
+Select one validation tier before implementation and record it in the issue:
+
+| Tier | Change risk | Required local evidence before push |
+| --- | --- | --- |
+| `A` | Documentation, labels, styling, or isolated non-behavioral cleanup | Focused validation and affected build/format; no complete local matrix or benchmark |
+| `B` | Ordinary contract, algorithm, UI, configuration, or isolated defect | Focused tests and affected project/boundary tests; no complete local matrix or canonical benchmark unless promoted by wider risk |
+| `C` | Durable boundary, concurrency, recovery, migration, full-frame algorithm, or measured hot path | Complete local candidate gate, affected integration/fault gates, and the smallest representative measurement |
+| `M` | Named operational milestone | Complete local candidate gate, canonical composition/fault evidence, runtime review, and milestone benchmark suite |
+
+The issue scope and changed boundary determine the tier, not project size or the
+mere presence of image data. Escalate when evidence reveals wider risk. Do not
+downgrade a durable or measured-path change to avoid its affected gate.
+
 1. **Inner loop:** build the changed project when needed and run the smallest
    faithful focused test without coverage. Do not run the solution-wide matrix
    after every edit.
 2. **Boundary checkpoint:** after a coherent contract, persistence, host, or UI
    slice, run the affected project tests and affected integration boundary.
    Independent affected gates may run concurrently when resources permit.
-3. **Candidate gate:** once the implementation is stable, run the complete local
-   issue gate, canonical coverage collection, output/observability review, and
-   applicable performance harness once per unchanged candidate before the first
-   push. Correct a failed gate and rerun every failed or invalidated portion;
-   preserve unaffected evidence only when its recorded boundary did not change.
+3. **Candidate gate:** once the implementation is stable, run the selected tier's
+   local candidate evidence once per unchanged candidate before the first push.
+   Tier C/M includes the complete standard local validation block, canonical
+   coverage, output/observability review, and applicable performance harness.
+   Tier A/B uses focused and affected local gates and lets protected CI provide
+   the complete matrix. Correct a failed gate and rerun every failed or
+   invalidated portion; preserve unaffected evidence only when its recorded
+   boundary did not change.
 4. **Review correction:** run the reproducer, focused regression, and full
    affected gate. Let replacement CI provide the complete matrix unless the
    correction changes shared contracts, migrations, test infrastructure,
@@ -135,7 +151,7 @@ Invalidate evidence only when a later change can affect that boundary.
    configuration, fixtures, workload parameters, or measurement logic on the
    measured path changed. Documentation-only and unrelated test changes do not
    invalidate it.
-6. **Current-head CI:** always require the complete protected CI matrix after the
+6. **Current-head CI:** every tier requires the complete protected CI matrix after the
    final pushed correction. A stale green run never satisfies the merge gate.
 
 If a supposedly focused correction exposes a cross-boundary failure, expand to
@@ -147,9 +163,15 @@ evidence, not weakening failure investigation or the final merge bar.
 Performance is a first-class design objective. More complexity is acceptable
 when measured benefit is meaningful, bounded, and maintainable.
 
-Every implementation issue labeled `performance` records each applicable field
-and marks a field `N/A` with a reason when it has no meaningful value. Umbrella
-issues link their child evidence rather than duplicating it.
+Every tier C/M implementation issue records each applicable field below and
+marks a field `N/A` with a reason when it has no meaningful value. A tier C
+measurement is reproducible even when the issue is not labeled `performance`;
+the label identifies a comparative budget, canonical hot path, or milestone
+that requires baseline/regression disposition. Do not add the label solely
+because a phase once had a performance gate. Tier A/B work records correctness
+and any cheap resource invariant needed by the changed behavior but does not
+create comparative benchmark evidence. Umbrella issues link child evidence
+rather than duplicating it.
 
 | Field | Required evidence |
 | --- | --- |
@@ -258,10 +280,10 @@ dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
 
 The positive Unit filter must pass with an invalid Docker endpoint. Integration
 is a separate required gate and requires Docker for the Testcontainers
-assemblies. This complete block is the candidate gate, not the default inner
-loop. Run focused tests during development, run the candidate gate once when the
-implementation is stable, and follow the correction rules in section 4 after
-review feedback.
+assemblies. This complete block is the tier C/M local candidate gate, not the
+default inner loop. Tier A/B uses its recorded focused/affected local evidence
+and relies on the same complete protected CI before merge. Follow the correction
+rules in section 4 after review feedback.
 
 Additional issue-specific gates may include:
 
@@ -280,8 +302,9 @@ Additional issue-specific gates may include:
 Every PR follows this sequence:
 
 1. Inspect worktree, diff, recent log, issue, and dependencies.
-2. Use the validation ladder: focused tests while developing, then one complete
-   candidate gate with output and applicable performance evidence before push.
+2. Use the validation ladder: focused tests while developing, then the selected
+   tier's candidate evidence with applicable output/performance review before
+   push. Tier C/M runs the complete local candidate gate.
 3. Commit only intended files.
 4. Push the issue branch.
 5. Open a PR linked to the issue and epic #89.
