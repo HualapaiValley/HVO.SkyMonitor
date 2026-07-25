@@ -1,6 +1,6 @@
 # HVO SkyMonitor Virtual-First Completion Plan
 
-Status date: 2026-07-13
+Status date: 2026-07-25
 
 This is the authoritative roadmap and architecture source for HVO SkyMonitor.
 Live coordination is tracked by the
@@ -12,6 +12,7 @@ Detailed execution rules and reusable agent prompts are maintained in:
 - [Agent prompts](planning/agent-prompts.md)
 - [Performance validation](planning/performance-validation.md)
 - [Requirements crosswalk](planning/requirements-crosswalk.md)
+- [Standalone CameraAgent course correction](planning/standalone-cameraagent-course-correction.md)
 - [Document migration](planning/document-migration.md)
 
 Aggregate phase status belongs here; live issue/PR execution state and evidence
@@ -21,8 +22,9 @@ evidence.
 
 ## 1. Objective
 
-Complete the automated CameraAgent and LogicHost software path using VirtualSky
-before implementing production physical camera modules.
+Complete a production-like standalone CameraAgent and then the optional
+CameraAgent-to-LogicHost software path using VirtualSky before implementing
+production physical camera modules.
 
 The target system must:
 
@@ -32,15 +34,20 @@ The target system must:
    processing lanes.
 4. Execute versioned local recipes for calibration, combination, preview, and
    annotation.
-5. Upload a reconstruction-complete raw contract to LogicHost.
-6. Reconstruct the raw frame centrally without consulting current device state.
-7. Execute the same shared recipes centrally, with optional enhanced central
+5. Evaluate local schedules, acquire virtual environmental observations, and
+   expose the complete local workflow through authenticated CameraAgent UI
+   without requiring LogicHost.
+6. Prove a full-catalog, calibrated, full-resolution standalone CameraAgent with
+   central services absent.
+7. Optionally upload a reconstruction-complete raw contract to LogicHost.
+8. Reconstruct the raw frame centrally without consulting current device state.
+9. Execute the same shared recipes centrally, with optional enhanced central
    configuration and contextual inputs.
-8. Execute deterministic weather, cloud, and transient workflows through the
+10. Execute deterministic weather, cloud, and transient workflows through the
    same durable processing substrate.
-9. Recover correctly across CameraAgent, network, LogicHost, SQL, object-store,
+11. Recover correctly across CameraAgent, network, LogicHost, SQL, object-store,
    and worker failures.
-10. Expose durable operational state through authenticated APIs and secondary
+12. Expose durable operational state through authenticated APIs and secondary
     operator UI.
 
 The final automated flow is:
@@ -49,7 +56,9 @@ The final automated flow is:
 VirtualSky acquisition
   -> SQLite/file durable raw ingress
   -> standard, upload, and secondary lanes
-  -> local derivatives and durable history
+  -> local schedule, environment, calibration, derivatives, and durable history
+  -> authenticated standalone CameraAgent operations and recovery
+  -> optional central integration
   -> manifest-v2 upload
   -> LogicHost reconstructable ingest
   -> shared central recipe execution
@@ -72,7 +81,9 @@ The milestone does not require:
 - Real-event detector sensitivity or false-positive acceptance.
 
 Hardware-neutral timing, metering, ownership, and adapter-facing contracts are
-included. Physical implementation and acceptance remain later work.
+included. Deterministic pseudo calibration, provisional virtual sensor/lens
+profiles, and virtual environmental acquisition are included; physical
+implementation and acceptance remain later work.
 
 ## 3. Architecture Decisions
 
@@ -86,13 +97,17 @@ included. Physical implementation and acceptance remain later work.
 | `SYS-004` | CameraAgent continues acquisition and bounded retention during LogicHost or network outage. |
 | `SYS-005` | One LogicHost accepts many CameraAgents across many observatories without becoming part of acquisition correctness. |
 | `SYS-006` | CameraAgent is not the permanent archive; LogicHost is the durable central system of record after verified ingest. |
+| `SYS-007` | Explicit standalone mode provides local schedule, environmental history, calibration, processing, storage, recovery, and authenticated operations with zero central network attempts. |
+| `SYS-008` | Optional central integration consumes durable edge facts and artifacts; it never determines whether local acquisition, processing, history, or operator control exists. |
 
-CameraAgent owns camera discovery/acquisition, setpoint control, raw
-normalization, local recipes and derivatives, bounded local history, offline
-authenticated operation, outbox, telemetry, and a local read-only catalog.
-LogicHost owns agent registration and profile history, streamed idempotent
-ingest, central lifecycle, contextual and cross-agent processing, durable
-history/UI, and reprocessing. These ownership statements are tracked as
+CameraAgent owns camera discovery/acquisition, setpoint control, authoritative
+local schedule/rig/readout/calibration/pipeline revisions, raw normalization,
+local recipes and derivatives, bounded local history, offline authenticated
+operation, outbox, telemetry, and a local read-only catalog. LogicHost owns
+agent registration and received capture-time profile snapshots, streamed
+idempotent ingest, central lifecycle, contextual and cross-agent processing,
+durable history/UI, and reprocessing. LogicHost displays but does not edit
+CameraAgent-owned revisions. These ownership statements are tracked as
 `OWN-EDGE-001` through `OWN-EDGE-010` and `OWN-CENTRAL-001` through
 `OWN-CENTRAL-006` in the
 [requirements crosswalk](planning/requirements-crosswalk.md).
@@ -211,7 +226,7 @@ identity is prohibited.
 - Module implementation options remain separate from physical/virtual rig
   profiles.
 - Rig and pipeline configuration used by a capture are versioned and validated
-  before camera initialization.
+  before initial camera startup or later revision activation.
 - Operator configuration uses stable aliases. Unknown operations, unsupported
   formats, incompatible dependencies, and cycles fail with actionable errors.
 - Assembly-qualified operation type names remain an explicit advanced extension
@@ -219,6 +234,26 @@ identity is prohibited.
 - Secrets never live in camera rig or processing-profile files.
 - Reduced deterministic CI and full-resolution performance profiles are both
   maintained.
+
+### 3.9 Standalone CameraAgent operation
+
+- Local schedule, profile revisions, calibration references, environmental
+  observations, processing state, artifacts, and operator actions remain
+  durable and queryable while central services are absent.
+- Astronomy scene, optics, native sensor, readout mode, response, and
+  quantization are separate configuration-selected stages.
+- Meaningful sample depth is distinct from container depth. Native ROI, binning,
+  output geometry, CFA phase, packing, and transformed optical calibration are
+  reconstruction facts rather than preset-name behavior.
+- Exposure duration and capture cadence are independent. Fixed and solar
+  schedule boundaries use the local deployment location and Observatory-owned
+  timezone without requiring a live central lookup.
+- Virtual environmental sources publish durable local facts first; optional
+  central delivery is an independent consumer.
+- Versioned profile changes validate before activation and bind every capture to
+  the exact schedule, rig/readout, calibration, and processing revision.
+- Detailed requirements and the representative sensor/readout matrix are owned
+  by `docs/planning/standalone-cameraagent-course-correction.md`.
 
 Raw, Calibrated, Combined, Preview, AnnotatedPreview, and Metadata are distinct
 artifact roles. Raw bytes are immutable. Every artifact records stable artifact
@@ -229,8 +264,10 @@ silently substitute a different role.
 
 ## 4. Performance Is a Design Requirement
 
-Performance-sensitive work is identified by the `performance` GitHub label and
-must follow these requirements.
+Performance-sensitive work is identified by the `performance` GitHub label or a
+named operational milestone and must follow these requirements. Ordinary
+changes do not acquire a comparative benchmark requirement merely because they
+touch an image or host project.
 
 | ID | Requirement |
 | --- | --- |
@@ -254,6 +291,8 @@ for accepting additional complexity are defined in
 [`docs/planning/performance-validation.md`](planning/performance-validation.md).
 Every performance-sensitive issue and PR must link its selected workload and
 evidence; a generic statement that performance was considered is insufficient.
+Tier A/B/C/M selection, evidence invalidation, and milestone benchmark ownership
+are defined in the execution protocol and standalone course correction.
 
 ## 5. Requirement Ownership
 
@@ -295,8 +334,21 @@ The plan starts from the following completed foundation:
 - Standalone ASI profile characterization, which is evidence and not a physical
   CameraAgent module.
 
-The baseline is not yet a reconstruction-complete or executable central
-pipeline.
+This initial baseline was not yet a reconstruction-complete or executable
+central pipeline.
+
+### Aggregate status at 2026-07-25
+
+- Phases 0-11 and the backend children of phase 12 are merged. Transient epic
+  #65 remains open for final UI/two-host closure.
+- The standalone foundation through #191, #194-#197, #171, and central location
+  reconciliation #170 is merged.
+- Phase 12A is the active course correction. Epic #205 and children #206-#211
+  are open; #206 is the first implementation dependency.
+- Phase 13 is partial: CameraAgent UI #106 is merged, while LogicHost UI #107
+  follows standalone gate #211.
+- Phase 14 remains open: #166 and #211 precede deployment automation #151;
+  #151, #107, and #211 precede final two-host gate #108.
 
 ## 7. Phase 0 - Planning, Boundaries, and Quality
 
@@ -656,6 +708,7 @@ Exit gate `GATE-P10`:
 Issues:
 
 - [#103 Add environmental observation contracts and persistence](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/103)
+- [#157 Add durable environmental observation delivery](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/157)
 - [#104 Add deterministic VirtualSky cloud scenarios](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/104)
 - [#105 Add shared cloud assessment and masks](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/105)
 
@@ -666,6 +719,7 @@ Requirements:
 | `ENV-001` | Represent observation time, validity, provider, units, quality, and staleness. |
 | `ENV-002` | Support temperature, pressure, humidity, wind, precipitation, and sky quality when available. |
 | `ENV-003` | Persist observations centrally and associate them by time without silent defaults. |
+| `ENV-004` | Deliver CameraAgent observations through restart-safe durable edge state without making central availability part of acquisition. |
 | `CLOUD-001` | Add seeded clear, scattered, broken, and overcast virtual scenarios. |
 | `CLOUD-002` | Apply deterministic opacity and motion before sensor response. |
 | `CLOUD-003` | Add versioned global cloud score, optional mask, confidence, and quality output. |
@@ -722,7 +776,56 @@ Exit gate `GATE-P12`:
 
 Physical sensitivity and real-world false-positive claims remain unverified.
 
-## 20. Phase 13 - Secondary Operator UI
+## 20. Phase 12A - Standalone CameraAgent Operational Completion
+
+Issues:
+
+- [#205 Epic: Complete standalone CameraAgent operational experience](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/205)
+- [#206 Make VirtualSky sensor and readout simulation configuration-driven](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/206)
+- [#207 Add local CameraAgent scheduling and versioned profile control](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/207)
+- [#208 Add CameraAgent calibration library and virtual reference acquisition](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/208)
+- [#209 Add virtual environmental acquisition and standalone local history](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/209)
+- [#210 Complete CameraAgent pipeline composition and operator controls](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/210)
+- [#211 Prove full-catalog ASI676MC standalone CameraAgent operation](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/211)
+
+Requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `READOUT-001` | Configure native sensor geometry, mono/RGB/CFA response, meaningful sample depth, container/packing, stored-code alignment/transfer, stride, byte order, levels/units, and deterministic response without preset-name branches. |
+| `READOUT-002` | Configure native-coordinate ROI, X/Y binning and algorithm, CFA origin/parity, and output geometry; transform calibrated optics and projected coordinates exactly. |
+| `READOUT-003` | Support representative 8-, 10-, 12-, 14-, and 16-bit modes and reject impossible, misaligned, or unsupported readout/pipeline combinations before acquisition. |
+| `READOUT-004` | Add stored-code transform/level-space to manifest v2 and central layout additively; use canonical defaults only when old facts prove them and classify ambiguous existing lower-depth history as byte-preserved `LegacyIncomplete`. |
+| `SCHED-001` | Evaluate local weekly schedules, exceptions, blackouts, and overrides using fixed or solar-relative day/twilight/night boundaries. |
+| `SCHED-002` | Keep exposure and cadence independent; persist deterministic precedence, DST/clock/restart behavior, active revision, next transition, and admission reason. |
+| `SCHED-003` | Define no-catch-up clock/restart behavior, one-shot replay protection, boundary-crossing exposure completion, and explicit no-solar-event fallback or closed state. |
+| `PROFILE-001` | Validate, preview, audit, activate, and roll back versioned local rig/readout/schedule/pipeline configuration at an explicit capture boundary. |
+| `CALIB-001` | Persist immutable bias/dark/flat/defect source and master artifacts with checksums, recipes, validity, compatibility, activation, retention, and ordered lineage. |
+| `CALIB-002` | Acquire deterministic virtual references compatible with configured ASI response models and prove correction improves declared synthetic residuals without changing raw bytes. |
+| `ENV-LOCAL-001` | Acquire deterministic virtual weather/camera observations on source-appropriate triggers and retain bounded targetless local history in standalone mode. |
+| `ENV-LOCAL-002` | Preserve measured/imported/derived/simulated provenance and explicit fresh/stale/missing/failed state; optional central delivery consumes local facts independently. |
+| `PIPE-LOCAL-001` | Configure and validate the effective calibration, combination, preview, quality/cloud, annotation, overlay, storage, telemetry, and edge-transient graph with explicit enable/disable dependency behavior. |
+| `PIPE-LOCAL-002` | Add reconstructable object/cardinal/image-circle and four-corner metadata overlays plus per-node artifact/status/lineage comparison in authenticated local UI. |
+| `STANDALONE-001` | Run the full production-catalog ASI676MC 12-in-16 Bayer profile with provisional 2.5 mm fisheye, five-second calibrated lights, virtual environment, edge transient processing, storage, retention, and telemetry. |
+| `STANDALONE-002` | Exercise the real CameraAgent UI, durable restart/fault/pressure boundaries, known-sky geometry, calibration residuals, checksums, lineage, runtime signals, and bounded resource/backlog behavior. |
+| `STANDALONE-003` | Complete with LogicHost, SQL Server, Redis, and MinIO absent and prove zero central attempts; also run an ASI174 Mono8 ROI/bin profile through the same configuration-driven path. |
+
+Exit gate `GATE-P12A`:
+
+- The production CameraAgent host completes the configured full-resolution
+  acquisition-to-local-history flow from a clean standalone environment.
+- Operators can schedule, configure, calibrate, inspect, compare, pause/resume,
+  and recover the real VirtualSky pipeline through authenticated local UI.
+- Known-sky geometry, pixel/layout ranges, calibration improvement, checksums,
+  recipe/profile identity, ordered lineage, and durable state pass.
+- Restart, optional-step failure, disk pressure, retention, and drain converge
+  without acknowledged loss or duplicate logical output.
+- The milestone composition records CPU, memory, I/O, latency, throughput,
+  backlog, storage growth, rendered outputs, and zero central network attempts.
+- Physical sensor, lens, calibration, timing, and detector-sensitivity claims
+  remain explicitly provisional or deferred.
+
+## 21. Phase 13 - Secondary Operator UI
 
 Issues:
 
@@ -736,7 +839,7 @@ Requirements:
 | `UI-001` | UI reads durable backend state and never orchestrates processing directly. |
 | `UI-002` | Authenticate operational pages and artifact content APIs. |
 | `UI-003` | Add CameraAgent ingress, lane, pipeline, outbox, storage, retention, health, weather, and gallery views. |
-| `UI-004` | Add read-only versioned CameraAgent configuration and validate-without-apply behavior. |
+| `UI-004` | CameraAgent owns authenticated versioned configuration preview, validation, apply, rollback, and audit; LogicHost exposes only received read-only capture-time snapshots. |
 | `UI-005` | Replace the LogicHost placeholder with fleet, ingest, queue, and dependency health. |
 | `UI-006` | Add central frames, artifacts, provenance, jobs, retrieval, and reprocessing views. |
 | `UI-007` | Add weather/cloud timeline and event review/reconstruction views. |
@@ -748,7 +851,7 @@ Exit gate `GATE-P13`:
 - Browser automation covers local gallery through central gallery.
 - UI remains secondary to automated backend completion.
 
-## 21. Phase 14 - End-to-End and Production Readiness
+## 22. Phase 14 - End-to-End and Production Readiness
 
 Issues:
 
@@ -818,7 +921,7 @@ Exit gate `GATE-P14`:
 - Logs, metrics, traces, health, coverage, output evidence, and performance have
   no unexplained failure or regression.
 
-## 22. Dependency Order
+## 23. Dependency Order
 
 ```text
 #90 --> #91 --> #110 CI quality gates
@@ -843,11 +946,17 @@ Exit gate `GATE-P14`:
 #62 + #99 + #100 + #101 --> #116 --> #118 (under #64)
 
 #58 + #96 + #97 + #102 + #105 --> #106 CameraAgent UI
-#98-#105 + completed #64 children --> #107 LogicHost UI
+#103 + #157 + #206 --> #209
+#206 --> #207 + #208
+#207 + #208 + #209 --> #210 --> #211 standalone CameraAgent gate
+#211 + #98-#105 + completed #64 children --> #107 LogicHost UI
 
 #94 + #97 + #98 --> #114 persistent state
 #91 --> #120 operations guidance
-all required backend/UI/readiness children --> #108 E2E --> close #109 and #89
+#166 + #211 --> #151 split-host deployment
+#211 --> close #205 standalone CameraAgent epic
+#151 + #107 + all required backend/UI/readiness children --> #108 E2E
+#108 --> close #65, #109, and #89
 ```
 
 Parallel work is allowed only when contracts and migration order are stable.
@@ -857,20 +966,23 @@ agents. One roadmap coordinator records claims in epic #89 and owns global slot
 accounting. Agents must not implement a downstream issue against an unmerged
 speculative contract unless the issues explicitly coordinate one PR series.
 
-## 23. PR and Validation Gate
+## 24. PR and Validation Gate
 
 Every issue follows this sequence:
 
 1. Read the master plan, issue, execution protocol, and relevant specifications.
 2. Inspect the current branch, worktree, open PR state, and recent commits.
-3. Record baseline behavior and performance where relevant.
+3. Record baseline behavior and performance where relevant to the selected
+   validation tier.
 4. Implement the smallest coherent issue slice.
 5. Add focused, integration, migration, fault, and UI tests as applicable.
 6. Validate outputs numerically or by checksum where behavior produces data.
-7. Use the execution protocol's validation ladder: focused inner-loop tests, one
-   complete stable-candidate local gate, affected correction gates, and complete
-   current-head replacement CI. Rerun performance when its measured code path,
-   configuration, fixture, workload, or measurement logic changes.
+7. Use the execution protocol's validation ladder: focused inner-loop tests,
+   tier-appropriate stable-candidate local evidence, affected correction gates,
+   and complete protected current-head replacement CI. Tier C/M work runs the
+   complete local candidate gate. Rerun performance only when its measured code
+   path, configuration, fixture, workload, environment, or measurement logic
+   changes.
 8. Inspect logs, metrics, traces, health, and durable state.
 9. Commit only issue files and preserve unrelated worktree changes.
 10. Push and open a PR linked to the issue and epic.
@@ -889,18 +1001,22 @@ Any red, canceled, timed-out, flaky, or missing required check blocks merge unti
 it is understood and corrected. A stale green run from before a correction does
 not satisfy the gate.
 
-## 24. Definition of Virtual-First Completion
+## 25. Definition of Virtual-First Completion
 
 The milestone is complete when:
 
 - `DONE-001`: Every issue in epic #89 is closed or explicitly moved to a later named
   milestone with a recorded decision.
-- `DONE-002`: The final automated acceptance flow passes from a clean environment.
-- `DONE-003`: CameraAgent raw evidence, lanes, local processing, upload, recovery, telemetry,
-  and authenticated operations are durable and bounded.
+- `DONE-002`: The standalone CameraAgent operational gate and final automated
+  two-host acceptance flow pass from clean environments.
+- `DONE-003`: CameraAgent schedule, versioned profiles, configurable sensor/readout,
+  raw evidence, calibration, environment, lanes, local processing, storage,
+  recovery, telemetry, and authenticated operations are durable and bounded
+  without LogicHost.
 - `DONE-004`: LogicHost reconstructs raw evidence, executes shared recipes, handles windows,
   supports reprocessing, and exposes authenticated history and operations.
-- `DONE-005`: Weather/cloud and transient scenarios run through ordinary raw paths.
+- `DONE-005`: Weather/cloud and transient scenarios run through ordinary raw
+  paths and local environmental observations remain available in standalone mode.
 - `DONE-006`: The software-complete virtual transient path persists and reviews versioned
   edge and central assessments.
 - `DONE-007`: Output checksums, numerical invariants, migrations, logs, telemetry, health,

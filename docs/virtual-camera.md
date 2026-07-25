@@ -46,6 +46,11 @@ Implement one `VirtualSkyCameraModule` selected through the ordinary
 as a monochrome or color camera. Named presets provide convenient physical
 camera fixtures without hard-coding the renderer to one model.
 
+Presets are examples, not the simulation type system. One custom profile may
+compose any compatible astronomical scene, installed optics, native sensor,
+readout mode, response, and quantization. No renderer branch may infer behavior
+from `VirtualAsi174`, `VirtualAsi178`, `VirtualAsi676`, or another preset name.
+
 Initial named profiles are:
 
 | Profile | Geometry | Sensor response | Canonical raw output |
@@ -70,9 +75,9 @@ provisional; see `docs/calibration/asi178mc-characterization.md`.
 The ASI676 profiles preserve the published sensor geometry and a provisional
 response envelope while clearly separating sample-derived lens coverage from
 assumed virtual projection and CFA phase. They are not physical calibrations;
-see `docs/calibration/asi676-characterization.md`. The intended MM ROI, 2x2
-binning, and video rate are hardware acquisition modes that the current rig
-profile cannot encode.
+see `docs/calibration/asi676-characterization.md`. Configuration-driven ROI and
+binning are required virtual readout behavior; physical supported-mode and
+video-rate evidence remain later hardware acceptance.
 
 The full comparison host profile is
 [`src/HVO.SkyMonitor.CameraAgent/cameraagent.asi178mc-comparison.json`](../src/HVO.SkyMonitor.CameraAgent/cameraagent.asi178mc-comparison.json). It
@@ -99,7 +104,8 @@ flowchart LR
     CD --> E[Exposure and spectral response]
     E --> F[Shot read dark and fixed-pattern noise]
     F --> G[Mono integration or CFA sampling]
-    G --> H[Quantization and raw CameraFrame]
+    G --> R[Configured native ROI and binning]
+    R --> H[Quantization packing and raw CameraFrame]
 ```
 
 ### Monochrome mode
@@ -107,7 +113,9 @@ flowchart LR
 - Accumulate stars, planets, background, and optional effects into a linear
   high-precision luminance buffer.
 - Apply exposure, gain, vignetting, response curve, and configured noise.
-- Quantize to unsigned 16-bit samples for `Mono16`.
+- Quantize to the configured 8-, 10-, 12-, 14-, or 16-bit meaningful range in
+  the declared container/packing. `Mono8` is native raw evidence when selected;
+  lower-depth samples in a 16-bit container remain truthful lower-depth data.
 - Do not apply display gamma, tone mapping, labels, or annotation to raw data.
 
 ### Color RGB compatibility mode
@@ -142,6 +150,44 @@ simulation parameter. Required configurable groups are:
 - Hot, dead, and stuck pixel maps.
 - Readout duration and optional row/readout effects.
 - Deterministic random seed.
+
+### Readout and quantization
+
+Native sensor geometry is separate from a configured readout mode. A readout
+records native-coordinate ROI origin/extent, X/Y bin factors, bin algorithm,
+output dimensions/stride, CFA origin/parity, meaningful sample depth, container
+depth, packing, native-to-stored code alignment/transfer, byte order, and known
+black/white levels with declared native or stored-code units. Right-aligned,
+left-shifted, full-range-scaled, and packed codes are distinct reconstruction
+facts.
+
+For an ROI `(x, y, width, height)` and integer bins `(binX, binY)`:
+
+```text
+outputWidth  = width / binX
+outputHeight = height / binY
+outputCx     = (nativeCx - x) / binX
+outputCy     = (nativeCy - y) / binY
+outputFx     = nativeFx / binX
+outputFy     = nativeFy / binY
+```
+
+ROI dimensions must divide exactly by the configured bins unless a separately
+versioned trim policy says otherwise. CFA alignment and output CFA semantics
+must be valid for the native origin, bins, and selected bin algorithm. Charge
+sum, digital sum, digital average, and any channel-preserving CFA mode are
+different versioned algorithms with explicit placement relative to noise and
+ADC quantization.
+
+Radial fisheye profiles require `binX == binY` while the shared projector uses a
+single radial focal scale and image-circle radius. Unequal bins require a future
+explicit anisotropic/elliptical projection and mask contract. Rectilinear modes
+may use unequal bins and their independently transformed `fx`/`fy` values.
+
+An ASI174 native 640 x 480 ROI binned 4 x 4 produces 160 x 120 output. Full
+1936 x 1216 geometry binned 4 x 4 produces 484 x 304. A 640 x 480 output at 4 x
+4 would require an impossible 2560 x 1920 ASI174 native ROI and must fail
+configuration validation.
 
 The first milestone may use documented heuristic defaults. It must not present
 them as measured IMX174 characteristics.
@@ -346,6 +392,11 @@ Fisheye configuration includes:
 - Sensor crop and horizon mask.
 - Boresight altitude/azimuth and camera roll.
 
+The calibrated profile is expressed in the native sensor coordinate system.
+Readout ROI/binning derives output principal point, focal scale, image circle,
+masks, and object/annotation coordinates through the same transform. Binning
+changes spatial sampling, not lens field of view; ROI crops the available field.
+
 Do not assume every fisheye follows the equidistant model. The Fujinon profile
 is configurable because its exact installed mapping and usable circle should be
 calibrated from real images.
@@ -396,19 +447,28 @@ identity. Reconstructable contracts must represent these requirements:
 
 ## Required Compatibility Matrix
 
-Every combination in the matrix must run through ordinary acquisition, preview,
-storage, telemetry, and shared-recipe conformance paths. Bayer execution follows
-the reconstructable frame-layout contract but remains a required virtual-first
-combination.
+Representative profiles must run through ordinary acquisition, raw ingress,
+preview, storage, telemetry, and shared-recipe conformance. These requirements
+prove the configuration model without benchmarking every Cartesian product.
 
-| Sensor | Fisheye | Rectilinear | Telescope |
-| --- | --- | --- | --- |
-| Mono16 | Required | Required | Required |
-| RGB24 color | Required | Required | Required |
-| Bayer16 color | Required | Required | Required |
+| ID | Required behavior |
+| --- | --- |
+| `MATRIX-001` | One module and contract path selects custom sensor/readout/optics without preset-name branches. |
+| `MATRIX-002` | Meaningful 8-, 10-, 12-, 14-, and 16-bit samples preserve explicit container, packing, code transfer, and levels. |
+| `MATRIX-003` | ASI174 Mono8 native ROI with 4 x 4 bin validates native 8-bit crop/bin geometry and transformed fisheye optics. |
+| `MATRIX-004` | Generic Mono10-in-16 validates ten right-aligned meaningful bits, stored-code levels, preview, and storage. |
+| `MATRIX-005` | ASI174 unpacked 12-in-16 validates meaningful/container-depth distinction and monochrome full frame. |
+| `MATRIX-006` | ASI178MC Bayer14-in-16 validates CFA phase, raw preservation, demosaic, and color preview. |
+| `MATRIX-007` | ASI676MC Bayer12-in-16 validates the full square CFA path with provisional 2.5 mm fisheye. |
+| `MATRIX-008` | Generic Mono16 validates the complete range with fisheye, rectilinear, and telescope fixtures. |
+| `MATRIX-009` | Rendered RGB24 validates explicit compatibility output with fisheye and rectilinear fixtures. |
+| `MATRIX-010` | CFA raw profiles pass ordinary ingress, calibration-capability, preview, storage, and telemetry paths without altering raw bytes. |
+| `MATRIX-011` | Reduced deterministic fixtures run in protected CI with geometry/statistical/checksum invariants. |
+| `MATRIX-012` | Selected full-resolution profiles run output/resource checks on changed paths and comparative composition only at named milestones. |
 
-CI uses reduced dimensions with the same aspect ratio and optics. Full
-1936 × 1216 profiles validate realistic memory, performance, and image output.
+Reduced fixtures run in ordinary CI. Selected full-resolution profiles validate
+output and bounded-resource behavior when a full-frame path changes; comparative
+composition benchmarks run at named milestone gates.
 
 ## Deterministic Fixture Manifest
 
@@ -424,7 +484,10 @@ manifest containing:
   enabled or omitted astronomy effect: precession, nutation, annual aberration,
   proper motion, parallax, and refraction.
 - Ephemeris implementation and version.
-- Sensor dimensions, pixel size, response mode, format, and CFA pattern.
+- Native sensor dimensions, pixel size, response mode, format, and CFA pattern.
+- Native ROI, bin factors/algorithm, output dimensions/stride, CFA origin/parity,
+  meaningful sample depth, container depth, packing, code transfer/alignment,
+  byte order, and level units/values.
 - Lens kind, mapping, focal length, fields of view, intrinsics, and principal
   point.
 - Boresight altitude/azimuth, roll, flip, crop, and horizon mask.
@@ -619,8 +682,11 @@ Required deterministic tests cover:
 - Magnitude/flux, point-spread symmetry/energy/edge behavior, masks,
   vignetting, zero/maximum exposure, gain scaling, clipping, seeded/different
   noise, malformed layouts, and overflow rejection.
-- Mono16 byte order, RGB24 channel order, CFA phase/raw preservation, and
-  geometry parity between sensor modes.
+- Mono8 plus unpacked 10/12/14/16-bit sample/container behavior, byte order,
+  RGB24 channel order, CFA phase/raw preservation, and geometry parity between
+  sensor modes.
+- Native ROI/bin validation, bin algorithm semantics, transformed
+  principal/focal/image-circle geometry, and impossible-mode rejection.
 - Configuration-driven module creation, reduced/full frame sizes, fixed
   checksums/statistics/centroids, time/orientation/setpoint behavior, ordinary
   pipeline persistence/telemetry/upload, and failure before capture for invalid
@@ -651,6 +717,10 @@ accuracy is suitable for visualization, not precision astrometry or navigation.
 
 - Mono, RGB color, and Bayer profiles produce deterministic images for identical
   input across the required lens matrix.
+- Sample precision, container precision, packing, ROI, and binning are selected
+  by configuration and preserved truthfully in raw descriptors.
+- Changing ROI or binning changes sampling and field crop through the declared
+  native-to-output transform; it does not silently select another lens model.
 - Fisheye and rectilinear/telescope profiles use the same celestial scene and
   shared projector contracts.
 - Changing sensor mode changes sensor response, not celestial geometry.
