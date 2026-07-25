@@ -43,7 +43,7 @@ Each raw file records branch, clean state, harness and production commits, assem
 
 ## Summary
 
-Run the summary from the clean candidate harness revision after both five-trial sets are present. The summary resolves every revision as a Git commit, verifies ancestry, rejects overlapping processes or harness drift, applies predeclared metric-specific budgets and N/A dispositions, and creates `docs/validation/issue-170-performance-summary.json`.
+Run the summary from a clean descendant of the candidate harness revision after both five-trial sets are present. The descendant may change only allowlisted evidence/summary support and is recorded as `SummaryCommit`; the summary resolves every revision as a Git commit, verifies ancestry, rejects overlapping processes or harness drift, applies predeclared metric-specific budgets and N/A dispositions, and creates `docs/validation/issue-170-performance-summary.json`.
 
 ```bash
 DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_CANDIDATE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_BASELINE_REVISION=$BASELINE_HARNESS HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION=$BASELINE_PRODUCTION dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~Issue170PerformanceSummaryTests.FiveTrialEvidence_WritesDeterministicReviewedSummary"
