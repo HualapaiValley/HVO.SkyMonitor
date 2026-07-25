@@ -451,6 +451,16 @@ public sealed class Issue170PerformanceSummaryTests
         string path,
         PairedComparison comparison)
     {
+        if (path.Contains("faultBacklog", StringComparison.OrdinalIgnoreCase))
+        {
+            if (comparison.AbsoluteMedianChange != 0)
+            {
+                throw new InvalidDataException($"{path} changed across the fixed fault workload.");
+            }
+            return new MetricDisposition(path, "exact fixed-fault backlog equality", comparison.BaselineMedian,
+                comparison.CandidateMedian, 0, false,
+                "The injected durable backlog is non-zero by design and must retain the baseline workload shape.");
+        }
         if (path.Contains("Backlog", StringComparison.OrdinalIgnoreCase))
         {
             if (comparison.BaselineMedian != comparison.CandidateMedian || comparison.CandidateMedian != 0)
