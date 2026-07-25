@@ -35,6 +35,29 @@ public sealed class TransientDetectorInputTests
     }
 
     [TestMethod]
+    public void RightAligned12In16WithNativeLevelsBorrowsExactMemory()
+    {
+        var value = TransientTestData.CreateDetectorSource(CameraPixelFormat.Mono16);
+        var artifact = value.Artifact with
+        {
+            Layout = value.Artifact.Layout! with
+            {
+                SampleDepthBits = 12,
+                StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+                LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+            }
+        };
+
+        var result = TransientDetectorInputFactory.Create(artifact, value.Source, value.Levels);
+
+        Assert.IsTrue(result.Validation.IsValid, result.Validation.ReasonCode);
+        Assert.IsNotNull(result.Input);
+        Assert.AreEqual(TransientDetectorInputOwnership.Borrowed, result.Input.Ownership);
+        Assert.AreEqual(value.Levels, result.Input.Descriptor.Levels);
+        CollectionAssert.AreEqual(artifact.Payload.ToArray(), result.Input.Pixels.ToArray());
+    }
+
+    [TestMethod]
     public void Rggb16UsesOneBoundedCellAverageCopyWithoutMutatingSource()
     {
         var value = TransientTestData.CreateDetectorSource(CameraPixelFormat.BayerRggb16);
@@ -212,6 +235,18 @@ public sealed class TransientDetectorInputTests
             TransientDetectorInputReasonCodes.InvalidByteOrder);
         AssertLayoutReason(value, value.Artifact.Layout! with { SampleDepthBits = 12 },
             TransientDetectorInputReasonCodes.InvalidSampleDepth);
+        AssertLayoutReason(value, value.Artifact.Layout! with
+        {
+            SampleDepthBits = 12,
+            StoredCodeTransform = FrameStoredCodeTransform.LeftShiftedV1,
+            LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+        }, TransientDetectorInputReasonCodes.InvalidSampleDepth);
+        AssertLayoutReason(value, value.Artifact.Layout! with
+        {
+            SampleDepthBits = 12,
+            StoredCodeTransform = FrameStoredCodeTransform.FullRangeScaledV1,
+            LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+        }, TransientDetectorInputReasonCodes.InvalidSampleDepth);
         AssertLayoutReason(value, value.Artifact.Layout! with { Packing = FrameSamplePacking.Packed },
             TransientDetectorInputReasonCodes.InvalidPacking);
         AssertLayoutReason(value, value.Artifact.Layout! with { CfaPattern = ColorFilterArrayPattern.Rggb },

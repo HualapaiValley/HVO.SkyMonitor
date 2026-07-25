@@ -173,7 +173,12 @@ public static class TransientDetectorInputFactory
         {
             return Failure(TransientDetectorInputReasonCodes.InvalidByteOrder, "artifact.layout.byteOrder");
         }
-        if (layout.SampleDepthBits != 16 || layout.ContainerDepthBits != 16)
+        var storedCodesMatchLevels = layout.SampleDepthBits == layout.ContainerDepthBits ||
+            layout.StoredCodeTransform == FrameStoredCodeTransform.RightAlignedV1 &&
+            layout.LevelCodeSpace is FrameLevelCodeSpace.NativeSample or FrameLevelCodeSpace.StoredContainer ||
+            layout.StoredCodeTransform is FrameStoredCodeTransform.LeftShiftedV1 or FrameStoredCodeTransform.FullRangeScaledV1 &&
+            layout.LevelCodeSpace == FrameLevelCodeSpace.StoredContainer;
+        if (layout.ContainerDepthBits != 16 || !storedCodesMatchLevels)
         {
             return Failure(TransientDetectorInputReasonCodes.InvalidSampleDepth, "artifact.layout.sampleDepthBits");
         }

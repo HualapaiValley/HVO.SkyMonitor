@@ -23,10 +23,6 @@ public sealed class ProjectionCoverageTests
             validCircle with { FocalLengthYPixels = 0 },
             validCircle with { WidthPixels = 0 },
             validCircle with { HeightPixels = 0 },
-            validCircle with { PrincipalPointX = -1 },
-            validCircle with { PrincipalPointX = 101 },
-            validCircle with { PrincipalPointY = -1 },
-            validCircle with { PrincipalPointY = 81 },
             validCircle with { BoresightAltitudeDegrees = -91 },
             validCircle with { BoresightAltitudeDegrees = 91 },
             validCircle with { BoresightAzimuthDegrees = double.NaN },
@@ -115,17 +111,30 @@ public sealed class ProjectionCoverageTests
             new(1, 1, 1, 1, RollDegrees: double.NaN),
             new(1, 1, 0, 1), new(1, 1, 1, 0),
             new(1, 1, 1, 1, WidthPixels: -1), new(1, 1, 1, 1, HeightPixels: -1),
-            new(1, 1, 1, 1, WidthPixels: 10), new(1, 1, 1, 1, HeightPixels: 10),
-            new(-1, 1, 1, 1, WidthPixels: 10, HeightPixels: 10),
-            new(11, 1, 1, 1, WidthPixels: 10, HeightPixels: 10),
-            new(1, -1, 1, 1, WidthPixels: 10, HeightPixels: 10),
-            new(1, 11, 1, 1, WidthPixels: 10, HeightPixels: 10)
+            new(1, 1, 1, 1, WidthPixels: 10), new(1, 1, 1, 1, HeightPixels: 10)
         ];
 
         foreach (var context in invalid)
         {
             Assert.Throws<ArgumentOutOfRangeException>(context.Validate);
         }
+    }
+
+    [TestMethod]
+    public void EquidistantContext_AllowsOffSensorPrincipalPointForCroppedReadout()
+    {
+        var context = new EquidistantProjectionContext(
+            142, 60, 94.83075, 148.96, WidthPixels: 120, HeightPixels: 120);
+
+        context.Validate();
+        var projector = new EquidistantFisheyeProjector(context);
+        var direction = projector.Unproject(new PixelPoint(119, 60));
+
+        Assert.IsNotNull(direction);
+        var roundTrip = projector.Project(direction.Value);
+        Assert.IsNotNull(roundTrip);
+        Assert.AreEqual(119, roundTrip.Value.X, 1e-12);
+        Assert.AreEqual(60, roundTrip.Value.Y, 1e-12);
     }
 
     [TestMethod]

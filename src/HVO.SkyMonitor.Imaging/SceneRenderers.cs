@@ -158,13 +158,13 @@ public static class Asi174MmSensorModel
     }
 }
 
-/// <summary>Published ASI178MC gain and read-noise response mapped to its full-range RAW16 container.</summary>
+/// <summary>Published ASI178MC gain and read-noise response in native 14-bit sample codes.</summary>
 public static class Asi178McSensorModel
 {
     private static readonly (double Gain, double ReadNoise)[] ReadNoisePoints =
         [(0, 2.25), (50, 1.92), (100, 1.72), (150, 1.57), (200, 1.44), (270, 1.37), (300, 1.37), (400, 1.35)];
 
-    public const string Version = "zwo-asi178mc-14bit-raw16-v1";
+    public const string Version = "zwo-asi178mc-14bit-raw16-v2";
 
     public static MonoSensorResponse Resolve(double gainControl, double blackLevelContainerAdu = 64)
     {
@@ -176,11 +176,13 @@ public static class Asi178McSensorModel
         var nativeElectronsPerAdu = 0.916 * Math.Pow(10, -gainControl / 200);
         return new MonoSensorResponse
         {
-            AdcBitDepth = 16,
+            AdcBitDepth = 14,
             FullWellElectrons = Math.Min(15_000, 16_383 * nativeElectronsPerAdu),
-            ElectronsPerAdu = nativeElectronsPerAdu / 4,
+            ElectronsPerAdu = nativeElectronsPerAdu,
             ReadNoiseElectrons = InterpolateReadNoise(gainControl),
-            BlackLevelAdu = blackLevelContainerAdu
+            BlackLevelAdu = Math.Round(
+                blackLevelContainerAdu * 16_383 / ushort.MaxValue,
+                MidpointRounding.AwayFromZero)
         };
     }
 
@@ -296,6 +298,8 @@ public sealed record BayerRggb16RenderOptions : LinearSceneRenderOptions
     public double FallbackColorIndex { get; init; } = 0.65;
     public RgbChannelSettings ChannelResponse { get; init; } = new(0.94, 1, 0.8);
     public MonoSensorResponse SensorResponse { get; init; } = Asi178McSensorModel.Resolve(0);
+    public FrameStoredCodeTransform StoredCodeTransform { get; init; } = FrameStoredCodeTransform.RightAlignedV1;
+    public int ContainerDepthBits { get; init; } = 16;
 
     public override void Validate()
     {
@@ -307,6 +311,14 @@ public sealed record BayerRggb16RenderOptions : LinearSceneRenderOptions
         ChannelResponse.Validate();
         ArgumentNullException.ThrowIfNull(SensorResponse);
         SensorResponse.Validate();
+        if (!Enum.IsDefined(StoredCodeTransform) || ContainerDepthBits is < 1 or > 16 ||
+            StoredCodeTransform == FrameStoredCodeTransform.IdentityV1 && SensorResponse.AdcBitDepth != ContainerDepthBits ||
+            StoredCodeTransform == FrameStoredCodeTransform.RightAlignedV1 && SensorResponse.AdcBitDepth > ContainerDepthBits ||
+            StoredCodeTransform is FrameStoredCodeTransform.LeftShiftedV1 or FrameStoredCodeTransform.FullRangeScaledV1 &&
+            SensorResponse.AdcBitDepth >= ContainerDepthBits)
+        {
+            throw new ArgumentOutOfRangeException(nameof(StoredCodeTransform));
+        }
     }
 }
 
@@ -354,17 +366,23 @@ public static class Mono16SceneRenderer
     }
 
     /// <summary>Renders background, PSFs, vignetting, exposure/gain, noise/defects, then clamps and quantizes.</summary>
-    public static SceneRenderResult Render(VisibleScene scene, ImageLayout layout, Mono16SceneRenderOptions? options = null)
+    public static SceneRenderResult Render(
+        VisibleScene scene,
+        ImageLayout layout,
+        Mono16SceneRenderOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         Validate(scene, layout, CameraPixelFormat.Mono16, options ??= new());
-        var transient = CreateTransientSignal(scene, layout, options);
+        var transient = CreateTransientSignal(scene, layout, options, cancellationToken);
         var plane = RenderCore(
             scene, layout, options, static _ => 1d, out var geometry,
             transient: transient,
-            transientChannel: -1);
+            transientChannel: -1,
+            cancellationToken: cancellationToken);
         var pixels = new byte[layout.RequiredByteLength];
         var maximumAdu = options.SensorResponse?.MaximumAdu ?? ushort.MaxValue;
-        var statistics = QuantizeMono16(scene, layout, plane, pixels, maximumAdu, transient);
+        var statistics = QuantizeMono16(scene, layout, plane, pixels, maximumAdu, transient, cancellationToken);
         var algorithmVersion = options.SensorResponse is null ? AlgorithmVersion : ElectronDomainAlgorithmVersion;
         return new SceneRenderResult(
             pixels,
@@ -383,13 +401,16 @@ public static class Mono16SceneRenderer
         CloudPixelEffect[]? cloudEffects = null,
         VirtualTransientFrameSignal? transient = null,
         int transientChannel = 1,
-        double transientSkyScale = 1)
+        double transientSkyScale = 1,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var length = checked(layout.Width * layout.Height);
         var rates = new double[length];
         var projection = scene.Request.Projection;
         for (var y = 0; y < layout.Height; y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = 0; x < layout.Width; x++)
             {
                 if (InsideAperture(x, y, projection))
@@ -402,6 +423,7 @@ public static class Mono16SceneRenderer
         var footprints = new List<RenderedObjectGeometry>(scene.Objects.Count);
         foreach (var item in scene.Objects)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var flux = RelativeFlux(item.Magnitude) * options.MagnitudeZeroElectronsPerSecond * objectScale(item);
             if (!double.IsFinite(item.Pixel.X) || !double.IsFinite(item.Pixel.Y) || !double.IsFinite(flux) || flux < 0)
             {
@@ -413,12 +435,13 @@ public static class Mono16SceneRenderer
 
         if (transient is null)
         {
-            RenderSensorPlane(scene, layout, options, rates, cloudEffects);
+            RenderSensorPlane(scene, layout, options, rates, cloudEffects, cancellationToken);
         }
         else
         {
             RenderSensorPlaneWithTransient(
-                scene, layout, options, rates, cloudEffects, transient, transientChannel, transientSkyScale);
+                scene, layout, options, rates, cloudEffects, transient, transientChannel, transientSkyScale,
+                cancellationToken);
         }
 
         ApplyDefects(rates, layout.Width, layout.Height, projection, options.Defects);
@@ -431,7 +454,8 @@ public static class Mono16SceneRenderer
         ImageLayout layout,
         LinearSceneRenderOptions options,
         double[] rates,
-        CloudPixelEffect[]? cloudEffects)
+        CloudPixelEffect[]? cloudEffects,
+        CancellationToken cancellationToken)
     {
         var projection = scene.Request.Projection;
         var random = new StableRandom(options.Seed);
@@ -443,6 +467,7 @@ public static class Mono16SceneRenderer
             : ProjectorFactory.Create(projection);
         for (var y = 0; y < layout.Height; y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = 0; x < layout.Width; x++)
             {
                 var index = y * layout.Width + x;
@@ -495,7 +520,8 @@ public static class Mono16SceneRenderer
         CloudPixelEffect[]? cloudEffects,
         VirtualTransientFrameSignal transient,
         int transientChannel,
-        double transientSkyScale)
+        double transientSkyScale,
+        CancellationToken cancellationToken)
     {
         var projection = scene.Request.Projection;
         var random = new StableRandom(options.Seed);
@@ -507,6 +533,7 @@ public static class Mono16SceneRenderer
             : ProjectorFactory.Create(projection);
         for (var y = 0; y < layout.Height; y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = 0; x < layout.Width; x++)
             {
                 var index = y * layout.Width + x;
@@ -567,13 +594,15 @@ public static class Mono16SceneRenderer
     internal static CloudPixelEffect[] CreateCloudEffects(
         VisibleScene scene,
         ImageLayout layout,
-        VirtualCloudRenderContext cloud)
+        VirtualCloudRenderContext cloud,
+        CancellationToken cancellationToken = default)
     {
         var projection = scene.Request.Projection;
         var projector = ProjectorFactory.Create(projection);
         var effects = new CloudPixelEffect[checked(layout.Width * layout.Height)];
         for (var y = 0; y < layout.Height; y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = 0; x < layout.Width; x++)
             {
                 if (InsideAperture(x, y, projection))
@@ -588,7 +617,8 @@ public static class Mono16SceneRenderer
     internal static VirtualTransientFrameSignal? CreateTransientSignal(
         VisibleScene scene,
         ImageLayout layout,
-        LinearSceneRenderOptions options)
+        LinearSceneRenderOptions options,
+        CancellationToken cancellationToken = default)
     {
         if (options.Transient is null)
         {
@@ -599,9 +629,10 @@ public static class Mono16SceneRenderer
                 layout,
                 options.Transient,
                  options.MagnitudeZeroElectronsPerSecond,
-                 options.PsfSigmaPixels,
+                options.PsfSigmaPixels,
                 options.PsfRadiusPixels,
-                options.Cloud);
+                options.Cloud,
+                cancellationToken);
         return signal.ActivePixelCount == 0 ? null : signal;
     }
 
@@ -680,12 +711,14 @@ public static class Mono16SceneRenderer
         double[] values,
         byte[] pixels,
         int maximumAdu,
-        VirtualTransientFrameSignal? transient)
+        VirtualTransientFrameSignal? transient,
+        CancellationToken cancellationToken)
     {
         var accumulator = new StatisticsAccumulator();
         var projection = scene.Request.Projection;
         for (var y = 0; y < layout.Height; y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = 0; x < layout.Width; x++)
             {
                 var index = y * layout.Width + x;
@@ -767,21 +800,26 @@ public static class Rgb24CompatibilityRenderer
     public const string CompatibilityLabel = "RGB24 compatibility (non-Bayer), packed R,G,B";
 
     /// <summary>Renders packed red, green, blue bytes using B-V color, response, and white-balance factors.</summary>
-    public static SceneRenderResult Render(VisibleScene scene, ImageLayout layout, Rgb24CompatibilityRenderOptions? options = null)
+    public static SceneRenderResult Render(
+        VisibleScene scene,
+        ImageLayout layout,
+        Rgb24CompatibilityRenderOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         Mono16SceneRenderer.Validate(scene, layout, CameraPixelFormat.Rgb24, options ??= new());
         var channels = new double[3][];
         var cloudEffects = options.Cloud is null || !options.Cloud.RequiresEvaluation
             ? null
-            : Mono16SceneRenderer.CreateCloudEffects(scene, layout, options.Cloud);
-        var transient = Mono16SceneRenderer.CreateTransientSignal(scene, layout, options);
+            : Mono16SceneRenderer.CreateCloudEffects(scene, layout, options.Cloud, cancellationToken);
+        var transient = Mono16SceneRenderer.CreateTransientSignal(scene, layout, options, cancellationToken);
         IReadOnlyList<RenderedObjectGeometry>? geometry = null;
         for (var channel = 0; channel < channels.Length; channel++)
         {
             var selected = channel;
             channels[channel] = Mono16SceneRenderer.RenderCore(scene, layout, options with { Seed = unchecked(options.Seed + channel * 104729) },
                 item => ColorFactors(item.ColorIndex ?? options.FallbackColorIndex)[selected], out var currentGeometry,
-                cloudEffects, transient, selected);
+                cloudEffects, transient, selected, cancellationToken: cancellationToken);
             geometry ??= currentGeometry;
         }
 
@@ -796,6 +834,7 @@ public static class Rgb24CompatibilityRenderer
         var projection = scene.Request.Projection;
         for (var y = 0; y < layout.Height; y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = 0; x < layout.Width; x++)
             {
                 var index = y * layout.Width + x;
@@ -856,15 +895,19 @@ public static class BayerRggb16Renderer
     public const string CompatibilityLabel = "Virtual RGGB RAW16 sensor (non-demosaiced)";
 
     public static SceneRenderResult Render(
-        VisibleScene scene, ImageLayout layout, BayerRggb16RenderOptions? options = null)
+        VisibleScene scene,
+        ImageLayout layout,
+        BayerRggb16RenderOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         Mono16SceneRenderer.Validate(scene, layout, CameraPixelFormat.BayerRggb16, options ??= new());
         var responses = new[] { options.ChannelResponse.Red, options.ChannelResponse.Green, options.ChannelResponse.Blue };
         var channels = new double[3][];
         var cloudEffects = options.Cloud is null || !options.Cloud.RequiresEvaluation
             ? null
-            : Mono16SceneRenderer.CreateCloudEffects(scene, layout, options.Cloud);
-        var transient = Mono16SceneRenderer.CreateTransientSignal(scene, layout, options);
+            : Mono16SceneRenderer.CreateCloudEffects(scene, layout, options.Cloud, cancellationToken);
+        var transient = Mono16SceneRenderer.CreateTransientSignal(scene, layout, options, cancellationToken);
         IReadOnlyList<RenderedObjectGeometry>? geometry = null;
         for (var channel = 0; channel < channels.Length; channel++)
         {
@@ -879,7 +922,8 @@ public static class BayerRggb16Renderer
                 cloudEffects,
                 transient,
                 selected,
-                responses[selected]);
+                responses[selected],
+                cancellationToken);
             geometry ??= currentGeometry;
         }
 
@@ -887,8 +931,11 @@ public static class BayerRggb16Renderer
         var statistics = new StatisticsAccumulator();
         var projection = scene.Request.Projection;
         var maximum = checked((ushort)options.SensorResponse.MaximumAdu);
+        var codeMapper = new StoredCodeMapper(
+            options.StoredCodeTransform, options.SensorResponse.AdcBitDepth, options.ContainerDepthBits);
         for (var y = 0; y < layout.Height; y++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var x = 0; x < layout.Width; x++)
             {
                 var index = y * layout.Width + x;
@@ -904,7 +951,7 @@ public static class BayerRggb16Renderer
                     (1, 1) => 2,
                     _ => 1
                 };
-                var sample = statistics.AddAndQuantize(channels[channel][index], maximum);
+                var sample = statistics.AddAndQuantize(channels[channel][index], maximum, codeMapper);
                 var offset = y * layout.StrideBytes + x * 2;
                 pixels[offset] = (byte)sample;
                 pixels[offset + 1] = (byte)(sample >> 8);
@@ -912,6 +959,19 @@ public static class BayerRggb16Renderer
         }
 
         var algorithmVersion = Mono16SceneRenderer.AppendScenarioVersions(AlgorithmVersion, options);
+        if (options.StoredCodeTransform == FrameStoredCodeTransform.FullRangeScaledV1)
+        {
+            algorithmVersion += "+full-range-scaled-v1";
+        }
+        else if (options.StoredCodeTransform == FrameStoredCodeTransform.LeftShiftedV1)
+        {
+            algorithmVersion += "+left-shifted-v1";
+        }
+        else if (options.StoredCodeTransform == FrameStoredCodeTransform.RightAlignedV1 &&
+            options.SensorResponse.AdcBitDepth < options.ContainerDepthBits)
+        {
+            algorithmVersion += "+right-aligned-v1";
+        }
         return new SceneRenderResult(pixels, algorithmVersion, CompatibilityLabel, statistics.Create(), geometry!);
     }
 }
@@ -945,9 +1005,49 @@ internal sealed class StatisticsAccumulator
         return (ushort)Math.Clamp(Math.Round(value, MidpointRounding.AwayFromZero), 0, maximum);
     }
 
+    public ushort AddAndQuantize(double value, ushort maximum, StoredCodeMapper codeMapper)
+    {
+        var native = (ushort)Math.Clamp(Math.Round(value, MidpointRounding.AwayFromZero), 0, maximum);
+        var stored = codeMapper.Map(native);
+        _count++;
+        _minimum = Math.Min(_minimum, stored);
+        _maximum = Math.Max(_maximum, stored);
+        _sum += stored;
+        if (value < 0)
+        {
+            _clippedLow++;
+        }
+        else if (value > maximum)
+        {
+            _clippedHigh++;
+        }
+
+        return stored;
+    }
+
     public RenderStatistics Create()
         => new(_count, _count == 0 ? 0 : _minimum, _count == 0 ? 0 : _maximum, _count == 0 ? 0 : _sum / _count,
             _clippedLow, _clippedHigh);
+}
+
+internal readonly record struct StoredCodeMapper(
+    FrameStoredCodeTransform Transform,
+    int SampleDepthBits,
+    int ContainerDepthBits)
+{
+    internal ushort Map(ushort value)
+    {
+        var mapped = Transform switch
+        {
+            FrameStoredCodeTransform.IdentityV1 or FrameStoredCodeTransform.RightAlignedV1 => value,
+            FrameStoredCodeTransform.LeftShiftedV1 => value << (ContainerDepthBits - SampleDepthBits),
+            FrameStoredCodeTransform.FullRangeScaledV1 => checked((int)(
+                ((long)value * ((1 << ContainerDepthBits) - 1) + ((1 << SampleDepthBits) - 1) / 2) /
+                ((1 << SampleDepthBits) - 1))),
+            _ => throw new InvalidOperationException("The stored-code transform is invalid.")
+        };
+        return checked((ushort)mapped);
+    }
 }
 
 internal sealed class StableRandom

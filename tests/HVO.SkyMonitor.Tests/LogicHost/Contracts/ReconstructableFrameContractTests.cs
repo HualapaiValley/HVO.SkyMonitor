@@ -28,6 +28,7 @@ public sealed class ReconstructableFrameContractTests
         Assert.IsTrue(result.IsValid);
         CollectionAssert.AreEqual(payload, frame!.PixelData.ToArray());
         Assert.AreEqual(payload.Length, frame.StrideBytes);
+        Assert.AreEqual(descriptor.Layout, frame.Layout);
     }
 
     private static ArtifactManifestV2 CreateManifest(

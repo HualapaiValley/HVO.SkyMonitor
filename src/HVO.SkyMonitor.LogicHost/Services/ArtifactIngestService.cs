@@ -36,7 +36,8 @@ internal sealed record ArtifactIngestManifest(
     string RecipeVersion,
     string IdempotencyKey,
     SceneProvenance? Scene,
-    ReconstructionDescriptor? Descriptor)
+    ReconstructionDescriptor? Descriptor,
+    CaptureManifestCompleteness Completeness)
 {
     public bool IsReconstructable => Descriptor is not null;
 
@@ -49,7 +50,7 @@ internal sealed record ArtifactIngestManifest(
             return new(
                 legacy.SchemaVersion, legacy.AgentId, legacy.ArtifactId, legacy.FrameId, legacy.Role,
                 legacy.MediaType, legacy.ByteLength, legacy.ChecksumSha256, legacy.CapturedAtUtc,
-                legacy.RecipeVersion, legacy.IdempotencyKey, legacy.Scene, null);
+                legacy.RecipeVersion, legacy.IdempotencyKey, legacy.Scene, null, document.Completeness);
         }
         var current = document.Manifest ?? throw new ArgumentException("Manifest document has no supported manifest.", nameof(document));
         var validation = current.Validate();
@@ -71,7 +72,8 @@ internal sealed record ArtifactIngestManifest(
             descriptor.Artifact.Recipe.ImplementationVersion,
             current.IdempotencyKey,
             current.Scene,
-            descriptor);
+            descriptor,
+            document.Completeness);
     }
 }
 
@@ -624,6 +626,7 @@ internal sealed partial class ArtifactIngestService(
             {
                 var existing = await dbContext.CentralArtifacts
                     .Include(artifact => artifact.IngestIdentities)
+                    .Include(artifact => artifact.Layout)
                     .Include(artifact => artifact.Sources)
                     .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
                     .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
@@ -902,9 +905,9 @@ internal sealed partial class ArtifactIngestService(
     }
 
     private static bool ShouldScheduleDerivatives(CentralArtifact artifact)
-        => artifact.ReconstructionState is CentralReconstructionState.Complete or CentralReconstructionState.LegacyIncomplete
-            && (artifact.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion
-                || artifact.Role == FrameArtifactRole.Raw);
+        => artifact.ReconstructionState == CentralReconstructionState.Complete &&
+            (artifact.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion ||
+                artifact.Role == FrameArtifactRole.Raw);
 
     private async Task ApplyReconstructionAsync(
         CentralFrame frame,
@@ -998,6 +1001,19 @@ internal sealed partial class ArtifactIngestService(
             CfaPattern = descriptor.Layout.CfaPattern.ToString(),
             BlackLevel = descriptor.Layout.BlackLevel,
             WhiteLevel = descriptor.Layout.WhiteLevel,
+            StoredCodeTransform = descriptor.Layout.StoredCodeTransform?.ToString(),
+            LevelCodeSpace = descriptor.Layout.LevelCodeSpace?.ToString(),
+            NativeWidth = descriptor.Layout.Readout?.NativeWidth,
+            NativeHeight = descriptor.Layout.Readout?.NativeHeight,
+            RoiX = descriptor.Layout.Readout?.RoiX,
+            RoiY = descriptor.Layout.Readout?.RoiY,
+            RoiWidth = descriptor.Layout.Readout?.RoiWidth,
+            RoiHeight = descriptor.Layout.Readout?.RoiHeight,
+            BinX = descriptor.Layout.Readout?.BinX,
+            BinY = descriptor.Layout.Readout?.BinY,
+            BinningAlgorithm = descriptor.Layout.Readout?.BinningAlgorithm.ToString(),
+            CfaOriginX = descriptor.Layout.Readout?.CfaOriginX,
+            CfaOriginY = descriptor.Layout.Readout?.CfaOriginY,
             ByteLength = descriptor.Layout.ByteLength
         };
         artifact.Recipe = new CentralArtifactRecipe
@@ -1027,7 +1043,7 @@ internal sealed partial class ArtifactIngestService(
                 ResolvedArtifact = resolved
             });
         }
-        SetReconstructionState(artifact, rigProfile is not null);
+        SetReconstructionState(artifact, rigProfile is not null, manifestCompleteness: manifest.Completeness);
         AddIfDetached(frame.Timing);
         AddIfDetached(frame.Control);
         AddIfDetached(frame.Location);
@@ -1063,6 +1079,7 @@ internal sealed partial class ArtifactIngestService(
 
         var waitingSources = await dbContext.CentralArtifactSources
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Frame)
+            .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Layout)
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Sources)
             .Where(source => source.SourceArtifactId == artifact.ArtifactId
                 && source.ResolvedCentralArtifactId == null
@@ -1337,7 +1354,11 @@ internal sealed partial class ArtifactIngestService(
                 source.ResolvedArtifact = resolved;
             }
         }
-        SetReconstructionState(artifact, frame.DeviceRigProfileId.HasValue, unavailableSource: unavailableSource);
+        SetReconstructionState(
+            artifact,
+            frame.DeviceRigProfileId.HasValue,
+            unavailableSource: unavailableSource,
+            manifestCompleteness: manifest.Completeness);
         artifact.ReconciledAtUtc = reconciledAtUtc;
     }
 
@@ -1409,8 +1430,19 @@ internal sealed partial class ArtifactIngestService(
         CentralArtifact artifact,
         bool hasRigProfile,
         bool? hasUnresolvedSource = null,
-        bool unavailableSource = false)
+        bool unavailableSource = false,
+        CaptureManifestCompleteness? manifestCompleteness = null)
     {
+        if (manifestCompleteness == CaptureManifestCompleteness.LegacyIncomplete ||
+            artifact.Layout is { SampleDepthBits: var sampleDepth, ContainerDepthBits: var containerDepth } layout &&
+            sampleDepth < containerDepth && (layout.StoredCodeTransform is null || layout.LevelCodeSpace is null))
+        {
+            artifact.ReconstructionState = CentralReconstructionState.LegacyIncomplete;
+            artifact.StateReasonCode = "layout.stored-code-ambiguous";
+            artifact.ReferenceRetryCount = 0;
+            artifact.ReferenceRetryAtUtc = null;
+            return;
+        }
         if (!hasRigProfile)
         {
             ResetReferenceRetryIfNewlyPending(artifact);

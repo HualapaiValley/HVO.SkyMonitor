@@ -321,7 +321,10 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
             currentLayout.Packing == referenceLayout.Packing &&
             currentLayout.CfaPattern == referenceLayout.CfaPattern &&
             currentLayout.BlackLevel == referenceLayout.BlackLevel &&
-            currentLayout.WhiteLevel == referenceLayout.WhiteLevel;
+            currentLayout.WhiteLevel == referenceLayout.WhiteLevel &&
+            currentLayout.StoredCodeTransform == referenceLayout.StoredCodeTransform &&
+            currentLayout.LevelCodeSpace == referenceLayout.LevelCodeSpace &&
+            currentLayout.Readout == referenceLayout.Readout;
     }
 
     private static CloudAssessmentCalibrationV1? CreateCalibration(

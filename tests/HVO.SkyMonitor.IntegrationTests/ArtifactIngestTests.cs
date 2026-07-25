@@ -173,6 +173,18 @@ public sealed class ArtifactIngestTests
 
         var payload = new byte[] { 1, 2, 3, 4 };
         var manifest = CreateManifestV2(deviceId, rig, payload, captureSequence: 7);
+        manifest = manifest with
+        {
+            Descriptor = manifest.Descriptor with
+            {
+                Layout = manifest.Descriptor.Layout with
+                {
+                    Readout = new FrameReadoutDescriptor(
+                        4, 4, 0, 0, 4, 4, 2, 2,
+                        FrameBinningAlgorithm.DigitalAverageV1, null, null)
+                }
+            }
+        };
         using var client = fixture.Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
 
@@ -198,9 +210,15 @@ public sealed class ArtifactIngestTests
         artifact.Frame.DeviceRigProfileId.Should().Be(historicalProfileId);
         artifact.Frame.RigProfileVersion.Should().Be(1);
         artifact.Layout!.StrideBytes.Should().Be(2);
+        artifact.Layout.StoredCodeTransform.Should().BeNull();
+        artifact.Layout.LevelCodeSpace.Should().BeNull();
         artifact.Recipe!.OptionsSha256.Should().Be(manifest.Descriptor.Artifact.Recipe.OptionsSha256);
         artifact.IngestIdentities.Should().ContainSingle(item => item.IdempotencyKey == manifest.IdempotencyKey);
         var persistedDescriptor = CentralReconstructionDescriptorFactory.Create(artifact.Frame, artifact);
+        persistedDescriptor.Layout.Should().Be(manifest.Descriptor.Layout);
+        persistedDescriptor.Layout.StoredCodeTransform.Should().BeNull();
+        persistedDescriptor.Layout.LevelCodeSpace.Should().BeNull();
+        CaptureContractJson.ComputeDescriptorSha256(persistedDescriptor).Should().Be(manifest.IdempotencyKey);
         FrameReconstructor.TryReconstruct(persistedDescriptor, payload, out var frame).IsValid.Should().BeTrue();
         frame!.PixelData.ToArray().Should().Equal(payload);
         var descriptor = manifest.Descriptor;
@@ -3062,6 +3080,54 @@ public sealed class ArtifactIngestTests
             .ConfigureAwait(false)).Should().Be(0);
     }
 
+    [TestMethod]
+    public async Task MultipartIngest_AmbiguousLowerDepthV2RemainsLegacyIncompleteAcrossDuplicate()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("ambiguous-lower-depth");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[8];
+        var manifest = CreateManifestV2(deviceId, rig, payload, captureSequence: 206);
+        manifest = manifest with
+        {
+            Descriptor = manifest.Descriptor with
+            {
+                Layout = new FrameLayoutDescriptor(
+                    2, 2, 4, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian, 12, 16,
+                    FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 0, ushort.MaxValue, payload.LongLength)
+            }
+        };
+        var scheduler = new RecordingScheduler(manifest.Descriptor.Artifact.ArtifactId);
+        using var factory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<ICentralDerivativeJobScheduler>();
+            services.AddScoped<ICentralDerivativeJobScheduler>(_ => scheduler);
+        }));
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var first = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        using var duplicate = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+
+        first.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        duplicate.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var artifact = await db.CentralArtifacts
+            .Include(item => item.Layout)
+            .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+            .ConfigureAwait(false);
+        artifact.ReconstructionState.Should().Be(CentralReconstructionState.LegacyIncomplete);
+        artifact.StateReasonCode.Should().Be("layout.stored-code-ambiguous");
+        artifact.Layout!.StoredCodeTransform.Should().BeNull();
+        artifact.Layout.LevelCodeSpace.Should().BeNull();
+        (await db.CentralDerivativeJobs.CountAsync(job => job.SourceCentralArtifactId == artifact.Id)
+            .ConfigureAwait(false)).Should().Be(0);
+        scheduler.InvocationCount.Should().Be(0);
+    }
+
     private static async Task<HttpResponseMessage> PostAsync(
         HttpClient client,
         ArtifactUploadManifest manifest,
@@ -3544,6 +3610,25 @@ public sealed class ArtifactIngestTests
             }
             Interlocked.Increment(ref injectionCount);
             return true;
+        }
+    }
+
+    private sealed class RecordingScheduler(Guid targetArtifactId) : ICentralDerivativeJobScheduler
+    {
+        private int invocationCount;
+
+        public int InvocationCount => Volatile.Read(ref invocationCount);
+
+        public Task EnsureRequiredJobsAsync(
+            CentralArtifact artifact,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+        {
+            if (artifact.ArtifactId == targetArtifactId)
+            {
+                Interlocked.Increment(ref invocationCount);
+            }
+            return Task.CompletedTask;
         }
     }
 

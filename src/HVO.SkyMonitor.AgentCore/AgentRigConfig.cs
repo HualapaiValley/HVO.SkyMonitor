@@ -9,7 +9,108 @@ public sealed record CameraRigConfig(
     RigOrientation Orientation,
     PipelineExposureProfile Pipeline,
     CameraControlPolicy? ControlPolicy = null,
-    string ProfileVersion = "unversioned");
+    string ProfileVersion = "unversioned",
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SensorReadoutProfile? Readout = null);
+
+/// <summary>Configured native ROI, binning, output representation, and quantization for one readout mode.</summary>
+public sealed record SensorReadoutProfile(
+    SensorCrop Roi,
+    int BinX,
+    int BinY,
+    FrameBinningAlgorithm BinningAlgorithm,
+    CameraPixelFormat PixelFormat,
+    int SampleDepthBits,
+    int ContainerDepthBits,
+    FrameSamplePacking Packing,
+    FrameStoredCodeTransform StoredCodeTransform,
+    FrameLevelCodeSpace LevelCodeSpace,
+    double? BlackLevel,
+    double? WhiteLevel,
+    int? StrideBytes = null,
+    SampleByteOrder ByteOrder = SampleByteOrder.LittleEndian,
+    ColorFilterArrayPattern CfaPattern = ColorFilterArrayPattern.None,
+    int? CfaOriginX = null,
+    int? CfaOriginY = null);
+
+/// <summary>Validated output geometry and authoritative frame layout derived from a native sensor readout.</summary>
+public sealed record ResolvedSensorReadout(
+    SensorReadoutProfile Profile,
+    FrameReadoutDescriptor Geometry,
+    FrameLayoutDescriptor Layout);
+
+public static class SensorReadoutResolver
+{
+    public static ResolvedSensorReadout Resolve(SensorProfile sensor, SensorReadoutProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(sensor);
+        ArgumentNullException.ThrowIfNull(profile);
+        ArgumentNullException.ThrowIfNull(profile.Roi);
+        if (sensor.WidthPixels < 1 || sensor.HeightPixels < 1 || profile.BinX < 1 || profile.BinY < 1 ||
+            !Enum.IsDefined(profile.ByteOrder) ||
+            profile.Roi.X < 0 || profile.Roi.Y < 0 || profile.Roi.Width < 1 || profile.Roi.Height < 1 ||
+            (long)profile.Roi.X + profile.Roi.Width > sensor.WidthPixels ||
+            (long)profile.Roi.Y + profile.Roi.Height > sensor.HeightPixels ||
+            profile.Roi.Width % profile.BinX != 0 || profile.Roi.Height % profile.BinY != 0)
+        {
+            throw new ArgumentException("The sensor readout ROI and bin factors are invalid.", nameof(profile));
+        }
+
+        var width = profile.Roi.Width / profile.BinX;
+        var height = profile.Roi.Height / profile.BinY;
+        var bytesPerPixel = profile.PixelFormat switch
+        {
+            CameraPixelFormat.Mono8 => 1,
+            CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 => 2,
+            CameraPixelFormat.Rgb24 => 3,
+            _ => throw new ArgumentOutOfRangeException(nameof(profile))
+        };
+        var minimumStride = checked(width * bytesPerPixel);
+        var stride = profile.StrideBytes ?? minimumStride;
+        var byteLength = checked((long)stride * height);
+        var geometry = new FrameReadoutDescriptor(
+            sensor.WidthPixels,
+            sensor.HeightPixels,
+            profile.Roi.X,
+            profile.Roi.Y,
+            profile.Roi.Width,
+            profile.Roi.Height,
+            profile.BinX,
+            profile.BinY,
+            profile.BinningAlgorithm,
+            profile.CfaOriginX,
+            profile.CfaOriginY);
+        var layout = new FrameLayoutDescriptor(
+            width,
+            height,
+            stride,
+            profile.PixelFormat,
+            profile.ContainerDepthBits > 8
+                ? profile.ByteOrder == SampleByteOrder.LittleEndian
+                    ? FrameByteOrder.LittleEndian
+                    : FrameByteOrder.BigEndian
+                : FrameByteOrder.NotApplicable,
+            profile.SampleDepthBits,
+            profile.ContainerDepthBits,
+            profile.Packing,
+            profile.CfaPattern,
+            profile.BlackLevel,
+            profile.WhiteLevel,
+            byteLength)
+        {
+            Readout = geometry,
+            StoredCodeTransform = profile.StoredCodeTransform,
+            LevelCodeSpace = profile.LevelCodeSpace
+        };
+        var validation = layout.Validate();
+        if (!validation.IsValid)
+        {
+            throw new ArgumentException(
+                $"The sensor readout is invalid ({validation.ReasonCode} at {validation.FieldPath}).",
+                nameof(profile));
+        }
+        return new ResolvedSensorReadout(profile, geometry, layout);
+    }
+}
 
 public sealed record SensorProfile(
     string Name,
@@ -21,7 +122,44 @@ public sealed record SensorProfile(
     SensorResponseMode ResponseMode = SensorResponseMode.Unspecified,
     int? StrideBytes = null,
     SampleByteOrder ByteOrder = SampleByteOrder.LittleEndian,
-    string SensorRecipeVersion = "unspecified");
+    string SensorRecipeVersion = "unspecified")
+{
+    /// <summary>Gets an optional data-driven virtual electron-response curve.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ConfiguredSensorResponseProfile? SimulationResponse { get; init; }
+}
+
+/// <summary>Transport-neutral data used to resolve a virtual electron-domain sensor response.</summary>
+public sealed record ConfiguredSensorResponseProfile(
+    string ModelVersion,
+    int AdcBitDepth,
+    double MinimumGainControl,
+    double MaximumGainControl,
+    double ElectronsPerAduAtZeroGain,
+    double GainControlDivisor,
+    double MaximumFullWellElectrons,
+    IReadOnlyList<SensorReadNoisePoint> ReadNoisePoints,
+    double BlackLevelAdu,
+    string GainUnits,
+    string CompatibilityLabel,
+    bool ShotNoiseEnabled = true,
+    bool DarkNoiseEnabled = true,
+    bool ClampFullWellToAdcRange = false,
+    ConfiguredColorResponseProfile? ColorResponse = null,
+    bool ExcludeBlackLevelFromFullWellRange = false,
+    double? HighConversionGainControl = null,
+    double? HighConversionReadNoiseElectrons = null,
+    string? CalibrationStatus = null);
+
+/// <summary>Relative linear channel sensitivity for a configured virtual color sensor.</summary>
+public sealed record ConfiguredColorResponseProfile(
+    double Red,
+    double Green,
+    double Blue,
+    string Model = "configured-relative-response");
+
+/// <summary>One gain/read-noise knot in a piecewise-linear response curve.</summary>
+public sealed record SensorReadNoisePoint(double GainControl, double ReadNoiseElectrons);
 
 public enum SensorColorMode
 {

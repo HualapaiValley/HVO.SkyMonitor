@@ -121,8 +121,7 @@ public readonly record struct ProjectionContext(
             !double.IsFinite(PrincipalPointX) || !double.IsFinite(PrincipalPointY) ||
             !double.IsFinite(FocalLengthXPixels) || FocalLengthXPixels <= 0 ||
             !double.IsFinite(FocalLengthYPixels) || FocalLengthYPixels <= 0 ||
-            WidthPixels <= 0 || HeightPixels <= 0 || PrincipalPointX < 0 || PrincipalPointX > WidthPixels ||
-            PrincipalPointY < 0 || PrincipalPointY > HeightPixels ||
+            WidthPixels <= 0 || HeightPixels <= 0 ||
             !double.IsFinite(BoresightAltitudeDegrees) || BoresightAltitudeDegrees is < -90 or > 90 ||
             !double.IsFinite(BoresightAzimuthDegrees) || !double.IsFinite(RollDegrees) ||
             Aperture == ProjectionAperture.Circular &&
@@ -198,9 +197,7 @@ public readonly record struct EquidistantProjectionContext(
             !double.IsFinite(BoresightAltitudeDegrees) || BoresightAltitudeDegrees is < -90 or > 90 ||
             !double.IsFinite(BoresightAzimuthDegrees) || !double.IsFinite(RollDegrees) ||
             FocalLengthPixels <= 0 || ImageCircleRadiusPixels <= 0 ||
-            WidthPixels < 0 || HeightPixels < 0 || (WidthPixels == 0) != (HeightPixels == 0) ||
-            (WidthPixels > 0 && (PrincipalPointX < 0 || PrincipalPointX > WidthPixels ||
-                PrincipalPointY < 0 || PrincipalPointY > HeightPixels)))
+            WidthPixels < 0 || HeightPixels < 0 || (WidthPixels == 0) != (HeightPixels == 0))
         {
             throw new ArgumentOutOfRangeException(nameof(EquidistantProjectionContext));
         }

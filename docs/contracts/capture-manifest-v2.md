@@ -33,6 +33,17 @@ coordinate-free hash of ID and version is used only as a processing
 compatibility axis. Absence means location is unknown; legacy captures are
 never assigned the current location.
 
+`descriptor.layout.readout`, `storedCodeTransform`, and `levelCodeSpace` are
+additive optional v2 fields. Readout records native dimensions, native-coordinate
+ROI, integer bins, a versioned bin algorithm, and CFA origin. The stored-code
+transform distinguishes identity, right-aligned, left-shifted, and full-range
+scaled samples; level code space states whether black and white levels use
+native-sample or stored-container units. A full-depth legacy byte-aligned layout
+has unambiguous identity/stored-container defaults without changing its JSON.
+A lower-depth layout that omits either fact remains byte-valid but parses as
+`LegacyIncomplete`; readers must not infer the missing facts from free-form
+metadata.
+
 All snapshot longitude values use decimal degrees east-positive in `[-180, 180]`;
 west longitude is negative. The deployment-location version and canonical hash
 freeze that interpretation. Capture provenance remains coordinate-free so the
@@ -58,7 +69,8 @@ The reconstruction descriptor records:
 - capture-time rig, calibration, mask, sensor, and processing profile
   name/version/SHA-256 identities;
 - width, height, row stride, pixel format, byte order, sample/container depth,
-  packing, CFA, known levels, and exact payload length;
+  packing, CFA, known levels and their code space, stored-code transform, native
+  ROI/binning geometry, and exact payload length;
 - artifact role, non-empty variant, creation time, media type, payload SHA-256,
   and ordered lineage;
 - descriptive recipe name, semantic version, implementation version, canonical
@@ -89,10 +101,13 @@ Capture IDs, artifact IDs, and source-artifact IDs occupy distinct identity
 roles. `ArtifactDescriptor.SourceId` identifies the module or operation that
 produced that artifact and is intentionally separate from both capture identity
 and the capture-time sensor profile.
-Current byte-layout validation accepts byte-aligned Mono8 and RGB24 payloads,
-plus Mono16 and RGGB16 payloads in either little- or big-endian byte order.
-Unsupported packing or byte order fails explicitly rather than being silently
-converted.
+Current byte-layout validation accepts 8-bit Mono8 and RGB24 payloads plus 8-,
+10-, 12-, 14-, or 16-bit meaningful Mono16 and RGGB16 samples in 16-bit
+containers and either little- or big-endian byte order. Explicit readout geometry
+must fit the native sensor, divide exactly by its bins, and produce the declared
+output dimensions. RGGB output currently requires an aligned native CFA origin
+and unbinned readout; unsupported CFA-preserving binning, packing, or byte order
+fails explicitly rather than being silently converted.
 
 ## Determinism
 

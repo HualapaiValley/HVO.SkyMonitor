@@ -31,7 +31,7 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
         var frame = artifact.Frame;
         var layout = product?.Layout ?? (reconstructionDescriptor?.Artifact.ArtifactId == artifact.ArtifactId
             ? reconstructionDescriptor.Layout
-            : CreateLayout(config, frame));
+            : frame.Layout ?? CreateLayout(config, frame));
         var integration = product?.TotalIntegration ?? frame.Metadata.Exposure;
         var observationStartedUtc = reconstructionDescriptor?.Timing.ExposureStartedUtc ??
             acquisitionTiming?.ExposureStartedUtc ?? frame.TimestampUtc;
@@ -82,7 +82,11 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             layout.Height,
             layout.PixelFormat,
             product.Payload,
-            source.Metadata with { SourceId = sourceId });
+            source.Metadata with { SourceId = sourceId },
+            layout.StrideBytes)
+        {
+            Layout = layout
+        };
     }
 
     internal static ProcessingInputSelector CreateSelector(

@@ -189,27 +189,25 @@ internal static class ProcessingRecipeSupport
                 nameof(input.Layout));
             return false;
         }
-        var semanticsAreValid = layout.PixelFormat switch
+        var hasCompleteStoredCodeSemantics = layout.SampleDepthBits == layout.ContainerDepthBits ||
+            layout.StoredCodeTransform.HasValue && layout.LevelCodeSpace.HasValue;
+        var storedCodeIsSupported = layout.StoredCodeTransform switch
         {
-            CameraPixelFormat.Mono8 => layout.ByteOrder == FrameByteOrder.NotApplicable &&
-                layout.SampleDepthBits == 8 && layout.ContainerDepthBits == 8 &&
-                layout.Packing == FrameSamplePacking.ByteAligned && layout.CfaPattern == ColorFilterArrayPattern.None,
-            CameraPixelFormat.Rgb24 => layout.ByteOrder == FrameByteOrder.NotApplicable &&
-                layout.SampleDepthBits == 8 && layout.ContainerDepthBits == 8 &&
-                layout.Packing == FrameSamplePacking.ByteAligned && layout.CfaPattern == ColorFilterArrayPattern.None,
-            CameraPixelFormat.Mono16 => layout.ByteOrder == FrameByteOrder.LittleEndian &&
-                layout.SampleDepthBits == 16 && layout.ContainerDepthBits == 16 &&
-                layout.Packing == FrameSamplePacking.ByteAligned && layout.CfaPattern == ColorFilterArrayPattern.None,
-            CameraPixelFormat.BayerRggb16 => layout.ByteOrder == FrameByteOrder.LittleEndian &&
-                layout.SampleDepthBits == 16 && layout.ContainerDepthBits == 16 &&
-                layout.Packing == FrameSamplePacking.ByteAligned && layout.CfaPattern == ColorFilterArrayPattern.Rggb,
+            null => layout.SampleDepthBits == layout.ContainerDepthBits,
+            FrameStoredCodeTransform.IdentityV1 or FrameStoredCodeTransform.RightAlignedV1 => true,
+            FrameStoredCodeTransform.LeftShiftedV1 or FrameStoredCodeTransform.FullRangeScaledV1 =>
+                layout.LevelCodeSpace == FrameLevelCodeSpace.StoredContainer,
             _ => false
         };
-        var maximumLevel = Math.Pow(2, layout.SampleDepthBits) - 1;
-        if (!semanticsAreValid || !IsFinite(layout.BlackLevel) || !IsFinite(layout.WhiteLevel) ||
-            layout.BlackLevel is < 0 || layout.WhiteLevel is < 0 ||
-            layout.BlackLevel > maximumLevel || layout.WhiteLevel > maximumLevel ||
-            layout.BlackLevel.HasValue && layout.WhiteLevel.HasValue && layout.BlackLevel > layout.WhiteLevel)
+        var semanticsAreValid = layout.Validate().IsValid && hasCompleteStoredCodeSemantics && storedCodeIsSupported &&
+            layout.PixelFormat switch
+            {
+                CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24 => true,
+                CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 =>
+                    layout.ByteOrder == FrameByteOrder.LittleEndian,
+                _ => false
+            };
+        if (!semanticsAreValid)
         {
             failure = ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.InvalidLayout,
@@ -301,8 +299,6 @@ internal static class ProcessingRecipeSupport
             input.RecipeIdentitySha256,
             selector.RecipeIdentitySha256,
             StringComparison.OrdinalIgnoreCase));
-
-    private static bool IsFinite(double? value) => !value.HasValue || double.IsFinite(value.Value);
 
     private static bool VariantIsValid(string? variant) => variant is null || !string.IsNullOrWhiteSpace(variant);
 
@@ -870,7 +866,9 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
                 layout.ByteOrder != firstLayout.ByteOrder ||
                 layout.SampleDepthBits != firstLayout.SampleDepthBits || layout.ContainerDepthBits != firstLayout.ContainerDepthBits ||
                 layout.Packing != firstLayout.Packing || layout.CfaPattern != firstLayout.CfaPattern ||
-                layout.BlackLevel != firstLayout.BlackLevel || layout.WhiteLevel != firstLayout.WhiteLevel) ||
+                layout.BlackLevel != firstLayout.BlackLevel || layout.WhiteLevel != firstLayout.WhiteLevel ||
+                layout.StoredCodeTransform != firstLayout.StoredCodeTransform ||
+                layout.LevelCodeSpace != firstLayout.LevelCodeSpace || layout.Readout != firstLayout.Readout) ||
             selected.Any(source => source.Compatibility != firstCompatibility
                 || !string.Equals(source.RecipeIdentitySha256, firstRecipeIdentity, StringComparison.OrdinalIgnoreCase)))
         {

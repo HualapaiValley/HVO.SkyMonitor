@@ -4,15 +4,11 @@
     "type": "VirtualSky",
     "options": {
       "seed": 2025,
-      "rigProfileVersion": "virtual-asi676mc-supplied-lens-provisional-v1",
+      "rigProfileVersion": "virtual-asi676mc-supplied-lens-provisional-v2",
       "maximumMagnitude": 6.5,
       "maximumResults": 300,
       "magnitudeZeroElectronsPerSecond": 1000.0,
-      "bortleClass": 3,
-      "asi676Sensor": {
-        "enabled": true,
-        "blackLevelAdu": 64.0
-      }
+      "bortleClass": 3
     }
   },
   "rig": {
@@ -26,7 +22,56 @@
       "responseMode": "BayerRaw",
       "strideBytes": 7104,
       "byteOrder": "LittleEndian",
-      "sensorRecipeVersion": "virtual-asi676mc-rggb12-in-raw16-provisional-v1"
+      "sensorRecipeVersion": "virtual-asi676mc-rggb12-in-raw16-provisional-v2",
+      "simulationResponse": {
+        "modelVersion": "zwo-asi676-12bit-published-envelope-v1",
+        "adcBitDepth": 12,
+        "minimumGainControl": 0.0,
+        "maximumGainControl": 180.0,
+        "electronsPerAduAtZeroGain": 2.5763125763125763,
+        "gainControlDivisor": 200.0,
+        "maximumFullWellElectrons": 10550.0,
+        "readNoisePoints": [
+          { "gainControl": 0.0, "readNoiseElectrons": 2.9 },
+          { "gainControl": 82.0, "readNoiseElectrons": 1.8 },
+          { "gainControl": 180.0, "readNoiseElectrons": 1.8 }
+        ],
+        "blackLevelAdu": 64.0,
+        "gainUnits": "ZWO 0.1 dB",
+        "compatibilityLabel": "ASI676 native 12-bit ADU in Mono16 container",
+        "shotNoiseEnabled": true,
+        "darkNoiseEnabled": true,
+        "clampFullWellToAdcRange": true,
+        "excludeBlackLevelFromFullWellRange": true,
+        "highConversionGainControl": 180.0,
+        "highConversionReadNoiseElectrons": 0.65,
+        "calibrationStatus": "provisional-published-envelope",
+        "colorResponse": {
+          "red": 1.0,
+          "green": 1.0,
+          "blue": 1.0,
+          "model": "neutral-uncharacterized"
+        }
+      }
+    },
+    "readout": {
+      "roi": { "x": 0, "y": 0, "width": 3552, "height": 3552 },
+      "binX": 1,
+      "binY": 1,
+      "binningAlgorithm": "IdentityV1",
+      "pixelFormat": "BayerRggb16",
+      "sampleDepthBits": 12,
+      "containerDepthBits": 16,
+      "packing": "ByteAligned",
+      "storedCodeTransform": "RightAlignedV1",
+      "levelCodeSpace": "NativeSample",
+      "blackLevel": 64.0,
+      "whiteLevel": 4095.0,
+      "strideBytes": 7104,
+      "byteOrder": "LittleEndian",
+      "cfaPattern": "Rggb",
+      "cfaOriginX": 0,
+      "cfaOriginY": 0
     },
     "optics": {
       "projectionModel": "EquidistantFisheye",
@@ -54,6 +99,6 @@
       "dayGain": 0.0,
       "nightGain": 82.0
     },
-    "profileVersion": "virtual-asi676mc-supplied-lens-provisional-v1"
+    "profileVersion": "virtual-asi676mc-supplied-lens-provisional-v2"
   }
 }

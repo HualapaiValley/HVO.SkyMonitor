@@ -430,8 +430,7 @@ internal sealed class CameraModuleRunner
         }
 
         var policy = config.Rig.ControlPolicy!.Metering ?? new CaptureMeteringPolicy();
-        var blackLevel = ResolveLevel(frame, "blackLevelAdu", 0);
-        var whiteLevel = ResolveLevel(frame, "whiteLevelAdu", ushort.MaxValue);
+        var (blackLevel, whiteLevel) = ResolveStoredLevels(frame);
         if (whiteLevel <= blackLevel)
         {
             blackLevel = 0;
@@ -444,12 +443,13 @@ internal sealed class CameraModuleRunner
         var region = policy.Region is { } crop
             ? new MeteringRegion(crop.X, crop.Y, crop.Width, crop.Height)
             : (MeteringRegion?)null;
-        var imageCircle = policy.UseImageCircle && config.Rig.Optics.ImageCircleRadiusPixels is { } radius
-            ? new MeteringImageCircle(
-                config.Rig.Optics.PrincipalPointX ?? (frame.Width - 1) / 2d,
-                config.Rig.Optics.PrincipalPointY ?? (frame.Height - 1) / 2d,
-                radius)
-            : (MeteringImageCircle?)null;
+        var imageCircle = policy.UseImageCircle ? ResolveMeteringImageCircle(config, frame) : null;
+        var byteOrder = frame.Layout?.ByteOrder switch
+        {
+            FrameByteOrder.BigEndian => SampleByteOrder.BigEndian,
+            FrameByteOrder.LittleEndian => SampleByteOrder.LittleEndian,
+            _ => config.Rig.Sensor.ByteOrder
+        };
         var options = new SparseMeteringOptions(
             policy.XStride,
             policy.YStride,
@@ -459,7 +459,7 @@ internal sealed class CameraModuleRunner
             region,
             imageCircle,
             (BayerMeteringPhotosites)(int)policy.CfaSelection,
-            config.Rig.Sensor.ByteOrder);
+            byteOrder);
         var result = SparseLinear16Meter.Measure(
             new ImageLayout(
                 frame.Width,
@@ -612,12 +612,64 @@ internal sealed class CameraModuleRunner
             ? requested with { Exposure = frame.Metadata.Exposure, Gain = frame.Metadata.Gain }
             : requested;
 
-    private static ushort ResolveLevel(CameraFrame frame, string name, ushort fallback)
+    private static ushort ResolveLevel(CameraFrame frame, string name, ushort fallback, int maximum)
         => frame.Metadata.Extra?.TryGetValue(name, out var value) == true &&
             double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) &&
-            double.IsFinite(parsed) && parsed is >= ushort.MinValue and <= ushort.MaxValue
+            double.IsFinite(parsed) && parsed >= ushort.MinValue && parsed <= maximum
                 ? checked((ushort)Math.Round(parsed, MidpointRounding.AwayFromZero))
                 : fallback;
+
+    private static (ushort Black, ushort White) ResolveStoredLevels(CameraFrame frame)
+    {
+        var layout = frame.Layout;
+        var metadataMaximum = layout?.LevelCodeSpace == FrameLevelCodeSpace.NativeSample
+            ? (1 << layout.SampleDepthBits) - 1
+            : layout is null ? ushort.MaxValue : (1 << layout.ContainerDepthBits) - 1;
+        var black = layout?.BlackLevel ?? ResolveLevel(frame, "blackLevelAdu", 0, metadataMaximum);
+        var white = layout?.WhiteLevel ?? ResolveLevel(
+            frame, "whiteLevelAdu", checked((ushort)metadataMaximum), metadataMaximum);
+        if (layout?.LevelCodeSpace == FrameLevelCodeSpace.NativeSample)
+        {
+            var sampleMaximum = Math.Pow(2, layout.SampleDepthBits) - 1;
+            var containerMaximum = Math.Pow(2, layout.ContainerDepthBits) - 1;
+            var scale = layout.StoredCodeTransform switch
+            {
+                FrameStoredCodeTransform.LeftShiftedV1 => Math.Pow(2, layout.ContainerDepthBits - layout.SampleDepthBits),
+                FrameStoredCodeTransform.FullRangeScaledV1 => containerMaximum / sampleMaximum,
+                _ => 1
+            };
+            black *= scale;
+            white *= scale;
+        }
+        return (
+            checked((ushort)Math.Round(Math.Clamp(black, ushort.MinValue, ushort.MaxValue), MidpointRounding.AwayFromZero)),
+            checked((ushort)Math.Round(Math.Clamp(white, ushort.MinValue, ushort.MaxValue), MidpointRounding.AwayFromZero)));
+    }
+
+    private static MeteringImageCircle? ResolveMeteringImageCircle(CameraModuleConfig config, CameraFrame frame)
+    {
+        if (config.Rig.Optics.ImageCircleRadiusPixels is not { } nativeRadius)
+        {
+            return null;
+        }
+        if (frame.Layout?.Readout is not { } readout)
+        {
+            return new MeteringImageCircle(
+                config.Rig.Optics.PrincipalPointX ?? (frame.Width - 1) / 2d,
+                config.Rig.Optics.PrincipalPointY ?? (frame.Height - 1) / 2d,
+                nativeRadius);
+        }
+        if (readout.BinX != readout.BinY)
+        {
+            return null;
+        }
+        var nativePrincipalX = config.Rig.Optics.PrincipalPointX ?? readout.NativeWidth / 2d;
+        var nativePrincipalY = config.Rig.Optics.PrincipalPointY ?? readout.NativeHeight / 2d;
+        return new MeteringImageCircle(
+            (nativePrincipalX - readout.RoiX) / readout.BinX,
+            (nativePrincipalY - readout.RoiY) / readout.BinY,
+            nativeRadius / readout.BinX);
+    }
 
     private async Task<bool> DelayAfterFailureAsync(
         int consecutiveFailures,

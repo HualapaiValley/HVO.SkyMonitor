@@ -189,6 +189,37 @@ public sealed class CameraAgentProcessingConformanceTests
         Assert.AreEqual(64d, projected.Layout!.BlackLevel);
         Assert.AreEqual(ushort.MaxValue, projected.Layout.WhiteLevel);
 
+        var authoritativeLayout = projected.Layout with
+        {
+            SampleDepthBits = 14,
+            StoredCodeTransform = FrameStoredCodeTransform.FullRangeScaledV1,
+            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer,
+            Readout = new FrameReadoutDescriptor(
+                configuredFrame.Width,
+                configuredFrame.Height,
+                0,
+                0,
+                configuredFrame.Width,
+                configuredFrame.Height,
+                1,
+                1,
+                FrameBinningAlgorithm.IdentityV1,
+                null,
+                null)
+        };
+        configuredFrame = configuredFrame with { Layout = authoritativeLayout };
+        configuredArtifact = new FrameArtifact(
+            configuredArtifact.ArtifactId,
+            configuredArtifact.Role,
+            configuredFrame,
+            configuredArtifact.SourceArtifactIds,
+            configuredArtifact.RecipeVersion);
+
+        projected = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            ProcessingConformanceFixture.CameraConfig with { Rig = configuredRig }, configuredArtifact, "source");
+
+        Assert.AreEqual(authoritativeLayout, projected.Layout);
+
         var previewFrame = new CameraFrame(
             configuredFrame.TimestampUtc,
             2,

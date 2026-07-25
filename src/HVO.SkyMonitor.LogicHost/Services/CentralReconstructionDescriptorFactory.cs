@@ -57,7 +57,29 @@ internal static class CentralReconstructionDescriptorFactory
                 Enum.Parse<ColorFilterArrayPattern>(artifact.Layout.CfaPattern),
                 artifact.Layout.BlackLevel,
                 artifact.Layout.WhiteLevel,
-                artifact.Layout.ByteLength),
+                artifact.Layout.ByteLength)
+            {
+                StoredCodeTransform = artifact.Layout.StoredCodeTransform is null
+                    ? null
+                    : Enum.Parse<FrameStoredCodeTransform>(artifact.Layout.StoredCodeTransform),
+                LevelCodeSpace = artifact.Layout.LevelCodeSpace is null
+                    ? null
+                    : Enum.Parse<FrameLevelCodeSpace>(artifact.Layout.LevelCodeSpace),
+                Readout = artifact.Layout.NativeWidth is null
+                    ? null
+                    : new FrameReadoutDescriptor(
+                        artifact.Layout.NativeWidth.Value,
+                        artifact.Layout.NativeHeight!.Value,
+                        artifact.Layout.RoiX!.Value,
+                        artifact.Layout.RoiY!.Value,
+                        artifact.Layout.RoiWidth!.Value,
+                        artifact.Layout.RoiHeight!.Value,
+                        artifact.Layout.BinX!.Value,
+                        artifact.Layout.BinY!.Value,
+                        Enum.Parse<FrameBinningAlgorithm>(artifact.Layout.BinningAlgorithm!),
+                        artifact.Layout.CfaOriginX,
+                        artifact.Layout.CfaOriginY)
+            },
             new ArtifactDescriptor(
                 artifact.ArtifactId,
                 artifact.Role,

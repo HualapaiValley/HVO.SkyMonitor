@@ -597,6 +597,88 @@ public sealed class CameraModuleCadenceTests
     }
 
     [TestMethod]
+    public async Task RunAsync_HostMeteringPrefersAuthoritativeLowerDepthLevelsOverMetadata()
+    {
+        var timeProvider = new ManualTimeProvider(StartUtc);
+        using var cancellation = new CancellationTokenSource();
+        var module = new ScriptedCameraModule(timeProvider, (call, request) =>
+        {
+            var frame = call == 1
+                ? CreatePaddedFrame(
+                    CameraPixelFormat.Mono16,
+                    TimeSpan.FromSeconds(4),
+                    40,
+                    timeProvider.GetUtcNow()) with
+                {
+                    Layout = new FrameLayoutDescriptor(
+                        8, 8, 20, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian, 12, 16,
+                        FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 100, 1100, 160)
+                    {
+                        StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+                        LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+                    }
+                }
+                : null;
+            return CreateResult(request, frame);
+        });
+        var context = new RecordingHostContext(
+            CreateHostMeteredConfig(CameraPixelFormat.Mono16),
+            timeProvider,
+            cancellation,
+            publishTarget: 2);
+        var runner = CreateRunner(module, context, timeProvider, new ZenithSunEphemeris());
+
+        await runner.RunAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        var metering = RequiredEvidence(context.Submissions[0]).Metering;
+        Assert.IsNotNull(metering);
+        Assert.AreEqual(CaptureMeteringOutcome.Measured, metering.Outcome);
+        Assert.AreEqual(0.9, metering.NormalizedLevel!.Value, 1e-12);
+    }
+
+    [TestMethod]
+    public async Task RunAsync_HostMeteringTransformsNativeMetadataWhenLayoutLevelsAreMissing()
+    {
+        var timeProvider = new ManualTimeProvider(StartUtc);
+        using var cancellation = new CancellationTokenSource();
+        var module = new ScriptedCameraModule(timeProvider, (call, request) =>
+        {
+            var frame = call == 1
+                ? CreatePaddedFrame(
+                    CameraPixelFormat.Mono16,
+                    TimeSpan.FromSeconds(4),
+                    40,
+                    timeProvider.GetUtcNow(),
+                    sampleAt: static (_, _) => 16000,
+                    blackLevelAdu: "64") with
+                {
+                    Layout = new FrameLayoutDescriptor(
+                        8, 8, 20, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian, 12, 16,
+                        FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, null, null, 160)
+                    {
+                        StoredCodeTransform = FrameStoredCodeTransform.LeftShiftedV1,
+                        LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+                    }
+                }
+                : null;
+            return CreateResult(request, frame);
+        });
+        var context = new RecordingHostContext(
+            CreateHostMeteredConfig(CameraPixelFormat.Mono16),
+            timeProvider,
+            cancellation,
+            publishTarget: 2);
+        var runner = CreateRunner(module, context, timeProvider, new ZenithSunEphemeris());
+
+        await runner.RunAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        var metering = RequiredEvidence(context.Submissions[0]).Metering;
+        Assert.IsNotNull(metering);
+        Assert.AreEqual(CaptureMeteringOutcome.Measured, metering.Outcome);
+        Assert.AreEqual((16000d - 1024) / (65520 - 1024), metering.NormalizedLevel!.Value, 1e-12);
+    }
+
+    [TestMethod]
     public async Task RunAsync_ConfiguredExcludedRegionsSkipBrightSamplesBeforeScanning()
     {
         var timeProvider = new ManualTimeProvider(StartUtc);

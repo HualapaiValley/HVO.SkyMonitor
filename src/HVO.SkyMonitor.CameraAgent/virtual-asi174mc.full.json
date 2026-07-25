@@ -37,7 +37,8 @@
       "nightExposure": "00:00:02.5000000",
       "dayGain": 1.0,
       "nightGain": 1.0
-    }
+    },
+    "profileVersion": "virtual-asi174mc-full-v1"
   },
   "processingSteps": [
     {

@@ -238,7 +238,9 @@ public sealed class CaptureProcessingContextTests
 
         var preview = context.Artifacts![FrameArtifactRole.Preview].Frame;
         CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4, 5, 6 }, preview.PixelData.ToArray());
-        Assert.IsNull(preview.StrideBytes);
+        Assert.AreEqual(3, preview.StrideBytes);
+        Assert.AreEqual(3, preview.Layout!.StrideBytes);
+        Assert.AreEqual(6, preview.Layout.ByteLength);
     }
 
     [TestMethod]

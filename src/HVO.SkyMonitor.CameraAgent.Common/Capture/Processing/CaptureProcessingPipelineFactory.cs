@@ -55,13 +55,17 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-graph.validate");
         ArgumentNullException.ThrowIfNull(config);
         var configuredSteps = config.ResolveProcessingSteps();
+        var effectiveLayout = config.Rig.Readout is null
+            ? null
+            : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout).Layout;
+        var effectivePixelFormat = effectiveLayout?.PixelFormat ?? config.Rig.Sensor.PixelFormat;
         IReadOnlyList<CaptureProcessingStepConfig> pipelineConfig = configuredSteps;
 
         if (pipelineConfig.Count == 0 && _registrationsByType.Count > 0)
         {
             pipelineConfig = _registrationsByType.Values
                 .Where(registration => registration.AutoInclude &&
-                    (config.Rig.Sensor.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 ||
+                    (effectivePixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 ||
                      registration.ImplementationType != typeof(CalibrationCaptureProcessingStep) &&
                      registration.ImplementationType != typeof(RollingCombinationCaptureProcessingStep)))
                 .OrderBy(r => r.DefaultOrder)
@@ -111,7 +115,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 }
             }
 
-            ValidateOutputs(config, configured, nodesById);
+            ValidateOutputs(config, effectiveLayout, configured, nodesById);
             var nodes = TopologicalSort(configured, nodesById);
             stopwatch.Stop();
             _telemetry.RecordValidation(nodes.Count, stopwatch.Elapsed);
@@ -163,6 +167,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
 
     private static void ValidateOutputs(
         CameraModuleConfig config,
+        FrameLayoutDescriptor? effectiveLayout,
         List<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
         Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
     {
@@ -181,11 +186,19 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
 
             var dependencies = item.Config.DependsOn ?? [];
-            if (string.Equals(graphStep.RecipeName, HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.RollingMean, StringComparison.Ordinal) &&
-                config.Rig.Sensor.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
+            var effectiveFormat = effectiveLayout?.PixelFormat ?? config.Rig.Sensor.PixelFormat;
+            if (RequiresLinear16(graphStep.RecipeName) &&
+                effectiveFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
             {
                 throw new InvalidOperationException(
-                    $"Capture processing step '{item.Step.Name}' requires a linear 16-bit sensor input.");
+                    $"Capture processing step '{item.Step.Name}' requires a linear 16-bit input, but the configured readout emits {effectiveFormat}.");
+            }
+            if (effectiveLayout is not null && dependencies.Count == 0 &&
+                (!ProcessingStoredCodeIsSupported(effectiveLayout) ||
+                 effectiveLayout.ContainerDepthBits > 8 && effectiveLayout.ByteOrder != FrameByteOrder.LittleEndian))
+            {
+                throw new InvalidOperationException(
+                    $"Capture processing step '{item.Step.Name}' does not support the configured raw readout layout.");
             }
             if (graphStep.AcceptedInputRoles.Count == 0)
             {
@@ -228,6 +241,20 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
         }
     }
+
+    private static bool RequiresLinear16(string recipeName)
+        => recipeName is HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.RollingMean or
+            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.ReferenceCalibration or
+            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment;
+
+    private static bool ProcessingStoredCodeIsSupported(FrameLayoutDescriptor layout)
+        => layout.StoredCodeTransform switch
+        {
+            FrameStoredCodeTransform.IdentityV1 or FrameStoredCodeTransform.RightAlignedV1 => true,
+            FrameStoredCodeTransform.LeftShiftedV1 or FrameStoredCodeTransform.FullRangeScaledV1 =>
+                layout.LevelCodeSpace == FrameLevelCodeSpace.StoredContainer,
+            _ => false
+        };
 
     private static List<CaptureProcessingGraphNode> TopologicalSort(
         List<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,

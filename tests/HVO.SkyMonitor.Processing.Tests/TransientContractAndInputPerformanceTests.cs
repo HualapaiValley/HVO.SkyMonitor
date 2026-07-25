@@ -20,7 +20,7 @@ public sealed class TransientContractAndInputPerformanceTests
     private const int MeasurementCount = 30;
     private const int FixtureSeed = 2025;
     private const string W1SourceChecksum = "8121BDC72C027790E27B08C94F969CE62F8FD961B7E0D34F6B5DFFF271C11329";
-    private const string W2SourceChecksum = "10696437FD9D3A865E6FD694FAFADF2B1961162367A7A5CDCBA114DB4FA58ACB";
+    private const string W2SourceChecksum = "1835368346863C347FF7A46E30E1A1DFC8CF1E062F77FF8369BFB88C55B7069B";
     private static readonly DateTimeOffset FixtureTime = DateTimeOffset.Parse(
         "2025-01-15T08:00:00Z",
         System.Globalization.CultureInfo.InvariantCulture);
@@ -362,10 +362,10 @@ public sealed class TransientContractAndInputPerformanceTests
             CameraPixelFormat.BayerRggb16,
             new TransientLinearLevelsV1(64, ushort.MaxValue, ushort.MaxValue),
             maximumResults: 300,
-            sensorIdentity: "virtual-asi178mc-rggb16-v1",
+            sensorIdentity: "virtual-asi178mc-rggb16-v2",
             calibrationIdentity: "asi178-fujinon-fe185c057ha1-candidate-v4",
             expectedSourceChecksum: W2SourceChecksum,
-            expectedDetectorChecksum: "0F50731EAC08ADBB53DC9F41D1FBF4D3886FFC038C70853D4A1C483A2916E562");
+            expectedDetectorChecksum: "C69F4434053AAB7E90F5F75032D11BDFA21CFC81C74FC54A43FD892FC8405E96");
 
     private static Workload CreateWorkload(
         string id,
@@ -386,9 +386,14 @@ public sealed class TransientContractAndInputPerformanceTests
         {
             for (var x = 0; x < width; x++)
             {
-                var value = format == CameraPixelFormat.Mono16
+                var nativeValue = format == CameraPixelFormat.Mono16
                     ? (ushort)((FixtureSeed + 257L * (y * (long)width + x)) & 0x0FFF)
-                    : (ushort)((FixtureSeed + 31L * x + 17L * y + 997L * ((y & 1) * 2 + (x & 1))) & 0xFFFF);
+                    : (ushort)((FixtureSeed + 31L * x + 17L * y + 997L * ((y & 1) * 2 + (x & 1))) & 0x3FFF);
+                var value = format == CameraPixelFormat.Mono16
+                    ? nativeValue
+                    : checked((ushort)Math.Round(
+                        nativeValue * ushort.MaxValue / 16_383d,
+                        MidpointRounding.AwayFromZero));
                 var offset = y * stride + x * 2;
                 pixels[offset] = (byte)value;
                 pixels[offset + 1] = (byte)(value >> 8);
@@ -409,13 +414,19 @@ public sealed class TransientContractAndInputPerformanceTests
                 stride,
                 format,
                 FrameByteOrder.LittleEndian,
-                16,
+                format == CameraPixelFormat.BayerRggb16 ? 14 : 16,
                 16,
                 FrameSamplePacking.ByteAligned,
                 format == CameraPixelFormat.BayerRggb16 ? ColorFilterArrayPattern.Rggb : ColorFilterArrayPattern.None,
                 levels.BlackLevel,
                 levels.WhiteLevel,
-                pixels.Length),
+                pixels.Length)
+            {
+                StoredCodeTransform = format == CameraPixelFormat.BayerRggb16
+                    ? FrameStoredCodeTransform.FullRangeScaledV1
+                    : FrameStoredCodeTransform.IdentityV1,
+                LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+            },
             pixels,
             FixtureTime,
             TimeSpan.FromSeconds(20),

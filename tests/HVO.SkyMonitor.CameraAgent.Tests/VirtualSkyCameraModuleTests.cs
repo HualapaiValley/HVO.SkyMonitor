@@ -178,6 +178,183 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
+    public async Task Asi174Mono8RoiProfileLoadsNativeAndOutputGeometrySeparately()
+    {
+        var config = await LoadProfileAsync("virtual-asi174-mono8-roi-bin4.json").ConfigureAwait(false);
+        var resolved = SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout!);
+
+        Assert.AreEqual(1936, config.Rig.Sensor.WidthPixels);
+        Assert.AreEqual(1216, config.Rig.Sensor.HeightPixels);
+        Assert.AreEqual(CameraPixelFormat.Mono16, config.Rig.Sensor.PixelFormat);
+        Assert.AreEqual(new SensorCrop(648, 368, 640, 480), config.Rig.Readout!.Roi);
+        Assert.AreEqual(160, resolved.Layout.Width);
+        Assert.AreEqual(120, resolved.Layout.Height);
+        Assert.AreEqual(CameraPixelFormat.Mono8, resolved.Layout.PixelFormat);
+        Assert.AreEqual(19_200, resolved.Layout.ByteLength);
+    }
+
+    [TestMethod]
+    public async Task ConfiguredAsi174ResponseMatchesLegacyCompatibilityResolver()
+    {
+        var configured = await LoadProfileAsync("virtual-asi174-mono8-roi-bin4.json").ConfigureAwait(false);
+        using var options = JsonDocument.Parse(
+            "{\"seed\":2025,\"maximumMagnitude\":6.5,\"maximumResults\":2000," +
+            "\"magnitudeZeroElectronsPerSecond\":300,\"bortleClass\":3," +
+            "\"asi174Sensor\":{\"enabled\":true,\"blackLevelAdu\":64}}");
+        var legacy = configured with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", options.RootElement.Clone()),
+            Rig = configured.Rig with
+            {
+                Sensor = configured.Rig.Sensor with { SimulationResponse = null }
+            }
+        };
+        var configuredModule = CreateModule(FixtureUtc);
+        var legacyModule = CreateModule(FixtureUtc);
+        var renamedModule = CreateModule(FixtureUtc);
+        var renamed = configured with
+        {
+            Rig = configured.Rig with
+            {
+                Sensor = configured.Rig.Sensor with { Name = "CustomMonochromeSensor" }
+            }
+        };
+        await configuredModule.InitializeAsync(configured, CancellationToken.None).ConfigureAwait(false);
+        await legacyModule.InitializeAsync(legacy, CancellationToken.None).ConfigureAwait(false);
+        await renamedModule.InitializeAsync(renamed, CancellationToken.None).ConfigureAwait(false);
+        var request = new CaptureRequest(
+            FixtureUtc,
+            TimeSpan.FromSeconds(1),
+            CaptureMode.Still,
+            new CaptureSetpoint(TimeSpan.FromSeconds(1), 150, null, null));
+
+        var configuredResult = await configuredModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var legacyResult = await legacyModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var renamedResult = await renamedModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(
+            legacyResult.Frame!.PixelData.ToArray(),
+            configuredResult.Frame!.PixelData.ToArray());
+        CollectionAssert.AreEqual(
+            configuredResult.Frame.PixelData.ToArray(),
+            renamedResult.Frame!.PixelData.ToArray());
+        Assert.AreEqual("zwo-asi174mm-12bit-v1", configuredResult.Frame.Metadata.Extra!["sensorModel"]);
+    }
+
+    [TestMethod]
+    public async Task ConfiguredSensorResponseRejectsInconsistentReadoutSensorAndPipeline()
+    {
+        var configured = await LoadProfileAsync("virtual-asi174-mono8-roi-bin4.json").ConfigureAwait(false);
+        var missingReadout = configured with { Rig = configured.Rig with { Readout = null } };
+        var colorSensor = configured with
+        {
+            Rig = configured.Rig with
+            {
+                Sensor = configured.Rig.Sensor with
+                {
+                    ColorMode = SensorColorMode.Color,
+                    PixelFormat = CameraPixelFormat.BayerRggb16,
+                    ResponseMode = SensorResponseMode.BayerRaw
+                }
+            }
+        };
+        var overstatedDepth = configured with
+        {
+            Rig = configured.Rig with
+            {
+                Readout = configured.Rig.Readout! with
+                {
+                    Roi = new SensorCrop(0, 0, 1936, 1216),
+                    BinX = 1,
+                    BinY = 1,
+                    BinningAlgorithm = FrameBinningAlgorithm.IdentityV1,
+                    PixelFormat = CameraPixelFormat.Mono16,
+                    SampleDepthBits = 16,
+                    ContainerDepthBits = 16,
+                    StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+                    BlackLevel = 64,
+                    WhiteLevel = 4095,
+                    StrideBytes = 3872
+                }
+            }
+        };
+        var invalidBlackLevel = configured with
+        {
+            Rig = configured.Rig with
+            {
+                Sensor = configured.Rig.Sensor with
+                {
+                    SimulationResponse = configured.Rig.Sensor.SimulationResponse! with { BlackLevelAdu = 4096 }
+                }
+            }
+        };
+        var unsupportedGain = configured with
+        {
+            Rig = configured.Rig with
+            {
+                Pipeline = configured.Rig.Pipeline with { NightGain = 401 }
+            }
+        };
+        var missingLevels = configured with
+        {
+            Rig = configured.Rig with
+            {
+                Readout = configured.Rig.Readout! with { BlackLevel = null, WhiteLevel = null }
+            }
+        };
+
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() =>
+            CreateModule(FixtureUtc).InitializeAsync(missingReadout, CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() =>
+            CreateModule(FixtureUtc).InitializeAsync(colorSensor, CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() =>
+            CreateModule(FixtureUtc).InitializeAsync(overstatedDepth, CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<ArgumentException>(() =>
+            CreateModule(FixtureUtc).InitializeAsync(invalidBlackLevel, CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() =>
+            CreateModule(FixtureUtc).InitializeAsync(unsupportedGain, CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() =>
+            CreateModule(FixtureUtc).InitializeAsync(missingLevels, CancellationToken.None)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task Asi174Mono8RoiProfileNegotiatesProcessingAgainstOutputFormat()
+    {
+        var config = await LoadProfileAsync("virtual-asi174-mono8-roi-bin4.json").ConfigureAwait(false);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
+            })
+            .Build());
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+
+        var graph = factory.CreateGraph(config);
+
+        Assert.IsFalse(graph.Nodes.Any(node => node.RecipeName is
+            BuiltInProcessingRecipes.RollingMean or BuiltInProcessingRecipes.ReferenceCalibration));
+        graph.DisposeSteps();
+
+        var incompatible = config with
+        {
+            ProcessingSteps =
+            [
+                new CaptureProcessingStepConfig(
+                    "RollingCombination",
+                    "rolling",
+                    25,
+                    JsonSerializer.SerializeToElement(new RollingCombinationProcessingStepOptions { WindowSize = 2 }))
+            ]
+        };
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(incompatible));
+        StringAssert.Contains(exception.Message, "rolling", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "Mono8", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task FullAsi676ProfilesLoadProvisionalSharedGeometry()
     {
         var profiles = new[]
@@ -207,6 +384,26 @@ public sealed class VirtualSkyCameraModuleTests
             Assert.AreEqual(1097.0456, config.Rig.Optics.FocalLengthXPixels);
             Assert.AreEqual(expected.Exposure, config.Rig.Pipeline.NightExposure);
             Assert.AreEqual(82, config.Rig.Pipeline.NightGain, 1e-12);
+        }
+    }
+
+    [TestMethod]
+    public async Task ConfiguredAsi676McResponseMatchesPublishedEnvelopeWithoutLegacyOption()
+    {
+        var config = await LoadProfileAsync("virtual-asi676mc.full.json").ConfigureAwait(false);
+        var configured = config.Rig.Sensor.SimulationResponse;
+        Assert.IsNotNull(configured);
+        Assert.IsNotNull(config.Rig.Readout);
+        Assert.IsFalse(config.ModuleOptions!.Value.TryGetProperty("asi676Sensor", out _));
+
+        foreach (var gain in new[] { 0d, 82d, 180d })
+        {
+            var expected = Asi676SensorModel.Resolve(gain, 64);
+            var actual = ConfiguredSensorResponseResolver.Resolve(configured, gain);
+            Assert.AreEqual(expected.ElectronsPerAdu, actual.ElectronsPerAdu, 1e-12);
+            Assert.AreEqual(expected.ReadNoiseElectrons, actual.ReadNoiseElectrons, 1e-12);
+            Assert.AreEqual(expected.FullWellElectrons, actual.FullWellElectrons, 1e-9);
+            Assert.AreEqual(expected.BlackLevelAdu, actual.BlackLevelAdu, 1e-12);
         }
     }
 
@@ -460,7 +657,7 @@ public sealed class VirtualSkyCameraModuleTests
     public async Task CaptureAsyncWithAsi178ProfileProducesRggbRaw16Frame()
     {
         using var document = System.Text.Json.JsonDocument.Parse(
-            "{\"magnitudeZeroElectronsPerSecond\":18000,\"asi178Sensor\":{\"enabled\":true}}");
+            "{\"magnitudeZeroElectronsPerSecond\":18000,\"asi178Sensor\":{\"enabled\":true,\"blackLevelContainerAdu\":63}}");
         var config = CreateConfig(CameraPixelFormat.BayerRggb16, 774, 520) with
         {
             Module = new CameraModuleDescriptor("VirtualSky", document.RootElement.Clone())
@@ -479,6 +676,209 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(Asi178McSensorModel.Version, result.Frame.Metadata.Extra["sensorModel"]);
         Assert.AreEqual("14", result.Frame.Metadata.Extra["sensorAdcBitDepth"]);
         Assert.AreEqual("65535", result.Frame.Metadata.Extra["whiteLevelAdu"]);
+        Assert.AreEqual(14, result.Frame.Layout!.SampleDepthBits);
+        Assert.AreEqual(16, result.Frame.Layout.ContainerDepthBits);
+        Assert.AreEqual(FrameStoredCodeTransform.FullRangeScaledV1, result.Frame.Layout.StoredCodeTransform);
+        Assert.AreEqual(FrameLevelCodeSpace.StoredContainer, result.Frame.Layout.LevelCodeSpace);
+        Assert.AreEqual(ColorFilterArrayPattern.Rggb, result.Frame.Layout.CfaPattern);
+        Assert.AreEqual(0, result.Frame.Layout.Readout!.CfaOriginX);
+        Assert.AreEqual(0, result.Frame.Layout.Readout.CfaOriginY);
+        Assert.AreEqual(64, result.Frame.Layout.BlackLevel);
+        for (var offset = 0; offset < result.Frame.PixelData.Length; offset += 2)
+        {
+            var stored = result.Frame.PixelData.Span[offset] | result.Frame.PixelData.Span[offset + 1] << 8;
+            var native = (stored * 16_383 + ushort.MaxValue / 2) / ushort.MaxValue;
+            var remapped = (native * ushort.MaxValue + 16_383 / 2) / 16_383;
+            Assert.AreEqual(stored, remapped, $"Stored code at byte offset {offset} is not a mapped 14-bit sample.");
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsyncRejectsLegacyBayerReadoutBelowNativeSampleDepth()
+    {
+        using var document = JsonDocument.Parse("{\"asi178Sensor\":{\"enabled\":true}}");
+        var config = CreateConfig(CameraPixelFormat.BayerRggb16, 32, 16);
+        config = config with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", document.RootElement.Clone()),
+            Rig = config.Rig with
+            {
+                Readout = new SensorReadoutProfile(
+                    new SensorCrop(0, 0, 32, 16),
+                    1,
+                    1,
+                    FrameBinningAlgorithm.IdentityV1,
+                    CameraPixelFormat.BayerRggb16,
+                    12,
+                    16,
+                    FrameSamplePacking.ByteAligned,
+                    FrameStoredCodeTransform.RightAlignedV1,
+                    FrameLevelCodeSpace.NativeSample,
+                    0,
+                    4095,
+                    64,
+                    CfaPattern: ColorFilterArrayPattern.Rggb,
+                    CfaOriginX: 0,
+                    CfaOriginY: 0)
+            }
+        };
+
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() =>
+            CreateModule(FixtureUtc).InitializeAsync(config, CancellationToken.None)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task ConfiguredAsi178ProfileProducesFullRangeBayer14In16WithoutLegacyOption()
+    {
+        var config = await LoadProfileAsync("virtual-asi178mc.full.json").ConfigureAwait(false);
+        Assert.IsNotNull(config.Rig.Sensor.SimulationResponse);
+        Assert.IsNotNull(config.Rig.Sensor.SimulationResponse.ColorResponse);
+        Assert.IsNotNull(config.Rig.Readout);
+        Assert.IsFalse(config.ModuleOptions!.Value.TryGetProperty("asi178Sensor", out _));
+        var expectedResponse = Asi178McSensorModel.Resolve(150, 64);
+        var configuredResponse = ConfiguredSensorResponseResolver.Resolve(config.Rig.Sensor.SimulationResponse, 150);
+        Assert.AreEqual(expectedResponse.ElectronsPerAdu, configuredResponse.ElectronsPerAdu, 1e-12);
+        Assert.AreEqual(expectedResponse.ReadNoiseElectrons, configuredResponse.ReadNoiseElectrons, 1e-12);
+        Assert.AreEqual(expectedResponse.FullWellElectrons, configuredResponse.FullWellElectrons, 1e-9);
+        var module = CreateModule(FixtureUtc);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+        var result = await module.CaptureAsync(
+            new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+                new CaptureSetpoint(TimeSpan.FromSeconds(20), 150, null, null)),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(14, result.Frame!.Layout!.SampleDepthBits);
+        Assert.AreEqual(FrameStoredCodeTransform.FullRangeScaledV1, result.Frame.Layout.StoredCodeTransform);
+        Assert.AreEqual(64, result.Frame.Layout.BlackLevel);
+        Assert.AreEqual(ushort.MaxValue, result.Frame.Layout.WhiteLevel);
+        Assert.AreEqual(checked(3096 * 2080 * 2), result.Frame.PixelData.Length);
+    }
+
+    [TestMethod]
+    public async Task CaptureAsyncWithAsi174UsesConfiguredNativeBlackLevelInLayout()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(
+            "{\"asi174Sensor\":{\"enabled\":true,\"blackLevelAdu\":73}}");
+        var config = CreateConfig(CameraPixelFormat.Mono16, 16, 16) with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", document.RootElement.Clone())
+        };
+        var module = CreateModule(FixtureUtc);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+        var result = await module.CaptureAsync(
+            new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+                new CaptureSetpoint(TimeSpan.FromSeconds(1), 100, null, null)),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(73, result.Frame!.Layout!.BlackLevel);
+        Assert.AreEqual(FrameLevelCodeSpace.NativeSample, result.Frame.Layout.LevelCodeSpace);
+    }
+
+    [TestMethod]
+    public async Task CaptureAsyncWithAsi174Mono8CenteredRoiBin4ProducesTruthfulReadout()
+    {
+        var config = CreateAsi174Mono8ReadoutConfig(fullFrame: false);
+        var module = CreateModule(FixtureUtc);
+        var repeatedModule = CreateModule(FixtureUtc);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        await repeatedModule.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var request = new CaptureRequest(
+            FixtureUtc,
+            TimeSpan.FromSeconds(1),
+            CaptureMode.Still,
+            new CaptureSetpoint(TimeSpan.FromSeconds(1), 150, null, null));
+
+        var result = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var repeated = await repeatedModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(160, result.Frame!.Width);
+        Assert.AreEqual(120, result.Frame.Height);
+        Assert.AreEqual(CameraPixelFormat.Mono8, result.Frame.PixelFormat);
+        Assert.AreEqual(19_200, result.Frame.PixelData.Length);
+        CollectionAssert.AreEqual(result.Frame.PixelData.ToArray(), repeated.Frame!.PixelData.ToArray());
+        Assert.AreEqual(config.Rig.Readout!.Roi.X, result.Frame.Layout!.Readout!.RoiX);
+        Assert.AreEqual(config.Rig.Readout.Roi.Y, result.Frame.Layout.Readout.RoiY);
+        Assert.AreEqual(FrameBinningAlgorithm.DigitalAverageV1, result.Frame.Layout.Readout.BinningAlgorithm);
+        Assert.AreEqual(8, result.Frame.Layout.SampleDepthBits);
+        Assert.AreEqual(8, result.Frame.Layout.ContainerDepthBits);
+        Assert.AreEqual(FrameStoredCodeTransform.IdentityV1, result.Frame.Layout.StoredCodeTransform);
+        Assert.AreEqual(4d, result.Frame.Layout.BlackLevel);
+        Assert.AreEqual(255d, result.Frame.Layout.WhiteLevel);
+        var projection = RigProjectionContextFactory.Create(config.Rig);
+        Assert.AreEqual(80, projection.PrincipalPointX);
+        Assert.AreEqual(60, projection.PrincipalPointY);
+        Assert.AreEqual(148.96, projection.ImageCircleRadiusPixels);
+        Assert.IsTrue(result.Frame.Metadata.Scene!.Objects!.All(item =>
+            item.PixelX >= 0 && item.PixelX <= 160 && item.PixelY >= 0 && item.PixelY <= 120));
+    }
+
+    [TestMethod]
+    public async Task CaptureAsyncWithAsi174Mono8FullFrameBin4Produces484By304()
+    {
+        var config = CreateAsi174Mono8ReadoutConfig(fullFrame: true);
+        var module = CreateModule(FixtureUtc);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+        var result = await module.CaptureAsync(
+            new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+                new CaptureSetpoint(TimeSpan.FromMilliseconds(100), 0, null, null)),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(484, result.Frame!.Width);
+        Assert.AreEqual(304, result.Frame.Height);
+        Assert.AreEqual(147_136, result.Frame.PixelData.Length);
+        Assert.AreEqual(1936, result.Frame.Layout!.Readout!.RoiWidth);
+        Assert.AreEqual(1216, result.Frame.Layout.Readout.RoiHeight);
+        var projection = RigProjectionContextFactory.Create(config.Rig);
+        Assert.AreEqual(242, projection.PrincipalPointX);
+        Assert.AreEqual(152, projection.PrincipalPointY);
+        Assert.AreEqual(148.96, projection.ImageCircleRadiusPixels);
+    }
+
+    [TestMethod]
+    [DataRow(SampleByteOrder.LittleEndian)]
+    [DataRow(SampleByteOrder.BigEndian)]
+    public async Task CaptureAsyncWithGenericMono10In16ProducesRightAlignedCodes(SampleByteOrder byteOrder)
+    {
+        var config = CreateConfig(CameraPixelFormat.Mono16, 32, 16);
+        config = config with
+        {
+            Rig = config.Rig with
+            {
+                Readout = new SensorReadoutProfile(
+                    new SensorCrop(0, 0, 32, 16),
+                    1,
+                    1,
+                    FrameBinningAlgorithm.IdentityV1,
+                    CameraPixelFormat.Mono16,
+                    10,
+                    16,
+                    FrameSamplePacking.ByteAligned,
+                    FrameStoredCodeTransform.RightAlignedV1,
+                    FrameLevelCodeSpace.NativeSample,
+                    0,
+                    1023,
+                    64,
+                    byteOrder)
+            }
+        };
+        var module = CreateModule(FixtureUtc);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+        var result = await module.CaptureAsync(
+            new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+                new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null)),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(10, result.Frame!.Layout!.SampleDepthBits);
+        Assert.AreEqual(16, result.Frame.Layout.ContainerDepthBits);
+        Assert.AreEqual(FrameStoredCodeTransform.RightAlignedV1, result.Frame.Layout.StoredCodeTransform);
+        Assert.AreEqual(
+            byteOrder == SampleByteOrder.LittleEndian ? FrameByteOrder.LittleEndian : FrameByteOrder.BigEndian,
+            result.Frame.Layout.ByteOrder);
+        Assert.IsTrue(MaximumSample(result.Frame.PixelData.Span, byteOrder) <= 1023);
     }
 
     [TestMethod]
@@ -504,7 +904,14 @@ public sealed class VirtualSkyCameraModuleTests
                         ImageCircleRadiusPixels = 30,
                         FocalLengthXPixels = 20,
                         FocalLengthYPixels = 20
-                    }
+                    },
+                    Readout = profile.Rig.Readout is null
+                        ? null
+                        : profile.Rig.Readout with
+                        {
+                            Roi = new SensorCrop(0, 0, 64, 64),
+                            StrideBytes = 128
+                        }
                 }
             };
             var module = CreateModule(FixtureUtc);
@@ -523,6 +930,12 @@ public sealed class VirtualSkyCameraModuleTests
             Assert.AreEqual("12", result.Frame.Metadata.Extra["sensorAdcBitDepth"]);
             Assert.AreEqual("16", result.Frame.Metadata.Extra["containerBitDepth"]);
             Assert.AreEqual("4095", result.Frame.Metadata.Extra["whiteLevelAdu"]);
+            Assert.AreEqual(12, result.Frame.Layout!.SampleDepthBits);
+            Assert.AreEqual(16, result.Frame.Layout.ContainerDepthBits);
+            Assert.AreEqual(FrameStoredCodeTransform.RightAlignedV1, result.Frame.Layout.StoredCodeTransform);
+            Assert.AreEqual(FrameLevelCodeSpace.NativeSample, result.Frame.Layout.LevelCodeSpace);
+            Assert.AreEqual(config.Rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16 ? 0 : null,
+                result.Frame.Layout.Readout!.CfaOriginX);
             Assert.AreEqual("provisional-published-envelope",
                 result.Frame.Metadata.Extra["responseCalibrationStatus"]);
             Assert.IsTrue(MaximumSample(result.Frame.PixelData.Span) <= 4095);
@@ -1185,6 +1598,33 @@ public sealed class VirtualSkyCameraModuleTests
         };
     }
 
+    private static CameraModuleConfig CreateAsi174Mono8ReadoutConfig(bool fullFrame)
+    {
+        var config = CreateAsi174Config(1936, 1216);
+        return config with
+        {
+            Rig = config.Rig with
+            {
+                Sensor = config.Rig.Sensor with { StrideBytes = 3872 },
+                Readout = new SensorReadoutProfile(
+                    fullFrame
+                        ? new SensorCrop(0, 0, 1936, 1216)
+                        : new SensorCrop(648, 368, 640, 480),
+                    4,
+                    4,
+                    FrameBinningAlgorithm.DigitalAverageV1,
+                    CameraPixelFormat.Mono8,
+                    8,
+                    8,
+                    FrameSamplePacking.ByteAligned,
+                    FrameStoredCodeTransform.IdentityV1,
+                    FrameLevelCodeSpace.StoredContainer,
+                    4,
+                    255)
+            }
+        };
+    }
+
     private static CameraModuleConfig CreateConfig(
         CameraPixelFormat format = CameraPixelFormat.Mono16, int width = 484, int height = 304) => new(
         new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix"), new CameraModuleDescriptor("VirtualSky"),
@@ -1221,12 +1661,17 @@ public sealed class VirtualSkyCameraModuleTests
              new RigOrientation(90, 0, 0),
               new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)));
 
-    private static ushort MaximumSample(ReadOnlySpan<byte> pixels)
+    private static ushort MaximumSample(
+        ReadOnlySpan<byte> pixels,
+        SampleByteOrder byteOrder = SampleByteOrder.LittleEndian)
     {
         ushort maximum = 0;
         for (var offset = 0; offset < pixels.Length; offset += 2)
         {
-            maximum = Math.Max(maximum, (ushort)(pixels[offset] | pixels[offset + 1] << 8));
+            var sample = byteOrder == SampleByteOrder.LittleEndian
+                ? (ushort)(pixels[offset] | pixels[offset + 1] << 8)
+                : (ushort)(pixels[offset] << 8 | pixels[offset + 1]);
+            maximum = Math.Max(maximum, sample);
         }
         return maximum;
     }

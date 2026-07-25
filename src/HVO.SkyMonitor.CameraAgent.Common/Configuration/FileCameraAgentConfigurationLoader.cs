@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -119,6 +120,18 @@ public sealed class FileCameraAgentConfigurationLoader(
         {
             throw new InvalidOperationException("Sensor resolution must be greater than zero.");
         }
+        if (config.Rig.Readout is not null)
+        {
+            try
+            {
+                _ = SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout);
+                _ = RigProjectionContextFactory.Create(config.Rig);
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or OverflowException)
+            {
+                throw new InvalidOperationException("Configured sensor readout is invalid.", exception);
+            }
+        }
 
         if (config.Rig.Pipeline.CaptureInterval <= TimeSpan.Zero)
         {
@@ -168,8 +181,12 @@ public sealed class FileCameraAgentConfigurationLoader(
         var meter = policy.Metering ?? new CaptureMeteringPolicy();
         var solar = policy.SolarRegimes ?? new CaptureSolarRegimePolicy();
         var envelope = rig.Pipeline.Envelope;
+        var readout = rig.Readout is null ? null : SensorReadoutResolver.Resolve(rig.Sensor, rig.Readout).Layout;
+        var effectiveFormat = readout?.PixelFormat ?? rig.Sensor.PixelFormat;
+        var effectiveWidth = readout?.Width ?? rig.Sensor.WidthPixels;
+        var effectiveHeight = readout?.Height ?? rig.Sensor.HeightPixels;
         if (envelope is null ||
-            rig.Sensor.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
+            effectiveFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
             meter.XStride <= 0 || meter.YStride <= 0 ||
             !double.IsFinite(meter.SaturationFraction) ||
             meter.SaturationFraction is <= 0 or > 1 ||
@@ -184,14 +201,14 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new InvalidOperationException(
                 "Host-metered control requires a valid envelope, sparse meter, and solar regime policy.");
         }
-        var hasInvalidBayerStride = rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16 &&
+        var hasInvalidBayerStride = effectiveFormat == CameraPixelFormat.BayerRggb16 &&
             ((meter.XStride & 1) != 0 || (meter.YStride & 1) != 0);
         var hasInvalidExcludedRegion = meter.ExcludedRegions?.Any(
-            region => region is null || !FitsSensor(region, rig.Sensor)) == true;
+            region => region is null || !FitsFrame(region, effectiveWidth, effectiveHeight)) == true;
         var hasInvalidImageCircle = meter.UseImageCircle &&
             (rig.Optics.ImageCircleRadiusPixels is not { } radius || !double.IsFinite(radius) || radius <= 0);
-        if (hasInvalidBayerStride || !Enum.IsDefined(rig.Sensor.ByteOrder) ||
-            !FitsSensor(meter.Region, rig.Sensor) || hasInvalidExcludedRegion || hasInvalidImageCircle)
+        if (hasInvalidBayerStride || !Enum.IsDefined(rig.Readout?.ByteOrder ?? rig.Sensor.ByteOrder) ||
+            !FitsFrame(meter.Region, effectiveWidth, effectiveHeight) || hasInvalidExcludedRegion || hasInvalidImageCircle)
         {
             throw new InvalidOperationException(
                 "Host metering regions, byte order, Bayer strides, and image-circle policy must match the sensor.");
@@ -215,10 +232,9 @@ public sealed class FileCameraAgentConfigurationLoader(
         }
     }
 
-    private static bool FitsSensor(SensorCrop? region, SensorProfile sensor)
+    private static bool FitsFrame(SensorCrop? region, int width, int height)
         => region is null || region is { X: >= 0, Y: >= 0, Width: > 0, Height: > 0 } value &&
-            value.X <= sensor.WidthPixels - value.Width &&
-            value.Y <= sensor.HeightPixels - value.Height;
+            value.X <= width - value.Width && value.Y <= height - value.Height;
 
     private static bool ValidDefaults(ExposureDefaults? value, ExposureEnvelope envelope)
         => value is not null &&

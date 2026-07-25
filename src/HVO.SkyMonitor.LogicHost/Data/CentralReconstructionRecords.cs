@@ -79,6 +79,19 @@ internal sealed class CentralArtifactLayout
     public string CfaPattern { get; set; } = string.Empty;
     public double? BlackLevel { get; set; }
     public double? WhiteLevel { get; set; }
+    public string? StoredCodeTransform { get; set; }
+    public string? LevelCodeSpace { get; set; }
+    public int? NativeWidth { get; set; }
+    public int? NativeHeight { get; set; }
+    public int? RoiX { get; set; }
+    public int? RoiY { get; set; }
+    public int? RoiWidth { get; set; }
+    public int? RoiHeight { get; set; }
+    public int? BinX { get; set; }
+    public int? BinY { get; set; }
+    public string? BinningAlgorithm { get; set; }
+    public int? CfaOriginX { get; set; }
+    public int? CfaOriginY { get; set; }
     public long ByteLength { get; set; }
 }
 

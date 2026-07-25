@@ -35,15 +35,6 @@ public sealed class VirtualSkyNoCloudBaselinePerformanceTests
             await PrewarmRuntimeAsync(workload).ConfigureAwait(false);
             measurements.Add(await MeasureAsync(workload).ConfigureAwait(false));
         }
-        Assert.IsLessThanOrEqualTo(61.4295 * 1.05,
-            measurements.Single(static item => item.Workload == "W1").MedianMilliseconds);
-        Assert.IsLessThanOrEqualTo(59.3849 * 1.05,
-            measurements.Single(static item => item.Workload == "W1").RenderOnly.MedianMilliseconds);
-        Assert.IsLessThanOrEqualTo(602.9345 * 1.05,
-            measurements.Single(static item => item.Workload == "W2").MedianMilliseconds);
-        Assert.IsLessThanOrEqualTo(595.034 * 1.05,
-            measurements.Single(static item => item.Workload == "W2").RenderOnly.MedianMilliseconds);
-
         var outputDirectory = Path.Combine(AppContext.BaseDirectory, "TestResults", "issue-104");
         Directory.CreateDirectory(outputDirectory);
         var outputPath = Path.Combine(outputDirectory, "no-cloud-baseline-performance.json");
@@ -65,6 +56,21 @@ public sealed class VirtualSkyNoCloudBaselinePerformanceTests
             Measurements = measurements
         }, SerializerOptions)).ConfigureAwait(false);
         TestContext.WriteLine($"Issue #104 no-cloud evidence: {outputPath}");
+        foreach (var measurement in measurements)
+        {
+            TestContext.WriteLine(
+                $"{measurement.Workload}: complete={measurement.MedianMilliseconds:F4}ms; " +
+                $"render={measurement.RenderOnly.MedianMilliseconds:F4}ms");
+        }
+
+        Assert.IsLessThanOrEqualTo(61.4295 * 1.05,
+            measurements.Single(static item => item.Workload == "W1").MedianMilliseconds);
+        Assert.IsLessThanOrEqualTo(59.3849 * 1.05,
+            measurements.Single(static item => item.Workload == "W1").RenderOnly.MedianMilliseconds);
+        Assert.IsLessThanOrEqualTo(602.9345 * 1.05,
+            measurements.Single(static item => item.Workload == "W2").MedianMilliseconds);
+        Assert.IsLessThanOrEqualTo(595.034 * 1.05,
+            measurements.Single(static item => item.Workload == "W2").RenderOnly.MedianMilliseconds);
     }
 
     public TestContext TestContext { get; set; } = null!;
@@ -234,7 +240,8 @@ public sealed class VirtualSkyNoCloudBaselinePerformanceTests
                 VignettingStrength = 0.25,
                 ShotNoiseEnabled = true,
                 Seed = 2025,
-                SensorResponse = Asi178McSensorModel.Resolve(0, 64)
+                SensorResponse = Asi178McSensorModel.Resolve(0, 64),
+                StoredCodeTransform = FrameStoredCodeTransform.FullRangeScaledV1
             });
 
     private static Task<CaptureResult> CaptureAsync(VirtualSkyCameraModule module, CaptureSetpoint setpoint, int index)
@@ -332,8 +339,8 @@ public sealed class VirtualSkyNoCloudBaselinePerformanceTests
             "760BE91721EC3AEDA7282251808F5CB450DBF7393C626645774043AF7A4DBAB2");
         public static Workload W2 { get; } = new(
             "W2", 3096, 2080, CameraPixelFormat.BayerRggb16, 1187.5, 735.553926,
-            "6CA0EE6A978B2044B96B88C9998A32344D0109E1FE60576DAB56F79F24F12A1B",
-            "F41EE465B439395025CFE91A6FD67861F9AB3CAE58DC9D42826A6E203407AF1E");
+            "5DC5E88CC26724EE27253FCBCEB1EC22BD2B43785B8D31006E32047FF3F8261B",
+            "ADFD83961E5222FE8F8E9B168D3FD1BCA51FD7E43955D71F29B75CAEC30C4F0D");
         public int OutputBytes => checked(Width * Height * 2);
     }
 }
