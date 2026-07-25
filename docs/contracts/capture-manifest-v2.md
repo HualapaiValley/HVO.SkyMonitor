@@ -33,6 +33,11 @@ coordinate-free hash of ID and version is used only as a processing
 compatibility axis. Absence means location is unknown; legacy captures are
 never assigned the current location.
 
+All snapshot longitude values use decimal degrees east-positive in `[-180, 180]`;
+west longitude is negative. The deployment-location version and canonical hash
+freeze that interpretation. Capture provenance remains coordinate-free so the
+manifest does not disclose coordinates.
+
 Location intervals are half-open. An open-ended captured snapshot remains
 immutable; when a later version is activated, protected CameraAgent history
 records the new version's effective start as the prior version's supersession

@@ -9,6 +9,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using HVO.SkyMonitor.Fleet.Contracts;
 using HVO.SkyMonitor.TestSupport;
+using Microsoft.AspNetCore.DataProtection;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -272,9 +275,23 @@ public sealed class DeviceApiControllerTests
             observatory.Id,
             ownerId)).ConfigureAwait(false);
 
+        var deployment = HVO.SkyMonitor.AgentCore.DeploymentLocationSnapshot.Create(
+            "identity-lifecycle-inherited",
+            1,
+            "observatory-fallback",
+            null,
+            DateTimeOffset.UnixEpoch,
+            null,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId);
         var bootstrap = await bootstrapService.BootstrapAsync(new DeviceBootstrapRequest(
             deviceId,
-            envelope.Envelope)).ConfigureAwait(false);
+            envelope.Envelope,
+            DeploymentLocation: deployment,
+            DeploymentLocationSourceKind: HVO.SkyMonitor.AgentCore.DeploymentLocationSourceKind.Inherited))
+            .ConfigureAwait(false);
         var active = await credentialValidator.ValidateAsync(
             deviceId,
             bootstrap.DeviceKey,
@@ -283,7 +300,9 @@ public sealed class DeviceApiControllerTests
 
         Func<Task> replay = () => bootstrapService.BootstrapAsync(new DeviceBootstrapRequest(
             deviceId,
-            envelope.Envelope));
+            envelope.Envelope,
+            DeploymentLocation: deployment,
+            DeploymentLocationSourceKind: HVO.SkyMonitor.AgentCore.DeploymentLocationSourceKind.Inherited));
         await replay.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false);
 
         await registrationService.RevokeAsync(new DeviceRegistrationRevokeRequest(
@@ -299,6 +318,106 @@ public sealed class DeviceApiControllerTests
             bootstrap.DeviceKey,
             CancellationToken.None);
         await validateRevoked.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task PreChangeV1Envelope_RedeemsWithoutFabricatingLocationEvidence()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var db = services.GetRequiredService<ApplicationDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        var deviceKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var registrationToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var observatory = new Observatory
+        {
+            OwnerUserId = $"legacy-owner-{Guid.NewGuid():N}",
+            Name = "Legacy envelope observatory",
+            LatitudeDegrees = 35.347,
+            LongitudeDegrees = -113.878,
+            ElevationMeters = 520,
+            TimeZoneId = "America/Phoenix",
+            CreatedAtUtc = now.AddDays(-1),
+            IsActive = true
+        };
+        var registration = new DeviceRegistration
+        {
+            DeviceId = $"legacy-envelope-{Guid.NewGuid():N}",
+            Observatory = observatory,
+            ObservatoryId = observatory.Id,
+            FriendlyName = "Legacy envelope camera",
+            ObservatoryName = observatory.Name,
+            ObservatoryTimeZoneId = observatory.TimeZoneId,
+            OwnerUserId = observatory.OwnerUserId,
+            OwnerDisplayName = "Legacy owner",
+            Status = DeviceRegistrationStatus.Pending,
+            VerificationCodeHash = new string('A', 64),
+            DevicePublicId = Guid.NewGuid(),
+            DeviceKeyHash = DeviceRegistrationService.ComputeSha256(deviceKey),
+            RegistrationTokenHash = DeviceRegistrationService.ComputeSha256(registrationToken),
+            EnvelopeVersion = "v1",
+            LocationEvidenceState = RegistrationLocationEvidenceState.LegacyIncomplete,
+            IssuedAtUtc = now,
+            ExpiresAtUtc = now.AddMinutes(10)
+        };
+        db.AddRange(observatory, registration);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        var legacyPayload = new DeviceRegistrationEnvelopePayload(
+            registration.Id,
+            registration.DeviceId,
+            registration.DevicePublicId!.Value,
+            observatory.Id,
+            registration.FriendlyName,
+            "v1",
+            deviceKey,
+            registrationToken,
+            now,
+            now.AddMinutes(10));
+        var protector = services.GetRequiredService<IDataProtectionProvider>()
+            .CreateProtector("LogicHost", "DeviceRegistration", "Envelope", "v1");
+        var protectedEnvelope = protector.Protect(
+            JsonSerializer.Serialize(legacyPayload, DeviceRegistrationJson.Options));
+
+        var clientShapedDeployment = HVO.SkyMonitor.AgentCore.DeploymentLocationSnapshot.Create(
+            "new-client-local-location",
+            1,
+            "operator-local-configuration",
+            null,
+            DateTimeOffset.UnixEpoch,
+            null,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId);
+        var result = await services.GetRequiredService<IDeviceBootstrapService>().BootstrapAsync(
+            new DeviceBootstrapRequest(
+                registration.DeviceId,
+                protectedEnvelope,
+                DeploymentLocation: clientShapedDeployment,
+                DeploymentLocationSourceKind: HVO.SkyMonitor.AgentCore.DeploymentLocationSourceKind.Manual))
+            .ConfigureAwait(false);
+
+        result.EnvelopeVersion.Should().Be("v1");
+        var ciphertext = Convert.FromBase64String(result.Payload.Ciphertext);
+        var plaintext = new byte[ciphertext.Length];
+        using (var aes = new AesGcm(Convert.FromBase64String(result.DeviceKey), 16))
+        {
+            aes.Decrypt(
+                Convert.FromBase64String(result.Payload.Nonce),
+                ciphertext,
+                Convert.FromBase64String(result.Payload.Tag),
+                plaintext);
+        }
+        using var secrets = JsonDocument.Parse(plaintext);
+        secrets.RootElement.GetProperty("deploymentLocationAcknowledgment").ValueKind
+            .Should().Be(JsonValueKind.Null);
+        db.ChangeTracker.Clear();
+        var activated = await db.DeviceRegistrations.SingleAsync(item => item.Id == registration.Id)
+            .ConfigureAwait(false);
+        activated.Status.Should().Be(DeviceRegistrationStatus.Active);
+        activated.LocationEvidenceState.Should().Be(RegistrationLocationEvidenceState.LegacyIncomplete);
+        (await db.DeviceDeploymentLocationVersions.AnyAsync(item => item.RegistrationId == registration.Id)
+            .ConfigureAwait(false)).Should().BeFalse();
     }
 
     [TestMethod]

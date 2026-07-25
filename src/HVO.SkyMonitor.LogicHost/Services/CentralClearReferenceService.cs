@@ -157,6 +157,7 @@ internal sealed class CentralClearReferenceService(
         .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
         .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
         .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
+        .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Location)
         .AsSplitQuery();
 
     internal static void ValidateArtifact(CentralArtifact artifact, Guid registrationId, string rigId)

@@ -61,7 +61,8 @@ public sealed class FileCameraAgentConfigurationLoader(
             _options.DeploymentLocation.HorizontalAccuracyMeters,
             _options.DeploymentLocation.EffectiveFromUtc,
             _options.DeploymentLocation.EffectiveUntilUtc,
-            _options.Observatory);
+            _options.Observatory,
+            _options.DeploymentLocation.SourceKind);
         var location = DeploymentLocationSnapshot.Create(
             locationSeed.LocationId,
             1,

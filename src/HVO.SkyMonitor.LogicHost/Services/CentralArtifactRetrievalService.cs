@@ -86,6 +86,7 @@ internal sealed partial class CentralArtifactRetrievalService(
             .Include(candidate => candidate.Frame)!.ThenInclude(frame => frame!.Timing)
             .Include(candidate => candidate.Frame)!.ThenInclude(frame => frame!.Control)
             .Include(candidate => candidate.Frame)!.ThenInclude(frame => frame!.Profiles)
+            .Include(candidate => candidate.Frame)!.ThenInclude(frame => frame!.Location)
             .SingleOrDefaultAsync(candidate => candidate.DevicePublicId == devicePublicId
                 && candidate.ArtifactId == artifactId
                 && candidate.Frame!.AgentId == agentId, cancellationToken).ConfigureAwait(false);
@@ -236,6 +237,17 @@ internal sealed partial class CentralArtifactRetrievalService(
 
     private static CentralArtifactLookupStatus GetAvailability(CentralArtifact artifact)
     {
+        if (string.Equals(
+                artifact.StateReasonCode,
+                CentralDerivativeJobScheduler.LocationUnresolvedReason,
+                StringComparison.Ordinal)
+            || string.Equals(
+                artifact.StateReasonCode,
+                CentralDerivativeJobScheduler.LocationMismatchReason,
+                StringComparison.Ordinal))
+        {
+            return CentralArtifactLookupStatus.Conflict;
+        }
         if (artifact.ObjectState == CentralArtifactObjectState.Expired)
         {
             return CentralArtifactLookupStatus.Gone;

@@ -172,6 +172,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
 
 public sealed class DeploymentLocationOptions : IValidatableObject
 {
+    [EnumDataType(typeof(DeploymentLocationSourceKind))]
+    public DeploymentLocationSourceKind SourceKind { get; init; } = DeploymentLocationSourceKind.Manual;
+
     [Required(AllowEmptyStrings = false)]
     [MaxLength(128)]
     public string LocationId { get; init; } = "local-deployment";
@@ -189,6 +192,12 @@ public sealed class DeploymentLocationOptions : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (!Enum.IsDefined(SourceKind) || SourceKind == DeploymentLocationSourceKind.Unspecified)
+        {
+            yield return new ValidationResult(
+                "SourceKind must be Gps, Manual, or Inherited.",
+                [nameof(SourceKind)]);
+        }
         if (HorizontalAccuracyMeters is { } accuracy && !double.IsFinite(accuracy))
         {
             yield return new ValidationResult(

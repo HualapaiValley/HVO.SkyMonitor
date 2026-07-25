@@ -34,6 +34,9 @@ internal sealed class ObservatoryConfiguration : IEntityTypeConfiguration<Observ
             .HasMaxLength(128)
             .IsRequired();
 
+        builder.Property(observatory => observatory.CurrentLocationCanonicalSha256)
+            .HasMaxLength(64);
+
         builder.Property(observatory => observatory.CreatedAtUtc)
             .IsRequired();
 

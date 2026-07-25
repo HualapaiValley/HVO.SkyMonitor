@@ -80,6 +80,23 @@ internal static class CentralReconstructionDescriptorFactory
                 CycleEvidence = JsonSerializer.Deserialize<CaptureCycleEvidence>(frame.CycleEvidenceJson)
             };
         }
+        if (frame.Location is { } location)
+        {
+            descriptor = descriptor with
+            {
+                Location = new CaptureLocationProvenance(
+                    location.LocationId,
+                    location.Version,
+                    location.Source,
+                    location.HorizontalAccuracyMeters,
+                    location.EffectiveFromUtc,
+                    location.EffectiveUntilUtc)
+            };
+        }
+        else if (frame.LocationEvidenceState != CentralCaptureLocationEvidenceState.LegacyIncomplete)
+        {
+            throw new InvalidOperationException("The central frame location evidence was not loaded.");
+        }
         return descriptor;
     }
 

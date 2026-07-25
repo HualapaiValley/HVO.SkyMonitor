@@ -426,6 +426,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Location)
             .AsSplitQuery()
             .OrderBy(artifact => artifact.Id)
             .Take(2)

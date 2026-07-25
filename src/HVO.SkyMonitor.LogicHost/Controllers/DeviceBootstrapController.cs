@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.AgentCore;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -28,7 +29,9 @@ public sealed class DeviceBootstrapController(
             var result = await bootstrapService.BootstrapAsync(new DeviceBootstrapRequest(
                 request.DeviceId,
                 request.Envelope,
-                request.Nonce), cancellationToken).ConfigureAwait(false);
+                request.Nonce,
+                request.DeploymentLocation,
+                request.DeploymentLocationSourceKind), cancellationToken).ConfigureAwait(false);
 
             var response = new DeviceBootstrapResponse(
                 result.RegistrationId,
@@ -60,7 +63,9 @@ public sealed class DeviceBootstrapController(
 public sealed record DeviceBootstrapRequestDto(
     [Required, StringLength(128)] string DeviceId,
     [Required, StringLength(8192)] string Envelope,
-    [StringLength(128)] string? Nonce = null);
+    [StringLength(128)] string? Nonce = null,
+    DeploymentLocationSnapshot? DeploymentLocation = null,
+    DeploymentLocationSourceKind DeploymentLocationSourceKind = DeploymentLocationSourceKind.Unspecified);
 
 public sealed record DeviceBootstrapResponse(
     Guid RegistrationId,

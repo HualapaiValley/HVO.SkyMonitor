@@ -178,6 +178,7 @@ internal static class DatabaseSeeder
             new { Name = "api.images", DisplayName = "Image APIs", Description = "Access to image processing endpoints" },
             new { Name = "api.admin", DisplayName = "Administrative Access", Description = "Full administrative access" },
             new { Name = "api.viewer", DisplayName = "Viewer Access", Description = "Read-only API access" },
+            new { Name = "api.owner.write", DisplayName = "Owner Mutation Access", Description = "Modify resources owned by the authenticated user" },
             new { Name = "api.webhooks", DisplayName = "Webhook Access", Description = "Webhook publishing scopes" }
         };
 

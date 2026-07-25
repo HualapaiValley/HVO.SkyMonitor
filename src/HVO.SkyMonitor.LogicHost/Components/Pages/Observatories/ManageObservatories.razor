@@ -97,6 +97,11 @@
                             <label class="form-label">Time Zone ID</label>
                             <InputText class="form-control" @bind-Value="FormModel.TimeZoneId" />
                         </div>
+                        <div class="mb-3">
+                            <label class="form-label">Allowed deployment radius (m)</label>
+                            <InputNumber class="form-control" @bind-Value="FormModel.AllowedDeploymentRadiusMeters" />
+                            <div class="form-text">Leave blank to require owner approval except for the inherited site location.</div>
+                        </div>
                         <div class="form-check form-switch mb-3">
                             <InputCheckbox class="form-check-input" @bind-Value="FormModel.IsActive" />
                             <label class="form-check-label">Active</label>

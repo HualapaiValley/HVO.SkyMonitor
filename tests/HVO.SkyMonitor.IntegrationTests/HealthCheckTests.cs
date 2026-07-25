@@ -4,6 +4,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
+using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -39,6 +40,12 @@ public sealed class HealthCheckTests
     public async Task HealthCheckReportsExplicitFixtureCatalogAsync()
     {
         // Arrange
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            await ObservatoryLocationBackfill.RunAsync(
+                scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+                TimeProvider.System).ConfigureAwait(false);
+        }
         var request = new Uri("/health", UriKind.Relative);
 
         // Act

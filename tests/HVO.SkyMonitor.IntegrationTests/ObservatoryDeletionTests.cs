@@ -20,6 +20,35 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class ObservatoryDeletionTests
 {
     [TestMethod]
+    public async Task Delete_EmptyVersionedObservatoryRemovesLocationHistoryBeforeSite()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var service = new ObservatoryService(
+            db,
+            TimeProvider.System,
+            scope.ServiceProvider.GetRequiredService<IDeploymentLocationAuthorityService>());
+        var owner = $"empty-observatory-owner-{Guid.NewGuid():N}";
+        var observatory = await service.CreateOrUpdateAsync(new ObservatoryUpsertRequest(
+            null,
+            owner,
+            "Empty versioned observatory",
+            35,
+            -113,
+            500,
+            "America/Phoenix",
+            true,
+            1000)).ConfigureAwait(false);
+
+        var deleted = await service.DeleteAsync(observatory.Id, owner).ConfigureAwait(false);
+
+        deleted.Should().BeTrue();
+        (await db.Observatories.AnyAsync(item => item.Id == observatory.Id).ConfigureAwait(false)).Should().BeFalse();
+        (await db.ObservatoryLocationVersions.AnyAsync(item => item.ObservatoryId == observatory.Id)
+            .ConfigureAwait(false)).Should().BeFalse();
+    }
+
+    [TestMethod]
     public async Task Delete_WithEnvironmentalEvidence_DeactivatesAndPreservesProvenance()
     {
         var observatory = new Observatory
@@ -51,7 +80,10 @@ public sealed class ObservatoryDeletionTests
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             db.EnvironmentalObservationSources.Add(source);
             await db.SaveChangesAsync().ConfigureAwait(false);
-            var service = new ObservatoryService(db, TimeProvider.System);
+            var service = new ObservatoryService(
+                db,
+                TimeProvider.System,
+                scope.ServiceProvider.GetRequiredService<IDeploymentLocationAuthorityService>());
 
             (await service.DeleteAsync(observatory.Id, observatory.OwnerUserId).ConfigureAwait(false)).Should().BeTrue();
         }
@@ -118,7 +150,8 @@ public sealed class ObservatoryDeletionTests
         {
             var service = new ObservatoryService(
                 scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
-                TimeProvider.System);
+                TimeProvider.System,
+                scope.ServiceProvider.GetRequiredService<IDeploymentLocationAuthorityService>());
 
             (await service.DeleteAsync(observatory.Id, observatory.OwnerUserId).ConfigureAwait(false)).Should().BeTrue();
         }

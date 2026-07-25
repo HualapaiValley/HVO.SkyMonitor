@@ -44,6 +44,8 @@ internal sealed class CentralDerivativeJobScheduler(
     internal const string SourceInvalidatedReason = "The derivative source artifact is not usable.";
     internal const string ResultInvalidatedReason = "The derivative result artifact is not usable.";
     internal const string LegacySourceSkippedReason = "The legacy derivative source is not reconstructable.";
+    internal const string LocationUnresolvedReason = "location.reported-unresolved";
+    internal const string LocationMismatchReason = "location.mismatch";
     private static readonly EnvironmentalObservationSourceKind[] EnvironmentalSourcePriority =
         Enum.GetValues<EnvironmentalObservationSourceKind>();
     private static readonly EnvironmentalObservationQuality[] EnvironmentalQualities =
@@ -57,6 +59,7 @@ internal sealed class CentralDerivativeJobScheduler(
     {
         var artifact = await dbContext.CentralArtifacts
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
             .SingleAsync(item => item.DevicePublicId == devicePublicId && item.ArtifactId == artifactId,
                 cancellationToken).ConfigureAwait(false);
         await EnsureRequiredJobsAsync(artifact, now, cancellationToken).ConfigureAwait(false);
@@ -302,6 +305,28 @@ internal sealed class CentralDerivativeJobScheduler(
                         cancellationToken).ConfigureAwait(false);
                 var isCloudAssessment = string.Equals(
                     recipe.RecipeName, BuiltInProcessingRecipes.CloudAssessment, StringComparison.Ordinal);
+                var requiresResolvedLocation = string.Equals(
+                    recipe.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal);
+                if (requiresResolvedLocation
+                    && frame.LocationEvidenceState == CentralCaptureLocationEvidenceState.ReportedResolved
+                    && existing is not null
+                    && IsLocationResolutionFailure(existing)
+                    && existing.ResultCentralArtifactId is { } retainedResultId
+                    && frame.Artifacts.FirstOrDefault(candidate => candidate.Id == retainedResultId) is
+                    {
+                        ObjectState: CentralArtifactObjectState.Available,
+                        ReconstructionState: CentralReconstructionState.Quarantined
+                    } retainedResult
+                    && (retainedResult.StateReasonCode == LocationUnresolvedReason
+                        || retainedResult.StateReasonCode == LocationMismatchReason)
+                    && await IsCanonicalTargetAsync(artifact, retainedResult, recipe, cancellationToken)
+                        .ConfigureAwait(false))
+                {
+                    retainedResult.StateReasonCode = null;
+                    retainedResult.ReconstructionState = CentralReconstructionState.Complete;
+                    Complete(existing, retainedResult, now);
+                    continue;
+                }
                 var target = recipe.Window is null && !isCloudAssessment ? frame.Artifacts.FirstOrDefault(candidate =>
                     candidate.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion
                     && candidate.Role == recipe.TargetRole
@@ -313,6 +338,26 @@ internal sealed class CentralDerivativeJobScheduler(
                 {
                     target = null;
                 }
+                if (requiresResolvedLocation
+                    && frame.LocationEvidenceState is CentralCaptureLocationEvidenceState.ReportedUnresolved
+                        or CentralCaptureLocationEvidenceState.Mismatch)
+                {
+                    if (existing is null)
+                    {
+                        existing = CreateJob(artifact, recipe, result: null, now);
+                        dbContext.CentralDerivativeJobs.Add(existing);
+                    }
+                    var completedResult = existing.ResultCentralArtifactId is { } resultId
+                        ? frame.Artifacts.FirstOrDefault(candidate => candidate.Id == resultId)
+                        : null;
+                    await QuarantineForLocationAsync(
+                        existing,
+                        completedResult ?? target,
+                        frame.LocationEvidenceState,
+                        now,
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
                 if (existing is null)
                 {
                     var job = isCloudAssessment
@@ -323,8 +368,15 @@ internal sealed class CentralDerivativeJobScheduler(
                         dbContext.CentralDerivativeJobs.Add(job);
                     }
                 }
-                else if (target is not null && CanComplete(existing) && !IsInvalidationFailure(existing))
+                else if (target is not null
+                    && (CanComplete(existing) || IsLocationResolutionFailure(existing))
+                    && !IsInvalidationFailure(existing))
                 {
+                    if (IsLocationResolutionFailure(existing))
+                    {
+                        target.StateReasonCode = null;
+                        target.ReconstructionState = CentralReconstructionState.Complete;
+                    }
                     Complete(existing, target, now);
                 }
                 else
@@ -898,6 +950,7 @@ internal sealed class CentralDerivativeJobScheduler(
         job.LeaseOwner = null;
         job.LeaseAcquiredAtUtc = null;
         job.LeaseExpiresAtUtc = null;
+        job.StateReasonCode = null;
         job.LastError = null;
     }
 
@@ -908,9 +961,12 @@ internal sealed class CentralDerivativeJobScheduler(
             || job.Status != CentralDerivativeJobStatus.Pending
                 && job.Status != CentralDerivativeJobStatus.RetryableFailure
                 && job.Status != CentralDerivativeJobStatus.Skipped
+                && job.Status != CentralDerivativeJobStatus.Quarantined
             || job.Status == CentralDerivativeJobStatus.RetryableFailure && !IsInvalidationFailure(job)
             || job.Status == CentralDerivativeJobStatus.Skipped
-                && !string.Equals(job.LastError, LegacySourceSkippedReason, StringComparison.Ordinal))
+                && !string.Equals(job.LastError, LegacySourceSkippedReason, StringComparison.Ordinal)
+            || job.Status == CentralDerivativeJobStatus.Quarantined
+                && !IsLocationResolutionFailure(job))
         {
             return;
         }
@@ -920,9 +976,62 @@ internal sealed class CentralDerivativeJobScheduler(
             job.MaxAttempts = checked(job.AttemptCount + CentralDerivativeRecipeCatalog.DefaultMaxAttempts);
         }
         job.AvailableAtUtc = now;
+        job.ResolutionCompletedAtUtc = now;
+        job.StateReasonCode = null;
         job.LastError = null;
         job.UpdatedAtUtc = now;
     }
+
+    private async Task QuarantineForLocationAsync(
+        CentralDerivativeJob job,
+        CentralArtifact? result,
+        CentralCaptureLocationEvidenceState evidenceState,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var reason = evidenceState == CentralCaptureLocationEvidenceState.ReportedUnresolved
+            ? LocationUnresolvedReason
+            : LocationMismatchReason;
+        if (job.Status == CentralDerivativeJobStatus.Leased)
+        {
+            var attempt = dbContext.CentralDerivativeJobAttempts.Local.SingleOrDefault(item =>
+                item.CentralDerivativeJobId == job.Id
+                && item.AttemptNumber == job.AttemptCount
+                && item.Outcome == CentralDerivativeAttemptOutcome.Leased)
+                ?? await dbContext.CentralDerivativeJobAttempts.SingleOrDefaultAsync(item =>
+                    item.CentralDerivativeJobId == job.Id
+                    && item.AttemptNumber == job.AttemptCount
+                    && item.Outcome == CentralDerivativeAttemptOutcome.Leased,
+                    cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("A leased derivative job has no active attempt.");
+            attempt.Outcome = CentralDerivativeAttemptOutcome.Quarantined;
+            attempt.ReasonCode = reason;
+            attempt.EndedAtUtc = now;
+        }
+        if (result is
+            {
+                ObjectState: CentralArtifactObjectState.Available,
+                ReconstructionState: CentralReconstructionState.Complete
+            })
+        {
+            result.StateReasonCode = reason;
+            result.ReconstructionState = CentralReconstructionState.Quarantined;
+        }
+        job.Status = CentralDerivativeJobStatus.Quarantined;
+        job.AvailableAtUtc = null;
+        job.LeaseToken = null;
+        job.LeaseOwner = null;
+        job.LeaseAcquiredAtUtc = null;
+        job.LeaseExpiresAtUtc = null;
+        job.ResolutionCompletedAtUtc = now;
+        job.StateReasonCode = reason;
+        job.LastError = reason;
+        job.UpdatedAtUtc = now;
+    }
+
+    private static bool IsLocationResolutionFailure(CentralDerivativeJob job)
+        => string.Equals(job.LastError, LocationUnresolvedReason, StringComparison.Ordinal)
+            || string.Equals(job.LastError, LocationMismatchReason, StringComparison.Ordinal);
 
     private static bool IsInvalidationFailure(CentralDerivativeJob job)
         => string.Equals(job.LastError, SourceInvalidatedReason, StringComparison.Ordinal)

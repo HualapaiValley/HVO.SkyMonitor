@@ -26,6 +26,13 @@ internal sealed class Observatory
     [MaxLength(128)]
     public string TimeZoneId { get; set; } = "UTC";
 
+    public double? AllowedDeploymentRadiusMeters { get; set; }
+
+    public long? CurrentLocationVersion { get; set; }
+
+    [MaxLength(64)]
+    public string? CurrentLocationCanonicalSha256 { get; set; }
+
     public DateTimeOffset CreatedAtUtc { get; set; }
 
     public DateTimeOffset? UpdatedAtUtc { get; set; }
@@ -33,4 +40,6 @@ internal sealed class Observatory
     public bool IsActive { get; set; } = true;
 
     public ICollection<DeviceRegistration> DeviceRegistrations { get; } = new List<DeviceRegistration>();
+
+    public ICollection<ObservatoryLocationVersion> LocationVersions { get; } = [];
 }

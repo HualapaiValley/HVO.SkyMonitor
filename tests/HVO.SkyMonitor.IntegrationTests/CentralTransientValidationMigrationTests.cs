@@ -772,8 +772,15 @@ public sealed class CentralTransientValidationMigrationTests
             ObjectState = CentralArtifactObjectState.Available,
             ReconstructionState = CentralReconstructionState.Complete
         };
-        frame.Artifacts.Add(artifact);
-        db.CentralFrames.Add(frame);
+        db.Database.ExecuteSqlInterpolated($"""
+            INSERT INTO [CentralFrames]
+                ([Id], [RegistrationId], [DevicePublicId], [ObservatoryId], [AgentId], [FrameId],
+                 [CapturedAtUtc], [FirstReceivedAtUtc], [RigProfileVersion], [SceneProvenanceJson])
+            VALUES
+                ({frame.Id}, {frame.RegistrationId}, {frame.DevicePublicId}, {frame.ObservatoryId},
+                 {frame.AgentId}, {frame.FrameId}, {frame.CapturedAtUtc}, {frame.FirstReceivedAtUtc}, NULL, NULL);
+            """);
+        db.CentralArtifacts.Add(artifact);
         return artifact;
     }
 

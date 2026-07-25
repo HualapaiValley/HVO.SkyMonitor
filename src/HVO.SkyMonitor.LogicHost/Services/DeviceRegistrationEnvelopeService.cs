@@ -128,6 +128,16 @@ internal sealed class DeviceRegistrationEnvelopeService : IDeviceRegistrationEnv
         var devicePublicId = registration.DevicePublicId ?? Guid.NewGuid();
         var deviceKey = GenerateSecret();
         var registrationToken = GenerateSecret();
+        var observatoryLocation = await ObservatoryLocationAuthority.EnsureCurrentVersionAsync(
+            dbContext,
+            observatory,
+            now,
+            request.OwnerUserId,
+            cancellationToken).ConfigureAwait(false);
+        registration.ObservatoryLocationVersion = observatoryLocation.Version;
+        registration.ObservatoryLocationCanonicalSha256 = observatoryLocation.CanonicalSha256;
+        registration.LocationEvidenceState = RegistrationLocationEvidenceState.ObservatoryPinned;
+        registration.EnvelopeVersion = "v2";
 
         var payload = new DeviceRegistrationEnvelopePayload(
             registration.Id,
@@ -139,7 +149,9 @@ internal sealed class DeviceRegistrationEnvelopeService : IDeviceRegistrationEnv
             deviceKey,
             registrationToken,
             now,
-            expiresAt);
+            expiresAt,
+            observatoryLocation.Version,
+            observatoryLocation.CanonicalSha256);
 
         var envelope = protector.Protect(JsonSerializer.Serialize(payload, DeviceRegistrationJson.Options));
 

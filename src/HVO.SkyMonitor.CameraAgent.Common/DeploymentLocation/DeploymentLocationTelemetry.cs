@@ -7,7 +7,7 @@ public sealed class DeploymentLocationTelemetry : IDisposable
 {
     public const string MeterName = "HVO.SkyMonitor.CameraAgent.DeploymentLocation";
     public const string ActivitySourceName = MeterName;
-    internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
+    public static ActivitySource ActivitySource { get; } = new(ActivitySourceName);
     private readonly Meter _meter = new(MeterName);
     private readonly Counter<long> _operations;
     private readonly Histogram<double> _duration;
@@ -20,7 +20,7 @@ public sealed class DeploymentLocationTelemetry : IDisposable
             "skymonitor.cameraagent.deployment_location.duration", "ms");
     }
 
-    internal void Record(string operation, string outcome, TimeSpan duration)
+    public void Record(string operation, string outcome, TimeSpan duration)
     {
         var tags = new TagList
         {

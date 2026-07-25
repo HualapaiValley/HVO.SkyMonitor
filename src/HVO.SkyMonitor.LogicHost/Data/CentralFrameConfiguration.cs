@@ -16,6 +16,11 @@ internal sealed class CentralFrameConfiguration : IEntityTypeConfiguration<Centr
         builder.Property(frame => frame.SceneProvenanceJson);
         builder.Property(frame => frame.RigId).HasMaxLength(128);
         builder.Property(frame => frame.CycleEvidenceJson);
+        builder.Property(frame => frame.LocationEvidenceState)
+            .HasConversion<string>().HasMaxLength(32)
+            .HasDefaultValue(CentralCaptureLocationEvidenceState.LegacyIncomplete).IsRequired();
+        builder.HasIndex(frame => frame.LocationEvidenceState);
+        builder.HasIndex(frame => frame.RegistrationId);
         builder.HasIndex(frame => new { frame.DevicePublicId, frame.FrameId }).IsUnique();
         builder.HasIndex(frame => new { frame.DevicePublicId, frame.CaptureSequence })
             .IsUnique().HasFilter("[CaptureSequence] IS NOT NULL");
