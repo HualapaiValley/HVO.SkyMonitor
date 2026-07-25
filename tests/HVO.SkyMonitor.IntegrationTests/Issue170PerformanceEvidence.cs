@@ -27,6 +27,7 @@ internal sealed class Issue170PerformanceEvidence
     ];
     private static readonly string[] ComparableHarnessFiles = HarnessOnlyFiles
         .Where(path => path.StartsWith("tests/", StringComparison.Ordinal)
+            && !path.EndsWith("Issue170PerformanceSummaryTests.cs", StringComparison.Ordinal)
             && !path.EndsWith("DeploymentLocationAuthorityPerformanceTests.cs", StringComparison.Ordinal))
         .ToArray();
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)

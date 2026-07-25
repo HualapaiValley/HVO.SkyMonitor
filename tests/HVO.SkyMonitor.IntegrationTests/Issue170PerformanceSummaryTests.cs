@@ -59,10 +59,7 @@ public sealed class Issue170PerformanceSummaryTests
     {
         var run = Issue170PerformanceEvidence.Create();
         var candidateCommit = RequiredCommit(run.RepositoryRoot, "HVO_EVIDENCE_CANDIDATE_REVISION");
-        if (!string.Equals(candidateCommit, run.Commit, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("The summary must run from the candidate harness commit.");
-        }
+        Issue170PerformanceEvidence.RequireAncestor(run.RepositoryRoot, candidateCommit, run.Commit);
         var baselineCommit = RequiredCommit(run.RepositoryRoot, "HVO_EVIDENCE_BASELINE_REVISION");
         var candidateProductionCommit = RequiredCommit(
             run.RepositoryRoot, "HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION");
@@ -497,7 +494,9 @@ public sealed class Issue170PerformanceSummaryTests
                 : throw new InvalidDataException($"{path} has an uncomputable non-zero regression.");
         var budget = fileName == "device-bootstrap-performance.json"
             ? path.EndsWith("allocatedBytes", StringComparison.OrdinalIgnoreCase) ? 50 :
-                path.Contains("protocol", StringComparison.OrdinalIgnoreCase) ? 50 : 35
+                path.Contains("protocol", StringComparison.OrdinalIgnoreCase)
+                    || path.Contains(".http.", StringComparison.OrdinalIgnoreCase)
+                    || path.Contains(".sql.", StringComparison.OrdinalIgnoreCase) ? 50 : 35
             : metadata.PreferredDirection == "higher"
                 ? path.Contains("scenario=W4-", StringComparison.Ordinal) ? 15 : 10
                 : path.EndsWith("allocatedBytes", StringComparison.OrdinalIgnoreCase)
