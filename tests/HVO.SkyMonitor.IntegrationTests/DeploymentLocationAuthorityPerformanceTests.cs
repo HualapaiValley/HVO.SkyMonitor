@@ -176,7 +176,7 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
             {
                 Trials = "Run five separate Release test processes from the same immutable evidence revision with trial ordinals 1 through 5.",
                 Percentiles = "nearest-rank over 1,000 measured logical operations after five warmups; paging uses 30 samples",
-                Resources = "CPU, monotonic allocation delta, and sampled process working set cover fleet phases; migration/population cover CPU/allocation and database growth; paging covers latency and SQL commands.",
+                Resources = "CPU, exact GC allocation-counter boundary snapshots, and sampled process working set cover fleet phases; migration/population cover CPU/allocation and database growth; paging covers latency and SQL commands.",
                 Sql = "EF command interceptor plus SQL Server STATISTICS IO and SHOWPLAN_XML on the owner/status paging query",
                 Retries = "SQL Server deadlock 1205 retries use a fresh production scope, are limited to three, remain inside logical-operation latency, and are reported per phase.",
                 Reset = "Changed deployment rows and audits are removed between concurrency levels; initial acknowledged rows and 10,000 links are restored."
@@ -349,15 +349,16 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
         using var process = Process.GetCurrentProcess();
         process.Refresh();
         var cpuBefore = process.TotalProcessorTime;
-        var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+        using var allocations = new Issue170AllocationSampler();
         var rssBefore = process.WorkingSet64;
         await using var rssSampler = new RssSampler(process, rssBefore);
+        allocations.Start();
         var started = Stopwatch.GetTimestamp();
         await ExecuteAsync(operations, concurrency, action, latencies).ConfigureAwait(false);
+        var allocation = await allocations.StopAsync().ConfigureAwait(false);
         var elapsed = Stopwatch.GetElapsedTime(started);
         process.Refresh();
         var cpuMilliseconds = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
-        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
         var rssAfter = process.WorkingSet64;
         var samples = latencies.Order().ToArray();
         var rssPeak = Math.Max(
@@ -376,7 +377,9 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
             counter.Count,
             Interlocked.Read(ref deadlockRetries),
             cpuMilliseconds,
-            allocatedBytes,
+            allocation.DeltaBytes,
+            allocation.StartBytes,
+            allocation.EndBytes,
             rssBefore,
             rssAfter,
             rssPeak);
@@ -773,12 +776,13 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
             StabilizeGc();
             using var process = Process.GetCurrentProcess();
             var cpuBefore = process.TotalProcessorTime;
-            var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+            using var allocations = new Issue170AllocationSampler();
+            allocations.Start();
             var started = Stopwatch.GetTimestamp();
             await migrator.MigrateAsync().ConfigureAwait(false);
+            var migrationAllocation = await allocations.StopAsync().ConfigureAwait(false);
             var migrationElapsed = Stopwatch.GetElapsedTime(started);
             var migrationCpu = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
-            var migrationAllocated = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
             var after = await ReadDatabaseSizeAsync(db).ConfigureAwait(false);
             var backfillStarted = Stopwatch.GetTimestamp();
             var backfilled = await ObservatoryLocationBackfill.RunAsync(db, TimeProvider.System).ConfigureAwait(false);
@@ -800,7 +804,9 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
                 FrameCount,
                 migrationElapsed.TotalMilliseconds,
                 migrationCpu,
-                migrationAllocated,
+                migrationAllocation.DeltaBytes,
+                migrationAllocation.StartBytes,
+                migrationAllocation.EndBytes,
                 before,
                 after,
                 after.DataAllocatedBytes - before.DataAllocatedBytes,
@@ -1105,7 +1111,8 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
         string Scenario, int Concurrency, int Warmups, int MeasuredOperations, double ElapsedMilliseconds,
         double OperationsPerSecond, LatencyDistribution LatencyMilliseconds,
         IReadOnlyList<double> LatencySamplesMilliseconds, long SqlCommands, long DeadlockRetries,
-        double CpuMilliseconds, long AllocatedBytes, long WorkingSetBeforeBytes, long WorkingSetAfterBytes,
+        double CpuMilliseconds, long AllocatedBytes, long AllocationCounterStartBytes,
+        long AllocationCounterEndBytes, long WorkingSetBeforeBytes, long WorkingSetAfterBytes,
         long WorkingSetObservedPeakBytes);
     private sealed record PagingEvidence(
         int Warmups, int MeasuredQueries, int PageSize, int TraversalPages, int UniqueRows,
@@ -1119,7 +1126,8 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
     private sealed record DatabaseSize(long DataAllocatedBytes, long DataUsedBytes, long LogAllocatedBytes, long LogUsedBytes);
     private sealed record MigrationEvidence(
         int Observatories, int Registrations, int Frames, double MigrationMilliseconds, double CpuMilliseconds,
-        long AllocatedBytes, DatabaseSize Before, DatabaseSize After, long DataAllocatedGrowthBytes,
+        long AllocatedBytes, long AllocationCounterStartBytes, long AllocationCounterEndBytes,
+        DatabaseSize Before, DatabaseSize After, long DataAllocatedGrowthBytes,
         long LogAllocatedGrowthBytes, long DataUsedGrowthBytes, long LogUsedGrowthBytes,
         int BackfilledObservatories, double BackfillMilliseconds,
         int RestartBackfilledObservatories, double RestartConvergenceMilliseconds);

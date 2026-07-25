@@ -66,9 +66,10 @@ public sealed class DeviceBootstrapPerformanceTests
         using var process = Process.GetCurrentProcess();
         process.Refresh();
         var cpuBefore = process.TotalProcessorTime;
-        var allocationsBefore = GC.GetTotalAllocatedBytes(precise: true);
+        using var allocations = new Issue170AllocationSampler();
         var rssBefore = process.WorkingSet64;
         await using var rssSampler = new RssSampler(process, rssBefore);
+        allocations.Start();
         var measuredStarted = Stopwatch.GetTimestamp();
         for (var index = 0; index < Measurements; index++)
         {
@@ -80,12 +81,12 @@ public sealed class DeviceBootstrapPerformanceTests
             requestBytes += result.RequestBytes;
             responseBytes += result.ResponseBytes;
         }
+        var allocation = await allocations.StopAsync().ConfigureAwait(false);
         var elapsed = Stopwatch.GetElapsedTime(measuredStarted);
         var measuredSqlCommands = sql.Count;
         var measuredTransactions = transactions.Snapshot();
         process.Refresh();
         var cpuMilliseconds = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
-        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocationsBefore;
         var rssAfter = process.WorkingSet64;
         var rssPeak = Math.Max(
             Math.Max(rssBefore, rssAfter),
@@ -155,7 +156,7 @@ public sealed class DeviceBootstrapPerformanceTests
             {
                 Trials = "Five separately launched Release test processes with unique run identities.",
                 Percentiles = "nearest-rank over 30 retained measured-operation latency samples after five warmups",
-                Resources = "Process.TotalProcessorTime, monotonic GC allocation delta, and sampled process working set",
+                Resources = "Process.TotalProcessorTime, exact GC allocation-counter boundary snapshots, and sampled process working set",
                 Sql = "EF command and transaction interceptors around the measured HTTP operations",
                 Boundary = "owner verify request start through bootstrap response-body read"
             },
@@ -182,7 +183,9 @@ public sealed class DeviceBootstrapPerformanceTests
                 Resources = new
                 {
                     CpuMilliseconds = cpuMilliseconds,
-                    AllocatedBytes = allocatedBytes,
+                    AllocatedBytes = allocation.DeltaBytes,
+                    AllocationCounterStartBytes = allocation.StartBytes,
+                    AllocationCounterEndBytes = allocation.EndBytes,
                     WorkingSetBeforeBytes = rssBefore,
                     WorkingSetAfterBytes = rssAfter,
                     WorkingSetObservedPeakBytes = rssPeak,

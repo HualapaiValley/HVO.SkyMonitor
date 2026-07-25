@@ -10,11 +10,14 @@ namespace HVO.SkyMonitor.IntegrationTests;
 
 internal sealed class Issue170PerformanceEvidence
 {
+    private static FileStream? exclusiveProcessLock;
     private static readonly string[] HarnessOnlyFiles =
     [
+        "tests/HVO.SkyMonitor.IntegrationTests/AssemblyHooks.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/DeviceBootstrapPerformanceTests.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/DeploymentLocationAuthorityPerformanceTests.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/IntegrationTestFixture.cs",
+        "tests/HVO.SkyMonitor.IntegrationTests/Issue170AllocationSampler.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/Issue170PerformanceEvidence.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/Issue170PerformanceSummaryTests.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/LogicHostIngestPerformanceTests.cs"
@@ -62,7 +65,7 @@ internal sealed class Issue170PerformanceEvidence
     public Guid RunId { get; }
     public int ProcessId { get; }
     public DateTime ProcessStartUtc { get; }
-    public static string BuildCommand => "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror";
+    public static string BuildCommand => "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release --no-incremental -warnaserror";
 
     public string CreateTestCommand(string fullyQualifiedName)
         => $"DOTNET_gcServer=1 HVO_EVIDENCE_REVISION={Commit} "
@@ -81,12 +84,14 @@ internal sealed class Issue170PerformanceEvidence
         RunId,
         ProcessId,
         ProcessStartUtc,
+        EvidenceCompletedUtc = DateTimeOffset.UtcNow,
         Assemblies
     };
 
     public static Issue170PerformanceEvidence Create()
     {
         var root = FindRepositoryRoot();
+        AcquireExclusiveProcessLock();
         var commit = RunGit(root, "rev-parse", "HEAD");
         var requestedRevision = System.Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION");
         if (string.IsNullOrWhiteSpace(requestedRevision))
@@ -144,11 +149,16 @@ internal sealed class Issue170PerformanceEvidence
                 "Every evidence assembly must be a Release binary built from the exact evidence harness commit.");
         }
         var environment = CreateEnvironmentEvidence(root);
+        var branch = RunGit(root, "branch", "--show-current");
+        if (string.IsNullOrWhiteSpace(branch))
+        {
+            throw new InvalidOperationException("Reviewed performance evidence requires a named branch.");
+        }
         return new Issue170PerformanceEvidence(
             root,
             commit,
             productionCommit,
-            RunGit(root, "branch", "--show-current"),
+            branch,
             trial,
             assemblies,
             environment,
@@ -223,7 +233,7 @@ internal sealed class Issue170PerformanceEvidence
         if (!string.Equals(declaredSdk, executingSdk, StringComparison.Ordinal)
             || !GCSettings.IsServerGC
             || string.Equals(dockerVersion, "unavailable", StringComparison.Ordinal)
-            || observedContainers.Length < containerImages.Length)
+            || containerImages.Any(image => !observedContainers.Contains(image, StringComparer.Ordinal)))
         {
             throw new InvalidOperationException(
                 "Reviewed evidence requires the pinned SDK, server GC, Docker, and all declared service containers.");
@@ -303,6 +313,33 @@ internal sealed class Issue170PerformanceEvidence
             hash.AppendData([0]);
         }
         return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
+    internal static string ResolveCommit(string root, string revision)
+        => RunGit(root, "rev-parse", $"{revision}^{{commit}}");
+
+    internal static void RequireAncestor(string root, string ancestor, string descendant)
+        => _ = RunGit(root, "merge-base", "--is-ancestor", ancestor, descendant);
+
+    internal static void AcquireExclusiveProcessLock()
+    {
+        if (exclusiveProcessLock is not null)
+        {
+            return;
+        }
+        try
+        {
+            exclusiveProcessLock = new FileStream(
+                Path.Combine(Path.GetTempPath(), "hvo-issue-170-performance.lock"),
+                FileMode.OpenOrCreate,
+                FileAccess.ReadWrite,
+                FileShare.None);
+        }
+        catch (IOException exception)
+        {
+            throw new InvalidOperationException(
+                "Another issue #170 performance evidence process is already running on this machine.", exception);
+        }
     }
 
     private static string[] ReadContainerImages(string root)

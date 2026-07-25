@@ -31,6 +31,7 @@ public sealed class Issue170PerformanceSummaryTests
         "allocatedBytes", "workingSetDeltaBytes", "workingSetObservedPeakBytes",
         "workingSetBeforeBytes", "workingSetAfterBytes", "rssStartBytes", "rssPeakBytes", "rssEndBytes",
         "runtimeAllocationCounterDeltaBytes",
+        "payloadBytes",
         "dataAllocatedGrowthBytes", "logAllocatedGrowthBytes", "dataUsedGrowthBytes",
         "logUsedGrowthBytes", "requestBodyBytes", "responseBodyBytes", "multipartRequestBodyBytes",
         "multipartPayloadBytes", "statusRequestBodyBytes", "logicalPayloadBytes",
@@ -55,10 +56,20 @@ public sealed class Issue170PerformanceSummaryTests
     public async Task FiveTrialEvidence_WritesDeterministicReviewedSummary()
     {
         var run = Issue170PerformanceEvidence.Create();
-        var candidateCommit = RequiredCommit("HVO_EVIDENCE_CANDIDATE_REVISION");
-        var baselineCommit = RequiredCommit("HVO_EVIDENCE_BASELINE_REVISION");
-        var candidateProductionCommit = RequiredCommit("HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION");
-        var baselineProductionCommit = RequiredCommit("HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION");
+        var candidateCommit = RequiredCommit(run.RepositoryRoot, "HVO_EVIDENCE_CANDIDATE_REVISION");
+        if (!string.Equals(candidateCommit, run.Commit, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The summary must run from the candidate harness commit.");
+        }
+        var baselineCommit = RequiredCommit(run.RepositoryRoot, "HVO_EVIDENCE_BASELINE_REVISION");
+        var candidateProductionCommit = RequiredCommit(
+            run.RepositoryRoot, "HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION");
+        var baselineProductionCommit = RequiredCommit(
+            run.RepositoryRoot, "HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION");
+        Issue170PerformanceEvidence.RequireAncestor(
+            run.RepositoryRoot, candidateProductionCommit, candidateCommit);
+        Issue170PerformanceEvidence.RequireAncestor(
+            run.RepositoryRoot, baselineProductionCommit, baselineCommit);
         if (!string.Equals(
                 baselineProductionCommit, RequiredBaselineProductionCommit, StringComparison.OrdinalIgnoreCase))
         {
@@ -66,6 +77,7 @@ public sealed class Issue170PerformanceSummaryTests
                 $"The issue #170 baseline production revision must be {RequiredBaselineProductionCommit}.");
         }
         var workloads = new SortedDictionary<string, WorkloadSummary>(StringComparer.Ordinal);
+        var allRuns = new List<RunEvidence>();
         foreach (var fileName in EvidenceFiles)
         {
             var candidate = LoadTrials(run.RepositoryRoot, candidateCommit, fileName, required: true)!;
@@ -92,11 +104,18 @@ public sealed class Issue170PerformanceSummaryTests
                 baseline?.Dispose();
                 throw new InvalidDataException("Evidence production revisions do not match the reviewed revisions.");
             }
+            allRuns.AddRange(candidate.Runs);
+            if (baseline is not null)
+            {
+                allRuns.AddRange(baseline.Runs);
+            }
             workloads.Add(fileName, Summarize(
                 candidate,
                 baseline,
-                requireComparable: fileName != "deployment-location-authority-performance.json"));
+                requireComparable: fileName != "deployment-location-authority-performance.json",
+                fileName: fileName));
         }
+        ValidateNonOverlappingRuns(allRuns, "all issue #170 workloads");
         var summary = new ReviewedSummary(
             "hvo-issue-170-five-trial-summary-v1",
             170,
@@ -105,8 +124,8 @@ public sealed class Issue170PerformanceSummaryTests
             baselineCommit,
             candidateProductionCommit,
             baselineProductionCommit,
-            "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror",
-            $"HVO_EVIDENCE_REVISION={run.Commit} HVO_EVIDENCE_PRODUCTION_REVISION={candidateProductionCommit} HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_CANDIDATE_REVISION={candidateCommit} HVO_EVIDENCE_BASELINE_REVISION={baselineCommit} HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION={candidateProductionCommit} HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION={baselineProductionCommit} dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~Issue170PerformanceSummaryTests.FiveTrialEvidence_WritesDeterministicReviewedSummary",
+            Issue170PerformanceEvidence.BuildCommand,
+            $"DOTNET_gcServer=1 HVO_EVIDENCE_REVISION={run.Commit} HVO_EVIDENCE_PRODUCTION_REVISION={candidateProductionCommit} HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_CANDIDATE_REVISION={candidateCommit} HVO_EVIDENCE_BASELINE_REVISION={baselineCommit} HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION={candidateProductionCommit} HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION={baselineProductionCommit} dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~Issue170PerformanceSummaryTests.FiveTrialEvidence_WritesDeterministicReviewedSummary",
             "The attributed summary revision validates immutable commit-scoped evidence revisions. Minimum/median/maximum use five independent processes. Pooled latency uses all retained samples. Paired deltas require matching immutable harness, normalized invariant workload, method, environment, scenario, metric, and sample shapes. The ingest workload normalization excludes only the explicitly recorded location-null baseline versus location-bound candidate mode required by issue #170.",
             workloads);
         var path = Path.Combine(run.RepositoryRoot, "docs", "validation", "issue-170-performance-summary.json");
@@ -187,7 +206,14 @@ public sealed class Issue170PerformanceSummaryTests
         var runs = roots.Select(rootElement => new RunEvidence(
             Property(Property(rootElement, "revision"), "runId").GetGuid(),
             Property(Property(rootElement, "revision"), "processId").GetInt32(),
-            Property(Property(rootElement, "revision"), "processStartUtc").GetDateTime())).ToArray();
+            Property(Property(rootElement, "revision"), "processStartUtc").GetDateTimeOffset(),
+            Property(Property(rootElement, "revision"), "evidenceCompletedUtc").GetDateTimeOffset())).ToArray();
+        var branch = Property(Property(roots[0], "revision"), "branch").GetString() ?? string.Empty;
+        var dirty = Property(Property(roots[0], "revision"), "dirty").GetBoolean();
+        if (string.IsNullOrWhiteSpace(branch) || dirty)
+        {
+            throw new InvalidDataException($"{fileName} evidence must record a named clean branch.");
+        }
         if (runIds.Distinct().Count() != roots.Length
             || runs.Select(run => (run.ProcessId, run.ProcessStartUtc)).Distinct().Count() != roots.Length
             || hashes.Distinct(StringComparer.Ordinal).Count() != hashes.Count)
@@ -202,6 +228,8 @@ public sealed class Issue170PerformanceSummaryTests
                 || Property(Property(rootElement, "revision"), "productionCommit").GetString() != productionCommit
                 || Property(Property(rootElement, "revision"), "harnessSourceSha256").GetString()
                     != harnessSourceSha256
+                || (Property(Property(rootElement, "revision"), "branch").GetString() ?? string.Empty) != branch
+                || Property(Property(rootElement, "revision"), "dirty").GetBoolean() != dirty
                 || Fingerprint(Property(rootElement, "environment")) != topologyFingerprint
                 || Fingerprint(Property(rootElement, "method")) != methodFingerprint
                 || !ReadStringProperties(Property(rootElement, "workload"), "intentionalLocationMode")
@@ -214,9 +242,7 @@ public sealed class Issue170PerformanceSummaryTests
             documents,
             hashes,
             roots.Select(rootElement => Property(rootElement, "correctness").Clone()).ToArray(),
-            roots.Select(rootElement => TryProperty(rootElement, "io", out var io)
-                ? io.Clone()
-                : JsonSerializer.SerializeToElement(new { })).ToArray(),
+            roots.Select(rootElement => Property(rootElement, "io").Clone()).ToArray(),
             environmentFingerprint,
             workloadFingerprint,
             assemblyFingerprint,
@@ -224,6 +250,8 @@ public sealed class Issue170PerformanceSummaryTests
             productionCommit,
             harnessSourceSha256,
             runs,
+            branch,
+            dirty,
             locationModes,
             topologyFingerprint,
             methodFingerprint);
@@ -232,7 +260,8 @@ public sealed class Issue170PerformanceSummaryTests
     private static WorkloadSummary Summarize(
         TrialSet candidate,
         TrialSet? baseline,
-        bool requireComparable)
+        bool requireComparable,
+        string fileName)
     {
         try
         {
@@ -240,6 +269,7 @@ public sealed class Issue170PerformanceSummaryTests
             var candidateLatencies = ReadLatencySamples(candidate);
             var baselineScalars = baseline is null ? null : ReadScalars(baseline);
             var baselineLatencies = baseline is null ? null : ReadLatencySamples(baseline);
+            ValidateNonOverlappingRuns(candidate.Runs.Concat(baseline?.Runs ?? []).ToArray(), fileName);
             var comparable = baseline is not null
                 && baseline.EnvironmentFingerprint == candidate.EnvironmentFingerprint
                 && baseline.WorkloadFingerprint == candidate.WorkloadFingerprint
@@ -273,6 +303,8 @@ public sealed class Issue170PerformanceSummaryTests
                     }
                 }
             }
+            var result = CreatePerformanceDisposition(
+                fileName, candidateScalars, candidateLatencies, scalarComparisons, latencyComparisons);
             return new WorkloadSummary(
                 candidate.EnvironmentFingerprint,
                 candidate.WorkloadFingerprint,
@@ -281,6 +313,8 @@ public sealed class Issue170PerformanceSummaryTests
                 candidate.ProductionCommit,
                 candidate.HarnessSourceSha256,
                 candidate.Runs,
+                candidate.Branch,
+                candidate.Dirty,
                 candidate.LocationModes,
                 candidate.TopologyFingerprint,
                 candidate.MethodFingerprint,
@@ -294,6 +328,8 @@ public sealed class Issue170PerformanceSummaryTests
                 baseline?.ProductionCommit,
                 baseline?.HarnessSourceSha256,
                 baseline?.Runs,
+                baseline?.Branch,
+                baseline?.Dirty,
                 baseline?.LocationModes,
                 baseline?.TopologyFingerprint,
                 baseline?.MethodFingerprint,
@@ -301,6 +337,7 @@ public sealed class Issue170PerformanceSummaryTests
                 baseline?.Correctness,
                 baseline?.Io,
                 comparable,
+                result,
                 SummarizeScalars(candidateScalars),
                 candidateScalars.Keys.ToDictionary(
                     path => path, MetricMetadataFor, StringComparer.Ordinal),
@@ -315,6 +352,187 @@ public sealed class Issue170PerformanceSummaryTests
             candidate.Dispose();
             baseline?.Dispose();
         }
+    }
+
+    private static void ValidateNonOverlappingRuns(IReadOnlyList<RunEvidence> runs, string fileName)
+    {
+        var ordered = runs.OrderBy(run => run.ProcessStartUtc).ToArray();
+        if (ordered.Any(run => run.EvidenceCompletedUtc < run.ProcessStartUtc)
+            || ordered.Zip(ordered.Skip(1), (current, next) =>
+                    next.ProcessStartUtc < current.EvidenceCompletedUtc)
+                .Any(overlaps => overlaps))
+        {
+            throw new InvalidDataException($"{fileName} evidence processes overlap or have invalid time bounds.");
+        }
+    }
+
+    private static PerformanceDisposition CreatePerformanceDisposition(
+        string fileName,
+        IReadOnlyDictionary<string, double[]> candidateScalars,
+        IReadOnlyDictionary<string, double[]> candidateLatencies,
+        IReadOnlyDictionary<string, PairedComparison> scalarComparisons,
+        IReadOnlyDictionary<string, DistributionComparison> latencyComparisons)
+    {
+        var metrics = new List<MetricDisposition>();
+        if (fileName == "deployment-location-authority-performance.json")
+        {
+            metrics.AddRange(candidateScalars.Select(pair => new MetricDisposition(
+                pair.Key,
+                "absolute candidate baseline; no equivalent pre-issue authority path",
+                null,
+                Range(pair.Value).Median,
+                null,
+                false,
+                "N/A comparison; correctness and durable-state invariants are mandatory.")));
+            metrics.AddRange(candidateLatencies.Select(pair => new MetricDisposition(
+                pair.Key,
+                "absolute candidate latency baseline; no equivalent pre-issue authority path",
+                null,
+                Distribution(pair.Value).P95,
+                null,
+                false,
+                "N/A comparison; pooled p50/p95/p99/maximum establish the future non-regression baseline.")));
+            return new PerformanceDisposition(
+                "Absolute candidate acceptance: all five trials must pass migration, durable-count, exact-binding, paging, backlog, and index-presence invariants.",
+                "accepted",
+                metrics,
+                [],
+                "This is a net-new authority path without an equivalent baseline; SQL Server plan choice and process counters remain environment-specific.");
+        }
+        foreach (var (path, comparison) in scalarComparisons)
+        {
+            metrics.Add(EvaluateScalar(fileName, path, comparison));
+        }
+        foreach (var (path, comparison) in latencyComparisons)
+        {
+            RequireMaximumRegression(comparison.P50ChangePercent, 35, $"{path} pooled p50");
+            RequireMaximumRegression(comparison.P95ChangePercent, 35, $"{path} pooled p95");
+            RequireMaximumRegression(comparison.P99ChangePercent, 50, $"{path} pooled p99");
+            RequireMaximumRegression(comparison.MaximumChangePercent, 50, $"{path} pooled maximum");
+            var observed = new[]
+            {
+                comparison.P50ChangePercent!.Value,
+                comparison.P95ChangePercent!.Value,
+                comparison.P99ChangePercent!.Value,
+                comparison.MaximumChangePercent!.Value
+            }.Max();
+            metrics.Add(new MetricDisposition(
+                path,
+                "pooled p50/p95 <= 35%; pooled p99/maximum <= 50% regression",
+                comparison.Baseline.P95,
+                comparison.Candidate.P95,
+                observed,
+                observed > 0,
+                "Tail budgets cover contention variance without treating five trial medians as percentile samples."));
+        }
+        var acceptedRegressions = metrics.Where(metric => metric.AcceptedRegression)
+            .Select(metric => string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"{metric.Metric}: {metric.ObservedRegressionPercent:F2}% within {metric.Policy}."))
+            .ToArray();
+        return new PerformanceDisposition(
+            fileName == "device-bootstrap-performance.json"
+                ? "Every comparable scalar and latency metric has an explicit budget, invariant, or N/A noise disposition; bootstrap allocations allow 50%, other resources and latency 35%, and structural I/O 50%."
+                : "Every comparable scalar and latency metric has an explicit budget, invariant, or N/A fault-noise disposition; normal/W4 throughput allow 10%/15%, allocations 25%, CPU/RSS 25%, structural I/O 20%, pooled p50/p95 35%, and p99/maximum 50%.",
+            "accepted",
+            metrics,
+            acceptedRegressions,
+            fileName == "device-bootstrap-performance.json"
+                ? "Provisioning is control-plane work; process-wide resource counters still include TestServer and client activity."
+                : "High-contention injected retries remain descriptive rather than comparative; zero final backlog, checksums, lineage, and durable location bindings remain mandatory.");
+    }
+
+    private static MetricDisposition EvaluateScalar(
+        string fileName,
+        string path,
+        PairedComparison comparison)
+    {
+        if (path.Contains("Backlog", StringComparison.OrdinalIgnoreCase))
+        {
+            if (comparison.BaselineMedian != comparison.CandidateMedian || comparison.CandidateMedian != 0)
+            {
+                throw new InvalidDataException($"{path} must remain exactly zero in baseline and candidate evidence.");
+            }
+            return new MetricDisposition(path, "exact zero invariant", 0, 0, 0, false,
+                "Durable backlog is a correctness gate, not a tolerated regression.");
+        }
+        if (path.EndsWith("rssStartBytes", StringComparison.Ordinal)
+            || path.EndsWith("serverErrorRetries", StringComparison.Ordinal)
+            || path.EndsWith("deadlockRetries", StringComparison.Ordinal)
+            || path.EndsWith("pendingReferenceRetries", StringComparison.Ordinal)
+            || path.EndsWith("statusPosts", StringComparison.Ordinal)
+            || path.EndsWith("statusRequestBodyBytes", StringComparison.Ordinal)
+            || path.EndsWith("sqlTransactionsRolledBackObserved", StringComparison.Ordinal)
+            || path.EndsWith("sqlTransactionsFailedObserved", StringComparison.Ordinal))
+        {
+            return new MetricDisposition(
+                path,
+                "N/A comparative gate; descriptive fault-injection or pre-window process state",
+                comparison.BaselineMedian,
+                comparison.CandidateMedian,
+                comparison.MedianChangePercent,
+                false,
+                "The fixed fault schedule and convergence assertions gate behavior; this counter is reported for diagnosis.");
+        }
+        var metadata = MetricMetadataFor(path);
+        if (metadata.PreferredDirection == "equal")
+        {
+            if (comparison.AbsoluteMedianChange != 0)
+            {
+                throw new InvalidDataException($"{path} changed across an invariant workload dimension.");
+            }
+            return new MetricDisposition(path, "exact workload-dimension equality", comparison.BaselineMedian,
+                comparison.CandidateMedian, 0, false, "Comparable trials must retain identical operation counts.");
+        }
+        var observed = comparison.MedianChangePercent.HasValue
+            ? metadata.PreferredDirection == "higher"
+                ? -comparison.MedianChangePercent.Value
+                : comparison.MedianChangePercent.Value
+            : comparison.BaselineMedian == comparison.CandidateMedian
+                ? 0
+                : throw new InvalidDataException($"{path} has an uncomputable non-zero regression.");
+        var budget = fileName == "device-bootstrap-performance.json"
+            ? path.EndsWith("allocatedBytes", StringComparison.OrdinalIgnoreCase) ? 50 :
+                path.Contains("protocol", StringComparison.OrdinalIgnoreCase) ? 50 : 35
+            : metadata.PreferredDirection == "higher"
+                ? path.Contains("scenario=W4-", StringComparison.Ordinal) ? 15 : 10
+                : path.EndsWith("allocatedBytes", StringComparison.OrdinalIgnoreCase)
+                    || path.EndsWith("cpuMilliseconds", StringComparison.OrdinalIgnoreCase)
+                    || path.EndsWith("rssPeakBytes", StringComparison.OrdinalIgnoreCase)
+                    || path.EndsWith("rssEndBytes", StringComparison.OrdinalIgnoreCase) ? 25
+                    : path.Contains("protocol", StringComparison.OrdinalIgnoreCase) ? 20 : 35;
+        if (metadata.Unit == "count"
+            && comparison.BaselineMedian is > 0 and <= 10
+            && Math.Abs(comparison.AbsoluteMedianChange) <= 2
+            && observed > budget)
+        {
+            return new MetricDisposition(path, "small-count absolute increase <= 2", comparison.BaselineMedian,
+                comparison.CandidateMedian, observed, observed > 0,
+                "Percentage change is unstable for single-digit operation counts.");
+        }
+        RequireMaximumRegression(observed, budget, path);
+        return new MetricDisposition(
+            path,
+            $"median preferred-direction regression <= {budget}%",
+            comparison.BaselineMedian,
+            comparison.CandidateMedian,
+            observed,
+            observed > 0,
+            "Budget was declared before replacement evidence collection.");
+    }
+
+    private static void RequireMaximumRegression(double? observedPercent, double maximumPercent, string metric)
+    {
+        if (observedPercent.HasValue && observedPercent.Value <= maximumPercent)
+        {
+            return;
+        }
+        if (!observedPercent.HasValue)
+        {
+            throw new InvalidDataException($"{metric} has no computable regression percentage.");
+        }
+        throw new InvalidDataException(
+            $"{metric} regressed {observedPercent.Value:F2}%, exceeding the predeclared {maximumPercent:F2}% budget.");
     }
 
     private static SortedDictionary<string, double[]> ReadScalars(TrialSet trials)
@@ -493,17 +711,33 @@ public sealed class Issue170PerformanceSummaryTests
             return;
         }
         if (scalars is not null && element.ValueKind == JsonValueKind.Number
-            && TryMetricMetadata(path, out _) && element.TryGetDouble(out var value))
+            && element.TryGetDouble(out var value))
         {
+            if (IsReviewedNonMetric(path))
+            {
+                return;
+            }
+            if (!TryMetricMetadata(path, out _))
+            {
+                throw new InvalidDataException($"Numeric measurement {path} has no metric disposition metadata.");
+            }
             scalars[path] = value;
         }
     }
 
+    private static bool IsReviewedNonMetric(string path)
+        => path.Contains("latencyMilliseconds.", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("medianMilliseconds", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("p95Milliseconds", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("p99Milliseconds", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("maximumMilliseconds", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("allocationCounterStartBytes", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("allocationCounterEndBytes", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("workingSetSamplingIntervalMilliseconds", StringComparison.OrdinalIgnoreCase);
+
     private static bool TryMetricMetadata(string path, out MetricMetadata metadata)
     {
-        if (path.Contains("latencyMilliseconds.", StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith("allocationCounterStart", StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith("allocationCounterEnd", StringComparison.OrdinalIgnoreCase))
+        if (IsReviewedNonMetric(path))
         {
             metadata = default!;
             return false;
@@ -525,6 +759,17 @@ public sealed class Issue170PerformanceSummaryTests
             metadata = new MetricMetadata("seconds", "lower");
             return true;
         }
+        if (path.EndsWith("concurrency", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("warmupOperations", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("measuredOperations", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("warmupTransitions", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("measuredTransitions", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("warmupPendingIntents", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("measuredPendingIntents", StringComparison.OrdinalIgnoreCase))
+        {
+            metadata = new MetricMetadata("count", "equal");
+            return true;
+        }
         if (ByteMetricSuffixes.Any(
                 suffix => path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
             || path.Contains("backlog", StringComparison.OrdinalIgnoreCase)
@@ -538,6 +783,17 @@ public sealed class Issue170PerformanceSummaryTests
             || path.Contains("backlog", StringComparison.OrdinalIgnoreCase)
                 && path.EndsWith("count", StringComparison.OrdinalIgnoreCase)
             || path.Contains(".sql.transactions.", StringComparison.OrdinalIgnoreCase))
+        {
+            metadata = new MetricMetadata("count", "lower");
+            return true;
+        }
+        if (path.EndsWith("commands", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("observed", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("injectedFailures", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("started", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("committed", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("rolledBack", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("failed", StringComparison.OrdinalIgnoreCase))
         {
             metadata = new MetricMetadata("count", "lower");
             return true;
@@ -606,7 +862,9 @@ public sealed class Issue170PerformanceSummaryTests
             after.P95 - before.P95,
             before.P95 == 0 ? null : (after.P95 / before.P95 - 1) * 100,
             after.P99 - before.P99,
-            before.P99 == 0 ? null : (after.P99 / before.P99 - 1) * 100);
+            before.P99 == 0 ? null : (after.P99 / before.P99 - 1) * 100,
+            after.Maximum - before.Maximum,
+            before.Maximum == 0 ? null : (after.Maximum / before.Maximum - 1) * 100);
     }
 
     private static TrialRange Range(IEnumerable<double> source)
@@ -718,11 +976,11 @@ public sealed class Issue170PerformanceSummaryTests
         return false;
     }
 
-    private static string RequiredCommit(string name)
-        => OptionalCommit(name)
+    private static string RequiredCommit(string root, string name)
+        => OptionalCommit(root, name)
             ?? throw new InvalidOperationException($"{name} must contain a full commit SHA.");
 
-    private static string? OptionalCommit(string name)
+    private static string? OptionalCommit(string root, string name)
     {
         var value = Environment.GetEnvironmentVariable(name);
         if (string.IsNullOrWhiteSpace(value))
@@ -733,7 +991,7 @@ public sealed class Issue170PerformanceSummaryTests
         {
             throw new InvalidOperationException($"{name} must contain one full 40-character commit SHA.");
         }
-        return value;
+        return Issue170PerformanceEvidence.ResolveCommit(root, value);
     }
 
     private sealed class TrialSet(
@@ -748,6 +1006,8 @@ public sealed class Issue170PerformanceSummaryTests
         string productionCommit,
         string harnessSourceSha256,
         IReadOnlyList<RunEvidence> runs,
+        string branch,
+        bool dirty,
         IReadOnlyList<string> locationModes,
         string topologyFingerprint,
         string methodFingerprint) : IDisposable
@@ -763,6 +1023,8 @@ public sealed class Issue170PerformanceSummaryTests
         public string ProductionCommit { get; } = productionCommit;
         public string HarnessSourceSha256 { get; } = harnessSourceSha256;
         public IReadOnlyList<RunEvidence> Runs { get; } = runs;
+        public string Branch { get; } = branch;
+        public bool Dirty { get; } = dirty;
         public IReadOnlyList<string> LocationModes { get; } = locationModes;
         public string TopologyFingerprint { get; } = topologyFingerprint;
         public string MethodFingerprint { get; } = methodFingerprint;
@@ -796,6 +1058,8 @@ public sealed class Issue170PerformanceSummaryTests
         string CandidateProductionCommit,
         string CandidateHarnessSourceSha256,
         IReadOnlyList<RunEvidence> CandidateRuns,
+        string CandidateBranch,
+        bool CandidateDirty,
         IReadOnlyList<string> CandidateLocationModes,
         string CandidateTopologyFingerprint,
         string CandidateMethodFingerprint,
@@ -809,6 +1073,8 @@ public sealed class Issue170PerformanceSummaryTests
         string? BaselineProductionCommit,
         string? BaselineHarnessSourceSha256,
         IReadOnlyList<RunEvidence>? BaselineRuns,
+        string? BaselineBranch,
+        bool? BaselineDirty,
         IReadOnlyList<string>? BaselineLocationModes,
         string? BaselineTopologyFingerprint,
         string? BaselineMethodFingerprint,
@@ -816,6 +1082,7 @@ public sealed class Issue170PerformanceSummaryTests
         IReadOnlyList<JsonElement>? BaselineCorrectness,
         IReadOnlyList<JsonElement>? BaselineIo,
         bool Comparable,
+        PerformanceDisposition Result,
         IReadOnlyDictionary<string, TrialRange> CandidateScalars,
         IReadOnlyDictionary<string, MetricMetadata> ScalarMetadata,
         IReadOnlyDictionary<string, TrialRange>? BaselineScalars,
@@ -823,9 +1090,27 @@ public sealed class Issue170PerformanceSummaryTests
         IReadOnlyDictionary<string, PooledDistribution> CandidateLatency,
         IReadOnlyDictionary<string, PooledDistribution>? BaselineLatency,
         IReadOnlyDictionary<string, DistributionComparison> LatencyComparisons);
+    private sealed record PerformanceDisposition(
+        string RegressionMethod,
+        string Disposition,
+        IReadOnlyList<MetricDisposition> Metrics,
+        IReadOnlyList<string> AcceptedRegressions,
+        string ResidualRisk);
+    private sealed record MetricDisposition(
+        string Metric,
+        string Policy,
+        double? BaselineValue,
+        double CandidateValue,
+        double? ObservedRegressionPercent,
+        bool AcceptedRegression,
+        string Rationale);
     private sealed record TrialRange(double Minimum, double Median, double Maximum);
     private sealed record MetricMetadata(string Unit, string PreferredDirection);
-    private sealed record RunEvidence(Guid RunId, int ProcessId, DateTime ProcessStartUtc);
+    private sealed record RunEvidence(
+        Guid RunId,
+        int ProcessId,
+        DateTimeOffset ProcessStartUtc,
+        DateTimeOffset EvidenceCompletedUtc);
     private sealed record PairedComparison(
         double BaselineMedian,
         double CandidateMedian,
@@ -841,5 +1126,7 @@ public sealed class Issue170PerformanceSummaryTests
         double P95AbsoluteChange,
         double? P95ChangePercent,
         double P99AbsoluteChange,
-        double? P99ChangePercent);
+        double? P99ChangePercent,
+        double MaximumAbsoluteChange,
+        double? MaximumChangePercent);
 }
