@@ -58,6 +58,6 @@
   "validation": {
     "unit": "dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj --filter FullyQualifiedName~DeploymentLocationTelemetryTests",
     "edge": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --filter FullyQualifiedName~DeploymentLocationReconciliationWorkerTests",
-    "integration": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --filter FullyQualifiedName~ArtifactIngestTests.ObservatoryChange_QuarantinesCompletedAnnotationUntilCurrentEvaluationIsResolved"
+    "integration": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --filter FullyQualifiedName~ArtifactIngestTests.ObservatoryChange_PreservesHistoricalCaptureAndCompletedAnnotation"
   }
 }

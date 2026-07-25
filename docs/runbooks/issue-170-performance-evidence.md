@@ -11,6 +11,7 @@ export BASELINE_PRODUCTION=57098c0f04e88e2a1a85b3ac1b18a8b675fa6257
 export BASELINE_HARNESS=<baseline-production-plus-harness-commit>
 export CANDIDATE_PRODUCTION=<issue-170-production-commit>
 export CANDIDATE_HARNESS=<candidate-production-plus-identical-comparable-harness-commit>
+export SUMMARY_REVISION=<clean-descendant-summary-commit>
 ```
 
 The baseline and candidate harness commits must differ from their production commits only in the harness files declared by `Issue170PerformanceEvidence`. The comparable harness files must be byte-identical. Both worktrees must be clean; use a named baseline evidence branch rather than an unreachable detached commit.
@@ -46,7 +47,7 @@ Each raw file records branch, clean state, harness and production commits, assem
 Run the summary from a clean descendant of the candidate harness revision after both five-trial sets are present. The descendant may change only allowlisted evidence/summary support and is recorded as `SummaryCommit`; the summary resolves every revision as a Git commit, verifies ancestry, rejects overlapping processes or harness drift, applies predeclared metric-specific budgets and N/A dispositions, and creates `docs/validation/issue-170-performance-summary.json`.
 
 ```bash
-DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_CANDIDATE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_BASELINE_REVISION=$BASELINE_HARNESS HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION=$BASELINE_PRODUCTION dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~Issue170PerformanceSummaryTests.FiveTrialEvidence_WritesDeterministicReviewedSummary"
+DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=$SUMMARY_REVISION HVO_EVIDENCE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_CANDIDATE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_BASELINE_REVISION=$BASELINE_HARNESS HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION=$BASELINE_PRODUCTION dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~Issue170PerformanceSummaryTests.FiveTrialEvidence_WritesDeterministicReviewedSummary"
 ```
 
 Review every accepted regression and residual risk in the generated summary before committing it. Any unexplained budget failure blocks merge.

@@ -15,6 +15,7 @@ internal sealed class Issue170PerformanceEvidence
     [
         "docs/runbooks/ci-pipeline.md",
         "docs/runbooks/issue-170-performance-evidence.md",
+        "docs/validation/issue-170-runtime-signals.json",
         "scripts/test-categories/Program.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/AssemblyHooks.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/DeviceBootstrapPerformanceTests.cs",

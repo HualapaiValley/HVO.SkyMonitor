@@ -479,14 +479,12 @@ public sealed class Issue170PerformanceSummaryTests
         if (path.EndsWith("rssStartBytes", StringComparison.Ordinal)
             || path.EndsWith("sampledAllocationRateBytes", StringComparison.OrdinalIgnoreCase)
             || path.EndsWith("allocationRateSamples", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("Retries", StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith("serverErrorRetries", StringComparison.Ordinal)
-            || path.EndsWith("deadlockRetries", StringComparison.Ordinal)
-            || path.EndsWith("pendingReferenceRetries", StringComparison.Ordinal)
-            || path.EndsWith("statusPosts", StringComparison.Ordinal)
-            || path.EndsWith("statusRequestBodyBytes", StringComparison.Ordinal)
-            || path.EndsWith("sqlTransactionsRolledBackObserved", StringComparison.Ordinal)
-            || path.EndsWith("sqlTransactionsFailedObserved", StringComparison.Ordinal))
+            || !path.Contains("steadyState", StringComparison.OrdinalIgnoreCase)
+            && (path.Contains("Retries", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith("statusPosts", StringComparison.Ordinal)
+                || path.EndsWith("statusRequestBodyBytes", StringComparison.Ordinal)
+                || path.EndsWith("sqlTransactionsRolledBackObserved", StringComparison.Ordinal)
+                || path.EndsWith("sqlTransactionsFailedObserved", StringComparison.Ordinal)))
         {
             return new MetricDisposition(
                 path,
@@ -532,10 +530,10 @@ public sealed class Issue170PerformanceSummaryTests
             && comparison.BaselineRange.Maximum >= comparison.CandidateRange.Minimum
             && comparison.CandidateRange.Maximum >= comparison.BaselineRange.Minimum)
         {
-            return new MetricDisposition(path, "noise disposition; five-trial ranges overlap",
-                comparison.BaselineMedian, comparison.CandidateMedian, observed, false,
+            return new MetricDisposition(path, "reviewed budget exception; five-trial ranges overlap",
+                comparison.BaselineMedian, comparison.CandidateMedian, observed, true,
                 string.Create(System.Globalization.CultureInfo.InvariantCulture,
-                    $"Baseline range {comparison.BaselineRange.Minimum:F3}-{comparison.BaselineRange.Maximum:F3} and candidate range {comparison.CandidateRange.Minimum:F3}-{comparison.CandidateRange.Maximum:F3} overlap; the median change is retained but not treated as a proven regression."));
+                    $"Baseline range {comparison.BaselineRange.Minimum:F3}-{comparison.BaselineRange.Maximum:F3} and candidate range {comparison.CandidateRange.Minimum:F3}-{comparison.CandidateRange.Maximum:F3} overlap; the over-budget median change is retained as an explicit reviewed exception rather than a proven regression."));
         }
         if (metadata.Unit == "count"
             && comparison.BaselineMedian is > 0 and <= 10
