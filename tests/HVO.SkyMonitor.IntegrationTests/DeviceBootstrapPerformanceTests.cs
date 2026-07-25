@@ -156,7 +156,7 @@ public sealed class DeviceBootstrapPerformanceTests
             {
                 Trials = "Five separately launched Release test processes with unique run identities.",
                 Percentiles = "nearest-rank over 30 retained measured-operation latency samples after five warmups",
-                Resources = "Process.TotalProcessorTime, exact GC allocation-counter boundary snapshots, and sampled process working set",
+                Resources = "Process.TotalProcessorTime, 100 ms System.Runtime allocation-rate samples with up to one interval of uncertainty at each boundary, and sampled process working set",
                 Sql = "EF command and transaction interceptors around the measured HTTP operations",
                 Boundary = "owner verify request start through bootstrap response-body read"
             },
@@ -183,9 +183,9 @@ public sealed class DeviceBootstrapPerformanceTests
                 Resources = new
                 {
                     CpuMilliseconds = cpuMilliseconds,
-                    AllocatedBytes = allocation.DeltaBytes,
-                    AllocationCounterStartBytes = allocation.StartBytes,
-                    AllocationCounterEndBytes = allocation.EndBytes,
+                    SampledAllocationRateBytes = allocation.SampledBytes,
+                    AllocationRateSamples = allocation.Samples,
+                    AllocationSamplingIntervalMilliseconds = allocation.IntervalMilliseconds,
                     WorkingSetBeforeBytes = rssBefore,
                     WorkingSetAfterBytes = rssAfter,
                     WorkingSetObservedPeakBytes = rssPeak,

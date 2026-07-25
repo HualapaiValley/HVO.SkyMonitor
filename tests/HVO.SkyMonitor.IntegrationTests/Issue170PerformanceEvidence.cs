@@ -14,6 +14,7 @@ internal sealed class Issue170PerformanceEvidence
     private static readonly string[] HarnessOnlyFiles =
     [
         "docs/runbooks/ci-pipeline.md",
+        "docs/runbooks/issue-170-performance-evidence.md",
         "scripts/test-categories/Program.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/AssemblyHooks.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/DeviceBootstrapPerformanceTests.cs",
