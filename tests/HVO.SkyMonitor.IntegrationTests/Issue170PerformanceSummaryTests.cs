@@ -773,6 +773,8 @@ public sealed class Issue170PerformanceSummaryTests
             return true;
         }
         if (path.EndsWith("concurrency", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith(".warmup", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith(".measured", StringComparison.OrdinalIgnoreCase)
             || path.EndsWith("warmupOperations", StringComparison.OrdinalIgnoreCase)
             || path.EndsWith("measuredOperations", StringComparison.OrdinalIgnoreCase)
             || path.EndsWith("warmupTransitions", StringComparison.OrdinalIgnoreCase)
