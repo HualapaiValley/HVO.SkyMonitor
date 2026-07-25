@@ -13,6 +13,8 @@ internal sealed class Issue170PerformanceEvidence
     private static FileStream? exclusiveProcessLock;
     private static readonly string[] HarnessOnlyFiles =
     [
+        "docs/runbooks/ci-pipeline.md",
+        "scripts/test-categories/Program.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/AssemblyHooks.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/DeviceBootstrapPerformanceTests.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/DeploymentLocationAuthorityPerformanceTests.cs",
