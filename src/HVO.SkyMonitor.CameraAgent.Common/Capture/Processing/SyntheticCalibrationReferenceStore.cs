@@ -146,9 +146,8 @@ internal sealed class SyntheticCalibrationReferenceStore(
             model.TemperatureC,
             model.TemperatureC,
             descriptors);
-        var profileElement = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(profile));
-        var profileJson = Encoding.UTF8.GetBytes(profileElement.GetRawText());
-        var profileIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(profileElement);
+        var profileJson = ReferenceCalibrationProfileJson.Serialize(profile);
+        var profileIdentity = ProcessingIdentity.ComputePayloadSha256(profileJson);
         await WriteImmutableAsync(
             profileRelativePath,
             profileJson,

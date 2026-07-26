@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -41,6 +42,37 @@ public sealed record ReferenceCalibrationProfileV1(
     [property: JsonRequired] IReadOnlyList<CalibrationReferenceDescriptorV1> References)
 {
     public const string CurrentSchemaVersion = "reference-calibration-profile-v1";
+}
+
+public static class ReferenceCalibrationProfileJson
+{
+    private static readonly JsonSerializerOptions SerializerOptions = new();
+    private static readonly JsonSerializerOptions ParserOptions = new(JsonSerializerDefaults.Web)
+    {
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+    };
+
+    public static byte[] Serialize(ReferenceCalibrationProfileV1 profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        var element = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(profile, SerializerOptions));
+        return Encoding.UTF8.GetBytes(element.GetRawText());
+    }
+
+    public static string ComputeIdentitySha256(ReferenceCalibrationProfileV1 profile)
+        => ProcessingIdentity.ComputePayloadSha256(Serialize(profile));
+
+    public static ReferenceCalibrationProfileV1? Parse(ReadOnlySpan<byte> utf8Json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<ReferenceCalibrationProfileV1>(utf8Json, ParserOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 }
 
 public sealed record ReferenceCalibrationOptions();
@@ -97,17 +129,7 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
                 ProcessingReasonCodes.InvalidCalibrationProfile, ProfileInput));
         }
 
-        ReferenceCalibrationProfileV1? profile;
-        try
-        {
-            profile = JsonSerializer.Deserialize<ReferenceCalibrationProfileV1>(
-                profileInput.Payload.Span,
-                ProcessingRecipeSupport.SerializerOptions);
-        }
-        catch (JsonException)
-        {
-            profile = null;
-        }
+        var profile = ReferenceCalibrationProfileJson.Parse(profileInput.Payload.Span);
         if (!TryValidateProfile(profile, light, lightLayout, out var profileFailure))
         {
             return ValueTask.FromResult(profileFailure!);

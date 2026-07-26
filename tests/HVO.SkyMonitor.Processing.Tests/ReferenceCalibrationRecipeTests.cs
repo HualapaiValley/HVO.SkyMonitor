@@ -1,6 +1,6 @@
-using System.Text;
-using System.Text.Json;
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 
@@ -13,9 +13,26 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "MSTest methods do not require context-free awaits.")]
 public sealed class ReferenceCalibrationRecipeTests
 {
+    private const string LegacyProfileSha256 = "044F86BF838784C7646EAE1D681440BB5D73A90AB8CDF799BE6930F09DCB86E2";
     private static readonly DateTimeOffset CaptureTime = new(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
     private static readonly ProcessingCompatibilityIdentity Compatibility = new(
         "rig", "orientation", "calibration", "mask", "sensor", "setpoint", "processing");
+
+    [TestMethod]
+    public async Task LegacyProfileGoldenRoundTripsWithoutChangingCanonicalBytesOrIdentity()
+    {
+        var fixture = await File.ReadAllBytesAsync(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "reference-calibration-profile-v1.json"));
+        Assert.AreEqual((byte)'\n', fixture[^1]);
+        var expected = fixture[..^1];
+
+        var profile = ReferenceCalibrationProfileJson.Parse(expected);
+
+        Assert.IsNotNull(profile);
+        CollectionAssert.AreEqual(expected, ReferenceCalibrationProfileJson.Serialize(profile));
+        Assert.AreEqual(LegacyProfileSha256, Convert.ToHexString(SHA256.HashData(expected)));
+        Assert.AreEqual(LegacyProfileSha256, ReferenceCalibrationProfileJson.ComputeIdentitySha256(profile));
+    }
 
     [TestMethod]
     public async Task ExecuteAsync_CorrectsReferencesAndBindsOrderedLineageAndProfileIdentity()
@@ -162,9 +179,8 @@ public sealed class ReferenceCalibrationRecipeTests
             -11,
             -9,
             descriptors);
-        var profileElement = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(profile));
-        var profileBytes = Encoding.UTF8.GetBytes(profileElement.GetRawText());
-        var profileIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(profileElement);
+        var profileBytes = ReferenceCalibrationProfileJson.Serialize(profile);
+        var profileIdentity = ReferenceCalibrationProfileJson.ComputeIdentitySha256(profile);
         var inputs = new List<ProcessingArtifact> { light };
         inputs.AddRange(references.Where(pair => !string.Equals(pair.Key, omitKind, StringComparison.Ordinal)).Select(static pair => pair.Value));
         var auxiliaries = new List<ProcessingAuxiliaryInput>
