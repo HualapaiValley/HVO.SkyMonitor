@@ -1,12 +1,15 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -67,6 +70,7 @@ public sealed class SqliteCalibrationLibraryStore(
     IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider) : IProcessingRetentionHolds, IDisposable
 {
+    internal const int MaximumAcquisitionAttempts = 3;
     private readonly IRawCaptureIngress _rawCaptureIngress = rawCaptureIngress;
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     private readonly string _databasePath = Path.Combine(
@@ -96,6 +100,238 @@ public sealed class SqliteCalibrationLibraryStore(
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return state;
     }
+
+    public async Task<CalibrationAcquisitionJobSnapshot?> ReadAcquireReplayAsync(
+        string idempotencyKey,
+        string payloadSha256,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(payloadSha256);
+        ValidateCommandIdentity(idempotencyKey, payloadSha256);
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        var result = await ReadAcquireCommandAsync(
+            connection, transaction, idempotencyKey, payloadSha256, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return result;
+    }
+
+    public async Task<CalibrationAcquisitionJobSnapshot> PlanAcquireAsync(
+        VirtualCalibrationAcquisitionPlanV1 plan,
+        string idempotencyKey,
+        string payloadSha256,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(payloadSha256);
+        VirtualCalibrationAcquisitionContractJson.ValidatePlan(plan);
+        ValidateCommandIdentity(idempotencyKey, payloadSha256);
+        ValidateActor(actor, reason);
+        var planJson = VirtualCalibrationAcquisitionContractJson.SerializePlan(plan);
+        var planIdentity = Convert.ToHexString(SHA256.HashData(planJson));
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var replay = await ReadAcquireCommandAsync(
+                connection, transaction, idempotencyKey, payloadSha256, cancellationToken).ConfigureAwait(false);
+            if (replay is not null)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return replay;
+            }
+            var existing = await ReadNonterminalAcquisitionJobAsync(
+                connection, transaction, plan.CameraKey, cancellationToken).ConfigureAwait(false);
+            if (existing is not null)
+            {
+                throw new CalibrationLibraryStoreConflictException(
+                    "A nonterminal calibration acquisition already exists for this camera.");
+            }
+            var now = Now();
+            await ExecuteAsync(connection, transaction, """
+                INSERT INTO calibration_acquisition_jobs(
+                    job_id, camera_key, idempotency_key, plan_json, plan_sha256, state, phase,
+                    attempt_count, bundle_id, failure_reason, actor, reason,
+                    created_unix_ms, updated_unix_ms, completed_unix_ms)
+                VALUES ($job, $camera, $key, $plan, $plan_sha, 'planned', 'planned',
+                        0, NULL, NULL, $actor, $reason, $now, $now, NULL);
+                INSERT INTO calibration_library_commands(
+                    idempotency_key, command_kind, payload_sha256, result_bundle_id, result_job_id,
+                    result_state_version, result_json, created_unix_ms, completed_unix_ms)
+                VALUES ($key, 'acquire', $payload, NULL, $job, NULL, $plan, $now, $now);
+                """, cancellationToken,
+                ("$job", plan.JobId),
+                ("$camera", plan.CameraKey),
+                ("$key", idempotencyKey),
+                ("$plan", planJson),
+                ("$plan_sha", planIdentity),
+                ("$payload", payloadSha256),
+                ("$actor", actor),
+                ("$reason", (object?)reason ?? DBNull.Value),
+                ("$now", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+            var job = await ReadAcquisitionJobAsync(
+                connection, transaction, plan.JobId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("The durable calibration acquisition job was not created.");
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return job;
+        }
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
+        {
+            throw new CalibrationLibraryStoreConflictException(
+                "Calibration acquisition planning conflicts with durable state.", exception);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<CalibrationAcquisitionJobSnapshot?> ReadPendingAcquisitionJobAsync(
+        CancellationToken cancellationToken)
+    {
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        string? jobId;
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT job_id FROM calibration_acquisition_jobs
+                WHERE state NOT IN ('published', 'failed', 'cancelled')
+                ORDER BY created_unix_ms, job_id LIMIT 1;
+                """;
+            jobId = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+        }
+        var result = jobId is null
+            ? null
+            : await ReadAcquisitionJobAsync(connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return result;
+    }
+
+    public async Task<CalibrationAcquisitionJobSnapshot?> GetAcquisitionJobAsync(
+        string jobId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(jobId) || jobId.Length > 128)
+        {
+            throw new ArgumentException("A valid calibration job identifier is required.", nameof(jobId));
+        }
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        var result = await ReadAcquisitionJobAsync(connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return result;
+    }
+
+    public async Task<CalibrationAcquisitionJobSnapshot> BeginAcquisitionAttemptAsync(
+        string jobId,
+        CancellationToken cancellationToken)
+    {
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var current = await ReadRequiredAcquisitionJobAsync(
+                connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            if (current.IsTerminal)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return current;
+            }
+            var state = current.State == CalibrationAcquisitionStates.Planned
+                ? CalibrationAcquisitionStates.Acquiring
+                : current.State;
+            var phase = current.State == CalibrationAcquisitionStates.Planned ? "sources-pending" : current.Phase;
+            await ExecuteAsync(connection, transaction, """
+                UPDATE calibration_acquisition_jobs
+                SET state = $state, phase = $phase, updated_unix_ms = $now
+                WHERE job_id = $job;
+                """, cancellationToken,
+                ("$state", state), ("$phase", phase), ("$now", Now().ToUnixTimeMilliseconds()), ("$job", jobId))
+                .ConfigureAwait(false);
+            var result = await ReadRequiredAcquisitionJobAsync(
+                connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<CalibrationAcquisitionJobSnapshot> RecordAcquisitionAttemptFailureAsync(
+        string jobId,
+        CancellationToken cancellationToken)
+    {
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var current = await ReadRequiredAcquisitionJobAsync(
+                connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            if (current.IsTerminal)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return current;
+            }
+            await ExecuteAsync(connection, transaction, """
+                UPDATE calibration_acquisition_jobs
+                SET attempt_count = attempt_count + 1, updated_unix_ms = $now
+                WHERE job_id = $job;
+                """, cancellationToken,
+                ("$now", Now().ToUnixTimeMilliseconds()), ("$job", jobId)).ConfigureAwait(false);
+            var result = await ReadRequiredAcquisitionJobAsync(
+                connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public Task<CalibrationAcquisitionJobSnapshot> RecordAcquisitionProgressAsync(
+        string jobId,
+        string state,
+        string phase,
+        CancellationToken cancellationToken)
+        => UpdateAcquisitionJobAsync(jobId, state, phase, bundleId: null, failureReason: null, terminal: false, cancellationToken);
+
+    public Task<CalibrationAcquisitionJobSnapshot> CompleteAcquisitionAsync(
+        string jobId,
+        string bundleId,
+        CancellationToken cancellationToken)
+        => UpdateAcquisitionJobAsync(
+            jobId, CalibrationAcquisitionStates.Published, "published", bundleId, failureReason: null,
+            terminal: true, cancellationToken);
+
+    public Task<CalibrationAcquisitionJobSnapshot> FailAcquisitionAsync(
+        string jobId,
+        string failureReason,
+        CancellationToken cancellationToken)
+        => UpdateAcquisitionJobAsync(
+            jobId, CalibrationAcquisitionStates.Failed, "failed", bundleId: null, failureReason,
+            terminal: true, cancellationToken);
+
+    internal Task<CalibrationAcquisitionJobSnapshot> CancelAcquisitionAsync(
+        string jobId,
+        CancellationToken cancellationToken)
+        => UpdateAcquisitionJobAsync(
+            jobId, CalibrationAcquisitionStates.Cancelled, "cancelled", bundleId: null,
+            failureReason: null, terminal: true, cancellationToken);
 
     internal async Task<IReadOnlyList<CalibrationReconciliationOperation>> ReadPlannedReconciliationsAsync(
         CancellationToken cancellationToken)
@@ -554,6 +790,9 @@ public sealed class SqliteCalibrationLibraryStore(
         CalibrationLibraryBundleV1 bundle,
         CancellationToken cancellationToken)
     {
+        var virtualPlan = bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1
+            ? await ReadVirtualAcquisitionPlanAsync(bundle, cancellationToken).ConfigureAwait(false)
+            : null;
         var profilePath = ResolveSafePath(bundle.ProfileRelativePath);
         if (!File.Exists(profilePath))
         {
@@ -594,6 +833,7 @@ public sealed class SqliteCalibrationLibraryStore(
                 manifest.Descriptor.Controls.EffectiveGain != artifact.Gain ||
                 manifest.Descriptor.Controls.EffectiveOffset != artifact.Offset ||
                 manifest.Descriptor.Controls.EffectiveTemperatureC != artifact.TemperatureC ||
+                !VirtualRequestedControlsMatch(bundle.Source, artifact, manifest.Descriptor.Controls) ||
                 !string.Equals(
                     manifest.Descriptor.Capture.AgentId,
                     bundle.Applicability.AgentId,
@@ -603,6 +843,13 @@ public sealed class SqliteCalibrationLibraryStore(
                     bundle.Applicability.RigId,
                     StringComparison.Ordinal) ||
                 !string.Equals(manifest.Descriptor.Artifact.Variant, artifact.Kind, StringComparison.Ordinal) ||
+                !string.Equals(
+                    manifest.RelativeArtifactPath,
+                    PayloadPathForManifest(artifact.ManifestRelativePath),
+                    StringComparison.Ordinal) ||
+                !ManifestRoleMatches(bundle.Source, artifact.Role, manifest.Descriptor.Artifact.Role) ||
+                !VirtualCaptureSequenceMatches(
+                    bundle, artifact, manifest.Descriptor.Capture.CaptureSequence) ||
                 !string.Equals(
                     manifest.Descriptor.Profiles.Rig.Sha256,
                     bundle.Applicability.RigProfileSha256,
@@ -617,7 +864,7 @@ public sealed class SqliteCalibrationLibraryStore(
                     StringComparison.OrdinalIgnoreCase) ||
                 !ManifestLayoutMatches(bundle, artifact, manifest.Descriptor.Layout) ||
                 !manifest.Descriptor.Artifact.SourceArtifactIds.SequenceEqual(artifact.OrderedSourceArtifactIds) ||
-                !MasterRecipeMatches(artifact.MasterBuildRecipe, manifest.Descriptor.Artifact.Recipe))
+                !RecipeMatches(bundle, artifact, manifest.Descriptor.Artifact.Recipe))
             {
                 throw new InvalidDataException("A committed calibration manifest conflicts with its library envelope.");
             }
@@ -629,7 +876,10 @@ public sealed class SqliteCalibrationLibraryStore(
             var payloadEvidence = await ReadStableFileAsync(payloadPath, cancellationToken).ConfigureAwait(false);
             var payload = payloadEvidence.Bytes;
             if (!string.Equals(PayloadChecksum.ComputeSha256(payload), artifact.PayloadSha256, StringComparison.OrdinalIgnoreCase) ||
-                !FrameReconstructor.TryReconstruct(manifest.Descriptor, payload, out _).IsValid)
+                !FrameReconstructor.TryReconstruct(manifest.Descriptor, payload, out _).IsValid ||
+                bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1 &&
+                artifact.Role == CalibrationLibraryArtifactRoles.Source &&
+                !ValidNativeSourcePayload(payload, bundle.Applicability.InputLayout))
             {
                 throw new InvalidDataException("A committed calibration payload is corrupt.");
             }
@@ -637,6 +887,15 @@ public sealed class SqliteCalibrationLibraryStore(
             evidence.Add(new PublishedArtifactEvidence(manifest.RelativeArtifactPath, manifestSha256));
             files.Add(manifestEvidence.Fingerprint);
             files.Add(payloadEvidence.Fingerprint);
+        }
+
+        if (bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1)
+        {
+            await ValidateVirtualMasterEvidenceAsync(
+                bundle,
+                profile,
+                virtualPlan ?? throw new InvalidDataException("The virtual acquisition plan is missing."),
+                cancellationToken).ConfigureAwait(false);
         }
 
         return new PublishedBundleEvidence(evidence, files, Now().ToUnixTimeMilliseconds());
@@ -719,14 +978,265 @@ public sealed class SqliteCalibrationLibraryStore(
             }
             : layout;
 
-    private static bool MasterRecipeMatches(
-        RecipeIdentityDescriptor? expected,
+    private static bool ManifestRoleMatches(string bundleSource, string role, FrameArtifactRole manifestRole)
+        => bundleSource != CalibrationLibraryBundleSources.VirtualAcquisitionV1 ||
+           role == CalibrationLibraryArtifactRoles.Source && manifestRole == FrameArtifactRole.Raw ||
+           role == CalibrationLibraryArtifactRoles.Master && manifestRole == FrameArtifactRole.Combined;
+
+    private static bool VirtualRequestedControlsMatch(
+        string bundleSource,
+        CalibrationLibraryArtifactV1 artifact,
+        CaptureControlDescriptor controls)
+        => bundleSource != CalibrationLibraryBundleSources.VirtualAcquisitionV1 ||
+           controls.RequestedExposure == artifact.Exposure &&
+           controls.RequestedGain == artifact.Gain &&
+           controls.RequestedOffset == artifact.Offset &&
+           controls.TemperatureSetpointC == artifact.TemperatureC;
+
+    private static bool VirtualCaptureSequenceMatches(
+        CalibrationLibraryBundleV1 bundle,
+        CalibrationLibraryArtifactV1 artifact,
+        long actual)
+    {
+        if (bundle.Source != CalibrationLibraryBundleSources.VirtualAcquisitionV1)
+        {
+            return true;
+        }
+        var jobId = bundle.BundleId["bundle-".Length..];
+        var kindIndex = -1;
+        for (var index = 0; index < CalibrationReferenceKinds.All.Count; index++)
+        {
+            if (string.Equals(CalibrationReferenceKinds.All[index], artifact.Kind, StringComparison.Ordinal))
+            {
+                kindIndex = index;
+                break;
+            }
+        }
+        if (kindIndex < 0)
+        {
+            return false;
+        }
+        var ordinal = artifact.Role == CalibrationLibraryArtifactRoles.Source && artifact.SourceIndex is { } sourceIndex
+            ? kindIndex * CalibrationMasterBuilder.RequiredSourceCount + sourceIndex + 1
+            : artifact.Role == CalibrationLibraryArtifactRoles.Master ? 13 + kindIndex : -1;
+        if (ordinal is < 1 or > 16)
+        {
+            return false;
+        }
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{jobId}:capture-sequence"));
+        const ulong reservedStart = (ulong)long.MaxValue / 2;
+        const ulong blockSize = 16;
+        var blockCount = reservedStart / blockSize;
+        var block = BinaryPrimitives.ReadUInt64BigEndian(hash) % blockCount;
+        return actual == checked((long)(reservedStart + block * blockSize + (uint)(ordinal - 1)));
+    }
+
+    private static bool RecipeMatches(
+        CalibrationLibraryBundleV1 bundle,
+        CalibrationLibraryArtifactV1 artifact,
         RecipeIdentityDescriptor actual)
-        => expected is null ||
-           string.Equals(expected.Name, actual.Name, StringComparison.Ordinal) &&
+    {
+        if (artifact.Role == CalibrationLibraryArtifactRoles.Master)
+        {
+            return artifact.MasterBuildRecipe is { } expected
+                ? RecipeIdentityMatches(expected, actual)
+                : bundle.Source != CalibrationLibraryBundleSources.VirtualAcquisitionV1;
+        }
+        if (artifact.MasterBuildRecipe is not null)
+        {
+            return false;
+        }
+        if (bundle.Source != CalibrationLibraryBundleSources.VirtualAcquisitionV1 || artifact.SourceIndex is not { } sourceIndex)
+        {
+            return true;
+        }
+        var expectedSource = RecipeIdentityDescriptor.Create(
+            "virtual-calibration-source",
+            "1.0.0",
+            VirtualCalibrationSourceGenerator.AlgorithmVersion,
+            JsonSerializer.SerializeToElement(new
+            {
+                schemaVersion = VirtualCalibrationSourceModelV1.CurrentSchemaVersion,
+                sourceModelIdentitySha256 = bundle.AcquisitionModelIdentitySha256,
+                referenceKind = artifact.Kind,
+                sourceIndex
+            }));
+        return RecipeIdentityMatches(expectedSource, actual);
+    }
+
+    private static bool RecipeIdentityMatches(RecipeIdentityDescriptor expected, RecipeIdentityDescriptor actual)
+        => string.Equals(expected.Name, actual.Name, StringComparison.Ordinal) &&
            string.Equals(expected.SemanticVersion, actual.SemanticVersion, StringComparison.Ordinal) &&
            string.Equals(expected.ImplementationVersion, actual.ImplementationVersion, StringComparison.Ordinal) &&
            string.Equals(expected.OptionsSha256, actual.OptionsSha256, StringComparison.OrdinalIgnoreCase);
+
+    private static bool ValidNativeSourcePayload(ReadOnlySpan<byte> payload, FrameLayoutDescriptor layout)
+    {
+        var nativeMaximum = (1u << layout.SampleDepthBits) - 1u;
+        for (var y = 0; y < layout.Height; y++)
+        {
+            for (var x = 0; x < layout.Width; x++)
+            {
+                var offset = checked(y * layout.StrideBytes + x * 2);
+                var stored = (ushort)(payload[offset] | payload[offset + 1] << 8);
+                if (stored > nativeMaximum)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private async Task ValidateVirtualMasterEvidenceAsync(
+        CalibrationLibraryBundleV1 bundle,
+        ReferenceCalibrationProfileV1 profile,
+        VirtualCalibrationAcquisitionPlanV1 plan,
+        CancellationToken cancellationToken)
+    {
+        foreach (var kind in CalibrationReferenceKinds.All)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var sourceArtifacts = bundle.Artifacts
+                .Where(artifact => artifact.Role == CalibrationLibraryArtifactRoles.Source && artifact.Kind == kind)
+                .OrderBy(static artifact => artifact.SourceIndex)
+                .ToArray();
+            var masterArtifact = bundle.Artifacts.Single(
+                artifact => artifact.Role == CalibrationLibraryArtifactRoles.Master && artifact.Kind == kind);
+            if (sourceArtifacts.Length != CalibrationMasterBuilder.RequiredSourceCount ||
+                sourceArtifacts.Where((artifact, index) =>
+                    artifact.SourceIndex != index ||
+                    artifact.Exposure != plan.ExposureFor(kind) ||
+                    artifact.Gain != plan.Gain ||
+                    artifact.Offset != plan.Offset ||
+                    artifact.TemperatureC != plan.TemperatureC ||
+                    !string.Equals(
+                        artifact.ManifestRelativePath,
+                        $"calibration/virtual/{plan.JobId}/sources/{kind}-{index}.json",
+                        StringComparison.Ordinal)).Any() ||
+                !string.Equals(
+                    masterArtifact.ManifestRelativePath,
+                    $"calibration/virtual/{plan.JobId}/masters/{kind}.json",
+                    StringComparison.Ordinal) ||
+                masterArtifact.Exposure != plan.ExposureFor(kind) ||
+                masterArtifact.Gain != plan.Gain ||
+                masterArtifact.Offset != plan.Offset ||
+                masterArtifact.TemperatureC != plan.TemperatureC)
+            {
+                throw new InvalidDataException("Virtual calibration artifact paths or source indexes are invalid.");
+            }
+            var sourceFrames = new List<CalibrationSourceFrame>(sourceArtifacts.Length);
+            foreach (var sourceArtifact in sourceArtifacts)
+            {
+                var source = await ReadStableFileAsync(
+                    ResolveSafePath(PayloadPathForManifest(sourceArtifact.ManifestRelativePath)), cancellationToken)
+                    .ConfigureAwait(false);
+                var generated = VirtualCalibrationSourceGenerator.Generate(
+                    ToVirtualSourceKind(kind),
+                    sourceArtifact.SourceIndex ?? throw new InvalidDataException("A virtual source index is missing."),
+                    plan.InputLayout,
+                    plan.ExposureFor(kind),
+                    plan.Gain,
+                    plan.Offset,
+                    plan.TemperatureC,
+                    plan.SourceModel,
+                    cancellationToken);
+                if (!source.Bytes.AsSpan().SequenceEqual(generated.PixelData.Span))
+                {
+                    throw new InvalidDataException(
+                        "Virtual calibration source evidence is not reproducible from its durable plan.");
+                }
+                sourceFrames.Add(new CalibrationSourceFrame(bundle.Applicability.InputLayout, source.Bytes));
+            }
+            var rebuilt = kind == CalibrationReferenceKinds.Defect
+                ? CalibrationMasterBuilder.BuildDefectMask(sourceFrames, cancellationToken)
+                : CalibrationMasterBuilder.BuildMedian(sourceFrames, cancellationToken);
+            if (!string.Equals(
+                    PayloadChecksum.ComputeSha256(rebuilt.PixelData.Span),
+                    masterArtifact.PayloadSha256,
+                    StringComparison.OrdinalIgnoreCase) ||
+                kind == CalibrationReferenceKinds.Flat &&
+                ResolveFlatNormalization(rebuilt.PixelData.Span) != profile.FlatNormalizationAdu)
+            {
+                throw new InvalidDataException("Virtual calibration master evidence is not reproducible from its sources.");
+            }
+        }
+    }
+
+    private async Task<VirtualCalibrationAcquisitionPlanV1> ReadVirtualAcquisitionPlanAsync(
+        CalibrationLibraryBundleV1 bundle,
+        CancellationToken cancellationToken)
+    {
+        const string prefix = "bundle-";
+        if (!bundle.BundleId.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The virtual calibration bundle identifier is invalid.");
+        }
+        var jobId = bundle.BundleId[prefix.Length..];
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT plan_json FROM calibration_acquisition_jobs WHERE job_id = $job;";
+        command.Parameters.AddWithValue("$job", jobId);
+        var planJson = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as byte[]
+            ?? throw new InvalidDataException("The virtual calibration bundle has no durable acquisition plan.");
+        var plan = VirtualCalibrationAcquisitionContractJson.ParsePlan(planJson);
+        var expectedApplicability = new CalibrationApplicabilityV1(
+            plan.AgentId,
+            plan.RigId,
+            plan.RigProfile.Sha256,
+            plan.SensorProfile.Sha256,
+            plan.InputLayout,
+            plan.OutputLayout,
+            plan.Gain,
+            plan.Gain,
+            plan.Offset,
+            plan.Offset,
+            plan.ApplicableLightExposure,
+            plan.ApplicableLightExposure,
+            plan.TemperatureC,
+            plan.TemperatureC,
+            plan.EffectiveFromUtc,
+            plan.EffectiveUntilUtc);
+        if (!string.Equals(bundle.BundleId, $"bundle-{plan.JobId}", StringComparison.Ordinal) ||
+            bundle.CreatedUtc != plan.CreatedUtc ||
+            !string.Equals(
+                bundle.ProfileRelativePath,
+                $"calibration/virtual/{plan.JobId}/reference-calibration-profile.json",
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                bundle.AcquisitionModelIdentitySha256,
+                plan.SourceModelIdentitySha256,
+                StringComparison.OrdinalIgnoreCase) ||
+            bundle.Applicability != expectedApplicability)
+        {
+            throw new InvalidDataException("The virtual calibration bundle conflicts with its durable acquisition plan.");
+        }
+        return plan;
+    }
+
+    private static VirtualCalibrationSourceKind ToVirtualSourceKind(string kind)
+        => kind switch
+        {
+            CalibrationReferenceKinds.Bias => VirtualCalibrationSourceKind.Bias,
+            CalibrationReferenceKinds.Dark => VirtualCalibrationSourceKind.Dark,
+            CalibrationReferenceKinds.Flat => VirtualCalibrationSourceKind.Flat,
+            CalibrationReferenceKinds.Defect => VirtualCalibrationSourceKind.Defect,
+            _ => throw new InvalidDataException("The virtual calibration reference kind is invalid.")
+        };
+
+    private static ushort ResolveFlatNormalization(ReadOnlySpan<byte> payload)
+    {
+        ulong sum = 0;
+        for (var index = 0; index < payload.Length; index += 2)
+        {
+            sum += (ushort)(payload[index] | payload[index + 1] << 8);
+        }
+        return checked((ushort)Math.Clamp(
+            (long)((sum + (ulong)(payload.Length / 4)) / (ulong)(payload.Length / 2)), 1, ushort.MaxValue));
+    }
+
+    private static string PayloadPathForManifest(string manifestPath)
+        => string.Concat(manifestPath.AsSpan(0, manifestPath.Length - ".json".Length), ".bin");
 
     private async Task ValidateEvidenceCachedAsync(
         CalibrationLibraryBundleSnapshot bundle,
@@ -1270,6 +1780,335 @@ public sealed class SqliteCalibrationLibraryStore(
             throw new InvalidDataException("A durable calibration command references a different bundle revision.");
         }
         return new PersistedCommand(payloadSha256, result);
+    }
+
+    private async Task<CalibrationAcquisitionJobSnapshot> UpdateAcquisitionJobAsync(
+        string jobId,
+        string state,
+        string phase,
+        string? bundleId,
+        string? failureReason,
+        bool terminal,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(jobId) || jobId.Length > 128 ||
+            string.IsNullOrWhiteSpace(phase) || phase.Length > 64 ||
+            failureReason?.Length > 512)
+        {
+            throw new ArgumentException("The calibration acquisition update is invalid.", nameof(jobId));
+        }
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var current = await ReadRequiredAcquisitionJobAsync(
+                connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            if (current.IsTerminal)
+            {
+                if (!string.Equals(current.State, state, StringComparison.Ordinal) ||
+                    !string.Equals(current.Phase, phase, StringComparison.Ordinal) ||
+                    !string.Equals(current.BundleId, bundleId, StringComparison.Ordinal) ||
+                    !string.Equals(current.FailureReason, failureReason, StringComparison.Ordinal))
+                {
+                    throw new CalibrationLibraryStoreConflictException(
+                        "The terminal calibration acquisition job cannot be changed.");
+                }
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return current;
+            }
+            ValidateAcquisitionTransition(current, state, phase, bundleId, failureReason, terminal);
+            var now = Now();
+            await ExecuteAsync(connection, transaction, """
+                UPDATE calibration_acquisition_jobs
+                SET state = $state, phase = $phase, bundle_id = $bundle,
+                    failure_reason = $failure, updated_unix_ms = $now,
+                    completed_unix_ms = CASE WHEN $terminal = 1 THEN $now ELSE NULL END
+                WHERE job_id = $job;
+                """, cancellationToken,
+                ("$state", state),
+                ("$phase", phase),
+                ("$bundle", (object?)bundleId ?? DBNull.Value),
+                ("$failure", (object?)failureReason ?? DBNull.Value),
+                ("$now", now.ToUnixTimeMilliseconds()),
+                ("$terminal", terminal ? 1 : 0),
+                ("$job", jobId)).ConfigureAwait(false);
+            var result = await ReadRequiredAcquisitionJobAsync(
+                connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private static void ValidateAcquisitionTransition(
+        CalibrationAcquisitionJobSnapshot current,
+        string state,
+        string phase,
+        string? bundleId,
+        string? failureReason,
+        bool terminal)
+    {
+        if (state is CalibrationAcquisitionStates.Failed or CalibrationAcquisitionStates.Cancelled)
+        {
+            if (!terminal || bundleId is not null ||
+                state == CalibrationAcquisitionStates.Failed && string.IsNullOrWhiteSpace(failureReason) ||
+                state == CalibrationAcquisitionStates.Cancelled && failureReason is not null)
+            {
+                throw new InvalidOperationException("The terminal calibration acquisition transition is invalid.");
+            }
+            return;
+        }
+        var currentRank = AcquisitionStateRank(current.State);
+        var targetRank = AcquisitionStateRank(state);
+        if (terminal != (state == CalibrationAcquisitionStates.Published) ||
+            targetRank < currentRank || targetRank > currentRank + 1 ||
+            PhaseRank(phase) != PhaseRank(current.Phase) + 1 ||
+            state == CalibrationAcquisitionStates.Published && string.IsNullOrWhiteSpace(bundleId) ||
+            state != CalibrationAcquisitionStates.Published && bundleId is not null || failureReason is not null)
+        {
+            throw new InvalidOperationException("The calibration acquisition phase transition is invalid.");
+        }
+    }
+
+    private static int AcquisitionStateRank(string state)
+        => state switch
+        {
+            CalibrationAcquisitionStates.Planned => 0,
+            CalibrationAcquisitionStates.Acquiring => 1,
+            CalibrationAcquisitionStates.Building => 2,
+            CalibrationAcquisitionStates.Publishing => 3,
+            CalibrationAcquisitionStates.Published => 4,
+            _ => throw new InvalidDataException("The durable calibration acquisition state is invalid.")
+        };
+
+    private static int PhaseRank(string phase)
+    {
+        if (phase == "planned") return 0;
+        if (phase == "sources-pending") return 1;
+        if (phase == "masters-pending") return 14;
+        if (phase == "masters-built") return 15;
+        if (phase == "profile-published") return 20;
+        if (phase == "published") return 21;
+        if (phase is "failed" or "cancelled") return 22;
+        var kinds = CalibrationReferenceKinds.All;
+        for (var kindIndex = 0; kindIndex < kinds.Count; kindIndex++)
+        {
+            for (var sourceIndex = 0; sourceIndex < 3; sourceIndex++)
+            {
+                if (phase == $"source-{kinds[kindIndex]}-{sourceIndex}")
+                {
+                    return 2 + kindIndex * 3 + sourceIndex;
+                }
+            }
+            if (phase == $"master-{kinds[kindIndex]}")
+            {
+                return 16 + kindIndex;
+            }
+        }
+        throw new InvalidDataException("The durable calibration acquisition phase is invalid.");
+    }
+
+    private static async Task<CalibrationAcquisitionJobSnapshot?> ReadAcquireCommandAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string idempotencyKey,
+        string payloadSha256,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT command_kind, payload_sha256, result_job_id, result_json, completed_unix_ms
+            FROM calibration_library_commands WHERE idempotency_key = $key;
+            """;
+        command.Parameters.AddWithValue("$key", idempotencyKey);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        if (!string.Equals(reader.GetString(0), "acquire", StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(1), payloadSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CalibrationLibraryStoreConflictException(
+                "The calibration command idempotency key has different durable content.");
+        }
+        if (await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ||
+            await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ||
+            await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidDataException("The durable calibration acquire command is incomplete.");
+        }
+        var jobId = reader.GetString(2);
+        var resultJson = (byte[])reader.GetValue(3);
+        await reader.DisposeAsync().ConfigureAwait(false);
+        var job = await ReadAcquisitionJobAsync(connection, transaction, jobId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The durable calibration acquire command references a missing job.");
+        if (!resultJson.AsSpan().SequenceEqual(VirtualCalibrationAcquisitionContractJson.SerializePlan(job.Plan)))
+        {
+            throw new InvalidDataException("The durable calibration acquire command references a different plan.");
+        }
+        return job;
+    }
+
+    private static async Task<CalibrationAcquisitionJobSnapshot?> ReadNonterminalAcquisitionJobAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string cameraKey,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT job_id FROM calibration_acquisition_jobs
+            WHERE camera_key = $camera AND state NOT IN ('published', 'failed', 'cancelled')
+            ORDER BY created_unix_ms, job_id LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$camera", cameraKey);
+        var jobId = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+        return jobId is null
+            ? null
+            : await ReadAcquisitionJobAsync(connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<CalibrationAcquisitionJobSnapshot> ReadRequiredAcquisitionJobAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string jobId,
+        CancellationToken cancellationToken)
+        => await ReadAcquisitionJobAsync(connection, transaction, jobId, cancellationToken).ConfigureAwait(false)
+            ?? throw new KeyNotFoundException("The calibration acquisition job was not found.");
+
+    private static async Task<CalibrationAcquisitionJobSnapshot?> ReadAcquisitionJobAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string jobId,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT camera_key, plan_json, plan_sha256, state, phase, attempt_count, bundle_id,
+                   failure_reason, actor, reason, created_unix_ms, updated_unix_ms, completed_unix_ms,
+                   idempotency_key
+            FROM calibration_acquisition_jobs WHERE job_id = $job;
+            """;
+        command.Parameters.AddWithValue("$job", jobId);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        var planJson = (byte[])reader.GetValue(1);
+        var plan = VirtualCalibrationAcquisitionContractJson.ParsePlan(planJson);
+        var planIdentity = reader.GetString(2);
+        var state = reader.GetString(3);
+        var phase = reader.GetString(4);
+        var bundleId = await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6);
+        var failure = await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(7);
+        var reason = await reader.IsDBNullAsync(9, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(9);
+        var actor = reader.GetString(8);
+        var idempotencyKey = reader.GetString(13);
+        var attemptCount = reader.GetInt32(5);
+        var created = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(10));
+        var updated = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(11));
+        DateTimeOffset? completed = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false)
+            ? null
+            : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(12));
+        var terminal = state is CalibrationAcquisitionStates.Published or CalibrationAcquisitionStates.Failed or
+            CalibrationAcquisitionStates.Cancelled;
+        var phaseRank = PhaseRank(phase);
+        if (!string.Equals(plan.JobId, jobId, StringComparison.Ordinal) ||
+            !string.Equals(plan.CameraKey, reader.GetString(0), StringComparison.Ordinal) ||
+            !string.Equals(Convert.ToHexString(SHA256.HashData(planJson)), planIdentity, StringComparison.OrdinalIgnoreCase) ||
+            terminal != completed.HasValue || attemptCount is < 0 or > MaximumAcquisitionAttempts ||
+            !StateMatchesPhase(state, phaseRank) ||
+            state == CalibrationAcquisitionStates.Published && bundleId is null ||
+            state != CalibrationAcquisitionStates.Published && bundleId is not null ||
+            state == CalibrationAcquisitionStates.Failed && string.IsNullOrWhiteSpace(failure) ||
+            state != CalibrationAcquisitionStates.Failed && failure is not null)
+        {
+            throw new InvalidDataException("The durable calibration acquisition job failed validation.");
+        }
+        _ = state is CalibrationAcquisitionStates.Failed or CalibrationAcquisitionStates.Cancelled
+            ? 0
+            : AcquisitionStateRank(state);
+        await reader.DisposeAsync().ConfigureAwait(false);
+        var request = new VirtualCalibrationAcquisitionRequestV1(
+            VirtualCalibrationAcquisitionRequestV1.CurrentSchemaVersion,
+            idempotencyKey,
+            plan.Gain,
+            plan.Offset,
+            plan.TemperatureC,
+            plan.BiasExposure,
+            plan.DarkExposure,
+            plan.FlatExposure,
+            plan.DefectExposure,
+            plan.ApplicableLightExposure,
+            plan.EffectiveFromUtc,
+            plan.EffectiveUntilUtc,
+            plan.SourceModel,
+            actor,
+            reason);
+        var requestIdentity = VirtualCalibrationAcquisitionContractJson.ComputeRequestIdentitySha256(request);
+        using (var replay = connection.CreateCommand())
+        {
+            replay.Transaction = transaction;
+            replay.CommandText = """
+                SELECT command_kind, payload_sha256, result_job_id, result_json, completed_unix_ms
+                FROM calibration_library_commands WHERE idempotency_key = $key;
+                """;
+            replay.Parameters.AddWithValue("$key", idempotencyKey);
+            using var replayReader = await replay.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await replayReader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
+                !string.Equals(replayReader.GetString(0), "acquire", StringComparison.Ordinal) ||
+                !string.Equals(replayReader.GetString(1), requestIdentity, StringComparison.OrdinalIgnoreCase) ||
+                await replayReader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ||
+                !string.Equals(replayReader.GetString(2), jobId, StringComparison.Ordinal) ||
+                await replayReader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ||
+                !((byte[])replayReader.GetValue(3)).AsSpan().SequenceEqual(planJson) ||
+                await replayReader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidDataException("The durable calibration acquisition command linkage is invalid.");
+            }
+        }
+        return new CalibrationAcquisitionJobSnapshot(
+            plan, planIdentity, state, phase, attemptCount, bundleId, failure,
+            actor, reason, created, updated, completed);
+    }
+
+    private static bool StateMatchesPhase(string state, int phaseRank)
+        => state switch
+        {
+            CalibrationAcquisitionStates.Planned => phaseRank == 0,
+            CalibrationAcquisitionStates.Acquiring => phaseRank is >= 1 and <= 13,
+            CalibrationAcquisitionStates.Building => phaseRank is 14 or 15,
+            CalibrationAcquisitionStates.Publishing => phaseRank is >= 16 and <= 20,
+            CalibrationAcquisitionStates.Published => phaseRank == 21,
+            CalibrationAcquisitionStates.Failed or CalibrationAcquisitionStates.Cancelled => phaseRank == 22,
+            _ => false
+        };
+
+    private static void ValidateCommandIdentity(string idempotencyKey, string payloadSha256)
+    {
+        if (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 128 ||
+            payloadSha256.Length != 64 || !payloadSha256.All(Uri.IsHexDigit))
+        {
+            throw new ArgumentException("The calibration command identity is invalid.");
+        }
+    }
+
+    private static void ValidateActor(string actor, string? reason)
+    {
+        if (string.IsNullOrWhiteSpace(actor) || actor.Length > 128 || reason?.Length > 512)
+        {
+            throw new ArgumentException("The calibration acquisition actor or reason is invalid.");
+        }
     }
 
     private static async Task<CalibrationReconciliationOperation?> ReadReconciliationAsync(

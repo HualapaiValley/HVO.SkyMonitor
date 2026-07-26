@@ -164,6 +164,13 @@ internal sealed class SqliteRawCaptureJournal(
                 throw;
             }
         }
+        else if (version == CurrentSchemaVersion)
+        {
+            // Schema v9 is not shipped yet; keep branch-local v9 databases aligned with additive v9 corrections.
+            await ExecuteNonQueryAsync(
+                connection, transaction: null, CalibrationAcquisitionV9CorrectionSql, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         await SynchronizeTransientPolicyAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
         await SynchronizeLaneDefinitionsAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
@@ -205,9 +212,10 @@ internal sealed class SqliteRawCaptureJournal(
                  'calibration_acquisition_jobs', 'calibration_library_reconciliation',
                  'ix_calibration_library_bundles_selection', 'ix_calibration_library_bundles_created',
                  'ix_calibration_library_artifacts_role', 'ix_calibration_library_activations_history',
-                 'ix_calibration_acquisition_jobs_camera', 'ix_calibration_library_reconciliation_state');
+                  'ix_calibration_acquisition_jobs_camera', 'ux_calibration_acquisition_jobs_camera_nonterminal',
+                  'ix_calibration_library_reconciliation_state');
             """, cancellationToken).ConfigureAwait(false);
-        if (schemaObjectCount != 59)
+        if (schemaObjectCount != 60)
         {
             throw new InvalidDataException("Raw ingress SQLite schema is incomplete or drifted.");
         }
@@ -253,6 +261,13 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyIndexAsync(connection, "ix_calibration_library_artifacts_role", "bundle_id,role,reference_kind,source_index,ordinal", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_calibration_library_activations_history", "activated_unix_ms,activation_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_calibration_acquisition_jobs_camera", "camera_key,state,created_unix_ms,job_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ux_calibration_acquisition_jobs_camera_nonterminal", "camera_key", cancellationToken).ConfigureAwait(false);
+        await VerifyPartialUniqueIndexAsync(
+            connection,
+            "calibration_acquisition_jobs",
+            "ux_calibration_acquisition_jobs_camera_nonterminal",
+            "WHERE state NOT IN ('published', 'failed', 'cancelled')",
+            cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_calibration_library_reconciliation_state", "operation_state,observed_unix_ms,reconciliation_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_claim", "lane_name,state,available_unix_ms,work_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_lease", "state,lease_expires_unix_ms", cancellationToken).ConfigureAwait(false);
@@ -1756,6 +1771,30 @@ internal sealed class SqliteRawCaptureJournal(
         }
     }
 
+    private static async Task VerifyPartialUniqueIndexAsync(
+        SqliteConnection connection,
+        string table,
+        string index,
+        string expectedPredicate,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT "unique", partial,
+                   (SELECT sql FROM sqlite_master WHERE type = 'index' AND name = $index)
+            FROM pragma_index_list($table) WHERE name = $index;
+            """;
+        command.Parameters.AddWithValue("$table", table);
+        command.Parameters.AddWithValue("$index", index);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
+            reader.GetInt32(0) != 1 || reader.GetInt32(1) != 1 ||
+            !reader.GetString(2).Contains(expectedPredicate, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException($"Raw ingress SQLite index '{index}' is not the expected partial unique index.");
+        }
+    }
+
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only internal constant schema and PRAGMA statements are passed to this helper.")]
     private static async Task ExecuteNonQueryAsync(
         SqliteConnection connection,
@@ -2241,6 +2280,9 @@ internal sealed class SqliteRawCaptureJournal(
         ) STRICT;
         CREATE INDEX IF NOT EXISTS ix_calibration_acquisition_jobs_camera
             ON calibration_acquisition_jobs(camera_key, state, created_unix_ms, job_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_calibration_acquisition_jobs_camera_nonterminal
+            ON calibration_acquisition_jobs(camera_key)
+            WHERE state NOT IN ('published', 'failed', 'cancelled');
         CREATE TABLE IF NOT EXISTS calibration_library_reconciliation (
             reconciliation_id INTEGER PRIMARY KEY,
             evidence_key TEXT NOT NULL UNIQUE CHECK (length(evidence_key) = 64),
@@ -2255,6 +2297,12 @@ internal sealed class SqliteRawCaptureJournal(
         ) STRICT;
         CREATE INDEX IF NOT EXISTS ix_calibration_library_reconciliation_state
             ON calibration_library_reconciliation(operation_state, observed_unix_ms, reconciliation_id);
+        """;
+
+    private const string CalibrationAcquisitionV9CorrectionSql = """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_calibration_acquisition_jobs_camera_nonterminal
+            ON calibration_acquisition_jobs(camera_key)
+            WHERE state NOT IN ('published', 'failed', 'cancelled');
         """;
 
     private const string LaneSchemaSql = """

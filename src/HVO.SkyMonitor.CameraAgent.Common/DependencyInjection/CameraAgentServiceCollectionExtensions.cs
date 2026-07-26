@@ -65,6 +65,10 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICaptureLaneStore>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<SqliteCaptureScheduleStore>();
         services.AddSingleton<SqliteCalibrationLibraryStore>();
+        services.AddSingleton<ICalibrationPublicationFaultInjector>(
+            NullCalibrationPublicationFaultInjector.Instance);
+        services.AddSingleton<CalibrationArtifactPublisher>();
+        services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryReconciler>();
         services.AddSingleton<SqliteTransientCandidateJournal>();
         services.AddSingleton<ITransientCandidateJournal>(provider =>
@@ -170,6 +174,7 @@ public static class CameraAgentServiceCollectionExtensions
             "WeatherCloudOverlay", typeof(WeatherCloudOverlayCaptureProcessingStep),
             typeof(WeatherCloudOverlayProcessingStepOptions), 90, AutoInclude: false));
         services.AddHostedService<CameraAgentConfigurationInitializer>();
+        services.AddHostedService<VirtualCalibrationAcquisitionRecoveryService>();
         services.AddHostedService(provider => provider.GetRequiredService<CaptureDistributionService>());
         services.AddHostedService<CameraCaptureService>();
         services.AddHostedService<RetentionBackgroundService>();

@@ -193,6 +193,36 @@ public sealed class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
+    public async Task AdoptPublishedBundleAsync_RejectsManifestThatRedirectsToAnotherPayload()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var store = fixture.Store;
+            var first = fixture.Bundle.Artifacts[0];
+            var second = fixture.Bundle.Artifacts[1];
+            var manifestPath = Path.Combine(
+                root, first.ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            var parsed = CaptureContractJson.ParseManifest(
+                await File.ReadAllBytesAsync(manifestPath).ConfigureAwait(false));
+            Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
+            var redirected = parsed.Document!.Manifest! with
+            {
+                RelativeArtifactPath = second.ManifestRelativePath.Replace(".json", ".bin", StringComparison.Ordinal)
+            };
+            await File.WriteAllBytesAsync(manifestPath, CaptureContractJson.Serialize(redirected)).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                store.AdoptPublishedBundleAsync(fixture.Bundle, CancellationToken.None)).ConfigureAwait(false);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task ReconcileAsync_AdoptsLegacyBundleWithoutChangingEvidenceAndIsRestartStable()
     {
         var root = CreateRoot();
