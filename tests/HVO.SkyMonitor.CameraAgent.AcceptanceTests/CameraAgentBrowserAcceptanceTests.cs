@@ -2,6 +2,9 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.Imaging;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Playwright;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
@@ -67,10 +70,129 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await AssertQuarantineAsync(page).ConfigureAwait(false);
         await AssertSystemNavigationAsync(page).ConfigureAwait(false);
         await AssertSchedulePreviewAsync(page).ConfigureAwait(false);
+        await AssertCalibrationAsync(page).ConfigureAwait(false);
         await AssertResponsiveAndAccessibleAsync(page, detailUrl).ConfigureAwait(false);
 
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         Assert.IsEmpty(previewFailures, string.Join(Environment.NewLine, previewFailures));
+    }
+
+    [TestMethod]
+    public async Task CalibrationAcquisitionActivationAndRollbackAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        if (!File.Exists(playwright.Chromium.ExecutablePath))
+        {
+            Assert.Inconclusive(
+                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui-106 --install-browser` from the repository root.");
+        }
+
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(
+            useCalibrationLibrary: true).ConfigureAwait(false);
+        var acquisition = host.Services.GetRequiredService<VirtualCalibrationAcquisitionCoordinator>();
+        var operations = host.Services.GetRequiredService<CalibrationLibraryOperationsCoordinator>();
+        var effectiveFrom = DateTimeOffset.UtcNow.AddDays(-1).ToUniversalTime();
+        var first = await acquisition.AcquireAsync(
+            new VirtualCalibrationAcquisitionRequestV1(
+                VirtualCalibrationAcquisitionRequestV1.CurrentSchemaVersion,
+                "browser-calibration-first",
+                82,
+                1,
+                -10,
+                TimeSpan.FromMilliseconds(1),
+                TimeSpan.FromSeconds(10),
+                TimeSpan.FromSeconds(2),
+                TimeSpan.FromMilliseconds(1),
+                TimeSpan.FromSeconds(5),
+                effectiveFrom,
+                effectiveFrom.AddYears(1),
+                new VirtualCalibrationSourceModelV1 { Seed = 675 },
+                "browser-owner",
+                "browser rollback target"),
+            CancellationToken.None).ConfigureAwait(false);
+        _ = await operations.ActivateAsync(
+            first.BundleId!,
+            "browser-calibration-first-activate",
+            0,
+            "browser-owner",
+            "browser rollback target",
+            CancellationToken.None).ConfigureAwait(false);
+
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true
+        }).ConfigureAwait(false);
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
+            ColorScheme = ColorScheme.Dark,
+            ReducedMotion = ReducedMotion.Reduce
+        }).ConfigureAwait(false);
+        context.SetDefaultTimeout(DefaultTimeoutMilliseconds);
+        context.SetDefaultNavigationTimeout(DefaultTimeoutMilliseconds);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        var browserErrors = new List<string>();
+        page.PageError += (_, error) => browserErrors.Add(error);
+        await LoginAsync(
+            page,
+            CameraAgentKestrelFixture.OwnerEmail,
+            CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await page.GotoAsync("/calibration").ConfigureAwait(false);
+        await VisibleAsync(page.GetByText(first.BundleId!, new() { Exact = true }).First).ConfigureAwait(false);
+        var activeBundle = page.Locator(".calibration-card--active h2");
+        Assert.AreEqual(first.BundleId, (await activeBundle.InnerTextAsync().ConfigureAwait(false)).Trim());
+        await page.WaitForFunctionAsync("() => window.Blazor !== undefined").ConfigureAwait(false);
+        await page.WaitForTimeoutAsync(1_000).ConfigureAwait(false);
+
+        await page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }).ClickAsync().ConfigureAwait(false);
+        Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
+        var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
+        await VisibleAsync(confirmation).ConfigureAwait(false);
+        await WaitForFocusAsync(page, confirmation).ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
+        var resultBanner = page.Locator(".calibration-banner");
+        try
+        {
+            await VisibleAsync(resultBanner, 180_000).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            Assert.Fail(string.Join(
+                Environment.NewLine,
+                [.. browserErrors, await page.Locator(".calibration-console").InnerTextAsync().ConfigureAwait(false)]));
+        }
+        Assert.AreEqual(
+            "Calibration acquisition published durably.",
+            (await resultBanner.InnerTextAsync().ConfigureAwait(false)).Trim());
+
+        var activate = page.GetByRole(AriaRole.Button, new() { Name = "Review activate" });
+        await VisibleAsync(activate).ConfigureAwait(false);
+        await activate.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(confirmation).ConfigureAwait(false);
+        await WaitForFocusAsync(page, confirmation).ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            "prior => document.querySelector('.calibration-card--active h2')?.textContent?.trim() !== prior",
+            first.BundleId).ConfigureAwait(false);
+        var secondBundleId = (await activeBundle.InnerTextAsync().ConfigureAwait(false)).Trim();
+        Assert.AreNotEqual(first.BundleId, secondBundleId);
+        await VisibleAsync(page.GetByText("Calibration command completed durably.", new() { Exact = true }))
+            .ConfigureAwait(false);
+
+        var rollback = page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" });
+        await VisibleAsync(rollback).ConfigureAwait(false);
+        await rollback.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(confirmation).ConfigureAwait(false);
+        await WaitForFocusAsync(page, confirmation).ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            "expected => document.querySelector('.calibration-card--active h2')?.textContent?.trim() === expected",
+            first.BundleId).ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("Calibration command completed durably.", new() { Exact = true }))
+            .ConfigureAwait(false);
+        Assert.AreEqual(first.BundleId, (await activeBundle.InnerTextAsync().ConfigureAwait(false)).Trim());
+        Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
     }
 
     private static async Task AssertAnonymousAndNonOwnerAuthorizationAsync(IBrowser browser, Uri baseAddress)
@@ -115,6 +237,32 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await nonOwnerPage.GotoAsync("/schedule").ConfigureAwait(false);
         await nonOwnerPage.WaitForURLAsync(url => url.Contains("/Account/AccessDenied", StringComparison.OrdinalIgnoreCase))
             .ConfigureAwait(false);
+        await nonOwnerPage.GotoAsync("/calibration").ConfigureAwait(false);
+        await nonOwnerPage.WaitForURLAsync(url => url.Contains("/Account/AccessDenied", StringComparison.OrdinalIgnoreCase))
+            .ConfigureAwait(false);
+    }
+
+    private static async Task AssertCalibrationAsync(IPage page)
+    {
+        await page.GotoAsync("/calibration").ConfigureAwait(false);
+        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Calibration library", Level = 1 });
+        await VisibleAsync(heading).ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("No active bundle", new() { Exact = true })).ConfigureAwait(false);
+        Assert.AreEqual("82", await page.GetByLabel("Gain", new() { Exact = true }).InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("1", await page.GetByLabel("Effective offset").InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("-10", await page.GetByLabel("Camera temperature C").InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("10", await page.GetByLabel("Dark exposure seconds").InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("5", await page.GetByLabel("Exact light exposure seconds").InputValueAsync().ConfigureAwait(false));
+
+        await page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }).ClickAsync().ConfigureAwait(false);
+        var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
+        await VisibleAsync(confirmation).ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            "element => element === document.activeElement", await confirmation.ElementHandleAsync().ConfigureAwait(false))
+            .ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Cancel" }).ClickAsync().ConfigureAwait(false);
+        await confirmation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.activeElement?.id === 'calibration-heading'").ConfigureAwait(false);
     }
 
     private static async Task AssertSchedulePreviewAsync(IPage page)
@@ -405,7 +553,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         };
         var routes = new[]
         {
-            "/operations", "/operations/quarantine?kind=Artifact", "/gallery?pageSize=24", detailUrl, "/schedule", "/system"
+            "/operations", "/operations/quarantine?kind=Artifact", "/gallery?pageSize=24", detailUrl,
+            "/schedule", "/calibration", "/system"
         };
         foreach (var viewport in viewports)
         {
@@ -589,9 +738,15 @@ public sealed class CameraAgentBrowserAcceptanceTests
         }
     }
 
-    private static Task VisibleAsync(ILocator locator) => locator.WaitForAsync(new LocatorWaitForOptions
-    {
-        State = WaitForSelectorState.Visible,
-        Timeout = DefaultTimeoutMilliseconds
-    });
+    private static async Task WaitForFocusAsync(IPage page, ILocator locator)
+        => await page.WaitForFunctionAsync(
+            "element => element === document.activeElement",
+            await locator.ElementHandleAsync().ConfigureAwait(false)).ConfigureAwait(false);
+
+    private static Task VisibleAsync(ILocator locator, float timeout = DefaultTimeoutMilliseconds)
+        => locator.WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Visible,
+            Timeout = timeout
+        });
 }

@@ -38,7 +38,7 @@ public sealed class ProcessingRecipePerformanceTests
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["W1"] = "D1985318620745A987148B339FB1C0764042597582A00EFE211CE9F2DF256DE6",
-            ["W2"] = "CF2EC8DA21988C5420022A110BE2AFAD93A019A8503634F427DE2A279CDC3BE7"
+            ["W2"] = "7C1BB880F21858A8261A0B6C14C3722391258F880669B668D14C40621E2AB2A7"
         };
     private static readonly ProcessingRecipeIdentity DirectBaselineIdentity = ProcessingIdentity.CreateRecipeIdentity(
         new ProcessingRecipeDefinition("baseline", "1.0.0", "direct-v1", ProcessingOperationKind.Transform),
@@ -358,7 +358,7 @@ public sealed class ProcessingRecipePerformanceTests
             pair.Kind,
             new string('C', 64),
             "application/x-hvo-linear-frame",
-            workload.Artifact.Layout! with
+            CalibrationMasterBuilder.CreateNormalizedLayout(workload.Artifact.Layout!) with
             {
                 StrideBytes = pair.Frame.StrideBytes,
                 ByteLength = pair.Frame.PixelData.Length

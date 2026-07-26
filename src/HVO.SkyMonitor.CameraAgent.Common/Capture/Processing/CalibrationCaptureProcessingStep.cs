@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Imaging;
@@ -14,11 +15,13 @@ internal sealed class CalibrationCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     CalibrationProcessingStepOptions options,
     CameraAgentRecipeExecutionAdapter adapter,
-    SyntheticCalibrationReferenceStore? syntheticReferences = null) : ConfigurableCaptureProcessingStep<CalibrationProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep
+    SyntheticCalibrationReferenceStore? syntheticReferences = null,
+    SqliteCalibrationLibraryStore? calibrationLibrary = null,
+    CalibrationLibraryProcessingInputLoader? libraryInputLoader = null) : ConfigurableCaptureProcessingStep<CalibrationProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep
 {
     public bool Enabled => Options.Enabled;
 
-    public string RecipeName => Options.UsesSyntheticReferences
+    public string RecipeName => Options.UsesReferences
         ? BuiltInProcessingRecipes.ReferenceCalibration
         : BuiltInProcessingRecipes.LinearNormalization;
 
@@ -94,6 +97,84 @@ internal sealed class CalibrationCaptureProcessingStep(
                 }
             }
         }
+        else if (Options.UsesCalibrationLibrary)
+        {
+            if (context.ReconstructionDescriptor is null)
+            {
+                outcome = ProcessingOutcome.TerminalFailure(
+                    CalibrationLibraryReasonCodes.IncompatibleIdentity,
+                    nameof(context.ReconstructionDescriptor));
+            }
+            else
+            {
+                var store = calibrationLibrary ?? throw new InvalidOperationException(
+                    "Calibration library storage is unavailable.");
+                var selection = await store.SelectAsync(
+                    context.ReconstructionDescriptor, cancellationToken).ConfigureAwait(false);
+                if (!selection.IsSelected)
+                {
+                    outcome = selection.ReasonCode is CalibrationLibraryReasonCodes.Missing or
+                        CalibrationLibraryReasonCodes.Inactive
+                        ? ProcessingOutcome.Skipped(selection.ReasonCode, nameof(Options.Strategy))
+                        : ProcessingOutcome.TerminalFailure(selection.ReasonCode, nameof(Options.Strategy));
+                }
+                else
+                {
+                    try
+                    {
+                        var loader = libraryInputLoader ?? throw new InvalidOperationException(
+                            "Calibration library input loading is unavailable.");
+                        var selectedBundle = selection.Bundle!;
+                        var libraryInputs = await loader.LoadAsync(
+                            selectedBundle, cancellationToken).ConfigureAwait(false);
+                        var confirmed = await store.SelectAsync(
+                            context.ReconstructionDescriptor, cancellationToken).ConfigureAwait(false);
+                        if (!confirmed.IsSelected || confirmed.StateVersion != selection.StateVersion ||
+                            !string.Equals(
+                                confirmed.Bundle!.BundleIdentitySha256,
+                                selectedBundle.BundleIdentitySha256,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            outcome = ProcessingOutcome.TerminalFailure(
+                                CalibrationLibraryReasonCodes.Inactive,
+                                nameof(Options.Strategy));
+                            context.AddProcessingOutcome(outcome);
+                            return;
+                        }
+                        var inputs = new List<ProcessingArtifact> { input };
+                        inputs.AddRange(CalibrationReferenceKinds.All.Select(kind => libraryInputs.References[kind]));
+                        var selectionJson = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(
+                            JsonSerializer.SerializeToElement(new
+                            {
+                                schemaVersion = "calibration-library-selection-v1",
+                                bundleIdentitySha256 = confirmed.Bundle.BundleIdentitySha256,
+                                stateVersion = confirmed.StateVersion
+                            })));
+                        var auxiliary = libraryInputs.AuxiliaryInputs.ToList();
+                        auxiliary.Add(new ProcessingAuxiliaryInput(
+                            "calibration-library-selection",
+                            ProcessingAuxiliaryInputKind.CanonicalJson,
+                            SchemaVersion: "calibration-library-selection-v1",
+                            IdentitySha256: PayloadChecksum.ComputeSha256(selectionJson),
+                            Payload: selectionJson));
+                        outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
+                            BuiltInProcessingRecipes.ReferenceCalibration,
+                            JsonSerializer.SerializeToElement(new ReferenceCalibrationOptions()),
+                            ProcessingInputSelector.Raw("source"),
+                            inputs,
+                            Options.OutputVariant,
+                            AuxiliaryInputs: auxiliary,
+                            InputArtifactId: input.ArtifactId), cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+                    {
+                        outcome = ProcessingOutcome.TerminalFailure(
+                            CalibrationLibraryReasonCodes.Corrupt,
+                            nameof(Options.Strategy));
+                    }
+                }
+            }
+        }
         else
         {
             outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
@@ -150,12 +231,16 @@ public sealed class CalibrationProcessingStepOptions : IValidatableObject
 
     internal bool UsesSyntheticReferences => string.Equals(Strategy, "SyntheticReferences", StringComparison.Ordinal);
 
+    internal bool UsesCalibrationLibrary => string.Equals(Strategy, "CalibrationLibrary", StringComparison.Ordinal);
+
+    internal bool UsesReferences => UsesSyntheticReferences || UsesCalibrationLibrary;
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        if (!string.Equals(Strategy, "None", StringComparison.Ordinal) && !UsesSyntheticReferences)
+        if (!string.Equals(Strategy, "None", StringComparison.Ordinal) && !UsesReferences)
         {
             yield return new ValidationResult(
-                "Calibration strategy must be None or SyntheticReferences.",
+                "Calibration strategy must be None, SyntheticReferences, or CalibrationLibrary.",
                 [nameof(Strategy)]);
         }
         if (UsesSyntheticReferences && SyntheticCalibration is null)

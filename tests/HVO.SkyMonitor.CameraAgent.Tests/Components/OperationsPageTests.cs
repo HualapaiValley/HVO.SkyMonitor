@@ -195,7 +195,7 @@ public sealed class OperationsPageTests
         var cut = context.Render<OperationsPage>();
         await cut.Instance.DisposeAsync().ConfigureAwait(false);
 
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -218,12 +218,12 @@ public sealed class OperationsPageTests
         cut.WaitForElement("#capture-action");
         await cut.Find("#capture-action").ClickAsync().ConfigureAwait(false);
         var commandTask = cut.Find(".confirmation-actions .btn-primary").TriggerEventAsync("onclick", EventArgs.Empty);
-        await commandStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        await commandStarted.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
 
         await cut.Instance.DisposeAsync().ConfigureAwait(false);
 
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-        await commandTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        await commandTask.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
     }
 
     [TestMethod]

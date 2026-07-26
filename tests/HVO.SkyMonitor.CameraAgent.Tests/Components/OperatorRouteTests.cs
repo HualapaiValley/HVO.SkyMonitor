@@ -23,6 +23,7 @@ public sealed class OperatorRouteTests
             typeof(GalleryPage),
             typeof(GalleryDetail),
             typeof(SchedulePage),
+            typeof(CalibrationPage),
             typeof(SystemStatusPage),
             typeof(DeviceBootstrap),
             typeof(FramesController)
@@ -47,6 +48,7 @@ public sealed class OperatorRouteTests
             new[]
             {
                 ("Operations", "/"), ("Gallery", "/gallery"), ("Schedule", "/schedule"),
+                ("Calibration", "/calibration"),
                 ("System", "/system"), ("Device", "/devices/bootstrap")
             },
             links);

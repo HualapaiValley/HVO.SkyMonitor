@@ -95,6 +95,9 @@ dotnet tool restore
 echo "Restoring solution dependencies..."
 dotnet restore HVO.SkyMonitor.v9.slnx
 
+echo "Installing the repository-pinned Playwright Chromium revision..."
+bash "$SCRIPT_DIR/install-playwright.sh"
+
 # The Docker devcontainer feature owns socket permissions and group membership.
 echo "Verifying Docker daemon access..."
 if command_exists docker; then

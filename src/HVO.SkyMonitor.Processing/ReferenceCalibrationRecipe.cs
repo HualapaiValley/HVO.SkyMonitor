@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -43,6 +44,37 @@ public sealed record ReferenceCalibrationProfileV1(
     public const string CurrentSchemaVersion = "reference-calibration-profile-v1";
 }
 
+public static class ReferenceCalibrationProfileJson
+{
+    private static readonly JsonSerializerOptions SerializerOptions = new();
+    private static readonly JsonSerializerOptions ParserOptions = new(JsonSerializerDefaults.Web)
+    {
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+    };
+
+    public static byte[] Serialize(ReferenceCalibrationProfileV1 profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        var element = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(profile, SerializerOptions));
+        return Encoding.UTF8.GetBytes(element.GetRawText());
+    }
+
+    public static string ComputeIdentitySha256(ReferenceCalibrationProfileV1 profile)
+        => ProcessingIdentity.ComputePayloadSha256(Serialize(profile));
+
+    public static ReferenceCalibrationProfileV1? Parse(ReadOnlySpan<byte> utf8Json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<ReferenceCalibrationProfileV1>(utf8Json, ParserOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+}
+
 public sealed record ReferenceCalibrationOptions();
 
 internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
@@ -52,7 +84,7 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
     public ProcessingRecipeDefinition Definition { get; } = new(
         BuiltInProcessingRecipes.ReferenceCalibration,
         "1.0.0",
-        "reference-calibration-linear16-v1",
+        "reference-calibration-linear16-v2",
         ProcessingOperationKind.Transform);
 
     public JsonElement NormalizeOptions(JsonElement options)
@@ -97,23 +129,14 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
                 ProcessingReasonCodes.InvalidCalibrationProfile, ProfileInput));
         }
 
-        ReferenceCalibrationProfileV1? profile;
-        try
-        {
-            profile = JsonSerializer.Deserialize<ReferenceCalibrationProfileV1>(
-                profileInput.Payload.Span,
-                ProcessingRecipeSupport.SerializerOptions);
-        }
-        catch (JsonException)
-        {
-            profile = null;
-        }
+        var profile = ReferenceCalibrationProfileJson.Parse(profileInput.Payload.Span);
         if (!TryValidateProfile(profile, light, lightLayout, out var profileFailure))
         {
             return ValueTask.FromResult(profileFailure!);
         }
 
         var references = new Dictionary<string, ProcessingArtifact>(StringComparer.Ordinal);
+        var normalizedLightLayout = CalibrationMasterBuilder.CreateNormalizedLayout(lightLayout);
         foreach (var descriptor in profile!.References)
         {
             var auxiliaryName = $"{descriptor.Kind}-reference";
@@ -138,7 +161,7 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
             }
             var reference = matches[0];
             if (!ProcessingRecipeSupport.TryValidateFrame(reference, out var referenceLayout, out _) ||
-                !LayoutsMatch(lightLayout, referenceLayout))
+                !LayoutsMatch(normalizedLightLayout, referenceLayout))
             {
                 return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
                     ProcessingReasonCodes.CalibrationReferenceLayoutMismatch, auxiliaryName));
@@ -163,8 +186,15 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
         Linear16CalibrationResult correction;
         try
         {
+            var normalizedLight = CalibrationMasterBuilder.Normalize(
+                new CalibrationSourceFrame(lightLayout, light.Payload), cancellationToken);
             correction = Linear16ReferenceCalibration.Correct(
-                ToFrame(light),
+                new Linear16Frame(
+                    normalizedLight.Layout.Width,
+                    normalizedLight.Layout.Height,
+                    normalizedLight.Layout.StrideBytes,
+                    normalizedLight.Layout.PixelFormat,
+                    normalizedLight.PixelData),
                 ToFrame(references[CalibrationReferenceKinds.Bias]),
                 ToFrame(references[CalibrationReferenceKinds.Dark]),
                 ToFrame(references[CalibrationReferenceKinds.Flat]),
@@ -206,17 +236,13 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
             FrameArtifactRole.Calibrated,
             request.OutputVariant,
             "application/x-hvo-linear-frame",
-            ProcessingRecipeSupport.CreatePackedLayout(lightLayout) with
-            {
-                SampleDepthBits = 16,
-                BlackLevel = 0,
-                WhiteLevel = ushort.MaxValue,
-                StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
-                LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
-            },
+            normalizedLightLayout,
             correction.PixelData,
             identity,
-            [new("linear16-reference-calibration", correction.AlgorithmVersion)],
+            [
+                new("calibration-normalization", CalibrationMasterBuilder.NormalizationAlgorithmVersion),
+                new("linear16-reference-calibration", correction.AlgorithmVersion)
+            ],
             orderedSources,
             light.Integration,
             compatibility);
@@ -276,12 +302,26 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
     }
 
     private static bool LayoutsMatch(FrameLayoutDescriptor expected, FrameLayoutDescriptor actual)
-        => expected.Width == actual.Width && expected.Height == actual.Height &&
-           expected.PixelFormat == actual.PixelFormat && expected.ByteOrder == actual.ByteOrder &&
-           expected.SampleDepthBits == actual.SampleDepthBits && expected.ContainerDepthBits == actual.ContainerDepthBits &&
-           expected.Packing == actual.Packing && expected.CfaPattern == actual.CfaPattern &&
-           expected.StoredCodeTransform == actual.StoredCodeTransform &&
-           expected.LevelCodeSpace == actual.LevelCodeSpace && expected.Readout == actual.Readout;
+    {
+        expected = NormalizeCompleteLayout(expected);
+        actual = NormalizeCompleteLayout(actual);
+        return expected.Width == actual.Width && expected.Height == actual.Height &&
+               expected.PixelFormat == actual.PixelFormat && expected.ByteOrder == actual.ByteOrder &&
+               expected.SampleDepthBits == actual.SampleDepthBits && expected.ContainerDepthBits == actual.ContainerDepthBits &&
+               expected.Packing == actual.Packing && expected.CfaPattern == actual.CfaPattern &&
+               expected.BlackLevel == actual.BlackLevel && expected.WhiteLevel == actual.WhiteLevel &&
+               expected.StoredCodeTransform == actual.StoredCodeTransform &&
+               expected.LevelCodeSpace == actual.LevelCodeSpace && expected.Readout == actual.Readout;
+    }
+
+    private static FrameLayoutDescriptor NormalizeCompleteLayout(FrameLayoutDescriptor layout)
+        => layout.SampleDepthBits == layout.ContainerDepthBits
+            ? layout with
+            {
+                StoredCodeTransform = layout.StoredCodeTransform ?? FrameStoredCodeTransform.IdentityV1,
+                LevelCodeSpace = layout.LevelCodeSpace ?? FrameLevelCodeSpace.StoredContainer
+            }
+            : layout;
 
     private static Linear16Frame ToFrame(ProcessingArtifact artifact)
         => new(

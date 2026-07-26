@@ -1,0 +1,211 @@
+@page "/calibration"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Calibration</PageTitle>
+
+<div class="calibration-console">
+    <header class="calibration-header">
+        <div>
+            <p class="eyebrow">Immutable local references</p>
+            <h1 id="calibration-heading" tabindex="-1" @ref="_heading">Calibration library</h1>
+            <p>Acquire deterministic software references, inspect exact lineage, and activate only at a safe capture boundary.</p>
+        </div>
+        <button class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+    </header>
+
+    @if (_loading)
+    {
+        <section class="calibration-banner" role="status">Loading durable calibration state.</section>
+    }
+    else if (_status is null)
+    {
+        <section class="calibration-banner calibration-banner--error" role="alert">
+            <strong>Calibration unavailable</strong><span>@_message</span>
+        </section>
+    }
+    else
+    {
+        @if (_message is not null)
+        {
+            <section class="calibration-banner @(_messageIsError ? "calibration-banner--error" : null)"
+                     role="@(_messageIsError ? "alert" : "status")">@_message</section>
+        }
+
+        <section class="status-grid" aria-label="Calibration library status">
+            <article class="calibration-card calibration-card--active">
+                <p class="eyebrow">Active correction</p>
+                @if (_status.ActiveBundle is null)
+                {
+                    <h2>No active bundle</h2>
+                    <p>Raw acquisition remains durable. Library correction will fail closed until a compatible bundle is activated.</p>
+                }
+                else
+                {
+                    <h2>@_status.ActiveBundle.BundleId</h2>
+                    <code>@_status.ActiveBundle.BundleIdentitySha256</code>
+                    <p><span class="state-chip">@_status.ActiveBundle.PublicationState</span> @_status.ActiveBundle.Source</p>
+                }
+                <dl>
+                    <div><dt>State version</dt><dd>@_status.Version</dd></div>
+                    <div><dt>Published</dt><dd>@_status.PublishedBundleCount</dd></div>
+                    <div><dt>Quarantined</dt><dd>@_status.QuarantineCount</dd></div>
+                    <div><dt>Last selection</dt><dd><code>@(_status.LastSelectionReason ?? "none")</code></dd></div>
+                </dl>
+            </article>
+
+            <article class="calibration-card">
+                <p class="eyebrow">Acquisition</p>
+                @if (_status.PendingAcquisition is null)
+                {
+                    <h2>Idle</h2><p>No durable calibration acquisition is pending.</p>
+                }
+                else
+                {
+                    <h2>@Split(_status.PendingAcquisition.State)</h2>
+                    <p><code>@_status.PendingAcquisition.Phase</code> / attempt @_status.PendingAcquisition.AttemptCount</p>
+                    <p class="breakable">@_status.PendingAcquisition.JobId</p>
+                    <button class="btn btn-outline-warning" disabled="@_busy"
+                            @onclick="() => CancelAcquisitionAsync(_status.PendingAcquisition)">Cancel acquisition</button>
+                }
+            </article>
+
+            <article class="calibration-card">
+                <p class="eyebrow">Latest durable changes</p>
+                <h2>@(_status.LastActivation is null ? "No activation" : Split(_status.LastActivation.CommandKind))</h2>
+                <p>@FormatUtc(_status.LastActivation?.ActivatedUtc)</p>
+                <p><code>@(_status.LastReconciliationReason ?? "none")</code></p>
+                <p>@FormatUtc(_status.LastReconciliationUtc)</p>
+                @if (RollbackTarget is { } rollbackTarget)
+                {
+                    <button class="btn btn-outline-light" disabled="@_busy"
+                            @onclick="() => BeginActivation(rollbackTarget, rollback: true)">Review rollback</button>
+                }
+            </article>
+        </section>
+
+        @if (_confirmation is not null)
+        {
+            <section class="confirmation-panel" role="alertdialog" aria-labelledby="confirmation-heading"
+                     aria-describedby="confirmation-description" tabindex="-1" @ref="_confirmationPanel">
+                <div>
+                    <p class="eyebrow">Capture-boundary confirmation</p>
+                    <h2 id="confirmation-heading">@ConfirmationHeading</h2>
+                    <p id="confirmation-description">@ConfirmationDescription</p>
+                </div>
+                <div class="confirmation-actions">
+                    <button class="btn btn-primary" disabled="@_busy" @onclick="ConfirmAsync">Confirm</button>
+                    <button class="btn btn-outline-light" disabled="@_busy" @onclick="CancelConfirmation">Cancel</button>
+                </div>
+            </section>
+        }
+
+        <section class="workspace-grid">
+            <article class="calibration-card acquisition-card">
+                <p class="eyebrow">VirtualSky software evidence</p>
+                <h2>Acquire ASI676 references</h2>
+                <p class="disclaimer">Generates deterministic pseudo references for workflow verification. This is not measured physical camera or illumination calibration.</p>
+                <div class="form-grid">
+                    <label for="cal-gain">Gain<input id="cal-gain" type="number" step="any" @bind="_gain" /></label>
+                    <label for="cal-offset">Effective offset<input id="cal-offset" type="number" step="any" @bind="_offset" /></label>
+                    <label for="cal-temperature">Camera temperature C<input id="cal-temperature" type="number" step="any" @bind="_temperatureC" /></label>
+                    <label for="cal-seed">Model seed<input id="cal-seed" type="number" @bind="_seed" /></label>
+                    <label for="cal-bias">Bias exposure seconds<input id="cal-bias" type="number" min="0" step="any" @bind="_biasSeconds" /></label>
+                    <label for="cal-dark">Dark exposure seconds<input id="cal-dark" type="number" min="0" step="any" @bind="_darkSeconds" /></label>
+                    <label for="cal-flat">Flat exposure seconds<input id="cal-flat" type="number" min="0" step="any" @bind="_flatSeconds" /></label>
+                    <label for="cal-defect">Defect exposure seconds<input id="cal-defect" type="number" min="0" step="any" @bind="_defectSeconds" /></label>
+                    <label for="cal-light">Exact light exposure seconds<input id="cal-light" type="number" min="0" step="any" @bind="_lightSeconds" /></label>
+                    <label for="cal-from">Effective from UTC<input id="cal-from" type="datetime-local" value="@_effectiveFrom" @onchange="EffectiveFromChanged" /></label>
+                    <label for="cal-until">Effective until UTC, optional<input id="cal-until" type="datetime-local" value="@_effectiveUntil" @onchange="EffectiveUntilChanged" /></label>
+                </div>
+                <label for="cal-reason">Operator reason, optional<input id="cal-reason" maxlength="512" @bind="_reason" /></label>
+                <p class="form-note">Creates three source frames for each of bias, dark, flat, and defect, then four immutable masters. Activation remains a separate command.</p>
+                <button id="start-calibration-acquisition" class="btn btn-primary" disabled="@(_busy || _acquisitionRunning)" @onclick="BeginAcquire">@(_acquisitionRunning ? "Acquisition running" : "Review acquisition")</button>
+            </article>
+
+            <article class="calibration-card library-card">
+                <header class="card-heading">
+                    <div><p class="eyebrow">Newest first</p><h2>Library</h2></div>
+                    <span>Page size 100</span>
+                </header>
+                @if (_page is null || _page.Items.Count == 0)
+                {
+                    <p>No immutable calibration bundles are published.</p>
+                }
+                else
+                {
+                    <ol class="bundle-list">
+                        @foreach (var bundle in _page.Items)
+                        {
+                            <li class="@(bundle.BundleId == _status.ActiveBundle?.BundleId ? "bundle-list__active" : null)">
+                                <div>
+                                    <strong>@bundle.BundleId</strong>
+                                    <span>@bundle.Source / @bundle.CreatedUtc.ToString("u")</span>
+                                    <code>@ShortHash(bundle.BundleIdentitySha256)</code>
+                                </div>
+                                <div class="bundle-actions">
+                                    <button class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => ShowDetailAsync(bundle.BundleId)">Inspect</button>
+                                    @if (bundle.PublicationState == "published" && bundle.BundleId != _status.ActiveBundle?.BundleId)
+                                    {
+                                        <button class="btn btn-sm btn-outline-warning" disabled="@_busy" @onclick="() => BeginActivation(bundle.BundleId, rollback: false)">Review activate</button>
+                                    }
+                                </div>
+                            </li>
+                        }
+                    </ol>
+                }
+                <div class="pager">
+                    <button class="btn btn-sm btn-outline-light" disabled="@(_busy || _cursor is null)" @onclick="LoadNewestAsync">Newest bundles</button>
+                    <button class="btn btn-sm btn-outline-light" disabled="@(_busy || _page?.NextCursor is null)" @onclick="LoadOlderAsync">Older bundles</button>
+                </div>
+            </article>
+        </section>
+
+        @if (_detail is not null)
+        {
+            <section class="calibration-card detail-card" aria-labelledby="bundle-detail-heading">
+                <header class="card-heading">
+                    <div><p class="eyebrow">Exact evidence</p><h2 id="bundle-detail-heading">@_detail.Summary.BundleId</h2></div>
+                    <button class="btn btn-sm btn-outline-light" @onclick="CloseDetail">Close detail</button>
+                </header>
+                <dl class="detail-facts">
+                    <div><dt>Bundle SHA-256</dt><dd><code>@_detail.Summary.BundleIdentitySha256</code></dd></div>
+                    <div><dt>Profile SHA-256</dt><dd><code>@_detail.Summary.ProfileIdentitySha256</code></dd></div>
+                    <div><dt>Model SHA-256</dt><dd><code>@_detail.Summary.AcquisitionModelIdentitySha256</code></dd></div>
+                    <div><dt>Agent / rig</dt><dd>@_detail.Summary.Applicability.AgentId / @_detail.Summary.Applicability.RigId</dd></div>
+                    <div><dt>Input readout</dt><dd>@FormatLayout(_detail.Summary.Applicability.InputLayout)</dd></div>
+                    <div><dt>Normalized output</dt><dd>@FormatLayout(_detail.Summary.Applicability.OutputLayout)</dd></div>
+                    <div><dt>Gain / offset / temperature</dt><dd>@FormatConditions(_detail.Summary.Applicability)</dd></div>
+                    <div><dt>Light exposure / interval</dt><dd>@FormatApplicability(_detail.Summary.Applicability)</dd></div>
+                </dl>
+                <div class="artifact-grid">
+                    @foreach (var artifact in _detail.Artifacts)
+                    {
+                        <article>
+                            <header><strong>@artifact.Kind / @artifact.Role</strong><span>@artifact.Exposure.TotalSeconds s</span></header>
+                            <code>@artifact.PayloadSha256</code>
+                            <p>@artifact.ArtifactId</p>
+                            <p>Gain @artifact.Gain, offset @(artifact.Offset?.ToString() ?? "unknown"), temperature @(artifact.TemperatureC?.ToString() ?? "unknown") C</p>
+                            @if (artifact.MasterBuildRecipe is { } recipe)
+                            {
+                                <p>@recipe.Name / @recipe.ImplementationVersion</p>
+                            }
+                            @if (artifact.OrderedSourceArtifactIds.Count > 0)
+                            {
+                                <ol aria-label="Ordered master source lineage">
+                                    @foreach (var sourceId in artifact.OrderedSourceArtifactIds)
+                                    {
+                                        <li>@sourceId</li>
+                                    }
+                                </ol>
+                            }
+                        </article>
+                    }
+                </div>
+            </section>
+        }
+    }
+</div>

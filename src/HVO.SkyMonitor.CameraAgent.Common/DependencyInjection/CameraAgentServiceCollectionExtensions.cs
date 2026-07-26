@@ -56,6 +56,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureLaneTelemetry>();
         services.AddSingleton<IRawIngressFaultInjector, NullRawIngressFaultInjector>();
         services.AddSingleton<ICaptureLaneFaultInjector, NullCaptureLaneFaultInjector>();
+        services.AddSingleton<CalibrationTelemetry>();
         services.AddSingleton<ITransientCandidateFaultInjector>(NullTransientCandidateFaultInjector.Instance);
         services.AddSingleton<ITransientRuntimeFaultInjector>(NullTransientRuntimeFaultInjector.Instance);
         services.AddSingleton<CaptureLanePolicy>();
@@ -64,6 +65,13 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<ICaptureLaneStore>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<SqliteCaptureScheduleStore>();
+        services.AddSingleton<SqliteCalibrationLibraryStore>();
+        services.AddSingleton<ICalibrationPublicationFaultInjector>(
+            NullCalibrationPublicationFaultInjector.Instance);
+        services.AddSingleton<CalibrationArtifactPublisher>();
+        services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
+        services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
+        services.AddSingleton<CalibrationLibraryReconciler>();
         services.AddSingleton<SqliteTransientCandidateJournal>();
         services.AddSingleton<ITransientCandidateJournal>(provider =>
             provider.GetRequiredService<SqliteTransientCandidateJournal>());
@@ -130,11 +138,13 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureProcessingPersistence>();
         services.AddSingleton<CameraAgentClearReferenceLoader>();
         services.AddSingleton<SyntheticCalibrationReferenceStore>();
+        services.AddSingleton<CalibrationLibraryProcessingInputLoader>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
         services.AddSingleton<IProcessingRetentionHolds>(provider =>
             new CompositeProcessingRetentionHolds(
                 provider.GetRequiredService<CaptureProcessingPersistence>(),
-                provider.GetRequiredService<CameraAgentClearReferenceLoader>()));
+                provider.GetRequiredService<CameraAgentClearReferenceLoader>(),
+                provider.GetRequiredService<SqliteCalibrationLibraryStore>()));
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         services.AddSingleton<CameraAgentRecipeExecutionAdapter>();
         services.AddSingleton<ArtifactOutboxState>();
@@ -167,6 +177,8 @@ public static class CameraAgentServiceCollectionExtensions
             "WeatherCloudOverlay", typeof(WeatherCloudOverlayCaptureProcessingStep),
             typeof(WeatherCloudOverlayProcessingStepOptions), 90, AutoInclude: false));
         services.AddHostedService<CameraAgentConfigurationInitializer>();
+        services.AddHostedService<CalibrationLibraryValidationService>();
+        services.AddHostedService<VirtualCalibrationAcquisitionRecoveryService>();
         services.AddHostedService(provider => provider.GetRequiredService<CaptureDistributionService>());
         services.AddHostedService<CameraCaptureService>();
         services.AddHostedService<RetentionBackgroundService>();

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -58,7 +59,34 @@ internal static class RawCaptureDescriptorFactory
 
         var syntheticCalibrationIdentity = ResolveIdentity(frame, "syntheticCalibrationModelSha256");
         var syntheticCalibrationSchema = ResolveText(frame, "syntheticCalibrationSchema");
-        var calibrationProfile = syntheticCalibrationIdentity is null
+        var virtualCalibrationIdentity = ResolveRequiredIdentity(frame, "virtualCalibrationModelSha256");
+        var virtualCalibrationSchema = ResolveText(frame, "virtualCalibrationSchema");
+        var virtualCalibrationAlgorithm = ResolveText(frame, "virtualCalibrationAlgorithm");
+        if (syntheticCalibrationIdentity is not null && virtualCalibrationIdentity is not null)
+        {
+            throw new InvalidDataException("A raw frame cannot declare multiple calibration corruption models.");
+        }
+        if (HasMetadata(
+                frame,
+                "virtualCalibrationModelSha256",
+                "virtualCalibrationSchema",
+                "virtualCalibrationAlgorithm") &&
+            (virtualCalibrationIdentity is null || virtualCalibrationSchema is null ||
+             !string.Equals(
+                 virtualCalibrationAlgorithm,
+                 VirtualCalibrationSourceGenerator.LightCorruptionAlgorithmVersion,
+                 StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException(
+                "Virtual calibration metadata requires an identity, schema, and supported light algorithm.");
+        }
+        var calibrationProfile = virtualCalibrationIdentity is not null
+            ? new ProfileIdentityDescriptor(
+                "virtual-calibration-source-model",
+                virtualCalibrationSchema ?? throw new InvalidDataException(
+                    "Virtual calibration model metadata requires a schema version."),
+                virtualCalibrationIdentity)
+            : syntheticCalibrationIdentity is null
             ? Profile(
                 calibrationSteps.Length == 0 ? "calibration" : "configured-calibration",
                 calibrationSteps.Length == 0 ? "none-v1" : "configured-v1",
@@ -278,13 +306,30 @@ internal static class RawCaptureDescriptorFactory
     private static string? ResolveText(CameraFrame frame, string key)
         => frame.Metadata.Extra is not null && frame.Metadata.Extra.TryGetValue(key, out var value) &&
            !string.IsNullOrWhiteSpace(value)
-            ? value
-            : null;
+             ? value
+             : null;
+
+    private static bool HasMetadata(CameraFrame frame, params string[] keys)
+        => frame.Metadata.Extra is not null && keys.Any(frame.Metadata.Extra.ContainsKey);
 
     private static string? ResolveIdentity(CameraFrame frame, string key)
     {
         var value = ResolveText(frame, key);
         return value is { Length: 64 } && value.All(Uri.IsHexDigit) ? value.ToUpperInvariant() : null;
+    }
+
+    private static string? ResolveRequiredIdentity(CameraFrame frame, string key)
+    {
+        var value = ResolveText(frame, key);
+        if (value is null)
+        {
+            return null;
+        }
+        if (value.Length != 64 || value.Any(static character => !Uri.IsHexDigit(character)))
+        {
+            throw new InvalidDataException($"Raw frame metadata '{key}' is not a SHA-256 identity.");
+        }
+        return value.ToUpperInvariant();
     }
 
     private static string MediaTypeFor(CameraPixelFormat pixelFormat) => pixelFormat switch

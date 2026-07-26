@@ -1,7 +1,8 @@
-using System.Text;
-using System.Text.Json;
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.Processing.Tests;
@@ -13,9 +14,26 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "MSTest methods do not require context-free awaits.")]
 public sealed class ReferenceCalibrationRecipeTests
 {
+    private const string LegacyProfileSha256 = "044F86BF838784C7646EAE1D681440BB5D73A90AB8CDF799BE6930F09DCB86E2";
     private static readonly DateTimeOffset CaptureTime = new(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
     private static readonly ProcessingCompatibilityIdentity Compatibility = new(
         "rig", "orientation", "calibration", "mask", "sensor", "setpoint", "processing");
+
+    [TestMethod]
+    public async Task LegacyProfileGoldenRoundTripsWithoutChangingCanonicalBytesOrIdentity()
+    {
+        var fixture = await File.ReadAllBytesAsync(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "reference-calibration-profile-v1.json"));
+        Assert.AreEqual((byte)'\n', fixture[^1]);
+        var expected = fixture[..^1];
+
+        var profile = ReferenceCalibrationProfileJson.Parse(expected);
+
+        Assert.IsNotNull(profile);
+        CollectionAssert.AreEqual(expected, ReferenceCalibrationProfileJson.Serialize(profile));
+        Assert.AreEqual(LegacyProfileSha256, Convert.ToHexString(SHA256.HashData(expected)));
+        Assert.AreEqual(LegacyProfileSha256, ReferenceCalibrationProfileJson.ComputeIdentitySha256(profile));
+    }
 
     [TestMethod]
     public async Task ExecuteAsync_CorrectsReferencesAndBindsOrderedLineageAndProfileIdentity()
@@ -33,9 +51,52 @@ public sealed class ReferenceCalibrationRecipeTests
         Assert.AreEqual(fixture.ProfileIdentity, product.Compatibility.Calibration);
         Assert.AreEqual(fixture.Profile.References.Single(item => item.Kind == CalibrationReferenceKinds.Defect).PayloadSha256,
             product.Compatibility.Mask);
-        Assert.AreEqual("linear16-reference-calibration-v1", product.Algorithms.Single().Version);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                CalibrationMasterBuilder.NormalizationAlgorithmVersion,
+                "linear16-reference-calibration-v1"
+            },
+            product.Algorithms.Select(static algorithm => algorithm.Version).ToArray());
         Assert.AreEqual(0, product.Layout!.BlackLevel);
         Assert.AreEqual(ushort.MaxValue, product.Layout.WhiteLevel);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_NormalizesNative12BitLightBeforeApplyingNormalizedMasters()
+    {
+        var fixture = CreateFixture();
+        var nativePayload = Bytes([100, 120, 100, 120]);
+        var nativeBefore = nativePayload.ToArray();
+        var nativeLight = fixture.Light with
+        {
+            Layout = fixture.Light.Layout! with
+            {
+                SampleDepthBits = 12,
+                BlackLevel = 64,
+                WhiteLevel = 4095,
+                StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+                LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+            },
+            Payload = nativePayload
+        };
+        var request = fixture.Request with
+        {
+            Inputs = fixture.Request.Inputs.Select(input => input.ArtifactId == fixture.Light.ArtifactId
+                ? nativeLight
+                : input).ToArray()
+        };
+
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var product = outcome.Products.Single();
+        Assert.AreEqual(16, product.Layout!.SampleDepthBits);
+        Assert.AreEqual(ushort.MaxValue, product.Layout.WhiteLevel);
+        Assert.AreEqual(FrameStoredCodeTransform.IdentityV1, product.Layout.StoredCodeTransform);
+        Assert.AreEqual(FrameLevelCodeSpace.StoredContainer, product.Layout.LevelCodeSpace);
+        CollectionAssert.AreEqual(new ushort[] { 930, 790, 930, 790 }, Values(product.Payload.Span));
+        CollectionAssert.AreEqual(nativeBefore, nativeLight.Payload.ToArray());
     }
 
     [TestMethod]
@@ -162,9 +223,8 @@ public sealed class ReferenceCalibrationRecipeTests
             -11,
             -9,
             descriptors);
-        var profileElement = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(profile));
-        var profileBytes = Encoding.UTF8.GetBytes(profileElement.GetRawText());
-        var profileIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(profileElement);
+        var profileBytes = ReferenceCalibrationProfileJson.Serialize(profile);
+        var profileIdentity = ReferenceCalibrationProfileJson.ComputeIdentitySha256(profile);
         var inputs = new List<ProcessingArtifact> { light };
         inputs.AddRange(references.Where(pair => !string.Equals(pair.Key, omitKind, StringComparison.Ordinal)).Select(static pair => pair.Value));
         var auxiliaries = new List<ProcessingAuxiliaryInput>
@@ -221,6 +281,16 @@ public sealed class ReferenceCalibrationRecipeTests
             bytes[index * 2 + 1] = (byte)(source[index] >> 8);
         }
         return bytes;
+    }
+
+    private static ushort[] Values(ReadOnlySpan<byte> bytes)
+    {
+        var values = new ushort[bytes.Length / 2];
+        for (var index = 0; index < values.Length; index++)
+        {
+            values[index] = (ushort)(bytes[index * 2] | bytes[index * 2 + 1] << 8);
+        }
+        return values;
     }
 
     private sealed record Fixture(

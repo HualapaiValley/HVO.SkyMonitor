@@ -163,6 +163,9 @@ public sealed class OwnerAuthorizationTests
         using var anonymousSchedule = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/schedule", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousSchedule.StatusCode);
+        using var anonymousCalibration = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/calibration/status", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousCalibration.StatusCode);
 
         using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
@@ -172,6 +175,9 @@ public sealed class OwnerAuthorizationTests
         using var nonOwnerSchedule = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/schedule", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerSchedule.StatusCode);
+        using var nonOwnerCalibration = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/calibration/status", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerCalibration.StatusCode);
         using var nonOwnerMutation = await nonOwnerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/capture/resume", UriKind.Relative),
             new { reason = "test" }).ConfigureAwait(false);
@@ -192,6 +198,18 @@ public sealed class OwnerAuthorizationTests
         Assert.AreEqual(HttpStatusCode.OK, ownerSchedule.StatusCode);
         var scheduleJson = await ownerSchedule.Content.ReadAsStringAsync().ConfigureAwait(false);
         Assert.IsFalse(scheduleJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
+        using var ownerCalibration = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/calibration/status", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerCalibration.StatusCode);
+        var calibrationJson = await ownerCalibration.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.IsFalse(calibrationJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(calibrationJson.Contains("relativePath", StringComparison.OrdinalIgnoreCase));
+        using var invalidCalibrationPage = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/calibration/bundles?pageSize=101", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, invalidCalibrationPage.StatusCode);
+        using var missingCalibrationDetail = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/calibration/bundles/missing", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, missingCalibrationDetail.StatusCode);
 
         using var missingAntiforgery = await ownerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/capture/resume", UriKind.Relative),
@@ -201,8 +219,27 @@ public sealed class OwnerAuthorizationTests
             new Uri("/api/v1/operations/schedule/stage", UriKind.Relative),
             new { }).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, missingScheduleAntiforgery.StatusCode);
+        using var missingCalibrationAntiforgery = await ownerClient.PostAsJsonAsync(
+            new Uri("/api/v1/operations/calibration/acquisitions", UriKind.Relative),
+            new { }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, missingCalibrationAntiforgery.StatusCode);
 
         var token = await GetAntiforgeryTokenAsync(ownerClient).ConfigureAwait(false);
+        using (var invalidCalibrationIdempotency = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/calibration/bundles/missing/activate", UriKind.Relative)))
+        {
+            invalidCalibrationIdempotency.Headers.Add("Idempotency-Key", new string('a', 129));
+            invalidCalibrationIdempotency.Headers.Add("RequestVerificationToken", token);
+            invalidCalibrationIdempotency.Content = JsonContent.Create(new
+            {
+                expectedVersion = 0,
+                reason = "invalid idempotency key"
+            });
+            using var invalidCalibration = await ownerClient.SendAsync(invalidCalibrationIdempotency)
+                .ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.BadRequest, invalidCalibration.StatusCode);
+        }
         using (var scheduleDocument = JsonDocument.Parse(scheduleJson))
         using (var missingVersionRequest = new HttpRequestMessage(
             HttpMethod.Post,
@@ -286,6 +323,7 @@ public sealed class OwnerAuthorizationTests
             (Path: "/operations", Expected: "Capture operations"),
             (Path: "/gallery", Expected: "Capture gallery"),
             (Path: "/schedule", Expected: "Schedule control"),
+            (Path: "/calibration", Expected: "Calibration library"),
             (Path: "/system", Expected: "System snapshot"),
             (Path: "/devices/bootstrap", Expected: "Device Bootstrap")
         })

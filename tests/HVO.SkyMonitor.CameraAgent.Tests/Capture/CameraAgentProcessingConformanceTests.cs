@@ -1,3 +1,4 @@
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -10,6 +11,61 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 [TestClass]
 public sealed class CameraAgentProcessingConformanceTests
 {
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void RawDescriptorEnforcesVirtualCalibrationProvenance()
+    {
+        var model = new VirtualCalibrationSourceModelV1();
+        var modelIdentity = VirtualCalibrationSourceGenerator.ComputeModelIdentitySha256(model);
+        var descriptor = CreateRawDescriptor(new Dictionary<string, string>
+        {
+            ["virtualCalibrationSchema"] = model.SchemaVersion,
+            ["virtualCalibrationModelSha256"] = modelIdentity,
+            ["virtualCalibrationAlgorithm"] = VirtualCalibrationSourceGenerator.LightCorruptionAlgorithmVersion
+        });
+
+        Assert.AreEqual("virtual-calibration-source-model", descriptor.Profiles.Calibration.Name);
+        Assert.AreEqual(VirtualCalibrationSourceModelV1.CurrentSchemaVersion, descriptor.Profiles.Calibration.Version);
+        Assert.AreEqual(modelIdentity, descriptor.Profiles.Calibration.Sha256);
+
+        Assert.ThrowsExactly<InvalidDataException>(() => CreateRawDescriptor(new Dictionary<string, string>
+        {
+            ["virtualCalibrationSchema"] = model.SchemaVersion,
+            ["virtualCalibrationModelSha256"] = "not-a-sha256-identity",
+            ["virtualCalibrationAlgorithm"] = VirtualCalibrationSourceGenerator.LightCorruptionAlgorithmVersion
+        }));
+        Assert.ThrowsExactly<InvalidDataException>(() => CreateRawDescriptor(new Dictionary<string, string>
+        {
+            ["virtualCalibrationModelSha256"] = modelIdentity,
+            ["virtualCalibrationAlgorithm"] = VirtualCalibrationSourceGenerator.LightCorruptionAlgorithmVersion
+        }));
+        Assert.ThrowsExactly<InvalidDataException>(() => CreateRawDescriptor(new Dictionary<string, string>
+        {
+            ["virtualCalibrationSchema"] = model.SchemaVersion,
+            ["virtualCalibrationModelSha256"] = modelIdentity
+        }));
+        Assert.ThrowsExactly<InvalidDataException>(() => CreateRawDescriptor(new Dictionary<string, string>
+        {
+            ["virtualCalibrationSchema"] = model.SchemaVersion
+        }));
+        Assert.ThrowsExactly<InvalidDataException>(() => CreateRawDescriptor(new Dictionary<string, string>
+        {
+            ["virtualCalibrationAlgorithm"] = VirtualCalibrationSourceGenerator.LightCorruptionAlgorithmVersion
+        }));
+        Assert.ThrowsExactly<InvalidDataException>(() => CreateRawDescriptor(new Dictionary<string, string>
+        {
+            ["virtualCalibrationModelSha256"] = string.Empty
+        }));
+        Assert.ThrowsExactly<InvalidDataException>(() => CreateRawDescriptor(new Dictionary<string, string>
+        {
+            ["syntheticCalibrationSchema"] = SyntheticCalibrationModelV1.CurrentSchemaVersion,
+            ["syntheticCalibrationModelSha256"] = new string('A', 64),
+            ["virtualCalibrationSchema"] = model.SchemaVersion,
+            ["virtualCalibrationModelSha256"] = modelIdentity,
+            ["virtualCalibrationAlgorithm"] = VirtualCalibrationSourceGenerator.LightCorruptionAlgorithmVersion
+        }));
+    }
+
     [TestMethod]
     [TestCategory("Unit")]
     public async Task CameraAgentAdapterProducesCanonicalPreviewFixture()
@@ -82,6 +138,10 @@ public sealed class CameraAgentProcessingConformanceTests
         Assert.AreEqual(canonicalFallbackStart, fallbackDescriptor.Timing.ExposureStartedUtc);
         Assert.AreEqual(canonicalFallbackStart.AddSeconds(1), fallbackDescriptor.Timing.ExposureEndedUtc);
         Assert.AreEqual(fallbackDescriptor.Timing.ExposureEndedUtc, fallbackDescriptor.Timing.ReadoutCompletedUtc);
+        Assert.AreEqual(
+            CaptureContractJson.ComputeCanonicalJsonSha256(
+                JsonSerializer.SerializeToElement(ProcessingConformanceFixture.CameraConfig.Rig.Sensor)),
+            fallbackDescriptor.Profiles.Sensor.Sha256);
         var syntheticIdentity = new string('B', 64);
         var syntheticFrame = fallbackFrame with
         {
@@ -234,5 +294,39 @@ public sealed class CameraAgentProcessingConformanceTests
         Assert.AreEqual(FrameByteOrder.NotApplicable, projectedPreview.Layout!.ByteOrder);
         Assert.IsNull(projectedPreview.Layout.BlackLevel);
         Assert.AreEqual(byte.MaxValue, projectedPreview.Layout.WhiteLevel);
+    }
+
+    private static ReconstructionDescriptor CreateRawDescriptor(Dictionary<string, string> extra)
+    {
+        var timestamp = ProcessingConformanceFixture.CapturedUtc;
+        var frame = new CameraFrame(
+            timestamp,
+            ProcessingConformanceFixture.Layout.Width,
+            ProcessingConformanceFixture.Layout.Height,
+            ProcessingConformanceFixture.Layout.PixelFormat,
+            ProcessingConformanceFixture.Payload,
+            new FrameMetadata(TimeSpan.FromSeconds(1), 150, 0, Extra: extra));
+        var submission = new CaptureLoopSubmission(
+            new CaptureRequest(timestamp, frame.Metadata.Exposure, CaptureMode.Still),
+            new CaptureResult(
+                frame,
+                new CaptureSetpoint(frame.Metadata.Exposure, frame.Metadata.Gain, null, null),
+                TimeSpan.Zero,
+                CaptureMode.Still,
+                false),
+            timestamp,
+            frame.Metadata.Exposure,
+            TimeSpan.Zero);
+
+        return RawCaptureDescriptorFactory.Create(
+            ProcessingConformanceFixture.CameraConfig,
+            submission,
+            new RawCaptureIdentity(
+                ProcessingConformanceFixture.CameraConfig.AgentId!,
+                1,
+                Guid.NewGuid(),
+                Guid.NewGuid()),
+            new string('F', 64),
+            timestamp.AddSeconds(2));
     }
 }

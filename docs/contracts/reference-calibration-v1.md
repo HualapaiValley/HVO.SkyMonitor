@@ -64,3 +64,28 @@ the canonical profile; it receives no ideal pixels or simulator truth. Reference
 artifacts use deterministic sequences in the reserved upper half of the positive
 64-bit range, away from practical acquisition sequences. Central scheduling and
 UI integration remain outside this contract.
+
+## Additive Local Library Envelope
+
+`calibration-library-bundle-v1` indexes the existing profile and manifest-v2
+artifacts without changing their bytes, identities, paths, or commit marker. A
+bundle records exact agent/rig and sensor-profile identities, input and normalized
+linear-16 output layouts, gain/offset/exposure/temperature applicability, effective
+UTC interval, simulator acquisition-model identity, and source/master artifacts.
+
+`legacy-synthetic-v1` bundles retain the existing four references as masters and
+retain their declared temperature applicability while leaving unavailable
+source-frame, offset, and light-exposure facts explicitly absent. Missing facts
+are never synthesized during adoption. New
+`virtual-acquisition-v1` bundles contain three immutable source frames per kind;
+bias, dark, and flat masters use `calibration-median-v1`, while defect masks use
+`calibration-bitwise-or-v1`. Master lineage lists source artifacts in acquisition
+order.
+
+Initial selection is exact-readout only. No crop/bin transform or nearest-match
+ranking is defined. A selector must match identity, native/readout geometry, CFA
+and origin, sample/container/packing/stored-code semantics, gain, offset, light
+exposure, temperature, and effective interval, then produce exactly one active
+bundle. Missing, stale, corrupt, incomplete, ambiguous, incompatible, inactive,
+publication-conflict, acquisition-failure, and master-build-failure outcomes use
+stable `calibration.library.*` reasons.
