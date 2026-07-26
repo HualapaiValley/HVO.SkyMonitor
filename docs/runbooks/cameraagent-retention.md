@@ -188,6 +188,48 @@ acceptance. Restore capacity or access, preserve all evidence, then restart the
 agent and confirm `raw-ingress` health, pending count/bytes, oldest age, and
 quarantine totals before resuming normal operation.
 
+## Environmental Local History
+
+The authoritative targetless environmental journal is
+`<raw-ingress-root>/.environment/environmental-observation-outbox.db`. Back up
+the database with its WAL and SHM files while CameraAgent is stopped or through
+a SQLite-consistent snapshot. Never edit or remove those files while the host is
+running.
+
+Schema v3 adds targetless observation history, source runtime and attempts,
+capture associations, durable on-demand commands, and independent central
+projections. Migration from v2 transactionally backfills every surviving
+delivery row and is restart-idempotent. V2 rows already deleted after central
+acknowledgement cannot be reconstructed, and migration never invents them. A
+newer schema fails closed. The journal retains WAL, `synchronous=FULL`, busy
+timeout, integrity, root containment, and symbolic-link defenses.
+
+Local history has independent age, count, byte, and batch limits. Active
+lineage, capture associations whose capture remains in `raw-ingress.db`, and
+waiting or staged central projections pin their referenced observations under
+normal and pressure retention. Once raw ingress releases a capture and its aged
+association is pruned, the corresponding observation may become eligible.
+Central acknowledgement removes only the delivery copy; it does not remove
+local history. Standalone mode remains authoritative and creates no central
+projection.
+
+Owner-authenticated environmental operations are:
+
+- `GET /api/v1/operations/environmental/sources`
+- `GET /api/v1/operations/environmental/attempts`
+- `GET /api/v1/operations/environmental/history`
+- `GET /api/v1/operations/environmental/history/{reference}`
+- `GET /api/v1/operations/environmental/captures/{captureId}/associations`
+- `POST /api/v1/operations/environmental/sources/{sourceId}/acquisitions`
+
+Reads require operations-read authorization. The mutation additionally requires
+owner operations-mutate authorization, antiforgery validation, actor identity,
+and an `Idempotency-Key`. References and cursors are protected and bounded;
+SQLite IDs, storage roots, hashes, actor IDs, credentials, and operation keys
+must not appear in operator URLs or public health output. A full queue or active
+same-source command returns `429`; same-key/different-payload conflict returns
+`409`.
+
 ## Soak Validation
 
 The normal test suite runs a reduced-resolution VirtualSky day from 289

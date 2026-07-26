@@ -124,6 +124,8 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
         var environmentMissing = environment.PrecipitationStatus == EnvironmentalObservationMatchStatus.Missing ||
             environment.SolarRegime is null;
         var environmentStale = environment.PrecipitationStatus == EnvironmentalObservationMatchStatus.Stale;
+        var environmentContradictory =
+            environment.PrecipitationStatus == EnvironmentalObservationMatchStatus.Contradictory;
         var reasons = BuildReasons(
             missingReference,
             incompatibleReference,
@@ -134,7 +136,8 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
             daylight,
             twilight,
             environmentMissing,
-            environmentStale);
+            environmentStale,
+            environmentContradictory);
         var unusable = missingReference || incompatibleReference || missingCalibration || insufficientSupport ||
             saturation || precipitation || daylight;
         var status = saturation || precipitation
@@ -144,7 +147,7 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
                 : CloudAssessmentStatus.Quantified;
         var quality = unusable
             ? CloudAssessmentQuality.Unusable
-            : twilight || environmentMissing || environmentStale
+            : twilight || environmentMissing || environmentStale || environmentContradictory
                 ? CloudAssessmentQuality.Degraded
                 : CloudAssessmentQuality.Good;
         var regions = transmission is null
@@ -294,7 +297,8 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
                CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
                StringComparison.Ordinal) &&
            Enum.IsDefined(environment.PrecipitationStatus) &&
-           (environment.PrecipitationStatus == EnvironmentalObservationMatchStatus.Missing
+           (environment.PrecipitationStatus is
+                EnvironmentalObservationMatchStatus.Missing or EnvironmentalObservationMatchStatus.Contradictory
                ? environment.PrecipitationObservationId is null &&
                  environment.PrecipitationContentSha256 is null && !environment.PrecipitationDetected
                : environment.PrecipitationObservationId is not null &&
@@ -392,7 +396,8 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
         bool daylight,
         bool twilight,
         bool environmentMissing,
-        bool environmentStale)
+        bool environmentStale,
+        bool environmentContradictory)
     {
         var reasons = new List<string>(10);
         Add(missingReference, CloudAssessmentReasonCodes.MissingClearReference);
@@ -405,6 +410,7 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
         Add(twilight, CloudAssessmentReasonCodes.Twilight);
         Add(environmentMissing, CloudAssessmentReasonCodes.EnvironmentMissing);
         Add(environmentStale, CloudAssessmentReasonCodes.EnvironmentStale);
+        Add(environmentContradictory, CloudAssessmentReasonCodes.EnvironmentContradictory);
         return reasons.ToArray();
 
         void Add(bool condition, string reason)

@@ -119,6 +119,68 @@ public sealed class EnvironmentalObservationContractTests
     }
 
     [TestMethod]
+    public void V2AddsOnlyEffectiveCameraSensorTemperatureWithoutChangingV1()
+    {
+        var cameraTemperature = Value(
+            EnvironmentalObservationKind.CameraSensorTemperature,
+            EnvironmentalObservationUnit.DegreesCelsius,
+            -5);
+        var v1 = CreateObservation(value: cameraTemperature);
+        var v2 = v1 with
+        {
+            SchemaVersion = EnvironmentalObservationSchemaVersions.V2,
+            Target = v1.Target with { RigId = "camera-1" }
+        };
+
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidUnit,
+            EnvironmentalObservationJson.Validate(v1).ReasonCode);
+        Assert.IsTrue(EnvironmentalObservationJson.Validate(v2).IsValid);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidTarget,
+            EnvironmentalObservationJson.Validate(v2 with { Target = v2.Target with { RigId = null } }).ReasonCode);
+        Assert.IsNotNull(EnvironmentalObservationJson.Parse(EnvironmentalObservationJson.Serialize(v2)).Observation);
+        Assert.IsFalse(EnvironmentalObservationJson.Validate(v2 with
+        {
+            Value = cameraTemperature with { NumericValue = -273.151 }
+        }).IsValid);
+        Assert.IsFalse(EnvironmentalObservationJson.Validate(v2 with
+        {
+            Value = cameraTemperature with { Unit = EnvironmentalObservationUnit.Pascals }
+        }).IsValid);
+        var alternativeKind = CreateObservation(value: Value(
+            EnvironmentalObservationKind.AirTemperature,
+            EnvironmentalObservationUnit.DegreesCelsius,
+            -5)) with
+        {
+            SchemaVersion = EnvironmentalObservationSchemaVersions.V2,
+            Target = v2.Target
+        };
+        var cameraKind = alternativeKind with
+        {
+            Value = alternativeKind.Value with { Kind = EnvironmentalObservationKind.CameraSensorTemperature }
+        };
+        var alternativeReading = alternativeKind with
+        {
+            Value = alternativeKind.Value with { NumericValue = -4 }
+        };
+        Assert.IsTrue(EnvironmentalObservationJson.Validate(cameraKind).IsValid);
+        Assert.IsTrue(EnvironmentalObservationJson.Validate(alternativeKind).IsValid);
+        Assert.AreNotEqual(
+            EnvironmentalObservationJson.ComputeSourceIdentitySha256(cameraKind),
+            EnvironmentalObservationJson.ComputeSourceIdentitySha256(alternativeKind));
+        Assert.AreNotEqual(
+            EnvironmentalObservationJson.ComputeSourceContentSha256(cameraKind),
+            EnvironmentalObservationJson.ComputeSourceContentSha256(alternativeKind));
+        Assert.AreEqual(
+            EnvironmentalObservationJson.ComputeSourceIdentitySha256(alternativeKind),
+            EnvironmentalObservationJson.ComputeSourceIdentitySha256(alternativeReading));
+        Assert.AreEqual(
+            EnvironmentalObservationJson.ComputeSourceContentSha256(alternativeKind),
+            EnvironmentalObservationJson.ComputeSourceContentSha256(alternativeReading));
+    }
+
+    [TestMethod]
     public void ValuesRejectNonfiniteAmbiguousAndInvalidUncertainty()
     {
         var source = CreateObservation();
@@ -274,7 +336,7 @@ public sealed class EnvironmentalObservationContractTests
         var caseCollidingMember = source.Insert(1, "\"SchemaVersion\":\"other\",");
         var unsupportedSchema = source.Replace(
             "\"schemaVersion\":\"environmental-observation-v1\"",
-            "\"schemaVersion\":\"environmental-observation-v2\"",
+            "\"schemaVersion\":\"environmental-observation-v3\"",
             StringComparison.Ordinal);
         var oversized = Encoding.UTF8.GetBytes(source + new string(' ', EnvironmentalObservationJson.MaximumPayloadBytes));
 
@@ -359,6 +421,121 @@ public sealed class EnvironmentalObservationContractTests
     }
 
     [TestMethod]
+    public void TargetlessFactCanonicalizationIsStrictAndTargetIndependent()
+    {
+        var observation = CreateObservation();
+        var fact = CreateFact(observation);
+
+        var payload = EnvironmentalObservationFactJson.Serialize(fact);
+        var parsed = EnvironmentalObservationFactJson.Parse(payload);
+
+        Assert.IsTrue(parsed.Validation.IsValid, parsed.Validation.ReasonCode);
+        CollectionAssert.AreEqual(payload, EnvironmentalObservationFactJson.Serialize(parsed.Fact!));
+        Assert.AreEqual(
+            EnvironmentalObservationFactJson.ComputeContentSha256(fact),
+            EnvironmentalObservationFactJson.ComputeContentSha256(parsed.Fact!));
+        Assert.AreEqual(
+            EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(fact),
+            EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(parsed.Fact!));
+        Assert.AreNotEqual(
+            EnvironmentalObservationJson.ComputeSourceIdentitySha256(fact.Enrich(observation.Target)),
+            EnvironmentalObservationJson.ComputeSourceIdentitySha256(fact.Enrich(
+                observation.Target with { SiteId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc") })));
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidJson,
+            EnvironmentalObservationFactJson.Parse(
+                Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(payload).Insert(1, "\"schemaVersion\":\"duplicate\",")))
+                .Validation.ReasonCode);
+    }
+
+    [TestMethod]
+    public void TargetlessFactValidationCoversStrictBoundsVersionsAndLineage()
+    {
+        var fact = CreateFact(CreateObservation());
+        var unsupported = fact with { SchemaVersion = "environmental-observation-v3" };
+        var v2 = fact with { SchemaVersion = EnvironmentalObservationSchemaVersions.V2 };
+        var derived = v2 with
+        {
+            Source = v2.Source with { Kind = EnvironmentalObservationSourceKind.Derived },
+            Lineage =
+            [
+                new EnvironmentalObservationReference(
+                    LowerHex(new string('A', 64)),
+                    Guid.Parse("22222222-2222-2222-2222-222222222222"))
+            ]
+        };
+
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.PayloadTooLarge,
+            EnvironmentalObservationFactJson.Parse(
+                new byte[EnvironmentalObservationJson.MaximumPayloadBytes + 1]).Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidJson,
+            EnvironmentalObservationFactJson.Parse(Encoding.UTF8.GetBytes("null")).Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidJson,
+            EnvironmentalObservationFactJson.Parse(Encoding.UTF8.GetBytes("not-json")).Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.UnsupportedSchema,
+            EnvironmentalObservationFactJson.Parse(
+                EnvironmentalObservationFactJson.Serialize(unsupported)).Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.UnsupportedSchema,
+            EnvironmentalObservationFactJson.Validate(unsupported).ReasonCode);
+        var nestedDuplicate = Encoding.UTF8.GetString(EnvironmentalObservationFactJson.Serialize(derived)).Replace(
+            $"\"sourceIdentitySha256\":\"{new string('A', 64)}\"",
+            $"\"sourceIdentitySha256\":\"{new string('A', 64)}\",\"sourceIdentitySha256\":\"{new string('B', 64)}\"",
+            StringComparison.Ordinal);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidJson,
+            EnvironmentalObservationFactJson.Parse(Encoding.UTF8.GetBytes(nestedDuplicate)).Validation.ReasonCode);
+
+        Assert.AreNotEqual(
+            EnvironmentalObservationFactJson.ComputeContentSha256(fact),
+            EnvironmentalObservationFactJson.ComputeContentSha256(v2));
+        Assert.AreNotEqual(
+            EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(fact),
+            EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(v2));
+        Assert.AreNotEqual(
+            EnvironmentalObservationFactJson.ComputeSourceContentSha256(fact),
+            EnvironmentalObservationFactJson.ComputeSourceContentSha256(v2));
+        var alternativeKind = v2 with
+        {
+            RigId = "rig-1",
+            Value = Value(
+                EnvironmentalObservationKind.AirTemperature,
+                EnvironmentalObservationUnit.DegreesCelsius,
+                -5)
+        };
+        var cameraKind = alternativeKind with
+        {
+            Value = alternativeKind.Value with { Kind = EnvironmentalObservationKind.CameraSensorTemperature }
+        };
+        var alternativeReading = alternativeKind with
+        {
+            Value = alternativeKind.Value with { NumericValue = -4 }
+        };
+        Assert.IsTrue(EnvironmentalObservationFactJson.Validate(cameraKind).IsValid);
+        Assert.IsTrue(EnvironmentalObservationFactJson.Validate(alternativeKind).IsValid);
+        Assert.AreNotEqual(
+            EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(cameraKind),
+            EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(alternativeKind));
+        Assert.AreNotEqual(
+            EnvironmentalObservationFactJson.ComputeSourceContentSha256(cameraKind),
+            EnvironmentalObservationFactJson.ComputeSourceContentSha256(alternativeKind));
+        Assert.AreEqual(
+            EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(alternativeKind),
+            EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(alternativeReading));
+        Assert.AreEqual(
+            EnvironmentalObservationFactJson.ComputeSourceContentSha256(alternativeKind),
+            EnvironmentalObservationFactJson.ComputeSourceContentSha256(alternativeReading));
+        var parsed = EnvironmentalObservationFactJson.Parse(EnvironmentalObservationFactJson.Serialize(derived));
+
+        Assert.IsTrue(parsed.Validation.IsValid, parsed.Validation.ReasonCode);
+        Assert.AreEqual(new string('A', 64), parsed.Fact!.Lineage.Single().SourceIdentitySha256);
+    }
+
+    [TestMethod]
     public void DeliveryEnvelopeAndAcknowledgementUseStrictBoundedIdentity()
     {
         var observation = CreateObservation();
@@ -432,6 +609,20 @@ public sealed class EnvironmentalObservationContractTests
                 45),
             []);
     }
+
+    private static EnvironmentalObservationFactV1 CreateFact(EnvironmentalObservationV1 observation)
+        => new(
+            observation.SchemaVersion,
+            observation.ObservationId,
+            observation.Source,
+            observation.ObservedAtUtc,
+            observation.ObservedFromUtc,
+            observation.ObservedThroughUtc,
+            observation.ValidFromUtc,
+            observation.ValidThroughUtc,
+            observation.StaleAfterUtc,
+            observation.Value,
+            observation.Lineage);
 
     private static EnvironmentalObservationValue Value(
         EnvironmentalObservationKind kind,

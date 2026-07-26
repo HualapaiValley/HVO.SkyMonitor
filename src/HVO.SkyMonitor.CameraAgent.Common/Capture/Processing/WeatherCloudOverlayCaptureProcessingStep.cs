@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -9,7 +10,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 internal sealed class WeatherCloudOverlayCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     WeatherCloudOverlayProcessingStepOptions options,
-    CameraAgentRecipeExecutionAdapter adapter)
+    CameraAgentRecipeExecutionAdapter adapter,
+    CameraAgentCloudEnvironment? cloudEnvironment = null)
     : ConfigurableCaptureProcessingStep<WeatherCloudOverlayProcessingStepOptions>(metadata, options),
         ICaptureProcessingGraphStep,
         ICompoundCaptureProcessingGraphStep
@@ -67,7 +69,9 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
             assessmentProduct.Compatibility,
             ObservationStartedUtc: preview.ObservationStartedUtc,
             ObservationEndedUtc: preview.ObservationEndedUtc);
-        var environment = CameraAgentCloudEnvironment.CreateInput(context);
+        var environment = cloudEnvironment is null
+            ? CameraAgentCloudEnvironment.CreateMissingInput(context)
+            : await cloudEnvironment.CreateInputAsync(context, cancellationToken).ConfigureAwait(false);
         var auxiliary = new ProcessingAuxiliaryInput[]
         {
             new(

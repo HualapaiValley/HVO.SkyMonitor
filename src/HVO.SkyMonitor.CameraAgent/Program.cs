@@ -169,6 +169,7 @@ public class Program
                 metrics.AddRuntimeInstrumentation();
                 metrics.AddMeter(FleetHeartbeatTelemetry.MeterName);
                 metrics.AddMeter(EnvironmentalObservationDeliveryTelemetry.MeterName);
+                metrics.AddMeter(EnvironmentalAcquisitionTelemetry.InstrumentationName);
                 metrics.AddMeter(TransientWorkerTelemetry.MeterName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
                 metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
@@ -177,6 +178,8 @@ public class Program
             .WithTracing(tracing => tracing
                 .AddSource(TransientWorkerTelemetry.ActivitySourceName)
                 .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
+                .AddSource(EnvironmentalObservationDeliveryTelemetry.ActivitySourceName)
+                .AddSource(EnvironmentalAcquisitionTelemetry.InstrumentationName)
                 .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
@@ -211,6 +214,7 @@ public class Program
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
         builder.Services.AddScoped<ICameraAgentCalibrationUiService, CameraAgentCalibrationUiService>();
+        builder.Services.AddScoped<ICameraAgentEnvironmentalUiService, CameraAgentEnvironmentalUiService>();
 
         builder.Services.AddOptions<CapturePreviewOptions>()
             .Bind(builder.Configuration.GetSection("CapturePreview"))
@@ -229,6 +233,7 @@ public class Program
         healthChecks.AddCheck<DeploymentLocationReconciliationHealthCheck>(
             "deployment-location-reconciliation", tags: ["dependency"]);
         healthChecks.AddCheck<EnvironmentalObservationDeliveryHealthCheck>("environmental-delivery", tags: ["dependency"]);
+        healthChecks.AddCheck<EnvironmentalAcquisitionHealthCheck>("environmental-acquisition", tags: ["dependency"]);
         healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureAdmissionHealthCheck>("capture-admission", tags: ["dependency"]);
         healthChecks.AddCheck<CalibrationLibraryHealthCheck>("calibration-library", tags: ["dependency"]);
@@ -298,6 +303,7 @@ public class Program
         app.MapCameraAgentScheduleOperationsEndpoints();
         app.MapCameraAgentCalibrationOperationsEndpoints();
         app.MapCameraAgentOutboxOperationsEndpoints();
+        app.MapCameraAgentEnvironmentalOperationsEndpoints();
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
         app.MapAdditionalIdentityEndpoints();

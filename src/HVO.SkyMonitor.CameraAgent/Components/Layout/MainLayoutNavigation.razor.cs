@@ -15,6 +15,7 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
         new NavigationLink("/gallery", "Gallery", "bi bi-images", NavLinkMatch.Prefix),
         new NavigationLink("/schedule", "Schedule", "bi bi-calendar3", NavLinkMatch.Prefix),
         new NavigationLink("/calibration", "Calibration", "bi bi-sliders", NavLinkMatch.Prefix),
+        new NavigationLink("/environmental", "Environment", "bi bi-cloud-sun", NavLinkMatch.Prefix),
         new NavigationLink("/system", "System", "bi bi-cpu", NavLinkMatch.Prefix),
         new NavigationLink("/devices/bootstrap", "Device", "bi bi-usb-symbol", NavLinkMatch.Prefix)
     ];

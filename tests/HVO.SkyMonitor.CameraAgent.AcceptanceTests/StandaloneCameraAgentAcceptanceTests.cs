@@ -125,6 +125,63 @@ public sealed class StandaloneCameraAgentAcceptanceTests
     }
 
     [TestMethod]
+    public async Task EnvironmentalHistoryAndOwnerSurfaceRecoverWithoutAnyCentralServiceAsync()
+    {
+        await using var fixture = await StandaloneCameraAgentKestrelFixture.CreateAsync(
+            useEnvironmentalAcquisition: true).ConfigureAwait(false);
+        await WaitForConditionAsync(async () =>
+        {
+            var states = await fixture.Services.GetRequiredService<IEnvironmentalAcquisitionStateStore>()
+                .ReadSourceStatesAsync(fixture.Root, CancellationToken.None).ConfigureAwait(false);
+            return states.Count == 12 && states.All(static state => state.LastDisposition.HasValue);
+        }, "all standalone environmental sources to acquire", TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        var associatedCapture = await WaitForCompleteCaptureAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
+        await WaitForConditionAsync(async () =>
+        {
+            var associations = await fixture.Services.GetRequiredService<ILocalEnvironmentalAssociationStore>()
+                .ReadAssociationsAsync(fixture.Root, associatedCapture.CaptureId, CancellationToken.None)
+                .ConfigureAwait(false);
+            return associations.Count == 12;
+        }, "the required environmental association lane to complete", TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        var store = fixture.Services.GetRequiredService<ILocalEnvironmentalObservationStore>();
+        var beforeRestart = await store.GetLocalSnapshotAsync(fixture.Root, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsGreaterThanOrEqualTo(12L, beforeRestart.StoredCount);
+
+        using (var ownerClient = await fixture.CreateOwnerClientAsync().ConfigureAwait(false))
+        {
+            using var sources = await ownerClient.GetAsync(
+                new Uri("/api/v1/operations/environmental/sources", UriKind.Relative)).ConfigureAwait(false);
+            sources.EnsureSuccessStatusCode();
+            using var sourcePayload = JsonDocument.Parse(
+                await sources.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+            Assert.AreEqual(12, sourcePayload.RootElement.GetArrayLength());
+            using var history = await ownerClient.GetAsync(
+                new Uri("/api/v1/operations/environmental/history?pageSize=50", UriKind.Relative)).ConfigureAwait(false);
+            history.EnsureSuccessStatusCode();
+            using var page = await ownerClient.GetAsync(new Uri("/environmental", UriKind.Relative)).ConfigureAwait(false);
+            page.EnsureSuccessStatusCode();
+            StringAssert.Contains(
+                await page.Content.ReadAsStringAsync().ConfigureAwait(false),
+                "Environmental",
+                StringComparison.Ordinal);
+        }
+        AssertNoOutboundAttempts(fixture);
+
+        await fixture.RestartHostAsync().ConfigureAwait(false);
+        await WaitForConditionAsync(async () =>
+        {
+            var states = await fixture.Services.GetRequiredService<IEnvironmentalAcquisitionStateStore>()
+                .ReadSourceStatesAsync(fixture.Root, CancellationToken.None).ConfigureAwait(false);
+            return states.Count == 12;
+        }, "standalone environmental state to recover").ConfigureAwait(false);
+        var afterRestart = await fixture.Services.GetRequiredService<ILocalEnvironmentalObservationStore>()
+            .GetLocalSnapshotAsync(fixture.Root, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsGreaterThanOrEqualTo(beforeRestart.StoredCount, afterRestart.StoredCount);
+        AssertNoProvisioningIdentity(fixture.Root);
+        AssertNoOutboundAttempts(fixture);
+    }
+
+    [TestMethod]
     public async Task SidingSpringLocationRemainsAuthoritativeAcrossStandaloneRestartAsync()
     {
         await using var fixture = await StandaloneCameraAgentKestrelFixture.CreateAsync(

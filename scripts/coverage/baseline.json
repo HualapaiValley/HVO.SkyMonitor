@@ -22,6 +22,7 @@
     "HVO.SkyMonitor.Imaging/Linear16ArithmeticMean.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Imaging/SceneRenderers.cs": { "line": 0.90, "branch": 0.85 },
     "HVO.SkyMonitor.Processing/BuiltInProcessingRecipes.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.Processing/EnvironmentalObservationFactJson.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Processing/EnvironmentalObservationJson.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Processing/ProcessingIdentity.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Processing/ProcessingRecipeExecutor.cs": { "line": 0.95, "branch": 0.90 },

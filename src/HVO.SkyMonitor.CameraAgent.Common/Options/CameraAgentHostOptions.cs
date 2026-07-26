@@ -1,5 +1,8 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Options;
 
@@ -30,6 +33,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
 
     [Required]
     public EnvironmentalObservationDeliveryOptions EnvironmentalDelivery { get; init; } = new();
+
+    [Required]
+    public EnvironmentalAcquisitionOptions EnvironmentalAcquisition { get; init; } = new();
 
     [Required]
     public ArtifactReadOptions ArtifactRead { get; init; } = new();
@@ -142,6 +148,16 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             environmentalResults,
             validateAllProperties: true);
         foreach (var result in environmentalResults)
+        {
+            yield return result;
+        }
+        var environmentalAcquisitionResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            EnvironmentalAcquisition,
+            new ValidationContext(EnvironmentalAcquisition),
+            environmentalAcquisitionResults,
+            validateAllProperties: true);
+        foreach (var result in environmentalAcquisitionResults)
         {
             yield return result;
         }
@@ -388,6 +404,155 @@ public sealed class EnvironmentalObservationDeliveryOptions : IValidatableObject
                 [nameof(RequestTimeoutSeconds), nameof(LeaseSeconds)]);
         }
     }
+}
+
+public sealed class EnvironmentalAcquisitionOptions : IValidatableObject
+{
+    public bool Enabled { get; init; }
+
+    [Range(1, 16)]
+    public int MaximumConcurrency { get; init; } = 4;
+
+    [Range(16, 10_000)]
+    public int QueueCapacity { get; init; } = 256;
+
+    [Range(100, 120_000)]
+    public int SourceTimeoutMilliseconds { get; init; } = 5_000;
+
+    [Range(0, 5_000)]
+    public int BeforeCaptureWaitMilliseconds { get; init; } = 250;
+
+    [Range(1, 1_000_000)]
+    public int MaximumHistoryCount { get; init; } = 100_000;
+
+    [Range(1, long.MaxValue)]
+    public long MaximumHistoryBytes { get; init; } = 256L * 1024 * 1024;
+
+    [Range(1, 3_650)]
+    public int RetentionDays { get; init; } = 31;
+
+    [Range(1, 10_000)]
+    public int RetentionBatchSize { get; init; } = 1_000;
+
+    public IReadOnlyList<EnvironmentalSourceConfiguration> Sources { get; init; } = [];
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (!Enabled && Sources.Count > 0)
+        {
+            yield return new ValidationResult(
+                "Environmental sources require environmental acquisition to be enabled.",
+                [nameof(Enabled), nameof(Sources)]);
+        }
+        if (Enabled && Sources.Count == 0)
+        {
+            yield return new ValidationResult(
+                "Enabled environmental acquisition requires at least one source.",
+                [nameof(Enabled), nameof(Sources)]);
+        }
+        if (Sources.Count > 128)
+        {
+            yield return new ValidationResult("At most 128 environmental sources may be configured.", [nameof(Sources)]);
+        }
+        var identities = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var source in Sources)
+        {
+            if (source is null)
+            {
+                yield return new ValidationResult("Environmental source entries cannot be null.", [nameof(Sources)]);
+                continue;
+            }
+            var results = new List<ValidationResult>();
+            Validator.TryValidateObject(source, new ValidationContext(source), results, validateAllProperties: true);
+            foreach (var result in results)
+            {
+                yield return result;
+            }
+            if (!string.IsNullOrWhiteSpace(source.Id) && !identities.Add(source.Id))
+            {
+                yield return new ValidationResult("Environmental source identifiers must be unique.", [nameof(Sources)]);
+            }
+        }
+    }
+}
+
+public sealed class EnvironmentalSourceConfiguration : IValidatableObject
+{
+    [Required]
+    [StringLength(128, MinimumLength = 1)]
+    public string Id { get; init; } = string.Empty;
+
+    [Required]
+    [StringLength(128, MinimumLength = 1)]
+    public string Type { get; init; } = string.Empty;
+
+    public EnvironmentalObservationKind Kind { get; init; }
+
+    public bool Required { get; init; } = true;
+
+    [MinLength(1)]
+    public IReadOnlyList<EnvironmentalAcquisitionTrigger> Triggers { get; init; } = [];
+
+    public DateTimeOffset ScheduleEpochUtc { get; init; } = DateTimeOffset.UnixEpoch;
+
+    [Range(1, 86_400)]
+    public int PeriodSeconds { get; init; } = 30;
+
+    [Range(1, 1_000_000)]
+    public int EveryNthCapture { get; init; } = 1;
+
+    [Range(1, 86_400)]
+    public int ValidForSeconds { get; init; } = 120;
+
+    [Range(1, 86_400)]
+    public int StaleAfterSeconds { get; init; } = 45;
+
+    [StringLength(128)]
+    public string? RigId { get; init; }
+
+    public JsonElement Options { get; init; }
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (Id != Id.Trim() || Type != Type.Trim() || RigId is not null && RigId != RigId.Trim())
+        {
+            yield return new ValidationResult("Environmental source identities must be trimmed.");
+        }
+        if (!Enum.IsDefined(Kind) || Triggers.Count == 0 || Triggers.Any(static trigger => !Enum.IsDefined(trigger)) ||
+            Triggers.Distinct().Count() != Triggers.Count)
+        {
+            yield return new ValidationResult("Environmental source kind and triggers must be supported.");
+        }
+        if (ScheduleEpochUtc.Offset != TimeSpan.Zero || ScheduleEpochUtc == default)
+        {
+            yield return new ValidationResult("Environmental source schedule epoch must be UTC.", [nameof(ScheduleEpochUtc)]);
+        }
+        if (StaleAfterSeconds > ValidForSeconds)
+        {
+            yield return new ValidationResult(
+                "Environmental source stale duration cannot exceed its validity duration.",
+                [nameof(StaleAfterSeconds), nameof(ValidForSeconds)]);
+        }
+        if (Options.ValueKind is not JsonValueKind.Object and not JsonValueKind.Undefined)
+        {
+            yield return new ValidationResult("Environmental source options must be a JSON object.", [nameof(Options)]);
+        }
+    }
+
+    public EnvironmentalSourceDescriptor ToDescriptor(JsonElement? resolvedOptions = null)
+        => new(
+            Id,
+            Type,
+            Kind,
+            Required,
+            Triggers,
+            ScheduleEpochUtc,
+            PeriodSeconds,
+            EveryNthCapture,
+            ValidForSeconds,
+            StaleAfterSeconds,
+            RigId,
+            resolvedOptions ?? Options);
 }
 
 public sealed class CaptureDistributionOptions : IValidatableObject

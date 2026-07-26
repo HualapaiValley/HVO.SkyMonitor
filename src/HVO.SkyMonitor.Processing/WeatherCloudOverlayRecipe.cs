@@ -216,7 +216,8 @@ internal sealed class WeatherCloudOverlayRecipe : IProcessingRecipe
                CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
                StringComparison.Ordinal) &&
            Enum.IsDefined(environment.PrecipitationStatus) &&
-           (environment.PrecipitationStatus == EnvironmentalObservationMatchStatus.Missing
+           (environment.PrecipitationStatus is
+                EnvironmentalObservationMatchStatus.Missing or EnvironmentalObservationMatchStatus.Contradictory
                ? environment.PrecipitationObservationId is null &&
                  environment.PrecipitationContentSha256 is null && !environment.PrecipitationDetected
                : environment.PrecipitationObservationId is not null &&

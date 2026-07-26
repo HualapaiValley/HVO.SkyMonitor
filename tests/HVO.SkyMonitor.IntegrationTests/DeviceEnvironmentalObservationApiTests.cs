@@ -57,6 +57,72 @@ public sealed class DeviceEnvironmentalObservationApiTests
     }
 
     [TestMethod]
+    public async Task Version2CameraSensorTemperatureRequiresRigAndPersistsWithoutDowngrade()
+    {
+        var device = await SeedDeviceAsync().ConfigureAwait(false);
+        await using (var bindingScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var bindingDb = bindingScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            bindingDb.CentralFrames.Add(new CentralFrame
+            {
+                RegistrationId = device.RegistrationId,
+                DevicePublicId = device.DevicePublicId,
+                ObservatoryId = device.ObservatoryId,
+                AgentId = device.DevicePublicId.ToString("D", CultureInfo.InvariantCulture),
+                RigId = "rig-1",
+                FrameId = Guid.NewGuid(),
+                CapturedAtUtc = Epoch,
+                FirstReceivedAtUtc = Epoch
+            });
+            await bindingDb.SaveChangesAsync().ConfigureAwait(false);
+        }
+        var observationId = Guid.NewGuid();
+        var template = CreateObservation(device.ObservatoryId, device.DevicePublicId, observationId);
+        var observation = template with
+        {
+            SchemaVersion = EnvironmentalObservationSchemaVersions.V2,
+            Target = template.Target with { RigId = "rig-1" },
+            Source = template.Source with { SourceId = "camera-sensor" },
+            Value = new EnvironmentalObservationValue(
+                EnvironmentalObservationKind.CameraSensorTemperature,
+                EnvironmentalObservationUnit.DegreesCelsius,
+                -12.5,
+                null,
+                EnvironmentalObservationQuality.Good,
+                0.2)
+        };
+
+        using var accepted = await PostAsync(device.DeviceId, device.DeviceKey, observation).ConfigureAwait(false);
+        using var duplicate = await PostAsync(device.DeviceId, device.DeviceKey, observation).ConfigureAwait(false);
+        using var missingRig = await PostAsync(
+            device.DeviceId,
+            device.DeviceKey,
+            observation with { ObservationId = Guid.NewGuid(), Target = observation.Target with { RigId = null } })
+            .ConfigureAwait(false);
+        using var wrongRig = await PostAsync(
+            device.DeviceId,
+            device.DeviceKey,
+            observation with { ObservationId = Guid.NewGuid(), Target = observation.Target with { RigId = "rig-2" } })
+            .ConfigureAwait(false);
+
+        accepted.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        duplicate.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await ReadAcknowledgementAsync(duplicate).ConfigureAwait(false)).Disposition.Should()
+            .Be(EnvironmentalObservationDeliveryDisposition.Duplicate);
+        missingRig.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        wrongRig.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var persisted = await db.EnvironmentalObservations.SingleAsync(item => item.ObservationId == observationId)
+            .ConfigureAwait(false);
+        persisted.SchemaVersion.Should().Be(EnvironmentalObservationSchemaVersions.V2);
+        persisted.Kind.Should().Be(EnvironmentalObservationKind.CameraSensorTemperature);
+        persisted.Unit.Should().Be(EnvironmentalObservationUnit.DegreesCelsius);
+        persisted.RigId.Should().Be("rig-1");
+        persisted.NumericValue.Should().Be(-12.5);
+    }
+
+    [TestMethod]
     public async Task AuthenticationTargetSpoofAndConflictingContentAreExplicit()
     {
         var device = await SeedDeviceAsync().ConfigureAwait(false);
@@ -304,6 +370,7 @@ public sealed class DeviceEnvironmentalObservationApiTests
         var state = new EnvironmentalObservationDeliveryState();
         return new(
             transport,
+            NullEnvironmentalObservationTargetResolver.Instance,
             outbox,
             new EnvironmentalObservationDeliveryWakeup(),
             state,
@@ -315,6 +382,14 @@ public sealed class DeviceEnvironmentalObservationApiTests
             }),
             timeProvider,
             NullLogger<EnvironmentalObservationDeliveryService>.Instance);
+    }
+
+    private sealed class NullEnvironmentalObservationTargetResolver : IEnvironmentalObservationTargetResolver
+    {
+        public static NullEnvironmentalObservationTargetResolver Instance { get; } = new();
+
+        public ValueTask<EnvironmentalObservationResolvedTarget?> ResolveAsync(CancellationToken cancellationToken)
+            => ValueTask.FromResult<EnvironmentalObservationResolvedTarget?>(null);
     }
 
     private static async Task<EnvironmentalObservationAcknowledgement> ReadAcknowledgementAsync(HttpResponseMessage response)

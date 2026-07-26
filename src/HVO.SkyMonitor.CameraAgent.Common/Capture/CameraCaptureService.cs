@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -28,7 +29,8 @@ public sealed class CameraCaptureService(
     CaptureAdmissionCoordinator captureAdmissionCoordinator,
     FleetRuntimeState fleetRuntimeState,
     ILogger<CameraCaptureService> logger,
-    CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null) : BackgroundService
+    CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null,
+    EnvironmentalCaptureTriggerBridge? environmentalTriggers = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly ICameraModuleFactory _moduleFactory = moduleFactory;
@@ -44,6 +46,7 @@ public sealed class CameraCaptureService(
     private readonly ILogger<CameraCaptureService> _logger = logger;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton coordinator.")]
     private readonly CaptureScheduleRuntimeCoordinator? _scheduleRuntimeCoordinator = scheduleRuntimeCoordinator;
+    private readonly EnvironmentalCaptureTriggerBridge? _environmentalTriggers = environmentalTriggers;
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
@@ -79,7 +82,8 @@ public sealed class CameraCaptureService(
                 _fleetRuntimeState.ModuleAvailable();
                 _logger.CameraModuleInitialized(module.DisplayName);
 
-                var hostContext = new CaptureHostContext(config, _rawCaptureIngress, _captureDistributor);
+                var hostContext = new CaptureHostContext(
+                    config, _rawCaptureIngress, _captureDistributor, _environmentalTriggers);
 
                 var runner = new CameraModuleRunner(
                     module,
@@ -90,7 +94,8 @@ public sealed class CameraCaptureService(
                     _planetEphemeris,
                     _captureControlTelemetry,
                     _fleetRuntimeState,
-                    _scheduleRuntimeCoordinator);
+                    _scheduleRuntimeCoordinator,
+                    _environmentalTriggers);
                 await runner.RunAsync(captureToken).ConfigureAwait(false);
                 if (_scheduleRuntimeCoordinator is not null &&
                     revisionCancellation.IsCancellationRequested && !stoppingToken.IsCancellationRequested)

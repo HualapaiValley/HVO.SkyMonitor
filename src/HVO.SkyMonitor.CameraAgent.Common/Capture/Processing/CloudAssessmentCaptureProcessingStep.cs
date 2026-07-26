@@ -2,7 +2,10 @@ using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -11,7 +14,8 @@ internal sealed class CloudAssessmentCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     CloudAssessmentProcessingStepOptions options,
     CameraAgentRecipeExecutionAdapter adapter,
-    CameraAgentClearReferenceLoader clearReferenceLoader)
+    CameraAgentClearReferenceLoader clearReferenceLoader,
+    CameraAgentCloudEnvironment? cloudEnvironment = null)
     : ConfigurableCaptureProcessingStep<CloudAssessmentProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep
 {
     public bool Enabled { get; } = RegisterReference(options, clearReferenceLoader);
@@ -59,7 +63,9 @@ internal sealed class CloudAssessmentCaptureProcessingStep(
                 CreateSelector(clear),
                 ArtifactId: clear.ArtifactId));
         }
-        auxiliary.Add(CameraAgentCloudEnvironment.CreateInput(context));
+        auxiliary.Add(cloudEnvironment is null
+            ? CameraAgentCloudEnvironment.CreateMissingInput(context)
+            : await cloudEnvironment.CreateInputAsync(context, cancellationToken).ConfigureAwait(false));
         var outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.CloudAssessment,
             JsonSerializer.SerializeToElement(new CloudAssessmentOptions(
@@ -129,9 +135,67 @@ public sealed class CloudAssessmentProcessingStepOptions
     public bool IncludeMask { get; init; } = true;
 }
 
-internal static class CameraAgentCloudEnvironment
+internal sealed class CameraAgentCloudEnvironment(
+    EnvironmentalAssociationService associations,
+    ILocalEnvironmentalObservationStore observations,
+    IOptions<CameraAgentHostOptions> options)
 {
-    internal static ProcessingAuxiliaryInput CreateInput(CaptureProcessingContext context)
+    internal async ValueTask<ProcessingAuxiliaryInput> CreateInputAsync(
+        CaptureProcessingContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (context.RawCapture?.Manifest.Descriptor is not { } descriptor)
+        {
+            return CreateMissingInput(context);
+        }
+        var capture = descriptor.Capture;
+        var timing = descriptor.Timing;
+        var exposureFromUtc = timing.ExposureStartedUtc.ToUniversalTime();
+        var exposureThroughUtc = timing.ExposureEndedUtc.ToUniversalTime();
+        if (exposureThroughUtc <= exposureFromUtc)
+        {
+            exposureThroughUtc = exposureFromUtc.AddTicks(1);
+        }
+        var association = (await associations.AssociateAsync(
+            capture.CaptureId,
+            capture.CaptureSequence,
+            exposureFromUtc,
+            exposureThroughUtc,
+            capture.RigId,
+            [EnvironmentalObservationKind.RainState],
+            cancellationToken).ConfigureAwait(false)).Single();
+        LocalEnvironmentalObservationRecord? selected = null;
+        if (association.SelectedRecordId is { } selectedRecordId)
+        {
+            selected = await observations.ReadLocalDetailAsync(
+                options.Value.RawIngressRoot, selectedRecordId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("The selected environmental association evidence is unavailable.");
+            if (selected.Fact.Value.Kind != EnvironmentalObservationKind.RainState ||
+                selected.Fact.Value.BooleanValue is null)
+            {
+                throw new InvalidDataException("The selected precipitation association evidence is invalid.");
+            }
+        }
+        var environment = new CloudAssessmentEnvironmentV1(
+            CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
+            context.Submission.CycleEvidence?.SolarRegime,
+            association.Status switch
+            {
+                LocalEnvironmentalAssociationStatus.Fresh => EnvironmentalObservationMatchStatus.Fresh,
+                LocalEnvironmentalAssociationStatus.Stale => EnvironmentalObservationMatchStatus.Stale,
+                LocalEnvironmentalAssociationStatus.Missing => EnvironmentalObservationMatchStatus.Missing,
+                LocalEnvironmentalAssociationStatus.Contradictory => EnvironmentalObservationMatchStatus.Contradictory,
+                _ => throw new InvalidDataException("The environmental association status is invalid.")
+            },
+            selected?.Fact.ObservationId,
+            selected?.ContentSha256,
+            selected?.Fact.Value.BooleanValue ?? false,
+            association.AssociationIdentitySha256);
+        return CreateInput(environment);
+    }
+
+    internal static ProcessingAuxiliaryInput CreateMissingInput(CaptureProcessingContext context)
     {
         var environment = new CloudAssessmentEnvironmentV1(
             CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
@@ -140,6 +204,11 @@ internal static class CameraAgentCloudEnvironment
             null,
             null,
             false);
+        return CreateInput(environment);
+    }
+
+    private static ProcessingAuxiliaryInput CreateInput(CloudAssessmentEnvironmentV1 environment)
+    {
         var element = CaptureContractJson.SerializeToElement(environment);
         var payload = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(element));
         return new ProcessingAuxiliaryInput(

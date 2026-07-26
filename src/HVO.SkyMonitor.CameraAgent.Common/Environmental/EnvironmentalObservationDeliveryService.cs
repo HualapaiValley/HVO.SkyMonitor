@@ -96,6 +96,7 @@ public sealed class EnvironmentalObservationDeliveryState
 
 public sealed class EnvironmentalObservationDeliveryService(
     IEnvironmentalObservationTransport transport,
+    IEnvironmentalObservationTargetResolver targetResolver,
     IEnvironmentalObservationOutbox outbox,
     EnvironmentalObservationDeliveryWakeup wakeup,
     EnvironmentalObservationDeliveryState state,
@@ -188,6 +189,17 @@ public sealed class EnvironmentalObservationDeliveryService(
         EnvironmentalObservationDeliveryOptions optionsValue,
         CancellationToken cancellationToken)
     {
+        if (outbox is IEnvironmentalObservationProjectionStore projection)
+        {
+            var target = await targetResolver.ResolveAsync(cancellationToken).ConfigureAwait(false);
+            if (target is not null && target.ObservatoryId != Guid.Empty && target.DevicePublicId != Guid.Empty)
+            {
+                _ = await projection.AssignUnprojectedAsync(
+                    root, target, optionsValue.BatchSize, cancellationToken).ConfigureAwait(false);
+            }
+            _ = await projection.ProjectWaitingAsync(root, optionsValue.BatchSize, cancellationToken)
+                .ConfigureAwait(false);
+        }
         for (var index = 0; index < optionsValue.BatchSize; index++)
         {
             var claimStarted = timeProvider.GetTimestamp();

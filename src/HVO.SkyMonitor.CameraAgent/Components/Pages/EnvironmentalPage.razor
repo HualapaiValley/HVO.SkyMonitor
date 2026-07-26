@@ -1,0 +1,35 @@
+@page "/environmental"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Environment</PageTitle>
+
+<div class="environment-page">
+    <header><div><p class="eyebrow">Standalone local evidence</p><h1>Environmental acquisition</h1><p>Source health, durable attempts, and targetless observation history remain available without central services.</p></div><button class="btn btn-outline-light" @onclick="LoadAsync" disabled="@_loading">Refresh</button></header>
+    @if (_loading)
+    {
+        <section class="state" role="status">Loading environmental history</section>
+    }
+    else if (_error is not null || _status is null)
+    {
+        <section class="state error" role="alert"><strong>Environmental status unavailable</strong><p>@_error</p></section>
+    }
+    else
+    {
+        <section class="summary"><span>@(_status.Enabled ? "Enabled" : "Disabled")</span><span>@_status.StoredCount observations</span><span>@OperationsPage.FormatBytes(_status.StoredBytes)</span><span>@_status.OverflowCount capacity rejections</span></section>
+        <section><h2>Configured sources</h2><div class="source-grid">
+            @foreach (var source in _status.Sources)
+            {
+                <article><div class="source-title"><strong>@source.Id</strong><span class="freshness @source.Freshness.Replace(" ", "-").ToLowerInvariant()">@source.Freshness</span></div><dl><div><dt>Kind</dt><dd>@OperationsPage.SplitWords(source.Kind.ToString())</dd></div><div><dt>Policy</dt><dd>@(source.Required ? "Required" : "Optional")</dd></div><div><dt>Last observation</dt><dd>@FormatTime(source.LastObservedUtc)</dd></div><div><dt>Age</dt><dd>@FormatAge(source.LastObservationAgeSeconds)</dd></div><div><dt>Next poll</dt><dd>@FormatTime(source.NextPollUtc)</dd></div><div><dt>Outcome</dt><dd>@(source.LastDisposition?.ToString() ?? "Initializing")</dd></div><div><dt>Failures</dt><dd>@source.ConsecutiveFailures</dd></div></dl>@if (source.LastReason is not null) { <p class="reason">@source.LastReason</p> }</article>
+            }
+        </div></section>
+        <section><div class="section-heading"><h2>Local history</h2>@if (_historyCursor is not null) { <button class="btn btn-sm btn-outline-light" @onclick="NewestAsync">Newest</button> }</div>
+            @if (_history is null || _history.Items.Count == 0) { <p class="empty">No local observations have been committed.</p> }
+            else { <div class="history">@foreach (var item in _history.Items) { <article><strong>@OperationsPage.SplitWords(item.Kind.ToString())</strong><span>@FormatValue(item)</span><small>@item.SourceId · @item.Quality · <time datetime="@item.ObservedAtUtc.ToString("O")">@item.ObservedAtUtc.ToString("u")</time></small></article> }</div> }
+            @if (_history?.NextCursor is not null) { <button class="btn btn-outline-light" @onclick="OlderAsync">Older observations</button> }
+        </section>
+        <section><h2>Recent attempts</h2><div class="attempts">@foreach (var attempt in _status.Attempts) { <div><span>@attempt.SourceId</span><strong>@attempt.Disposition</strong><span>@attempt.Reason</span><time datetime="@attempt.CompletedUtc.ToString("O")">@attempt.CompletedUtc.ToString("u")</time></div> }</div></section>
+    }
+</div>
