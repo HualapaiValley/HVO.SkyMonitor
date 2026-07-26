@@ -2832,6 +2832,7 @@ public sealed class SqliteCalibrationLibraryStore(
     private static void ValidateCommandIdentity(string idempotencyKey, string payloadSha256)
     {
         if (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 128 ||
+            idempotencyKey.Any(static character => char.IsControl(character)) ||
             payloadSha256.Length != 64 || !payloadSha256.All(Uri.IsHexDigit))
         {
             throw new ArgumentException("The calibration command identity is invalid.");
@@ -2917,7 +2918,8 @@ public sealed class SqliteCalibrationLibraryStore(
         {
             throw new ArgumentException("A valid calibration bundle identifier is required.", nameof(bundleId));
         }
-        if (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 128)
+        if (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 128 ||
+            idempotencyKey.Any(static character => char.IsControl(character)))
         {
             throw new ArgumentException("A valid idempotency key is required.", nameof(idempotencyKey));
         }

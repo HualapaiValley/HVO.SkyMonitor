@@ -68,6 +68,11 @@ public sealed class SqliteCalibrationLibraryStoreTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using var store = fixture.Store;
             _ = await store.AdoptPublishedBundleAsync(fixture.Bundle, CancellationToken.None).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<ArgumentException>(() => store.ActivateAsync(
+                fixture.Bundle.BundleId, "unsafe\nkey", 0, "operator", null,
+                CancellationToken.None)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<ArgumentException>(() => store.ReadAcquireReplayAsync(
+                "unsafe\nkey", new string('A', 64), CancellationToken.None)).ConfigureAwait(false);
 
             var activated = await store.ActivateAsync(
                 fixture.Bundle.BundleId, "activate-1", 0, "operator", "initial",

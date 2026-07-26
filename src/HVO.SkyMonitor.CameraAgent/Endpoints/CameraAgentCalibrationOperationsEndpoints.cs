@@ -231,6 +231,10 @@ internal static class CameraAgentCalibrationOperationsEndpoints
             return Invalid("The expected durable calibration state version is required.");
         }
         var key = context.Request.Headers["Idempotency-Key"].ToString();
+        if (!IsValidIdempotencyKey(key))
+        {
+            return Invalid("A valid Idempotency-Key header is required.");
+        }
         var actor = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(actor))
         {
@@ -286,6 +290,11 @@ internal static class CameraAgentCalibrationOperationsEndpoints
                 title: "The calibration command could not be completed.");
         }
     }
+
+    internal static bool IsValidIdempotencyKey(string idempotencyKey)
+        => !string.IsNullOrWhiteSpace(idempotencyKey) &&
+            idempotencyKey.Length <= 128 &&
+            idempotencyKey.All(static character => !char.IsControl(character));
 
     private static object Project(CalibrationLibraryOperationsStatus status) => new
     {

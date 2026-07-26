@@ -9,6 +9,16 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Operations;
 public sealed class CalibrationOperationsTokenServiceTests
 {
     [TestMethod]
+    public void IdempotencyKeyValidation_RejectsUnsafeValues()
+    {
+        Assert.IsFalse(CameraAgentCalibrationOperationsEndpoints.IsValidIdempotencyKey(string.Empty));
+        Assert.IsFalse(CameraAgentCalibrationOperationsEndpoints.IsValidIdempotencyKey("   "));
+        Assert.IsFalse(CameraAgentCalibrationOperationsEndpoints.IsValidIdempotencyKey(new string('a', 129)));
+        Assert.IsFalse(CameraAgentCalibrationOperationsEndpoints.IsValidIdempotencyKey("unsafe\nkey"));
+        Assert.IsTrue(CameraAgentCalibrationOperationsEndpoints.IsValidIdempotencyKey(new string('a', 128)));
+    }
+
+    [TestMethod]
     public void BundleCursor_IsOpaqueAndRejectsTamper()
     {
         var tokens = new CalibrationOperationsTokenService(

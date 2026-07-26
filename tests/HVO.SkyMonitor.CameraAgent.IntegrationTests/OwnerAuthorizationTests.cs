@@ -225,6 +225,21 @@ public sealed class OwnerAuthorizationTests
         Assert.AreEqual(HttpStatusCode.BadRequest, missingCalibrationAntiforgery.StatusCode);
 
         var token = await GetAntiforgeryTokenAsync(ownerClient).ConfigureAwait(false);
+        using (var invalidCalibrationIdempotency = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/calibration/bundles/missing/activate", UriKind.Relative)))
+        {
+            invalidCalibrationIdempotency.Headers.Add("Idempotency-Key", new string('a', 129));
+            invalidCalibrationIdempotency.Headers.Add("RequestVerificationToken", token);
+            invalidCalibrationIdempotency.Content = JsonContent.Create(new
+            {
+                expectedVersion = 0,
+                reason = "invalid idempotency key"
+            });
+            using var invalidCalibration = await ownerClient.SendAsync(invalidCalibrationIdempotency)
+                .ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.BadRequest, invalidCalibration.StatusCode);
+        }
         using (var scheduleDocument = JsonDocument.Parse(scheduleJson))
         using (var missingVersionRequest = new HttpRequestMessage(
             HttpMethod.Post,
