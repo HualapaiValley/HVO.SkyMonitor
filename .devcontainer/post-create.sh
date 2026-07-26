@@ -77,7 +77,8 @@ done
 # Fix .dotnet directory ownership
 echo "Fixing .dotnet directory ownership..."
 sudo chown -R vscode:vscode /home/vscode/.dotnet || true
-sudo chown -R vscode:vscode /home/vscode/.config/opencode /home/vscode/.local/share/opencode
+sudo chown -R vscode:vscode /home/vscode/.config/opencode /home/vscode/.local
+bash "$SCRIPT_DIR/install-opencode.sh"
 bash "$SCRIPT_DIR/configure-opencode.sh"
 
 # Display .NET version and runtime details

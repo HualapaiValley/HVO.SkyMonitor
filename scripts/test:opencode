@@ -11,7 +11,10 @@ readonly REPO_ROOT
 readonly ENABLE_SCRIPT="$REPO_ROOT/scripts/opencode:enable"
 readonly DISABLE_SCRIPT="$REPO_ROOT/scripts/opencode:disable"
 readonly CONNECT_SCRIPT="$REPO_ROOT/scripts/opencode:connect"
+readonly REMOTE_CONNECT_SCRIPT="$REPO_ROOT/scripts/opencode:remote-connect"
+readonly STATUS_SCRIPT="$REPO_ROOT/scripts/opencode:status"
 readonly CONFIGURE_SCRIPT="$REPO_ROOT/.devcontainer/configure-opencode.sh"
+readonly INSTALL_SCRIPT="$REPO_ROOT/.devcontainer/install-opencode.sh"
 readonly HOST_CONFIG_FILE="$REPO_ROOT/.devcontainer/opencode-host.conf"
 readonly DEVCONTAINER_FILE="$REPO_ROOT/.devcontainer/devcontainer.json"
 TEMP_DIR="$(mktemp -d -t hvo-opencode-test.XXXXXX)"
@@ -32,6 +35,8 @@ bash -n \
     "$ENABLE_SCRIPT" \
     "$DISABLE_SCRIPT" \
     "$CONNECT_SCRIPT" \
+    "$REMOTE_CONNECT_SCRIPT" \
+    "$STATUS_SCRIPT" \
     "$REPO_ROOT/scripts/test:opencode"
 
 for lifecycle_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"; do
@@ -45,7 +50,7 @@ done
 
 grep -Fq 'tmux new-session -d -s "$TMUX_SESSION"' "$ENABLE_SCRIPT"
 grep -Fq 'exec %q serve --hostname 0.0.0.0 --port %q' "$ENABLE_SCRIPT"
-grep -Fq 'readonly OPENCODE_BINARY=/usr/local/bin/opencode' "$ENABLE_SCRIPT"
+grep -Fq 'OPENCODE_BINARY="$(command -v opencode)"' "$ENABLE_SCRIPT"
 grep -Fq 'Cleared exited OpenCode tmux session' "$ENABLE_SCRIPT"
 grep -Fq 'leaving it unchanged.' "$ENABLE_SCRIPT"
 grep -Fq 'tmux kill-session -t "$TMUX_SESSION"' "$DISABLE_SCRIPT"
@@ -56,36 +61,23 @@ grep -Fq 'leaving it running.' "$DISABLE_SCRIPT"
 grep -Fq 'if [[ -f /.dockerenv ]]' "$CONNECT_SCRIPT"
 grep -Fq 'OpenCode port must be an integer from 1 through 65535.' "$CONNECT_SCRIPT"
 grep -Fq 'exec "$OPENCODE_BINARY" attach "http://127.0.0.1:${PORT}" "$@"' "$CONNECT_SCRIPT"
+grep -Fq 'Run this script on the Docker host, not inside the devcontainer.' "$REMOTE_CONNECT_SCRIPT"
+grep -Fq 'exec opencode attach "$server_url" "$@"' "$REMOTE_CONNECT_SCRIPT"
+grep -Fq 'OpenCode is healthy at http://127.0.0.1:${CONTAINER_PORT}.' "$STATUS_SCRIPT"
 grep -Fq 'scripts/opencode:enable' "$REPO_ROOT/.devcontainer/post-start.sh"
 
-# shellcheck source=.devcontainer/opencode-host.conf
+# shellcheck source=.devcontainer/opencode-host.conf disable=SC1091
 source "$HOST_CONFIG_FILE"
 [[ "$OPENCODE_TMUX_SESSION" =~ ^[A-Za-z0-9_.-]+$ ]]
 test "$OPENCODE_CONTAINER_PORT" = 4096
 test "$OPENCODE_HOST_PORT" = 4097
-grep -Fq "\"127.0.0.1:${OPENCODE_HOST_PORT}:${OPENCODE_CONTAINER_PORT}\"" "$DEVCONTAINER_FILE"
-if grep -Fq "\"0.0.0.0:${OPENCODE_HOST_PORT}:${OPENCODE_CONTAINER_PORT}\"" "$DEVCONTAINER_FILE"; then
-    echo "OpenCode must not be published on every Docker-host interface." >&2
-    exit 1
-fi
-grep -Fq '"label": "OpenCode server (SSH tunnel only)"' "$DEVCONTAINER_FILE"
+grep -Fq "\"0.0.0.0:${OPENCODE_HOST_PORT}:${OPENCODE_CONTAINER_PORT}\"" "$DEVCONTAINER_FILE"
+grep -Fq '"label": "OpenCode server (Docker host port 4097)"' "$DEVCONTAINER_FILE"
 grep -Fq '"onAutoForward": "ignore"' "$DEVCONTAINER_FILE"
-if grep -Fq 'opencode-bin' "$DEVCONTAINER_FILE"; then
-    echo "The root-owned OpenCode executable must not be replaced by writable persisted state." >&2
-    exit 1
-fi
-
-grep -Fq 'ARG OPENCODE_VERSION=1.18.2' "$REPO_ROOT/.devcontainer/Dockerfile"
-grep -Fq '88f9b79f44b02e8e7c33e528832047c177b0cb20939484afaff22425a47f3d81' \
-    "$REPO_ROOT/.devcontainer/Dockerfile"
-grep -Fq '93352b30d37d8da2e5c226085f1afbf37cf57cfcecedc813520ff2d0f8581540' \
-    "$REPO_ROOT/.devcontainer/Dockerfile"
-grep -Fq 'tar -xzf "/tmp/${opencode_archive}" -C /usr/local/bin opencode' \
-    "$REPO_ROOT/.devcontainer/Dockerfile"
-if grep -Fq '/home/vscode/.opencode/bin' "$REPO_ROOT/.devcontainer/Dockerfile"; then
-    echo "A user-writable OpenCode executable must not shadow the pinned binary." >&2
-    exit 1
-fi
+grep -Fq 'opencode-bin' "$DEVCONTAINER_FILE"
+grep -Fq 'releases/latest' "$INSTALL_SCRIPT"
+grep -Fq 'sha256sum -c -' "$INSTALL_SCRIPT"
+grep -Fq 'Using persisted OpenCode' "$INSTALL_SCRIPT"
 
 mkdir -p "$TEMP_DIR/legacy-config" "$TEMP_DIR/legacy-data"
 printf '{\n\t"$schema": "https://opencode.ai/config.json",\n\t"permission": "allow"\n}\n' \
@@ -112,13 +104,9 @@ grep -Fqx '{"permission":"ask"}' "$TEMP_DIR/custom-config/opencode.jsonc"
 test "$(stat -c %a "$TEMP_DIR/custom-config/opencode.jsonc")" = 600
 
 grep -Fq 'persistent in-container server' "$REPO_ROOT/README.md"
-grep -Fq '127.0.0.1:4097' "$REPO_ROOT/README.md"
-grep -Fq 'ssh -o ExitOnForwardFailure=yes -N -L 127.0.0.1:4097:127.0.0.1:4097' \
-    "$REPO_ROOT/README.md"
-if grep -Fq 'publishes it to every Docker-host interface' "$REPO_ROOT/README.md"; then
-    echo "README must not recommend plaintext all-interface publication." >&2
-    exit 1
-fi
+grep -Fq 'publishes it to every Docker-host interface' "$REPO_ROOT/README.md"
+grep -Fq './scripts/opencode:remote-connect --continue' "$REPO_ROOT/README.md"
+grep -Fq 'trusted encrypted network or behind a TLS reverse proxy' "$REPO_ROOT/README.md"
 
 if [[ ! -f /.dockerenv ]]; then
     for lifecycle_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"; do
@@ -131,7 +119,7 @@ if [[ ! -f /.dockerenv ]]; then
 fi
 
 if [[ -f /.dockerenv ]] \
-    && [[ -x /usr/local/bin/opencode ]] \
+    && command -v opencode >/dev/null 2>&1 \
     && command -v curl >/dev/null 2>&1 \
     && command -v python3 >/dev/null 2>&1 \
     && command -v script >/dev/null 2>&1 \
