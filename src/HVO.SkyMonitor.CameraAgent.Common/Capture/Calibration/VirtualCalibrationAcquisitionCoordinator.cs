@@ -50,12 +50,12 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                 ? replay
                 : await ExecuteSerializedAsync(replay.Plan.JobId, cancellationToken).ConfigureAwait(false);
         }
-
         var configuration = _scheduleRuntimeCoordinator?.Snapshot?.Configuration ??
             await _configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
         var plan = CreatePlan(configuration, request, requestIdentity);
         var job = await _store.PlanAcquireAsync(
-            plan, request.IdempotencyKey, requestIdentity, request.Actor, request.Reason, cancellationToken)
+            plan, request.IdempotencyKey, requestIdentity, request.Actor, request.Reason,
+            request.ExpectedVersion, cancellationToken)
             .ConfigureAwait(false);
         return await ExecuteSerializedAsync(job.Plan.JobId, cancellationToken).ConfigureAwait(false);
     }
@@ -68,6 +68,25 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
             return null;
         }
         return await ExecuteSerializedAsync(pending.Plan.JobId, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<CalibrationAcquisitionJobSnapshot> CancelAsync(
+        string jobId,
+        string idempotencyKey,
+        long expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        var replay = await _store.PrepareCancelAcquisitionAsync(
+            jobId, idempotencyKey, expectedVersion, actor, reason, cancellationToken).ConfigureAwait(false);
+        if (replay is not null)
+        {
+            return replay;
+        }
+        var result = await CancelAsync(jobId, CancellationToken.None).ConfigureAwait(false);
+        return await _store.CompleteCancelAcquisitionCommandAsync(
+            result, idempotencyKey, expectedVersion, actor, reason, CancellationToken.None).ConfigureAwait(false);
     }
 
     public async Task<CalibrationAcquisitionJobSnapshot> CancelAsync(
@@ -134,9 +153,13 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                 jobId,
                 cancellationPending ? CancellationToken.None : executionCancellation.Token).ConfigureAwait(false)
                 ?? throw new InvalidDataException("The durable calibration acquisition job is missing.");
+            cancellationPending |= await _store.HasPendingCancelCommandAsync(
+                jobId, CancellationToken.None).ConfigureAwait(false);
             if (current.IsTerminal)
             {
-                return current;
+                return cancellationPending
+                    ? await ResolveCancellationAsync(current).ConfigureAwait(false)
+                    : current;
             }
             return cancellationPending
                 ? await ResolveCancellationAsync(current).ConfigureAwait(false)
@@ -161,6 +184,11 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
     {
         try
         {
+            if (current.IsTerminal)
+            {
+                return await _store.CancelAcquisitionAsync(
+                    current.Plan.JobId, CancellationToken.None).ConfigureAwait(false);
+            }
             var markerCommitted = await _publisher.EnsureCommittedEvidenceIsCompleteAsync(
                 ProfilePath(current.Plan),
                 EvidencePaths(current.Plan),

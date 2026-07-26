@@ -22,7 +22,8 @@ public sealed record VirtualCalibrationAcquisitionRequestV1(
     DateTimeOffset? EffectiveUntilUtc,
     [property: JsonRequired] VirtualCalibrationSourceModelV1 SourceModel,
     [property: JsonRequired] string Actor,
-    string? Reason)
+    string? Reason,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? ExpectedVersion = null)
 {
     public const string CurrentSchemaVersion = "virtual-calibration-acquisition-request-v1";
 }
@@ -177,6 +178,7 @@ internal static class VirtualCalibrationAcquisitionContractJson
         ArgumentNullException.ThrowIfNull(request);
         if (!string.Equals(request.SchemaVersion, VirtualCalibrationAcquisitionRequestV1.CurrentSchemaVersion, StringComparison.Ordinal) ||
             !ValidText(request.IdempotencyKey, 128) || !ValidText(request.Actor, 128) || request.Reason?.Length > 512 ||
+            request.ExpectedVersion is < 0 ||
             !FiniteNonnegative(request.Gain) || !double.IsFinite(request.Offset) || !double.IsFinite(request.TemperatureC) ||
             !Positive(request.BiasExposure) || !Positive(request.DarkExposure) || !Positive(request.FlatExposure) ||
             !Positive(request.DefectExposure) || !Positive(request.ApplicableLightExposure) ||

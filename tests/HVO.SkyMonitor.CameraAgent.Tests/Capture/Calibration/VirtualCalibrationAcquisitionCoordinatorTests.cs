@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Diagnostics.CodeAnalysis;
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
@@ -9,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -137,7 +139,10 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
         var root = CreateRoot();
         try
         {
-            using var fixture = await Fixture.CreateAsync(root).ConfigureAwait(false);
+            using var fixture = await Fixture.CreateAsync(
+                root,
+                timeProvider: new FixedTimeProvider(new DateTimeOffset(2026, 7, 26, 12, 0, 0, TimeSpan.Zero)))
+                .ConfigureAwait(false);
             var job = await fixture.Coordinator.AcquireAsync(
                 Request("boundary-activation"), CancellationToken.None).ConfigureAwait(false);
             _ = await fixture.Admission.PauseAsync(
@@ -161,6 +166,25 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
             Assert.AreEqual(3L, rolledBack.Version);
             Assert.AreEqual(job.BundleId, rolledBack.ActiveBundle?.Bundle.BundleId);
             Assert.AreEqual(CaptureAdmissionState.Paused, fixture.Admission.Snapshot.State);
+            var projected = JsonSerializer.Serialize(
+                CameraAgentCalibrationOperationsEndpoints.ProjectState(rolledBack));
+            Assert.IsFalse(projected.Contains("relativePath", StringComparison.OrdinalIgnoreCase));
+            Assert.IsFalse(projected.Contains("operator", StringComparison.OrdinalIgnoreCase));
+            var firstPage = await fixture.Store.GetBundlePageAsync(
+                1, null, CancellationToken.None).ConfigureAwait(false);
+            var secondPage = await fixture.Store.GetBundlePageAsync(
+                1, firstPage.NextCursor, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(1, firstPage.Items);
+            Assert.HasCount(1, secondPage.Items);
+            Assert.IsNotNull(firstPage.NextCursor);
+            Assert.IsNull(secondPage.NextCursor);
+            Assert.AreNotEqual(firstPage.Items[0].Bundle.BundleId, secondPage.Items[0].Bundle.BundleId);
+            var status = await fixture.Store.GetOperationsStatusAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(2L, status.PublishedBundleCount);
+            Assert.AreEqual(0L, status.QuarantineCount);
+            Assert.IsNull(status.PendingAcquisition);
+            Assert.AreEqual("rollback", status.LastActivation?.CommandKind);
+            Assert.AreEqual(3L, status.State.Version);
             using var connection = await OpenAsync(root).ConfigureAwait(false);
             Assert.AreEqual(1L, await ScalarLongAsync(connection, """
                 SELECT COUNT(*) FROM calibration_library_commands WHERE command_kind = 'rollback';
@@ -376,6 +400,36 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
                 await fixture.Coordinator.AcquireAsync(first with { Gain = 83 }, CancellationToken.None)
                     .ConfigureAwait(false)).ConfigureAwait(false);
 
+            using var connection = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM calibration_acquisition_jobs;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcquireAsync_ExpectedVersionRejectsStaleCommandButExactReplayWins()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var fixture = await Fixture.CreateAsync(root).ConfigureAwait(false);
+            var stale = Request("stale-acquire") with { ExpectedVersion = 1 };
+            await Assert.ThrowsExactlyAsync<CalibrationLibraryStoreConflictException>(() =>
+                fixture.Coordinator.AcquireAsync(stale, CancellationToken.None)).ConfigureAwait(false);
+            var request = Request("versioned-acquire") with { ExpectedVersion = 0 };
+            var acquired = await fixture.Coordinator.AcquireAsync(request, CancellationToken.None).ConfigureAwait(false);
+            _ = await fixture.Store.ActivateAsync(
+                acquired.BundleId!, "activate-after-acquire", 0, "operator", null, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            var replay = await fixture.Coordinator.AcquireAsync(request, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(acquired.Plan.JobId, replay.Plan.JobId);
+            Assert.AreEqual(CalibrationAcquisitionStates.Published, replay.State);
             using var connection = await OpenAsync(root).ConfigureAwait(false);
             Assert.AreEqual(1L, await ScalarLongAsync(
                 connection, "SELECT COUNT(*) FROM calibration_acquisition_jobs;").ConfigureAwait(false));
@@ -613,8 +667,13 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
                 fixture.Coordinator.AcquireAsync(Request("cancel-running"), CancellationToken.None));
             await blocker.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
             var jobId = await WaitForJobIdAsync(root).ConfigureAwait(false);
-            var firstCancel = fixture.Coordinator.CancelAsync(jobId, CancellationToken.None);
-            var secondCancel = fixture.Coordinator.CancelAsync(jobId, CancellationToken.None);
+            var firstCancel = fixture.Coordinator.CancelAsync(
+                jobId, "cancel-command", 0, "operator", "stop", CancellationToken.None);
+            var secondCancel = fixture.Coordinator.CancelAsync(
+                jobId, "cancel-command", 0, "operator", "stop", CancellationToken.None);
+            await Task.Delay(500).ConfigureAwait(false);
+            Assert.IsFalse(firstCancel.IsFaulted, firstCancel.Exception?.ToString());
+            Assert.IsFalse(secondCancel.IsFaulted, secondCancel.Exception?.ToString());
 
             blocker.Release.Set();
             await Assert.ThrowsAsync<OperationCanceledException>(() => acquire).ConfigureAwait(false);
@@ -622,6 +681,17 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
 
             Assert.IsTrue(cancellations.All(static job => job.State == CalibrationAcquisitionStates.Cancelled));
             Assert.IsEmpty(await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
+            var replay = await fixture.Coordinator.CancelAsync(
+                jobId, "cancel-command", 0, "operator", "stop", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CalibrationAcquisitionStates.Cancelled, replay.State);
+            await Assert.ThrowsExactlyAsync<CalibrationLibraryStoreConflictException>(() =>
+                fixture.Coordinator.CancelAsync(
+                    jobId, "cancel-command", 0, "operator", "different", CancellationToken.None))
+                .ConfigureAwait(false);
+            using var connection = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarLongAsync(connection, """
+                SELECT COUNT(*) FROM calibration_library_commands WHERE command_kind = 'cancel';
+                """).ConfigureAwait(false));
         }
         finally
         {
@@ -732,6 +802,46 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
             using var restarted = await Fixture.CreateAsync(root).ConfigureAwait(false);
             var resumed = await restarted.Coordinator.ResumePendingAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CalibrationAcquisitionStates.Published, resumed?.State);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task RecoveryService_HonorsDurableCancelIntentBeforeResumingAcquisition()
+    {
+        var root = CreateRoot();
+        string jobId;
+        try
+        {
+            using (var interrupted = await Fixture.CreateAsync(
+                       root, new OneShotFaultInjector(CalibrationPublicationFaultPoint.BeforePayloadWrite))
+                   .ConfigureAwait(false))
+            {
+                await Assert.ThrowsExactlyAsync<IOException>(() =>
+                    interrupted.Coordinator.AcquireAsync(Request("durable-cancel-source"), CancellationToken.None))
+                    .ConfigureAwait(false);
+                jobId = await ReadOnlyJobAsync(root).ConfigureAwait(false);
+                Assert.IsNull(await interrupted.Store.PrepareCancelAcquisitionAsync(
+                    jobId, "durable-cancel-command", 0, "operator", "restart cancellation",
+                    CancellationToken.None).ConfigureAwait(false));
+            }
+
+            using var restarted = await Fixture.CreateAsync(root).ConfigureAwait(false);
+            var service = new VirtualCalibrationAcquisitionRecoveryService(restarted.Coordinator);
+            await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+
+            var cancelled = await restarted.Coordinator.CancelAsync(
+                jobId, "durable-cancel-command", 0, "operator", "restart cancellation",
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CalibrationAcquisitionStates.Cancelled, cancelled.State);
+            using var connection = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarLongAsync(connection, """
+                SELECT COUNT(*) FROM calibration_library_commands
+                WHERE command_kind = 'cancel' AND completed_unix_ms IS NOT NULL;
+                """).ConfigureAwait(false));
         }
         finally
         {
@@ -1031,8 +1141,10 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
         internal static async Task<Fixture> CreateAsync(
             string root,
             ICalibrationPublicationFaultInjector? faultInjector = null,
-            CameraModuleConfig? configuration = null)
+            CameraModuleConfig? configuration = null,
+            TimeProvider? timeProvider = null)
         {
+            timeProvider ??= TimeProvider.System;
             var options = Options.Create(new CameraAgentHostOptions
             {
                 RawIngressRoot = root,
@@ -1041,16 +1153,16 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
             var ingress = new InitializingIngress(root);
             var telemetry = new CaptureControlTelemetry();
             var admission = new CaptureAdmissionCoordinator(
-                ingress, options, TimeProvider.System, telemetry);
+                ingress, options, timeProvider, telemetry);
             await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var store = new SqliteCalibrationLibraryStore(ingress, options, TimeProvider.System);
+            var store = new SqliteCalibrationLibraryStore(ingress, options, timeProvider);
             _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var accessor = new CameraAgentConfigurationAccessor();
             accessor.SetConfiguration(configuration ?? Configuration());
             var publisher = new CalibrationArtifactPublisher(
                 options, faultInjector ?? NullCalibrationPublicationFaultInjector.Instance);
             var coordinator = new VirtualCalibrationAcquisitionCoordinator(
-                store, publisher, admission, accessor, TimeProvider.System);
+                store, publisher, admission, accessor, timeProvider);
             return new Fixture(store, admission, telemetry, coordinator);
         }
 
@@ -1075,6 +1187,11 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
             CaptureLoopSubmission submission,
             CancellationToken cancellationToken)
             => ValueTask.FromResult<RawCaptureReceipt?>(null);
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 
     private sealed class OneShotFaultInjector(CalibrationPublicationFaultPoint target) : ICalibrationPublicationFaultInjector

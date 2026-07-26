@@ -41,6 +41,27 @@ public sealed record CalibrationLibrarySelectionResult(
     public bool IsSelected => Bundle is not null;
 }
 
+public sealed record CalibrationLibraryBundleCursor(DateTimeOffset CreatedUtc, string BundleId);
+
+public sealed record CalibrationLibraryBundlePage(
+    IReadOnlyList<CalibrationLibraryBundleSnapshot> Items,
+    CalibrationLibraryBundleCursor? NextCursor);
+
+public sealed record CalibrationLibraryActivationSnapshot(
+    string CommandKind,
+    string? FromBundleId,
+    string ToBundleId,
+    long StateVersion,
+    DateTimeOffset ActivatedUtc,
+    string? Reason);
+
+public sealed record CalibrationLibraryOperationsStatus(
+    CalibrationLibraryStateSnapshot State,
+    CalibrationAcquisitionJobSnapshot? PendingAcquisition,
+    long PublishedBundleCount,
+    long QuarantineCount,
+    CalibrationLibraryActivationSnapshot? LastActivation);
+
 internal sealed record CalibrationReconciliationOperation(
     string EvidenceKey,
     string SourceRelativePath,
@@ -123,6 +144,7 @@ public sealed class SqliteCalibrationLibraryStore(
         string payloadSha256,
         string actor,
         string? reason,
+        long? expectedVersion,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(payloadSha256);
@@ -144,6 +166,12 @@ public sealed class SqliteCalibrationLibraryStore(
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 return replay;
             }
+            if (expectedVersion is { } version &&
+                (await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false)).Version != version)
+            {
+                throw new CalibrationLibraryStoreConflictException(
+                    "The calibration library state changed after the operator read it.");
+            }
             var existing = await ReadNonterminalAcquisitionJobAsync(
                 connection, transaction, plan.CameraKey, cancellationToken).ConfigureAwait(false);
             if (existing is not null)
@@ -162,7 +190,7 @@ public sealed class SqliteCalibrationLibraryStore(
                 INSERT INTO calibration_library_commands(
                     idempotency_key, command_kind, payload_sha256, result_bundle_id, result_job_id,
                     result_state_version, result_json, created_unix_ms, completed_unix_ms)
-                VALUES ($key, 'acquire', $payload, NULL, $job, NULL, $plan, $now, $now);
+                VALUES ($key, 'acquire', $payload, NULL, $job, $version, $plan, $now, $now);
                 """, cancellationToken,
                 ("$job", plan.JobId),
                 ("$camera", plan.CameraKey),
@@ -172,6 +200,7 @@ public sealed class SqliteCalibrationLibraryStore(
                 ("$payload", payloadSha256),
                 ("$actor", actor),
                 ("$reason", (object?)reason ?? DBNull.Value),
+                ("$version", expectedVersion.HasValue ? expectedVersion.Value : DBNull.Value),
                 ("$now", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
             var job = await ReadAcquisitionJobAsync(
                 connection, transaction, plan.JobId, cancellationToken).ConfigureAwait(false)
@@ -230,6 +259,23 @@ public sealed class SqliteCalibrationLibraryStore(
         return result;
     }
 
+    internal async Task<bool> HasPendingCancelCommandAsync(
+        string jobId,
+        CancellationToken cancellationToken)
+    {
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*) FROM calibration_library_commands
+            WHERE command_kind = 'cancel' AND result_job_id = $job AND completed_unix_ms IS NULL;
+            """;
+        command.Parameters.AddWithValue("$job", jobId);
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) > 0;
+    }
+
     public async Task<CalibrationAcquisitionJobSnapshot> BeginAcquisitionAttemptAsync(
         string jobId,
         CancellationToken cancellationToken)
@@ -244,6 +290,8 @@ public sealed class SqliteCalibrationLibraryStore(
                 connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
             if (current.IsTerminal)
             {
+                await CompletePendingCancelCommandsAsync(
+                    connection, transaction, current, cancellationToken).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 return current;
             }
@@ -260,6 +308,8 @@ public sealed class SqliteCalibrationLibraryStore(
                 .ConfigureAwait(false);
             var result = await ReadRequiredAcquisitionJobAsync(
                 connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            await CompletePendingCancelCommandsAsync(
+                connection, transaction, result, cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return result;
         }
@@ -326,12 +376,162 @@ public sealed class SqliteCalibrationLibraryStore(
             jobId, CalibrationAcquisitionStates.Failed, "failed", bundleId: null, failureReason,
             terminal: true, cancellationToken);
 
-    internal Task<CalibrationAcquisitionJobSnapshot> CancelAcquisitionAsync(
+    internal async Task<CalibrationAcquisitionJobSnapshot> CancelAcquisitionAsync(
         string jobId,
         CancellationToken cancellationToken)
-        => UpdateAcquisitionJobAsync(
-            jobId, CalibrationAcquisitionStates.Cancelled, "cancelled", bundleId: null,
-            failureReason: null, terminal: true, cancellationToken);
+    {
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var current = await ReadRequiredAcquisitionJobAsync(
+                connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            CalibrationAcquisitionJobSnapshot result;
+            if (current.IsTerminal)
+            {
+                result = current;
+            }
+            else
+            {
+                ValidateAcquisitionTransition(
+                    current, CalibrationAcquisitionStates.Cancelled, "cancelled",
+                    bundleId: null, failureReason: null, terminal: true);
+                var now = Now().ToUnixTimeMilliseconds();
+                await ExecuteAsync(connection, transaction, """
+                    UPDATE calibration_acquisition_jobs
+                    SET state = 'cancelled', phase = 'cancelled', bundle_id = NULL,
+                        failure_reason = NULL, updated_unix_ms = $now, completed_unix_ms = $now
+                    WHERE job_id = $job;
+                    """, cancellationToken, ("$now", now), ("$job", jobId)).ConfigureAwait(false);
+                result = await ReadRequiredAcquisitionJobAsync(
+                    connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            }
+            await CompletePendingCancelCommandsAsync(
+                connection, transaction, result, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<CalibrationAcquisitionJobSnapshot?> PrepareCancelAcquisitionAsync(
+        string jobId,
+        string idempotencyKey,
+        long expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        ValidateCancelMutation(jobId, idempotencyKey, expectedVersion, actor, reason);
+        var payloadSha256 = CancelPayloadSha256(jobId, expectedVersion, actor, reason);
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var existing = await ReadCancelCommandAsync(
+                connection, transaction, idempotencyKey, payloadSha256, cancellationToken).ConfigureAwait(false);
+            if (existing is not null)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return existing.Pending ? null : existing.Result;
+            }
+            var state = await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            if (state.Version != expectedVersion)
+            {
+                throw new CalibrationLibraryStoreConflictException(
+                    "The calibration library state changed after the operator read it.");
+            }
+            var job = await ReadAcquisitionJobAsync(connection, transaction, jobId, cancellationToken).ConfigureAwait(false)
+                ?? throw new KeyNotFoundException("The calibration acquisition job was not found.");
+            var now = Now().ToUnixTimeMilliseconds();
+            await ExecuteAsync(connection, transaction, """
+                INSERT INTO calibration_library_commands(
+                    idempotency_key, command_kind, payload_sha256, result_bundle_id, result_job_id,
+                    result_state_version, result_json, created_unix_ms, completed_unix_ms)
+                VALUES ($key, 'cancel', $payload, $bundle, $job, $version, $result, $now, NULL);
+                """, cancellationToken,
+                ("$key", idempotencyKey),
+                ("$payload", payloadSha256),
+                ("$bundle", (object?)job.BundleId ?? DBNull.Value),
+                ("$job", job.Plan.JobId),
+                ("$version", expectedVersion),
+                ("$result", JsonSerializer.SerializeToUtf8Bytes(job)),
+                ("$now", now)).ConfigureAwait(false);
+            if (job.IsTerminal)
+            {
+                await CompletePendingCancelCommandsAsync(
+                    connection, transaction, job, cancellationToken).ConfigureAwait(false);
+            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return job.IsTerminal ? job : null;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<CalibrationAcquisitionJobSnapshot> CompleteCancelAcquisitionCommandAsync(
+        CalibrationAcquisitionJobSnapshot result,
+        string idempotencyKey,
+        long expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        ValidateCancelMutation(result.Plan.JobId, idempotencyKey, expectedVersion, actor, reason);
+        if (!result.IsTerminal)
+        {
+            throw new ArgumentException("A cancellation command requires a terminal cancellation result.", nameof(result));
+        }
+        var payloadSha256 = CancelPayloadSha256(result.Plan.JobId, expectedVersion, actor, reason);
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var replay = await ReadCancelCommandAsync(
+                connection, transaction, idempotencyKey, payloadSha256, cancellationToken).ConfigureAwait(false);
+            if (replay is null)
+            {
+                throw new InvalidDataException("The durable calibration cancellation request is missing.");
+            }
+            if (!replay.Pending)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return replay.Result;
+            }
+            var current = await ReadRequiredAcquisitionJobAsync(
+                connection, transaction, result.Plan.JobId, cancellationToken).ConfigureAwait(false);
+            if (current.State != result.State || current.Phase != result.Phase || current.BundleId != result.BundleId)
+            {
+                throw new CalibrationLibraryStoreConflictException(
+                    "The calibration acquisition changed while cancellation completed.");
+            }
+            await CompletePendingCancelCommandsAsync(
+                connection, transaction, current, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return current;
+        }
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
+        {
+            throw new CalibrationLibraryStoreConflictException(
+                "The calibration cancellation command conflicts with durable state.", exception);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
 
     internal async Task<IReadOnlyList<CalibrationReconciliationOperation>> ReadPlannedReconciliationsAsync(
         CancellationToken cancellationToken)
@@ -591,6 +791,130 @@ public sealed class SqliteCalibrationLibraryStore(
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return bundles;
+    }
+
+    public async Task<CalibrationLibraryBundleSnapshot?> GetBundleAsync(
+        string bundleId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(bundleId) || bundleId.Length > 128)
+        {
+            throw new ArgumentException("A valid calibration bundle identifier is required.", nameof(bundleId));
+        }
+        var persisted = await ReadBundleOutsideTransactionAsync(bundleId, cancellationToken).ConfigureAwait(false);
+        return persisted?.Snapshot;
+    }
+
+    public async Task<CalibrationLibraryBundlePage> GetBundlePageAsync(
+        int pageSize,
+        CalibrationLibraryBundleCursor? cursor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(pageSize, 100);
+        if (cursor is not null && (cursor.CreatedUtc.Offset != TimeSpan.Zero ||
+                                   string.IsNullOrWhiteSpace(cursor.BundleId) || cursor.BundleId.Length > 128))
+        {
+            throw new ArgumentException("The calibration bundle cursor is invalid.", nameof(cursor));
+        }
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        var bundleIds = new List<string>(pageSize + 1);
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT bundle_id FROM calibration_library_bundles
+                WHERE $has_cursor = 0 OR created_unix_ms < $created OR
+                      (created_unix_ms = $created AND bundle_id > $bundle)
+                ORDER BY created_unix_ms DESC, bundle_id
+                LIMIT $limit;
+                """;
+            command.Parameters.AddWithValue("$has_cursor", cursor is null ? 0 : 1);
+            command.Parameters.AddWithValue("$created", cursor?.CreatedUtc.ToUnixTimeMilliseconds() ?? 0);
+            command.Parameters.AddWithValue("$bundle", cursor?.BundleId ?? string.Empty);
+            command.Parameters.AddWithValue("$limit", pageSize + 1);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                bundleIds.Add(reader.GetString(0));
+            }
+        }
+        var hasMore = bundleIds.Count > pageSize;
+        if (hasMore)
+        {
+            bundleIds.RemoveAt(bundleIds.Count - 1);
+        }
+        var bundles = new List<CalibrationLibraryBundleSnapshot>(bundleIds.Count);
+        foreach (var bundleId in bundleIds)
+        {
+            bundles.Add((await ReadBundleAsync(
+                connection, transaction, bundleId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("A paged calibration bundle disappeared.")).Snapshot);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        var next = hasMore && bundles.Count > 0
+            ? new CalibrationLibraryBundleCursor(bundles[^1].CreatedUtc, bundles[^1].Bundle.BundleId)
+            : null;
+        return new CalibrationLibraryBundlePage(bundles, next);
+    }
+
+    public async Task<CalibrationLibraryOperationsStatus> GetOperationsStatusAsync(
+        CancellationToken cancellationToken)
+    {
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        var state = await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        var published = await ScalarLongAsync(
+            connection, transaction,
+            "SELECT COUNT(*) FROM calibration_library_bundles WHERE publication_state = 'published';",
+            cancellationToken).ConfigureAwait(false);
+        var quarantined = await ScalarLongAsync(
+            connection, transaction,
+            "SELECT COUNT(*) FROM calibration_library_reconciliation WHERE outcome = 'quarantined' AND operation_state = 'completed';",
+            cancellationToken).ConfigureAwait(false);
+        CalibrationAcquisitionJobSnapshot? pending = null;
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT job_id FROM calibration_acquisition_jobs
+                WHERE state NOT IN ('published', 'failed', 'cancelled')
+                ORDER BY created_unix_ms, job_id LIMIT 1;
+                """;
+            if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is string jobId)
+            {
+                pending = await ReadAcquisitionJobAsync(
+                    connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        CalibrationLibraryActivationSnapshot? activation = null;
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT c.command_kind, a.from_bundle_id, a.to_bundle_id, a.state_version,
+                       a.activated_unix_ms, a.reason
+                FROM calibration_library_activations a
+                JOIN calibration_library_commands c ON c.idempotency_key = a.idempotency_key
+                ORDER BY a.activated_unix_ms DESC, a.activation_id DESC LIMIT 1;
+                """;
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                activation = new CalibrationLibraryActivationSnapshot(
+                    reader.GetString(0),
+                    await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetInt64(3),
+                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
+                    await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5));
+            }
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new CalibrationLibraryOperationsStatus(state, pending, published, quarantined, activation);
     }
 
     public async Task<CalibrationLibraryStateSnapshot> ActivateAsync(
@@ -1874,6 +2198,8 @@ public sealed class SqliteCalibrationLibraryStore(
                     throw new CalibrationLibraryStoreConflictException(
                         "The terminal calibration acquisition job cannot be changed.");
                 }
+                await CompletePendingCancelCommandsAsync(
+                    connection, transaction, current, cancellationToken).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 return current;
             }
@@ -1895,6 +2221,8 @@ public sealed class SqliteCalibrationLibraryStore(
                 ("$job", jobId)).ConfigureAwait(false);
             var result = await ReadRequiredAcquisitionJobAsync(
                 connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            await CompletePendingCancelCommandsAsync(
+                connection, transaction, result, cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return result;
         }
@@ -2015,6 +2343,74 @@ public sealed class SqliteCalibrationLibraryStore(
         return job;
     }
 
+    private static async Task<PersistedCancelCommand?> ReadCancelCommandAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string idempotencyKey,
+        string payloadSha256,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT command_kind, payload_sha256, result_job_id, result_json, completed_unix_ms
+            FROM calibration_library_commands WHERE idempotency_key = $key;
+            """;
+        command.Parameters.AddWithValue("$key", idempotencyKey);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        if (!string.Equals(reader.GetString(0), "cancel", StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(1), payloadSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CalibrationLibraryStoreConflictException(
+                "The calibration command idempotency key has different durable content.");
+        }
+        if (await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ||
+            await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidDataException("The durable calibration cancellation command is incomplete.");
+        }
+        var jobId = reader.GetString(2);
+        var result = JsonSerializer.Deserialize<CalibrationAcquisitionJobSnapshot>((byte[])reader.GetValue(3))
+            ?? throw new InvalidDataException("The durable calibration cancellation result is invalid JSON.");
+        var pending = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false);
+        await reader.DisposeAsync().ConfigureAwait(false);
+        var current = await ReadAcquisitionJobAsync(
+            connection, transaction, jobId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The durable calibration cancellation references a missing job.");
+        if (result.Plan.JobId != current.Plan.JobId || !pending &&
+            (result.State != current.State || result.Phase != current.Phase ||
+             result.BundleId != current.BundleId || !current.IsTerminal))
+        {
+            throw new InvalidDataException("The durable calibration cancellation result is inconsistent.");
+        }
+        return new PersistedCancelCommand(pending, current);
+    }
+
+    private async Task CompletePendingCancelCommandsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CalibrationAcquisitionJobSnapshot result,
+        CancellationToken cancellationToken)
+    {
+        if (!result.IsTerminal)
+        {
+            return;
+        }
+        await ExecuteAsync(connection, transaction, """
+            UPDATE calibration_library_commands
+            SET result_bundle_id = $bundle, result_json = $result, completed_unix_ms = $now
+            WHERE command_kind = 'cancel' AND result_job_id = $job AND completed_unix_ms IS NULL;
+            """, cancellationToken,
+            ("$bundle", (object?)result.BundleId ?? DBNull.Value),
+            ("$result", JsonSerializer.SerializeToUtf8Bytes(result)),
+            ("$now", Now().ToUnixTimeMilliseconds()),
+            ("$job", result.Plan.JobId)).ConfigureAwait(false);
+    }
+
     private static async Task<CalibrationAcquisitionJobSnapshot?> ReadNonterminalAcquisitionJobAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -2098,33 +2494,42 @@ public sealed class SqliteCalibrationLibraryStore(
             ? 0
             : AcquisitionStateRank(state);
         await reader.DisposeAsync().ConfigureAwait(false);
-        var request = new VirtualCalibrationAcquisitionRequestV1(
-            VirtualCalibrationAcquisitionRequestV1.CurrentSchemaVersion,
-            idempotencyKey,
-            plan.Gain,
-            plan.Offset,
-            plan.TemperatureC,
-            plan.BiasExposure,
-            plan.DarkExposure,
-            plan.FlatExposure,
-            plan.DefectExposure,
-            plan.ApplicableLightExposure,
-            plan.EffectiveFromUtc,
-            plan.EffectiveUntilUtc,
-            plan.SourceModel,
-            actor,
-            reason);
-        var requestIdentity = VirtualCalibrationAcquisitionContractJson.ComputeRequestIdentitySha256(request);
         using (var replay = connection.CreateCommand())
         {
             replay.Transaction = transaction;
             replay.CommandText = """
-                SELECT command_kind, payload_sha256, result_job_id, result_json, completed_unix_ms
+                SELECT command_kind, payload_sha256, result_job_id, result_json, completed_unix_ms,
+                       result_state_version
                 FROM calibration_library_commands WHERE idempotency_key = $key;
                 """;
             replay.Parameters.AddWithValue("$key", idempotencyKey);
             using var replayReader = await replay.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            if (!await replayReader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
+            if (!await replayReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidDataException("The durable calibration acquisition command linkage is missing.");
+            }
+            long? expectedVersion = await replayReader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false)
+                ? null
+                : replayReader.GetInt64(5);
+            var request = new VirtualCalibrationAcquisitionRequestV1(
+                VirtualCalibrationAcquisitionRequestV1.CurrentSchemaVersion,
+                idempotencyKey,
+                plan.Gain,
+                plan.Offset,
+                plan.TemperatureC,
+                plan.BiasExposure,
+                plan.DarkExposure,
+                plan.FlatExposure,
+                plan.DefectExposure,
+                plan.ApplicableLightExposure,
+                plan.EffectiveFromUtc,
+                plan.EffectiveUntilUtc,
+                plan.SourceModel,
+                actor,
+                reason,
+                expectedVersion);
+            var requestIdentity = VirtualCalibrationAcquisitionContractJson.ComputeRequestIdentitySha256(request);
+            if (
                 !string.Equals(replayReader.GetString(0), "acquire", StringComparison.Ordinal) ||
                 !string.Equals(replayReader.GetString(1), requestIdentity, StringComparison.OrdinalIgnoreCase) ||
                 await replayReader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ||
@@ -2263,6 +2668,35 @@ public sealed class SqliteCalibrationLibraryStore(
         }
     }
 
+    private static void ValidateCancelMutation(
+        string jobId,
+        string idempotencyKey,
+        long expectedVersion,
+        string actor,
+        string? reason)
+    {
+        if (string.IsNullOrWhiteSpace(jobId) || jobId.Length > 128 || expectedVersion < 0)
+        {
+            throw new ArgumentException("The calibration cancellation command is invalid.", nameof(jobId));
+        }
+        ValidateCommandIdentity(idempotencyKey, new string('0', 64));
+        ValidateActor(actor, reason);
+    }
+
+    private static string CancelPayloadSha256(
+        string jobId,
+        long expectedVersion,
+        string actor,
+        string? reason)
+        => CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            command = "cancel",
+            jobId,
+            expectedVersion,
+            actor,
+            reason
+        });
+
     private string ResolveSafePath(string relativePath)
     {
         if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath))
@@ -2381,4 +2815,6 @@ public sealed class SqliteCalibrationLibraryStore(
         public string BundleIdentitySha256 => Snapshot.BundleIdentitySha256;
     }
     private sealed record PersistedCommand(string PayloadSha256, CalibrationLibraryStateSnapshot Result);
+
+    private sealed record PersistedCancelCommand(bool Pending, CalibrationAcquisitionJobSnapshot Result);
 }

@@ -215,6 +215,7 @@ public class Program
             .ValidateOnStart();
         builder.Services.AddInstalledCelestialCatalog();
         builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
+        builder.Services.AddSingleton<CalibrationOperationsTokenService>();
         healthChecks.AddCheck<CameraAgentConfigurationHealthCheck>("camera-configuration", tags: ["dependency"]);
         healthChecks.AddCheck<DiskPressureHealthCheck>("disk-pressure", tags: ["dependency"]);
         healthChecks.AddCheck<RawIngressHealthCheck>("raw-ingress", tags: ["dependency"]);
@@ -291,6 +292,7 @@ public class Program
         app.MapCameraAgentArtifactEndpoints();
         app.MapCameraAgentOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
+        app.MapCameraAgentCalibrationOperationsEndpoints();
         app.MapCameraAgentOutboxOperationsEndpoints();
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
