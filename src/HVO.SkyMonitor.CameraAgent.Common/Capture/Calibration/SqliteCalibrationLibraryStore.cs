@@ -1,0 +1,1484 @@
+using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
+using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.Processing;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
+
+namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+
+public sealed record CalibrationLibraryBundleSnapshot(
+    CalibrationLibraryBundleV1 Bundle,
+    string BundleIdentitySha256,
+    string PublicationState,
+    string? FailureReason,
+    DateTimeOffset CreatedUtc,
+    DateTimeOffset UpdatedUtc);
+
+public sealed record CalibrationLibraryStateSnapshot(
+    CalibrationLibraryBundleSnapshot? ActiveBundle,
+    long Version,
+    string? LastSelectionReason,
+    DateTimeOffset? LastSelectionUtc,
+    string? LastReconciliationReason,
+    DateTimeOffset? LastReconciliationUtc,
+    DateTimeOffset UpdatedUtc);
+
+public sealed record CalibrationLibrarySelectionResult(
+    CalibrationLibraryBundleSnapshot? Bundle,
+    string ReasonCode,
+    long StateVersion)
+{
+    public bool IsSelected => Bundle is not null;
+}
+
+internal sealed record CalibrationReconciliationOperation(
+    string EvidenceKey,
+    string SourceRelativePath,
+    string? QuarantineRelativePath,
+    string Outcome,
+    string Reason,
+    string OperationState);
+
+public sealed class CalibrationLibraryStoreConflictException : InvalidOperationException
+{
+    public CalibrationLibraryStoreConflictException()
+    {
+    }
+
+    public CalibrationLibraryStoreConflictException(string message) : base(message)
+    {
+    }
+
+    public CalibrationLibraryStoreConflictException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
+public sealed class SqliteCalibrationLibraryStore(
+    IRawCaptureIngress rawCaptureIngress,
+    IOptions<CameraAgentHostOptions> options,
+    TimeProvider timeProvider) : IProcessingRetentionHolds, IDisposable
+{
+    private readonly IRawCaptureIngress _rawCaptureIngress = rawCaptureIngress;
+    private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
+    private readonly string _databasePath = Path.Combine(
+        Path.GetFullPath(options.Value.RawIngressRoot), "journal", "raw-ingress.db");
+    private readonly string _connectionString = new SqliteConnectionStringBuilder
+    {
+        DataSource = Path.Combine(
+            Path.GetFullPath(options.Value.RawIngressRoot), "journal", "raw-ingress.db"),
+        Mode = SqliteOpenMode.ReadWriteCreate,
+        Pooling = false,
+        DefaultTimeout = options.Value.RawIngressSqliteBusyTimeoutSeconds
+    }.ToString();
+    private readonly TimeProvider _timeProvider = timeProvider;
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly ConcurrentDictionary<string, PublishedBundleEvidence> _validatedEvidence =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _selectionRecordGate = new();
+    private string? _lastRecordedSelectionReason;
+    private long _lastRecordedSelectionUnixMs;
+
+    public async Task<CalibrationLibraryStateSnapshot> InitializeAsync(CancellationToken cancellationToken)
+    {
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        var state = await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return state;
+    }
+
+    internal async Task<IReadOnlyList<CalibrationReconciliationOperation>> ReadPlannedReconciliationsAsync(
+        CancellationToken cancellationToken)
+    {
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT evidence_key, source_relative_path, quarantine_relative_path,
+                   outcome, reason, operation_state
+            FROM calibration_library_reconciliation
+            WHERE operation_state = 'planned' ORDER BY reconciliation_id;
+            """;
+        var operations = new List<CalibrationReconciliationOperation>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            operations.Add(new CalibrationReconciliationOperation(
+                reader.GetString(0),
+                reader.GetString(1),
+                await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5)));
+        }
+        return operations;
+    }
+
+    internal async Task PlanReconciliationAsync(
+        CalibrationReconciliationOperation operation,
+        long observedBytes,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        if (operation.OperationState != "planned" || operation.Outcome is not ("adopted" or "failed" or "quarantined") ||
+            operation.EvidenceKey.Length != 64 || observedBytes < 0)
+        {
+            throw new ArgumentException("The calibration reconciliation operation is invalid.", nameof(operation));
+        }
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            await ExecuteAsync(connection, transaction, """
+                INSERT INTO calibration_library_reconciliation(
+                    evidence_key, source_relative_path, quarantine_relative_path, outcome, reason,
+                    operation_state, observed_bytes, observed_unix_ms, completed_unix_ms)
+                VALUES ($key, $source, $quarantine, $outcome, $reason, 'planned', $bytes, $now, NULL)
+                ON CONFLICT(evidence_key) DO NOTHING;
+                """, cancellationToken,
+                ("$key", operation.EvidenceKey),
+                ("$source", operation.SourceRelativePath),
+                ("$quarantine", (object?)operation.QuarantineRelativePath ?? DBNull.Value),
+                ("$outcome", operation.Outcome),
+                ("$reason", operation.Reason),
+                ("$bytes", observedBytes),
+                ("$now", Now().ToUnixTimeMilliseconds())).ConfigureAwait(false);
+            var existing = await ReadReconciliationAsync(
+                connection, transaction, operation.EvidenceKey, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("The calibration reconciliation operation was not persisted.");
+            if (!ReconciliationFactsMatch(existing, operation))
+            {
+                throw new CalibrationLibraryStoreConflictException(
+                    "The calibration reconciliation identity has different durable facts.");
+            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    internal async Task CompleteReconciliationAsync(
+        string evidenceKey,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var now = Now();
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var changed = await ExecuteAsync(connection, transaction, """
+                UPDATE calibration_library_reconciliation
+                SET operation_state = 'completed', completed_unix_ms = COALESCE(completed_unix_ms, $now)
+                WHERE evidence_key = $key;
+                UPDATE calibration_library_state
+                SET last_reconciliation_reason = $reason,
+                    last_reconciliation_unix_ms = $now,
+                    updated_unix_ms = $now
+                WHERE state_key = 1;
+                """, cancellationToken,
+                ("$now", now.ToUnixTimeMilliseconds()),
+                ("$key", evidenceKey),
+                ("$reason", reason)).ConfigureAwait(false);
+            if (changed < 2)
+            {
+                throw new InvalidDataException("The calibration reconciliation operation is missing.");
+            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<CalibrationLibraryBundleSnapshot> AdoptPublishedBundleAsync(
+        CalibrationLibraryBundleV1 bundle,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(bundle);
+        var validation = CalibrationLibraryContract.Validate(bundle);
+        if (!validation.IsValid)
+        {
+            throw new ArgumentException($"The calibration bundle is invalid ({validation.FieldPath}).", nameof(bundle));
+        }
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var bundleJson = CalibrationLibraryContractJson.Serialize(bundle);
+        bundle = CalibrationLibraryContractJson.Parse(bundleJson).Value
+            ?? throw new InvalidDataException("The canonical calibration bundle could not be parsed.");
+        var bundleIdentity = CalibrationLibraryContractJson.ComputeIdentitySha256(bundle);
+        var lifecycleGate = RawIngressLifecycleLock.ForRoot(_storageRoot);
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var storeGateAcquired = false;
+        try
+        {
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            storeGateAcquired = true;
+            using (var precheckConnection = await OpenAsync(cancellationToken).ConfigureAwait(false))
+            using (var precheckTransaction = BeginRead(precheckConnection))
+            {
+                var preexisting = await ReadBundleAsync(
+                    precheckConnection, precheckTransaction, bundle.BundleId, cancellationToken).ConfigureAwait(false);
+                if (preexisting is not null &&
+                    (!string.Equals(preexisting.BundleIdentitySha256, bundleIdentity, StringComparison.OrdinalIgnoreCase) ||
+                     !preexisting.BundleJson.AsSpan().SequenceEqual(bundleJson)))
+                {
+                    throw new CalibrationLibraryStoreConflictException(
+                        "The calibration bundle identifier is already assigned to different immutable facts.");
+                }
+                if (preexisting is null && await ReadBundleCollisionAsync(
+                        precheckConnection,
+                        precheckTransaction,
+                        bundleIdentity,
+                        bundle.ProfileRelativePath,
+                        cancellationToken).ConfigureAwait(false) is not null)
+                {
+                    throw new CalibrationLibraryStoreConflictException(
+                        "Calibration evidence is already assigned to a different immutable bundle.");
+                }
+                await precheckTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            var evidence = await ValidatePublishedEvidenceAsync(bundle, cancellationToken).ConfigureAwait(false);
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var existing = await ReadBundleAsync(connection, transaction, bundle.BundleId, cancellationToken)
+                .ConfigureAwait(false);
+            if (existing is not null)
+            {
+                if (!string.Equals(existing.BundleIdentitySha256, bundleIdentity, StringComparison.OrdinalIgnoreCase) ||
+                    !existing.BundleJson.AsSpan().SequenceEqual(bundleJson))
+                {
+                    throw new CalibrationLibraryStoreConflictException(
+                        "The calibration bundle identifier is already assigned to different immutable facts.");
+                }
+                await ValidatePersistedArtifactsAsync(
+                    connection, transaction, bundle, evidence.Artifacts, cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                _validatedEvidence[bundleIdentity] = evidence;
+                return existing.Snapshot;
+            }
+
+            var collision = await ReadBundleCollisionAsync(
+                connection, transaction, bundleIdentity, bundle.ProfileRelativePath, cancellationToken).ConfigureAwait(false);
+            if (collision is not null)
+            {
+                throw new CalibrationLibraryStoreConflictException(
+                    "Calibration evidence is already assigned to a different immutable bundle.");
+            }
+            var now = Now();
+            await InsertBundleAsync(
+                connection, transaction, bundle, bundleJson, bundleIdentity, now, cancellationToken).ConfigureAwait(false);
+            for (var ordinal = 0; ordinal < bundle.Artifacts.Count; ordinal++)
+            {
+                await InsertArtifactAsync(
+                    connection, transaction, bundle.BundleId, ordinal, bundle.Artifacts[ordinal], evidence.Artifacts[ordinal],
+                    cancellationToken).ConfigureAwait(false);
+            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            _validatedEvidence[bundleIdentity] = evidence;
+            return new CalibrationLibraryBundleSnapshot(
+                bundle, bundleIdentity, "published", null, bundle.CreatedUtc, now);
+        }
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
+        {
+            throw new CalibrationLibraryStoreConflictException(
+                "Calibration evidence conflicts with existing durable library state.", exception);
+        }
+        finally
+        {
+            if (storeGateAcquired)
+            {
+                _gate.Release();
+            }
+            lifecycleGate.Release();
+        }
+    }
+
+    public async Task<CalibrationLibraryStateSnapshot> GetStateAsync(CancellationToken cancellationToken)
+    {
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        var state = await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return state;
+    }
+
+    public async Task<IReadOnlyList<CalibrationLibraryBundleSnapshot>> GetBundlesAsync(
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
+        if (maximumCount is < 1 or > 100)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumCount));
+        }
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        var bundleIds = new List<string>();
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT bundle_id FROM calibration_library_bundles
+                ORDER BY created_unix_ms DESC, bundle_id LIMIT $limit;
+                """;
+            command.Parameters.AddWithValue("$limit", maximumCount);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                bundleIds.Add(reader.GetString(0));
+            }
+        }
+        var bundles = new List<CalibrationLibraryBundleSnapshot>(bundleIds.Count);
+        foreach (var bundleId in bundleIds)
+        {
+            var persisted = await ReadBundleAsync(connection, transaction, bundleId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("A durable calibration bundle disappeared during the read transaction.");
+            bundles.Add(persisted.Snapshot);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return bundles;
+    }
+
+    public async Task<CalibrationLibraryStateSnapshot> ActivateAsync(
+        string bundleId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        ValidateMutation(bundleId, idempotencyKey, expectedVersion, actor, reason);
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var payloadSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            command = "activate",
+            bundleId,
+            expectedVersion,
+            actor,
+            reason
+        });
+        var priorReplay = await ReadCommandOutsideTransactionAsync(idempotencyKey, cancellationToken).ConfigureAwait(false);
+        if (priorReplay is not null)
+        {
+            return ValidateReplay(priorReplay, payloadSha256);
+        }
+        var target = await ReadBundleOutsideTransactionAsync(bundleId, cancellationToken).ConfigureAwait(false)
+            ?? throw new KeyNotFoundException("The calibration bundle was not found.");
+        if (!string.Equals(target.Snapshot.PublicationState, "published", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Only a completely published calibration bundle can be activated.");
+        }
+        await ValidateEvidenceCachedAsync(target.Snapshot, cancellationToken).ConfigureAwait(false);
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var replay = await ReadCommandAsync(connection, transaction, idempotencyKey, cancellationToken)
+                .ConfigureAwait(false);
+            if (replay is not null)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return ValidateReplay(replay, payloadSha256);
+            }
+
+            var current = await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            if (current.Version != expectedVersion)
+            {
+                throw new CalibrationLibraryStoreConflictException(
+                    "The calibration library state changed after the operator read it.");
+            }
+            var nextVersion = current.Version + 1;
+            var now = Now();
+            var result = current with
+            {
+                ActiveBundle = target.Snapshot,
+                Version = nextVersion,
+                UpdatedUtc = now
+            };
+            var resultJson = JsonSerializer.SerializeToUtf8Bytes(result);
+            await ExecuteAsync(connection, transaction, """
+                UPDATE calibration_library_state
+                SET active_bundle_id = $bundle, version = $version, updated_unix_ms = $now
+                WHERE state_key = 1;
+                INSERT INTO calibration_library_activations(
+                    idempotency_key, from_bundle_id, to_bundle_id, actor, reason,
+                    state_version, activated_unix_ms)
+                VALUES ($key, $from, $bundle, $actor, $reason, $version, $now);
+                INSERT INTO calibration_library_commands(
+                    idempotency_key, command_kind, payload_sha256, result_bundle_id,
+                    result_state_version, result_json, created_unix_ms, completed_unix_ms)
+                VALUES ($key, 'activate', $payload, $bundle, $version, $result, $now, $now);
+                """, cancellationToken,
+                ("$bundle", bundleId),
+                ("$version", nextVersion),
+                ("$now", now.ToUnixTimeMilliseconds()),
+                ("$key", idempotencyKey),
+                ("$from", (object?)current.ActiveBundle?.Bundle.BundleId ?? DBNull.Value),
+                ("$actor", actor),
+                ("$reason", (object?)reason ?? DBNull.Value),
+                ("$payload", payloadSha256),
+                ("$result", resultJson)).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<CalibrationLibrarySelectionResult> SelectAsync(
+        ReconstructionDescriptor light,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(light);
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        CalibrationLibraryStateSnapshot state;
+        long bundleCount;
+        using (var connection = await OpenAsync(cancellationToken).ConfigureAwait(false))
+        using (var transaction = BeginRead(connection))
+        {
+            state = await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            bundleCount = await ScalarLongAsync(
+                connection, transaction, "SELECT COUNT(*) FROM calibration_library_bundles WHERE publication_state = 'published';",
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        var reason = SelectReason(state.ActiveBundle, light, bundleCount);
+        if (reason is null && state.ActiveBundle is { } active)
+        {
+            try
+            {
+                await ValidateEvidenceCachedAsync(active, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                reason = CalibrationLibraryReasonCodes.Corrupt;
+            }
+        }
+        var result = new CalibrationLibrarySelectionResult(
+            reason is null ? state.ActiveBundle : null,
+            reason ?? "calibration.library.selected",
+            state.Version);
+        if (ShouldRecordSelection(result.ReasonCode))
+        {
+            await RecordSelectionAsync(result.ReasonCode, cancellationToken).ConfigureAwait(false);
+        }
+        return result;
+    }
+
+    public async ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
+        string storageRoot,
+        CancellationToken cancellationToken)
+    {
+        if (!PathsEqual(_storageRoot, storageRoot))
+        {
+            return [];
+        }
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            var holds = new List<ProcessingRetentionHold>();
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    SELECT a.artifact_id, a.payload_relative_path, a.manifest_relative_path
+                    FROM calibration_library_artifacts a
+                    JOIN calibration_library_bundles b ON b.bundle_id = a.bundle_id
+                    WHERE b.retention_hold = 1
+                    ORDER BY a.bundle_id, a.ordinal;
+                    """;
+                using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    _ = ResolveSafePath(reader.GetString(1));
+                    _ = ResolveSafePath(reader.GetString(2));
+                    holds.Add(new ProcessingRetentionHold(
+                        Guid.ParseExact(reader.GetString(0), "N"),
+                        reader.GetString(1),
+                        reader.GetString(2)));
+                }
+            }
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    SELECT bundle_identity_sha256, profile_relative_path
+                    FROM calibration_library_bundles WHERE retention_hold = 1
+                    ORDER BY bundle_id;
+                    """;
+                using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    var profilePath = reader.GetString(1);
+                    _ = ResolveSafePath(profilePath);
+                    holds.Add(new ProcessingRetentionHold(
+                        Guid.ParseExact(reader.GetString(0)[..32], "N"),
+                        profilePath,
+                        profilePath));
+                }
+            }
+            return holds;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public void Dispose() => _gate.Dispose();
+
+    private async Task<PublishedBundleEvidence> ValidatePublishedEvidenceAsync(
+        CalibrationLibraryBundleV1 bundle,
+        CancellationToken cancellationToken)
+    {
+        var profilePath = ResolveSafePath(bundle.ProfileRelativePath);
+        if (!File.Exists(profilePath))
+        {
+            throw new InvalidDataException("The committed calibration profile marker is missing.");
+        }
+        var profileEvidence = await ReadStableFileAsync(profilePath, cancellationToken).ConfigureAwait(false);
+        var profileJson = profileEvidence.Bytes;
+        if (!string.Equals(
+                PayloadChecksum.ComputeSha256(profileJson), bundle.ProfileIdentitySha256,
+                StringComparison.OrdinalIgnoreCase) || ReferenceCalibrationProfileJson.Parse(profileJson) is not { } profile)
+        {
+            throw new InvalidDataException("The committed calibration profile marker is invalid.");
+        }
+
+        ValidateProfile(profile, bundle);
+        var evidence = new List<PublishedArtifactEvidence>(bundle.Artifacts.Count);
+        var files = new List<EvidenceFileFingerprint>(1 + bundle.Artifacts.Count * 2)
+        {
+            profileEvidence.Fingerprint
+        };
+        foreach (var artifact in bundle.Artifacts)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var manifestPath = ResolveSafePath(artifact.ManifestRelativePath);
+            if (!File.Exists(manifestPath))
+            {
+                throw new InvalidDataException("A committed calibration manifest is missing.");
+            }
+            var manifestEvidence = await ReadStableFileAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+            var manifestJson = manifestEvidence.Bytes;
+            var parsed = CaptureContractJson.ParseManifest(manifestJson);
+            if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
+                manifest.Descriptor.Artifact.ArtifactId != artifact.ArtifactId ||
+                !string.Equals(
+                    manifest.Descriptor.Artifact.ChecksumSha256, artifact.PayloadSha256,
+                    StringComparison.OrdinalIgnoreCase) ||
+                manifest.Descriptor.Controls.EffectiveExposure != artifact.Exposure ||
+                manifest.Descriptor.Controls.EffectiveGain != artifact.Gain ||
+                manifest.Descriptor.Controls.EffectiveOffset != artifact.Offset ||
+                manifest.Descriptor.Controls.EffectiveTemperatureC != artifact.TemperatureC ||
+                !string.Equals(
+                    manifest.Descriptor.Capture.AgentId,
+                    bundle.Applicability.AgentId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    manifest.Descriptor.Capture.RigId,
+                    bundle.Applicability.RigId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(manifest.Descriptor.Artifact.Variant, artifact.Kind, StringComparison.Ordinal) ||
+                !string.Equals(
+                    manifest.Descriptor.Profiles.Rig.Sha256,
+                    bundle.Applicability.RigProfileSha256,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    manifest.Descriptor.Profiles.Sensor.Sha256,
+                    bundle.Applicability.SensorProfileSha256,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    manifest.Descriptor.Profiles.Calibration.Sha256,
+                    bundle.AcquisitionModelIdentitySha256,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !ManifestLayoutMatches(bundle, artifact, manifest.Descriptor.Layout) ||
+                !manifest.Descriptor.Artifact.SourceArtifactIds.SequenceEqual(artifact.OrderedSourceArtifactIds) ||
+                !MasterRecipeMatches(artifact.MasterBuildRecipe, manifest.Descriptor.Artifact.Recipe))
+            {
+                throw new InvalidDataException("A committed calibration manifest conflicts with its library envelope.");
+            }
+            var payloadPath = ResolveSafePath(manifest.RelativeArtifactPath);
+            if (!File.Exists(payloadPath))
+            {
+                throw new InvalidDataException("A committed calibration payload is missing.");
+            }
+            var payloadEvidence = await ReadStableFileAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+            var payload = payloadEvidence.Bytes;
+            if (!string.Equals(PayloadChecksum.ComputeSha256(payload), artifact.PayloadSha256, StringComparison.OrdinalIgnoreCase) ||
+                !FrameReconstructor.TryReconstruct(manifest.Descriptor, payload, out _).IsValid)
+            {
+                throw new InvalidDataException("A committed calibration payload is corrupt.");
+            }
+            var manifestSha256 = PayloadChecksum.ComputeSha256(manifestJson);
+            evidence.Add(new PublishedArtifactEvidence(manifest.RelativeArtifactPath, manifestSha256));
+            files.Add(manifestEvidence.Fingerprint);
+            files.Add(payloadEvidence.Fingerprint);
+        }
+
+        return new PublishedBundleEvidence(evidence, files, Now().ToUnixTimeMilliseconds());
+    }
+
+    private static void ValidateProfile(
+        ReferenceCalibrationProfileV1 profile,
+        CalibrationLibraryBundleV1 bundle)
+    {
+        if (profile.References is null || profile.References.Any(static reference => reference is null))
+        {
+            throw new InvalidDataException("The calibration profile has invalid reference entries.");
+        }
+        var applicability = bundle.Applicability;
+        var masters = bundle.Artifacts.Where(static artifact => artifact.Role == CalibrationLibraryArtifactRoles.Master);
+        if (!string.Equals(
+                profile.SchemaVersion,
+                ReferenceCalibrationProfileV1.CurrentSchemaVersion,
+                StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(profile.ProfileId) || profile.ProfileId.Length > 128 ||
+            string.IsNullOrWhiteSpace(profile.ProfileVersion) || profile.ProfileVersion.Length > 128 ||
+            string.IsNullOrWhiteSpace(profile.Source) || profile.Source.Length > 512 ||
+            profile.Width != applicability.OutputLayout.Width ||
+            profile.Height != applicability.OutputLayout.Height ||
+            profile.PixelFormat != applicability.OutputLayout.PixelFormat ||
+            profile.FlatNormalizationAdu <= 0 ||
+            profile.MinimumGain != applicability.MinimumGain ||
+            profile.MaximumGain != applicability.MaximumGain ||
+            profile.MinimumTemperatureC != applicability.MinimumTemperatureC ||
+            profile.MaximumTemperatureC != applicability.MaximumTemperatureC ||
+            profile.EffectiveFromUtc != applicability.EffectiveFromUtc ||
+            profile.EffectiveUntilUtc != applicability.EffectiveUntilUtc ||
+            profile.References.Count != CalibrationReferenceKinds.All.Count ||
+            profile.References.Select(static reference => reference.Kind).Distinct(StringComparer.Ordinal).Count() !=
+                CalibrationReferenceKinds.All.Count ||
+            profile.References.Select(static reference => reference.ArtifactId).Distinct().Count() !=
+                CalibrationReferenceKinds.All.Count ||
+            profile.References.Any(reference => InvalidProfileReference(profile, reference)) ||
+            masters.Any(master => !profile.References.Any(reference =>
+                reference.Kind == master.Kind &&
+                reference.ArtifactId == master.ArtifactId &&
+                string.Equals(reference.PayloadSha256, master.PayloadSha256, StringComparison.OrdinalIgnoreCase) &&
+                reference.Exposure == master.Exposure &&
+                reference.Gain == master.Gain &&
+                reference.TemperatureC == master.TemperatureC)))
+        {
+            throw new InvalidDataException("The calibration profile conflicts with its library envelope.");
+        }
+    }
+
+    private static bool InvalidProfileReference(
+        ReferenceCalibrationProfileV1 profile,
+        CalibrationReferenceDescriptorV1 reference)
+        => !CalibrationReferenceKinds.All.Contains(reference.Kind, StringComparer.Ordinal) ||
+           reference.ArtifactId == Guid.Empty || reference.Exposure <= TimeSpan.Zero ||
+           !double.IsFinite(reference.Gain) || reference.Gain < 0 ||
+           reference.TemperatureC is not { } temperature || !double.IsFinite(temperature) ||
+           string.IsNullOrWhiteSpace(reference.PayloadSha256) || reference.PayloadSha256.Length != 64 ||
+           !reference.PayloadSha256.All(Uri.IsHexDigit) ||
+           temperature < profile.MinimumTemperatureC || temperature > profile.MaximumTemperatureC ||
+           reference.Gain < profile.MinimumGain || reference.Gain > profile.MaximumGain;
+
+    private static bool ManifestLayoutMatches(
+        CalibrationLibraryBundleV1 bundle,
+        CalibrationLibraryArtifactV1 artifact,
+        FrameLayoutDescriptor actual)
+    {
+        var expected = artifact.Role == CalibrationLibraryArtifactRoles.Source
+            ? bundle.Applicability.InputLayout
+            : bundle.Applicability.OutputLayout;
+        return NormalizeCompleteLayout(expected) == NormalizeCompleteLayout(actual);
+    }
+
+    private static FrameLayoutDescriptor NormalizeCompleteLayout(FrameLayoutDescriptor layout)
+        => layout.SampleDepthBits == layout.ContainerDepthBits
+            ? layout with
+            {
+                StoredCodeTransform = layout.StoredCodeTransform ?? FrameStoredCodeTransform.IdentityV1,
+                LevelCodeSpace = layout.LevelCodeSpace ?? FrameLevelCodeSpace.StoredContainer
+            }
+            : layout;
+
+    private static bool MasterRecipeMatches(
+        RecipeIdentityDescriptor? expected,
+        RecipeIdentityDescriptor actual)
+        => expected is null ||
+           string.Equals(expected.Name, actual.Name, StringComparison.Ordinal) &&
+           string.Equals(expected.SemanticVersion, actual.SemanticVersion, StringComparison.Ordinal) &&
+           string.Equals(expected.ImplementationVersion, actual.ImplementationVersion, StringComparison.Ordinal) &&
+           string.Equals(expected.OptionsSha256, actual.OptionsSha256, StringComparison.OrdinalIgnoreCase);
+
+    private async Task ValidateEvidenceCachedAsync(
+        CalibrationLibraryBundleSnapshot bundle,
+        CancellationToken cancellationToken)
+    {
+        if (_validatedEvidence.TryGetValue(bundle.BundleIdentitySha256, out var cached) &&
+            Now().ToUnixTimeMilliseconds() - cached.ValidatedUnixMs < TimeSpan.FromMinutes(10).TotalMilliseconds &&
+            cached.Files.All(FingerprintMatches))
+        {
+            return;
+        }
+        _validatedEvidence[bundle.BundleIdentitySha256] = await ValidatePublishedEvidenceAsync(
+            bundle.Bundle, cancellationToken).ConfigureAwait(false);
+    }
+
+    private bool FingerprintMatches(EvidenceFileFingerprint fingerprint)
+    {
+        var path = ResolveSafePath(fingerprint.RelativePath);
+        var info = new FileInfo(path);
+        return info.Exists && info.Length == fingerprint.Length &&
+               info.LastWriteTimeUtc.Ticks == fingerprint.LastWriteUtcTicks;
+    }
+
+    private async Task<StableEvidenceFile> ReadStableFileAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        var before = new FileInfo(path);
+        if (!before.Exists || before.Length > int.MaxValue)
+        {
+            throw new InvalidDataException("Calibration evidence is missing or too large.");
+        }
+        var bytes = new byte[checked((int)before.Length)];
+        var stream = new FileStream(
+            path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using (stream.ConfigureAwait(false))
+        {
+            await stream.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
+        }
+        var after = new FileInfo(path);
+        if (!after.Exists || before.Length != after.Length ||
+            before.LastWriteTimeUtc != after.LastWriteTimeUtc)
+        {
+            throw new InvalidDataException("Calibration evidence changed while it was being validated.");
+        }
+        return new StableEvidenceFile(bytes, new EvidenceFileFingerprint(
+            Path.GetRelativePath(_storageRoot, path).Replace(Path.DirectorySeparatorChar, '/'),
+            after.Length,
+            after.LastWriteTimeUtc.Ticks));
+    }
+
+    private static string? SelectReason(
+        CalibrationLibraryBundleSnapshot? active,
+        ReconstructionDescriptor light,
+        long publishedBundleCount)
+    {
+        if (active is null)
+        {
+            return publishedBundleCount == 0
+                ? CalibrationLibraryReasonCodes.Missing
+                : CalibrationLibraryReasonCodes.Inactive;
+        }
+        if (!string.Equals(active.PublicationState, "published", StringComparison.Ordinal))
+        {
+            return active.PublicationState switch
+            {
+                "incomplete" => CalibrationLibraryReasonCodes.Incomplete,
+                "corrupt" => CalibrationLibraryReasonCodes.Corrupt,
+                _ => CalibrationLibraryReasonCodes.Inactive
+            };
+        }
+        var applicability = active.Bundle.Applicability;
+        if (!string.Equals(applicability.AgentId, light.Capture.AgentId, StringComparison.Ordinal) ||
+            !string.Equals(applicability.RigId, light.Capture.RigId, StringComparison.Ordinal) ||
+            !string.Equals(applicability.RigProfileSha256, light.Profiles.Rig.Sha256, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(applicability.SensorProfileSha256, light.Profiles.Sensor.Sha256, StringComparison.OrdinalIgnoreCase))
+        {
+            return CalibrationLibraryReasonCodes.IncompatibleIdentity;
+        }
+        if (!ReadoutMatches(applicability.InputLayout, light.Layout))
+        {
+            return CalibrationLibraryReasonCodes.IncompatibleReadout;
+        }
+        if (!CodeSpaceMatches(applicability.InputLayout, light.Layout))
+        {
+            return CalibrationLibraryReasonCodes.IncompatibleCodeSpace;
+        }
+        if (light.Controls.EffectiveGain < applicability.MinimumGain ||
+            light.Controls.EffectiveGain > applicability.MaximumGain ||
+            !NullableRangeMatches(
+                light.Controls.EffectiveOffset, applicability.MinimumOffset, applicability.MaximumOffset) ||
+            !NullableRangeMatches(
+                light.Controls.EffectiveTemperatureC,
+                applicability.MinimumTemperatureC,
+                applicability.MaximumTemperatureC))
+        {
+            return CalibrationLibraryReasonCodes.IncompatibleConditions;
+        }
+        if (applicability.MinimumLightExposure is { } minimumExposure &&
+            (light.Controls.EffectiveExposure < minimumExposure ||
+             light.Controls.EffectiveExposure > applicability.MaximumLightExposure!.Value))
+        {
+            return CalibrationLibraryReasonCodes.IncompatibleExposure;
+        }
+        var observed = light.Timing.ExposureStartedUtc;
+        if (observed < applicability.EffectiveFromUtc ||
+            applicability.EffectiveUntilUtc is { } until && observed >= until)
+        {
+            return CalibrationLibraryReasonCodes.Stale;
+        }
+        return null;
+    }
+
+    private static bool ReadoutMatches(FrameLayoutDescriptor expected, FrameLayoutDescriptor actual)
+        => expected.Width == actual.Width && expected.Height == actual.Height &&
+           expected.StrideBytes == actual.StrideBytes && expected.PixelFormat == actual.PixelFormat &&
+           expected.CfaPattern == actual.CfaPattern && expected.Readout == actual.Readout;
+
+    private static bool CodeSpaceMatches(FrameLayoutDescriptor expected, FrameLayoutDescriptor actual)
+        => expected.ByteOrder == actual.ByteOrder && expected.SampleDepthBits == actual.SampleDepthBits &&
+           expected.ContainerDepthBits == actual.ContainerDepthBits && expected.Packing == actual.Packing &&
+           expected.BlackLevel == actual.BlackLevel && expected.WhiteLevel == actual.WhiteLevel &&
+           expected.ByteLength == actual.ByteLength && expected.StoredCodeTransform == actual.StoredCodeTransform &&
+           expected.LevelCodeSpace == actual.LevelCodeSpace;
+
+    private static bool NullableRangeMatches(double? value, double? minimum, double? maximum)
+        => minimum is null
+            ? value is null
+            : value is { } actual && actual >= minimum.Value && actual <= maximum!.Value;
+
+    private async Task RecordSelectionAsync(string reasonCode, CancellationToken cancellationToken)
+    {
+        var now = Now();
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await ExecuteAsync(connection, transaction: null, """
+            UPDATE calibration_library_state
+            SET last_selection_reason = $reason, last_selection_unix_ms = $now
+            WHERE state_key = 1;
+            """, cancellationToken,
+            ("$reason", reasonCode),
+            ("$now", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+    }
+
+    private bool ShouldRecordSelection(string reasonCode)
+    {
+        var now = Now().ToUnixTimeMilliseconds();
+        lock (_selectionRecordGate)
+        {
+            if (string.Equals(_lastRecordedSelectionReason, reasonCode, StringComparison.Ordinal) &&
+                now - _lastRecordedSelectionUnixMs < 60_000)
+            {
+                return false;
+            }
+            _lastRecordedSelectionReason = reasonCode;
+            _lastRecordedSelectionUnixMs = now;
+            return true;
+        }
+    }
+
+    private async Task<PersistedBundle?> ReadBundleOutsideTransactionAsync(
+        string bundleId,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        var bundle = await ReadBundleAsync(connection, transaction, bundleId, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return bundle;
+    }
+
+    private static async Task InsertBundleAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CalibrationLibraryBundleV1 bundle,
+        byte[] bundleJson,
+        string bundleIdentity,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var applicability = bundle.Applicability;
+        await ExecuteAsync(connection, transaction, """
+            INSERT INTO calibration_library_bundles(
+                bundle_id, bundle_identity_sha256, source, bundle_json, profile_relative_path,
+                profile_identity_sha256, acquisition_model_identity_sha256, agent_id, rig_id,
+                rig_profile_sha256, sensor_profile_sha256, input_layout_sha256, output_layout_sha256,
+                minimum_gain, maximum_gain, minimum_offset, maximum_offset,
+                minimum_light_exposure_ticks, maximum_light_exposure_ticks,
+                minimum_temperature_c, maximum_temperature_c, effective_from_unix_ms,
+                effective_until_unix_ms, publication_state, retention_hold, failure_reason,
+                created_unix_ms, updated_unix_ms)
+            VALUES (
+                $id, $identity, $source, $json, $profile_path, $profile_identity, $model_identity,
+                $agent, $rig, $rig_profile, $sensor_profile, $input_layout, $output_layout,
+                $minimum_gain, $maximum_gain, $minimum_offset, $maximum_offset,
+                $minimum_exposure, $maximum_exposure, $minimum_temperature, $maximum_temperature,
+                $effective_from, $effective_until, 'published', 1, NULL, $created, $updated);
+            """, cancellationToken,
+            ("$id", bundle.BundleId),
+            ("$identity", bundleIdentity),
+            ("$source", bundle.Source),
+            ("$json", bundleJson),
+            ("$profile_path", bundle.ProfileRelativePath),
+            ("$profile_identity", bundle.ProfileIdentitySha256),
+            ("$model_identity", bundle.AcquisitionModelIdentitySha256),
+            ("$agent", applicability.AgentId),
+            ("$rig", applicability.RigId),
+            ("$rig_profile", applicability.RigProfileSha256),
+            ("$sensor_profile", applicability.SensorProfileSha256),
+            ("$input_layout", CaptureContractJson.ComputeCanonicalJsonSha256(applicability.InputLayout)),
+            ("$output_layout", CaptureContractJson.ComputeCanonicalJsonSha256(applicability.OutputLayout)),
+            ("$minimum_gain", applicability.MinimumGain),
+            ("$maximum_gain", applicability.MaximumGain),
+            ("$minimum_offset", DbValue(applicability.MinimumOffset)),
+            ("$maximum_offset", DbValue(applicability.MaximumOffset)),
+            ("$minimum_exposure", DbValue(applicability.MinimumLightExposure?.Ticks)),
+            ("$maximum_exposure", DbValue(applicability.MaximumLightExposure?.Ticks)),
+            ("$minimum_temperature", DbValue(applicability.MinimumTemperatureC)),
+            ("$maximum_temperature", DbValue(applicability.MaximumTemperatureC)),
+            ("$effective_from", applicability.EffectiveFromUtc.ToUnixTimeMilliseconds()),
+            ("$effective_until", DbValue(applicability.EffectiveUntilUtc?.ToUnixTimeMilliseconds())),
+            ("$created", bundle.CreatedUtc.ToUnixTimeMilliseconds()),
+            ("$updated", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+    }
+
+    private static Task<int> InsertArtifactAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string bundleId,
+        int ordinal,
+        CalibrationLibraryArtifactV1 artifact,
+        PublishedArtifactEvidence evidence,
+        CancellationToken cancellationToken)
+        => ExecuteAsync(connection, transaction, """
+            INSERT INTO calibration_library_artifacts(
+                bundle_id, ordinal, artifact_id, reference_kind, role, source_index,
+                manifest_relative_path, manifest_sha256, payload_relative_path, payload_sha256,
+                ordered_source_artifact_ids_json, master_recipe_json)
+            VALUES ($bundle, $ordinal, $artifact, $kind, $role, $source_index,
+                    $manifest, $manifest_sha, $payload, $sha, $sources, $recipe);
+            """, cancellationToken,
+            ("$bundle", bundleId),
+            ("$ordinal", ordinal),
+            ("$artifact", artifact.ArtifactId.ToString("N")),
+            ("$kind", artifact.Kind),
+            ("$role", artifact.Role),
+            ("$source_index", DbValue(artifact.SourceIndex)),
+            ("$manifest", artifact.ManifestRelativePath),
+            ("$manifest_sha", evidence.ManifestSha256),
+            ("$payload", evidence.PayloadRelativePath),
+            ("$sha", artifact.PayloadSha256),
+            ("$sources", JsonSerializer.SerializeToUtf8Bytes(artifact.OrderedSourceArtifactIds)),
+            ("$recipe", artifact.MasterBuildRecipe is null
+                ? DBNull.Value
+                : JsonSerializer.SerializeToUtf8Bytes(artifact.MasterBuildRecipe)));
+
+    private static async Task ValidatePersistedArtifactsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CalibrationLibraryBundleV1 bundle,
+        IReadOnlyList<PublishedArtifactEvidence> evidence,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT ordinal, artifact_id, reference_kind, role, source_index,
+                   manifest_relative_path, manifest_sha256, payload_relative_path, payload_sha256,
+                   ordered_source_artifact_ids_json, master_recipe_json
+            FROM calibration_library_artifacts WHERE bundle_id = $bundle ORDER BY ordinal;
+            """;
+        command.Parameters.AddWithValue("$bundle", bundle.BundleId);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var ordinal = 0;
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (ordinal >= bundle.Artifacts.Count)
+            {
+                throw new InvalidDataException("Persisted calibration artifact rows conflict with immutable evidence.");
+            }
+            var artifact = bundle.Artifacts[ordinal];
+            var expectedSources = JsonSerializer.SerializeToUtf8Bytes(artifact.OrderedSourceArtifactIds);
+            var expectedRecipe = artifact.MasterBuildRecipe is null
+                ? null
+                : JsonSerializer.SerializeToUtf8Bytes(artifact.MasterBuildRecipe);
+            if (reader.GetInt32(0) != ordinal ||
+                !string.Equals(reader.GetString(1), artifact.ArtifactId.ToString("N"), StringComparison.Ordinal) ||
+                !string.Equals(reader.GetString(2), artifact.Kind, StringComparison.Ordinal) ||
+                !string.Equals(reader.GetString(3), artifact.Role, StringComparison.Ordinal) ||
+                ReadNullableInt32(reader, 4) != artifact.SourceIndex ||
+                !string.Equals(reader.GetString(5), artifact.ManifestRelativePath, StringComparison.Ordinal) ||
+                !string.Equals(reader.GetString(6), evidence[ordinal].ManifestSha256, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(reader.GetString(7), evidence[ordinal].PayloadRelativePath, StringComparison.Ordinal) ||
+                !string.Equals(reader.GetString(8), artifact.PayloadSha256, StringComparison.OrdinalIgnoreCase) ||
+                !((byte[])reader.GetValue(9)).AsSpan().SequenceEqual(expectedSources) ||
+                !NullableBytesEqual(reader, 10, expectedRecipe))
+            {
+                throw new InvalidDataException("Persisted calibration artifact rows conflict with immutable evidence.");
+            }
+            ordinal++;
+        }
+        if (ordinal != bundle.Artifacts.Count)
+        {
+            throw new InvalidDataException("Persisted calibration artifact rows are incomplete.");
+        }
+    }
+
+    private static async Task ValidatePersistedArtifactEnvelopeAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CalibrationLibraryBundleV1 bundle,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT ordinal, artifact_id, reference_kind, role, source_index,
+                   manifest_relative_path, payload_sha256,
+                   ordered_source_artifact_ids_json, master_recipe_json
+            FROM calibration_library_artifacts WHERE bundle_id = $bundle ORDER BY ordinal;
+            """;
+        command.Parameters.AddWithValue("$bundle", bundle.BundleId);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var ordinal = 0;
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (ordinal >= bundle.Artifacts.Count)
+            {
+                throw new InvalidDataException("Persisted calibration artifact rows are inconsistent.");
+            }
+            var artifact = bundle.Artifacts[ordinal];
+            var expectedSources = JsonSerializer.SerializeToUtf8Bytes(artifact.OrderedSourceArtifactIds);
+            var expectedRecipe = artifact.MasterBuildRecipe is null
+                ? null
+                : JsonSerializer.SerializeToUtf8Bytes(artifact.MasterBuildRecipe);
+            if (reader.GetInt32(0) != ordinal ||
+                !string.Equals(reader.GetString(1), artifact.ArtifactId.ToString("N"), StringComparison.Ordinal) ||
+                !string.Equals(reader.GetString(2), artifact.Kind, StringComparison.Ordinal) ||
+                !string.Equals(reader.GetString(3), artifact.Role, StringComparison.Ordinal) ||
+                ReadNullableInt32(reader, 4) != artifact.SourceIndex ||
+                !string.Equals(reader.GetString(5), artifact.ManifestRelativePath, StringComparison.Ordinal) ||
+                !string.Equals(reader.GetString(6), artifact.PayloadSha256, StringComparison.OrdinalIgnoreCase) ||
+                !((byte[])reader.GetValue(7)).AsSpan().SequenceEqual(expectedSources) ||
+                !NullableBytesEqual(reader, 8, expectedRecipe))
+            {
+                throw new InvalidDataException("Persisted calibration artifact rows are inconsistent.");
+            }
+            ordinal++;
+        }
+        if (ordinal != bundle.Artifacts.Count)
+        {
+            throw new InvalidDataException("Persisted calibration artifact rows are incomplete.");
+        }
+    }
+
+    private static async Task<CalibrationLibraryStateSnapshot> ReadStateAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT active_bundle_id, version, last_selection_reason, last_selection_unix_ms,
+                   last_reconciliation_reason, last_reconciliation_unix_ms, updated_unix_ms
+            FROM calibration_library_state WHERE state_key = 1;
+            """;
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidDataException("The calibration library state row is missing.");
+        }
+        var activeId = await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false)
+            ? null
+            : reader.GetString(0);
+        var version = reader.GetInt64(1);
+        var lastSelectionReason = await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false)
+            ? null
+            : reader.GetString(2);
+        DateTimeOffset? lastSelectionUtc = await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false)
+            ? null
+            : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3));
+        var lastReconciliationReason = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false)
+            ? null
+            : reader.GetString(4);
+        DateTimeOffset? lastReconciliationUtc = await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false)
+            ? null
+            : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5));
+        var updatedUtc = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6));
+        await reader.DisposeAsync().ConfigureAwait(false);
+        var active = activeId is null
+            ? null
+            : (await ReadBundleAsync(connection, transaction, activeId, cancellationToken).ConfigureAwait(false))?.Snapshot
+                ?? throw new InvalidDataException("The active calibration bundle is missing.");
+        return new CalibrationLibraryStateSnapshot(
+            active, version, lastSelectionReason, lastSelectionUtc,
+            lastReconciliationReason, lastReconciliationUtc, updatedUtc);
+    }
+
+    private static async Task<PersistedBundle?> ReadBundleAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string bundleId,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT bundle_json, bundle_identity_sha256, publication_state, failure_reason,
+                   created_unix_ms, updated_unix_ms, source, profile_relative_path,
+                   profile_identity_sha256, acquisition_model_identity_sha256, agent_id, rig_id,
+                   rig_profile_sha256, sensor_profile_sha256, input_layout_sha256, output_layout_sha256,
+                   minimum_gain, maximum_gain, minimum_offset, maximum_offset,
+                   minimum_light_exposure_ticks, maximum_light_exposure_ticks,
+                   minimum_temperature_c, maximum_temperature_c, effective_from_unix_ms,
+                   effective_until_unix_ms
+            FROM calibration_library_bundles WHERE bundle_id = $id;
+            """;
+        command.Parameters.AddWithValue("$id", bundleId);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        var bundleJson = (byte[])reader.GetValue(0);
+        var identity = reader.GetString(1);
+        var publicationState = reader.GetString(2);
+        var failureReason = await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false)
+            ? null
+            : reader.GetString(3);
+        var created = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4));
+        var updated = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5));
+        var parsed = CalibrationLibraryContractJson.Parse(bundleJson);
+        if (!parsed.Validation.IsValid || parsed.Value is not { } bundle ||
+            !string.Equals(bundle.BundleId, bundleId, StringComparison.Ordinal) ||
+            !string.Equals(
+                CalibrationLibraryContractJson.ComputeIdentitySha256(bundle), identity,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(reader.GetString(6), bundle.Source, StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(7), bundle.ProfileRelativePath, StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(8), bundle.ProfileIdentitySha256, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(reader.GetString(9), bundle.AcquisitionModelIdentitySha256, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(reader.GetString(10), bundle.Applicability.AgentId, StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(11), bundle.Applicability.RigId, StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(12), bundle.Applicability.RigProfileSha256, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(reader.GetString(13), bundle.Applicability.SensorProfileSha256, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(reader.GetString(14), CaptureContractJson.ComputeCanonicalJsonSha256(bundle.Applicability.InputLayout), StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(reader.GetString(15), CaptureContractJson.ComputeCanonicalJsonSha256(bundle.Applicability.OutputLayout), StringComparison.OrdinalIgnoreCase) ||
+            reader.GetDouble(16) != bundle.Applicability.MinimumGain || reader.GetDouble(17) != bundle.Applicability.MaximumGain ||
+            ReadNullableDouble(reader, 18) != bundle.Applicability.MinimumOffset ||
+            ReadNullableDouble(reader, 19) != bundle.Applicability.MaximumOffset ||
+            ReadNullableInt64(reader, 20) != bundle.Applicability.MinimumLightExposure?.Ticks ||
+            ReadNullableInt64(reader, 21) != bundle.Applicability.MaximumLightExposure?.Ticks ||
+            ReadNullableDouble(reader, 22) != bundle.Applicability.MinimumTemperatureC ||
+            ReadNullableDouble(reader, 23) != bundle.Applicability.MaximumTemperatureC ||
+            reader.GetInt64(24) != bundle.Applicability.EffectiveFromUtc.ToUnixTimeMilliseconds() ||
+            ReadNullableInt64(reader, 25) != bundle.Applicability.EffectiveUntilUtc?.ToUnixTimeMilliseconds() ||
+            created.ToUnixTimeMilliseconds() != bundle.CreatedUtc.ToUnixTimeMilliseconds())
+        {
+            throw new InvalidDataException("A durable calibration bundle failed validation.");
+        }
+        await reader.DisposeAsync().ConfigureAwait(false);
+        await ValidatePersistedArtifactEnvelopeAsync(
+            connection, transaction, bundle, cancellationToken).ConfigureAwait(false);
+        return new PersistedBundle(
+            new CalibrationLibraryBundleSnapshot(bundle, identity, publicationState, failureReason, created, updated),
+            bundleJson);
+    }
+
+    private static async Task<string?> ReadBundleCollisionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string identity,
+        string profileRelativePath,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT bundle_id FROM calibration_library_bundles
+            WHERE bundle_identity_sha256 = $identity OR profile_relative_path = $profile COLLATE NOCASE
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$identity", identity);
+        command.Parameters.AddWithValue("$profile", profileRelativePath);
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is string bundleId
+            ? bundleId
+            : null;
+    }
+
+    private static async Task<PersistedCommand?> ReadCommandAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT payload_sha256, command_kind, result_bundle_id, result_state_version,
+                   result_json, completed_unix_ms
+            FROM calibration_library_commands WHERE idempotency_key = $key;
+            """;
+        command.Parameters.AddWithValue("$key", idempotencyKey);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        if (!string.Equals(reader.GetString(1), "activate", StringComparison.Ordinal) ||
+            await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ||
+            await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ||
+            await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ||
+            await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidDataException("A durable calibration command result is incomplete.");
+        }
+        var resultBundleId = reader.GetString(2);
+        var result = JsonSerializer.Deserialize<CalibrationLibraryStateSnapshot>((byte[])reader.GetValue(4))
+            ?? throw new InvalidDataException("A durable calibration command result is invalid JSON.");
+        if (result.Version != reader.GetInt64(3) || result.ActiveBundle is not { } active ||
+            !string.Equals(active.Bundle.BundleId, resultBundleId, StringComparison.Ordinal) ||
+            !CalibrationLibraryContract.Validate(active.Bundle).IsValid ||
+            !string.Equals(
+                CalibrationLibraryContractJson.ComputeIdentitySha256(active.Bundle),
+                active.BundleIdentitySha256,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("A durable calibration command result is inconsistent.");
+        }
+        var payloadSha256 = reader.GetString(0);
+        await reader.DisposeAsync().ConfigureAwait(false);
+        var persistedBundle = await ReadBundleAsync(
+            connection, transaction, resultBundleId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("A durable calibration command references a missing bundle.");
+        if (!string.Equals(
+                persistedBundle.BundleIdentitySha256,
+                active.BundleIdentitySha256,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("A durable calibration command references a different bundle revision.");
+        }
+        return new PersistedCommand(payloadSha256, result);
+    }
+
+    private static async Task<CalibrationReconciliationOperation?> ReadReconciliationAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string evidenceKey,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT source_relative_path, quarantine_relative_path, outcome, reason, operation_state
+            FROM calibration_library_reconciliation WHERE evidence_key = $key;
+            """;
+        command.Parameters.AddWithValue("$key", evidenceKey);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new CalibrationReconciliationOperation(
+                evidenceKey,
+                reader.GetString(0),
+                await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4))
+            : null;
+    }
+
+    private static bool ReconciliationFactsMatch(
+        CalibrationReconciliationOperation existing,
+        CalibrationReconciliationOperation requested)
+        => string.Equals(existing.EvidenceKey, requested.EvidenceKey, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(existing.SourceRelativePath, requested.SourceRelativePath, StringComparison.Ordinal) &&
+           string.Equals(existing.QuarantineRelativePath, requested.QuarantineRelativePath, StringComparison.Ordinal) &&
+           string.Equals(existing.Outcome, requested.Outcome, StringComparison.Ordinal) &&
+           string.Equals(existing.Reason, requested.Reason, StringComparison.Ordinal);
+
+    private async Task<PersistedCommand?> ReadCommandOutsideTransactionAsync(
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        var command = await ReadCommandAsync(connection, transaction, idempotencyKey, cancellationToken)
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return command;
+    }
+
+    private static CalibrationLibraryStateSnapshot ValidateReplay(
+        PersistedCommand replay,
+        string payloadSha256)
+    {
+        if (!string.Equals(replay.PayloadSha256, payloadSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CalibrationLibraryStoreConflictException(
+                "The calibration command idempotency key has different durable content.");
+        }
+        return replay.Result;
+    }
+
+    private static void ValidateMutation(
+        string bundleId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason)
+    {
+        if (string.IsNullOrWhiteSpace(bundleId) || bundleId.Length > 128)
+        {
+            throw new ArgumentException("A valid calibration bundle identifier is required.", nameof(bundleId));
+        }
+        if (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 128)
+        {
+            throw new ArgumentException("A valid idempotency key is required.", nameof(idempotencyKey));
+        }
+        if (expectedVersion is null)
+        {
+            throw new ArgumentException("The expected durable state version is required.", nameof(expectedVersion));
+        }
+        if (expectedVersion < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedVersion));
+        }
+        if (string.IsNullOrWhiteSpace(actor) || actor.Length > 128)
+        {
+            throw new ArgumentException("A valid actor is required.", nameof(actor));
+        }
+        if (reason?.Length > 512)
+        {
+            throw new ArgumentException("The reason is too long.", nameof(reason));
+        }
+    }
+
+    private string ResolveSafePath(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath))
+        {
+            throw new InvalidDataException("Calibration evidence paths must be relative to CameraAgent storage.");
+        }
+        var path = Path.GetFullPath(Path.Combine(_storageRoot, relativePath));
+        var prefix = string.Concat(Path.TrimEndingDirectorySeparator(_storageRoot), Path.DirectorySeparatorChar);
+        if (!path.StartsWith(
+                prefix,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Calibration evidence path escapes CameraAgent storage.");
+        }
+        RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, path);
+        return path;
+    }
+
+    private DateTimeOffset Now()
+        => DateTimeOffset.FromUnixTimeMilliseconds(_timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+
+    private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
+    {
+        EnsureDatabaseFilesArePhysical();
+        var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        EnsureDatabaseFilesArePhysical();
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;";
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        return connection;
+    }
+
+    private void EnsureDatabaseFilesArePhysical()
+    {
+        RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, _databasePath);
+        RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, string.Concat(_databasePath, "-wal"));
+        RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, string.Concat(_databasePath, "-shm"));
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "Only internal constant SQL statements are passed to this helper.")]
+    private static async Task<int> ExecuteAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string sql,
+        CancellationToken cancellationToken,
+        params (string Name, object Value)[] parameters)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        foreach (var parameter in parameters)
+        {
+            command.Parameters.AddWithValue(parameter.Name, parameter.Value);
+        }
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "Only internal constant SQL statements are passed to this helper.")]
+    private static async Task<long> ScalarLongAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    [SuppressMessage("Reliability", "CA1849:Call async methods when in an async method",
+        Justification = "Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.")]
+    private static SqliteTransaction BeginImmediate(SqliteConnection connection)
+        => connection.BeginTransaction(deferred: false);
+
+    private static SqliteTransaction BeginRead(SqliteConnection connection)
+        => connection.BeginTransaction(deferred: true);
+
+    private static bool PathsEqual(string left, string right)
+        => string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private static object DbValue<T>(T? value) where T : struct
+        => value.HasValue ? value.Value : DBNull.Value;
+
+    private static int? ReadNullableInt32(SqliteDataReader reader, int ordinal)
+        => reader.IsDBNull(ordinal) ? null : reader.GetInt32(ordinal);
+
+    private static long? ReadNullableInt64(SqliteDataReader reader, int ordinal)
+        => reader.IsDBNull(ordinal) ? null : reader.GetInt64(ordinal);
+
+    private static double? ReadNullableDouble(SqliteDataReader reader, int ordinal)
+        => reader.IsDBNull(ordinal) ? null : reader.GetDouble(ordinal);
+
+    private static bool NullableBytesEqual(SqliteDataReader reader, int ordinal, byte[]? expected)
+        => reader.IsDBNull(ordinal)
+            ? expected is null
+            : expected is not null && ((byte[])reader.GetValue(ordinal)).AsSpan().SequenceEqual(expected);
+
+    private sealed record PublishedArtifactEvidence(string PayloadRelativePath, string ManifestSha256);
+    private sealed record EvidenceFileFingerprint(string RelativePath, long Length, long LastWriteUtcTicks);
+    private sealed record StableEvidenceFile(byte[] Bytes, EvidenceFileFingerprint Fingerprint);
+    private sealed record PublishedBundleEvidence(
+        IReadOnlyList<PublishedArtifactEvidence> Artifacts,
+        IReadOnlyList<EvidenceFileFingerprint> Files,
+        long ValidatedUnixMs);
+    private sealed record PersistedBundle(CalibrationLibraryBundleSnapshot Snapshot, byte[] BundleJson)
+    {
+        public string BundleIdentitySha256 => Snapshot.BundleIdentitySha256;
+    }
+    private sealed record PersistedCommand(string PayloadSha256, CalibrationLibraryStateSnapshot Result);
+}

@@ -173,6 +173,11 @@ internal sealed class SqliteRawCaptureJournal(
         {
             throw new InvalidDataException("Raw ingress SQLite integrity check failed.");
         }
+        if (await ExecuteScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken).ConfigureAwait(false) != 0)
+        {
+            throw new InvalidDataException("Raw ingress SQLite foreign-key validation failed.");
+        }
         var schemaObjectCount = await ExecuteScalarLongAsync(connection, """
             SELECT COUNT(*) FROM sqlite_master
             WHERE name IN (
@@ -1822,13 +1827,13 @@ internal sealed class SqliteRawCaptureJournal(
     private const string CalibrationLibraryBundleColumns =
         "bundle_id,bundle_identity_sha256,source,bundle_json,profile_relative_path,profile_identity_sha256,acquisition_model_identity_sha256,agent_id,rig_id,rig_profile_sha256,sensor_profile_sha256,input_layout_sha256,output_layout_sha256,minimum_gain,maximum_gain,minimum_offset,maximum_offset,minimum_light_exposure_ticks,maximum_light_exposure_ticks,minimum_temperature_c,maximum_temperature_c,effective_from_unix_ms,effective_until_unix_ms,publication_state,retention_hold,failure_reason,created_unix_ms,updated_unix_ms";
     private const string CalibrationLibraryArtifactColumns =
-        "bundle_id,ordinal,artifact_id,reference_kind,role,source_index,manifest_relative_path,payload_relative_path,payload_sha256,ordered_source_artifact_ids_json,master_recipe_json";
+        "bundle_id,ordinal,artifact_id,reference_kind,role,source_index,manifest_relative_path,manifest_sha256,payload_relative_path,payload_sha256,ordered_source_artifact_ids_json,master_recipe_json";
     private const string CalibrationLibraryStateColumns =
         "state_key,active_bundle_id,version,last_selection_reason,last_selection_unix_ms,last_reconciliation_reason,last_reconciliation_unix_ms,updated_unix_ms";
     private const string CalibrationLibraryActivationColumns =
         "activation_id,idempotency_key,from_bundle_id,to_bundle_id,actor,reason,state_version,activated_unix_ms";
     private const string CalibrationLibraryCommandColumns =
-        "idempotency_key,command_kind,payload_sha256,result_bundle_id,result_job_id,result_state_version,created_unix_ms,completed_unix_ms";
+        "idempotency_key,command_kind,payload_sha256,result_bundle_id,result_job_id,result_state_version,result_json,created_unix_ms,completed_unix_ms";
     private const string CalibrationAcquisitionJobColumns =
         "job_id,camera_key,idempotency_key,plan_json,plan_sha256,state,phase,attempt_count,bundle_id,failure_reason,actor,reason,created_unix_ms,updated_unix_ms,completed_unix_ms";
     private const string CalibrationLibraryReconciliationColumns =
@@ -2117,7 +2122,7 @@ internal sealed class SqliteRawCaptureJournal(
             bundle_identity_sha256 TEXT NOT NULL UNIQUE CHECK (length(bundle_identity_sha256) = 64),
             source TEXT NOT NULL CHECK (source IN ('legacy-synthetic-v1', 'virtual-acquisition-v1')),
             bundle_json BLOB NOT NULL CHECK (length(bundle_json) BETWEEN 1 AND 1048576),
-            profile_relative_path TEXT NOT NULL UNIQUE,
+            profile_relative_path TEXT COLLATE NOCASE NOT NULL UNIQUE,
             profile_identity_sha256 TEXT NOT NULL CHECK (length(profile_identity_sha256) = 64),
             acquisition_model_identity_sha256 TEXT NOT NULL CHECK (length(acquisition_model_identity_sha256) = 64),
             agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128),
@@ -2158,17 +2163,19 @@ internal sealed class SqliteRawCaptureJournal(
         CREATE TABLE IF NOT EXISTS calibration_library_artifacts (
             bundle_id TEXT NOT NULL,
             ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-            artifact_id TEXT NOT NULL,
+            artifact_id TEXT NOT NULL UNIQUE,
             reference_kind TEXT NOT NULL CHECK (reference_kind IN ('bias', 'dark', 'flat', 'defect')),
             role TEXT NOT NULL CHECK (role IN ('source', 'master')),
             source_index INTEGER CHECK (source_index IS NULL OR source_index BETWEEN 0 AND 2),
-            manifest_relative_path TEXT NOT NULL UNIQUE,
-            payload_relative_path TEXT NOT NULL UNIQUE,
+            manifest_relative_path TEXT COLLATE NOCASE NOT NULL UNIQUE,
+            manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+            payload_relative_path TEXT COLLATE NOCASE NOT NULL UNIQUE,
             payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
             ordered_source_artifact_ids_json BLOB NOT NULL,
             master_recipe_json BLOB,
             PRIMARY KEY (bundle_id, ordinal),
-            UNIQUE (bundle_id, artifact_id),
+            CHECK ((role = 'source' AND source_index IS NOT NULL AND master_recipe_json IS NULL) OR
+                   (role = 'master' AND source_index IS NULL)),
             FOREIGN KEY (bundle_id) REFERENCES calibration_library_bundles(bundle_id) ON DELETE CASCADE
         ) STRICT;
         CREATE INDEX IF NOT EXISTS ix_calibration_library_artifacts_role
@@ -2208,6 +2215,7 @@ internal sealed class SqliteRawCaptureJournal(
             result_bundle_id TEXT,
             result_job_id TEXT,
             result_state_version INTEGER CHECK (result_state_version IS NULL OR result_state_version >= 0),
+            result_json BLOB NOT NULL CHECK (length(result_json) BETWEEN 1 AND 1048576),
             created_unix_ms INTEGER NOT NULL,
             completed_unix_ms INTEGER,
             FOREIGN KEY (result_bundle_id) REFERENCES calibration_library_bundles(bundle_id),

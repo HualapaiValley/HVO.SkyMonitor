@@ -64,6 +64,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<ICaptureLaneStore>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<SqliteCaptureScheduleStore>();
+        services.AddSingleton<SqliteCalibrationLibraryStore>();
+        services.AddSingleton<CalibrationLibraryReconciler>();
         services.AddSingleton<SqliteTransientCandidateJournal>();
         services.AddSingleton<ITransientCandidateJournal>(provider =>
             provider.GetRequiredService<SqliteTransientCandidateJournal>());
@@ -134,7 +136,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IProcessingRetentionHolds>(provider =>
             new CompositeProcessingRetentionHolds(
                 provider.GetRequiredService<CaptureProcessingPersistence>(),
-                provider.GetRequiredService<CameraAgentClearReferenceLoader>()));
+                provider.GetRequiredService<CameraAgentClearReferenceLoader>(),
+                provider.GetRequiredService<SqliteCalibrationLibraryStore>()));
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         services.AddSingleton<CameraAgentRecipeExecutionAdapter>();
         services.AddSingleton<ArtifactOutboxState>();
