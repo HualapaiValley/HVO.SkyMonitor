@@ -18,10 +18,15 @@ public sealed record CalibrationMasterResult(
     int SourceCount,
     string AlgorithmVersion);
 
+public sealed record NormalizedCalibrationFrame(
+    FrameLayoutDescriptor Layout,
+    ReadOnlyMemory<byte> PixelData);
+
 /// <summary>Builds deterministic normalized Linear16 calibration masters from native 16-bit containers.</summary>
 public static class CalibrationMasterBuilder
 {
     public const int RequiredSourceCount = 3;
+    public const string NormalizationAlgorithmVersion = "calibration-normalize-linear16-v1";
 
     public static CalibrationMasterResult BuildMedian(
         IReadOnlyList<CalibrationSourceFrame> sources,
@@ -32,6 +37,35 @@ public static class CalibrationMasterBuilder
         IReadOnlyList<CalibrationSourceFrame> sources,
         CancellationToken cancellationToken = default)
         => Build(sources, defectMask: true, cancellationToken);
+
+    public static NormalizedCalibrationFrame Normalize(
+        CalibrationSourceFrame source,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        cancellationToken.ThrowIfCancellationRequested();
+        ValidateSource(source, nameof(source));
+        var layout = source.Layout;
+        var output = new byte[checked(layout.Width * layout.Height * 2)];
+        for (var y = 0; y < layout.Height; y++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            for (var x = 0; x < layout.Width; x++)
+            {
+                var value = Normalize(Read(source, x, y), layout);
+                var offset = checked((y * layout.Width + x) * 2);
+                output[offset] = (byte)value;
+                output[offset + 1] = (byte)(value >> 8);
+            }
+        }
+        return new NormalizedCalibrationFrame(CreateOutputLayout(layout), output);
+    }
+
+    public static FrameLayoutDescriptor CreateNormalizedLayout(FrameLayoutDescriptor layout)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        return CreateOutputLayout(layout);
+    }
 
     private static CalibrationMasterResult Build(
         IReadOnlyList<CalibrationSourceFrame> sources,
@@ -129,6 +163,11 @@ public static class CalibrationMasterBuilder
 
     private static uint DecodeLevelCode(ushort stored, FrameLayoutDescriptor layout)
     {
+        if (layout.SampleDepthBits == layout.ContainerDepthBits &&
+            layout.StoredCodeTransform is null && layout.LevelCodeSpace is null)
+        {
+            return stored;
+        }
         if (layout.LevelCodeSpace == FrameLevelCodeSpace.StoredContainer)
         {
             _ = DecodeNativeSample(stored, layout);
@@ -143,6 +182,10 @@ public static class CalibrationMasterBuilder
 
     private static uint DecodeNativeSample(ushort stored, FrameLayoutDescriptor layout)
     {
+        if (layout.SampleDepthBits == layout.ContainerDepthBits && layout.StoredCodeTransform is null)
+        {
+            return stored;
+        }
         var nativeMaximum = ResolveNativeCodeMaximum(layout);
         var shift = layout.ContainerDepthBits - layout.SampleDepthBits;
         return layout.StoredCodeTransform switch

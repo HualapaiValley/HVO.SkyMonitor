@@ -59,6 +59,24 @@ public sealed class CalibrationMasterBuilderTests
     }
 
     [TestMethod]
+    public void Normalize_UsesTheSameNativeCodeTransformAndRemovesRowPadding()
+    {
+        var layout = CreateNative12Layout();
+        var sourceBytes = Bytes([64, 2064, 4095, 1000], strideBytes: 10);
+        var sourceBefore = sourceBytes.ToArray();
+        var source = new CalibrationSourceFrame(layout, sourceBytes);
+
+        var result = CalibrationMasterBuilder.Normalize(source);
+
+        Assert.AreEqual(8, result.Layout.StrideBytes);
+        Assert.AreEqual(8, result.PixelData.Length);
+        CollectionAssert.AreEqual(
+            new ushort[] { 0, Normalize(2064), ushort.MaxValue, Normalize(1000) },
+            Values(result.PixelData.Span));
+        CollectionAssert.AreEqual(sourceBefore, sourceBytes);
+    }
+
+    [TestMethod]
     public void Build_RejectsWrongCountLayoutMismatchAndCodesAboveNativeRange()
     {
         var layout = CreateNative12Layout();
