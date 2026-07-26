@@ -2,8 +2,10 @@ using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
@@ -110,6 +112,85 @@ public sealed class SqliteCalibrationLibraryStoreTests
             Assert.AreEqual(2L, restored.Version);
             Assert.AreEqual(fixture.Bundle.BundleId, restored.ActiveBundle?.Bundle.BundleId);
             Assert.AreEqual(CalibrationLibraryReasonCodes.IncompatibleConditions, restored.LastSelectionReason);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task SelectAsync_VirtualAcquisitionRequiresExactCalibrationModelProfile()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fixture = await CreateVirtualFixtureAsync(root).ConfigureAwait(false);
+            using var store = fixture.Store;
+            _ = await store.ActivateAsync(
+                fixture.Bundle.BundleId, "activate-virtual", 0, "operator", null,
+                CancellationToken.None).ConfigureAwait(false);
+
+            var selected = await store.SelectAsync(fixture.Light, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(selected.IsSelected, selected.ReasonCode);
+            Assert.AreEqual("virtual-calibration-source-model", fixture.Light.Profiles.Calibration.Name);
+            Assert.AreEqual(
+                VirtualCalibrationSourceModelV1.CurrentSchemaVersion,
+                fixture.Light.Profiles.Calibration.Version);
+            Assert.AreEqual(
+                fixture.Bundle.AcquisitionModelIdentitySha256,
+                fixture.Light.Profiles.Calibration.Sha256);
+
+            var incompatibleProfiles = new[]
+            {
+                fixture.Light.Profiles.Calibration with { Sha256 = new string('F', 64) },
+                fixture.Light.Profiles.Calibration with { Sha256 = string.Empty },
+                fixture.Light.Profiles.Calibration with { Name = "virtual-calibration-source" },
+                fixture.Light.Profiles.Calibration with { Version = "virtual-calibration-source-model-v2" }
+            };
+            foreach (var calibrationProfile in incompatibleProfiles)
+            {
+                var incompatible = fixture.Light with
+                {
+                    Profiles = fixture.Light.Profiles with { Calibration = calibrationProfile }
+                };
+
+                var rejected = await store.SelectAsync(incompatible, CancellationToken.None).ConfigureAwait(false);
+
+                Assert.IsFalse(rejected.IsSelected);
+                Assert.AreEqual(CalibrationLibraryReasonCodes.IncompatibleIdentity, rejected.ReasonCode);
+            }
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task SelectAsync_LegacyBundleRetainsCalibrationProfileSelectionBehavior()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var store = fixture.Store;
+            _ = await store.AdoptPublishedBundleAsync(fixture.Bundle, CancellationToken.None).ConfigureAwait(false);
+            _ = await store.ActivateAsync(
+                fixture.Bundle.BundleId, "activate-legacy", 0, "operator", null,
+                CancellationToken.None).ConfigureAwait(false);
+            var light = fixture.Light with
+            {
+                Profiles = fixture.Light.Profiles with
+                {
+                    Calibration = new ProfileIdentityDescriptor("legacy-profile", "legacy-v2", string.Empty)
+                }
+            };
+
+            var selected = await store.SelectAsync(light, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(selected.IsSelected, selected.ReasonCode);
         }
         finally
         {
@@ -542,6 +623,100 @@ public sealed class SqliteCalibrationLibraryStoreTests
         Assert.IsTrue(CalibrationLibraryContract.Validate(bundle).IsValid);
         return new Fixture(new SqliteCalibrationLibraryStore(
             new InitializedIngress(), options, timeProvider ?? TimeProvider.System), bundle, light);
+    }
+
+    private static async Task<Fixture> CreateVirtualFixtureAsync(string root)
+    {
+        Directory.CreateDirectory(root);
+        var options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = root,
+            RawIngressSqliteBusyTimeoutSeconds = 1
+        });
+        await new SqliteRawCaptureJournal(
+            Path.Combine(root, "journal", "raw-ingress.db"), 1)
+            .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        using var telemetry = new CaptureControlTelemetry();
+        using var admission = new CaptureAdmissionCoordinator(
+            new InitializedIngress(), options, TimeProvider.System, telemetry);
+        await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var store = new SqliteCalibrationLibraryStore(
+            new InitializedIngress(), options, TimeProvider.System);
+        _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var accessor = new CameraAgentConfigurationAccessor();
+        accessor.SetConfiguration(CreateVirtualConfiguration());
+        using var coordinator = new VirtualCalibrationAcquisitionCoordinator(
+            store,
+            new CalibrationArtifactPublisher(options, NullCalibrationPublicationFaultInjector.Instance),
+            admission,
+            accessor,
+            TimeProvider.System);
+        var effectiveFrom = DateTimeOffset.UtcNow.AddDays(-1);
+        var job = await coordinator.AcquireAsync(
+            new VirtualCalibrationAcquisitionRequestV1(
+                VirtualCalibrationAcquisitionRequestV1.CurrentSchemaVersion,
+                "virtual-selection-fixture",
+                82,
+                1,
+                -10,
+                TimeSpan.FromMilliseconds(1),
+                TimeSpan.FromSeconds(2),
+                TimeSpan.FromMilliseconds(100),
+                TimeSpan.FromMilliseconds(3),
+                TimeSpan.FromMilliseconds(32),
+                effectiveFrom,
+                effectiveFrom.AddYears(1),
+                new VirtualCalibrationSourceModelV1 { Seed = 208 },
+                "operator",
+                "selection fixture"),
+            CancellationToken.None).ConfigureAwait(false);
+        var bundle = (await store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false)).Single().Bundle;
+        var source = bundle.Artifacts.First(static artifact =>
+            artifact.Role == CalibrationLibraryArtifactRoles.Source);
+        var manifestPath = Path.Combine(
+            root,
+            source.ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        var parsed = CaptureContractJson.ParseManifest(
+            await File.ReadAllBytesAsync(manifestPath).ConfigureAwait(false));
+        Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
+        var started = effectiveFrom.AddHours(1);
+        var ended = started.Add(job.Plan.ApplicableLightExposure);
+        var sourceDescriptor = parsed.Document!.Manifest!.Descriptor;
+        var light = sourceDescriptor with
+        {
+            Timing = new CaptureTimingDescriptor(started, started, ended, ended, ended),
+            Controls = sourceDescriptor.Controls with
+            {
+                RequestedExposure = job.Plan.ApplicableLightExposure,
+                EffectiveExposure = job.Plan.ApplicableLightExposure
+            }
+        };
+        return new Fixture(store, bundle, light);
+    }
+
+    private static CameraModuleConfig CreateVirtualConfiguration()
+    {
+        var sensor = new SensorProfile(
+            "VirtualCalibrationTest", 2, 2, 2, SensorColorMode.Mono, CameraPixelFormat.Mono16,
+            SensorResponseMode.Monochrome, 16, SampleByteOrder.LittleEndian, "virtual-sensor-v1");
+        var readout = new SensorReadoutProfile(
+            new SensorCrop(0, 0, 2, 2), 1, 1, FrameBinningAlgorithm.IdentityV1,
+            CameraPixelFormat.Mono16, 16, 16, FrameSamplePacking.ByteAligned,
+            FrameStoredCodeTransform.RightAlignedV1, FrameLevelCodeSpace.NativeSample,
+            0, ushort.MaxValue, 4, SampleByteOrder.LittleEndian,
+            ColorFilterArrayPattern.None, null, null);
+        return new CameraModuleConfig(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            new CameraModuleDescriptor("VirtualSky"),
+            new CameraRigConfig(
+                sensor,
+                new OpticsProfile("EquidistantFisheye", 2.5, 170, 0),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(
+                    TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(32), TimeSpan.FromMilliseconds(32), 82, 82),
+                ProfileVersion: "virtual-rig-v1",
+                Readout: readout),
+            AgentId: "virtual-calibration-agent");
     }
 
     private static SqliteCalibrationLibraryStore CreateStore(string root)

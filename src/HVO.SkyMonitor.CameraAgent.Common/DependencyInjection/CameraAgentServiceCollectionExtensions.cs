@@ -56,6 +56,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureLaneTelemetry>();
         services.AddSingleton<IRawIngressFaultInjector, NullRawIngressFaultInjector>();
         services.AddSingleton<ICaptureLaneFaultInjector, NullCaptureLaneFaultInjector>();
+        services.AddSingleton<CalibrationTelemetry>();
         services.AddSingleton<ITransientCandidateFaultInjector>(NullTransientCandidateFaultInjector.Instance);
         services.AddSingleton<ITransientRuntimeFaultInjector>(NullTransientRuntimeFaultInjector.Instance);
         services.AddSingleton<CaptureLanePolicy>();
@@ -176,6 +177,7 @@ public static class CameraAgentServiceCollectionExtensions
             "WeatherCloudOverlay", typeof(WeatherCloudOverlayCaptureProcessingStep),
             typeof(WeatherCloudOverlayProcessingStepOptions), 90, AutoInclude: false));
         services.AddHostedService<CameraAgentConfigurationInitializer>();
+        services.AddHostedService<CalibrationLibraryValidationService>();
         services.AddHostedService<VirtualCalibrationAcquisitionRecoveryService>();
         services.AddHostedService(provider => provider.GetRequiredService<CaptureDistributionService>());
         services.AddHostedService<CameraCaptureService>();

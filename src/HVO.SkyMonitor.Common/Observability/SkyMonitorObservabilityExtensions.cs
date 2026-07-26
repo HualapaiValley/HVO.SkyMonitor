@@ -70,6 +70,12 @@ public static class SkyMonitorObservabilityExtensions
         "Availability", "PendingCount", "PendingBytes", "LeasedCount", "RetryCount", "QuarantineCount",
         "TerminalCount", "OverflowCount", "OldestAgeSeconds"
     };
+    private static readonly HashSet<string> CalibrationLibraryHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Required", "Active", "ActiveState", "StateVersion", "PendingAcquisitionState",
+        "LastSelectionReason", "LastSelectionUtc", "BundleCount", "QuarantineCount",
+        "LastActivationResult", "LastActivationUtc", "LastReconciliationResult", "LastReconciliationUtc"
+    };
 
     /// <summary>
     /// Configures the shared HVO telemetry stack and OTLP export.
@@ -101,6 +107,7 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.DeploymentLocation");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Transients");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Calibration");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureControl");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
@@ -113,6 +120,7 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.DeploymentLocation");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Transients");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Calibration");
             options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
         });
 
@@ -136,6 +144,7 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.LogicHost.DeploymentLocation")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Transients")
+                    .AddMeter("HVO.SkyMonitor.CameraAgent.Calibration")
                     .AddOtlpExporter());
         }
 
@@ -212,6 +221,7 @@ public static class SkyMonitorObservabilityExtensions
             "environmental-observations" => EnvironmentalObservationHealthDataKeys,
             "environmental-delivery" => EnvironmentalDeliveryHealthDataKeys,
             "deployment-location" => DeploymentLocationHealthDataKeys,
+            "calibration-library" => CalibrationLibraryHealthDataKeys,
             _ => null
         };
         return allowedKeys is null

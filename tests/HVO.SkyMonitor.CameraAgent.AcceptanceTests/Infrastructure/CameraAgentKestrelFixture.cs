@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.DataProtection;
@@ -48,10 +49,16 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
 
     internal string Root => _root;
 
+    internal IServiceProvider Services => _factory.Services;
+
     internal static async Task<CameraAgentKestrelFixture> CreateAsync(
-        Action<IServiceCollection>? configureServices = null)
+        Action<IServiceCollection>? configureServices = null,
+        bool useCalibrationLibrary = false)
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-browser-{Guid.NewGuid():N}");
+        var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
+            ? "/dev/shm"
+            : Path.GetTempPath();
+        var root = Path.Combine(temporaryRoot, $"hvo-cameraagent-browser-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var catalog = CatalogFixtureInstallation.Create(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"),
@@ -59,10 +66,45 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         var configPath = Path.Combine(root, "cameraagent.browser.json");
         var template = await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.browser.json")).ConfigureAwait(false);
-        await File.WriteAllTextAsync(
-            configPath,
-            template.Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(root), StringComparison.Ordinal))
-            .ConfigureAwait(false);
+        var configured = template.Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(root), StringComparison.Ordinal);
+        if (useCalibrationLibrary)
+        {
+            var document = JsonNode.Parse(configured)?.AsObject()
+                ?? throw new InvalidDataException("The browser calibration fixture configuration is invalid.");
+            document["module"] = JsonNode.Parse("""
+                {
+                  "type": "VirtualSky",
+                  "options": { "seed": 208, "maximumResults": 10 }
+                }
+                """);
+            var sensor = document["rig"]!["sensor"]!.AsObject();
+            sensor["name"] = "BrowserFixtureMono16";
+            sensor["pixelFormat"] = "Mono16";
+            sensor["strideBytes"] = 320;
+            sensor["sensorRecipeVersion"] = "browser-fixture-mono16-v1";
+            document["rig"]!["pipeline"]!["captureInterval"] = "00:00:10";
+            document["rig"]!["readout"] = JsonNode.Parse("""
+                {
+                  "roi": { "x": 0, "y": 0, "width": 160, "height": 120 },
+                  "binX": 1,
+                  "binY": 1,
+                  "binningAlgorithm": "IdentityV1",
+                  "pixelFormat": "Mono16",
+                  "sampleDepthBits": 16,
+                  "containerDepthBits": 16,
+                  "packing": "ByteAligned",
+                  "storedCodeTransform": "RightAlignedV1",
+                  "levelCodeSpace": "NativeSample",
+                  "blackLevel": 0,
+                  "whiteLevel": 65535,
+                  "strideBytes": 320,
+                  "byteOrder": "LittleEndian",
+                  "cfaPattern": "None"
+                }
+                """);
+            configured = document.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        }
+        await File.WriteAllTextAsync(configPath, configured).ConfigureAwait(false);
 
         var overrides = new Dictionary<string, string?>
         {

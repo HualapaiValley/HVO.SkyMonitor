@@ -76,7 +76,8 @@
   // See docs/security/secrets.md for comprehensive secret management
   "containerEnv": {
     "ASPNETCORE_ENVIRONMENT": "Development",
-    "DOTNET_ENVIRONMENT": "Development"
+    "DOTNET_ENVIRONMENT": "Development",
+    "PLAYWRIGHT_BROWSERS_PATH": "/home/vscode/.cache/ms-playwright"
   },
   "remoteEnv": {
     // Forward GitHub token from host so gh CLI works without re-auth
@@ -173,6 +174,11 @@
       "type": "bind",
       "source": "${localWorkspaceFolder}/.devcontainer/state/opencode-data",
       "target": "/home/vscode/.local/share/opencode"
+    },
+    {
+      "type": "volume",
+      "source": "hvo-skymonitor-playwright",
+      "target": "/home/vscode/.cache/ms-playwright"
     }
   ],
   "postCreateCommand": "bash .devcontainer/post-create.sh",

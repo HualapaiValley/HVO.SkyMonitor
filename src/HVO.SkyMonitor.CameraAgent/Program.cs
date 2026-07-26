@@ -172,10 +172,12 @@ public class Program
                 metrics.AddMeter(TransientWorkerTelemetry.MeterName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
                 metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
+                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
             })
             .WithTracing(tracing => tracing
                 .AddSource(TransientWorkerTelemetry.ActivitySourceName)
-                .AddSource(DeploymentLocationTelemetry.ActivitySourceName));
+                .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
+                .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
@@ -208,6 +210,7 @@ public class Program
         builder.Services.AddCameraAgentOutboxOperations();
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
+        builder.Services.AddScoped<ICameraAgentCalibrationUiService, CameraAgentCalibrationUiService>();
 
         builder.Services.AddOptions<CapturePreviewOptions>()
             .Bind(builder.Configuration.GetSection("CapturePreview"))
@@ -228,6 +231,7 @@ public class Program
         healthChecks.AddCheck<EnvironmentalObservationDeliveryHealthCheck>("environmental-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureAdmissionHealthCheck>("capture-admission", tags: ["dependency"]);
+        healthChecks.AddCheck<CalibrationLibraryHealthCheck>("calibration-library", tags: ["dependency"]);
         builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
         builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
 

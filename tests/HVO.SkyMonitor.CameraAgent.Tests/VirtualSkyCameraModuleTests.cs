@@ -489,6 +489,121 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
+    public async Task VirtualCalibrationCorruptsCleanNativeTwinWithExactControlsMetadataAndReplay()
+    {
+        const string expectedModelSha256 = "116694B6E95ACD7FB5BC204A48AAD52FEC1E0BA1AA43D3470D69B1106DABCCB8";
+        var model = new VirtualCalibrationSourceModelV1 { Seed = 208 };
+        var calibration = new VirtualCalibrationLightOptions
+        {
+            SourceModel = model,
+            BiasExposure = TimeSpan.FromMilliseconds(3),
+            DarkExposure = TimeSpan.FromSeconds(7),
+            FlatExposure = TimeSpan.FromMilliseconds(1500),
+            DefectExposure = TimeSpan.FromMilliseconds(4),
+            Offset = 8,
+            TemperatureC = -12.5
+        };
+        var cleanConfig = CreateVirtualCalibrationConfig(null);
+        var corruptedConfig = CreateVirtualCalibrationConfig(calibration);
+        var cleanModule = CreateModule(FixtureUtc);
+        var corruptedModule = CreateModule(FixtureUtc);
+        var replayModule = CreateModule(FixtureUtc);
+        await cleanModule.InitializeAsync(cleanConfig, CancellationToken.None).ConfigureAwait(false);
+        await corruptedModule.InitializeAsync(corruptedConfig, CancellationToken.None).ConfigureAwait(false);
+        await replayModule.InitializeAsync(corruptedConfig, CancellationToken.None).ConfigureAwait(false);
+        var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(3), 120, null, null);
+        var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint);
+
+        var clean = (await cleanModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var corrupted = (await corruptedModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var replay = (await replayModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        Assert.IsNotNull(clean.Layout);
+        var expected = VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+            new CalibrationSourceFrame(clean.Layout, clean.PixelData),
+            new VirtualCalibrationLightParameters(
+                calibration.BiasExposure,
+                calibration.DarkExposure,
+                calibration.FlatExposure,
+                calibration.DefectExposure,
+                setpoint.Exposure,
+                setpoint.Gain,
+                calibration.Offset,
+                calibration.TemperatureC),
+            model);
+
+        Assert.AreEqual(expectedModelSha256, VirtualCalibrationSourceGenerator.ComputeModelIdentitySha256(model));
+        CollectionAssert.AreNotEqual(clean.PixelData.ToArray(), corrupted.PixelData.ToArray());
+        CollectionAssert.AreEqual(expected.PixelData.ToArray(), corrupted.PixelData.ToArray());
+        CollectionAssert.AreEqual(corrupted.PixelData.ToArray(), replay.PixelData.ToArray());
+        Assert.AreEqual("virtual-calibration-source-model-v1", corrupted.Metadata.Extra!["virtualCalibrationSchema"]);
+        Assert.AreEqual(expectedModelSha256, corrupted.Metadata.Extra["virtualCalibrationModelSha256"]);
+        Assert.AreEqual("virtual-calibration-light-corruption-v1", corrupted.Metadata.Extra["virtualCalibrationAlgorithm"]);
+        StringAssert.EndsWith(
+            corrupted.Metadata.Extra["renderAlgorithm"],
+            "+virtual-calibration-light-corruption-v1",
+            StringComparison.Ordinal);
+        Assert.AreEqual(setpoint.Exposure, corrupted.Metadata.Exposure);
+        Assert.AreEqual(setpoint.Gain, corrupted.Metadata.Gain);
+        Assert.AreEqual(calibration.Offset, corrupted.Metadata.Offset);
+        Assert.AreEqual(calibration.TemperatureC, corrupted.Metadata.TemperatureC);
+        Assert.AreEqual(32, corrupted.Width);
+        Assert.AreEqual(16, corrupted.Height);
+        Assert.AreEqual(32 * 16 * 2, corrupted.PixelData.Length);
+        Assert.AreEqual(12, corrupted.Layout!.SampleDepthBits);
+        Assert.AreEqual(16, corrupted.Layout.ContainerDepthBits);
+        Assert.AreEqual(FrameByteOrder.LittleEndian, corrupted.Layout.ByteOrder);
+        Assert.AreEqual(FrameSamplePacking.ByteAligned, corrupted.Layout.Packing);
+        Assert.AreEqual(FrameStoredCodeTransform.RightAlignedV1, corrupted.Layout.StoredCodeTransform);
+        Assert.AreEqual(FrameLevelCodeSpace.NativeSample, corrupted.Layout.LevelCodeSpace);
+        Assert.AreEqual(64d, corrupted.Layout.BlackLevel);
+        Assert.AreEqual(4095d, corrupted.Layout.WhiteLevel);
+        Assert.IsTrue(MaximumSample(corrupted.PixelData.Span) <= 4095);
+    }
+
+    [TestMethod]
+    public async Task VirtualCalibrationRejectsSyntheticCalibrationAndMissingOrUnsupportedReadout()
+    {
+        var calibration = new VirtualCalibrationLightOptions();
+        var valid = CreateVirtualCalibrationConfig(calibration);
+        var simultaneousOptions = new VirtualSkyCameraModuleOptions
+        {
+            SyntheticCalibration = new SyntheticCalibrationModelV1(),
+            VirtualCalibration = calibration
+        };
+        var simultaneous = valid with
+        {
+            Module = new CameraModuleDescriptor(
+                "VirtualSky",
+                JsonSerializer.SerializeToElement(simultaneousOptions))
+        };
+        var missingReadout = valid with { Rig = valid.Rig with { Readout = null } };
+        var unsupportedReadout = valid with
+        {
+            Rig = valid.Rig with
+            {
+                Readout = valid.Rig.Readout! with
+                {
+                    PixelFormat = CameraPixelFormat.Mono8,
+                    SampleDepthBits = 8,
+                    ContainerDepthBits = 8,
+                    StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+                    LevelCodeSpace = FrameLevelCodeSpace.StoredContainer,
+                    BlackLevel = 0,
+                    WhiteLevel = byte.MaxValue,
+                    StrideBytes = 32
+                }
+            }
+        };
+
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() =>
+            CreateModule(FixtureUtc).InitializeAsync(simultaneous, CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<ArgumentException>(() =>
+            CreateModule(FixtureUtc).InitializeAsync(missingReadout, CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<ArgumentException>(() =>
+            CreateModule(FixtureUtc).InitializeAsync(unsupportedReadout, CancellationToken.None)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task FullAsi174McTelescopeProfileBuildsRgbCompatibleGraph()
     {
         var config = await LoadProfileAsync("virtual-asi174mc-telescope.full.json").ConfigureAwait(false);
@@ -594,6 +709,9 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(
             Convert.ToHexString(SHA256.HashData(first.Frame.PixelData.Span)),
             Convert.ToHexString(SHA256.HashData(second.Frame.PixelData.Span)));
+        Assert.IsFalse(first.Frame.Metadata.Extra!.ContainsKey("virtualCalibrationSchema"));
+        Assert.IsFalse(first.Frame.Metadata.Extra.ContainsKey("virtualCalibrationModelSha256"));
+        Assert.IsFalse(first.Frame.Metadata.Extra.ContainsKey("virtualCalibrationAlgorithm"));
         var checksum = Convert.ToHexString(SHA256.HashData(first.Frame.PixelData.Span));
         TestContext.WriteLine($"Reduced SHA-256: {checksum}");
         Assert.AreEqual("5B77FD453893CC419FF5FFDA0D392329B5DD6557666B1B3D4B91AAD981FEB43F", checksum);
@@ -1675,6 +1793,40 @@ public sealed class VirtualSkyCameraModuleTests
                 CalibrationVersion: "virtual-fisheye-180-equidistant-v1"),
              new RigOrientation(90, 0, 0),
               new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)));
+
+    private static CameraModuleConfig CreateVirtualCalibrationConfig(VirtualCalibrationLightOptions? calibration)
+    {
+        const int width = 32;
+        const int height = 16;
+        var config = CreateConfig(CameraPixelFormat.Mono16, width, height);
+        var options = new VirtualSkyCameraModuleOptions
+        {
+            Seed = 2025,
+            MaximumResults = 10,
+            VirtualCalibration = calibration
+        };
+        return config with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(options)),
+            Rig = config.Rig with
+            {
+                Readout = new SensorReadoutProfile(
+                    new SensorCrop(0, 0, width, height),
+                    1,
+                    1,
+                    FrameBinningAlgorithm.IdentityV1,
+                    CameraPixelFormat.Mono16,
+                    12,
+                    16,
+                    FrameSamplePacking.ByteAligned,
+                    FrameStoredCodeTransform.RightAlignedV1,
+                    FrameLevelCodeSpace.NativeSample,
+                    64,
+                    4095,
+                    width * 2)
+            }
+        };
+    }
 
     private static ushort MaximumSample(
         ReadOnlySpan<byte> pixels,

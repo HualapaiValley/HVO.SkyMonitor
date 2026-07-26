@@ -30,6 +30,8 @@ public sealed class VirtualSkyCameraModule(
     private VirtualCloudField? _cloudField;
     private VirtualTransientScenario? _transientScenario;
     private ResolvedSensorReadout? _resolvedReadout;
+    private readonly object _virtualCalibrationCacheLock = new();
+    private PreparedVirtualCalibration? _preparedVirtualCalibration;
     private long _captureSequence;
 
     public string Id { get; } = Guid.NewGuid().ToString("N");
@@ -41,6 +43,10 @@ public sealed class VirtualSkyCameraModule(
     {
         ArgumentNullException.ThrowIfNull(config);
         cancellationToken.ThrowIfCancellationRequested();
+        lock (_virtualCalibrationCacheLock)
+        {
+            _preparedVirtualCalibration = null;
+        }
         if (config.ModuleOptions is { } options)
         {
             _options = JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(options.GetRawText(), SerializerOptions)
@@ -52,6 +58,7 @@ public sealed class VirtualSkyCameraModule(
         _resolvedReadout = config.Rig.Readout is null
             ? null
             : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout);
+        ValidateVirtualCalibration(_options.VirtualCalibration, _resolvedReadout);
         _config = config;
         var outputWidth = _resolvedReadout?.Layout.Width ?? config.Rig.Sensor.WidthPixels;
         var outputHeight = _resolvedReadout?.Layout.Height ?? config.Rig.Sensor.HeightPixels;
@@ -230,6 +237,26 @@ public sealed class VirtualSkyCameraModule(
                 Statistics = affected.Statistics
             };
         }
+        PreparedVirtualCalibration? preparedVirtualCalibration = null;
+        if (_options.VirtualCalibration is { } virtualCalibration)
+        {
+            preparedVirtualCalibration = GetOrCreatePreparedVirtualCalibration(
+                _resolvedReadout!.Layout,
+                virtualCalibration,
+                setpoint.Gain,
+                cancellationToken);
+            var affected = VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+                new CalibrationSourceFrame(_resolvedReadout!.Layout, render.Pixels),
+                setpoint.Exposure,
+                preparedVirtualCalibration,
+                cancellationToken);
+            render = render with
+            {
+                Pixels = affected.PixelData,
+                AlgorithmVersion = $"{render.AlgorithmVersion}+{affected.AlgorithmVersion}",
+                Statistics = affected.Statistics
+            };
+        }
         sceneStore.Put(sceneId, scene);
         var cloudProvenance = CreateCloudProvenance(_options.CloudScenario, request.RequestedStartUtc, setpoint.Exposure);
         var transientProvenance = CreateTransientProvenance(
@@ -295,6 +322,13 @@ public sealed class VirtualSkyCameraModule(
                 SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(calibration);
             extra["blackLevelAdu"] = calibration.BiasPedestalAdu.ToString(CultureInfo.InvariantCulture);
             extra["whiteLevelAdu"] = ushort.MaxValue.ToString(CultureInfo.InvariantCulture);
+        }
+        if (_options.VirtualCalibration is { } virtualCalibrationMetadata &&
+            preparedVirtualCalibration is { } appliedVirtualCalibration)
+        {
+            extra["virtualCalibrationSchema"] = virtualCalibrationMetadata.SourceModel.SchemaVersion;
+            extra["virtualCalibrationModelSha256"] = appliedVirtualCalibration.ModelIdentitySha256;
+            extra["virtualCalibrationAlgorithm"] = VirtualCalibrationSourceGenerator.LightCorruptionAlgorithmVersion;
         }
         if (sensor.SimulationResponse is { } configuredResponse)
         {
@@ -390,9 +424,10 @@ public sealed class VirtualSkyCameraModule(
             new FrameMetadata(
                 setpoint.Exposure,
                 setpoint.Gain,
-                _options.SyntheticCalibration?.TemperatureC ?? double.NaN,
+                _options.VirtualCalibration?.TemperatureC ?? _options.SyntheticCalibration?.TemperatureC ?? double.NaN,
                 "VirtualSky",
                 extra,
+                Offset: _options.VirtualCalibration?.Offset,
                 Scene: provenance),
             layout.StrideBytes)
         {
@@ -408,7 +443,14 @@ public sealed class VirtualSkyCameraModule(
         };
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public ValueTask DisposeAsync()
+    {
+        lock (_virtualCalibrationCacheLock)
+        {
+            _preparedVirtualCalibration = null;
+        }
+        return ValueTask.CompletedTask;
+    }
 
     private static (VirtualSkyCameraModuleOptions Options, ResolvedSensorReadout? Readout) ValidateConfiguration(
         CameraModuleConfig config)
@@ -423,6 +465,7 @@ public sealed class VirtualSkyCameraModule(
         var readout = config.Rig.Readout is null
             ? null
             : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout);
+        ValidateVirtualCalibration(options.VirtualCalibration, readout);
         var outputWidth = readout?.Layout.Width ?? config.Rig.Sensor.WidthPixels;
         var outputHeight = readout?.Layout.Height ?? config.Rig.Sensor.HeightPixels;
         options.SyntheticCalibration?.Validate(outputWidth, outputHeight);
@@ -443,6 +486,74 @@ public sealed class VirtualSkyCameraModule(
             throw new ArgumentException("The configured physical sensor model must match the raw pixel format.", nameof(config));
         }
         return (options, readout);
+    }
+
+    private static void ValidateVirtualCalibration(
+        VirtualCalibrationLightOptions? calibration,
+        ResolvedSensorReadout? readout)
+    {
+        if (calibration is null)
+        {
+            return;
+        }
+        calibration.Validate();
+        if (readout is null)
+        {
+            throw new ArgumentException(
+                "Virtual calibration light corruption requires an explicit native readout.",
+                nameof(readout));
+        }
+        _ = VirtualCalibrationSourceGenerator.Generate(
+            VirtualCalibrationSourceKind.Bias,
+            0,
+            readout.Layout,
+            calibration.BiasExposure,
+            0,
+            calibration.Offset,
+            calibration.TemperatureC,
+            calibration.SourceModel);
+    }
+
+    private PreparedVirtualCalibration GetOrCreatePreparedVirtualCalibration(
+        FrameLayoutDescriptor layout,
+        VirtualCalibrationLightOptions calibration,
+        double gain,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var modelIdentitySha256 =
+            VirtualCalibrationSourceGenerator.ComputeModelIdentitySha256(calibration.SourceModel);
+        lock (_virtualCalibrationCacheLock)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_preparedVirtualCalibration is { } prepared &&
+                prepared.Layout == layout &&
+                prepared.BiasExposure == calibration.BiasExposure &&
+                prepared.DarkExposure == calibration.DarkExposure &&
+                prepared.FlatExposure == calibration.FlatExposure &&
+                prepared.DefectExposure == calibration.DefectExposure &&
+                prepared.Gain == gain &&
+                prepared.Offset == calibration.Offset &&
+                prepared.TemperatureC == calibration.TemperatureC &&
+                string.Equals(prepared.ModelIdentitySha256, modelIdentitySha256, StringComparison.Ordinal))
+            {
+                return prepared;
+            }
+
+            prepared = VirtualCalibrationSourceGenerator.Prepare(
+                layout,
+                calibration.BiasExposure,
+                calibration.DarkExposure,
+                calibration.FlatExposure,
+                calibration.DefectExposure,
+                gain,
+                calibration.Offset,
+                calibration.TemperatureC,
+                calibration.SourceModel,
+                cancellationToken);
+            _preparedVirtualCalibration = prepared;
+            return prepared;
+        }
     }
 
     private Mono16SceneRenderOptions CreateMonoOptions(
@@ -954,6 +1065,8 @@ public sealed class VirtualSkyCameraModuleOptions
     public VirtualTransientScenarioDefinition? TransientScenario { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SyntheticCalibrationModelV1? SyntheticCalibration { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VirtualCalibrationLightOptions? VirtualCalibration { get; init; }
     public string CatalogName { get; init; } = "HYG";
     public string CatalogVersion { get; init; } = "4.2-test-fixture";
     public Uri CatalogSourceUrl { get; init; } = new("https://astronexus.com/projects/hyg");
@@ -976,6 +1089,7 @@ public sealed class VirtualSkyCameraModuleOptions
             (Asi174Sensor.Enabled ? 1 : 0) + (Asi178Sensor.Enabled ? 1 : 0) +
             (Asi676Enabled ? 1 : 0) > 1 ||
             ConstellationIds is null || ConstellationIds.Any(string.IsNullOrWhiteSpace) ||
+            SyntheticCalibration is not null && VirtualCalibration is not null ||
             SolarSystemBodies is null || SolarSystemBodies.Any(name =>
                 string.IsNullOrWhiteSpace(name) || !Enum.TryParse<SolarSystemBody>(name, true, out var body) || !Enum.IsDefined(body)))
         {
@@ -1024,6 +1138,39 @@ public sealed class VirtualSkyCameraModuleOptions
                 BortleClass, MagnitudeZeroElectronsPerSecond,
                 projection.FocalLengthXPixels, projection.FocalLengthYPixels)
             : ResolveBackgroundElectronsPerSecond());
+}
+
+public sealed record VirtualCalibrationLightOptions
+{
+    public VirtualCalibrationSourceModelV1 SourceModel { get; init; } = new();
+    public TimeSpan BiasExposure { get; init; } = TimeSpan.FromMilliseconds(1);
+    public TimeSpan DarkExposure { get; init; } = TimeSpan.FromSeconds(10);
+    public TimeSpan FlatExposure { get; init; } = TimeSpan.FromSeconds(2);
+    public TimeSpan DefectExposure { get; init; } = TimeSpan.FromMilliseconds(1);
+    public double Offset { get; init; } = 1;
+    public double TemperatureC { get; init; } = -10;
+
+    internal void Validate()
+    {
+        SourceModel?.Validate();
+        if (SourceModel is null || BiasExposure <= TimeSpan.Zero || DarkExposure <= TimeSpan.Zero ||
+            FlatExposure <= TimeSpan.Zero || DefectExposure <= TimeSpan.Zero ||
+            !double.IsFinite(Offset) || !double.IsFinite(TemperatureC))
+        {
+            throw new ArgumentOutOfRangeException(nameof(VirtualCalibrationLightOptions));
+        }
+    }
+
+    internal VirtualCalibrationLightParameters CreateParameters(TimeSpan lightExposure, double gain)
+        => new(
+            BiasExposure,
+            DarkExposure,
+            FlatExposure,
+            DefectExposure,
+            lightExposure,
+            gain,
+            Offset,
+            TemperatureC);
 }
 
 /// <summary>Configures the documented ASI174MM 12-bit electron-domain response.</summary>

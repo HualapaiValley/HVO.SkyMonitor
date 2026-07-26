@@ -21,6 +21,8 @@ The install option downloads the Chromium revision pinned by
 runner performs a warning-as-error Release build and then runs all Manual tests
 in the acceptance assembly. The browser test becomes inconclusive with an
 explicit install command when the pinned executable is absent.
+The development container installs that pinned revision during post-create and
+retains it in the `hvo-skymonitor-playwright` volume across rebuilds.
 
 The acceptance fixture starts the production CameraAgent host on an ephemeral
 Kestrel TCP port. Identity, Data Protection keys, raw ingress, processing,

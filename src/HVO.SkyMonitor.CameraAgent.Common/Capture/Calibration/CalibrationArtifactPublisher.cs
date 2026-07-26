@@ -13,7 +13,9 @@ public enum CalibrationPublicationFaultPoint
     AfterManifestPublished,
     BeforeProfileWrite,
     AfterProfilePublished,
-    DirectorySynced
+    DirectorySynced,
+    AfterSqlitePublication,
+    AfterActivationCommitted
 }
 
 public interface ICalibrationPublicationFaultInjector
@@ -56,6 +58,9 @@ public sealed class CalibrationArtifactPublisher(
 {
     private readonly string _root = Path.GetFullPath(options.Value.RawIngressRoot);
     private readonly ICalibrationPublicationFaultInjector _faultInjector = faultInjector;
+
+    internal void InjectFault(CalibrationPublicationFaultPoint point, string relativePath)
+        => _faultInjector.Inject(point, relativePath);
 
     public async Task PublishPairAsync(
         string payloadRelativePath,

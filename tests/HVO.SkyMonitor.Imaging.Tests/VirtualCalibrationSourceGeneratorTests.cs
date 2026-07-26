@@ -9,6 +9,15 @@ public sealed class VirtualCalibrationSourceGeneratorTests
 {
     private static readonly TimeSpan Exposure = TimeSpan.FromSeconds(2);
     private static readonly VirtualCalibrationSourceModelV1 Model = new() { Seed = 208 };
+    private static readonly VirtualCalibrationLightParameters LightParameters = new(
+        TimeSpan.FromMilliseconds(1),
+        TimeSpan.FromSeconds(10),
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromMilliseconds(1),
+        Exposure,
+        120,
+        8,
+        -10);
 
     [TestMethod]
     public void Generate_ReplaysExactBytesPreservesInputsAndPadding()
@@ -230,6 +239,236 @@ public sealed class VirtualCalibrationSourceGeneratorTests
         }
     }
 
+    [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
+    public void ApplyToLightWithStatistics_ReplaysWithoutMutationAndPreservesNativeLayout(
+        CameraPixelFormat pixelFormat)
+    {
+        var layout = CreateLayout(pixelFormat);
+        var clean = CreateNativeLight(layout, 1200, 0xA5);
+        var cleanBefore = clean.PixelData.ToArray();
+        var layoutBefore = layout with { };
+        var parameters = LightParameters with { };
+        var parametersBefore = parameters with { };
+        var model = Model with { };
+        var modelBefore = model with { };
+
+        var first = VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(clean, parameters, model);
+        var replay = VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(clean, parameters, model);
+        var changedModel = VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+            clean, parameters, model with { Seed = model.Seed + 1 });
+
+        CollectionAssert.AreEqual(first.PixelData.ToArray(), replay.PixelData.ToArray());
+        Assert.AreEqual(first.Statistics, replay.Statistics);
+        Assert.AreEqual(VirtualCalibrationSourceGenerator.LightCorruptionAlgorithmVersion, first.AlgorithmVersion);
+        Assert.AreEqual(layout.Width * layout.Height, first.Statistics.ActivePixelCount);
+        Assert.AreEqual(0, first.Statistics.ClippedLow);
+        Assert.AreEqual(0, first.Statistics.ClippedHigh);
+        Assert.IsFalse(first.PixelData.Span.SequenceEqual(changedModel.PixelData.Span));
+        Assert.AreEqual(layout.ByteLength, first.PixelData.Length);
+        Assert.IsTrue(ReadActive(new CalibrationSourceFrame(layout, first.PixelData))
+            .All(static value => value <= 4095));
+        AssertPaddingIsZero(new CalibrationSourceFrame(layout, first.PixelData));
+        CollectionAssert.AreEqual(cleanBefore, clean.PixelData.ToArray());
+        Assert.AreSame(layout, clean.Layout);
+        Assert.AreEqual(layoutBefore, layout);
+        Assert.AreEqual(parametersBefore, parameters);
+        Assert.AreEqual(modelBefore, model);
+    }
+
+    [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
+    public void PrepareAndApply_EqualsConveniencePathAndRejectsMismatchedLayout(
+        CameraPixelFormat pixelFormat)
+    {
+        var layout = CreateLayout(pixelFormat);
+        var clean = CreateNativeLight(layout, 1200, 0xA5);
+        var cleanBefore = clean.PixelData.ToArray();
+        var prepared = VirtualCalibrationSourceGenerator.Prepare(
+            layout,
+            LightParameters.BiasExposure,
+            LightParameters.DarkExposure,
+            LightParameters.FlatExposure,
+            LightParameters.DefectExposure,
+            LightParameters.Gain,
+            LightParameters.Offset,
+            LightParameters.TemperatureC,
+            Model);
+
+        var expected = VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+            clean, LightParameters, Model);
+        var first = VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+            clean, LightParameters.LightExposure, prepared);
+        var replay = VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+            clean, LightParameters.LightExposure, prepared);
+
+        CollectionAssert.AreEqual(expected.PixelData.ToArray(), first.PixelData.ToArray());
+        CollectionAssert.AreEqual(first.PixelData.ToArray(), replay.PixelData.ToArray());
+        Assert.AreEqual(expected.Statistics, first.Statistics);
+        Assert.AreEqual(first.Statistics, replay.Statistics);
+        Assert.AreEqual(layout, prepared.Layout);
+        Assert.AreEqual(LightParameters.BiasExposure, prepared.BiasExposure);
+        Assert.AreEqual(LightParameters.DarkExposure, prepared.DarkExposure);
+        Assert.AreEqual(LightParameters.FlatExposure, prepared.FlatExposure);
+        Assert.AreEqual(LightParameters.DefectExposure, prepared.DefectExposure);
+        Assert.AreEqual(LightParameters.Gain, prepared.Gain);
+        Assert.AreEqual(LightParameters.Offset, prepared.Offset);
+        Assert.AreEqual(LightParameters.TemperatureC, prepared.TemperatureC);
+        Assert.AreEqual(
+            VirtualCalibrationSourceGenerator.ComputeModelIdentitySha256(Model),
+            prepared.ModelIdentitySha256);
+        CollectionAssert.AreEqual(cleanBefore, clean.PixelData.ToArray());
+
+        var mismatchedLayout = layout with { BlackLevel = layout.BlackLevel!.Value + 1 };
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+                new CalibrationSourceFrame(mismatchedLayout, clean.PixelData),
+                LightParameters.LightExposure,
+                prepared));
+    }
+
+    [TestMethod]
+    public void ApplyToLightWithStatistics_RejectsInvalidArgumentsAndCancellation()
+    {
+        var layout = CreateLayout(CameraPixelFormat.Mono16);
+        var clean = CreateNativeLight(layout, 1200);
+
+        Assert.ThrowsExactly<ArgumentNullException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(null!, LightParameters, Model));
+        Assert.ThrowsExactly<ArgumentNullException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(clean, null!, Model));
+        Assert.ThrowsExactly<ArgumentNullException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(clean, LightParameters, null!));
+        Assert.ThrowsExactly<ArgumentException>(() => VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+            new CalibrationSourceFrame(layout, new byte[checked((int)layout.ByteLength) - 1]),
+            LightParameters,
+            Model));
+        Assert.ThrowsExactly<ArgumentException>(() => VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+            new CalibrationSourceFrame(layout with { StoredCodeTransform = FrameStoredCodeTransform.LeftShiftedV1 },
+                clean.PixelData),
+            LightParameters,
+            Model));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+                clean, LightParameters with { BiasExposure = TimeSpan.Zero }, Model));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+                clean, LightParameters with { DarkExposure = TimeSpan.Zero }, Model));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+                clean, LightParameters with { FlatExposure = TimeSpan.Zero }, Model));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+                clean, LightParameters with { DefectExposure = TimeSpan.Zero }, Model));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+                clean, LightParameters with { LightExposure = TimeSpan.Zero }, Model));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+                clean, LightParameters with { Gain = double.NaN }, Model));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+                clean, LightParameters, Model with { SchemaVersion = "future-model" }));
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        Assert.ThrowsExactly<OperationCanceledException>(() =>
+            VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+                clean, LightParameters, Model, cancellation.Token));
+    }
+
+    [TestMethod]
+    public void CalculateFlatNormalization_UsesRoundedLinear16MeanWithoutMutationAndRejectsInvalidPayloads()
+    {
+        var flat = PackedBytes([100, 101, 102, 103]);
+        var flatBefore = flat.ToArray();
+
+        Assert.AreEqual(102, CalibrationMasterBuilder.CalculateFlatNormalization(flat));
+        Assert.AreEqual(1, CalibrationMasterBuilder.CalculateFlatNormalization(PackedBytes([0, 0])));
+        Assert.AreEqual(ushort.MaxValue,
+            CalibrationMasterBuilder.CalculateFlatNormalization(PackedBytes([ushort.MaxValue, ushort.MaxValue])));
+        CollectionAssert.AreEqual(flatBefore, flat);
+        Assert.ThrowsExactly<ArgumentException>(() => CalibrationMasterBuilder.CalculateFlatNormalization([]));
+        Assert.ThrowsExactly<ArgumentException>(() => CalibrationMasterBuilder.CalculateFlatNormalization([0]));
+    }
+
+    [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
+    public void ApplyAndIndependentThreeSourceMasters_CorrectionImprovesMaeWithinTwoNativeAdu(
+        CameraPixelFormat pixelFormat)
+    {
+        var layout = CreateLayout(pixelFormat);
+        var cleanNative = CreateNativeLight(layout, 1200);
+        var affected = VirtualCalibrationSourceGenerator.ApplyToLightWithStatistics(
+            cleanNative, LightParameters, Model);
+        var bias = BuildIndependentMaster(VirtualCalibrationSourceKind.Bias, LightParameters.BiasExposure, false);
+        var dark = BuildIndependentMaster(VirtualCalibrationSourceKind.Dark, LightParameters.DarkExposure, false);
+        var flat = BuildIndependentMaster(VirtualCalibrationSourceKind.Flat, LightParameters.FlatExposure, false);
+        var defect = BuildIndependentMaster(VirtualCalibrationSourceKind.Defect, LightParameters.DefectExposure, true);
+        var clean = CalibrationMasterBuilder.Normalize(cleanNative);
+        var corrupted = CalibrationMasterBuilder.Normalize(new CalibrationSourceFrame(layout, affected.PixelData));
+        var flatNormalization = CalibrationMasterBuilder.CalculateFlatNormalization(flat.PixelData.Span);
+
+        var corrected = Linear16ReferenceCalibration.Correct(
+            LinearFrame(corrupted.Layout, corrupted.PixelData),
+            LinearFrame(bias.Layout, bias.PixelData),
+            LinearFrame(dark.Layout, dark.PixelData),
+            LinearFrame(flat.Layout, flat.PixelData),
+            LinearFrame(defect.Layout, defect.PixelData),
+            new(LightParameters.LightExposure, LightParameters.DarkExposure,
+                LightParameters.FlatExposure, flatNormalization));
+
+        var expectedValues = ReadPacked(clean.PixelData.Span);
+        var corruptedValues = ReadPacked(corrupted.PixelData.Span);
+        var correctedValues = ReadPacked(corrected.PixelData.Span);
+        var defectValues = ReadPacked(defect.PixelData.Span);
+        var usableIndices = Enumerable.Range(0, expectedValues.Length)
+            .Where(index => defectValues[index] == 0)
+            .ToArray();
+        var corruptedMae = usableIndices
+            .Average(index => Math.Abs((double)corruptedValues[index] - expectedValues[index]));
+        var correctedMae = usableIndices
+            .Average(index => Math.Abs((double)correctedValues[index] - expectedValues[index]));
+        var maximumNativeResidual = usableIndices.Max(index =>
+            Math.Abs((double)correctedValues[index] - expectedValues[index]) *
+            (layout.WhiteLevel!.Value - layout.BlackLevel!.Value) / ushort.MaxValue);
+
+        Assert.IsLessThan(corruptedMae, correctedMae);
+        Assert.IsLessThanOrEqualTo(2d, maximumNativeResidual);
+        Assert.IsTrue(defectValues.Any(static value => value != 0));
+        Assert.IsTrue(defectValues.All(static value => (value & ~0x000F) == 0));
+        Assert.AreEqual(0x000F, defectValues.Aggregate((ushort)0, static (bits, value) => (ushort)(bits | value)));
+        Assert.AreEqual(defectValues.Count(static value => value != 0), corrected.CorrectedDefectCount);
+        Assert.IsTrue(Enumerable.Range(0, defectValues.Length)
+            .Where(index => defectValues[index] != 0)
+            .All(index => correctedValues[index] != ushort.MaxValue));
+
+        CalibrationMasterResult BuildIndependentMaster(
+            VirtualCalibrationSourceKind kind,
+            TimeSpan exposure,
+            bool defectMask)
+        {
+            var sources = Enumerable.Range(0, CalibrationMasterBuilder.RequiredSourceCount)
+                .Select(index => VirtualCalibrationSourceGenerator.Generate(
+                    kind,
+                    index,
+                    layout,
+                    exposure,
+                    LightParameters.Gain,
+                    LightParameters.Offset,
+                    LightParameters.TemperatureC,
+                    Model))
+                .ToArray();
+            Assert.HasCount(CalibrationMasterBuilder.RequiredSourceCount, sources);
+            return defectMask
+                ? CalibrationMasterBuilder.BuildDefectMask(sources)
+                : CalibrationMasterBuilder.BuildMedian(sources);
+        }
+    }
+
     private static CalibrationSourceFrame Generate(
         VirtualCalibrationSourceKind kind,
         int sourceIndex,
@@ -261,6 +500,29 @@ public sealed class VirtualCalibrationSourceGeneratorTests
         };
     }
 
+    private static CalibrationSourceFrame CreateNativeLight(
+        FrameLayoutDescriptor layout,
+        ushort value,
+        byte padding = 0)
+    {
+        var pixels = new byte[checked((int)layout.ByteLength)];
+        for (var y = 0; y < layout.Height; y++)
+        {
+            for (var x = 0; x < layout.Width; x++)
+            {
+                var offset = y * layout.StrideBytes + x * 2;
+                pixels[offset] = (byte)value;
+                pixels[offset + 1] = (byte)(value >> 8);
+            }
+            pixels.AsSpan(y * layout.StrideBytes + layout.Width * 2,
+                layout.StrideBytes - layout.Width * 2).Fill(padding);
+        }
+        return new CalibrationSourceFrame(layout, pixels);
+    }
+
+    private static Linear16Frame LinearFrame(FrameLayoutDescriptor layout, ReadOnlyMemory<byte> pixels)
+        => new(layout.Width, layout.Height, layout.StrideBytes, layout.PixelFormat, pixels);
+
     private static ushort[] ReadActive(CalibrationSourceFrame source)
     {
         var values = new ushort[source.Layout.Width * source.Layout.Height];
@@ -284,6 +546,18 @@ public sealed class VirtualCalibrationSourceGeneratorTests
             values[index] = (ushort)(pixels[index * 2] | pixels[index * 2 + 1] << 8);
         }
         return values;
+    }
+
+    private static byte[] PackedBytes(IEnumerable<ushort> values)
+    {
+        var source = values.ToArray();
+        var pixels = new byte[source.Length * 2];
+        for (var index = 0; index < source.Length; index++)
+        {
+            pixels[index * 2] = (byte)source[index];
+            pixels[index * 2 + 1] = (byte)(source[index] >> 8);
+        }
+        return pixels;
     }
 
     private static void AssertPaddingIsZero(CalibrationSourceFrame source)

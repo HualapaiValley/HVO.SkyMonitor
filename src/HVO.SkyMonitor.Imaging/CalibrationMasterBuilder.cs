@@ -67,6 +67,24 @@ public static class CalibrationMasterBuilder
         return CreateOutputLayout(layout);
     }
 
+    public static ushort CalculateFlatNormalization(ReadOnlySpan<byte> normalizedFlat)
+    {
+        if (normalizedFlat.IsEmpty || normalizedFlat.Length % 2 != 0)
+        {
+            throw new ArgumentException("A non-empty Linear16 flat payload is required.", nameof(normalizedFlat));
+        }
+
+        ulong sum = 0;
+        for (var index = 0; index < normalizedFlat.Length; index += 2)
+        {
+            sum += (ushort)(normalizedFlat[index] | normalizedFlat[index + 1] << 8);
+        }
+        return checked((ushort)Math.Clamp(
+            (long)((sum + (ulong)(normalizedFlat.Length / 4)) / (ulong)(normalizedFlat.Length / 2)),
+            1,
+            ushort.MaxValue));
+    }
+
     private static CalibrationMasterResult Build(
         IReadOnlyList<CalibrationSourceFrame> sources,
         bool defectMask,

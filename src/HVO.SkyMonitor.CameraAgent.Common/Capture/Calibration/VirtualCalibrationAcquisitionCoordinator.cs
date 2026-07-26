@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
@@ -20,7 +21,8 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
     CaptureAdmissionCoordinator admissionCoordinator,
     ICameraAgentConfigurationAccessor configurationAccessor,
     TimeProvider timeProvider,
-    CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null) : IDisposable
+    CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null,
+    CalibrationTelemetry? telemetry = null) : IDisposable
 {
     private static readonly JsonElement NoneOptions = JsonSerializer.SerializeToElement(new { mode = "none" });
     private readonly SqliteCalibrationLibraryStore _store = store;
@@ -29,6 +31,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly CaptureScheduleRuntimeCoordinator? _scheduleRuntimeCoordinator = scheduleRuntimeCoordinator;
+    private readonly CalibrationTelemetry? _telemetry = telemetry;
     private readonly SemaphoreSlim _executionGate = new(1, 1);
     private readonly object _activeExecutionSync = new();
     private readonly Dictionary<string, int> _cancellationIntents = new(StringComparer.Ordinal);
@@ -138,6 +141,8 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         string jobId,
         CancellationToken cancellationToken)
     {
+        using var activity = CalibrationTelemetry.ActivitySource.StartActivity("calibration.acquire");
+        var started = Stopwatch.GetTimestamp();
         await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         using var executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         bool cancellationPending;
@@ -157,13 +162,41 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                 jobId, CancellationToken.None).ConfigureAwait(false);
             if (current.IsTerminal)
             {
+                activity?.SetTag("calibration.replay", true);
+                activity?.SetStatus(ActivityStatusCode.Ok);
                 return cancellationPending
                     ? await ResolveCancellationAsync(current).ConfigureAwait(false)
                     : current;
             }
-            return cancellationPending
+            var result = cancellationPending
                 ? await ResolveCancellationAsync(current).ConfigureAwait(false)
                 : await ExecuteAsync(current, executionCancellation.Token).ConfigureAwait(false);
+            _telemetry?.RecordAcquisition(result.State, Stopwatch.GetElapsedTime(started));
+            activity?.SetTag("calibration.outcome", result.State);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            _telemetry?.RecordAcquisition("cancelled", Stopwatch.GetElapsedTime(started));
+            activity?.SetTag("calibration.outcome", "cancelled");
+            throw;
+        }
+        catch (CalibrationLibraryAcquisitionException exception)
+        {
+            _telemetry?.RecordAcquisition("failed", Stopwatch.GetElapsedTime(started));
+            _telemetry?.RecordFailure("acquire", exception.ReasonCode);
+            activity?.SetTag("calibration.outcome", "failure");
+            activity?.SetStatus(ActivityStatusCode.Error);
+            throw;
+        }
+        catch (Exception)
+        {
+            _telemetry?.RecordAcquisition("failed", Stopwatch.GetElapsedTime(started));
+            _telemetry?.RecordFailure("acquire", CalibrationLibraryReasonCodes.AcquisitionFailure);
+            activity?.SetTag("calibration.outcome", "failure");
+            activity?.SetStatus(ActivityStatusCode.Error);
+            throw;
         }
         finally
         {
@@ -276,9 +309,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                             }
                         }
 
-                        var result = kind == CalibrationReferenceKinds.Defect
-                            ? CalibrationMasterBuilder.BuildDefectMask(frames, boundaryToken)
-                            : CalibrationMasterBuilder.BuildMedian(frames, boundaryToken);
+                        var result = BuildMaster(kind, frames, boundaryToken);
                         var master = CreateMasterArtifact(job.Plan, kind, result, sourceIds, 13 + kindIndex);
                         await _publisher.PublishPairAsync(
                             PayloadPath(master.ManifestRelativePath), master.Payload,
@@ -287,7 +318,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                         masters.Add(master.LibraryArtifact);
                         if (kind == CalibrationReferenceKinds.Flat)
                         {
-                            flatNormalization = ResolveFlatNormalization(master.Payload);
+                            flatNormalization = CalibrationMasterBuilder.CalculateFlatNormalization(master.Payload.Span);
                         }
                     }
                     if (current.State == CalibrationAcquisitionStates.Acquiring)
@@ -338,6 +369,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
 
             var bundle = CreateBundle(job.Plan, profilePath, profileJson, artifacts);
             _ = await _store.AdoptPublishedBundleAsync(bundle, CancellationToken.None).ConfigureAwait(false);
+            _publisher.InjectFault(CalibrationPublicationFaultPoint.AfterSqlitePublication, profilePath);
             return await _store.CompleteAcquisitionAsync(
                 job.Plan.JobId, bundle.BundleId, CancellationToken.None).ConfigureAwait(false);
         }
@@ -376,6 +408,36 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         }
     }
 
+    private CalibrationMasterResult BuildMaster(
+        string kind,
+        IReadOnlyList<CalibrationSourceFrame> frames,
+        CancellationToken cancellationToken)
+    {
+        using var activity = CalibrationTelemetry.ActivitySource.StartActivity("calibration.master.build");
+        var started = Stopwatch.GetTimestamp();
+        activity?.SetTag("calibration.kind", kind);
+        try
+        {
+            var result = kind == CalibrationReferenceKinds.Defect
+                ? CalibrationMasterBuilder.BuildDefectMask(frames, cancellationToken)
+                : CalibrationMasterBuilder.BuildMedian(frames, cancellationToken);
+            _telemetry?.RecordMasterBuild(kind, "success", Stopwatch.GetElapsedTime(started));
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            _telemetry?.RecordMasterBuild(kind, "failure", Stopwatch.GetElapsedTime(started));
+            _telemetry?.RecordFailure("master-build", CalibrationLibraryReasonCodes.MasterBuildFailure);
+            activity?.SetStatus(ActivityStatusCode.Error);
+            throw;
+        }
+    }
+
     private VirtualCalibrationAcquisitionPlanV1 CreatePlan(
         CameraModuleConfig configuration,
         VirtualCalibrationAcquisitionRequestV1 request,
@@ -389,7 +451,8 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         }
         var input = SensorReadoutResolver.Resolve(configuration.Rig.Sensor, configuration.Rig.Readout).Layout;
         var rigIdentity = CameraRigProfileIdentity.ComputeSha256(configuration.Rig);
-        var sensorIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(configuration.Rig.Sensor);
+        var sensorIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(
+            JsonSerializer.SerializeToElement(configuration.Rig.Sensor));
         var rigId = $"rig-{rigIdentity[..16].ToUpperInvariant()}";
         var jobMaterial = string.Join('\n', requestIdentity, configuration.AgentId, rigId,
             CaptureContractJson.ComputeCanonicalJsonSha256(input));
@@ -591,19 +654,6 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
             new ProfileIdentityDescriptor(
                 "calibration-acquisition", VirtualCalibrationAcquisitionPlanV1.CurrentSchemaVersion,
                 CaptureContractJson.ComputeCanonicalJsonSha256(new { plan.JobId })));
-
-    private static ushort ResolveFlatNormalization(ReadOnlyMemory<byte> payload)
-    {
-        ulong sum = 0;
-        var span = payload.Span;
-        for (var index = 0; index < span.Length; index += 2)
-        {
-            sum += (ushort)(span[index] | span[index + 1] << 8);
-        }
-        var value = checked((ushort)Math.Clamp(
-            (long)((sum + (ulong)(span.Length / 4)) / (ulong)(span.Length / 2)), 1, ushort.MaxValue));
-        return value;
-    }
 
     private static VirtualCalibrationSourceKind ToSourceKind(string kind)
         => kind switch

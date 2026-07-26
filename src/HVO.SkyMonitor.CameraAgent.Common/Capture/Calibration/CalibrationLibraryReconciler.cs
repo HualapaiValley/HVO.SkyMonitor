@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -15,14 +16,17 @@ public sealed record CalibrationLibraryReconciliationSummary(
 
 public sealed class CalibrationLibraryReconciler(
     SqliteCalibrationLibraryStore store,
-    IOptions<CameraAgentHostOptions> options)
+    IOptions<CameraAgentHostOptions> options,
+    CalibrationTelemetry? telemetry = null)
 {
     private readonly SqliteCalibrationLibraryStore _store = store;
     private readonly string _root = Path.GetFullPath(options.Value.RawIngressRoot);
+    private readonly CalibrationTelemetry? _telemetry = telemetry;
 
     public async Task<CalibrationLibraryReconciliationSummary> ReconcileAsync(
         CancellationToken cancellationToken)
     {
+        using var activity = CalibrationTelemetry.ActivitySource.StartActivity("calibration.library.reconcile");
         _ = await _store.InitializeAsync(cancellationToken).ConfigureAwait(false);
         var adopted = 0;
         var quarantined = 0;
@@ -41,6 +45,7 @@ public sealed class CalibrationLibraryReconciler(
             catch (Exception exception) when (IsExpectedReconciliationFailure(exception))
             {
                 failed++;
+                _telemetry?.RecordValidationFailure("reconcile", CalibrationLibraryReasonCodes.Corrupt);
             }
         }
 
@@ -50,7 +55,10 @@ public sealed class CalibrationLibraryReconciler(
             var syntheticRoot = ResolveSafePath("calibration/synthetic");
             if (!Directory.Exists(syntheticRoot))
             {
-                return new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed);
+                return await CompleteRunAsync(
+                    new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed),
+                    activity,
+                    cancellationToken).ConfigureAwait(false);
             }
             directories = Directory.EnumerateDirectories(syntheticRoot)
                 .Order(StringComparer.Ordinal)
@@ -58,7 +66,10 @@ public sealed class CalibrationLibraryReconciler(
         }
         catch (Exception exception) when (IsExpectedReconciliationFailure(exception))
         {
-            return new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed + 1);
+            return await CompleteRunAsync(
+                new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed + 1),
+                activity,
+                cancellationToken).ConfigureAwait(false);
         }
         foreach (var directory in directories)
         {
@@ -86,6 +97,7 @@ public sealed class CalibrationLibraryReconciler(
                     MovePlannedQuarantine(quarantineOperation);
                     await _store.CompleteReconciliationAsync(
                         evidenceKey, quarantineOperation.Reason, cancellationToken).ConfigureAwait(false);
+                    _telemetry?.RecordQuarantine(quarantineOperation.Reason, observedBytes);
                     quarantined++;
                     continue;
                 }
@@ -107,6 +119,7 @@ public sealed class CalibrationLibraryReconciler(
             catch (Exception exception) when (IsExpectedReconciliationFailure(exception))
             {
                 failed++;
+                _telemetry?.RecordValidationFailure("reconcile", CalibrationLibraryReasonCodes.Corrupt);
                 evidenceKey ??= CaptureContractJson.ComputeCanonicalJsonSha256(new
                 {
                     Directory = relativeDirectory,
@@ -131,7 +144,31 @@ public sealed class CalibrationLibraryReconciler(
                 }
             }
         }
-        return new CalibrationLibraryReconciliationSummary(directories.Length, adopted, quarantined, failed);
+        return await CompleteRunAsync(
+            new CalibrationLibraryReconciliationSummary(directories.Length, adopted, quarantined, failed),
+            activity,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<CalibrationLibraryReconciliationSummary> CompleteRunAsync(
+        CalibrationLibraryReconciliationSummary summary,
+        Activity? activity,
+        CancellationToken cancellationToken)
+    {
+        var result = summary.Failed == 0
+            ? "calibration.library.reconciled"
+            : "calibration.library.reconciliation-failed";
+        await _store.RecordReconciliationResultAsync(result, cancellationToken).ConfigureAwait(false);
+        _telemetry?.RecordLibraryOperation(
+            "reconcile",
+            summary.Failed == 0 ? "success" : "failure",
+            summary.Inspected,
+            summary.Adopted,
+            summary.Quarantined,
+            summary.Failed);
+        activity?.SetTag("calibration.outcome", summary.Failed == 0 ? "success" : "failure");
+        activity?.SetStatus(summary.Failed == 0 ? ActivityStatusCode.Ok : ActivityStatusCode.Error);
+        return summary;
     }
 
     private async Task<CalibrationLibraryBundleV1> BuildLegacyBundleAsync(

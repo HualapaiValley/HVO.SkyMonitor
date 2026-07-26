@@ -308,6 +308,7 @@ public sealed class OwnerAuthorizationTests
             (Path: "/operations", Expected: "Capture operations"),
             (Path: "/gallery", Expected: "Capture gallery"),
             (Path: "/schedule", Expected: "Schedule control"),
+            (Path: "/calibration", Expected: "Calibration library"),
             (Path: "/system", Expected: "System snapshot"),
             (Path: "/devices/bootstrap", Expected: "Device Bootstrap")
         })

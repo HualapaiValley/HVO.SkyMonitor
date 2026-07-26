@@ -55,10 +55,83 @@ public sealed record VirtualCalibrationSourceModelV1
         => double.IsFinite(value) && value is >= 0 and <= 1;
 }
 
+public sealed record VirtualCalibrationLightParameters(
+    TimeSpan BiasExposure,
+    TimeSpan DarkExposure,
+    TimeSpan FlatExposure,
+    TimeSpan DefectExposure,
+    TimeSpan LightExposure,
+    double Gain,
+    double Offset,
+    double TemperatureC);
+
+public sealed record VirtualCalibrationLightResult(
+    ReadOnlyMemory<byte> PixelData,
+    RenderStatistics Statistics,
+    string AlgorithmVersion);
+
+/// <summary>Immutable reusable masters for deterministic virtual calibration light corruption.</summary>
+public sealed class PreparedVirtualCalibration
+{
+    private readonly ReadOnlyMemory<byte> _biasPixels;
+    private readonly ReadOnlyMemory<byte> _darkPixels;
+    private readonly ReadOnlyMemory<byte> _flatPixels;
+    private readonly ReadOnlyMemory<byte> _defectPixels;
+
+    internal PreparedVirtualCalibration(
+        FrameLayoutDescriptor layout,
+        TimeSpan biasExposure,
+        TimeSpan darkExposure,
+        TimeSpan flatExposure,
+        TimeSpan defectExposure,
+        double gain,
+        double offset,
+        double temperatureC,
+        string modelIdentitySha256,
+        CalibrationMasterResult bias,
+        CalibrationMasterResult dark,
+        CalibrationMasterResult flat,
+        CalibrationMasterResult defect,
+        ushort flatNormalization)
+    {
+        Layout = layout;
+        BiasExposure = biasExposure;
+        DarkExposure = darkExposure;
+        FlatExposure = flatExposure;
+        DefectExposure = defectExposure;
+        Gain = gain;
+        Offset = offset;
+        TemperatureC = temperatureC;
+        ModelIdentitySha256 = modelIdentitySha256;
+        _biasPixels = bias.PixelData;
+        _darkPixels = dark.PixelData;
+        _flatPixels = flat.PixelData;
+        _defectPixels = defect.PixelData;
+        FlatNormalization = flatNormalization;
+    }
+
+    public FrameLayoutDescriptor Layout { get; }
+    public TimeSpan BiasExposure { get; }
+    public TimeSpan DarkExposure { get; }
+    public TimeSpan FlatExposure { get; }
+    public TimeSpan DefectExposure { get; }
+    public double Gain { get; }
+    public double Offset { get; }
+    public double TemperatureC { get; }
+    public string ModelIdentitySha256 { get; }
+
+    internal ReadOnlySpan<byte> BiasPixels => _biasPixels.Span;
+    internal ReadOnlySpan<byte> DarkPixels => _darkPixels.Span;
+    internal ReadOnlySpan<byte> FlatPixels => _flatPixels.Span;
+    internal ReadOnlySpan<byte> DefectPixels => _defectPixels.Span;
+    internal ushort FlatNormalization { get; }
+}
+
 /// <summary>Generates one deterministic software-only native-code calibration source frame.</summary>
 public static class VirtualCalibrationSourceGenerator
 {
     public const string AlgorithmVersion = "virtual-calibration-source-generator-v1";
+    public const string LightCorruptionAlgorithmVersion = "virtual-calibration-light-corruption-v1";
     public const ushort PersistentDefectBit = 1;
     public const ushort SourceZeroDefectBit = 2;
     public const ushort SourceOneDefectBit = 4;
@@ -122,6 +195,192 @@ public static class VirtualCalibrationSourceGenerator
         }
 
         return new CalibrationSourceFrame(layout, pixels);
+    }
+
+    public static PreparedVirtualCalibration Prepare(
+        FrameLayoutDescriptor layout,
+        TimeSpan biasExposure,
+        TimeSpan darkExposure,
+        TimeSpan flatExposure,
+        TimeSpan defectExposure,
+        double gain,
+        double offset,
+        double temperatureC,
+        VirtualCalibrationSourceModelV1 model,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentNullException.ThrowIfNull(model);
+        cancellationToken.ThrowIfCancellationRequested();
+        Validate(
+            VirtualCalibrationSourceKind.Bias,
+            0,
+            layout,
+            biasExposure,
+            gain,
+            offset,
+            temperatureC,
+            model);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(darkExposure, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(flatExposure, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(defectExposure, TimeSpan.Zero);
+
+        var modelIdentitySha256 = ComputeModelIdentitySha256(model);
+        var bias = BuildMaster(VirtualCalibrationSourceKind.Bias, biasExposure, defectMask: false);
+        var dark = BuildMaster(VirtualCalibrationSourceKind.Dark, darkExposure, defectMask: false);
+        var flat = BuildMaster(VirtualCalibrationSourceKind.Flat, flatExposure, defectMask: false);
+        var defect = BuildMaster(VirtualCalibrationSourceKind.Defect, defectExposure, defectMask: true);
+        var flatNormalization = CalibrationMasterBuilder.CalculateFlatNormalization(flat.PixelData.Span);
+        return new PreparedVirtualCalibration(
+            layout,
+            biasExposure,
+            darkExposure,
+            flatExposure,
+            defectExposure,
+            gain,
+            offset,
+            temperatureC,
+            modelIdentitySha256,
+            bias,
+            dark,
+            flat,
+            defect,
+            flatNormalization);
+
+        CalibrationMasterResult BuildMaster(
+            VirtualCalibrationSourceKind kind,
+            TimeSpan exposure,
+            bool defectMask)
+        {
+            var sources = Enumerable.Range(0, CalibrationMasterBuilder.RequiredSourceCount)
+                .Select(index => Generate(
+                    kind,
+                    index,
+                    layout,
+                    exposure,
+                    gain,
+                    offset,
+                    temperatureC,
+                    model,
+                    cancellationToken))
+                .ToArray();
+            return defectMask
+                ? CalibrationMasterBuilder.BuildDefectMask(sources, cancellationToken)
+                : CalibrationMasterBuilder.BuildMedian(sources, cancellationToken);
+        }
+    }
+
+    public static VirtualCalibrationLightResult ApplyToLightWithStatistics(
+        CalibrationSourceFrame cleanNativeLight,
+        VirtualCalibrationLightParameters parameters,
+        VirtualCalibrationSourceModelV1 model,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(cleanNativeLight);
+        ArgumentNullException.ThrowIfNull(parameters);
+        ArgumentNullException.ThrowIfNull(model);
+        cancellationToken.ThrowIfCancellationRequested();
+        Validate(
+            VirtualCalibrationSourceKind.Bias,
+            0,
+            cleanNativeLight.Layout,
+            parameters.LightExposure,
+            parameters.Gain,
+            parameters.Offset,
+            parameters.TemperatureC,
+            model);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(parameters.BiasExposure, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(parameters.DarkExposure, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(parameters.FlatExposure, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(parameters.DefectExposure, TimeSpan.Zero);
+        if (cleanNativeLight.PixelData.Length != cleanNativeLight.Layout.ByteLength)
+        {
+            throw new ArgumentException("The clean light payload does not match its layout.", nameof(cleanNativeLight));
+        }
+
+        var prepared = Prepare(
+            cleanNativeLight.Layout,
+            parameters.BiasExposure,
+            parameters.DarkExposure,
+            parameters.FlatExposure,
+            parameters.DefectExposure,
+            parameters.Gain,
+            parameters.Offset,
+            parameters.TemperatureC,
+            model,
+            cancellationToken);
+        return ApplyToLightWithStatistics(
+            cleanNativeLight,
+            parameters.LightExposure,
+            prepared,
+            cancellationToken);
+    }
+
+    public static VirtualCalibrationLightResult ApplyToLightWithStatistics(
+        CalibrationSourceFrame cleanNativeLight,
+        TimeSpan lightExposure,
+        PreparedVirtualCalibration preparedCalibration,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(cleanNativeLight);
+        ArgumentNullException.ThrowIfNull(preparedCalibration);
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lightExposure, TimeSpan.Zero);
+        if (cleanNativeLight.Layout != preparedCalibration.Layout)
+        {
+            throw new ArgumentException(
+                "The clean light layout does not match the prepared calibration.",
+                nameof(cleanNativeLight));
+        }
+        if (cleanNativeLight.PixelData.Length != cleanNativeLight.Layout.ByteLength)
+        {
+            throw new ArgumentException("The clean light payload does not match its layout.", nameof(cleanNativeLight));
+        }
+
+        var clean = CalibrationMasterBuilder.Normalize(cleanNativeLight, cancellationToken);
+        var output = new byte[checked((int)cleanNativeLight.Layout.ByteLength)];
+        var statistics = new StatisticsAccumulator();
+        var black = checked((uint)cleanNativeLight.Layout.BlackLevel!.Value);
+        var white = checked((uint)cleanNativeLight.Layout.WhiteLevel!.Value);
+        var codeRange = white - black;
+
+        for (var y = 0; y < cleanNativeLight.Layout.Height; y++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            for (var x = 0; x < cleanNativeLight.Layout.Width; x++)
+            {
+                var packedOffset = checked((y * cleanNativeLight.Layout.Width + x) * 2);
+                var biasValue = ReadPacked(preparedCalibration.BiasPixels, packedOffset);
+                var darkSignal = Math.Max(0L, ReadPacked(preparedCalibration.DarkPixels, packedOffset) - biasValue);
+                var scaledDark = ScaleRounded(
+                    (ulong)darkSignal,
+                    (ulong)lightExposure.Ticks,
+                    (ulong)preparedCalibration.DarkExposure.Ticks);
+                var flatDark = ScaleRounded(
+                    (ulong)darkSignal,
+                    (ulong)preparedCalibration.FlatExposure.Ticks,
+                    (ulong)preparedCalibration.DarkExposure.Ticks);
+                var flatSignal = Math.Max(
+                    1L,
+                    ReadPacked(preparedCalibration.FlatPixels, packedOffset) - biasValue - (long)flatDark);
+                var cleanValue = ReadPacked(clean.PixelData.Span, packedOffset);
+                var lightSignal = DivideRounded(
+                    (ulong)cleanValue * (ulong)flatSignal,
+                    preparedCalibration.FlatNormalization);
+                var normalized = ReadPacked(preparedCalibration.DefectPixels, packedOffset) == 0
+                    ? Math.Min((ulong)ushort.MaxValue, (ulong)biasValue + scaledDark + lightSignal)
+                    : ushort.MaxValue;
+                var native = normalized >= ushort.MaxValue
+                    ? white
+                    : black + DivideRounded(normalized * codeRange, ushort.MaxValue);
+                var stored = statistics.AddAndQuantize(native, checked((ushort)((1u << cleanNativeLight.Layout.SampleDepthBits) - 1u)));
+                var outputOffset = checked(y * cleanNativeLight.Layout.StrideBytes + x * 2);
+                output[outputOffset] = (byte)stored;
+                output[outputOffset + 1] = (byte)(stored >> 8);
+            }
+        }
+
+        return new VirtualCalibrationLightResult(output, statistics.Create(), LightCorruptionAlgorithmVersion);
     }
 
     private static double GenerateLevel(
@@ -262,6 +521,26 @@ public static class VirtualCalibrationSourceGenerator
 
     private static double BoundedSigned(double value)
         => value / (1 + Math.Abs(value));
+
+    private static ushort ReadPacked(ReadOnlySpan<byte> pixels, int offset)
+        => (ushort)(pixels[offset] | pixels[offset + 1] << 8);
+
+    private static ulong ScaleRounded(ulong value, ulong numerator, ulong denominator)
+        => DivideRounded((UInt128)value * numerator, denominator);
+
+    private static ulong DivideRounded(ulong numerator, ulong denominator)
+        => (numerator + denominator / 2) / denominator;
+
+    private static ulong DivideRounded(UInt128 numerator, ulong denominator)
+    {
+        var quotient = numerator / denominator;
+        var remainder = numerator % denominator;
+        if (remainder >= ((UInt128)denominator + 1) / 2)
+        {
+            quotient++;
+        }
+        return quotient > ulong.MaxValue ? ulong.MaxValue : (ulong)quotient;
+    }
 
     private static double SignedUnit(int seed, int salt, int x, int y)
         => Mix(seed, salt, x, y) / (double)uint.MaxValue * 2 - 1;
