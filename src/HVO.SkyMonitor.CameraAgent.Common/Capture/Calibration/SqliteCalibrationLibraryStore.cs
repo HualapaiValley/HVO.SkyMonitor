@@ -600,18 +600,42 @@ public sealed class SqliteCalibrationLibraryStore(
         string actor,
         string? reason,
         CancellationToken cancellationToken)
+        => await ChangeActivationAsync(
+            bundleId, idempotencyKey, expectedVersion, actor, reason, "activate", cancellationToken)
+            .ConfigureAwait(false);
+
+    public async Task<CalibrationLibraryStateSnapshot> RollbackAsync(
+        string bundleId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+        => await ChangeActivationAsync(
+            bundleId, idempotencyKey, expectedVersion, actor, reason, "rollback", cancellationToken)
+            .ConfigureAwait(false);
+
+    private async Task<CalibrationLibraryStateSnapshot> ChangeActivationAsync(
+        string bundleId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        string commandKind,
+        CancellationToken cancellationToken)
     {
         ValidateMutation(bundleId, idempotencyKey, expectedVersion, actor, reason);
         await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         var payloadSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
-            command = "activate",
+            command = commandKind,
             bundleId,
             expectedVersion,
             actor,
             reason
         });
-        var priorReplay = await ReadCommandOutsideTransactionAsync(idempotencyKey, cancellationToken).ConfigureAwait(false);
+        var priorReplay = await ReadCommandOutsideTransactionAsync(
+            idempotencyKey, commandKind, cancellationToken).ConfigureAwait(false);
         if (priorReplay is not null)
         {
             return ValidateReplay(priorReplay, payloadSha256);
@@ -629,7 +653,8 @@ public sealed class SqliteCalibrationLibraryStore(
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
-            var replay = await ReadCommandAsync(connection, transaction, idempotencyKey, cancellationToken)
+            var replay = await ReadCommandAsync(
+                connection, transaction, idempotencyKey, commandKind, cancellationToken)
                 .ConfigureAwait(false);
             if (replay is not null)
             {
@@ -642,6 +667,14 @@ public sealed class SqliteCalibrationLibraryStore(
             {
                 throw new CalibrationLibraryStoreConflictException(
                     "The calibration library state changed after the operator read it.");
+            }
+            if (commandKind == "rollback" &&
+                (string.Equals(current.ActiveBundle?.Bundle.BundleId, bundleId, StringComparison.Ordinal) ||
+                 !await WasPreviouslyActiveAsync(
+                     connection, transaction, bundleId, current.Version, cancellationToken).ConfigureAwait(false)))
+            {
+                throw new CalibrationLibraryStoreConflictException(
+                    "Rollback requires a different previously active calibration bundle.");
             }
             var nextVersion = current.Version + 1;
             var now = Now();
@@ -663,12 +696,13 @@ public sealed class SqliteCalibrationLibraryStore(
                 INSERT INTO calibration_library_commands(
                     idempotency_key, command_kind, payload_sha256, result_bundle_id,
                     result_state_version, result_json, created_unix_ms, completed_unix_ms)
-                VALUES ($key, 'activate', $payload, $bundle, $version, $result, $now, $now);
+                VALUES ($key, $command, $payload, $bundle, $version, $result, $now, $now);
                 """, cancellationToken,
                 ("$bundle", bundleId),
                 ("$version", nextVersion),
                 ("$now", now.ToUnixTimeMilliseconds()),
                 ("$key", idempotencyKey),
+                ("$command", commandKind),
                 ("$from", (object?)current.ActiveBundle?.Bundle.BundleId ?? DBNull.Value),
                 ("$actor", actor),
                 ("$reason", (object?)reason ?? DBNull.Value),
@@ -1731,6 +1765,7 @@ public sealed class SqliteCalibrationLibraryStore(
         SqliteConnection connection,
         SqliteTransaction transaction,
         string idempotencyKey,
+        string expectedCommandKind,
         CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
@@ -1746,8 +1781,12 @@ public sealed class SqliteCalibrationLibraryStore(
         {
             return null;
         }
-        if (!string.Equals(reader.GetString(1), "activate", StringComparison.Ordinal) ||
-            await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ||
+        if (!string.Equals(reader.GetString(1), expectedCommandKind, StringComparison.Ordinal))
+        {
+            throw new CalibrationLibraryStoreConflictException(
+                "The calibration command idempotency key is assigned to a different command kind.");
+        }
+        if (await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ||
             await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ||
             await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ||
             await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false))
@@ -1780,6 +1819,26 @@ public sealed class SqliteCalibrationLibraryStore(
             throw new InvalidDataException("A durable calibration command references a different bundle revision.");
         }
         return new PersistedCommand(payloadSha256, result);
+    }
+
+    private static async Task<bool> WasPreviouslyActiveAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string bundleId,
+        long currentVersion,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT COUNT(*) FROM calibration_library_activations
+            WHERE to_bundle_id = $bundle AND state_version < $version;
+            """;
+        command.Parameters.AddWithValue("$bundle", bundleId);
+        command.Parameters.AddWithValue("$version", currentVersion);
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) > 0;
     }
 
     private async Task<CalibrationAcquisitionJobSnapshot> UpdateAcquisitionJobAsync(
@@ -2147,11 +2206,13 @@ public sealed class SqliteCalibrationLibraryStore(
 
     private async Task<PersistedCommand?> ReadCommandOutsideTransactionAsync(
         string idempotencyKey,
+        string expectedCommandKind,
         CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginRead(connection);
-        var command = await ReadCommandAsync(connection, transaction, idempotencyKey, cancellationToken)
+        var command = await ReadCommandAsync(
+            connection, transaction, idempotencyKey, expectedCommandKind, cancellationToken)
             .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return command;

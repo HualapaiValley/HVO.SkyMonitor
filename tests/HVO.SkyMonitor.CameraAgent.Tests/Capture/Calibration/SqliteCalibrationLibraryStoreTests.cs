@@ -118,6 +118,41 @@ public sealed class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
+    public async Task RollbackAsync_RejectsCurrentBundleAndCrossKindIdempotencyCollision()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var store = fixture.Store;
+            _ = await store.AdoptPublishedBundleAsync(fixture.Bundle, CancellationToken.None).ConfigureAwait(false);
+            _ = await store.ActivateAsync(
+                fixture.Bundle.BundleId, "activate-before-rollback", 0, "operator", null,
+                CancellationToken.None).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<CalibrationLibraryStoreConflictException>(() =>
+                store.RollbackAsync(
+                    fixture.Bundle.BundleId, "rollback-1", 1, "operator", "restore",
+                    CancellationToken.None)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<CalibrationLibraryStoreConflictException>(() =>
+                store.RollbackAsync(
+                    fixture.Bundle.BundleId, "activate-before-rollback", 1, "operator", "restore",
+                    CancellationToken.None)).ConfigureAwait(false);
+            using var connection = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(0L, await ScalarLongAsync(connection, """
+                SELECT COUNT(*) FROM calibration_library_commands WHERE command_kind = 'rollback';
+                """).ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarLongAsync(connection, """
+                SELECT COUNT(*) FROM calibration_library_activations;
+                """).ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task AdoptPublishedBundleAsync_RejectsMissingOrConflictingEvidenceWithoutDurableRow()
     {
         foreach (var conflict in new[] { false, true })

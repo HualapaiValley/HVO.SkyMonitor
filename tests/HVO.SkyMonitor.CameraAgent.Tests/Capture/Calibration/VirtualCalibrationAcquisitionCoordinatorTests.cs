@@ -132,6 +132,47 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
     }
 
     [TestMethod]
+    public async Task ActivationCoordinator_CommitsAtBoundaryAndPreservesPausedState()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var fixture = await Fixture.CreateAsync(root).ConfigureAwait(false);
+            var job = await fixture.Coordinator.AcquireAsync(
+                Request("boundary-activation"), CancellationToken.None).ConfigureAwait(false);
+            _ = await fixture.Admission.PauseAsync(
+                "pause-before-activation", 0, "operator", null, CancellationToken.None).ConfigureAwait(false);
+            var operations = new CalibrationLibraryOperationsCoordinator(fixture.Store, fixture.Admission);
+
+            var firstActivation = await operations.ActivateAsync(
+                job.BundleId!, "activate-at-boundary", 0, "operator", null, CancellationToken.None)
+                .ConfigureAwait(false);
+            var secondJob = await fixture.Coordinator.AcquireAsync(
+                Request("boundary-activation-second"), CancellationToken.None).ConfigureAwait(false);
+            var secondActivation = await operations.ActivateAsync(
+                secondJob.BundleId!, "activate-second-at-boundary", 1, "operator", null, CancellationToken.None)
+                .ConfigureAwait(false);
+            var rolledBack = await operations.RollbackAsync(
+                job.BundleId!, "rollback-at-boundary", 2, "operator", null, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            Assert.AreEqual(1L, firstActivation.Version);
+            Assert.AreEqual(2L, secondActivation.Version);
+            Assert.AreEqual(3L, rolledBack.Version);
+            Assert.AreEqual(job.BundleId, rolledBack.ActiveBundle?.Bundle.BundleId);
+            Assert.AreEqual(CaptureAdmissionState.Paused, fixture.Admission.Snapshot.State);
+            using var connection = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarLongAsync(connection, """
+                SELECT COUNT(*) FROM calibration_library_commands WHERE command_kind = 'rollback';
+                """).ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task ProcessingInputLoader_LoadsOnlyFourSelectedMasters()
     {
         var root = CreateRoot();

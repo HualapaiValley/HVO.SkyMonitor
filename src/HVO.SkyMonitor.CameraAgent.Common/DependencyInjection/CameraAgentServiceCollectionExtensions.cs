@@ -69,6 +69,7 @@ public static class CameraAgentServiceCollectionExtensions
             NullCalibrationPublicationFaultInjector.Instance);
         services.AddSingleton<CalibrationArtifactPublisher>();
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
+        services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
         services.AddSingleton<CalibrationLibraryReconciler>();
         services.AddSingleton<SqliteTransientCandidateJournal>();
         services.AddSingleton<ITransientCandidateJournal>(provider =>
