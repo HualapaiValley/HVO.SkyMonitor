@@ -27,11 +27,9 @@ tmux_option() {
     tmux show-options -v -t "$TMUX_SESSION" "$1" 2>/dev/null || true
 }
 
-session_is_owned() {
+session_identity_matches() {
     [[ "$(tmux_option @hvo-opencode-repo)" == "$REPO_ROOT" ]] \
-        && [[ "$(tmux_option @hvo-opencode-port)" == "$CONTAINER_PORT" ]] \
-        && [[ "$(tmux display-message -p -t "$TMUX_SESSION" '#{pane_dead}' 2>/dev/null || true)" != 1 ]] \
-        && [[ "$(tmux display-message -p -t "$TMUX_SESSION" '#{pane_current_command}' 2>/dev/null || true)" == opencode ]]
+        && [[ "$(tmux_option @hvo-opencode-port)" == "$CONTAINER_PORT" ]]
 }
 
 health_status() {
@@ -56,7 +54,7 @@ if [[ ! "$TMUX_SESSION" =~ ^[A-Za-z0-9_.-]+$ ]]; then
     echo "OPENCODE_TMUX_SESSION contains unsupported characters: '$TMUX_SESSION'." >&2
     exit 1
 fi
-if [[ ! "$CONTAINER_PORT" =~ ^[0-9]+$ ]] || (( CONTAINER_PORT < 1 || CONTAINER_PORT > 65535 )); then
+if [[ ! "$CONTAINER_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$CONTAINER_PORT > 65535 )); then
     echo "OPENCODE_CONTAINER_PORT must be an integer from 1 through 65535." >&2
     exit 1
 fi
@@ -72,17 +70,24 @@ if ! flock -n 9; then
 fi
 
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    if ! session_is_owned; then
+    if ! session_identity_matches; then
         echo "tmux session '$TMUX_SESSION' does not match this workspace's OpenCode process; leaving it unchanged." >&2
         exit 1
     fi
-    if [[ "$(health_status)" == 200 ]]; then
+    if [[ "$(tmux display-message -p -t "$TMUX_SESSION" '#{pane_dead}' 2>/dev/null || true)" == 1 ]]; then
+        tmux kill-session -t "$TMUX_SESSION"
+        echo "Cleared exited OpenCode tmux session '$TMUX_SESSION'."
+    elif [[ "$(tmux display-message -p -t "$TMUX_SESSION" '#{pane_current_command}' 2>/dev/null || true)" != opencode ]]; then
+        echo "tmux session '$TMUX_SESSION' does not contain OpenCode; leaving it unchanged." >&2
+        exit 1
+    elif [[ "$(health_status)" == 200 ]]; then
         echo "OpenCode is already running in internal tmux session '$TMUX_SESSION'."
         exit 0
+    else
+        echo "Managed tmux session '$TMUX_SESSION' exists, but OpenCode is not healthy." >&2
+        echo "Inspect it inside the devcontainer with: tmux attach-session -t $TMUX_SESSION" >&2
+        exit 1
     fi
-    echo "Managed tmux session '$TMUX_SESSION' exists, but OpenCode is not healthy." >&2
-    echo "Inspect it inside the devcontainer with: tmux attach-session -t $TMUX_SESSION" >&2
-    exit 1
 fi
 if [[ "$(health_status)" == 200 ]] || ss -H -ltn "sport = :${CONTAINER_PORT}" | grep -q .; then
     echo "OpenCode port $CONTAINER_PORT is already in use by an unmanaged process; leaving it unchanged." >&2
