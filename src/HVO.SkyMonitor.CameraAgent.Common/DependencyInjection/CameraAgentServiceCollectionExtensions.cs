@@ -106,18 +106,47 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<FleetStatusCollector>();
         services.AddSingleton<IFleetStatusOutbox, SqliteFleetStatusOutbox>();
         services.AddSingleton<EnvironmentalObservationDeliveryWakeup>();
+        services.TryAddSingleton<IEnvironmentalObservationTargetResolver, NullEnvironmentalObservationTargetResolver>();
         services.AddSingleton<EnvironmentalObservationDeliveryState>();
         services.AddSingleton<EnvironmentalObservationDeliveryTelemetry>();
-        services.AddSingleton<IEnvironmentalObservationOutbox>(provider =>
+        services.AddSingleton<EnvironmentalAcquisitionTelemetry>();
+        services.AddSingleton<SqliteEnvironmentalObservationOutbox>(provider =>
         {
             var configured = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<CameraAgentHostOptions>>().Value;
             return new SqliteEnvironmentalObservationOutbox(
                 provider.GetRequiredService<TimeProvider>(),
                 configured.RawIngressSqliteBusyTimeoutSeconds,
                 configured.EnvironmentalDelivery.MaximumPendingCount,
-                configured.EnvironmentalDelivery.MaximumPendingBytes);
+                configured.EnvironmentalDelivery.MaximumPendingBytes,
+                maximumLocalRecords: configured.EnvironmentalAcquisition.MaximumHistoryCount,
+                maximumLocalBytes: configured.EnvironmentalAcquisition.MaximumHistoryBytes,
+                localRetentionDays: configured.EnvironmentalAcquisition.RetentionDays,
+                localRetentionBatchSize: configured.EnvironmentalAcquisition.RetentionBatchSize,
+                acquisitionTelemetry: provider.GetRequiredService<EnvironmentalAcquisitionTelemetry>());
         });
+        services.AddSingleton<IEnvironmentalObservationOutbox>(provider =>
+            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
+        services.AddSingleton<ILocalEnvironmentalObservationStore>(provider =>
+            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
+        services.AddSingleton<ILocalEnvironmentalAssociationStore>(provider =>
+            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
+        services.AddSingleton<IEnvironmentalAcquisitionStateStore>(provider =>
+            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
+        services.AddSingleton<IEnvironmentalOnDemandCommandStore>(provider =>
+            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
+        services.AddSingleton<ILocalEnvironmentalRetentionStore>(provider =>
+            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
         services.AddSingleton<IEnvironmentalObservationPublisher, EnvironmentalObservationPublisher>();
+        services.AddSingleton(new EnvironmentalSourceRegistration(
+            "VirtualEnvironment", typeof(VirtualEnvironmentalSource), typeof(VirtualEnvironmentalSourceOptions)));
+        services.AddSingleton<EnvironmentalSourceFactory>();
+        services.AddSingleton<EnvironmentalAcquisitionCoordinator>();
+        services.AddSingleton<EnvironmentalOnDemandAcquisitionService>();
+        services.AddSingleton<EnvironmentalAssociationService>();
+        services.AddSingleton<CameraAgentCloudEnvironment>();
+        services.AddSingleton<EnvironmentalAssociationCaptureLaneHandler>();
+        services.AddSingleton<EnvironmentalAcquisitionService>();
+        services.AddSingleton<EnvironmentalCaptureTriggerBridge>();
         services.AddSingleton<CaptureControlTelemetry>();
         services.AddSingleton<CaptureAdmissionCoordinator>();
         services.AddSingleton<CaptureScheduleRuntimeCoordinator>();
@@ -156,6 +185,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<StandardCaptureLaneHandler>());
         services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<UploadCaptureLaneHandler>());
         services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<TransientCaptureLaneHandler>());
+        services.AddSingleton<ICaptureLaneHandler>(provider =>
+            provider.GetRequiredService<EnvironmentalAssociationCaptureLaneHandler>());
         services.AddSingleton<CaptureDistributionService>();
         services.AddSingleton<ICaptureDistributor>(provider => provider.GetRequiredService<CaptureDistributionService>());
         services.AddTransient<ArtifactUploadClient>();
@@ -177,6 +208,7 @@ public static class CameraAgentServiceCollectionExtensions
             "WeatherCloudOverlay", typeof(WeatherCloudOverlayCaptureProcessingStep),
             typeof(WeatherCloudOverlayProcessingStepOptions), 90, AutoInclude: false));
         services.AddHostedService<CameraAgentConfigurationInitializer>();
+        services.AddHostedService(provider => provider.GetRequiredService<EnvironmentalAcquisitionService>());
         services.AddHostedService<CalibrationLibraryValidationService>();
         services.AddHostedService<VirtualCalibrationAcquisitionRecoveryService>();
         services.AddHostedService(provider => provider.GetRequiredService<CaptureDistributionService>());

@@ -13,6 +13,12 @@ public interface IEnvironmentalObservationTargetResolver
     ValueTask<EnvironmentalObservationResolvedTarget?> ResolveAsync(CancellationToken cancellationToken);
 }
 
+internal sealed class NullEnvironmentalObservationTargetResolver : IEnvironmentalObservationTargetResolver
+{
+    public ValueTask<EnvironmentalObservationResolvedTarget?> ResolveAsync(CancellationToken cancellationToken)
+        => ValueTask.FromResult<EnvironmentalObservationResolvedTarget?>(null);
+}
+
 public enum EnvironmentalObservationPublishDisposition
 {
     Disabled,
@@ -23,6 +29,106 @@ public enum EnvironmentalObservationPublishDisposition
 public sealed record EnvironmentalObservationPublishResult(
     EnvironmentalObservationPublishDisposition Disposition,
     EnvironmentalObservationV1? Observation);
+
+public enum LocalEnvironmentalObservationCommitDisposition
+{
+    Committed,
+    Duplicate
+}
+
+public sealed record LocalEnvironmentalObservationRecord(
+    long RecordId,
+    EnvironmentalObservationFactV1 Fact,
+    string SourceIdentitySha256,
+    string SourceContentSha256,
+    string ContentSha256,
+    int PayloadBytes,
+    DateTimeOffset RecordedUtc);
+
+public enum EnvironmentalObservationProjectionDisposition
+{
+    NotRequested,
+    Waiting,
+    Staged,
+    Acknowledged
+}
+
+public sealed record LocalEnvironmentalObservationCommitResult(
+    LocalEnvironmentalObservationCommitDisposition Disposition,
+    LocalEnvironmentalObservationRecord Record,
+    EnvironmentalObservationProjectionDisposition ProjectionDisposition,
+    EnvironmentalObservationV1? DeliveryObservation,
+    EnvironmentalObservationEnqueueDisposition? DeliveryDisposition = null);
+
+public sealed record LocalEnvironmentalObservationSnapshot(
+    long StoredCount,
+    long StoredBytes,
+    long OverflowCount,
+    DateTimeOffset? OldestRecordedUtc,
+    DateTimeOffset EvaluatedUtc);
+
+public sealed record LocalEnvironmentalObservationCursor(
+    DateTimeOffset ObservedAtUtc,
+    long RecordId);
+
+public sealed record LocalEnvironmentalObservationPage(
+    IReadOnlyList<LocalEnvironmentalObservationRecord> Items,
+    LocalEnvironmentalObservationCursor? NextCursor);
+
+public interface ILocalEnvironmentalObservationStore
+{
+    ValueTask<LocalEnvironmentalObservationCommitResult> CommitLocalAsync(
+        string root,
+        EnvironmentalObservationFactV1 fact,
+        EnvironmentalObservationResolvedTarget? deliveryTarget,
+        CancellationToken cancellationToken);
+
+    ValueTask<LocalEnvironmentalObservationCommitResult> CommitLocalAsync(
+        string root,
+        EnvironmentalObservationFactV1 fact,
+        CancellationToken cancellationToken)
+        => CommitLocalAsync(root, fact, null, cancellationToken);
+
+    ValueTask<LocalEnvironmentalObservationSnapshot> GetLocalSnapshotAsync(
+        string root,
+        CancellationToken cancellationToken);
+
+    ValueTask<LocalEnvironmentalObservationPage> ReadLocalPageAsync(
+        string root,
+        EnvironmentalObservationKind? kind,
+        int pageSize,
+        LocalEnvironmentalObservationCursor? cursor,
+        CancellationToken cancellationToken);
+
+    ValueTask<LocalEnvironmentalObservationRecord?> ReadLocalDetailAsync(
+        string root,
+        long recordId,
+        CancellationToken cancellationToken);
+
+    ValueTask<IReadOnlyList<LocalEnvironmentalObservationRecord>> ReadLocalCandidatesAsync(
+        string root,
+        EnvironmentalObservationKind kind,
+        string? rigId,
+        DateTimeOffset intervalFromUtc,
+        DateTimeOffset intervalThroughUtc,
+        int maximumResults,
+        CancellationToken cancellationToken);
+}
+
+public sealed record LocalEnvironmentalRetentionResult(
+    int RemovedCount,
+    long RemovedBytes,
+    long RemainingCount,
+    long RemainingBytes);
+
+public interface ILocalEnvironmentalRetentionStore
+{
+    ValueTask<LocalEnvironmentalRetentionResult> RetainLocalAsync(
+        string root,
+        DateTimeOffset recordedBeforeUtc,
+        int maximumResults,
+        CancellationToken cancellationToken);
+}
 
 public interface IEnvironmentalObservationPublisher
 {
@@ -59,7 +165,22 @@ public sealed record EnvironmentalObservationOutboxRecord(
     string SourceIdentitySha256,
     string ContentSha256,
     int PayloadBytes,
-    int AttemptCount);
+    int AttemptCount,
+    long? LocalRecordId = null);
+
+public interface IEnvironmentalObservationProjectionStore
+{
+    ValueTask<int> AssignUnprojectedAsync(
+        string root,
+        EnvironmentalObservationResolvedTarget target,
+        int maximumResults,
+        CancellationToken cancellationToken);
+
+    ValueTask<int> ProjectWaitingAsync(
+        string root,
+        int maximumResults,
+        CancellationToken cancellationToken);
+}
 
 public sealed record EnvironmentalObservationOutboxLease(
     EnvironmentalObservationOutboxRecord Record,
@@ -219,6 +340,21 @@ public sealed class EnvironmentalObservationOutboxCapacityException : InvalidOpe
     }
 
     public EnvironmentalObservationOutboxCapacityException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+}
+
+public sealed class LocalEnvironmentalObservationCapacityException : InvalidOperationException
+{
+    public LocalEnvironmentalObservationCapacityException()
+    {
+    }
+
+    public LocalEnvironmentalObservationCapacityException(string message) : base(message)
+    {
+    }
+
+    public LocalEnvironmentalObservationCapacityException(string message, Exception innerException) : base(message, innerException)
     {
     }
 }

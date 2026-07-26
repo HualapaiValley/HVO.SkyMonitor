@@ -113,6 +113,48 @@ public sealed class CloudAssessmentRecipeTests
     }
 
     [TestMethod]
+    public async Task ContradictoryPrecipitationRemainsExplicitDegradedEvidence()
+    {
+        var current = CreateArtifact(
+            "current",
+            Guid.Parse("21000000-0000-0000-0000-000000000001"),
+            (x, y) => (ushort)(1000 + x * 100 + y * 10));
+        var clear = CreateArtifact(
+            "clear",
+            Guid.Parse("21000000-0000-0000-0000-000000000002"),
+            (x, y) => (ushort)(1000 + x * 100 + y * 10));
+        var environment = new CloudAssessmentEnvironmentV1(
+            CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
+            CaptureSolarRegime.Night,
+            EnvironmentalObservationMatchStatus.Contradictory,
+            null,
+            null,
+            false,
+            new string('E', 64));
+        var environmentElement = CaptureContractJson.SerializeToElement(environment);
+        var environmentPayload = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(environmentElement));
+
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(CreateRequest(
+            current,
+            clear,
+            new ProcessingAuxiliaryInput(
+                "environment",
+                ProcessingAuxiliaryInputKind.CanonicalJson,
+                SchemaVersion: CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
+                IdentitySha256: ProcessingIdentity.ComputePayloadSha256(environmentPayload),
+                Payload: environmentPayload))).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var assessment = CloudAssessmentJson.Parse(outcome.Products.Single().Payload).Assessment!;
+        Assert.AreEqual(EnvironmentalObservationMatchStatus.Contradictory, assessment.Environment.PrecipitationStatus);
+        Assert.AreEqual(CloudAssessmentStatus.Quantified, assessment.Status);
+        Assert.AreEqual(CloudAssessmentQuality.Degraded, assessment.Quality);
+        CollectionAssert.Contains(
+            assessment.ReasonCodes.ToArray(),
+            CloudAssessmentReasonCodes.EnvironmentContradictory);
+    }
+
+    [TestMethod]
     public async Task SameCaptureDerivativeCannotServeAsClearReference()
     {
         var current = CreateArtifact(

@@ -24,7 +24,17 @@ public enum EnvironmentalObservationKind
     RainState,
     SkyBrightness,
     SkyQuality,
-    CloudCover
+    CloudCover,
+    CameraSensorTemperature
+}
+
+public static class EnvironmentalObservationSchemaVersions
+{
+    public const string V1 = "environmental-observation-v1";
+    public const string V2 = "environmental-observation-v2";
+
+    public static bool IsSupported(string? value)
+        => value is V1 or V2;
 }
 
 public enum EnvironmentalObservationUnit
@@ -93,7 +103,7 @@ public sealed record EnvironmentalObservationV1(
     [property: JsonRequired] EnvironmentalObservationValue Value,
     [property: JsonRequired] IReadOnlyList<EnvironmentalObservationReference> Lineage)
 {
-    public const string CurrentSchemaVersion = "environmental-observation-v1";
+    public const string CurrentSchemaVersion = EnvironmentalObservationSchemaVersions.V1;
 }
 
 /// <summary>A producer-authored environmental fact whose central target is assigned by the CameraAgent host.</summary>
@@ -108,17 +118,19 @@ public sealed record EnvironmentalObservationFactV1(
     [property: JsonRequired] DateTimeOffset ValidThroughUtc,
     [property: JsonRequired] DateTimeOffset StaleAfterUtc,
     [property: JsonRequired] EnvironmentalObservationValue Value,
-    [property: JsonRequired] IReadOnlyList<EnvironmentalObservationReference> Lineage)
+    [property: JsonRequired] IReadOnlyList<EnvironmentalObservationReference> Lineage,
+    string? RigId = null)
 {
     public const string CurrentSchemaVersion = EnvironmentalObservationV1.CurrentSchemaVersion;
 
     public EnvironmentalObservationV1 Enrich(EnvironmentalObservationTarget target)
     {
         ArgumentNullException.ThrowIfNull(target);
+        var enrichedTarget = RigId is null ? target : target with { RigId = RigId };
         return new EnvironmentalObservationV1(
             SchemaVersion,
             ObservationId,
-            target,
+            enrichedTarget,
             Source,
             ObservedAtUtc,
             ObservedFromUtc,
@@ -167,7 +179,8 @@ public enum EnvironmentalObservationMatchStatus
 {
     Fresh,
     Stale,
-    Missing
+    Missing,
+    Contradictory
 }
 
 public sealed record EnvironmentalObservationMatch(

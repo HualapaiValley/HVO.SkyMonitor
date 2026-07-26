@@ -24,6 +24,7 @@ public sealed class OperatorRouteTests
             typeof(GalleryDetail),
             typeof(SchedulePage),
             typeof(CalibrationPage),
+            typeof(EnvironmentalPage),
             typeof(SystemStatusPage),
             typeof(DeviceBootstrap),
             typeof(FramesController)
@@ -49,6 +50,7 @@ public sealed class OperatorRouteTests
             {
                 ("Operations", "/"), ("Gallery", "/gallery"), ("Schedule", "/schedule"),
                 ("Calibration", "/calibration"),
+                ("Environment", "/environmental"),
                 ("System", "/system"), ("Device", "/devices/bootstrap")
             },
             links);

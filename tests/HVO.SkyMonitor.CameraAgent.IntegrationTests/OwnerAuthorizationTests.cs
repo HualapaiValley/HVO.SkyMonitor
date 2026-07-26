@@ -166,6 +166,9 @@ public sealed class OwnerAuthorizationTests
         using var anonymousCalibration = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/calibration/status", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousCalibration.StatusCode);
+        using var anonymousEnvironmental = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/environmental/sources", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousEnvironmental.StatusCode);
 
         using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
@@ -178,6 +181,9 @@ public sealed class OwnerAuthorizationTests
         using var nonOwnerCalibration = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/calibration/status", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerCalibration.StatusCode);
+        using var nonOwnerEnvironmental = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/environmental/history", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerEnvironmental.StatusCode);
         using var nonOwnerMutation = await nonOwnerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/capture/resume", UriKind.Relative),
             new { reason = "test" }).ConfigureAwait(false);
@@ -204,6 +210,15 @@ public sealed class OwnerAuthorizationTests
         var calibrationJson = await ownerCalibration.Content.ReadAsStringAsync().ConfigureAwait(false);
         Assert.IsFalse(calibrationJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(calibrationJson.Contains("relativePath", StringComparison.OrdinalIgnoreCase));
+        using var ownerEnvironmental = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/environmental/sources", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerEnvironmental.StatusCode);
+        var environmentalJson = await ownerEnvironmental.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.IsFalse(environmentalJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(environmentalJson.Contains("options", StringComparison.OrdinalIgnoreCase));
+        using var invalidEnvironmentalPage = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/environmental/history?pageSize=101", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, invalidEnvironmentalPage.StatusCode);
         using var invalidCalibrationPage = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/calibration/bundles?pageSize=101", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, invalidCalibrationPage.StatusCode);
@@ -223,8 +238,22 @@ public sealed class OwnerAuthorizationTests
             new Uri("/api/v1/operations/calibration/acquisitions", UriKind.Relative),
             new { }).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, missingCalibrationAntiforgery.StatusCode);
+        using var missingEnvironmentalAntiforgery = await ownerClient.PostAsJsonAsync(
+            new Uri("/api/v1/operations/environmental/sources/missing/acquisitions", UriKind.Relative),
+            new { reason = "test" }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, missingEnvironmentalAntiforgery.StatusCode);
 
         var token = await GetAntiforgeryTokenAsync(ownerClient).ConfigureAwait(false);
+        using (var missingEnvironmentalRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/environmental/sources/missing/acquisitions", UriKind.Relative)))
+        {
+            missingEnvironmentalRequest.Headers.Add("Idempotency-Key", $"environment-{Guid.NewGuid():N}");
+            missingEnvironmentalRequest.Headers.Add("RequestVerificationToken", token);
+            missingEnvironmentalRequest.Content = JsonContent.Create(new { reason = "integration verification" });
+            using var missingEnvironmental = await ownerClient.SendAsync(missingEnvironmentalRequest).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.NotFound, missingEnvironmental.StatusCode);
+        }
         using (var invalidCalibrationIdempotency = new HttpRequestMessage(
             HttpMethod.Post,
             new Uri("/api/v1/operations/calibration/bundles/missing/activate", UriKind.Relative)))
@@ -324,6 +353,7 @@ public sealed class OwnerAuthorizationTests
             (Path: "/gallery", Expected: "Capture gallery"),
             (Path: "/schedule", Expected: "Schedule control"),
             (Path: "/calibration", Expected: "Calibration library"),
+            (Path: "/environmental", Expected: "Environmental acquisition"),
             (Path: "/system", Expected: "System snapshot"),
             (Path: "/devices/bootstrap", Expected: "Device Bootstrap")
         })

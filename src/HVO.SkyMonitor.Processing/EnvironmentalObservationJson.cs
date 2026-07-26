@@ -82,7 +82,9 @@ public static class EnvironmentalObservationJson
         ArgumentNullException.ThrowIfNull(observation);
         return CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
-            Schema = "hvo-environmental-observation-content-v1",
+            Schema = observation.SchemaVersion == EnvironmentalObservationSchemaVersions.V2
+                ? "hvo-environmental-observation-content-v2"
+                : "hvo-environmental-observation-content-v1",
             Observation = Normalize(observation)
         });
     }
@@ -90,33 +92,53 @@ public static class EnvironmentalObservationJson
     public static string ComputeSourceIdentitySha256(EnvironmentalObservationV1 observation)
     {
         ArgumentNullException.ThrowIfNull(observation);
-        return CaptureContractJson.ComputeCanonicalJsonSha256(new
-        {
-            Schema = "hvo-environmental-source-identity-v1",
-            observation.Target.SiteId,
-            observation.Target.AgentId,
-            observation.Target.RigId,
-            observation.Source.Provider,
-            observation.Source.SourceId,
-            observation.Source.Version
-        });
+        return observation.SchemaVersion == EnvironmentalObservationSchemaVersions.V2
+            ? CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                Schema = "hvo-environmental-source-identity-v2",
+                observation.Target.SiteId,
+                observation.Target.AgentId,
+                observation.Target.RigId,
+                observation.Source.Provider,
+                observation.Source.SourceId,
+                observation.Source.Version,
+                observation.Value.Kind
+            })
+            : CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                Schema = "hvo-environmental-source-identity-v1",
+                observation.Target.SiteId,
+                observation.Target.AgentId,
+                observation.Target.RigId,
+                observation.Source.Provider,
+                observation.Source.SourceId,
+                observation.Source.Version
+            });
     }
 
     public static string ComputeSourceContentSha256(EnvironmentalObservationV1 observation)
     {
         ArgumentNullException.ThrowIfNull(observation);
-        return CaptureContractJson.ComputeCanonicalJsonSha256(new
-        {
-            Schema = "hvo-environmental-source-content-v1",
-            Target = observation.Target,
-            Source = Normalize(observation).Source
-        });
+        return observation.SchemaVersion == EnvironmentalObservationSchemaVersions.V2
+            ? CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                Schema = "hvo-environmental-source-content-v2",
+                Target = observation.Target,
+                Source = Normalize(observation).Source,
+                observation.Value.Kind
+            })
+            : CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                Schema = "hvo-environmental-source-content-v1",
+                Target = observation.Target,
+                Source = Normalize(observation).Source
+            });
     }
 
     public static EnvironmentalObservationValidationResult Validate(EnvironmentalObservationV1 observation)
     {
         ArgumentNullException.ThrowIfNull(observation);
-        if (!string.Equals(observation.SchemaVersion, EnvironmentalObservationV1.CurrentSchemaVersion, StringComparison.Ordinal))
+        if (!EnvironmentalObservationSchemaVersions.IsSupported(observation.SchemaVersion))
         {
             return Failure(EnvironmentalObservationReasonCodes.UnsupportedSchema, nameof(observation.SchemaVersion));
         }
@@ -144,10 +166,17 @@ public static class EnvironmentalObservationJson
         {
             return timeValidation;
         }
-        var valueValidation = ValidateValue(observation.Value);
+        var valueValidation = ValidateValue(
+            observation.Value,
+            observation.SchemaVersion == EnvironmentalObservationSchemaVersions.V2);
         if (!valueValidation.IsValid)
         {
             return valueValidation;
+        }
+        if (observation.Value.Kind == EnvironmentalObservationKind.CameraSensorTemperature &&
+            observation.Target.RigId is null)
+        {
+            return Failure(EnvironmentalObservationReasonCodes.InvalidTarget, "target.rigId");
         }
         return Serialize(observation).Length <= MaximumPayloadBytes
             ? EnvironmentalObservationValidationResult.Success
@@ -255,7 +284,9 @@ public static class EnvironmentalObservationJson
         return EnvironmentalObservationValidationResult.Success;
     }
 
-    private static EnvironmentalObservationValidationResult ValidateValue(EnvironmentalObservationValue? value)
+    private static EnvironmentalObservationValidationResult ValidateValue(
+        EnvironmentalObservationValue? value,
+        bool supportsCameraSensorTemperature)
     {
         if (value is null || !Enum.IsDefined(value.Kind) || !Enum.IsDefined(value.Unit))
         {
@@ -282,14 +313,14 @@ public static class EnvironmentalObservationJson
         {
             return Failure(EnvironmentalObservationReasonCodes.InvalidValue, "value.submittedUnit");
         }
-        if (!ValidUnitAndRange(value))
+        if (!ValidUnitAndRange(value, supportsCameraSensorTemperature))
         {
             return Failure(EnvironmentalObservationReasonCodes.InvalidUnit, "value.unit");
         }
         return EnvironmentalObservationValidationResult.Success;
     }
 
-    private static bool ValidUnitAndRange(EnvironmentalObservationValue value)
+    private static bool ValidUnitAndRange(EnvironmentalObservationValue value, bool supportsCameraSensorTemperature)
         => value.Kind switch
         {
             EnvironmentalObservationKind.AirTemperature =>
@@ -310,6 +341,9 @@ public static class EnvironmentalObservationJson
                 value.Unit == EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond,
             EnvironmentalObservationKind.CloudCover =>
                 value.Unit == EnvironmentalObservationUnit.Fraction && value.NumericValue is >= 0 and <= 1,
+            EnvironmentalObservationKind.CameraSensorTemperature =>
+                supportsCameraSensorTemperature && value.Unit == EnvironmentalObservationUnit.DegreesCelsius &&
+                value.NumericValue >= -273.15,
             _ => false
         };
 

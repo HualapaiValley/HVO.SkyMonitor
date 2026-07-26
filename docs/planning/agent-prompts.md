@@ -156,7 +156,7 @@ worker CPU/memory, queue age, claim latency, and processing throughput.
 Recommended primary: GPT-5.6 Sol
 Recommended reviewers: Luna for fixtures/provenance and Terra for image performance
 
-Use for #103, #104, and #105.
+Use for #103, #104, #105, #157, and #209.
 
 ```text
 Keep environmental observations distinct from image-derived cloud assessments.

@@ -31,6 +31,7 @@ public static class CloudAssessmentReasonCodes
     public const string Twilight = "cloud.twilight";
     public const string EnvironmentMissing = "cloud.environment-missing";
     public const string EnvironmentStale = "cloud.environment-stale";
+    public const string EnvironmentContradictory = "cloud.environment-contradictory";
 }
 
 public sealed record CloudAssessmentSourceV1(
@@ -145,7 +146,8 @@ public static class CloudAssessmentJson
         CloudAssessmentReasonCodes.Daylight,
         CloudAssessmentReasonCodes.Twilight,
         CloudAssessmentReasonCodes.EnvironmentMissing,
-        CloudAssessmentReasonCodes.EnvironmentStale
+        CloudAssessmentReasonCodes.EnvironmentStale,
+        CloudAssessmentReasonCodes.EnvironmentContradictory
     };
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
 
@@ -306,7 +308,8 @@ public static class CloudAssessmentJson
         {
             return Invalid(InvalidContract, nameof(assessment.Environment));
         }
-        var precipitationIsInvalid = environment.PrecipitationStatus == EnvironmentalObservationMatchStatus.Missing
+        var precipitationIsInvalid = environment.PrecipitationStatus is
+            EnvironmentalObservationMatchStatus.Missing or EnvironmentalObservationMatchStatus.Contradictory
             ? environment.PrecipitationObservationId is not null ||
               environment.PrecipitationContentSha256 is not null || environment.PrecipitationDetected ||
               environment.InputIdentitySha256 is not null && !Sha256(environment.InputIdentitySha256)
@@ -326,6 +329,7 @@ public static class CloudAssessmentJson
         var hasTwilight = assessment.ReasonCodes.Contains(CloudAssessmentReasonCodes.Twilight);
         var hasEnvironmentMissing = assessment.ReasonCodes.Contains(CloudAssessmentReasonCodes.EnvironmentMissing);
         var hasEnvironmentStale = assessment.ReasonCodes.Contains(CloudAssessmentReasonCodes.EnvironmentStale);
+        var hasEnvironmentContradictory = assessment.ReasonCodes.Contains(CloudAssessmentReasonCodes.EnvironmentContradictory);
         var unusableReason = hasMissingReference || hasIncompatibleReference || hasMissingCalibration ||
             hasInsufficientSupport || hasSaturation || hasPrecipitation || hasDaylight;
         if (hasMissingReference != (assessment.ClearReference is null) ||
@@ -335,12 +339,15 @@ public static class CloudAssessmentJson
             assessment.Status == CloudAssessmentStatus.Contaminated != (hasSaturation || hasPrecipitation) ||
             assessment.Status == CloudAssessmentStatus.InsufficientEvidence && !unusableReason ||
             assessment.Quality == CloudAssessmentQuality.Good &&
-                (assessment.Status != CloudAssessmentStatus.Quantified || hasTwilight || hasEnvironmentMissing || hasEnvironmentStale) ||
+                (assessment.Status != CloudAssessmentStatus.Quantified || hasTwilight || hasEnvironmentMissing ||
+                    hasEnvironmentStale || hasEnvironmentContradictory) ||
             assessment.Quality == CloudAssessmentQuality.Degraded && assessment.Status != CloudAssessmentStatus.Quantified ||
             hasPrecipitation != environment.PrecipitationDetected ||
             hasDaylight != (environment.SolarRegime == CaptureSolarRegime.Day) ||
             hasTwilight != (environment.SolarRegime == CaptureSolarRegime.Twilight) ||
             hasEnvironmentStale != (environment.PrecipitationStatus == EnvironmentalObservationMatchStatus.Stale) ||
+            hasEnvironmentContradictory !=
+                (environment.PrecipitationStatus == EnvironmentalObservationMatchStatus.Contradictory) ||
             hasEnvironmentMissing != (environment.PrecipitationStatus == EnvironmentalObservationMatchStatus.Missing ||
                 environment.SolarRegime is null))
         {

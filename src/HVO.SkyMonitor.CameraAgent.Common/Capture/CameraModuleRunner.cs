@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Exposure;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Logging;
 
@@ -26,6 +27,7 @@ internal sealed class CameraModuleRunner
     private readonly CaptureControlTelemetry? _telemetry;
     private readonly FleetRuntimeState? _fleetRuntimeState;
     private readonly CaptureScheduleRuntimeCoordinator? _scheduleRuntimeCoordinator;
+    private readonly EnvironmentalCaptureTriggerBridge? _environmentalTriggers;
 
     public CameraModuleRunner(
         ICameraModule module,
@@ -35,10 +37,11 @@ internal sealed class CameraModuleRunner
         IPlanetEphemeris? planetEphemeris = null,
         CaptureControlTelemetry? telemetry = null,
         FleetRuntimeState? fleetRuntimeState = null,
-        CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null)
+        CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null,
+        EnvironmentalCaptureTriggerBridge? environmentalTriggers = null)
         : this(
             module, hostContext, timeProvider, logger, null, planetEphemeris, telemetry,
-            fleetRuntimeState, scheduleRuntimeCoordinator)
+            fleetRuntimeState, scheduleRuntimeCoordinator, environmentalTriggers)
     {
     }
 
@@ -51,7 +54,8 @@ internal sealed class CameraModuleRunner
         IPlanetEphemeris? planetEphemeris = null,
         CaptureControlTelemetry? telemetry = null,
         FleetRuntimeState? fleetRuntimeState = null,
-        CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null)
+        CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null,
+        EnvironmentalCaptureTriggerBridge? environmentalTriggers = null)
     {
         _module = module;
         _hostContext = hostContext;
@@ -62,6 +66,7 @@ internal sealed class CameraModuleRunner
         _telemetry = telemetry;
         _fleetRuntimeState = fleetRuntimeState;
         _scheduleRuntimeCoordinator = scheduleRuntimeCoordinator;
+        _environmentalTriggers = environmentalTriggers;
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
@@ -227,6 +232,11 @@ internal sealed class CameraModuleRunner
             cycleActivity?.SetTag("start.reason", effectiveSchedule.StartReason.ToString());
             try
             {
+                if (_environmentalTriggers is not null)
+                {
+                    await _environmentalTriggers.BeforeCaptureAsync(moduleCallStartedUtc, cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 result = await _module.CaptureAsync(request, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

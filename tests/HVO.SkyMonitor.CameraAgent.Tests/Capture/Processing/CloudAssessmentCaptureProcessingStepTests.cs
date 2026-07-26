@@ -6,6 +6,10 @@ using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -138,6 +142,84 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
         }
         finally
         {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task CloudEnvironmentUsesPersistedFreshRainAssociation()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-cloud-environment", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var manifest = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+            var timing = manifest.Descriptor.Timing;
+            using var parametersDocument = JsonDocument.Parse("{}");
+            var parameters = parametersDocument.RootElement.Clone();
+            var fact = new EnvironmentalObservationFactV1(
+                EnvironmentalObservationSchemaVersions.V1,
+                Guid.Parse("93000000-0000-0000-0000-000000000001"),
+                new EnvironmentalObservationSource(
+                    "test-provider",
+                    "rain-state",
+                    "1.0.0",
+                    EnvironmentalObservationSourceKind.Measured,
+                    new EnvironmentalObservationProvenance(
+                        new ProcessingAlgorithmIdentity("normalizer", "1.0.0"),
+                        parameters,
+                        CaptureContractJson.ComputeCanonicalJsonSha256(parameters))),
+                timing.ExposureStartedUtc,
+                null,
+                null,
+                timing.ExposureStartedUtc.AddMinutes(-1),
+                timing.ExposureEndedUtc.AddMinutes(1),
+                timing.ExposureEndedUtc.AddMinutes(1),
+                new EnvironmentalObservationValue(
+                    EnvironmentalObservationKind.RainState,
+                    EnvironmentalObservationUnit.Boolean,
+                    null,
+                    true,
+                    EnvironmentalObservationQuality.Good),
+                []);
+            using var store = new SqliteEnvironmentalObservationOutbox();
+            var committed = await store.CommitLocalAsync(root, fact, CancellationToken.None).ConfigureAwait(false);
+            var configured = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var environment = new CameraAgentCloudEnvironment(
+                new EnvironmentalAssociationService(store, store, configured, TimeProvider.System),
+                store,
+                configured);
+            var frame = CreateFrame(static (_, _) => 1);
+            var request = new CaptureRequest(frame.TimestampUtc, frame.Metadata.Exposure, CaptureMode.Still);
+            var result = new CaptureResult(
+                frame,
+                new CaptureSetpoint(frame.Metadata.Exposure, frame.Metadata.Gain, null, null),
+                TimeSpan.Zero,
+                CaptureMode.Still,
+                false);
+            var submission = new CaptureLoopSubmission(
+                request, result, frame.TimestampUtc, frame.Metadata.Exposure, TimeSpan.Zero);
+            var receipt = new RawCaptureReceipt(
+                RawIngressOutcome.Committed,
+                manifest,
+                new StoredFrameReference("frames/raw.bin", Path.Combine(root, "frames", "raw.bin"), frame.TimestampUtc, FrameArtifactRole.Raw),
+                new string('A', 64));
+            var context = new CaptureProcessingContext(ProcessingConformanceFixture.CameraConfig, submission, receipt);
+
+            var input = await environment.CreateInputAsync(context, CancellationToken.None).ConfigureAwait(false);
+            using var payload = JsonDocument.Parse(input.Payload);
+            var rootElement = payload.RootElement;
+
+            Assert.AreEqual("Fresh", rootElement.GetProperty("precipitationStatus").GetString());
+            Assert.IsTrue(rootElement.GetProperty("precipitationDetected").GetBoolean());
+            Assert.AreEqual(fact.ObservationId, rootElement.GetProperty("precipitationObservationId").GetGuid());
+            Assert.AreEqual(committed.Record.ContentSha256, rootElement.GetProperty("precipitationContentSha256").GetString());
+            Assert.AreEqual(64, rootElement.GetProperty("inputIdentitySha256").GetString()!.Length);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
         }
     }

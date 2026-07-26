@@ -59,6 +59,10 @@
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi676mc.full.json" Link="virtual-asi676mc.full.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\..\docs\validation\cameraagent-environmental-acquisition-runtime-signals.json"
+          Link="Validation\cameraagent-environmental-acquisition-runtime-signals.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\fixtures\astronomy\hualapai-asi174-conformance-v1.json" Link="Fixtures\hualapai-asi174-conformance-v1.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

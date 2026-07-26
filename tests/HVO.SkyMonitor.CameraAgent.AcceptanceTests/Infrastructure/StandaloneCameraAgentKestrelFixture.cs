@@ -27,6 +27,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     private readonly string _root;
     private readonly CatalogFixtureInstallation? _catalog;
     private readonly IReadOnlyDictionary<string, string?> _overrides;
+    private readonly string? _environmentalSettingsPath;
     private readonly TimeProvider? _timeProvider;
     private readonly ControllableLaneFaultInjector? _laneFaultInjector;
     private readonly ConcurrentQueue<OutboundHttpAttempt> _outboundAttempts = new();
@@ -36,12 +37,14 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         string root,
         CatalogFixtureInstallation? catalog,
         IReadOnlyDictionary<string, string?> overrides,
+        string? environmentalSettingsPath = null,
         TimeProvider? timeProvider = null,
         ControllableLaneFaultInjector? laneFaultInjector = null)
     {
         _root = root;
         _catalog = catalog;
         _overrides = overrides;
+        _environmentalSettingsPath = environmentalSettingsPath;
         _timeProvider = timeProvider;
         _laneFaultInjector = laneFaultInjector;
     }
@@ -64,7 +67,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
 
     internal static async Task<StandaloneCameraAgentKestrelFixture> CreateAsync(
         bool useSidingSpringLocation = false,
-        bool useSyntheticCalibration = false)
+        bool useSyntheticCalibration = false,
+        bool useEnvironmentalAcquisition = false)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -76,6 +80,13 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         {
             var configPath = Path.Combine(root, "cameraagent.standalone.json");
             await WriteConfigurationAsync(configPath, root, useSyntheticCalibration).ConfigureAwait(false);
+            var environmentalSettingsPath = useEnvironmentalAcquisition
+                ? Path.Combine(root, "environmental.settings.json")
+                : null;
+            if (environmentalSettingsPath is not null)
+            {
+                await WriteEnvironmentalSettingsAsync(environmentalSettingsPath).ConfigureAwait(false);
+            }
             var overrides = new Dictionary<string, string?>
             {
                 ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
@@ -109,7 +120,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                     "GitHub issue #196 operator-pinned acceptance coordinates; not a physical survey";
                 overrides["CameraAgent:DeploymentLocation:EffectiveFromUtc"] = "2025-01-01T00:00:00Z";
             }
-            var fixture = new StandaloneCameraAgentKestrelFixture(root, catalog, overrides);
+            var fixture = new StandaloneCameraAgentKestrelFixture(
+                root, catalog, overrides, environmentalSettingsPath);
             await fixture.StartHostAsync().ConfigureAwait(false);
             return fixture;
         }
@@ -173,6 +185,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 root,
                 null,
                 overrides,
+                null,
                 timeProvider,
                 laneFaultInjector);
             await fixture.StartHostAsync().ConfigureAwait(false);
@@ -200,6 +213,72 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         .Disarm();
 
     internal Task StartStoppedHostAsync() => StartHostAsync();
+
+    private static async Task WriteEnvironmentalSettingsAsync(string path)
+    {
+        var sources = new (string Kind, double? Numeric, bool? Boolean, string? Rig)[]
+        {
+            ("AirTemperature", 12.5, null, null),
+            ("RelativeHumidity", 45, null, null),
+            ("AtmosphericPressure", 101325, null, null),
+            ("WindSpeed", 4, null, null),
+            ("WindDirection", 180, null, null),
+            ("WindGust", 6, null, null),
+            ("PrecipitationRate", 0, null, null),
+            ("RainState", null, false, null),
+            ("SkyBrightness", 21, null, null),
+            ("SkyQuality", 21, null, null),
+            ("CloudCover", 0.2, null, null),
+            ("CameraSensorTemperature", -10, null, "standalone-rig")
+        };
+        var configuredSources = new JsonArray();
+        for (var index = 0; index < sources.Length; index++)
+        {
+            var source = sources[index];
+            configuredSources.Add(new JsonObject
+            {
+                ["Id"] = $"standalone-{source.Kind}",
+                ["Type"] = "VirtualEnvironment",
+                ["Kind"] = source.Kind,
+                ["Required"] = true,
+                ["Triggers"] = new JsonArray("Periodic", "OnDemand"),
+                ["ScheduleEpochUtc"] = "2026-01-15T08:00:00Z",
+                ["PeriodSeconds"] = 30,
+                ["EveryNthCapture"] = 3,
+                ["ValidForSeconds"] = 120,
+                ["StaleAfterSeconds"] = 45,
+                ["RigId"] = source.Rig,
+                ["Options"] = new JsonObject
+                {
+                    ["Seed"] = 209 + index,
+                    ["EpochUtc"] = "2026-01-15T08:00:00Z",
+                    ["NumericValue"] = source.Numeric,
+                    ["BooleanValue"] = source.Boolean,
+                    ["NoiseAmplitude"] = 0.25,
+                    ["Uncertainty"] = source.Boolean is null ? 0.1 : null,
+                    ["Quality"] = "Good",
+                    ["Mode"] = "Normal",
+                    ["DelayMilliseconds"] = 0,
+                    ["AlgorithmVersion"] = "virtual-environment-source-v1"
+                }
+            });
+        }
+        var settings = new JsonObject
+        {
+            ["CameraAgent"] = new JsonObject
+            {
+                ["EnvironmentalAcquisition"] = new JsonObject
+                {
+                    ["Enabled"] = true,
+                    ["MaximumConcurrency"] = 4,
+                    ["QueueCapacity"] = 256,
+                    ["Sources"] = configuredSources
+                }
+            }
+        };
+        await File.WriteAllTextAsync(
+            path, settings.ToJsonString(new JsonSerializerOptions { WriteIndented = true })).ConfigureAwait(false);
+    }
 
     internal async Task StopHostAsync()
     {
@@ -269,6 +348,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         var factory = new StandaloneWebApplicationFactory(
             _root,
             _overrides,
+            _environmentalSettingsPath,
             _outboundAttempts,
             _timeProvider,
             _laneFaultInjector);
@@ -412,6 +492,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     private sealed class StandaloneWebApplicationFactory(
         string root,
         IReadOnlyDictionary<string, string?> overrides,
+        string? environmentalSettingsPath,
         ConcurrentQueue<OutboundHttpAttempt> outboundAttempts,
         TimeProvider? timeProvider,
         ControllableLaneFaultInjector? laneFaultInjector) : WebApplicationFactory<Program>
@@ -420,7 +501,13 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         {
             builder.UseEnvironment(timeProvider is null ? "Development" : "StandaloneProductionSmoke");
             builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(overrides));
+            {
+                if (environmentalSettingsPath is not null)
+                {
+                    configuration.AddJsonFile(environmentalSettingsPath, optional: false, reloadOnChange: false);
+                }
+                configuration.AddInMemoryCollection(overrides);
+            });
             builder.ConfigureServices(services =>
             {
                 if (timeProvider is not null)

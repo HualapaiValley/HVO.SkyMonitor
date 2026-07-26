@@ -1,0 +1,61 @@
+{
+  "schema": "hvo-runtime-signal-manifest-v1",
+  "issue": 209,
+  "component": "CameraAgent environmental acquisition and local history",
+  "meter": "HVO.SkyMonitor.CameraAgent.EnvironmentalAcquisition",
+  "activitySource": "HVO.SkyMonitor.CameraAgent.EnvironmentalAcquisition",
+  "logs": [
+    { "eventId": 2520, "level": "Information", "fields": ["SourceCount", "RequiredSourceCount", "MaximumConcurrency", "QueueCapacity"] },
+    { "eventId": 2521, "level": "Information", "fields": ["Kind", "Trigger", "Outcome", "Reason"] },
+    { "eventId": 2522, "level": "Error", "fields": ["Kind", "Trigger", "Outcome", "Reason"] },
+    { "eventId": 2523, "level": "Warning", "fields": ["Kind", "Trigger", "Outcome", "Reason"] },
+    { "eventId": 2524, "level": "Information", "fields": ["Kind", "Trigger", "Outcome", "Reason"] },
+    { "eventId": 2525, "level": "Warning", "fields": ["Trigger", "Reason"] },
+    { "eventId": 2526, "level": "Error", "fields": ["Operation"] },
+    { "eventId": 2527, "level": "Information", "fields": ["Operation"] },
+    { "eventId": 2528, "level": "Information", "fields": ["RemovedCount", "RemovedBytes"] },
+    { "eventId": 2529, "level": "Information", "fields": ["Outcome", "Reason", "Replayed"] }
+  ],
+  "metrics": [
+    { "name": "skymonitor.environment.local.triggers", "unit": "{trigger}", "labels": { "trigger": ["Periodic", "BeforeCapture", "AfterCapture", "EveryNthCapture", "RegimeChange", "OnDemand"] } },
+    { "name": "skymonitor.environment.local.acquisitions", "unit": "{attempt}", "labels": { "trigger": ["Periodic", "BeforeCapture", "AfterCapture", "EveryNthCapture", "RegimeChange", "OnDemand"], "observation_kind": ["AirTemperature", "RelativeHumidity", "AtmosphericPressure", "WindSpeed", "WindDirection", "WindGust", "PrecipitationRate", "RainState", "SkyBrightness", "SkyQuality", "CloudCover", "CameraSensorTemperature"], "outcome": ["Produced", "Duplicate", "Missing", "Failed", "TimedOut", "Coalesced"], "reason": ["produced", "duplicate", "trigger-coalesced", "source-timeout", "source-failure", "source-missing", "virtual-source-failure", "invalid-result", "journal-unavailable", "capacity-exhausted", "other"] } },
+    { "name": "skymonitor.environment.local.journal.commits", "unit": "{observation}", "labels": { "schema": ["environmental-observation-v1", "environmental-observation-v2"], "outcome": ["Committed", "Duplicate"] } },
+    { "name": "skymonitor.environment.local.associations", "unit": "{association}", "labels": { "association_status": ["Fresh", "Stale", "Missing", "Contradictory"] } },
+    { "name": "skymonitor.environment.local.acquisition.duration", "unit": "ms", "labels": { "trigger": ["Periodic", "BeforeCapture", "AfterCapture", "EveryNthCapture", "RegimeChange", "OnDemand"], "observation_kind": ["AirTemperature", "RelativeHumidity", "AtmosphericPressure", "WindSpeed", "WindDirection", "WindGust", "PrecipitationRate", "RainState", "SkyBrightness", "SkyQuality", "CloudCover", "CameraSensorTemperature"], "outcome": ["Produced", "Duplicate", "Missing", "Failed", "TimedOut", "Coalesced"], "reason": ["produced", "duplicate", "trigger-coalesced", "source-timeout", "source-failure", "source-missing", "virtual-source-failure", "invalid-result", "journal-unavailable", "capacity-exhausted", "other"] } },
+    { "name": "skymonitor.environment.local.journal.commit.duration", "unit": "ms", "labels": { "schema": ["environmental-observation-v1", "environmental-observation-v2"], "outcome": ["Committed", "Duplicate"] } },
+    { "name": "skymonitor.environment.local.payload.size", "unit": "By", "labels": { "schema": ["environmental-observation-v1", "environmental-observation-v2"], "outcome": ["Committed", "Duplicate"] } },
+    { "name": "skymonitor.environment.local.history.query.duration", "unit": "ms", "labels": { "observation_kind": ["All", "AirTemperature", "RelativeHumidity", "AtmosphericPressure", "WindSpeed", "WindDirection", "WindGust", "PrecipitationRate", "RainState", "SkyBrightness", "SkyQuality", "CloudCover", "CameraSensorTemperature"] } },
+    { "name": "skymonitor.environment.local.inflight", "unit": "{acquisition}", "labels": {} },
+    { "name": "skymonitor.environment.local.queue.depth", "unit": "{request}", "labels": {} },
+    { "name": "skymonitor.environment.local.journal.records", "unit": "{observation}", "labels": {} },
+    { "name": "skymonitor.environment.local.journal.bytes", "unit": "By", "labels": {} },
+    { "name": "skymonitor.environment.local.journal.oldest.age", "unit": "s", "labels": {} },
+    { "name": "skymonitor.environment.local.sources", "unit": "{source}", "labels": {} }
+  ],
+  "spans": [
+    { "name": "environment.acquire", "kind": "Internal", "tags": ["environment.trigger", "environment.observation_kind"] },
+    { "name": "environment.local.commit", "kind": "Internal", "tags": ["environment.outcome"] },
+    { "name": "environment.associate", "kind": "Internal", "tags": [] },
+    { "name": "environment.history.query", "kind": "Internal", "tags": [] },
+    { "name": "environment.delivery.project", "kind": "Internal", "tags": [] }
+  ],
+  "health": {
+    "check": "environmental-acquisition",
+    "healthy": ["disabled", "journal-usable-and-required-sources-current"],
+    "degraded": ["initializing", "stale", "missing", "recent-failure", "overdue"],
+    "unhealthy": ["journal-unavailable", "capacity-exhausted", "all-required-sources-unable"],
+    "fields": ["Availability", "ConfiguredSourceCount", "RequiredSourceCount", "InitializedSourceCount", "FreshSourceCount", "StaleSourceCount", "MissingSourceCount", "FailingSourceCount", "OverduePollCount", "MaximumConsecutiveFailures", "StoredCount", "StoredBytes"]
+  },
+  "privacy": {
+    "forbidden": ["provider identity", "source identity", "site identity", "agent identity", "rig identity", "observation value", "hash", "provenance JSON", "storage path", "connection string", "credential", "actor identity", "idempotency key", "lease token"],
+    "identifiers": "Source, observation, capture, actor, and operation identifiers remain only in protected durable state and are not metric labels or public health fields."
+  },
+  "collection": {
+    "focusedCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter FullyQualifiedName~Environmental",
+    "ownerCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~OwnerAuthorizationTests",
+    "centralCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeviceEnvironmentalObservationApiTests",
+    "performanceCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter FullyQualifiedName=HVO.SkyMonitor.CameraAgent.Tests.Environmental.EnvironmentalAcquisitionPerformanceTests.Issue209_A1ToA6_RecordsReproducibleEvidence",
+    "retainedArtifactPath": "TestResults/issue-209/<revision>/environmental-acquisition-performance.json",
+    "uiBoundary": "Owner-authenticated /environmental page and /api/v1/operations/environmental routes."
+  }
+}

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics.Metrics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
@@ -78,7 +79,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
     }
 
     [TestMethod]
-    public async Task Publisher_WhenCentralIntegrationIsDisabled_CreatesNoTargetOrDurableWork()
+    public async Task Publisher_WhenCentralIntegrationIsDisabled_CommitsTargetlessLocalHistoryWithoutDelivery()
     {
         var resolver = new MutableTargetResolver(new EnvironmentalObservationResolvedTarget(
             Guid.NewGuid(), Guid.NewGuid()));
@@ -98,12 +99,486 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
             }),
             TimeProvider.System);
 
-        var result = await publisher.PublishAsync(CreateFact(Guid.NewGuid())).ConfigureAwait(false);
+        var fact = CreateFact(Guid.NewGuid());
+        var result = await publisher.PublishAsync(fact).ConfigureAwait(false);
+        var replay = await publisher.PublishAsync(fact).ConfigureAwait(false);
 
-        Assert.AreEqual(EnvironmentalObservationPublishDisposition.Disabled, result.Disposition);
+        Assert.AreEqual(EnvironmentalObservationPublishDisposition.Enqueued, result.Disposition);
+        Assert.AreEqual(EnvironmentalObservationPublishDisposition.Duplicate, replay.Disposition);
         Assert.IsNull(result.Observation);
         Assert.AreEqual(0, resolver.ResolveCount);
-        Assert.IsFalse(File.Exists(Path.Combine(_root!, ".environment", "environmental-observation-outbox.db")));
+        Assert.IsTrue(File.Exists(Path.Combine(_root!, ".environment", "environmental-observation-outbox.db")));
+        Assert.AreEqual(1, (await outbox.GetLocalSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual(0, (await outbox.GetSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+    }
+
+    [TestMethod]
+    public async Task Publisher_CentralResolutionFailureCannotRejectLocalHistory()
+    {
+        using var outbox = new SqliteEnvironmentalObservationOutbox();
+        var state = new EnvironmentalObservationDeliveryState();
+        using var telemetry = new EnvironmentalObservationDeliveryTelemetry(state, TimeProvider.System);
+        var publisher = new EnvironmentalObservationPublisher(
+            new ThrowingTargetResolver(),
+            outbox,
+            new EnvironmentalObservationDeliveryWakeup(),
+            state,
+            telemetry,
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root! }),
+            TimeProvider.System);
+
+        var result = await publisher.PublishAsync(CreateFact(Guid.NewGuid())).ConfigureAwait(false);
+
+        Assert.AreEqual(EnvironmentalObservationPublishDisposition.Enqueued, result.Disposition);
+        Assert.IsNull(result.Observation);
+        Assert.AreEqual(1, (await outbox.GetLocalSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual(0, (await outbox.GetSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual(EnvironmentalObservationDeliveryAvailability.Unhealthy, state.Snapshot.Availability);
+        Assert.AreEqual("central-projection-unavailable", state.Snapshot.Reason);
+    }
+
+    [TestMethod]
+    public async Task CancellationDuringOptionalProjectionCannotRejectCommittedLocalHistory()
+    {
+        using var cancellation = new CancellationTokenSource();
+        using var outbox = new SqliteEnvironmentalObservationOutbox();
+        var state = new EnvironmentalObservationDeliveryState();
+        using var telemetry = new EnvironmentalObservationDeliveryTelemetry(state, TimeProvider.System);
+        var publisher = new EnvironmentalObservationPublisher(
+            new CancellingTargetResolver(cancellation),
+            outbox,
+            new EnvironmentalObservationDeliveryWakeup(),
+            state,
+            telemetry,
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root! }),
+            TimeProvider.System);
+
+        var result = await publisher.PublishAsync(CreateFact(Guid.NewGuid()), cancellation.Token).ConfigureAwait(false);
+
+        Assert.AreEqual(EnvironmentalObservationPublishDisposition.Enqueued, result.Disposition);
+        Assert.AreEqual(1, (await outbox.GetLocalSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual(0, (await outbox.GetSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual("central-projection-unavailable", state.Snapshot.Reason);
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task ThrowingDeliveryMetricListenerCannotRejectCommittedLocalHistory()
+    {
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == EnvironmentalObservationDeliveryTelemetry.MeterName)
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>(static (
+            Instrument instrument,
+            long measurement,
+            ReadOnlySpan<KeyValuePair<string, object?>> tags,
+            object? state) => throw new InvalidOperationException("listener failure"));
+        listener.Start();
+        using var outbox = new SqliteEnvironmentalObservationOutbox();
+        var deliveryState = new EnvironmentalObservationDeliveryState();
+        using var telemetry = new EnvironmentalObservationDeliveryTelemetry(deliveryState, TimeProvider.System);
+        var publisher = new EnvironmentalObservationPublisher(
+            new MutableTargetResolver(new EnvironmentalObservationResolvedTarget(Guid.NewGuid(), Guid.NewGuid())),
+            outbox,
+            new EnvironmentalObservationDeliveryWakeup(),
+            deliveryState,
+            telemetry,
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root! }),
+            TimeProvider.System);
+
+        var result = await publisher.PublishAsync(CreateFact(Guid.NewGuid())).ConfigureAwait(false);
+
+        Assert.AreEqual(EnvironmentalObservationPublishDisposition.Enqueued, result.Disposition);
+        Assert.AreEqual(1, (await outbox.GetLocalSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual(1, (await outbox.GetSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+    }
+
+    [TestMethod]
+    public async Task Publisher_ReplayAfterProvisioningFreezesTargetAndProjectsExistingLocalFact()
+    {
+        var resolver = new MutableTargetResolver(null);
+        using var outbox = new SqliteEnvironmentalObservationOutbox();
+        var state = new EnvironmentalObservationDeliveryState();
+        using var telemetry = new EnvironmentalObservationDeliveryTelemetry(state, TimeProvider.System);
+        var publisher = new EnvironmentalObservationPublisher(
+            resolver,
+            outbox,
+            new EnvironmentalObservationDeliveryWakeup(),
+            state,
+            telemetry,
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root! }),
+            TimeProvider.System);
+        var fact = CreateFact(Guid.NewGuid());
+
+        var unprovisioned = await publisher.PublishAsync(fact).ConfigureAwait(false);
+        resolver.Target = new EnvironmentalObservationResolvedTarget(
+            Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"));
+        var recovered = await publisher.PublishAsync(fact).ConfigureAwait(false);
+
+        Assert.IsNull(unprovisioned.Observation);
+        Assert.AreEqual(EnvironmentalObservationPublishDisposition.Duplicate, recovered.Disposition);
+        Assert.IsNotNull(recovered.Observation);
+        Assert.AreEqual(1, (await outbox.GetLocalSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual(1, (await outbox.GetSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+    }
+
+    [TestMethod]
+    public async Task FirstProjectionOfExistingLocalFactReportsActualEnqueueDisposition()
+    {
+        using var outbox = new SqliteEnvironmentalObservationOutbox();
+        var fact = CreateFact(Guid.NewGuid());
+        var target = new EnvironmentalObservationResolvedTarget(Guid.NewGuid(), Guid.NewGuid());
+
+        var local = await outbox.CommitLocalAsync(_root!, fact, CancellationToken.None).ConfigureAwait(false);
+        var projected = await outbox.CommitLocalAsync(_root!, fact, target, CancellationToken.None).ConfigureAwait(false);
+        var replay = await outbox.CommitLocalAsync(_root!, fact, target, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNull(local.DeliveryDisposition);
+        Assert.AreEqual(LocalEnvironmentalObservationCommitDisposition.Duplicate, projected.Disposition);
+        Assert.AreEqual(EnvironmentalObservationEnqueueDisposition.Enqueued, projected.DeliveryDisposition);
+        Assert.AreEqual(EnvironmentalObservationEnqueueDisposition.Duplicate, replay.DeliveryDisposition);
+    }
+
+    [TestMethod]
+    public async Task ProjectionRecoveryAssignsPreviouslyUnprovisionedFactsWithoutProducerReplay()
+    {
+        using var outbox = new SqliteEnvironmentalObservationOutbox();
+        var fact = CreateFact(Guid.NewGuid());
+        await outbox.CommitLocalAsync(_root!, fact, CancellationToken.None).ConfigureAwait(false);
+
+        var assigned = await outbox.AssignUnprojectedAsync(
+            _root!,
+            new EnvironmentalObservationResolvedTarget(
+                Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")),
+            10,
+            CancellationToken.None).ConfigureAwait(false);
+        var lease = await outbox.ClaimAsync(
+            _root!, "recovery", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(1, assigned);
+        Assert.IsNotNull(lease);
+        Assert.AreEqual(fact.ObservationId, lease.Record.Observation.ObservationId);
+        Assert.AreEqual(1, (await outbox.GetLocalSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+    }
+
+    [TestMethod]
+    public async Task LocalJournalRejectsConflictsAndCorruptCommittedDuplicates()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var fact = CreateFact(Guid.NewGuid());
+
+        Assert.AreEqual(
+            LocalEnvironmentalObservationCommitDisposition.Committed,
+            (await store.CommitLocalAsync(_root!, fact, CancellationToken.None).ConfigureAwait(false)).Disposition);
+        Assert.AreEqual(
+            LocalEnvironmentalObservationCommitDisposition.Duplicate,
+            (await store.CommitLocalAsync(_root!, fact, CancellationToken.None).ConfigureAwait(false)).Disposition);
+        await Assert.ThrowsAsync<EnvironmentalObservationIdentityConflictException>(async () =>
+            await store.CommitLocalAsync(
+                _root!,
+                fact with { Value = fact.Value with { NumericValue = fact.Value.NumericValue + 1 } },
+                CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+        var databasePath = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db");
+        using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE environmental_observation_journal SET payload = zeroblob(payload_bytes);";
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await store.CommitLocalAsync(_root!, fact, CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task LocalJournalRejectsChangedContentForAnExistingSourceIdentity()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var first = CreateFact(Guid.NewGuid());
+        await store.CommitLocalAsync(_root!, first, CancellationToken.None).ConfigureAwait(false);
+        using var document = JsonDocument.Parse("{\"normalizer\":\"changed-v2\"}");
+        var parameters = document.RootElement.Clone();
+        var changed = first with
+        {
+            ObservationId = Guid.NewGuid(),
+            Source = first.Source with
+            {
+                Provenance = first.Source.Provenance with
+                {
+                    Parameters = parameters,
+                    ParametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(parameters)
+                }
+            }
+        };
+
+        await Assert.ThrowsExactlyAsync<EnvironmentalObservationIdentityConflictException>(async () =>
+            await store.CommitLocalAsync(_root!, changed, CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task CentralAcknowledgementRemovesDeliveryCopyButRetainsLocalHistory()
+    {
+        var time = new MutableTimeProvider(Epoch);
+        using var store = new SqliteEnvironmentalObservationOutbox(time);
+        var state = new EnvironmentalObservationDeliveryState();
+        using var telemetry = new EnvironmentalObservationDeliveryTelemetry(state, time);
+        var publisher = new EnvironmentalObservationPublisher(
+            new MutableTargetResolver(new EnvironmentalObservationResolvedTarget(
+                Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))),
+            store,
+            new EnvironmentalObservationDeliveryWakeup(),
+            state,
+            telemetry,
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root! }),
+            time);
+        _ = await publisher.PublishAsync(CreateFact(Guid.NewGuid())).ConfigureAwait(false);
+        var lease = (await store.ClaimAsync(
+            _root!, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false))!;
+
+        var acknowledgement = new FaithfulCentralReceiver(time).Ingest(lease.Record.Observation);
+        await store.AcknowledgeAsync(_root!, lease, acknowledgement, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(0, (await store.GetSnapshotAsync(_root!, CancellationToken.None).ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual(1, (await store.GetLocalSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+    }
+
+    [TestMethod]
+    public async Task LocalJournalCapacityIsIndependentAndDurablyCounted()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox(
+            new MutableTimeProvider(Epoch), maximumLocalRecords: 1);
+        await store.CommitLocalAsync(_root!, CreateFact(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+
+        await Assert.ThrowsAsync<LocalEnvironmentalObservationCapacityException>(async () =>
+            await store.CommitLocalAsync(_root!, CreateFact(Guid.NewGuid()), CancellationToken.None)
+                .ConfigureAwait(false)).ConfigureAwait(false);
+
+        var snapshot = await store.GetLocalSnapshotAsync(_root!, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, snapshot.StoredCount);
+        Assert.AreEqual(1, snapshot.OverflowCount);
+    }
+
+    [TestMethod]
+    public async Task LocalPressureRetentionRemovesExpiredUnpinnedFactsBeforeRejectingNewHistory()
+    {
+        var time = new MutableTimeProvider(Epoch);
+        using var store = new SqliteEnvironmentalObservationOutbox(
+            time,
+            maximumLocalRecords: 1,
+            localRetentionDays: 31,
+            localRetentionBatchSize: 1);
+        var first = await store.CommitLocalAsync(
+            _root!, CreateFact(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+        time.Advance(TimeSpan.FromDays(1));
+
+        var second = await store.CommitLocalAsync(
+            _root!, CreateFact(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(1, (await store.GetLocalSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+        Assert.IsNull(await store.ReadLocalDetailAsync(
+            _root!, first.Record.RecordId, CancellationToken.None).ConfigureAwait(false));
+        Assert.IsNotNull(await store.ReadLocalDetailAsync(
+            _root!, second.Record.RecordId, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task LocalHistoryUsesBoundedKeysetPagingAndTemporalCandidates()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var facts = Enumerable.Range(1, 3)
+            .Select(index => CreateFact(Guid.Parse($"20000000-0000-0000-0000-{index:D12}")) with
+            {
+                ObservedAtUtc = Epoch.AddSeconds(index)
+            })
+            .ToArray();
+        foreach (var fact in facts)
+        {
+            await store.CommitLocalAsync(_root!, fact, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        var first = await store.ReadLocalPageAsync(
+            _root!, EnvironmentalObservationKind.RelativeHumidity, 2, null, CancellationToken.None)
+            .ConfigureAwait(false);
+        var second = await store.ReadLocalPageAsync(
+            _root!, EnvironmentalObservationKind.RelativeHumidity, 2, first.NextCursor, CancellationToken.None)
+            .ConfigureAwait(false);
+        var candidates = await store.ReadLocalCandidatesAsync(
+            _root!, EnvironmentalObservationKind.RelativeHumidity, null, Epoch, Epoch.AddMinutes(1), 10,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(2, first.Items);
+        Assert.AreEqual(facts[2].ObservationId, first.Items[0].Fact.ObservationId);
+        Assert.IsNotNull(first.NextCursor);
+        Assert.HasCount(1, second.Items);
+        Assert.AreEqual(facts[0].ObservationId, second.Items[0].Fact.ObservationId);
+        Assert.IsNull(second.NextCursor);
+        Assert.HasCount(3, candidates);
+        var detail = await store.ReadLocalDetailAsync(
+            _root!, first.Items[0].RecordId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(detail);
+        Assert.AreEqual(first.Items[0].ContentSha256, detail!.ContentSha256);
+        Assert.IsEmpty((await store.ReadLocalPageAsync(
+            _root!, EnvironmentalObservationKind.AirTemperature, 10, null, CancellationToken.None)
+            .ConfigureAwait(false)).Items);
+    }
+
+    [TestMethod]
+    public async Task AcquisitionAttemptsAndSourceRuntimeSurviveRestartWithoutManufacturingObservations()
+    {
+        using var document = JsonDocument.Parse("{}");
+        var source = new EnvironmentalSourceDescriptor(
+            "temperature",
+            "VirtualEnvironment",
+            EnvironmentalObservationKind.AirTemperature,
+            true,
+            [EnvironmentalAcquisitionTrigger.Periodic],
+            Epoch,
+            30,
+            3,
+            120,
+            45,
+            null,
+            document.RootElement.Clone());
+        var observationId = Guid.NewGuid();
+        using (var store = new SqliteEnvironmentalObservationOutbox())
+        {
+            await store.RecordAttemptAsync(
+                _root!,
+                source,
+                new EnvironmentalAcquisitionReceipt(
+                    source.Id,
+                    EnvironmentalAcquisitionTrigger.Periodic,
+                    EnvironmentalAcquisitionDisposition.Produced,
+                    "produced",
+                    observationId,
+                    Epoch,
+                    Epoch.AddMilliseconds(10),
+                    Epoch,
+                    Epoch.AddSeconds(45)),
+                null,
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+            await store.UpdateSourceScheduleAsync(
+                _root!, source, Epoch.AddSeconds(60), CancellationToken.None).ConfigureAwait(false);
+            await store.RecordAttemptAsync(
+                _root!,
+                source,
+                new EnvironmentalAcquisitionReceipt(
+                    source.Id,
+                    EnvironmentalAcquisitionTrigger.Periodic,
+                    EnvironmentalAcquisitionDisposition.Missing,
+                    "source-missing",
+                    null,
+                    Epoch.AddSeconds(30),
+                    Epoch.AddSeconds(30).AddMilliseconds(10)),
+                null,
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        using var restarted = new SqliteEnvironmentalObservationOutbox();
+        var state = (await restarted.ReadSourceStatesAsync(_root!, CancellationToken.None).ConfigureAwait(false)).Single();
+        var attempts = await restarted.ReadAttemptsAsync(_root!, 10, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Missing, state.LastDisposition);
+        Assert.AreEqual(observationId, state.LastObservationId);
+        Assert.AreEqual(Epoch, state.LastObservedUtc);
+        Assert.AreEqual(Epoch.AddSeconds(45), state.LastStaleAfterUtc);
+        Assert.AreEqual(1, state.ConsecutiveFailures);
+        Assert.AreEqual(Epoch.AddSeconds(60), state.NextPollUtc);
+        Assert.HasCount(2, attempts);
+        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Missing, attempts[0].Disposition);
+        Assert.IsNull(attempts[0].ObservationId);
+        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, attempts[1].Disposition);
+    }
+
+    [TestMethod]
+    public async Task OnDemandCommandIsLeasedConflictCheckedAndDurablyReplayable()
+    {
+        const string key = "environment-command-1";
+        var payload = new string('A', 64);
+        var receipt = new EnvironmentalAcquisitionReceipt(
+            "temperature",
+            EnvironmentalAcquisitionTrigger.OnDemand,
+            EnvironmentalAcquisitionDisposition.Missing,
+            "source-missing",
+            null,
+            Epoch,
+            Epoch.AddMilliseconds(10));
+        using (var store = new SqliteEnvironmentalObservationOutbox(new MutableTimeProvider(Epoch)))
+        {
+            var claim = await store.ClaimOnDemandAsync(
+                _root!, key, payload, "temperature", "owner-1", "manual-check", Epoch,
+                TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(EnvironmentalOnDemandClaimDisposition.Claimed, claim.Disposition);
+            Assert.AreEqual(EnvironmentalOnDemandClaimDisposition.Busy, (await store.ClaimOnDemandAsync(
+                _root!, key, payload, "temperature", "owner-1", "manual-check", Epoch.AddSeconds(1),
+                TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false)).Disposition);
+            await Assert.ThrowsExactlyAsync<EnvironmentalOnDemandCommandConflictException>(async () =>
+                await store.ClaimOnDemandAsync(
+                    _root!, key, new string('B', 64), "temperature", "owner-1", "manual-check", Epoch,
+                    TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            await store.CompleteOnDemandAsync(
+                _root!, key, claim.LeaseToken, receipt, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        using var restarted = new SqliteEnvironmentalObservationOutbox(new MutableTimeProvider(Epoch.AddMinutes(2)));
+        var replay = await restarted.ClaimOnDemandAsync(
+            _root!, key, payload, "temperature", "owner-1", "manual-check", Epoch.AddMinutes(2),
+            TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(EnvironmentalOnDemandClaimDisposition.Completed, replay.Disposition);
+        Assert.AreEqual(receipt, replay.Receipt);
+        Assert.AreEqual(Epoch, replay.ObservedAtUtc);
+    }
+
+    [TestMethod]
+    public async Task CaptureRegimeChangeSurvivesRestartAndCaptureReplay()
+    {
+        var nightCapture = Guid.Parse("91000000-0000-0000-0000-000000000001");
+        var twilightCapture = Guid.Parse("91000000-0000-0000-0000-000000000002");
+        using (var store = new SqliteEnvironmentalObservationOutbox())
+        {
+            Assert.IsFalse(await store.RecordCaptureRegimeAsync(
+                _root!, 1, nightCapture, CaptureSolarRegime.Night, Epoch, CancellationToken.None).ConfigureAwait(false));
+        }
+
+        using var restarted = new SqliteEnvironmentalObservationOutbox();
+        Assert.IsTrue(await restarted.RecordCaptureRegimeAsync(
+            _root!, 2, twilightCapture, CaptureSolarRegime.Twilight, Epoch.AddMinutes(1), CancellationToken.None)
+            .ConfigureAwait(false));
+        Assert.IsFalse(await restarted.RecordCaptureRegimeAsync(
+            _root!, 2, twilightCapture, CaptureSolarRegime.Twilight, Epoch.AddMinutes(1), CancellationToken.None)
+            .ConfigureAwait(false));
+        Assert.IsFalse(await restarted.RecordCaptureRegimeAsync(
+            _root!, 1, nightCapture, CaptureSolarRegime.Night, Epoch, CancellationToken.None).ConfigureAwait(false));
+        await Assert.ThrowsExactlyAsync<EnvironmentalObservationIdentityConflictException>(async () =>
+            await restarted.RecordCaptureRegimeAsync(
+                _root!, 2, twilightCapture, CaptureSolarRegime.Day, Epoch.AddMinutes(1), CancellationToken.None)
+                .ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -173,7 +648,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
     }
 
     [TestMethod]
-    public async Task PublisherMarksDeliveryUnhealthyWhenCapacityRejectsProducer()
+    public async Task PublisherKeepsLocalHistoryWhenDeliveryCapacityRejectsProjection()
     {
         using var outbox = new SqliteEnvironmentalObservationOutbox(maximumRecords: 1);
         var state = new EnvironmentalObservationDeliveryState();
@@ -188,13 +663,63 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
             telemetry,
             Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root! }),
             TimeProvider.System);
-        await publisher.PublishAsync(CreateFact(Guid.NewGuid())).ConfigureAwait(false);
+        var firstFact = CreateFact(Guid.NewGuid());
+        var secondFact = CreateFact(Guid.NewGuid());
+        await publisher.PublishAsync(firstFact).ConfigureAwait(false);
 
-        await Assert.ThrowsAsync<EnvironmentalObservationOutboxCapacityException>(async () =>
-            await publisher.PublishAsync(CreateFact(Guid.NewGuid())).ConfigureAwait(false)).ConfigureAwait(false);
+        var second = await publisher.PublishAsync(secondFact).ConfigureAwait(false);
 
+        Assert.AreEqual(EnvironmentalObservationPublishDisposition.Enqueued, second.Disposition);
+        Assert.IsNull(second.Observation);
         Assert.AreEqual(EnvironmentalObservationDeliveryAvailability.Unhealthy, state.Snapshot.Availability);
         Assert.AreEqual("capacity-exhausted", state.Snapshot.Reason);
+        Assert.AreEqual(2, (await outbox.GetLocalSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual(1, (await outbox.GetSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+
+        var firstLease = (await outbox.ClaimAsync(
+            _root!, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false))!;
+        await outbox.AcknowledgeAsync(
+            _root!, firstLease, new FaithfulCentralReceiver(TimeProvider.System).Ingest(firstLease.Record.Observation),
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, await outbox.ProjectWaitingAsync(_root!, 10, CancellationToken.None).ConfigureAwait(false));
+        var recovered = await outbox.ClaimAsync(
+            _root!, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(recovered);
+        Assert.AreEqual(secondFact.ObservationId, recovered.Record.Observation.ObservationId);
+    }
+
+    [TestMethod]
+    public async Task AbandoningLinkedDeliveryResetsProjectionForIndependentRecovery()
+    {
+        using var outbox = new SqliteEnvironmentalObservationOutbox();
+        var state = new EnvironmentalObservationDeliveryState();
+        using var deliveryTelemetry = new EnvironmentalObservationDeliveryTelemetry(state, TimeProvider.System);
+        var publisher = new EnvironmentalObservationPublisher(
+            new MutableTargetResolver(new EnvironmentalObservationResolvedTarget(
+                Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))),
+            outbox,
+            new EnvironmentalObservationDeliveryWakeup(),
+            state,
+            deliveryTelemetry,
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root! }),
+            TimeProvider.System);
+        var fact = CreateFact(Guid.NewGuid());
+        await publisher.PublishAsync(fact).ConfigureAwait(false);
+        var lease = (await outbox.ClaimAsync(
+            _root!, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false))!;
+        await outbox.TerminalAsync(_root!, lease, "operator-review", CancellationToken.None).ConfigureAwait(false);
+        await outbox.AbandonAsync(
+            _root!, lease.Record.RecordId, "owner", "accepted-loss", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(1, await outbox.ProjectWaitingAsync(
+            _root!, 10, CancellationToken.None).ConfigureAwait(false));
+        var recovered = await outbox.ClaimAsync(
+            _root!, "recovery", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(recovered);
+        Assert.AreEqual(fact.ObservationId, recovered.Record.Observation.ObservationId);
     }
 
     [TestMethod]
@@ -207,7 +732,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         await connection.OpenAsync().ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA user_version;";
-        Assert.AreEqual(2L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
+        Assert.AreEqual(3L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
         command.CommandText = "PRAGMA journal_mode;";
         Assert.AreEqual("wal", (string)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
         command.CommandText = "PRAGMA synchronous;";
@@ -222,6 +747,89 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         var schema = (string)(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
         StringAssert.Contains(schema, "payload_bytes = length(payload)", StringComparison.Ordinal);
         StringAssert.Contains(schema, "status = 'leased' AND lease_owner IS NOT NULL", StringComparison.Ordinal);
+        command.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'environmental_observation_journal';";
+        var journalSchema = (string)(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+        StringAssert.Contains(journalSchema, "STRICT", StringComparison.Ordinal);
+        StringAssert.Contains(journalSchema, "payload_bytes = length(payload)", StringComparison.Ordinal);
+        command.CommandText = "SELECT group_concat(name, ',') FROM pragma_table_info('environmental_observation_journal');";
+        var journalColumns = (string)(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+        Assert.IsFalse(journalColumns.Contains("credential", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public async Task Version2MigrationBackfillsSurvivingDeliveryRowsIntoLocalHistoryIdempotently()
+    {
+        var observation = CreateObservation(Guid.NewGuid());
+        var movedTarget = observation with
+        {
+            Target = new EnvironmentalObservationTarget(
+                Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+                Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"))
+        };
+        using (var current = new SqliteEnvironmentalObservationOutbox())
+        {
+            await current.EnqueueAsync(_root!, observation, CancellationToken.None).ConfigureAwait(false);
+            await current.EnqueueAsync(_root!, movedTarget, CancellationToken.None).ConfigureAwait(false);
+        }
+        SqliteConnection.ClearAllPools();
+        var databasePath = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db");
+        using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                DROP INDEX ix_environment_delivery_local_record;
+                ALTER TABLE environmental_observation_outbox DROP COLUMN local_record_id;
+                DROP TABLE environmental_observation_central_projection;
+                DROP TABLE environmental_capture_association_evidence;
+                DROP TABLE environmental_capture_associations;
+                DROP TABLE environmental_observation_local_lineage;
+                DROP TABLE environmental_on_demand_commands;
+                DROP TABLE environmental_acquisition_attempts;
+                DROP TABLE environmental_capture_regime_state;
+                DROP TABLE environmental_source_runtime;
+                DROP TABLE environmental_observation_journal;
+                DROP TABLE environmental_observation_journal_metadata;
+                PRAGMA user_version=2;
+                """;
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        SqliteConnection.ClearAllPools();
+
+        using (var migrated = new SqliteEnvironmentalObservationOutbox())
+        using (var concurrent = new SqliteEnvironmentalObservationOutbox())
+        {
+            var snapshots = await Task.WhenAll(
+                migrated.GetLocalSnapshotAsync(_root!, CancellationToken.None).AsTask(),
+                concurrent.GetLocalSnapshotAsync(_root!, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            Assert.IsTrue(snapshots.All(static snapshot => snapshot.StoredCount == 1));
+            Assert.AreEqual(2, (await migrated.GetSnapshotAsync(_root!, CancellationToken.None)
+                .ConfigureAwait(false)).StoredCount);
+        }
+        using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA user_version;";
+            Assert.AreEqual(3L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
+            command.CommandText = "SELECT COUNT(*) FROM environmental_observation_outbox WHERE local_record_id IS NOT NULL;";
+            Assert.AreEqual(2L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
+        }
+        SqliteConnection.ClearAllPools();
+        using var restarted = new SqliteEnvironmentalObservationOutbox();
+        Assert.AreEqual(1, (await restarted.GetLocalSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
+        var receiver = new FaithfulCentralReceiver(TimeProvider.System);
+        for (var index = 0; index < 2; index++)
+        {
+            var lease = await restarted.ClaimAsync(
+                _root!, "migration", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            await restarted.AcknowledgeAsync(
+                _root!, lease, receiver.Ingest(lease.Record.Observation), CancellationToken.None).ConfigureAwait(false);
+        }
+        Assert.AreEqual(0, (await restarted.GetSnapshotAsync(_root!, CancellationToken.None)
+            .ConfigureAwait(false)).StoredCount);
     }
 
     [TestMethod]
@@ -610,7 +1218,8 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
             observation.ValidThroughUtc,
             observation.StaleAfterUtc,
             observation.Value,
-            observation.Lineage);
+            observation.Lineage,
+            observation.Target.RigId);
     }
 
     private EnvironmentalObservationDeliveryService CreateDeliveryService(
@@ -622,6 +1231,9 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         ILogger<EnvironmentalObservationDeliveryService>? logger = null)
         => new(
             transport,
+            new MutableTargetResolver(new EnvironmentalObservationResolvedTarget(
+                Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))),
             outbox,
             new EnvironmentalObservationDeliveryWakeup(),
             new EnvironmentalObservationDeliveryState(),
@@ -669,16 +1281,32 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
             []);
     }
 
-    private sealed class MutableTargetResolver(EnvironmentalObservationResolvedTarget target)
+    private sealed class MutableTargetResolver(EnvironmentalObservationResolvedTarget? target)
         : IEnvironmentalObservationTargetResolver
     {
-        public EnvironmentalObservationResolvedTarget Target { get; set; } = target;
+        public EnvironmentalObservationResolvedTarget? Target { get; set; } = target;
         public int ResolveCount { get; private set; }
 
         public ValueTask<EnvironmentalObservationResolvedTarget?> ResolveAsync(CancellationToken cancellationToken)
         {
             ResolveCount++;
             return ValueTask.FromResult<EnvironmentalObservationResolvedTarget?>(Target);
+        }
+    }
+
+    private sealed class ThrowingTargetResolver : IEnvironmentalObservationTargetResolver
+    {
+        public ValueTask<EnvironmentalObservationResolvedTarget?> ResolveAsync(CancellationToken cancellationToken)
+            => throw new InvalidOperationException("central provisioning unavailable");
+    }
+
+    private sealed class CancellingTargetResolver(CancellationTokenSource cancellation)
+        : IEnvironmentalObservationTargetResolver
+    {
+        public async ValueTask<EnvironmentalObservationResolvedTarget?> ResolveAsync(CancellationToken cancellationToken)
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            throw new OperationCanceledException(cancellationToken);
         }
     }
 

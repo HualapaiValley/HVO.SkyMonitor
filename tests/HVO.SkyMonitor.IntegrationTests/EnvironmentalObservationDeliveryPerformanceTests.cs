@@ -814,6 +814,7 @@ public sealed class EnvironmentalObservationDeliveryPerformanceTests
         int batchSize)
         => new(
             transport,
+            NullEnvironmentalObservationTargetResolver.Instance,
             outbox,
             new EnvironmentalObservationDeliveryWakeup(),
             new EnvironmentalObservationDeliveryState(),
@@ -825,6 +826,14 @@ public sealed class EnvironmentalObservationDeliveryPerformanceTests
             }),
             clock,
             NullLogger<EnvironmentalObservationDeliveryService>.Instance);
+
+    private sealed class NullEnvironmentalObservationTargetResolver : IEnvironmentalObservationTargetResolver
+    {
+        public static NullEnvironmentalObservationTargetResolver Instance { get; } = new();
+
+        public ValueTask<EnvironmentalObservationResolvedTarget?> ResolveAsync(CancellationToken cancellationToken)
+            => ValueTask.FromResult<EnvironmentalObservationResolvedTarget?>(null);
+    }
 
     private static EnvironmentalObservationDeliveryOptions DeliveryOptions(int batchSize)
         => new()

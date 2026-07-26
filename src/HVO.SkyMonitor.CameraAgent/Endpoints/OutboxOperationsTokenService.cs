@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.AspNetCore.DataProtection;
@@ -41,6 +42,48 @@ internal sealed class OutboxOperationsTokenService
             alias == "raw-ingress" &&
             long.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out recordId) &&
             recordId > 0;
+    }
+
+    public string ProtectEnvironmentalHistoryReference(long recordId)
+        => Protect("environmental-history.reference", new TokenPayload("local-history", recordId.ToString(
+            System.Globalization.CultureInfo.InvariantCulture)));
+
+    public bool TryReadEnvironmentalHistoryReference(string token, out long recordId)
+    {
+        recordId = 0;
+        return TryReadTarget("environmental-history.reference", token, out var alias, out var value) &&
+            alias == "local-history" &&
+            long.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out recordId) &&
+            recordId > 0;
+    }
+
+    public string ProtectEnvironmentalHistoryCursor(
+        LocalEnvironmentalObservationCursor cursor,
+        HVO.SkyMonitor.Processing.EnvironmentalObservationKind? kind)
+        => Protect("environmental-history.cursor", new CursorPayload(
+            "local-history", kind?.ToString() ?? "All", cursor.ObservedAtUtc.ToUnixTimeMilliseconds(), cursor.RecordId));
+
+    public bool TryReadEnvironmentalHistoryCursor(
+        string token,
+        HVO.SkyMonitor.Processing.EnvironmentalObservationKind? kind,
+        out LocalEnvironmentalObservationCursor? cursor)
+    {
+        cursor = null;
+        if (!TryUnprotect("environmental-history.cursor", token, out CursorPayload? payload) ||
+            payload?.Alias != "local-history" || payload.Target != (kind?.ToString() ?? "All") || payload.RecordId < 1)
+        {
+            return false;
+        }
+        try
+        {
+            cursor = new LocalEnvironmentalObservationCursor(
+                DateTimeOffset.FromUnixTimeMilliseconds(payload.Position), payload.RecordId);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
     }
 
     public string ProtectArtifactAction(OutboxOperationAction action, string alias, string recordKey)

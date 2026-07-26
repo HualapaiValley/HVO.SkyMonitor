@@ -70,6 +70,12 @@ public static class SkyMonitorObservabilityExtensions
         "Availability", "PendingCount", "PendingBytes", "LeasedCount", "RetryCount", "QuarantineCount",
         "TerminalCount", "OverflowCount", "OldestAgeSeconds"
     };
+    private static readonly HashSet<string> EnvironmentalAcquisitionHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Availability", "ConfiguredSourceCount", "RequiredSourceCount", "InitializedSourceCount",
+        "FreshSourceCount", "StaleSourceCount", "MissingSourceCount", "FailingSourceCount",
+        "OverduePollCount", "MaximumConsecutiveFailures", "StoredCount", "StoredBytes"
+    };
     private static readonly HashSet<string> CalibrationLibraryHealthDataKeys = new(StringComparer.Ordinal)
     {
         "Required", "Active", "ActiveState", "StateVersion", "PendingAcquisitionState",
@@ -220,6 +226,7 @@ public static class SkyMonitorObservabilityExtensions
             "central-derivative-worker" => CentralDerivativeWorkerHealthDataKeys,
             "environmental-observations" => EnvironmentalObservationHealthDataKeys,
             "environmental-delivery" => EnvironmentalDeliveryHealthDataKeys,
+            "environmental-acquisition" => EnvironmentalAcquisitionHealthDataKeys,
             "deployment-location" => DeploymentLocationHealthDataKeys,
             "calibration-library" => CalibrationLibraryHealthDataKeys,
             _ => null

@@ -24,6 +24,11 @@ internal sealed class CaptureLanePolicy
         {
             definitions.Add(Create("transient", enabled: true, transient.Required, ordered: true));
         }
+        definitions.Add(Create(
+            "environment-association",
+            options.Value.EnvironmentalAcquisition.Enabled,
+            required: true,
+            ordered: false));
         definitions.AddRange(configured.SecondaryLanes.Select(static lane =>
             Create(lane.Name, lane.Enabled, lane.Required, ordered: true)));
         Definitions = definitions;

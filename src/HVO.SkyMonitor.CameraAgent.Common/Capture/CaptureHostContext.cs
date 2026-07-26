@@ -4,13 +4,15 @@ using System.Threading.Tasks;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 
 internal sealed class CaptureHostContext(
     CameraModuleConfig configuration,
     IRawCaptureIngress rawCaptureIngress,
-    ICaptureDistributor captureDistributor) : ICaptureHostContext
+    ICaptureDistributor captureDistributor,
+    EnvironmentalCaptureTriggerBridge? environmentalTriggers = null) : ICaptureHostContext
 {
     private readonly CameraModuleConfig _configuration = configuration;
     private readonly IRawCaptureIngress _rawCaptureIngress = rawCaptureIngress;
@@ -27,6 +29,10 @@ internal sealed class CaptureHostContext(
             await _captureDistributor.ProcessEphemeralAsync(
                 _configuration, submission, cancellationToken).ConfigureAwait(false);
             return;
+        }
+        if (environmentalTriggers is not null)
+        {
+            await environmentalTriggers.AfterCaptureAsync(receipt, submission, cancellationToken).ConfigureAwait(false);
         }
         _captureDistributor.NotifyCommittedCapture();
     }
