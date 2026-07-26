@@ -19,7 +19,7 @@ internal sealed class SqliteRawCaptureJournal(
     Func<DateTimeOffset>? utcNow = null,
     TransientDetectionOptions? transientOptions = null)
 {
-    internal const int CurrentSchemaVersion = 8;
+    internal const int CurrentSchemaVersion = 9;
     private const int CoordinateScrubbedSchemaVersion = 7;
     private const int PendingCoordinateScrubSchemaVersion = -7;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
@@ -141,6 +141,8 @@ internal sealed class SqliteRawCaptureJournal(
                 await ExecuteNonQueryAsync(
                     connection, transaction, CaptureScheduleSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
+                    connection, transaction, CalibrationLibrarySchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(
                     connection,
                     transaction,
                     version < CoordinateScrubbedSchemaVersion
@@ -192,9 +194,15 @@ internal sealed class SqliteRawCaptureJournal(
                  'capture_schedule_expansions', 'capture_schedule_intervals', 'capture_schedule_unavailable',
                  'capture_schedule_admissions', 'capture_schedule_override_events',
                  'ix_capture_schedule_revisions_created', 'ix_capture_schedule_overrides_active',
-                 'ix_capture_schedule_expansions_lookup', 'ix_capture_schedule_intervals_bounds');
+                 'ix_capture_schedule_expansions_lookup', 'ix_capture_schedule_intervals_bounds',
+                 'calibration_library_bundles', 'calibration_library_artifacts', 'calibration_library_state',
+                 'calibration_library_activations', 'calibration_library_commands',
+                 'calibration_acquisition_jobs', 'calibration_library_reconciliation',
+                 'ix_calibration_library_bundles_selection', 'ix_calibration_library_bundles_created',
+                 'ix_calibration_library_artifacts_role', 'ix_calibration_library_activations_history',
+                 'ix_calibration_acquisition_jobs_camera', 'ix_calibration_library_reconciliation_state');
             """, cancellationToken).ConfigureAwait(false);
-        if (schemaObjectCount != 46)
+        if (schemaObjectCount != 59)
         {
             throw new InvalidDataException("Raw ingress SQLite schema is incomplete or drifted.");
         }
@@ -224,10 +232,23 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyColumnsAsync(connection, "capture_schedule_unavailable", CaptureScheduleUnavailableColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_schedule_admissions", CaptureScheduleAdmissionColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_schedule_override_events", CaptureScheduleOverrideEventColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "calibration_library_bundles", CalibrationLibraryBundleColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "calibration_library_artifacts", CalibrationLibraryArtifactColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "calibration_library_state", CalibrationLibraryStateColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "calibration_library_activations", CalibrationLibraryActivationColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "calibration_library_commands", CalibrationLibraryCommandColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "calibration_acquisition_jobs", CalibrationAcquisitionJobColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "calibration_library_reconciliation", CalibrationLibraryReconciliationColumns, cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_schedule_revisions_created", "created_unix_ms,revision_number", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_schedule_overrides_active", "cleared_unix_ms,end_unix_ms,mode,override_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_schedule_expansions_lookup", "revision_id,deployment_location_id,deployment_location_version,preview_start_unix_ms,preview_end_unix_ms", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_schedule_intervals_bounds", "expansion_key,start_unix_ms,end_unix_ms,ordinal", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_calibration_library_bundles_selection", "publication_state,agent_id,rig_id,rig_profile_sha256,sensor_profile_sha256,effective_from_unix_ms,effective_until_unix_ms,bundle_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_calibration_library_bundles_created", "created_unix_ms,bundle_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_calibration_library_artifacts_role", "bundle_id,role,reference_kind,source_index,ordinal", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_calibration_library_activations_history", "activated_unix_ms,activation_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_calibration_acquisition_jobs_camera", "camera_key,state,created_unix_ms,job_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_calibration_library_reconciliation_state", "operation_state,observed_unix_ms,reconciliation_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_claim", "lane_name,state,available_unix_ms,work_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_lease", "state,lease_expires_unix_ms", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_backlog", "lane_name,state,created_unix_ms", cancellationToken).ConfigureAwait(false);
@@ -1798,6 +1819,20 @@ internal sealed class SqliteRawCaptureJournal(
         "admission_id,revision_id,override_id,decision_unix_ms,created_unix_ms";
     private const string CaptureScheduleOverrideEventColumns =
         "event_id,override_id,event_kind,actor,reason,occurred_unix_ms";
+    private const string CalibrationLibraryBundleColumns =
+        "bundle_id,bundle_identity_sha256,source,bundle_json,profile_relative_path,profile_identity_sha256,acquisition_model_identity_sha256,agent_id,rig_id,rig_profile_sha256,sensor_profile_sha256,input_layout_sha256,output_layout_sha256,minimum_gain,maximum_gain,minimum_offset,maximum_offset,minimum_light_exposure_ticks,maximum_light_exposure_ticks,minimum_temperature_c,maximum_temperature_c,effective_from_unix_ms,effective_until_unix_ms,publication_state,retention_hold,failure_reason,created_unix_ms,updated_unix_ms";
+    private const string CalibrationLibraryArtifactColumns =
+        "bundle_id,ordinal,artifact_id,reference_kind,role,source_index,manifest_relative_path,payload_relative_path,payload_sha256,ordered_source_artifact_ids_json,master_recipe_json";
+    private const string CalibrationLibraryStateColumns =
+        "state_key,active_bundle_id,version,last_selection_reason,last_selection_unix_ms,last_reconciliation_reason,last_reconciliation_unix_ms,updated_unix_ms";
+    private const string CalibrationLibraryActivationColumns =
+        "activation_id,idempotency_key,from_bundle_id,to_bundle_id,actor,reason,state_version,activated_unix_ms";
+    private const string CalibrationLibraryCommandColumns =
+        "idempotency_key,command_kind,payload_sha256,result_bundle_id,result_job_id,result_state_version,created_unix_ms,completed_unix_ms";
+    private const string CalibrationAcquisitionJobColumns =
+        "job_id,camera_key,idempotency_key,plan_json,plan_sha256,state,phase,attempt_count,bundle_id,failure_reason,actor,reason,created_unix_ms,updated_unix_ms,completed_unix_ms";
+    private const string CalibrationLibraryReconciliationColumns =
+        "reconciliation_id,evidence_key,source_relative_path,quarantine_relative_path,outcome,reason,operation_state,observed_bytes,observed_unix_ms,completed_unix_ms";
 
     private const string SchemaSql = """
         CREATE TABLE IF NOT EXISTS raw_capture_sequences (
@@ -2074,6 +2109,144 @@ internal sealed class SqliteRawCaptureJournal(
             occurred_unix_ms INTEGER NOT NULL,
             FOREIGN KEY (override_id) REFERENCES capture_schedule_overrides(override_id)
         ) STRICT;
+        """;
+
+    private const string CalibrationLibrarySchemaSql = """
+        CREATE TABLE IF NOT EXISTS calibration_library_bundles (
+            bundle_id TEXT PRIMARY KEY CHECK (length(bundle_id) BETWEEN 1 AND 128),
+            bundle_identity_sha256 TEXT NOT NULL UNIQUE CHECK (length(bundle_identity_sha256) = 64),
+            source TEXT NOT NULL CHECK (source IN ('legacy-synthetic-v1', 'virtual-acquisition-v1')),
+            bundle_json BLOB NOT NULL CHECK (length(bundle_json) BETWEEN 1 AND 1048576),
+            profile_relative_path TEXT NOT NULL UNIQUE,
+            profile_identity_sha256 TEXT NOT NULL CHECK (length(profile_identity_sha256) = 64),
+            acquisition_model_identity_sha256 TEXT NOT NULL CHECK (length(acquisition_model_identity_sha256) = 64),
+            agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128),
+            rig_id TEXT NOT NULL CHECK (length(rig_id) BETWEEN 1 AND 128),
+            rig_profile_sha256 TEXT NOT NULL CHECK (length(rig_profile_sha256) = 64),
+            sensor_profile_sha256 TEXT NOT NULL CHECK (length(sensor_profile_sha256) = 64),
+            input_layout_sha256 TEXT NOT NULL CHECK (length(input_layout_sha256) = 64),
+            output_layout_sha256 TEXT NOT NULL CHECK (length(output_layout_sha256) = 64),
+            minimum_gain REAL NOT NULL,
+            maximum_gain REAL NOT NULL CHECK (maximum_gain >= minimum_gain),
+            minimum_offset REAL,
+            maximum_offset REAL,
+            minimum_light_exposure_ticks INTEGER,
+            maximum_light_exposure_ticks INTEGER,
+            minimum_temperature_c REAL,
+            maximum_temperature_c REAL,
+            effective_from_unix_ms INTEGER NOT NULL,
+            effective_until_unix_ms INTEGER,
+            publication_state TEXT NOT NULL CHECK (publication_state IN ('published', 'incomplete', 'corrupt', 'quarantined')),
+            retention_hold INTEGER NOT NULL DEFAULT 1 CHECK (retention_hold IN (0, 1)),
+            failure_reason TEXT,
+            created_unix_ms INTEGER NOT NULL,
+            updated_unix_ms INTEGER NOT NULL,
+            CHECK ((minimum_offset IS NULL AND maximum_offset IS NULL) OR
+                   (minimum_offset IS NOT NULL AND maximum_offset IS NOT NULL AND maximum_offset >= minimum_offset)),
+            CHECK ((minimum_light_exposure_ticks IS NULL AND maximum_light_exposure_ticks IS NULL) OR
+                   (minimum_light_exposure_ticks > 0 AND maximum_light_exposure_ticks >= minimum_light_exposure_ticks)),
+            CHECK ((minimum_temperature_c IS NULL AND maximum_temperature_c IS NULL) OR
+                   (minimum_temperature_c IS NOT NULL AND maximum_temperature_c IS NOT NULL AND maximum_temperature_c >= minimum_temperature_c)),
+            CHECK (effective_until_unix_ms IS NULL OR effective_until_unix_ms > effective_from_unix_ms)
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS ix_calibration_library_bundles_selection
+            ON calibration_library_bundles(
+                publication_state, agent_id, rig_id, rig_profile_sha256, sensor_profile_sha256,
+                effective_from_unix_ms, effective_until_unix_ms, bundle_id);
+        CREATE INDEX IF NOT EXISTS ix_calibration_library_bundles_created
+            ON calibration_library_bundles(created_unix_ms DESC, bundle_id);
+        CREATE TABLE IF NOT EXISTS calibration_library_artifacts (
+            bundle_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+            artifact_id TEXT NOT NULL,
+            reference_kind TEXT NOT NULL CHECK (reference_kind IN ('bias', 'dark', 'flat', 'defect')),
+            role TEXT NOT NULL CHECK (role IN ('source', 'master')),
+            source_index INTEGER CHECK (source_index IS NULL OR source_index BETWEEN 0 AND 2),
+            manifest_relative_path TEXT NOT NULL UNIQUE,
+            payload_relative_path TEXT NOT NULL UNIQUE,
+            payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
+            ordered_source_artifact_ids_json BLOB NOT NULL,
+            master_recipe_json BLOB,
+            PRIMARY KEY (bundle_id, ordinal),
+            UNIQUE (bundle_id, artifact_id),
+            FOREIGN KEY (bundle_id) REFERENCES calibration_library_bundles(bundle_id) ON DELETE CASCADE
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS ix_calibration_library_artifacts_role
+            ON calibration_library_artifacts(bundle_id, role, reference_kind, source_index, ordinal);
+        CREATE TABLE IF NOT EXISTS calibration_library_state (
+            state_key INTEGER PRIMARY KEY CHECK (state_key = 1),
+            active_bundle_id TEXT,
+            version INTEGER NOT NULL CHECK (version >= 0),
+            last_selection_reason TEXT,
+            last_selection_unix_ms INTEGER,
+            last_reconciliation_reason TEXT,
+            last_reconciliation_unix_ms INTEGER,
+            updated_unix_ms INTEGER NOT NULL,
+            FOREIGN KEY (active_bundle_id) REFERENCES calibration_library_bundles(bundle_id)
+        ) STRICT;
+        INSERT INTO calibration_library_state(state_key, active_bundle_id, version, updated_unix_ms)
+        VALUES (1, NULL, 0, unixepoch('subsec') * 1000)
+        ON CONFLICT(state_key) DO NOTHING;
+        CREATE TABLE IF NOT EXISTS calibration_library_activations (
+            activation_id INTEGER PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+            from_bundle_id TEXT,
+            to_bundle_id TEXT NOT NULL,
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 128),
+            reason TEXT CHECK (reason IS NULL OR length(reason) <= 512),
+            state_version INTEGER NOT NULL CHECK (state_version > 0),
+            activated_unix_ms INTEGER NOT NULL,
+            FOREIGN KEY (from_bundle_id) REFERENCES calibration_library_bundles(bundle_id),
+            FOREIGN KEY (to_bundle_id) REFERENCES calibration_library_bundles(bundle_id)
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS ix_calibration_library_activations_history
+            ON calibration_library_activations(activated_unix_ms DESC, activation_id DESC);
+        CREATE TABLE IF NOT EXISTS calibration_library_commands (
+            idempotency_key TEXT PRIMARY KEY CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+            command_kind TEXT NOT NULL CHECK (command_kind IN ('acquire', 'cancel', 'activate', 'rollback')),
+            payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
+            result_bundle_id TEXT,
+            result_job_id TEXT,
+            result_state_version INTEGER CHECK (result_state_version IS NULL OR result_state_version >= 0),
+            created_unix_ms INTEGER NOT NULL,
+            completed_unix_ms INTEGER,
+            FOREIGN KEY (result_bundle_id) REFERENCES calibration_library_bundles(bundle_id),
+            FOREIGN KEY (result_job_id) REFERENCES calibration_acquisition_jobs(job_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS calibration_acquisition_jobs (
+            job_id TEXT PRIMARY KEY CHECK (length(job_id) BETWEEN 1 AND 128),
+            camera_key TEXT NOT NULL CHECK (length(camera_key) BETWEEN 1 AND 256),
+            idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+            plan_json BLOB NOT NULL CHECK (length(plan_json) BETWEEN 1 AND 1048576),
+            plan_sha256 TEXT NOT NULL CHECK (length(plan_sha256) = 64),
+            state TEXT NOT NULL CHECK (state IN ('planned', 'acquiring', 'building', 'publishing', 'published', 'failed', 'cancelled')),
+            phase TEXT NOT NULL CHECK (length(phase) BETWEEN 1 AND 64),
+            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+            bundle_id TEXT,
+            failure_reason TEXT,
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 128),
+            reason TEXT CHECK (reason IS NULL OR length(reason) <= 512),
+            created_unix_ms INTEGER NOT NULL,
+            updated_unix_ms INTEGER NOT NULL,
+            completed_unix_ms INTEGER,
+            FOREIGN KEY (bundle_id) REFERENCES calibration_library_bundles(bundle_id)
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS ix_calibration_acquisition_jobs_camera
+            ON calibration_acquisition_jobs(camera_key, state, created_unix_ms, job_id);
+        CREATE TABLE IF NOT EXISTS calibration_library_reconciliation (
+            reconciliation_id INTEGER PRIMARY KEY,
+            evidence_key TEXT NOT NULL UNIQUE CHECK (length(evidence_key) = 64),
+            source_relative_path TEXT NOT NULL,
+            quarantine_relative_path TEXT,
+            outcome TEXT NOT NULL CHECK (outcome IN ('adopted', 'failed', 'quarantined')),
+            reason TEXT NOT NULL,
+            operation_state TEXT NOT NULL CHECK (operation_state IN ('planned', 'completed')),
+            observed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (observed_bytes >= 0),
+            observed_unix_ms INTEGER NOT NULL,
+            completed_unix_ms INTEGER
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS ix_calibration_library_reconciliation_state
+            ON calibration_library_reconciliation(operation_state, observed_unix_ms, reconciliation_id);
         """;
 
     private const string LaneSchemaSql = """
