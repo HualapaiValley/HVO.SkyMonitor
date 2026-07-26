@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Verify the host-owned tmux OpenCode lifecycle contract without changing live state.
-# shellcheck disable=SC2016 # Literal grep patterns intentionally contain shell expressions.
+# Verify the in-container OpenCode lifecycle contract without changing live state.
+# shellcheck disable=SC2016 # Literal grep assertions intentionally contain shell syntax.
 
 set -euo pipefail
 
@@ -13,98 +13,79 @@ readonly DISABLE_SCRIPT="$REPO_ROOT/scripts/opencode:disable"
 readonly CONNECT_SCRIPT="$REPO_ROOT/scripts/opencode:connect"
 readonly CONFIGURE_SCRIPT="$REPO_ROOT/.devcontainer/configure-opencode.sh"
 readonly HOST_CONFIG_FILE="$REPO_ROOT/.devcontainer/opencode-host.conf"
+readonly DEVCONTAINER_FILE="$REPO_ROOT/.devcontainer/devcontainer.json"
 TEMP_DIR="$(mktemp -d -t hvo-opencode-test.XXXXXX)"
 readonly TEMP_DIR
+LIFECYCLE_SESSION=""
 
 cleanup() {
+    if [[ -n "$LIFECYCLE_SESSION" ]] && command -v tmux >/dev/null 2>&1; then
+        tmux kill-session -t "$LIFECYCLE_SESSION" 2>/dev/null || true
+    fi
     rm -rf "$TEMP_DIR"
 }
 trap cleanup EXIT
 
-for host_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT" "$CONNECT_SCRIPT"; do
-    grep -Fq 'Run this script on the Docker host, not inside the devcontainer.' "$host_script"
-    grep -Fq 'source "$HOST_CONFIG_FILE"' "$host_script"
-done
+bash -n \
+    "$REPO_ROOT"/.devcontainer/*.sh \
+    "$HOST_CONFIG_FILE" \
+    "$ENABLE_SCRIPT" \
+    "$DISABLE_SCRIPT" \
+    "$CONNECT_SCRIPT" \
+    "$REPO_ROOT/scripts/test:opencode"
+
 for lifecycle_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"; do
-    grep -Fq 'label=devcontainer.local_folder=$REPO_ROOT' "$lifecycle_script"
+    grep -Fq 'Run this script inside the devcontainer.' "$lifecycle_script"
+    grep -Fq 'source "$REPO_ROOT/.devcontainer/opencode-host.conf"' "$lifecycle_script"
+    grep -Fq '@hvo-opencode-repo' "$lifecycle_script"
+    grep -Fq '@hvo-opencode-port' "$lifecycle_script"
+    grep -Fq '#{pane_current_command}' "$lifecycle_script"
+    grep -Fq 'flock -n 9' "$lifecycle_script"
 done
-grep -Fq 'tmux new-session -d -s "$TMUX_SESSION" "$tmux_command" 9>&-' "$ENABLE_SCRIPT"
-for lifecycle_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"; do
-    grep -Fq 'opencode-lifecycle-v2.lock' "$lifecycle_script"
-done
-grep -Fq 'tmux set-option -t "$TMUX_SESSION" @hvo-opencode-repo "$REPO_ROOT"' "$ENABLE_SCRIPT"
-grep -Fq 'tmux set-option -t "$TMUX_SESSION" @hvo-opencode-container "$CONTAINER"' "$ENABLE_SCRIPT"
-grep -Fq 'tmux set-option -t "$TMUX_SESSION" @hvo-opencode-generation "$GENERATION"' "$ENABLE_SCRIPT"
-grep -Fq 'exec --interactive --tty' "$ENABLE_SCRIPT"
-grep -Fq 'TMUX_DOCKER_COMMAND' "$ENABLE_SCRIPT"
-grep -Fq -- '-u DOCKER_HOST -u DOCKER_CONTEXT' "$ENABLE_SCRIPT"
-grep -Fq 'exec opencode --hostname 0.0.0.0 --port %q --continue' "$ENABLE_SCRIPT"
-grep -Fq 'OPENCODE_SERVER_PASSWORD' "$ENABLE_SCRIPT"
-grep -Fq '"127.0.0.1:${HOST_PORT}"' "$ENABLE_SCRIPT"
-grep -Fq 'flock -n 9' "$ENABLE_SCRIPT"
-grep -Fq 'container_port_in_use' "$ENABLE_SCRIPT"
+
+grep -Fq 'tmux new-session -d -s "$TMUX_SESSION"' "$ENABLE_SCRIPT"
+grep -Fq 'exec %q serve --hostname 0.0.0.0 --port %q' "$ENABLE_SCRIPT"
+grep -Fq 'readonly OPENCODE_BINARY=/usr/local/bin/opencode' "$ENABLE_SCRIPT"
+grep -Fq 'Cleared exited OpenCode tmux session' "$ENABLE_SCRIPT"
+grep -Fq 'leaving it unchanged.' "$ENABLE_SCRIPT"
 grep -Fq 'tmux kill-session -t "$TMUX_SESSION"' "$DISABLE_SCRIPT"
-grep -Fq 'tmux_option @hvo-opencode-repo' "$DISABLE_SCRIPT"
-grep -Fq 'tmux_option @hvo-opencode-container' "$DISABLE_SCRIPT"
-grep -Fq '"${metadata[2]:-}" == "$(cut -d " " -f 22 "/proc/$pid/stat"' "$DISABLE_SCRIPT"
-grep -Fq '"${metadata[3]:-}" == "$expected_uid"' "$DISABLE_SCRIPT"
-grep -Fq '"${metadata[4]:-}" == "$(hostname)"' "$DISABLE_SCRIPT"
-grep -Fq '"${metadata[7]:-}" == "$expected_generation"' "$DISABLE_SCRIPT"
-grep -Fq 'PID start ticks survive exec' "$DISABLE_SCRIPT"
-if grep -Fq 'readlink -f "/proc/$pid/exe"' "$DISABLE_SCRIPT"; then
-    echo "Managed shutdown must not depend on mutable process executable state." >&2
-    exit 1
-fi
-grep -Fq 'docker exec --user "$CONTAINER_USER"' "$DISABLE_SCRIPT"
-grep -Fq 'flock -n 9' "$DISABLE_SCRIPT"
-grep -Fq 'managed_process_absent' "$DISABLE_SCRIPT"
-grep -Fq 'process_state" == Z' "$DISABLE_SCRIPT"
-grep -Fq '[[ -e "$metadata_file" ]] || exit 2' "$DISABLE_SCRIPT"
-grep -Fq 'tmux_pane_dead && ! container_port_in_use' "$DISABLE_SCRIPT"
-grep -Fq 'Cleared exited tmux session' "$DISABLE_SCRIPT"
-grep -Fq "Cleared exited tmux state for replaced devcontainer" "$DISABLE_SCRIPT"
-grep -Fq "docker inspect --format '{{.State.Running}}' \"\$SESSION_CONTAINER\"" "$DISABLE_SCRIPT"
-grep -Fq 'Cleared stale OpenCode lifecycle state; no managed process remains.' "$DISABLE_SCRIPT"
-grep -Fq 'no tmux session or server listener remains' "$DISABLE_SCRIPT"
-grep -Fq 'container_port_in_use' "$DISABLE_SCRIPT"
-grep -Fq 'tmux attach-session -t "$TMUX_SESSION"' "$CONNECT_SCRIPT"
-grep -Fq 'tmux switch-client -t "$TMUX_SESSION"' "$CONNECT_SCRIPT"
-grep -Fq 'tmux_option @hvo-opencode-repo' "$CONNECT_SCRIPT"
-grep -Fq 'tmux_option @hvo-opencode-generation' "$CONNECT_SCRIPT"
-grep -Fq "'#{pane_dead}'" "$CONNECT_SCRIPT"
-grep -Fq "Clear it safely with: \$REPO_ROOT/scripts/opencode:disable" "$CONNECT_SCRIPT"
-if grep -Fq 'nohup opencode' "$ENABLE_SCRIPT"; then
-    echo "Host lifecycle must not daemonize OpenCode outside tmux." >&2
-    exit 1
-fi
-if grep -Fq 'scripts/opencode:enable' "$REPO_ROOT/.devcontainer/post-start.sh"; then
-    echo "The devcontainer still starts OpenCode automatically." >&2
-    exit 1
-fi
+grep -Fq 'OPENCODE_CONTAINER_PORT must be an integer from 1 through 65535.' "$DISABLE_SCRIPT"
+grep -Fq 'OpenCode state directory is missing; leaving tmux session' "$DISABLE_SCRIPT"
+grep -Fq 'Cleared exited OpenCode tmux session' "$DISABLE_SCRIPT"
+grep -Fq 'leaving it running.' "$DISABLE_SCRIPT"
+grep -Fq 'if [[ -f /.dockerenv ]]' "$CONNECT_SCRIPT"
+grep -Fq 'OpenCode port must be an integer from 1 through 65535.' "$CONNECT_SCRIPT"
+grep -Fq 'exec "$OPENCODE_BINARY" attach "http://127.0.0.1:${PORT}" "$@"' "$CONNECT_SCRIPT"
+grep -Fq 'scripts/opencode:enable' "$REPO_ROOT/.devcontainer/post-start.sh"
 
 # shellcheck source=.devcontainer/opencode-host.conf
 source "$HOST_CONFIG_FILE"
 [[ "$OPENCODE_TMUX_SESSION" =~ ^[A-Za-z0-9_.-]+$ ]]
 test "$OPENCODE_CONTAINER_PORT" = 4096
-test "$OPENCODE_HOST_PORT" = 4096
-grep -Fq "\"127.0.0.1:${OPENCODE_HOST_PORT}:${OPENCODE_CONTAINER_PORT}\"" \
-    "$REPO_ROOT/.devcontainer/devcontainer.json"
-if grep -Fq '"4096:4096"' "$REPO_ROOT/.devcontainer/devcontainer.json"; then
+test "$OPENCODE_HOST_PORT" = 4097
+grep -Fq "\"127.0.0.1:${OPENCODE_HOST_PORT}:${OPENCODE_CONTAINER_PORT}\"" "$DEVCONTAINER_FILE"
+if grep -Fq "\"0.0.0.0:${OPENCODE_HOST_PORT}:${OPENCODE_CONTAINER_PORT}\"" "$DEVCONTAINER_FILE"; then
     echo "OpenCode must not be published on every Docker-host interface." >&2
     exit 1
 fi
-grep -Fq '4096: OpenCode server' "$REPO_ROOT/.devcontainer/devcontainer.json"
-if grep -Eq '^[[:space:]]+4096,?$' "$REPO_ROOT/.devcontainer/devcontainer.json"; then
-    echo "OpenCode must not use automatic devcontainer port forwarding." >&2
+grep -Fq '"label": "OpenCode server (SSH tunnel only)"' "$DEVCONTAINER_FILE"
+grep -Fq '"onAutoForward": "ignore"' "$DEVCONTAINER_FILE"
+if grep -Fq 'opencode-bin' "$DEVCONTAINER_FILE"; then
+    echo "The root-owned OpenCode executable must not be replaced by writable persisted state." >&2
     exit 1
 fi
-grep -Fq '"label": "OpenCode (SSH tunnel only)"' "$REPO_ROOT/.devcontainer/devcontainer.json"
-grep -Fq '"onAutoForward": "ignore"' "$REPO_ROOT/.devcontainer/devcontainer.json"
-if grep -Fq 'target": "/var/lib/tailscale"' "$REPO_ROOT/.devcontainer/devcontainer.json"; then
-    echo "Legacy persisted Tailscale Serve state must not be mounted." >&2
+
+grep -Fq 'ARG OPENCODE_VERSION=1.18.2' "$REPO_ROOT/.devcontainer/Dockerfile"
+grep -Fq '88f9b79f44b02e8e7c33e528832047c177b0cb20939484afaff22425a47f3d81' \
+    "$REPO_ROOT/.devcontainer/Dockerfile"
+grep -Fq '93352b30d37d8da2e5c226085f1afbf37cf57cfcecedc813520ff2d0f8581540' \
+    "$REPO_ROOT/.devcontainer/Dockerfile"
+grep -Fq 'tar -xzf "/tmp/${opencode_archive}" -C /usr/local/bin opencode' \
+    "$REPO_ROOT/.devcontainer/Dockerfile"
+if grep -Fq '/home/vscode/.opencode/bin' "$REPO_ROOT/.devcontainer/Dockerfile"; then
+    echo "A user-writable OpenCode executable must not shadow the pinned binary." >&2
     exit 1
 fi
-grep -Fq 'bash "$SCRIPT_DIR/configure-opencode.sh"' "$REPO_ROOT/.devcontainer/post-create.sh"
 
 mkdir -p "$TEMP_DIR/legacy-config" "$TEMP_DIR/legacy-data"
 printf '{\n\t"$schema": "https://opencode.ai/config.json",\n\t"permission": "allow"\n}\n' \
@@ -130,25 +111,153 @@ env -i HOME="$TEMP_DIR/home" PATH="/usr/bin:/bin" \
 grep -Fqx '{"permission":"ask"}' "$TEMP_DIR/custom-config/opencode.jsonc"
 test "$(stat -c %a "$TEMP_DIR/custom-config/opencode.jsonc")" = 600
 
-grep -Fq 'OpenCode from the Docker host' "$REPO_ROOT/README.md"
-grep -Fq 'host `tmux` session' "$REPO_ROOT/README.md"
-grep -Fq './scripts/opencode:connect' "$REPO_ROOT/README.md"
-grep -Fq "ssh -t hvo-dev-01 'cd /home/roys/development/HVO.SkyMonitor && ./scripts/opencode:connect'" \
+grep -Fq 'persistent in-container server' "$REPO_ROOT/README.md"
+grep -Fq '127.0.0.1:4097' "$REPO_ROOT/README.md"
+grep -Fq 'ssh -o ExitOnForwardFailure=yes -N -L 127.0.0.1:4097:127.0.0.1:4097' \
     "$REPO_ROOT/README.md"
-if grep -Fq 'opencode attach http://' "$ENABLE_SCRIPT" "$REPO_ROOT/README.md"; then
-    echo "The supported remote workflow must use the host tmux connection script." >&2
+if grep -Fq 'publishes it to every Docker-host interface' "$REPO_ROOT/README.md"; then
+    echo "README must not recommend plaintext all-interface publication." >&2
     exit 1
 fi
 
-if [[ -f /.dockerenv ]]; then
-    for host_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT" "$CONNECT_SCRIPT"; do
-        if bash "$host_script" >"$TEMP_DIR/host-guard.out" 2>&1; then
-            echo "$(basename "$host_script") unexpectedly ran inside the devcontainer." >&2
+if [[ ! -f /.dockerenv ]]; then
+    for lifecycle_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"; do
+        if bash "$lifecycle_script" >"$TEMP_DIR/container-guard.out" 2>&1; then
+            echo "$(basename "$lifecycle_script") unexpectedly ran outside the devcontainer." >&2
             exit 1
         fi
-        grep -Fq 'Run this script on the Docker host, not inside the devcontainer.' \
-            "$TEMP_DIR/host-guard.out"
+        grep -Fq 'Run this script inside the devcontainer.' "$TEMP_DIR/container-guard.out"
     done
 fi
 
-echo "OpenCode host tmux lifecycle contract passed."
+if [[ -f /.dockerenv ]] \
+    && [[ -x /usr/local/bin/opencode ]] \
+    && command -v curl >/dev/null 2>&1 \
+    && command -v python3 >/dev/null 2>&1 \
+    && command -v script >/dev/null 2>&1 \
+    && command -v ss >/dev/null 2>&1 \
+    && command -v tmux >/dev/null 2>&1; then
+    LIFECYCLE_SESSION="hvo-opencode-test-$$"
+    lifecycle_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+    lifecycle_data="$TEMP_DIR/lifecycle-data"
+    mkdir -p "$lifecycle_data"
+    printf 'test-only-password\n' > "$lifecycle_data/server-password"
+    chmod 600 "$lifecycle_data/server-password"
+
+    lifecycle_env=(
+        env
+        "OPENCODE_TMUX_SESSION=$LIFECYCLE_SESSION"
+        "OPENCODE_CONTAINER_PORT=$lifecycle_port"
+        "OPENCODE_DATA_DIR=$lifecycle_data"
+    )
+
+    for invalid_port in 0 0100000 099999 65536 100000; do
+        if env \
+            "OPENCODE_TMUX_SESSION=${LIFECYCLE_SESSION}-invalid" \
+            "OPENCODE_CONTAINER_PORT=$invalid_port" \
+            "OPENCODE_DATA_DIR=$lifecycle_data" \
+            "$ENABLE_SCRIPT" > "$TEMP_DIR/invalid-enable.out" 2>&1; then
+            echo "OpenCode enable accepted invalid port '$invalid_port'." >&2
+            exit 1
+        fi
+        grep -Fq 'OPENCODE_CONTAINER_PORT must be an integer from 1 through 65535.' \
+            "$TEMP_DIR/invalid-enable.out"
+
+        if env \
+            "OPENCODE_TMUX_SESSION=${LIFECYCLE_SESSION}-invalid" \
+            "OPENCODE_CONTAINER_PORT=$invalid_port" \
+            "OPENCODE_DATA_DIR=$lifecycle_data" \
+            "$DISABLE_SCRIPT" > "$TEMP_DIR/invalid-disable.out" 2>&1; then
+            echo "OpenCode disable accepted invalid port '$invalid_port'." >&2
+            exit 1
+        fi
+        grep -Fq 'OPENCODE_CONTAINER_PORT must be an integer from 1 through 65535.' \
+            "$TEMP_DIR/invalid-disable.out"
+
+        if env \
+            "OPENCODE_CONTAINER_PORT=$invalid_port" \
+            "OPENCODE_DATA_DIR=$lifecycle_data" \
+            script --quiet --return --command "$CONNECT_SCRIPT" /dev/null \
+            > "$TEMP_DIR/invalid-connect.out" 2>&1; then
+            echo "OpenCode connect accepted invalid port '$invalid_port'." >&2
+            exit 1
+        fi
+        grep -Fq 'OpenCode port must be an integer from 1 through 65535.' \
+            "$TEMP_DIR/invalid-connect.out"
+    done
+
+    first_run_session="${LIFECYCLE_SESSION}-first-run"
+    first_run_data="$TEMP_DIR/missing-lifecycle-data"
+    env \
+        "OPENCODE_TMUX_SESSION=$first_run_session" \
+        "OPENCODE_CONTAINER_PORT=$lifecycle_port" \
+        "OPENCODE_DATA_DIR=$first_run_data" \
+        "$DISABLE_SCRIPT" > "$TEMP_DIR/first-run-disable.out"
+    grep -Fq "OpenCode is not running in internal tmux session '$first_run_session'." \
+        "$TEMP_DIR/first-run-disable.out"
+    if [[ -e "$first_run_data" ]]; then
+        echo "First-run disable unexpectedly created OpenCode state." >&2
+        exit 1
+    fi
+
+    "${lifecycle_env[@]}" "$ENABLE_SCRIPT" > "$TEMP_DIR/enable.out"
+    grep -Fq "OpenCode is running in internal tmux session '$LIFECYCLE_SESSION'." "$TEMP_DIR/enable.out"
+    test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+        --user 'opencode:test-only-password' \
+        "http://127.0.0.1:${lifecycle_port}/global/health")" = 200
+
+    "${lifecycle_env[@]}" "$ENABLE_SCRIPT" > "$TEMP_DIR/enable-again.out"
+    grep -Fq "OpenCode is already running in internal tmux session '$LIFECYCLE_SESSION'." \
+        "$TEMP_DIR/enable-again.out"
+
+    tmux set-option -t "$LIFECYCLE_SESSION" @hvo-opencode-port invalid
+    if "${lifecycle_env[@]}" "$DISABLE_SCRIPT" > "$TEMP_DIR/mismatched-disable.out" 2>&1; then
+        echo "OpenCode disable accepted mismatched lifecycle identity." >&2
+        exit 1
+    fi
+    tmux has-session -t "$LIFECYCLE_SESSION"
+    grep -Fq 'leaving it running.' "$TEMP_DIR/mismatched-disable.out"
+
+    tmux set-option -t "$LIFECYCLE_SESSION" @hvo-opencode-port "$lifecycle_port"
+    "${lifecycle_env[@]}" "$DISABLE_SCRIPT" > "$TEMP_DIR/disable.out"
+    if tmux has-session -t "$LIFECYCLE_SESSION" 2>/dev/null; then
+        echo "OpenCode disable left the verified test session running." >&2
+        exit 1
+    fi
+
+    create_dead_lifecycle_session() {
+        tmux new-session -d -s "$LIFECYCLE_SESSION" sleep 30
+        tmux set-option -t "$LIFECYCLE_SESSION" @hvo-opencode-repo "$REPO_ROOT"
+        tmux set-option -t "$LIFECYCLE_SESSION" @hvo-opencode-port "$lifecycle_port"
+        tmux set-window-option -t "$LIFECYCLE_SESSION" remain-on-exit on
+        tmux send-keys -t "$LIFECYCLE_SESSION" C-c
+        for _ in {1..20}; do
+            if [[ "$(tmux display-message -p -t "$LIFECYCLE_SESSION" '#{pane_dead}')" == 1 ]]; then
+                return
+            fi
+            sleep 0.1
+        done
+        echo "OpenCode test session did not reach the expected dead-pane state." >&2
+        exit 1
+    }
+
+    create_dead_lifecycle_session
+    "${lifecycle_env[@]}" "$ENABLE_SCRIPT" > "$TEMP_DIR/dead-pane-enable.out"
+    grep -Fq "Cleared exited OpenCode tmux session '$LIFECYCLE_SESSION'." \
+        "$TEMP_DIR/dead-pane-enable.out"
+    grep -Fq "OpenCode is running in internal tmux session '$LIFECYCLE_SESSION'." \
+        "$TEMP_DIR/dead-pane-enable.out"
+    "${lifecycle_env[@]}" "$DISABLE_SCRIPT" > "$TEMP_DIR/restarted-disable.out"
+
+    create_dead_lifecycle_session
+    "${lifecycle_env[@]}" "$DISABLE_SCRIPT" > "$TEMP_DIR/dead-pane-disable.out"
+    grep -Fq "Cleared exited OpenCode tmux session '$LIFECYCLE_SESSION'." \
+        "$TEMP_DIR/dead-pane-disable.out"
+    if tmux has-session -t "$LIFECYCLE_SESSION" 2>/dev/null; then
+        echo "OpenCode disable left the matching dead-pane test session running." >&2
+        exit 1
+    fi
+    LIFECYCLE_SESSION=""
+fi
+
+echo "OpenCode in-container lifecycle contract passed."

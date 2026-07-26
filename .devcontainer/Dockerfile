@@ -6,7 +6,7 @@ ARG TAILSCALE_VERSION=1.98.8
 ARG OPENCODE_VERSION=1.18.2
 
 ENV NUGET_XMLDOC_MODE=
-ENV PATH="/home/vscode/.dotnet/tools:/home/vscode/.opencode/bin:${PATH}"
+ENV PATH="/home/vscode/.dotnet/tools:${PATH}"
 
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -24,6 +24,7 @@ RUN apt-get update \
     shellcheck \
     sqlite3 \
     tar \
+    tmux \
     && curl -fsSL --retry 3 \
     https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg \
     -o /tmp/tailscale-archive-keyring.gpg \

@@ -124,7 +124,7 @@ The devcontainer configuration includes:
 - **.NET 10 SDK** - Latest .NET SDK for building and running applications
 - **Docker CLI** - Manage host and remote Docker contexts from the dev container
 - **.NET local tools** - Pinned Entity Framework Core and ReportGenerator tooling restored automatically
-- **OpenCode CLI** - Checksum-verified, pinned CLI available for host-owned persistent sessions on port 4096
+- **OpenCode CLI** - Checksum-verified, pinned CLI serving persistent in-container sessions on port 4096
 - **Tailscale CLI** - Signature-verified, pinned client available in the container image
 - **Command-line tools** - `jq`, `rg`, `shellcheck`, and `sqlite3` are installed in the container image
 - **C# Dev Kit** - Complete C# development experience with IntelliSense, debugging, and more
@@ -137,56 +137,40 @@ The devcontainer configuration includes:
 - **Shared diagnostics/security library** - Cross-cutting middleware (correlation IDs, exception handling, antiforgery helpers) and API-key primitives live in `src/HVO.SkyMonitor.Common`, consumed by the main site and reusable by future services.
 - **Camera-agent independence** - Projects under `HVO.SkyMonitor.CameraAgent.*` keep acquisition and local processing independent from LogicHost while registering their own diagnostics and security components.
 
-### OpenCode from the Docker host
+### OpenCode from the devcontainer
 
-OpenCode is installed in the devcontainer but is not started automatically. Its credentials are retained under the ignored `.devcontainer/state/` directory, so rebuilding the same workspace does not require authentication again.
-
-The devcontainer publishes port `4096` only on the Docker host's loopback interface. From the host workspace, `scripts/opencode:enable` discovers the running devcontainer and starts its interactive OpenCode process inside a detached host `tmux` session. The tmux-owned terminal and OpenCode server survive SSH disconnects. Authenticate providers once with `opencode auth login`; provider credentials then persist across rebuilds in the ignored state directory.
-
-The endpoint requires OpenCode Basic Auth. Its username is `opencode`; the post-create setup generates a random password at `.devcontainer/state/opencode-data/server-password` and retains it across rebuilds. Read that ignored file locally when authenticating.
-
-Install `tmux`, Docker, `curl`, and `flock` on the Docker host. After the devcontainer is running, start OpenCode from an SSH shell on that host:
+OpenCode runs as a persistent in-container server supervised by an internal `tmux` session. The server survives terminal, SSH, browser, and desktop-client disconnects; each client is independent and `/exit` closes only that client. The server starts automatically during devcontainer startup and can be managed from a devcontainer terminal:
 
 ```bash
 ./scripts/opencode:enable
+./scripts/opencode:disable
 ```
 
-An existing devcontainer created before the loopback mapping was added must be rebuilt first. The enable script refuses legacy all-interface port publishing and never stops an existing OpenCode process implicitly.
+The server listens on container port `4096`; Docker publishes it only on the Docker host's loopback interface at `127.0.0.1:4097`. Inside the devcontainer, `./scripts/opencode:connect --continue` attaches through port `4096`. On the Docker host, the same command reads the persisted password and attaches through port `4097`. Use `--session <session-id>` to attach to a specific session.
 
-Reattach a host terminal to the persistent TUI with the repository-owned connection command:
+For a browser, desktop client, or TUI on another machine, create an SSH tunnel to the Docker host:
 
 ```bash
-./scripts/opencode:connect
+ssh -o ExitOnForwardFailure=yes -N -L 127.0.0.1:4097:127.0.0.1:4097 hvo-dev-01
 ```
 
-From another machine, allocate an SSH terminal and run that same host command:
+The remote client can then connect to `http://127.0.0.1:4097`. Alternatively, allocate an SSH terminal and run the host-side connection command directly with `ssh -t hvo-dev-01 'cd /path/to/HVO.SkyMonitor && ./scripts/opencode:connect --continue'`. Host-side TUI attachment requires an OpenCode CLI compatible with the image-pinned server version.
 
-```bash
-ssh -t hvo-dev-01 'cd /home/roys/development/HVO.SkyMonitor && ./scripts/opencode:connect'
-```
+The endpoint requires OpenCode Basic Auth. Its username is `opencode`; post-create setup generates a random password at `.devcontainer/state/opencode-data/server-password` and retains it across rebuilds. The SSH tunnel protects the otherwise plaintext HTTP connection. Only one client should actively control a particular session at a time.
 
-If SSH disconnects, OpenCode continues inside host `tmux`; rerun the command to reconnect. To disconnect intentionally without stopping OpenCode, press `Ctrl-b` and then `d` to detach tmux. The OpenCode `/exit` command stops the managed process instead. Running `opencode:connect` inside the devcontainer is rejected because the tmux session belongs to the Docker host.
-
-The loopback-only HTTP endpoint remains protected by Basic Auth for OpenCode's internal client/server communication; remote operators use the SSH TUI command above rather than connecting to that endpoint directly. Set `HVO_OPENCODE_CONTAINER` only if automatic devcontainer discovery is ambiguous. The non-secret `.devcontainer/opencode-host.conf` keeps the tmux session, container port, and Docker-host port consistent across all lifecycle commands. Keep its host/container ports aligned with the loopback-only `appPort` mapping in `.devcontainer/devcontainer.json`.
+The non-secret [`.devcontainer/opencode-host.conf`](.devcontainer/opencode-host.conf) keeps the internal tmux identity, container port, and Docker-host port consistent with [`.devcontainer/devcontainer.json`](.devcontainer/devcontainer.json).
 
 Another repository can use the same scripts without colliding by choosing its own host port and tmux session while retaining OpenCode's container port:
 
 ```bash
 OPENCODE_TMUX_SESSION=hvo-website-opencode
 OPENCODE_CONTAINER_PORT=4096
-OPENCODE_HOST_PORT=4097
+OPENCODE_HOST_PORT=4098
 ```
 
-Its devcontainer would publish `127.0.0.1:4097:4096`. Host ports and tmux session names must be unique for concurrently running repositories.
-Stop the repository's managed session before changing these values.
+Its devcontainer would publish `127.0.0.1:4098:4096`. Host ports and tmux session names must be unique for concurrently running workspaces. Stop the repository's managed session before changing these values and recreate the devcontainer for the Docker port change.
 
-To stop both the tmux session and its validated in-container OpenCode process, run this from the Docker host:
-
-```bash
-./scripts/opencode:disable
-```
-
-If the devcontainer was rebuilt before this command ran, `opencode:disable` also clears stale lifecycle state after proving that the recorded process no longer exists. Restart a stopped devcontainer before running the command.
+The OpenCode executable is pinned, checksum-verified, and installed root-owned in the container image. Provider credentials, configuration, and sessions remain in ignored `.devcontainer/state/` mounts across rebuilds.
 
 ### Extensions
 

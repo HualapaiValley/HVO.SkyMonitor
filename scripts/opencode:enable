@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# opencode:enable - Start persistent OpenCode in the devcontainer from the Docker host.
-# Usage: ./scripts/opencode:enable
+# Start this workspace's persistent OpenCode server inside the devcontainer.
 
 set -euo pipefail
 
@@ -8,245 +7,108 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 readonly REPO_ROOT
-readonly HOST_CONFIG_FILE="$REPO_ROOT/.devcontainer/opencode-host.conf"
-# shellcheck source=.devcontainer/opencode-host.conf
-source "$HOST_CONFIG_FILE"
-TMUX_SESSION="${OPENCODE_TMUX_SESSION:?OPENCODE_TMUX_SESSION is required}"
-readonly TMUX_SESSION
-CONTAINER_PORT="${OPENCODE_CONTAINER_PORT:?OPENCODE_CONTAINER_PORT is required}"
-readonly CONTAINER_PORT
-HOST_PORT="${OPENCODE_HOST_PORT:?OPENCODE_HOST_PORT is required}"
-readonly HOST_PORT
-readonly CONTAINER_USER="vscode"
-CONTAINER_WORKSPACE="/workspaces/$(basename "$REPO_ROOT")"
-readonly CONTAINER_WORKSPACE
-readonly CONTAINER_METADATA_FILE="/tmp/hvo-opencode-tmux.meta"
-readonly CONTAINER_PASSWORD_FILE="/home/${CONTAINER_USER}/.local/share/opencode/server-password"
-readonly HOST_PASSWORD_FILE="$REPO_ROOT/.devcontainer/state/opencode-data/server-password"
-readonly HOST_LOCK_FILE="$REPO_ROOT/.devcontainer/state/opencode-lifecycle-v2.lock"
-readonly HOST_GENERATION_FILE="$REPO_ROOT/.devcontainer/state/opencode-generation"
+# shellcheck source=.devcontainer/opencode-host.conf disable=SC1091
+source "$REPO_ROOT/.devcontainer/opencode-host.conf"
+
+readonly TMUX_SESSION="${OPENCODE_TMUX_SESSION:?OPENCODE_TMUX_SESSION is required}"
+readonly CONTAINER_PORT="${OPENCODE_CONTAINER_PORT:?OPENCODE_CONTAINER_PORT is required}"
+readonly PASSWORD_FILE="${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}/server-password"
+readonly LOCK_FILE="${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}/server-lifecycle.lock"
+readonly OPENCODE_BINARY=/usr/local/bin/opencode
 
 require_command() {
-    if ! command -v "$1" >/dev/null 2>&1; then
-        echo "Required host command '$1' is not installed." >&2
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "Required command '$1' is not installed." >&2
         exit 1
-    fi
-}
-
-validate_container() {
-    local container="$1"
-    local expected_label="$REPO_ROOT"
-    local actual_label
-    if [[ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)" != true ]]; then
-        echo "Devcontainer '$container' is not running." >&2
-        exit 1
-    fi
-    actual_label="$(docker inspect \
-        --format '{{index .Config.Labels "devcontainer.local_folder"}}' \
-        "$container" 2>/dev/null || true)"
-    if [[ "$actual_label" != "$expected_label" ]]; then
-        echo "Container '$container' belongs to '$actual_label', not '$expected_label'." >&2
-        exit 1
-    fi
-}
-
-canonical_container() {
-    validate_container "$1"
-    docker inspect --format '{{.Id}}' "$1"
-}
-
-discover_container() {
-    if [[ -n "${HVO_OPENCODE_CONTAINER:-}" ]]; then
-        canonical_container "$HVO_OPENCODE_CONTAINER"
-        return
-    fi
-
-    mapfile -t containers < <(docker ps \
-        --filter "label=devcontainer.local_folder=$REPO_ROOT" \
-        --format '{{.ID}}')
-    if (( ${#containers[@]} != 1 )); then
-        echo "Expected one running devcontainer for '$REPO_ROOT'; found ${#containers[@]}." >&2
-        echo "Set HVO_OPENCODE_CONTAINER to the intended labeled container name or ID." >&2
-        exit 1
-    fi
-    canonical_container "${containers[0]}"
-}
-
-health_status() {
-    curl --connect-timeout 2 --max-time 5 -sS -o /dev/null -w '%{http_code}' \
-        "http://127.0.0.1:${HOST_PORT}/global/health" 2>/dev/null || true
-}
-
-container_port_in_use() {
-    local listeners
-    if ! listeners="$(docker exec --user "$CONTAINER_USER" "$CONTAINER" \
-        ss -H -ltn "sport = :${CONTAINER_PORT}" 2>/dev/null)"; then
-        echo "Could not inspect TCP listeners in devcontainer '$CONTAINER'." >&2
-        echo "Rebuild the devcontainer to restore the required 'ss' command." >&2
-        exit 1
-    fi
-    [[ -n "$listeners" ]]
+    }
 }
 
 tmux_option() {
     tmux show-options -v -t "$TMUX_SESSION" "$1" 2>/dev/null || true
 }
 
-validate_local_docker() {
-    local context
-    local endpoint
-    if [[ -n "${DOCKER_HOST:-}" && "$DOCKER_HOST" != unix://* ]]; then
-        echo "DOCKER_HOST must use a local Unix socket, not '$DOCKER_HOST'." >&2
-        exit 1
-    fi
-    context="$(docker context show)"
-    endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' "$context")"
-    if [[ "$endpoint" != unix://* ]]; then
-        echo "Docker context '$context' is remote ($endpoint); run this script on its Docker host." >&2
-        exit 1
-    fi
+session_identity_matches() {
+    [[ "$(tmux_option @hvo-opencode-repo)" == "$REPO_ROOT" ]] \
+        && [[ "$(tmux_option @hvo-opencode-port)" == "$CONTAINER_PORT" ]]
 }
 
-cleanup_unowned_session() {
-    if [[ "${SESSION_OWNED:-false}" != true ]]; then
-        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-    fi
+health_status() {
+    curl --silent --output /dev/null --write-out '%{http_code}' \
+        --connect-timeout 2 --max-time 5 \
+        --user "opencode:$(<"$PASSWORD_FILE")" \
+        "http://127.0.0.1:${CONTAINER_PORT}/global/health" 2>/dev/null || true
 }
 
-if [[ -f /.dockerenv ]]; then
-    echo "Run this script on the Docker host, not inside the devcontainer." >&2
+if [[ ! -f /.dockerenv ]]; then
+    echo "Run this script inside the devcontainer." >&2
     exit 1
 fi
-for command_name in docker tmux curl env flock; do
+for command_name in curl flock ss tmux; do
     require_command "$command_name"
 done
+if [[ ! -x "$OPENCODE_BINARY" ]]; then
+    echo "Pinned OpenCode executable is missing at $OPENCODE_BINARY." >&2
+    exit 1
+fi
 if [[ ! "$TMUX_SESSION" =~ ^[A-Za-z0-9_.-]+$ ]]; then
     echo "OPENCODE_TMUX_SESSION contains unsupported characters: '$TMUX_SESSION'." >&2
     exit 1
 fi
-for port_name in CONTAINER_PORT HOST_PORT; do
-    port_value="${!port_name}"
-    if [[ ! "$port_value" =~ ^[0-9]+$ ]] || (( port_value < 1 || port_value > 65535 )); then
-        echo "$port_name must be an integer from 1 through 65535." >&2
-        exit 1
-    fi
-done
-validate_local_docker
-DOCKER_BIN="$(command -v docker)"
-readonly DOCKER_BIN
-ENV_BIN="$(command -v env)"
-readonly ENV_BIN
-if [[ -n "${DOCKER_HOST:-}" ]]; then
-    printf -v TMUX_DOCKER_COMMAND \
-        '%q -u DOCKER_CONTEXT DOCKER_HOST=%q %q' \
-        "$ENV_BIN" "$DOCKER_HOST" "$DOCKER_BIN"
-else
-    DOCKER_CONTEXT_NAME="$(docker context show)"
-    readonly DOCKER_CONTEXT_NAME
-    printf -v TMUX_DOCKER_COMMAND \
-        '%q -u DOCKER_HOST -u DOCKER_CONTEXT %q --context %q' \
-        "$ENV_BIN" "$DOCKER_BIN" "$DOCKER_CONTEXT_NAME"
-fi
-readonly TMUX_DOCKER_COMMAND
-if [[ ! -d "$(dirname "$HOST_LOCK_FILE")" ]]; then
-    echo "OpenCode state directory is missing; run the devcontainer initialize setup first." >&2
+if [[ ! "$CONTAINER_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$CONTAINER_PORT > 65535 )); then
+    echo "OPENCODE_CONTAINER_PORT must be an integer from 1 through 65535." >&2
     exit 1
 fi
-exec 9>"$HOST_LOCK_FILE"
-if ! flock -n 9; then
-    echo "Another OpenCode lifecycle operation is already running for '$REPO_ROOT'." >&2
+if [[ ! -s "$PASSWORD_FILE" ]]; then
+    echo "OpenCode password is missing at $PASSWORD_FILE. Run post-create setup first." >&2
     exit 1
 fi
 
-CONTAINER="$(discover_container)"
-readonly CONTAINER
-mapfile -t published_bindings < <(
-    docker port "$CONTAINER" "${CONTAINER_PORT}/tcp" 2>/dev/null || true
-)
-if (( ${#published_bindings[@]} != 1 )) \
-    || [[ "${published_bindings[0]:-}" != "127.0.0.1:${HOST_PORT}" ]]; then
-    echo "Devcontainer '$CONTAINER' must publish container TCP port ${CONTAINER_PORT} only as 127.0.0.1:${HOST_PORT}." >&2
-    echo "Rebuild it after confirming .devcontainer/devcontainer.json uses the loopback mapping." >&2
-    exit 1
-fi
-if [[ ! -s "$HOST_PASSWORD_FILE" ]]; then
-    echo "OpenCode password is missing at $HOST_PASSWORD_FILE." >&2
-    echo "Run the devcontainer post-create setup before starting OpenCode." >&2
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "Another OpenCode lifecycle operation is already running." >&2
     exit 1
 fi
 
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    if [[ "$(tmux_option @hvo-opencode-repo)" != "$REPO_ROOT" ]] \
-        || [[ "$(tmux_option @hvo-opencode-container)" != "$CONTAINER" ]]; then
-        echo "tmux session '$TMUX_SESSION' is not managed for this workspace and container." >&2
+    if ! session_identity_matches; then
+        echo "tmux session '$TMUX_SESSION' does not match this workspace's OpenCode process; leaving it unchanged." >&2
         exit 1
     fi
-    if [[ ! -s "$HOST_GENERATION_FILE" ]] \
-        || [[ "$(tmux_option @hvo-opencode-generation)" != "$(<"$HOST_GENERATION_FILE")" ]]; then
-        echo "tmux session '$TMUX_SESSION' does not match the host generation metadata." >&2
+    if [[ "$(tmux display-message -p -t "$TMUX_SESSION" '#{pane_dead}' 2>/dev/null || true)" == 1 ]]; then
+        tmux kill-session -t "$TMUX_SESSION"
+        echo "Cleared exited OpenCode tmux session '$TMUX_SESSION'."
+    elif [[ "$(tmux display-message -p -t "$TMUX_SESSION" '#{pane_current_command}' 2>/dev/null || true)" != opencode ]]; then
+        echo "tmux session '$TMUX_SESSION' does not contain OpenCode; leaving it unchanged." >&2
         exit 1
-    fi
-    if [[ "$(health_status)" == 401 ]]; then
-        echo "OpenCode is already running in tmux session '$TMUX_SESSION'."
-        echo "Attach on the host with: tmux attach-session -t $TMUX_SESSION"
+    elif [[ "$(health_status)" == 200 ]]; then
+        echo "OpenCode is already running in internal tmux session '$TMUX_SESSION'."
         exit 0
+    else
+        echo "Managed tmux session '$TMUX_SESSION' exists, but OpenCode is not healthy." >&2
+        echo "Inspect it inside the devcontainer with: tmux attach-session -t $TMUX_SESSION" >&2
+        exit 1
     fi
-    echo "Managed tmux session '$TMUX_SESSION' exists, but OpenCode is not healthy on host port $HOST_PORT." >&2
-    echo "Inspect it with: tmux attach-session -t $TMUX_SESSION" >&2
-    exit 1
 fi
-if [[ "$(health_status)" != 000 ]]; then
-    echo "Host port ${HOST_PORT} is already serving HTTP outside managed tmux session '$TMUX_SESSION'." >&2
-    echo "Stop the existing devcontainer OpenCode process before running this script." >&2
-    exit 1
-fi
-if container_port_in_use; then
-    echo "Devcontainer port ${CONTAINER_PORT} already has a non-HTTP or unresponsive listener." >&2
-    echo "Stop that service before running this script." >&2
-    exit 1
-fi
-if [[ -e "$HOST_GENERATION_FILE" ]]; then
-    echo "Prior OpenCode lifecycle state still exists at $HOST_GENERATION_FILE." >&2
-    echo "Run ./scripts/opencode:disable or inspect the prior managed process before retrying." >&2
+if [[ "$(health_status)" == 200 ]] || ss -H -ltn "sport = :${CONTAINER_PORT}" | grep -q .; then
+    echo "OpenCode port $CONTAINER_PORT is already in use by an unmanaged process; leaving it unchanged." >&2
     exit 1
 fi
 
-GENERATION="$(</proc/sys/kernel/random/uuid)"
-readonly GENERATION
-umask 077
-generation_tmp="${HOST_GENERATION_FILE}.$$"
-printf '%s\n' "$GENERATION" > "$generation_tmp"
-mv -f "$generation_tmp" "$HOST_GENERATION_FILE"
-# shellcheck disable=SC2016 # The generated command expands inside the devcontainer.
-printf -v container_command \
-    'set -euo pipefail; password_file=%q; metadata_file=%q; workspace=%q; generation=%q; [[ -s "$password_file" ]] || { echo "OpenCode server password is missing: $password_file" >&2; exit 1; }; umask 077; start_ticks="$(cut -d " " -f 22 "/proc/$$/stat")"; metadata_tmp="${metadata_file}.$$"; printf "1\\n%%s\\n%%s\\n%%s\\n%%s\\n%%s\\n%%s\\n%%s\\n" "$$" "$start_ticks" "$(id -u)" "$(hostname)" %q "$workspace" "$generation" > "$metadata_tmp"; mv -f "$metadata_tmp" "$metadata_file"; export OPENCODE_SERVER_PASSWORD="$(<"$password_file")"; exec opencode --hostname 0.0.0.0 --port %q --continue' \
-    "$CONTAINER_PASSWORD_FILE" \
-    "$CONTAINER_METADATA_FILE" \
-    "$CONTAINER_WORKSPACE" \
-    "$GENERATION" \
-    "$CONTAINER_PORT" \
-    "$CONTAINER_PORT"
-printf -v tmux_command \
-    '%s exec --interactive --tty --user %q --workdir %q %q bash -lc %q' \
-    "$TMUX_DOCKER_COMMAND" \
-    "$CONTAINER_USER" \
-    "$CONTAINER_WORKSPACE" \
-    "$CONTAINER" \
-    "$container_command"
-
-SESSION_OWNED=false
-# A newly created tmux server inherits open descriptors from this client.
-# Close the lifecycle lock in the child so docker exec cannot hold it indefinitely.
-tmux new-session -d -s "$TMUX_SESSION" "$tmux_command" 9>&-
-trap cleanup_unowned_session EXIT
+# shellcheck disable=SC2016 # The generated command expands inside tmux.
+printf -v server_command \
+    'set -euo pipefail; export OPENCODE_SERVER_PASSWORD="$(<%q)"; exec %q serve --hostname 0.0.0.0 --port %q' \
+    "$PASSWORD_FILE" "$OPENCODE_BINARY" "$CONTAINER_PORT"
+tmux new-session -d -s "$TMUX_SESSION" "bash -lc $(printf '%q' "$server_command")" 9>&-
 tmux set-option -t "$TMUX_SESSION" @hvo-opencode-repo "$REPO_ROOT"
-tmux set-option -t "$TMUX_SESSION" @hvo-opencode-container "$CONTAINER"
-tmux set-option -t "$TMUX_SESSION" @hvo-opencode-generation "$GENERATION"
-SESSION_OWNED=true
-trap - EXIT
+tmux set-option -t "$TMUX_SESSION" @hvo-opencode-port "$CONTAINER_PORT"
+
 for _ in {1..40}; do
-    if [[ "$(health_status)" == 401 ]]; then
-        break
+    if [[ "$(health_status)" == 200 ]]; then
+        echo "OpenCode is running in internal tmux session '$TMUX_SESSION'."
+        echo "Container URL: http://127.0.0.1:${CONTAINER_PORT}"
+        echo "Docker-host loopback URL: http://127.0.0.1:${OPENCODE_HOST_PORT}"
+        echo "Remote clients require an SSH tunnel to the Docker host."
+        exit 0
     fi
     if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         break
@@ -254,19 +116,5 @@ for _ in {1..40}; do
     sleep 0.25
 done
 
-if [[ "$(health_status)" != 401 ]]; then
-    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        echo "OpenCode did not become healthy. The managed tmux session was left intact for inspection." >&2
-        echo "Inspect it with: tmux attach-session -t $TMUX_SESSION" >&2
-    else
-        echo "OpenCode did not become healthy because the tmux command exited." >&2
-    fi
-    exit 1
-fi
-
-HOST_NAME="$(hostname -f 2>/dev/null || hostname)"
-readonly HOST_NAME
-echo "OpenCode is running in host tmux session '$TMUX_SESSION'."
-echo "Host TUI: $REPO_ROOT/scripts/opencode:connect"
-echo "Remote TUI: ssh -t $HOST_NAME 'cd $REPO_ROOT && ./scripts/opencode:connect'"
-echo "Stop: $REPO_ROOT/scripts/opencode:disable"
+echo "OpenCode did not become healthy; the internal tmux session was left intact for inspection." >&2
+exit 1

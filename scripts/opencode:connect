@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# opencode:connect - Attach this terminal to the workspace's managed host tmux session.
-# Usage: ./scripts/opencode:connect
+# Attach a new terminal client to this devcontainer's persistent OpenCode server.
 
 set -euo pipefail
 
@@ -8,57 +7,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 readonly REPO_ROOT
-readonly HOST_CONFIG_FILE="$REPO_ROOT/.devcontainer/opencode-host.conf"
-readonly HOST_GENERATION_FILE="$REPO_ROOT/.devcontainer/state/opencode-generation"
+# shellcheck source=.devcontainer/opencode-host.conf disable=SC1091
+source "$REPO_ROOT/.devcontainer/opencode-host.conf"
 
-if [[ -f /.dockerenv ]]; then
-    echo "Run this script on the Docker host, not inside the devcontainer." >&2
-    exit 1
-fi
-
-# shellcheck source=.devcontainer/opencode-host.conf
-source "$HOST_CONFIG_FILE"
-TMUX_SESSION="${OPENCODE_TMUX_SESSION:?OPENCODE_TMUX_SESSION is required}"
-readonly TMUX_SESSION
-if [[ ! "$TMUX_SESSION" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-    echo "OPENCODE_TMUX_SESSION contains unsupported characters: '$TMUX_SESSION'." >&2
-    exit 1
-fi
-if ! command -v tmux >/dev/null 2>&1; then
-    echo "Required host command 'tmux' is not installed." >&2
-    exit 1
-fi
 if [[ ! -t 0 || ! -t 1 ]]; then
     echo "OpenCode connection requires an interactive terminal." >&2
-    echo "For SSH, allocate one with: ssh -t <docker-host> '$REPO_ROOT/scripts/opencode:connect'" >&2
     exit 1
 fi
-if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    echo "Managed tmux session '$TMUX_SESSION' is not running." >&2
-    echo "Start it on this host with: $REPO_ROOT/scripts/opencode:enable" >&2
+if [[ -f /.dockerenv ]]; then
+    readonly PORT="${OPENCODE_CONTAINER_PORT:?OPENCODE_CONTAINER_PORT is required}"
+    readonly PASSWORD_FILE="${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}/server-password"
+    readonly OPENCODE_BINARY=/usr/local/bin/opencode
+else
+    readonly PORT="${OPENCODE_HOST_PORT:?OPENCODE_HOST_PORT is required}"
+    readonly PASSWORD_FILE="$REPO_ROOT/.devcontainer/state/opencode-data/server-password"
+    OPENCODE_BINARY="$(command -v opencode 2>/dev/null || true)"
+    readonly OPENCODE_BINARY
+fi
+if [[ -z "$OPENCODE_BINARY" || ! -x "$OPENCODE_BINARY" ]]; then
+    echo "A compatible OpenCode CLI is not installed in this environment." >&2
     exit 1
 fi
-
-tmux_option() {
-    tmux show-options -v -t "$TMUX_SESSION" "$1" 2>/dev/null || true
-}
-
-if [[ "$(tmux_option @hvo-opencode-repo)" != "$REPO_ROOT" ]]; then
-    echo "tmux session '$TMUX_SESSION' is not managed for workspace '$REPO_ROOT'." >&2
+if [[ ! "$PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$PORT > 65535 )); then
+    echo "OpenCode port must be an integer from 1 through 65535." >&2
     exit 1
 fi
-if [[ ! -s "$HOST_GENERATION_FILE" ]] \
-    || [[ "$(tmux_option @hvo-opencode-generation)" != "$(<"$HOST_GENERATION_FILE")" ]]; then
-    echo "tmux session '$TMUX_SESSION' does not match the host generation metadata." >&2
-    exit 1
-fi
-if [[ "$(tmux display-message -p -t "$TMUX_SESSION" '#{pane_dead}' 2>/dev/null || true)" == 1 ]]; then
-    echo "Managed tmux session '$TMUX_SESSION' has exited." >&2
-    echo "Clear it safely with: $REPO_ROOT/scripts/opencode:disable" >&2
+if [[ ! -s "$PASSWORD_FILE" ]]; then
+    echo "OpenCode password is missing at $PASSWORD_FILE." >&2
     exit 1
 fi
 
-if [[ -n "${TMUX:-}" ]]; then
-    exec tmux switch-client -t "$TMUX_SESSION"
-fi
-exec tmux attach-session -t "$TMUX_SESSION"
+server_password="$(<"$PASSWORD_FILE")"
+export OPENCODE_SERVER_PASSWORD="$server_password"
+exec "$OPENCODE_BINARY" attach "http://127.0.0.1:${PORT}" "$@"

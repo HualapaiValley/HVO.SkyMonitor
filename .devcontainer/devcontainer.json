@@ -92,9 +92,9 @@
   // 7096: Logic Host HTTPS (dotnet run)
   // 5174: SkyMonitor container mode (HTTP)
   // 5130: Camera agent container mode
-  // 4096: OpenCode server (Basic Auth)
+  // 4096: OpenCode server in the container; 4097: loopback-only endpoint on the Docker host
   "appPort": [
-    "127.0.0.1:4096:4096"
+    "127.0.0.1:4097:4096"
   ],
   "forwardPorts": [
     5000,
@@ -133,7 +133,7 @@
       "onAutoForward": "silent"
     },
     "4096": {
-      "label": "OpenCode (SSH tunnel only)",
+      "label": "OpenCode server (SSH tunnel only)",
       "onAutoForward": "ignore"
     }
   },
