@@ -14,6 +14,7 @@ readonly TMUX_SESSION="${OPENCODE_TMUX_SESSION:?OPENCODE_TMUX_SESSION is require
 readonly CONTAINER_PORT="${OPENCODE_CONTAINER_PORT:?OPENCODE_CONTAINER_PORT is required}"
 readonly PASSWORD_FILE="${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}/server-password"
 readonly LOCK_FILE="${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}/server-lifecycle.lock"
+readonly OPENCODE_BINARY=/usr/local/bin/opencode
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -42,11 +43,13 @@ if [[ ! -f /.dockerenv ]]; then
     echo "Run this script inside the devcontainer." >&2
     exit 1
 fi
-for command_name in curl flock opencode ss tmux; do
+for command_name in curl flock ss tmux; do
     require_command "$command_name"
 done
-OPENCODE_BINARY="$(command -v opencode)"
-readonly OPENCODE_BINARY
+if [[ ! -x "$OPENCODE_BINARY" ]]; then
+    echo "Pinned OpenCode executable is missing at $OPENCODE_BINARY." >&2
+    exit 1
+fi
 if [[ ! "$TMUX_SESSION" =~ ^[A-Za-z0-9_.-]+$ ]]; then
     echo "OPENCODE_TMUX_SESSION contains unsupported characters: '$TMUX_SESSION'." >&2
     exit 1
@@ -103,7 +106,8 @@ for _ in {1..40}; do
     if [[ "$(health_status)" == 200 ]]; then
         echo "OpenCode is running in internal tmux session '$TMUX_SESSION'."
         echo "Container URL: http://127.0.0.1:${CONTAINER_PORT}"
-        echo "Docker-host URL: http://<docker-host>:${OPENCODE_HOST_PORT}"
+        echo "Docker-host loopback URL: http://127.0.0.1:${OPENCODE_HOST_PORT}"
+        echo "Remote clients require an SSH tunnel to the Docker host."
         exit 0
     fi
     if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then

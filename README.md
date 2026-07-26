@@ -142,14 +142,21 @@ The devcontainer configuration includes:
 OpenCode runs as a persistent in-container server supervised by an internal `tmux` session. The server survives terminal, SSH, browser, and desktop-client disconnects; each client is independent and `/exit` closes only that client. The server starts automatically during devcontainer startup and can be managed from a devcontainer terminal:
 
 ```bash
-./scripts/opencode:status
 ./scripts/opencode:enable
 ./scripts/opencode:disable
 ```
 
-The server listens on container port `4096` and Docker publishes it to every Docker-host interface at port `4097`. Browser and desktop clients can use `http://<docker-host>:4097`; terminal clients can use `opencode attach http://<docker-host>:4097`. On the Docker host, `./scripts/opencode:remote-connect --continue` reads the persisted password and attaches a new TUI client through `http://127.0.0.1:4097`. Inside the devcontainer, `./scripts/opencode:connect --continue` attaches a new TUI client to `http://127.0.0.1:4096`. Use `--session <session-id>` to attach to a specific session.
+The server listens on container port `4096`; Docker publishes it only on the Docker host's loopback interface at `127.0.0.1:4097`. Inside the devcontainer, `./scripts/opencode:connect --continue` attaches through port `4096`. On the Docker host, the same command reads the persisted password and attaches through port `4097`. Use `--session <session-id>` to attach to a specific session.
 
-The endpoint requires OpenCode Basic Auth. Its username is `opencode`; post-create setup generates a random password at `.devcontainer/state/opencode-data/server-password` and retains it across rebuilds. Only one client should actively control a particular session at a time.
+For a browser, desktop client, or TUI on another machine, create an SSH tunnel to the Docker host:
+
+```bash
+ssh -o ExitOnForwardFailure=yes -N -L 127.0.0.1:4097:127.0.0.1:4097 hvo-dev-01
+```
+
+The remote client can then connect to `http://127.0.0.1:4097`. Alternatively, allocate an SSH terminal and run the host-side connection command directly with `ssh -t hvo-dev-01 'cd /path/to/HVO.SkyMonitor && ./scripts/opencode:connect --continue'`. Host-side TUI attachment requires an OpenCode CLI compatible with the image-pinned server version.
+
+The endpoint requires OpenCode Basic Auth. Its username is `opencode`; post-create setup generates a random password at `.devcontainer/state/opencode-data/server-password` and retains it across rebuilds. The SSH tunnel protects the otherwise plaintext HTTP connection. Only one client should actively control a particular session at a time.
 
 The non-secret [`.devcontainer/opencode-host.conf`](.devcontainer/opencode-host.conf) keeps the internal tmux identity, container port, and Docker-host port consistent with [`.devcontainer/devcontainer.json`](.devcontainer/devcontainer.json).
 
@@ -161,9 +168,9 @@ OPENCODE_CONTAINER_PORT=4096
 OPENCODE_HOST_PORT=4098
 ```
 
-Its devcontainer would publish `0.0.0.0:4098:4096`. Host ports and tmux session names must be unique for concurrently running workspaces. Stop the repository's managed session before changing these values and recreate the devcontainer for the Docker port change.
+Its devcontainer would publish `127.0.0.1:4098:4096`. Host ports and tmux session names must be unique for concurrently running workspaces. Stop the repository's managed session before changing these values and recreate the devcontainer for the Docker port change.
 
-The OpenCode binary is retained at `.devcontainer/state/opencode-bin/opencode`. A fresh workspace downloads the latest verified OpenCode release; subsequent devcontainer rebuilds preserve that binary, including manual upgrades. The HTTP endpoint uses Basic Auth but not TLS, so expose it only on a trusted encrypted network or behind a TLS reverse proxy.
+The OpenCode executable is pinned, checksum-verified, and installed root-owned in the container image. Provider credentials, configuration, and sessions remain in ignored `.devcontainer/state/` mounts across rebuilds.
 
 ### Extensions
 

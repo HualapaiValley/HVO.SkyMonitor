@@ -8,13 +8,11 @@ state_root="$repo_root/.devcontainer/state"
 
 mkdir -p \
     "$HOME/.microsoft/usersecrets" \
-    "$state_root/opencode-bin" \
     "$state_root/opencode-config" \
     "$state_root/opencode-data"
 
 chmod 0700 \
     "$state_root" \
-    "$state_root/opencode-bin" \
     "$state_root/opencode-config" \
     "$state_root/opencode-data"
 

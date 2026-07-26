@@ -1,16 +1,18 @@
 # Pin to Ubuntu LTS; the .NET SDK is supplied by the devcontainer feature.
 FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
+ARG TARGETARCH
 ARG TAILSCALE_VERSION=1.98.8
+ARG OPENCODE_VERSION=1.18.2
 
 ENV NUGET_XMLDOC_MODE=
-ENV PATH="/home/vscode/.local/bin:/home/vscode/.dotnet/tools:${PATH}"
+ENV PATH="/home/vscode/.dotnet/tools:${PATH}"
 
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Tailscale packages are authenticated by its pinned repository key. OpenCode is
-# installed after container creation into persisted developer-tool state.
+# Tailscale packages are authenticated by its pinned repository key. OpenCode
+# release archives are pinned and checked against the immutable GitHub digest.
 # hadolint ignore=DL3008
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -36,6 +38,27 @@ RUN apt-get update \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     "tailscale=${TAILSCALE_VERSION}" \
+    && architecture="${TARGETARCH:-$(dpkg --print-architecture)}" \
+    && case "$architecture" in \
+    amd64) \
+    opencode_archive="opencode-linux-x64-baseline.tar.gz"; \
+    opencode_sha256="88f9b79f44b02e8e7c33e528832047c177b0cb20939484afaff22425a47f3d81" \
+    ;; \
+    arm64) \
+    opencode_archive="opencode-linux-arm64.tar.gz"; \
+    opencode_sha256="93352b30d37d8da2e5c226085f1afbf37cf57cfcecedc813520ff2d0f8581540" \
+    ;; \
+    *) \
+    echo "Unsupported OpenCode architecture: $architecture" >&2; \
+    exit 1 \
+    ;; \
+    esac \
+    && curl -fL --retry 3 \
+    "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/${opencode_archive}" \
+    -o "/tmp/${opencode_archive}" \
+    && echo "${opencode_sha256}  /tmp/${opencode_archive}" | sha256sum -c - \
+    && tar -xzf "/tmp/${opencode_archive}" -C /usr/local/bin opencode \
+    && chmod 0755 /usr/local/bin/opencode \
     && mkdir -p \
     /home/vscode/.config/opencode \
     /home/vscode/.local/share/opencode \
@@ -47,6 +70,6 @@ RUN apt-get update \
     && chmod 0700 \
     /home/vscode/.config/opencode \
     /home/vscode/.local/share/opencode \
-    && rm -rf /tmp/tailscale-archive-keyring.gpg /var/lib/apt/lists/*
+    && rm -rf /tmp/opencode-*.tar.gz /tmp/tailscale-archive-keyring.gpg /var/lib/apt/lists/*
 
 USER vscode
