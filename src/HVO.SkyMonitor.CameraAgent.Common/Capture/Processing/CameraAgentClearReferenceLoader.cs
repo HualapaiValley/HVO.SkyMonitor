@@ -61,6 +61,14 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         {
             throw new InvalidDataException("Configured clear-reference manifest is invalid.");
         }
+        return await LoadAsync(manifest, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<ProcessingArtifact> LoadAsync(
+        ArtifactManifestV2 manifest,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
         var descriptor = manifest.Descriptor;
         if (descriptor.Artifact.Role is not (FrameArtifactRole.Raw or FrameArtifactRole.Calibrated or FrameArtifactRole.Combined) ||
             descriptor.Layout.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))

@@ -136,6 +136,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureProcessingPersistence>();
         services.AddSingleton<CameraAgentClearReferenceLoader>();
         services.AddSingleton<SyntheticCalibrationReferenceStore>();
+        services.AddSingleton<CalibrationLibraryProcessingInputLoader>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
         services.AddSingleton<IProcessingRetentionHolds>(provider =>
             new CompositeProcessingRetentionHolds(

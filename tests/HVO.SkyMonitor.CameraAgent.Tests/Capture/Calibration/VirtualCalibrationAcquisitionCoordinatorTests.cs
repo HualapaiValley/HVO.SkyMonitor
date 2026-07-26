@@ -1,11 +1,14 @@
 using System.Security.Cryptography;
 using System.Diagnostics.CodeAnalysis;
+using System.ComponentModel.DataAnnotations;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -20,6 +23,22 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
     Justification = "Test helpers receive only constant SQL from this test class.")]
 public sealed class VirtualCalibrationAcquisitionCoordinatorTests
 {
+    [TestMethod]
+    public void CalibrationLibraryStrategy_ValidatesWithoutSyntheticModel()
+    {
+        var library = new CalibrationProcessingStepOptions { Strategy = "CalibrationLibrary" };
+        var invalid = new CalibrationProcessingStepOptions
+        {
+            Strategy = "CalibrationLibrary",
+            SyntheticCalibration = new SyntheticCalibrationModelV1()
+        };
+
+        Assert.IsTrue(Validator.TryValidateObject(
+            library, new ValidationContext(library), [], validateAllProperties: true));
+        Assert.IsFalse(Validator.TryValidateObject(
+            invalid, new ValidationContext(invalid), [], validateAllProperties: true));
+    }
+
     [TestMethod]
     public async Task AcquireAsync_PublishesExactLineageNormalizedMastersAndDoesNotActivate()
     {
@@ -105,6 +124,148 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
                 VirtualCalibrationSourceGenerator.ComputeModelIdentitySha256(job.Plan.SourceModel),
                 job.Plan.SourceModelIdentitySha256);
             Assert.AreEqual(job.PlanIdentitySha256, VirtualCalibrationAcquisitionContractJson.ComputePlanIdentitySha256(job.Plan));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task ProcessingInputLoader_LoadsOnlyFourSelectedMasters()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var fixture = await Fixture.CreateAsync(root).ConfigureAwait(false);
+            var job = await fixture.Coordinator.AcquireAsync(
+                Request("processing-inputs"), CancellationToken.None).ConfigureAwait(false);
+            var bundle = (await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false)).Single();
+            var options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressSqliteBusyTimeoutSeconds = 1
+            });
+            var loader = new CalibrationLibraryProcessingInputLoader(
+                options, new CameraAgentClearReferenceLoader(options));
+
+            var inputs = await loader.LoadAsync(bundle, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(job.BundleId, bundle.Bundle.BundleId);
+            Assert.HasCount(4, inputs.References);
+            Assert.HasCount(5, inputs.AuxiliaryInputs);
+            Assert.IsTrue(inputs.References.Values.All(static reference => reference.Role == FrameArtifactRole.Combined));
+            Assert.IsTrue(inputs.References.Values.All(static reference => reference.SourceArtifactIds?.Count == 3));
+            Assert.IsTrue(CalibrationReferenceKinds.All.All(inputs.References.ContainsKey));
+            Assert.IsFalse(inputs.References.Values.Any(reference =>
+                bundle.Bundle.Artifacts.Any(artifact =>
+                    artifact.Role == CalibrationLibraryArtifactRoles.Source && artifact.ArtifactId == reference.ArtifactId)));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task CalibrationLibraryStrategy_UsesExplicitlyActivatedBundleAndPreservesRawBytes()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var fixture = await Fixture.CreateAsync(root).ConfigureAwait(false);
+            var job = await fixture.Coordinator.AcquireAsync(
+                Request("process-active-library"), CancellationToken.None).ConfigureAwait(false);
+            _ = await fixture.Store.ActivateAsync(
+                job.BundleId!, "activate-processing", 0, "operator", null, CancellationToken.None)
+                .ConfigureAwait(false);
+            var generated = VirtualCalibrationSourceGenerator.Generate(
+                VirtualCalibrationSourceKind.Flat,
+                1,
+                job.Plan.InputLayout,
+                job.Plan.ApplicableLightExposure,
+                job.Plan.Gain,
+                job.Plan.Offset,
+                job.Plan.TemperatureC,
+                job.Plan.SourceModel);
+            var sourceArtifact = (await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false))
+                .Single().Bundle.Artifacts.First(static artifact => artifact.Role == CalibrationLibraryArtifactRoles.Source);
+            var template = await ReadManifestAsync(root, sourceArtifact.ManifestRelativePath).ConfigureAwait(false);
+            var started = job.Plan.EffectiveFromUtc.AddDays(1);
+            var ended = started.Add(job.Plan.ApplicableLightExposure);
+            var rawArtifactId = Guid.NewGuid();
+            var descriptor = template.Descriptor with
+            {
+                Capture = template.Descriptor.Capture with
+                {
+                    CaptureSequence = 42,
+                    CaptureId = Guid.NewGuid()
+                },
+                Timing = new CaptureTimingDescriptor(started, started, ended, ended, ended),
+                Controls = new CaptureControlDescriptor(
+                    job.Plan.ApplicableLightExposure,
+                    job.Plan.ApplicableLightExposure,
+                    job.Plan.Gain,
+                    job.Plan.Gain,
+                    job.Plan.Offset,
+                    job.Plan.Offset,
+                    job.Plan.TemperatureC,
+                    job.Plan.TemperatureC),
+                Artifact = template.Descriptor.Artifact with
+                {
+                    ArtifactId = rawArtifactId,
+                    Role = FrameArtifactRole.Raw,
+                    SourceId = "VirtualCalibrationLight",
+                    Variant = "source",
+                    CreatedUtc = ended,
+                    SourceArtifactIds = [],
+                    ChecksumSha256 = PayloadChecksum.ComputeSha256(generated.PixelData.Span)
+                }
+            };
+            var manifest = new ArtifactManifestV2(
+                ArtifactManifestV2.CurrentSchemaVersion, descriptor, "light.bin");
+            Assert.IsTrue(FrameReconstructor.TryReconstruct(
+                descriptor, generated.PixelData, out var frame).IsValid);
+            var submission = new CaptureLoopSubmission(
+                new CaptureRequest(started, job.Plan.ApplicableLightExposure, CaptureMode.Still),
+                new CaptureResult(
+                    frame,
+                    new CaptureSetpoint(job.Plan.ApplicableLightExposure, job.Plan.Gain, null, null),
+                    TimeSpan.Zero,
+                    CaptureMode.Still,
+                    false),
+                started,
+                job.Plan.ApplicableLightExposure,
+                TimeSpan.Zero);
+            var receipt = new RawCaptureReceipt(
+                RawIngressOutcome.Committed,
+                manifest,
+                new StoredFrameReference("light.bin", Path.Combine(root, "light.bin"), started, FrameArtifactRole.Raw),
+                CaptureContractJson.ComputeManifestSha256(manifest));
+            var context = new CaptureProcessingContext(Configuration(), submission, receipt);
+            var options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressSqliteBusyTimeoutSeconds = 1
+            });
+            var inputLoader = new CalibrationLibraryProcessingInputLoader(
+                options, new CameraAgentClearReferenceLoader(options));
+            var step = new CalibrationCaptureProcessingStep(
+                new CaptureProcessingStepMetadata("calibration", "calibration", 0),
+                new CalibrationProcessingStepOptions { Strategy = "CalibrationLibrary", OutputVariant = "calibrated" },
+                new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()),
+                calibrationLibrary: fixture.Store,
+                libraryInputLoader: inputLoader);
+            var rawChecksum = PayloadChecksum.ComputeSha256(generated.PixelData.Span);
+
+            await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+
+            var outcome = context.ProcessingOutcomes.Single();
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+            Assert.HasCount(5, outcome.Products.Single().SourceArtifactIds);
+            Assert.AreEqual(context.Artifacts!.Raw.ArtifactId, outcome.Products.Single().SourceArtifactIds[0]);
+            Assert.AreEqual(rawChecksum, PayloadChecksum.ComputeSha256(generated.PixelData.Span));
+            Assert.IsTrue(context.Artifacts?.Artifacts.ContainsKey(FrameArtifactRole.Calibrated) == true);
         }
         finally
         {
