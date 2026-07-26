@@ -19,8 +19,8 @@ public static class CalibrationLibraryArtifactRoles
 
 public static class CalibrationMasterBuildAlgorithms
 {
-    public const string MedianV1 = "calibration-median-v1";
-    public const string BitwiseOrV1 = "calibration-bitwise-or-v1";
+    public const string MedianV1 = HVO.SkyMonitor.Imaging.CalibrationMasterAlgorithms.MedianV1;
+    public const string BitwiseOrV1 = HVO.SkyMonitor.Imaging.CalibrationMasterAlgorithms.BitwiseOrV1;
 }
 
 public static class CalibrationLibraryReasonCodes
