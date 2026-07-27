@@ -2,6 +2,7 @@ using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
@@ -12,6 +13,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestCategory("Unit")]
 public sealed class SchedulePageTests
 {
+    private static readonly string[] RawDependency = ["$raw"];
+
     [TestMethod]
     public void Render_ShowsDurableStateEditorPreviewAndRollbackHistory()
     {
@@ -27,7 +30,36 @@ public sealed class SchedulePageTests
             Assert.IsTrue(cut.Markup.Contains("Canonical JSON", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Create override", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Rollback targets", StringComparison.Ordinal));
+            Assert.IsTrue(cut.Markup.Contains("Desired and effective graph", StringComparison.Ordinal));
+            Assert.IsTrue(cut.Markup.Contains("Preview / required", StringComparison.Ordinal));
         });
+    }
+
+    [TestMethod]
+    public void PipelineToggle_ChangesOnlyV2EnabledStateAndRejectsLegacyProfile()
+    {
+        var options = JsonSerializer.SerializeToElement(new { outputVariant = "display" });
+        var profile = Profile() with
+        {
+            SchemaVersion = LocalCaptureProfileDefinition.CurrentSchemaVersion,
+            DependencyPolicy = CapturePipelineDependencyPolicy.RejectEnabledDependent,
+            ProcessingSteps =
+            [
+                new CaptureProcessingStepConfig(
+                    "Preview", "preview", 10, options, RawDependency, Enabled: true)
+            ]
+        };
+
+        var toggled = CameraAgentPipelineOperatorProjection.Toggle(profile, "preview", enabled: false);
+
+        Assert.IsFalse(toggled.ProcessingSteps.Single().Enabled);
+        Assert.AreEqual(options.GetRawText(), toggled.ProcessingSteps.Single().Options!.Value.GetRawText());
+        CollectionAssert.AreEqual(RawDependency, toggled.ProcessingSteps.Single().DependsOn!.ToArray());
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            CameraAgentPipelineOperatorProjection.Toggle(Profile(), "preview", enabled: false));
+        Assert.AreEqual(
+            "Graph toggles require a cameraagent-local-profile-v2 revision.",
+            CameraAgentPipelineOperatorProjection.SanitizeValidationFailure(exception));
     }
 
     [TestMethod]
@@ -62,6 +94,51 @@ public sealed class SchedulePageTests
 
         Assert.IsFalse(serialized.Contains("module-secret", StringComparison.Ordinal));
         Assert.IsFalse(serialized.Contains("/private/root", StringComparison.Ordinal));
+
+        var basis = profile with
+        {
+            SchemaVersion = LocalCaptureProfileDefinition.CurrentSchemaVersion,
+            DependencyPolicy = CapturePipelineDependencyPolicy.RejectEnabledDependent,
+            ProcessingSteps =
+            [
+                new CaptureProcessingStepConfig(
+                    "First", Options: JsonSerializer.SerializeToElement(new { marker = "first" }),
+                    DependsOn: RawDependency),
+                new CaptureProcessingStepConfig(
+                    "Second", Options: JsonSerializer.SerializeToElement(new { marker = "second" }),
+                    DependsOn: RawDependency)
+            ]
+        };
+        var reordered = CameraAgentScheduleOperatorProjection.Sanitize(basis) with
+        {
+            ProcessingSteps = CameraAgentScheduleOperatorProjection.Sanitize(basis).ProcessingSteps.Reverse().ToArray()
+        };
+
+        var restored = CameraAgentScheduleOperatorProjection.RestoreOpaqueOptions(reordered, basis);
+
+        Assert.AreEqual(
+            "second",
+            restored.ProcessingSteps[0].Options!.Value.GetProperty("marker").GetString());
+        Assert.AreEqual(
+            "first",
+            restored.ProcessingSteps[1].Options!.Value.GetProperty("marker").GetString());
+
+        var spacedIdBasis = basis with
+        {
+            ProcessingSteps = [basis.ProcessingSteps[0] with { Id = " first " }]
+        };
+        var normalizedIdCandidate = CameraAgentScheduleOperatorProjection.Sanitize(spacedIdBasis) with
+        {
+            ProcessingSteps = [spacedIdBasis.ProcessingSteps[0] with { Id = "first", Options = null }]
+        };
+        var normalizedIdRestored = CameraAgentScheduleOperatorProjection.RestoreOpaqueOptions(
+            normalizedIdCandidate,
+            spacedIdBasis);
+        Assert.AreEqual(
+            "first",
+            normalizedIdRestored.ProcessingSteps[0].Options!.Value.GetProperty("marker").GetString());
+        Assert.IsFalse(CameraAgentPipelineOperatorProjection.Toggle(spacedIdBasis, "first", enabled: false)
+            .ProcessingSteps[0].Enabled);
     }
 
     [TestMethod]
@@ -130,7 +207,7 @@ public sealed class SchedulePageTests
 
     private static LocalCaptureProfileDefinition Profile()
         => new(
-            LocalCaptureProfileDefinition.CurrentSchemaVersion,
+            LocalCaptureProfileDefinition.LegacySchemaVersion,
             new CameraModuleDescriptor("test"),
             new CameraRigConfig(
                 new SensorProfile("test", 2, 2, 5, SensorColorMode.Mono, CameraPixelFormat.Mono16),
@@ -154,6 +231,34 @@ public sealed class SchedulePageTests
                 ? OperatorUiResult<CaptureScheduleOperatorState>.Failure(
                     OperatorUiResultKind.Unauthorized, "Authorization is required.")
                 : OperatorUiResult<CaptureScheduleOperatorState>.Success(state));
+
+        public ValueTask<OperatorUiResult<CameraAgentPipelineOperatorState>> GetPipelineAsync(
+            CancellationToken cancellationToken)
+        {
+            if (state is null)
+            {
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentPipelineOperatorState>.Failure(
+                    OperatorUiResultKind.Unauthorized, "Authorization is required."));
+            }
+            var node = new CaptureProcessingPlanNode(
+                "Preview", "Preview", true, true, 10, null, RawDependency,
+                "encoded-preview", FrameArtifactRole.Preview, "display");
+            var plan = new CaptureProcessingPlanPreview(
+                CapturePipelineSchemaVersions.LegacyV1,
+                CapturePipelineDependencyPolicy.LegacyInference,
+                new string('D', 64),
+                new string('E', 64),
+                [node],
+                [node]);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentPipelineOperatorState>.Success(new(
+                new CameraAgentPipelineRevisionPlan(
+                    state.ActiveRevision.RevisionId,
+                    state.ActiveRevision.RevisionNumber,
+                    state.ActiveRevision.ProfileSha256,
+                    false,
+                    plan),
+                null)));
+        }
 
         public ValueTask<OperatorUiResult<CaptureSchedulePreview>> PreviewAsync(
             string profileJson, string basisRevisionId, int dayCount, CancellationToken cancellationToken)

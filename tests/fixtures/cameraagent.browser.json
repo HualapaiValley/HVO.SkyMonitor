@@ -1,10 +1,16 @@
 {
   "agentId": "cameraagent-browser-acceptance",
   "module": {
-    "type": "RandomImage",
+    "type": "VirtualSky",
     "options": {
-      "pattern": "Gradient",
-      "seed": 106
+      "seed": 106,
+      "maximumMagnitude": 6.5,
+      "maximumResults": 50,
+      "magnitudeZeroElectronsPerSecond": 1000.0,
+      "backgroundElectronsPerSecond": 2.0,
+      "shotNoiseEnabled": false,
+      "readNoiseStandardDeviation": 0.0,
+      "rigProfileVersion": "browser-fixture-mono16-v1"
     }
   },
   "observatory": {
@@ -15,16 +21,16 @@
   },
   "rig": {
     "sensor": {
-      "name": "BrowserFixtureMono8",
+      "name": "BrowserFixtureMono16",
       "widthPixels": 160,
       "heightPixels": 120,
       "pixelSizeMicrons": 5.0,
       "colorMode": "Mono",
-      "pixelFormat": "Mono8",
+      "pixelFormat": "Mono16",
       "responseMode": "Monochrome",
-      "strideBytes": 160,
+      "strideBytes": 320,
       "byteOrder": "LittleEndian",
-      "sensorRecipeVersion": "browser-fixture-mono8-v1"
+      "sensorRecipeVersion": "browser-fixture-mono16-v1"
     },
     "optics": {
       "projectionModel": "EquidistantFisheye",
@@ -56,48 +62,55 @@
       "autoExposure": "Disabled"
     }
   },
-  "processingSteps": [
-    {
-      "id": "Calibration",
-      "type": "Calibration",
-      "order": 10,
-      "options": {
+  "pipeline": {
+    "schemaVersion": "cameraagent-capture-pipeline-v2",
+    "dependencyPolicy": "reject-enabled-dependent-v1",
+    "steps": [
+      {
+        "id": "Calibration",
+        "type": "Calibration",
+        "order": 10,
         "enabled": true,
-        "strategy": "None",
-        "outputVariant": "none"
-      }
-    },
-    {
-      "id": "Preview",
-      "type": "Preview",
-      "order": 50,
-      "dependsOn": ["Calibration"],
-      "options": {
+        "dependsOn": ["$raw"],
+        "options": {
+          "strategy": "None",
+          "outputVariant": "none"
+        }
+      },
+      {
+        "id": "Preview",
+        "type": "Preview",
+        "order": 50,
         "enabled": true,
-        "recipeVersion": "browser-fixture-preview-v1",
-        "outputVariant": "browser-display",
-        "blackPercentile": 0.01,
-        "whitePercentile": 0.99,
-        "asinhStrength": 2.0
+        "dependsOn": ["Calibration"],
+        "options": {
+          "recipeVersion": "browser-fixture-preview-v1",
+          "outputVariant": "browser-display",
+          "blackPercentile": 0.01,
+          "whitePercentile": 0.99,
+          "asinhStrength": 2.0
+        }
+      },
+      {
+        "id": "LocalStorage",
+        "type": "Storage",
+        "order": 100,
+        "enabled": true,
+        "dependsOn": ["Preview"],
+        "options": {
+          "storageRoot": __STORAGE_ROOT__,
+          "retentionDays": 1,
+          "updateLatestFrame": true,
+          "queueForUpload": false
+        }
+      },
+      {
+        "id": "Telemetry",
+        "type": "Telemetry",
+        "order": 1000,
+        "enabled": true,
+        "dependsOn": ["Calibration", "Preview", "LocalStorage"]
       }
-    },
-    {
-      "id": "LocalStorage",
-      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
-      "order": 100,
-      "dependsOn": ["Preview"],
-      "options": {
-        "storageRoot": __STORAGE_ROOT__,
-        "retentionDays": 1,
-        "updateLatestFrame": true,
-        "queueForUpload": false
-      }
-    },
-    {
-      "id": "Telemetry",
-      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
-      "order": 1000,
-      "dependsOn": ["LocalStorage"]
-    }
-  ]
+    ]
+  }
 }

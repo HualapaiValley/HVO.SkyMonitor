@@ -25,10 +25,27 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
     public string OutputVariant => Options.OutputVariant;
 
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
-        new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview, FrameArtifactRole.Metadata };
+        new HashSet<FrameArtifactRole>
+        {
+            FrameArtifactRole.Preview,
+            FrameArtifactRole.AnnotatedPreview,
+            FrameArtifactRole.Metadata
+        };
 
-    public IReadOnlySet<FrameArtifactRole> RequiredDependencyRoles { get; } =
-        new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview, FrameArtifactRole.Metadata };
+    public IReadOnlyList<IReadOnlySet<FrameArtifactRole>> RequiredDependencyRoleGroups { get; } =
+    [
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview, FrameArtifactRole.AnnotatedPreview },
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }
+    ];
+
+    public IReadOnlyDictionary<FrameArtifactRole, IReadOnlySet<string>> RequiredDependencyRecipes { get; } =
+        new Dictionary<FrameArtifactRole, IReadOnlySet<string>>
+        {
+            [FrameArtifactRole.Metadata] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                BuiltInProcessingRecipes.CloudAssessment
+            }
+        };
 
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
@@ -37,9 +54,11 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
         {
             return;
         }
-        var previewArtifact = context.GetDependencyArtifacts().SingleOrDefault(static artifact => artifact.Role == FrameArtifactRole.Preview);
+        var previewArtifact = context.GetDependencyArtifacts().SingleOrDefault(static artifact =>
+            artifact.Role is FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview);
         var products = context.GetDependencyProducts();
-        var previewProduct = products.SingleOrDefault(static product => product.Role == FrameArtifactRole.Preview);
+        var previewProduct = products.SingleOrDefault(static product =>
+            product.Role is FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview);
         var assessmentProduct = products.SingleOrDefault(static product => product.Role == FrameArtifactRole.Metadata);
         if (previewArtifact is null || previewProduct is null || assessmentProduct is null)
         {
@@ -72,6 +91,12 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
         var environment = cloudEnvironment is null
             ? CameraAgentCloudEnvironment.CreateMissingInput(context)
             : await cloudEnvironment.CreateInputAsync(context, cancellationToken).ConfigureAwait(false);
+        if (environment is null)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.RetryableFailure(
+                ProcessingReasonCodes.EnvironmentAssociationPending));
+            return;
+        }
         var auxiliary = new ProcessingAuxiliaryInput[]
         {
             new(
@@ -84,7 +109,7 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
                 ArtifactId: assessment.ArtifactId),
             environment
         };
-        var outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
+        var outcome = await adapter.ExecuteAsync(context, new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.WeatherCloudOverlay,
             JsonSerializer.SerializeToElement(new WeatherCloudOverlayOptions(
                 Options.LineThickness,

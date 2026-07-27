@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -49,6 +50,27 @@ internal interface ICameraAgentScheduleUiService
         string idempotencyKey,
         string? reason,
         CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentPipelineOperatorState>> GetPipelineAsync(
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentPipelineOperatorState>.Failure(
+            OperatorUiResultKind.Unavailable, "Current processing graph data is unavailable."));
+
+    ValueTask<OperatorUiResult<CameraAgentPipelineProfilePreview>> PreviewPipelineAsync(
+        string profileJson,
+        string basisRevisionId,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentPipelineProfilePreview>.Failure(
+            OperatorUiResultKind.Unavailable, "The processing graph preview could not be completed."));
+
+    ValueTask<OperatorUiResult<CameraAgentPipelineProfilePreview>> TogglePipelineAsync(
+        string profileJson,
+        string basisRevisionId,
+        string nodeId,
+        bool enabled,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentPipelineProfilePreview>.Failure(
+            OperatorUiResultKind.Unavailable, "The processing graph preview could not be completed."));
 }
 
 internal sealed class CameraAgentScheduleUiService(
@@ -57,6 +79,7 @@ internal sealed class CameraAgentScheduleUiService(
     CaptureScheduleRuntimeCoordinator runtime,
     SqliteCaptureScheduleStore store,
     ICameraAgentConfigurationAccessor configurationAccessor,
+    ICaptureProcessingPipelineFactory pipelineFactory,
     ILogger<CameraAgentScheduleUiService> logger) : ICameraAgentScheduleUiService
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
@@ -113,8 +136,8 @@ internal sealed class CameraAgentScheduleUiService(
         => ExecuteMutationAsync(
             profileJson,
             basisRevisionId,
-            (profile, actor, token) => runtime.StageAsync(
-                profile!, idempotencyKey, expectedVersion, actor, reason, token),
+            (profile, actor, token) => runtime.StageFromBasisAsync(
+                profile!, basisRevisionId, idempotencyKey, expectedVersion, actor, reason, token),
             cancellationToken);
 
     public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ActivateAsync(
@@ -154,6 +177,56 @@ internal sealed class CameraAgentScheduleUiService(
             basisRevisionId: null,
             (_, actor, token) => store.ClearOverrideAsync(
                 overrideId, idempotencyKey, expectedVersion, actor, reason, token),
+            cancellationToken);
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The operator service logs internal failures and returns fixed sanitized graph state.")]
+    public async ValueTask<OperatorUiResult<CameraAgentPipelineOperatorState>> GetPipelineAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentPipelineOperatorState>();
+        }
+        try
+        {
+            await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+            var current = runtime.Snapshot ?? throw new InvalidOperationException("The pipeline runtime is unavailable.");
+            var state = await runtime.GetOperatorStateAsync(cancellationToken).ConfigureAwait(false);
+            return OperatorUiResult<CameraAgentPipelineOperatorState>.Success(
+                CameraAgentPipelineOperatorProjection.CreateState(state, current.Configuration, pipelineFactory));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent pipeline UI read failed.");
+            return Unavailable<CameraAgentPipelineOperatorState>("Current processing graph data is unavailable.");
+        }
+    }
+
+    public ValueTask<OperatorUiResult<CameraAgentPipelineProfilePreview>> PreviewPipelineAsync(
+        string profileJson,
+        string basisRevisionId,
+        CancellationToken cancellationToken)
+        => ExecutePipelinePreviewAsync(
+            profileJson,
+            basisRevisionId,
+            static profile => profile,
+            cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentPipelineProfilePreview>> TogglePipelineAsync(
+        string profileJson,
+        string basisRevisionId,
+        string nodeId,
+        bool enabled,
+        CancellationToken cancellationToken)
+        => ExecutePipelinePreviewAsync(
+            profileJson,
+            basisRevisionId,
+            profile => CameraAgentPipelineOperatorProjection.Toggle(profile, nodeId, enabled),
             cancellationToken);
 
     internal static string SerializeProfile(LocalCaptureProfileDefinition profile)
@@ -285,6 +358,54 @@ internal sealed class CameraAgentScheduleUiService(
     private static LocalCaptureProfileDefinition ParseProfile(string json)
         => JsonSerializer.Deserialize<LocalCaptureProfileDefinition>(json, SerializerOptions)
             ?? throw new JsonException("The local profile is empty.");
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The operator service returns fixed sanitized graph failures.")]
+    private async ValueTask<OperatorUiResult<CameraAgentPipelineProfilePreview>> ExecutePipelinePreviewAsync(
+        string profileJson,
+        string basisRevisionId,
+        Func<LocalCaptureProfileDefinition, LocalCaptureProfileDefinition> transform,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentPipelineProfilePreview>();
+        }
+        try
+        {
+            await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+            var basis = await store.GetRevisionAsync(basisRevisionId, cancellationToken).ConfigureAwait(false);
+            var profile = CameraAgentScheduleOperatorProjection.RestoreOpaqueOptions(
+                ParseProfile(profileJson), basis.Profile);
+            profile = transform(profile);
+            var current = runtime.Snapshot ?? throw new InvalidOperationException("The pipeline runtime is unavailable.");
+            var plan = CameraAgentPipelineOperatorProjection.Preview(
+                profile, current.Configuration, pipelineFactory);
+            return OperatorUiResult<CameraAgentPipelineProfilePreview>.Success(new(
+                basisRevisionId,
+                SerializeProfile(profile),
+                plan));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Invalid<CameraAgentPipelineProfilePreview>(
+                CameraAgentPipelineOperatorProjection.SanitizeValidationFailure(exception));
+        }
+        catch (Exception exception) when (exception is JsonException or ArgumentException or KeyNotFoundException or
+            CaptureProfileCompatibilityException or System.ComponentModel.DataAnnotations.ValidationException)
+        {
+            return Invalid<CameraAgentPipelineProfilePreview>("The local profile or desired graph is invalid.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent pipeline UI preview failed.");
+            return Unavailable<CameraAgentPipelineProfilePreview>("The processing graph preview could not be completed.");
+        }
+    }
 
     private static OperatorUiResult<T> Denied<T>()
         => OperatorUiResult<T>.Failure(OperatorUiResultKind.Unauthorized, "Authorization is required.");

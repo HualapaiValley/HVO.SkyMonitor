@@ -39,6 +39,18 @@ internal sealed record DurableProcessingOutput(
         ?? throw new InvalidDataException("Durable processing output has no artifact descriptor.");
 }
 
+internal sealed record DurableProcessingNodeInput(
+    int Ordinal,
+    string Kind,
+    string? Name,
+    Guid? ArtifactId,
+    FrameArtifactRole? Role,
+    string? Variant,
+    string? RecipeIdentitySha256,
+    string? SchemaVersion,
+    string? IdentitySha256,
+    bool Selected);
+
 internal sealed record DurableProcessingNode(
     Guid CaptureId,
     string NodeId,
@@ -47,6 +59,12 @@ internal sealed record DurableProcessingNode(
     string? Reason,
     int Attempt,
     string PlanSha256,
+    string? ProcessingProfileIdentitySha256,
+    DateTimeOffset? StartedUtc,
+    DateTimeOffset CompletedUtc,
+    TimeSpan? Duration,
+    ProcessingOutcomeStatus? Outcome,
+    IReadOnlyList<DurableProcessingNodeInput>? Inputs,
     IReadOnlyList<DurableProcessingOutput> Outputs);
 
 internal sealed record DurableGalleryProcessingNode(
@@ -69,7 +87,13 @@ internal sealed record DurableGalleryProcessingNodeDetail(
     IReadOnlyList<string> Dependencies,
     int Attempt,
     DateTimeOffset CompletedUtc,
-    string? Reason);
+    string? Reason,
+    string? ProcessingProfileIdentitySha256,
+    DateTimeOffset? StartedUtc,
+    TimeSpan? Duration,
+    ProcessingOutcomeStatus? Outcome,
+    IReadOnlyList<DurableProcessingNodeInput>? Inputs,
+    bool InputsTruncated);
 
 internal sealed record DurableRawProcessingInput(
     ReconstructionDescriptor Descriptor,
@@ -83,6 +107,7 @@ internal sealed record CaptureProcessingOperationalState(
 
 internal sealed class SqliteCaptureProcessingStore : IDisposable
 {
+    internal const int MaximumGalleryInputsPerNode = 8;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly string _root;
     private readonly string _databasePath;
@@ -135,18 +160,24 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                         await versionCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
                         System.Globalization.CultureInfo.InvariantCulture);
                 }
-                if (version > 2)
+                if (version > 3)
                 {
-                    throw new InvalidOperationException($"Capture processing schema {version} is newer than supported schema 2.");
+                    throw new InvalidOperationException($"Capture processing schema {version} is newer than supported schema 3.");
                 }
-                if (version < 2)
+                if (version < 3)
                 {
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
                     using var transaction = connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
                     using var command = connection.CreateCommand();
                     command.Transaction = transaction;
-                    command.CommandText = version == 0 ? SchemaSql : ProcessingV2MigrationSql;
+                    command.CommandText = version switch
+                    {
+                        0 => SchemaSql,
+                        1 => string.Concat(ProcessingV2MigrationSql, ProcessingV3MigrationSql),
+                        2 => ProcessingV3MigrationSql,
+                        _ => throw new InvalidOperationException($"Unsupported capture processing schema {version}.")
+                    };
                     await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 }
@@ -166,11 +197,12 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                     'capture_processing_schema', 'processing_nodes', 'processing_outputs',
                     'ix_processing_outputs_capture_node', 'ix_processing_outputs_window',
                     'ix_processing_nodes_status', 'ix_processing_nodes_recipe',
-                    'ix_processing_outputs_role', 'ix_processing_outputs_recipe');
+                    'ix_processing_outputs_role', 'ix_processing_outputs_recipe',
+                    'processing_node_inputs', 'ix_processing_node_inputs_artifact');
                 """;
             if (Convert.ToInt32(
                 await schemaObjects.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture) != 9)
+                System.Globalization.CultureInfo.InvariantCulture) != 11)
             {
                 throw new InvalidDataException("Capture processing SQLite schema is incomplete or drifted.");
             }
@@ -191,7 +223,9 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT required, status, reason, attempt, plan_sha256
+            SELECT required, status, reason, attempt, plan_sha256,
+                   processing_profile_identity_sha256, started_unix_ms, completed_unix_ms,
+                   duration_ticks, outcome, input_evidence_version
             FROM processing_nodes
             WHERE capture_id = $capture_id AND node_id = $node_id;
             """;
@@ -207,9 +241,26 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         var reason = await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(2);
         var attempt = reader.GetInt32(3);
         var planSha256 = reader.GetString(4);
+        var profileIdentity = await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5);
+        DateTimeOffset? startedUtc = await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
+            ? null
+            : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6));
+        var completedUtc = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7));
+        TimeSpan? duration = await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false)
+            ? null
+            : TimeSpan.FromTicks(reader.GetInt64(8));
+        ProcessingOutcomeStatus? outcome = await reader.IsDBNullAsync(9, cancellationToken).ConfigureAwait(false)
+            ? null
+            : Enum.Parse<ProcessingOutcomeStatus>(reader.GetString(9));
+        var hasInputEvidence = !await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false);
         await reader.DisposeAsync().ConfigureAwait(false);
         var outputs = await ReadOutputsAsync(connection, captureId, nodeId, cancellationToken).ConfigureAwait(false);
-        return new DurableProcessingNode(captureId, nodeId, required, status, reason, attempt, planSha256, outputs);
+        var inputs = hasInputEvidence
+            ? await ReadInputsAsync(connection, captureId, nodeId, cancellationToken).ConfigureAwait(false)
+            : null;
+        return new DurableProcessingNode(
+            captureId, nodeId, required, status, reason, attempt, planSha256, profileIdentity,
+            startedUtc, completedUtc, duration, outcome, inputs, outputs);
     }
 
     internal async ValueTask WriteNodeAsync(
@@ -218,6 +269,12 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         DurableProcessingNodeStatus status,
         string? reason,
         int attempt,
+        string? processingProfileIdentitySha256,
+        DateTimeOffset? startedUtc,
+        DateTimeOffset completedUtc,
+        TimeSpan? duration,
+        ProcessingOutcomeStatus? outcome,
+        IReadOnlyList<DurableProcessingNodeInput> inputs,
         long workId,
         string? leaseToken,
         IReadOnlyList<DurableProcessingOutput> outputs,
@@ -238,10 +295,12 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.CommandText = """
             INSERT INTO processing_nodes(
                 capture_id, node_id, required, dependencies_json, recipe_name, output_role, output_variant,
-                plan_sha256, status, reason, attempt, completed_unix_ms)
+                plan_sha256, status, reason, attempt, input_evidence_version,
+                processing_profile_identity_sha256, started_unix_ms, completed_unix_ms, duration_ticks, outcome)
             VALUES (
                 $capture_id, $node_id, $required, $dependencies_json, $recipe_name, $output_role, $output_variant,
-                $plan_sha256, $status, $reason, $attempt, $completed_unix_ms)
+                $plan_sha256, $status, $reason, $attempt, 1,
+                $processing_profile, $started_unix_ms, $completed_unix_ms, $duration_ticks, $outcome)
             ON CONFLICT(capture_id, node_id) DO UPDATE SET
                 required = excluded.required,
                 dependencies_json = excluded.dependencies_json,
@@ -252,7 +311,12 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 status = excluded.status,
                 reason = excluded.reason,
                 attempt = excluded.attempt,
-                completed_unix_ms = excluded.completed_unix_ms;
+                input_evidence_version = excluded.input_evidence_version,
+                processing_profile_identity_sha256 = excluded.processing_profile_identity_sha256,
+                started_unix_ms = excluded.started_unix_ms,
+                completed_unix_ms = excluded.completed_unix_ms,
+                duration_ticks = excluded.duration_ticks,
+                outcome = excluded.outcome;
             """;
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
         command.Parameters.AddWithValue("$node_id", node.Id);
@@ -265,9 +329,98 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$status", status.ToString());
         command.Parameters.AddWithValue("$reason", (object?)reason ?? DBNull.Value);
         command.Parameters.AddWithValue("$attempt", attempt);
-        command.Parameters.AddWithValue("$completed_unix_ms", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$processing_profile", (object?)processingProfileIdentitySha256 ?? DBNull.Value);
+        command.Parameters.AddWithValue("$started_unix_ms", startedUtc is null ? DBNull.Value : startedUtc.Value.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$completed_unix_ms", completedUtc.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$duration_ticks", duration is null ? DBNull.Value : duration.Value.Ticks);
+        command.Parameters.AddWithValue("$outcome", outcome?.ToString() ?? (object)DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        using (var deleteInputs = connection.CreateCommand())
+        {
+            deleteInputs.Transaction = transaction;
+            deleteInputs.CommandText = "DELETE FROM processing_node_inputs WHERE capture_id = $capture_id AND node_id = $node_id;";
+            deleteInputs.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+            deleteInputs.Parameters.AddWithValue("$node_id", node.Id);
+            await deleteInputs.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        foreach (var input in inputs)
+        {
+            await InsertInputAsync(connection, transaction, captureId, node.Id, input, cancellationToken).ConfigureAwait(false);
+        }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask InsertInputAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid captureId,
+        string nodeId,
+        DurableProcessingNodeInput input,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO processing_node_inputs(
+                capture_id, node_id, input_ordinal, kind, name, artifact_id, role, variant,
+                recipe_identity_sha256, schema_version, identity_sha256, selected_flag)
+            VALUES(
+                $capture_id, $node_id, $ordinal, $kind, $name, $artifact_id, $role, $variant,
+                $recipe_identity, $schema_version, $identity, $selected);
+            """;
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$node_id", nodeId);
+        command.Parameters.AddWithValue("$ordinal", input.Ordinal);
+        command.Parameters.AddWithValue("$kind", input.Kind);
+        command.Parameters.AddWithValue("$name", (object?)input.Name ?? DBNull.Value);
+        command.Parameters.AddWithValue("$artifact_id", input.ArtifactId?.ToString("N") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("$role", input.Role?.ToString() ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("$variant", (object?)input.Variant ?? DBNull.Value);
+        command.Parameters.AddWithValue("$recipe_identity", (object?)input.RecipeIdentitySha256 ?? DBNull.Value);
+        command.Parameters.AddWithValue("$schema_version", (object?)input.SchemaVersion ?? DBNull.Value);
+        command.Parameters.AddWithValue("$identity", (object?)input.IdentitySha256 ?? DBNull.Value);
+        command.Parameters.AddWithValue("$selected", input.Selected ? 1 : 0);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<IReadOnlyList<DurableProcessingNodeInput>> ReadInputsAsync(
+        SqliteConnection connection,
+        Guid captureId,
+        string nodeId,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT input_ordinal, kind, name, artifact_id, role, variant,
+                   recipe_identity_sha256, schema_version, identity_sha256, selected_flag
+            FROM processing_node_inputs
+            WHERE capture_id = $capture_id AND node_id = $node_id
+            ORDER BY input_ordinal
+            LIMIT 129;
+            """;
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$node_id", nodeId);
+        var values = new List<DurableProcessingNodeInput>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            values.Add(new DurableProcessingNodeInput(
+                reader.GetInt32(0),
+                reader.GetString(1),
+                await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(2),
+                await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ? null : Guid.ParseExact(reader.GetString(3), "N"),
+                await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? null : Enum.Parse<FrameArtifactRole>(reader.GetString(4)),
+                await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5),
+                await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6),
+                await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(7),
+                await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(8),
+                reader.GetBoolean(9)));
+        }
+        if (values.Count > 128)
+        {
+            throw new InvalidDataException("Processing node input evidence exceeds its durable bound.");
+        }
+        return values;
     }
 
     private async ValueTask EnsureLeaseAsync(
@@ -420,17 +573,24 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             .Where(group => group.Count() > maximumNodesPerCapture)
             .Select(static group => group.Key)
             .ToHashSet();
+        var retainedNodes = nodes.GroupBy(static node => node.CaptureId)
+            .SelectMany(group => group.Take(maximumNodesPerCapture))
+            .ToArray();
+        var retainedNodeKeys = retainedNodes
+            .Select(static node => (node.CaptureId, node.NodeId))
+            .ToHashSet();
         var truncatedOutputs = outputRows.GroupBy(static row => row.CaptureId)
             .Where(group => group.Count() > maximumOutputsPerCapture)
             .Select(static group => group.Key)
             .ToHashSet();
+        truncatedOutputs.UnionWith(outputRows
+            .Where(row => !retainedNodeKeys.Contains((row.CaptureId, row.NodeId)))
+            .Select(static row => row.CaptureId));
         outputRows = outputRows.GroupBy(static row => row.CaptureId)
             .SelectMany(group => group.Take(maximumOutputsPerCapture))
             .ToList();
         var outputs = outputRows.ToLookup(static row => (row.CaptureId, row.NodeId), static row => row.Output);
-        var projected = nodes.GroupBy(static node => node.CaptureId)
-            .SelectMany(group => group.Take(maximumNodesPerCapture))
-            .Select(node => new DurableGalleryProcessingNode(
+        var projected = retainedNodes.Select(node => new DurableGalleryProcessingNode(
             node.CaptureId,
             node.NodeId,
             node.Required,
@@ -450,14 +610,18 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT node_id, dependencies_json, attempt, completed_unix_ms, reason
+            SELECT node_id, dependencies_json, attempt, completed_unix_ms, reason,
+                   processing_profile_identity_sha256, started_unix_ms, duration_ticks, outcome,
+                   input_evidence_version
             FROM processing_nodes
             WHERE capture_id = $capture_id
             ORDER BY node_id
             LIMIT 65;
             """;
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
-        var details = new List<DurableGalleryProcessingNodeDetail>();
+        var rows = new List<(string NodeId, string[] Dependencies, int Attempt, DateTimeOffset CompletedUtc,
+            string? Reason, string? Profile, DateTimeOffset? StartedUtc, TimeSpan? Duration,
+            ProcessingOutcomeStatus? Outcome, bool HasInputs)>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -468,14 +632,35 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             {
                 throw new InvalidDataException("Processing dependencies exceed gallery bounds.");
             }
-            details.Add(new DurableGalleryProcessingNodeDetail(
+            rows.Add((
                 reader.GetString(0),
                 dependencies,
                 reader.GetInt32(2),
                 DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
-                await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(4)));
+                await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(4),
+                await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5),
+                await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
+                    ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6)),
+                await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
+                    ? null : TimeSpan.FromTicks(reader.GetInt64(7)),
+                await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false)
+                    ? null : Enum.Parse<ProcessingOutcomeStatus>(reader.GetString(8)),
+                !await reader.IsDBNullAsync(9, cancellationToken).ConfigureAwait(false)));
         }
-        return details.Take(64).ToArray();
+        await reader.DisposeAsync().ConfigureAwait(false);
+        var details = new List<DurableGalleryProcessingNodeDetail>(Math.Min(64, rows.Count));
+        foreach (var row in rows.Take(64))
+        {
+            var inputs = row.HasInputs
+                ? await ReadInputsAsync(connection, captureId, row.NodeId, cancellationToken).ConfigureAwait(false)
+                : null;
+            details.Add(new DurableGalleryProcessingNodeDetail(
+                row.NodeId, row.Dependencies, row.Attempt, row.CompletedUtc, row.Reason, row.Profile,
+                row.StartedUtc, row.Duration, row.Outcome,
+                inputs?.Take(MaximumGalleryInputsPerNode).ToArray(),
+                inputs is not null && inputs.Count > MaximumGalleryInputsPerNode));
+        }
+        return details;
     }
 
     internal async ValueTask<IReadOnlyDictionary<Guid, bool>> ReadGalleryRetentionStatesAsync(
@@ -952,9 +1137,9 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
     private const string SchemaSql = """
         CREATE TABLE IF NOT EXISTS capture_processing_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 2)
+            version INTEGER NOT NULL CHECK(version = 3)
         ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 2)
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 3)
             ON CONFLICT(schema_key) DO NOTHING;
         CREATE TABLE IF NOT EXISTS processing_nodes(
             capture_id TEXT NOT NULL,
@@ -968,8 +1153,30 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             status TEXT NOT NULL CHECK(status IN ('Completed', 'Skipped', 'RetryableFailure', 'TerminalFailure')),
             reason TEXT NULL,
             attempt INTEGER NOT NULL,
+            input_evidence_version INTEGER NULL CHECK(input_evidence_version IS NULL OR input_evidence_version = 1),
+            processing_profile_identity_sha256 TEXT NULL CHECK(processing_profile_identity_sha256 IS NULL OR length(processing_profile_identity_sha256) = 64),
+            started_unix_ms INTEGER NULL,
             completed_unix_ms INTEGER NOT NULL,
+            duration_ticks INTEGER NULL CHECK(duration_ticks IS NULL OR duration_ticks >= 0),
+            outcome TEXT NULL CHECK(outcome IS NULL OR outcome IN ('Produced', 'Skipped', 'RetryableFailure', 'TerminalFailure')),
             PRIMARY KEY(capture_id, node_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS processing_node_inputs(
+            capture_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            input_ordinal INTEGER NOT NULL CHECK(input_ordinal >= 0 AND input_ordinal < 128),
+            kind TEXT NOT NULL CHECK(kind IN ('Artifact', 'AuxiliaryArtifact', 'CanonicalContext')),
+            name TEXT NULL CHECK(name IS NULL OR length(name) BETWEEN 1 AND 64),
+            artifact_id TEXT NULL CHECK(artifact_id IS NULL OR length(artifact_id) = 32),
+            role TEXT NULL,
+            variant TEXT NULL CHECK(variant IS NULL OR length(variant) BETWEEN 1 AND 128),
+            recipe_identity_sha256 TEXT NULL CHECK(recipe_identity_sha256 IS NULL OR length(recipe_identity_sha256) = 64),
+            schema_version TEXT NULL CHECK(schema_version IS NULL OR length(schema_version) BETWEEN 1 AND 128),
+            identity_sha256 TEXT NULL CHECK(identity_sha256 IS NULL OR length(identity_sha256) = 64),
+            selected_flag INTEGER NOT NULL CHECK(selected_flag IN (0, 1)),
+            PRIMARY KEY(capture_id, node_id, input_ordinal),
+            FOREIGN KEY(capture_id, node_id) REFERENCES processing_nodes(capture_id, node_id)
+                ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
         ) STRICT;
         CREATE TABLE IF NOT EXISTS processing_outputs(
             output_identity_sha256 TEXT PRIMARY KEY CHECK(length(output_identity_sha256) = 64),
@@ -1004,6 +1211,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             ON processing_outputs(role, capture_id);
         CREATE INDEX IF NOT EXISTS ix_processing_outputs_recipe
             ON processing_outputs(recipe_identity_sha256, capture_id);
+        CREATE INDEX IF NOT EXISTS ix_processing_node_inputs_artifact
+            ON processing_node_inputs(artifact_id, capture_id, node_id);
         """;
 
     private const string ProcessingV2MigrationSql = """
@@ -1021,5 +1230,42 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             version INTEGER NOT NULL CHECK(version = 2)
         ) STRICT;
         INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 2);
+        """;
+
+    private const string ProcessingV3MigrationSql = """
+        ALTER TABLE processing_nodes ADD COLUMN input_evidence_version INTEGER NULL
+            CHECK(input_evidence_version IS NULL OR input_evidence_version = 1);
+        ALTER TABLE processing_nodes ADD COLUMN processing_profile_identity_sha256 TEXT NULL
+            CHECK(processing_profile_identity_sha256 IS NULL OR length(processing_profile_identity_sha256) = 64);
+        ALTER TABLE processing_nodes ADD COLUMN started_unix_ms INTEGER NULL;
+        ALTER TABLE processing_nodes ADD COLUMN duration_ticks INTEGER NULL
+            CHECK(duration_ticks IS NULL OR duration_ticks >= 0);
+        ALTER TABLE processing_nodes ADD COLUMN outcome TEXT NULL
+            CHECK(outcome IS NULL OR outcome IN ('Produced', 'Skipped', 'RetryableFailure', 'TerminalFailure'));
+        CREATE TABLE processing_node_inputs(
+            capture_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            input_ordinal INTEGER NOT NULL CHECK(input_ordinal >= 0 AND input_ordinal < 128),
+            kind TEXT NOT NULL CHECK(kind IN ('Artifact', 'AuxiliaryArtifact', 'CanonicalContext')),
+            name TEXT NULL CHECK(name IS NULL OR length(name) BETWEEN 1 AND 64),
+            artifact_id TEXT NULL CHECK(artifact_id IS NULL OR length(artifact_id) = 32),
+            role TEXT NULL,
+            variant TEXT NULL CHECK(variant IS NULL OR length(variant) BETWEEN 1 AND 128),
+            recipe_identity_sha256 TEXT NULL CHECK(recipe_identity_sha256 IS NULL OR length(recipe_identity_sha256) = 64),
+            schema_version TEXT NULL CHECK(schema_version IS NULL OR length(schema_version) BETWEEN 1 AND 128),
+            identity_sha256 TEXT NULL CHECK(identity_sha256 IS NULL OR length(identity_sha256) = 64),
+            selected_flag INTEGER NOT NULL CHECK(selected_flag IN (0, 1)),
+            PRIMARY KEY(capture_id, node_id, input_ordinal),
+            FOREIGN KEY(capture_id, node_id) REFERENCES processing_nodes(capture_id, node_id)
+                ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+        ) STRICT;
+        CREATE INDEX ix_processing_node_inputs_artifact
+            ON processing_node_inputs(artifact_id, capture_id, node_id);
+        DROP TABLE capture_processing_schema;
+        CREATE TABLE capture_processing_schema(
+            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
+            version INTEGER NOT NULL CHECK(version = 3)
+        ) STRICT;
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 3);
         """;
 }

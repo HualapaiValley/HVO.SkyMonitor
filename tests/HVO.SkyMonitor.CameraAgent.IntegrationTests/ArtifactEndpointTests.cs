@@ -18,13 +18,13 @@ public sealed class ArtifactEndpointTests
     [TestMethod]
     public async Task ArtifactEndpointsEnforceOwnerPolicyAsync()
     {
-        var (ownerId, nonOwnerId) = await GetUsersAsync().ConfigureAwait(false);
         var service = new StubArtifactService();
         using var factory = AssemblyHooks.Fixture.CreateCameraAgentFactory(services =>
         {
             services.RemoveAll<ICameraAgentArtifactService>();
             services.AddSingleton<ICameraAgentArtifactService>(service);
         });
+        var (ownerId, nonOwnerId) = await GetUsersAsync(factory.Services).ConfigureAwait(false);
 
         using var anonymous = factory.CreateClient();
         using var anonymousResponse = await anonymous.GetAsync(
@@ -47,13 +47,13 @@ public sealed class ArtifactEndpointTests
     [TestMethod]
     public async Task ContentSupportsExactGetHeadConditionalAndSingleRangeAsync()
     {
-        var (ownerId, _) = await GetUsersAsync().ConfigureAwait(false);
         var service = new StubArtifactService();
         using var factory = AssemblyHooks.Fixture.CreateCameraAgentFactory(services =>
         {
             services.RemoveAll<ICameraAgentArtifactService>();
             services.AddSingleton<ICameraAgentArtifactService>(service);
         });
+        var (ownerId, _) = await GetUsersAsync(factory.Services).ConfigureAwait(false);
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
         var uri = new Uri($"/api/v1/operations/artifacts/{service.ArtifactId:D}/content", UriKind.Relative);
@@ -94,13 +94,13 @@ public sealed class ArtifactEndpointTests
     [TestMethod]
     public async Task PreviewHeadAndFailuresDoNotDiscloseStorageDetailsAsync()
     {
-        var (ownerId, _) = await GetUsersAsync().ConfigureAwait(false);
         var service = new StubArtifactService();
         using var factory = AssemblyHooks.Fixture.CreateCameraAgentFactory(services =>
         {
             services.RemoveAll<ICameraAgentArtifactService>();
             services.AddSingleton<ICameraAgentArtifactService>(service);
         });
+        var (ownerId, _) = await GetUsersAsync(factory.Services).ConfigureAwait(false);
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
 
@@ -130,9 +130,9 @@ public sealed class ArtifactEndpointTests
         Assert.IsFalse(failure.Contains("relative_path", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static async Task<(string OwnerId, string NonOwnerId)> GetUsersAsync()
+    private static async Task<(string OwnerId, string NonOwnerId)> GetUsersAsync(IServiceProvider services)
     {
-        using var scope = AssemblyHooks.Fixture.CreateCameraAgentScope();
+        using var scope = services.CreateScope();
         var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
         var owner = await userManager.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false);
         Assert.IsNotNull(owner);

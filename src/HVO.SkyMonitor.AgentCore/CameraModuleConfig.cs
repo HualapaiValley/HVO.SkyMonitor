@@ -52,9 +52,30 @@ public sealed record CameraModuleDescriptor(
     JsonElement? Options = null);
 
 public sealed record CapturePipelineConfig(
-    IReadOnlyList<CaptureProcessingStepConfig> Steps)
+    IReadOnlyList<CaptureProcessingStepConfig> Steps,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SchemaVersion = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    CapturePipelineDependencyPolicy DependencyPolicy = CapturePipelineDependencyPolicy.LegacyInference)
 {
     public static CapturePipelineConfig Empty { get; } = new(Array.Empty<CaptureProcessingStepConfig>());
+
+    [JsonIgnore]
+    public string EffectiveSchemaVersion => SchemaVersion ?? CapturePipelineSchemaVersions.LegacyV1;
+}
+
+public static class CapturePipelineSchemaVersions
+{
+    public const string LegacyV1 = "cameraagent-capture-pipeline-v1";
+    public const string ExplicitV2 = "cameraagent-capture-pipeline-v2";
+}
+
+public enum CapturePipelineDependencyPolicy
+{
+    [System.Text.Json.Serialization.JsonStringEnumMemberName("legacy-inference-v1")]
+    LegacyInference,
+
+    [System.Text.Json.Serialization.JsonStringEnumMemberName("reject-enabled-dependent-v1")]
+    RejectEnabledDependent
 }
 
 public sealed record CaptureProcessingStepConfig(
@@ -63,4 +84,5 @@ public sealed record CaptureProcessingStepConfig(
     int? Order = null,
     JsonElement? Options = null,
     IReadOnlyList<string>? DependsOn = null,
-    bool Required = true);
+    bool Required = true,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? Enabled = null);

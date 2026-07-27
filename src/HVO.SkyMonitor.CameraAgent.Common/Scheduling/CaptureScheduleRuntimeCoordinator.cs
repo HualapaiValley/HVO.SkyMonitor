@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using System.ComponentModel.DataAnnotations;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 
@@ -228,6 +229,33 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         string actor,
         string? reason,
         CancellationToken cancellationToken)
+        => await StageCoreAsync(
+            profile, basisRevisionId: null, idempotencyKey, expectedVersion, actor, reason, cancellationToken)
+            .ConfigureAwait(false);
+
+    public async Task<CaptureScheduleStoreSnapshot> StageFromBasisAsync(
+        LocalCaptureProfileDefinition profile,
+        string basisRevisionId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(basisRevisionId);
+        return await StageCoreAsync(
+            profile, basisRevisionId, idempotencyKey, expectedVersion, actor, reason, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<CaptureScheduleStoreSnapshot> StageCoreAsync(
+        LocalCaptureProfileDefinition profile,
+        string? basisRevisionId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(profile);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -236,8 +264,12 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             var current = Snapshot ?? throw new InvalidOperationException("Capture schedule runtime is not initialized.");
             var candidateConfiguration = profile.ApplyTo(current.Configuration);
             ValidateConfiguration(candidateConfiguration);
-            var result = await _store.StageWithCurrentAsync(
-                profile, idempotencyKey, expectedVersion, actor, reason, cancellationToken).ConfigureAwait(false);
+            var result = basisRevisionId is null
+                ? await _store.StageWithCurrentAsync(
+                    profile, idempotencyKey, expectedVersion, actor, reason, cancellationToken).ConfigureAwait(false)
+                : await _store.StageWithCurrentFromBasisAsync(
+                    profile, basisRevisionId, idempotencyKey, expectedVersion, actor, reason, cancellationToken)
+                    .ConfigureAwait(false);
             lock (_stateGate)
             {
                 Volatile.Write(ref _snapshot, current with
@@ -485,7 +517,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             throw;
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
-            JsonException or NotSupportedException)
+            JsonException or NotSupportedException or ValidationException)
         {
             throw new CaptureProfileCompatibilityException(
                 "The local capture profile is incompatible with this CameraAgent.", exception);

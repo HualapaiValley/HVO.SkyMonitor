@@ -309,7 +309,8 @@ internal sealed class SqliteCaptureLaneStore(
             using var transaction = BeginImmediate(connection);
             var current = await ReadOwnershipAsync(connection, transaction, lease.WorkId, cancellationToken).ConfigureAwait(false);
             EnsureOwned(lease, current, _timeProvider.GetUtcNow());
-            var retry = result.Outcome == CaptureLaneHandlerOutcome.RetryableFailure && lease.Attempt < _options.MaximumAttempts;
+            var deferred = result.Outcome == CaptureLaneHandlerOutcome.Deferred;
+            var retry = deferred || result.Outcome == CaptureLaneHandlerOutcome.RetryableFailure && lease.Attempt < _options.MaximumAttempts;
             var now = _timeProvider.GetUtcNow();
             var state = retry ? "retry_wait" : "quarantined";
             var available = retry ? now + RetryDelay(lease.Attempt) : now;
@@ -319,6 +320,7 @@ internal sealed class SqliteCaptureLaneStore(
                 command.CommandText = """
                     UPDATE capture_lane_work
                     SET state = $state, available_unix_ms = $available,
+                        attempt_count = CASE WHEN $deferred = 1 THEN attempt_count - 1 ELSE attempt_count END,
                         lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL,
                         failure_reason = $reason, updated_unix_ms = $now
                     WHERE work_id = $work AND state = 'leased'
@@ -327,6 +329,7 @@ internal sealed class SqliteCaptureLaneStore(
                 command.Parameters.AddWithValue("$state", state);
                 command.Parameters.AddWithValue("$available", available.ToUnixTimeMilliseconds());
                 command.Parameters.AddWithValue("$reason", NormalizeReason(result.Reason));
+                command.Parameters.AddWithValue("$deferred", deferred ? 1 : 0);
                 command.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
                 AddLeaseParameters(command, lease);
                 if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
@@ -337,7 +340,9 @@ internal sealed class SqliteCaptureLaneStore(
             await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(retry ? CaptureLaneFaultPoint.AfterRetryCommit : CaptureLaneFaultPoint.AfterQuarantineCommit);
-            return retry ? CaptureLaneHandlerOutcome.RetryableFailure : CaptureLaneHandlerOutcome.TerminalFailure;
+            return deferred
+                ? CaptureLaneHandlerOutcome.Deferred
+                : retry ? CaptureLaneHandlerOutcome.RetryableFailure : CaptureLaneHandlerOutcome.TerminalFailure;
         }
         finally
         {

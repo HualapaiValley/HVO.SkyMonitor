@@ -140,7 +140,15 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
             detail.Dependencies,
             detail.Attempt,
             detail.CompletedUtc,
-            SanitizeFailureCategory(detail.Reason)))
+            SanitizeFailureCategory(detail.Reason),
+            detail.ProcessingProfileIdentitySha256,
+            detail.StartedUtc,
+            detail.Duration?.TotalMilliseconds,
+            detail.Outcome?.ToString(),
+            detail.Inputs?.Select(static input => new CameraAgentGalleryProcessingNodeInput(
+                input.Ordinal, input.Kind, input.Name, input.ArtifactId, input.Role, input.Variant,
+                input.RecipeIdentitySha256, input.SchemaVersion, input.IdentitySha256, input.Selected)).ToArray(),
+            detail.InputsTruncated))
             .ToArray();
 
         return new CameraAgentGalleryCaptureDetail(
@@ -178,7 +186,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
             row.RetentionHold,
             artifactStates,
             nodeDetails,
-            await ReadCloudAssessmentAsync(row.CaptureId, cancellationToken).ConfigureAwait(false));
+            await ReadCloudAssessmentAsync(row.CaptureId, cancellationToken).ConfigureAwait(false),
+            descriptor?.Profiles.Processing);
     }
 
     private async ValueTask<CameraAgentGalleryCloudAssessment> ReadCloudAssessmentAsync(
@@ -368,7 +377,9 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
     private static string? SanitizeFailureCategory(string? reason)
         => reason is { Length: > 0 and <= 64 } &&
            (reason.StartsWith("processing.", StringComparison.Ordinal) ||
-            reason.StartsWith("cloud.", StringComparison.Ordinal)) &&
+             reason.StartsWith("cloud.", StringComparison.Ordinal) ||
+             reason.StartsWith("environment.", StringComparison.Ordinal) ||
+             reason.StartsWith("calibration.", StringComparison.Ordinal)) &&
            reason.All(static character => character is >= 'a' and <= 'z' or >= '0' and <= '9' or '.' or '-')
             ? reason
             : reason is null ? null : "unavailable";
@@ -547,7 +558,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
                     output.Artifact,
                     output.Descriptor?.Layout.ByteLength ?? output.ProductManifest?.ByteLength,
                     output.RecipeIdentitySha256,
-                    node.NodeId));
+                    node.NodeId,
+                    output.Algorithms));
             }
             nodes.Add(new CameraAgentGalleryProcessingNode(
                 node.NodeId,
@@ -579,7 +591,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
         ArtifactDescriptor artifact,
         long? byteLength,
         string? recipeIdentity,
-        string? processingNodeId)
+        string? processingNodeId,
+        IReadOnlyList<ProcessingAlgorithmIdentity>? algorithms = null)
     {
         recipeIdentity ??= ProcessingIdentity.CreateRecipeIdentity(artifact.Recipe).IdentitySha256;
         return new CameraAgentGalleryArtifact(
@@ -598,7 +611,9 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
                 artifact.Recipe.OptionsSha256,
                 recipeIdentity),
             artifact.SourceArtifactIds,
-            processingNodeId);
+            processingNodeId,
+            algorithms?.Select(static algorithm => new CameraAgentGalleryAlgorithm(
+                algorithm.Name, algorithm.Version)).ToArray());
     }
 
     private static ArtifactManifestV2? TryReadTrustedManifest(RawGalleryRow row)

@@ -92,7 +92,8 @@ public static class ProcessingIdentity
                 annotation.Transform,
                 annotation.Objects,
                 annotation.Segments,
-                annotation.ProjectionOverlay
+                annotation.ProjectionOverlay,
+                annotation.MetadataOverlay
             }, SerializerOptions));
         if (auxiliaryInputs is null or { Count: 0 })
         {

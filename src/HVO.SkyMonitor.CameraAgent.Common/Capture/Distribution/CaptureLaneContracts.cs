@@ -16,6 +16,7 @@ internal enum CaptureLaneWorkState
 public enum CaptureLaneHandlerOutcome
 {
     Completed,
+    Deferred,
     RetryableFailure,
     TerminalFailure
 }
@@ -48,6 +49,9 @@ public readonly record struct CaptureLaneHandlerResult(
 
     public static CaptureLaneHandlerResult Retry(string reason)
         => new(CaptureLaneHandlerOutcome.RetryableFailure, reason);
+
+    public static CaptureLaneHandlerResult Wait(string reason)
+        => new(CaptureLaneHandlerOutcome.Deferred, reason);
 
     public static CaptureLaneHandlerResult Terminal(string reason)
         => new(CaptureLaneHandlerOutcome.TerminalFailure, reason);

@@ -26,14 +26,7 @@ public sealed class EnvironmentalAssociationService(
         CancellationToken cancellationToken)
     {
         using var activity = EnvironmentalAcquisitionTelemetry.ActivitySource.StartActivity("environment.associate");
-        ArgumentNullException.ThrowIfNull(kinds);
-        if (captureId == Guid.Empty || captureSequence < 1 || exposureFromUtc.Offset != TimeSpan.Zero ||
-            exposureThroughUtc.Offset != TimeSpan.Zero || exposureFromUtc >= exposureThroughUtc ||
-            rigId is { Length: > 128 } || rigId is not null && rigId != rigId.Trim() ||
-            kinds.Count == 0 || kinds.Any(static kind => !Enum.IsDefined(kind)))
-        {
-            throw new ArgumentException("The environmental capture association request is invalid.");
-        }
+        ValidateRequest(captureId, captureSequence, exposureFromUtc, exposureThroughUtc, rigId, kinds);
         exposureFromUtc = DateTimeOffset.FromUnixTimeMilliseconds(exposureFromUtc.ToUnixTimeMilliseconds());
         exposureThroughUtc = DateTimeOffset.FromUnixTimeMilliseconds(exposureThroughUtc.ToUnixTimeMilliseconds());
         if (exposureThroughUtc <= exposureFromUtc)
@@ -42,26 +35,13 @@ public sealed class EnvironmentalAssociationService(
         }
         var root = options.Value.RawIngressRoot;
         var expectedKinds = kinds.Distinct().Order().ToArray();
-        var policyIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(new
-        {
-            Schema = AlgorithmVersion,
-            SourcePriority,
-            QualityPriority,
-            Kinds = expectedKinds
-        });
+        var policyIdentity = CreatePolicyIdentity(expectedKinds);
         var persisted = (await associations.ReadAssociationsAsync(root, captureId, cancellationToken).ConfigureAwait(false))
             .Where(association => string.Equals(
                 association.PolicyIdentitySha256, policyIdentity, StringComparison.Ordinal))
             .ToArray();
-        if (persisted.Any(association => association.CaptureSequence != captureSequence ||
-            association.ExposureFromUtc != exposureFromUtc || association.ExposureThroughUtc != exposureThroughUtc ||
-            !string.Equals(association.RigId, rigId, StringComparison.Ordinal) ||
-            !expectedKinds.Contains(association.Kind)) ||
-            persisted.Select(static association => association.Kind).Distinct().Count() != persisted.Length)
-        {
-            throw new EnvironmentalObservationIdentityConflictException(
-                "The durable environmental association set conflicts with the capture context or policy.");
-        }
+        ValidatePersisted(
+            persisted, captureSequence, exposureFromUtc, exposureThroughUtc, rigId, expectedKinds);
         if (persisted.Length == expectedKinds.Length)
         {
             return persisted.OrderBy(static association => association.Kind).ToArray();
@@ -90,6 +70,90 @@ public sealed class EnvironmentalAssociationService(
             telemetry?.RecordAssociation(association.Status);
         }
         return completed;
+    }
+
+    public async ValueTask<IReadOnlyList<LocalEnvironmentalCaptureAssociation>?> ReadCompletedAsync(
+        Guid captureId,
+        long captureSequence,
+        DateTimeOffset exposureFromUtc,
+        DateTimeOffset exposureThroughUtc,
+        string? rigId,
+        IReadOnlyList<EnvironmentalObservationKind> kinds,
+        CancellationToken cancellationToken)
+    {
+        ValidateRequest(captureId, captureSequence, exposureFromUtc, exposureThroughUtc, rigId, kinds);
+        exposureFromUtc = DateTimeOffset.FromUnixTimeMilliseconds(exposureFromUtc.ToUnixTimeMilliseconds());
+        exposureThroughUtc = DateTimeOffset.FromUnixTimeMilliseconds(exposureThroughUtc.ToUnixTimeMilliseconds());
+        if (exposureThroughUtc <= exposureFromUtc)
+        {
+            exposureThroughUtc = exposureFromUtc.AddMilliseconds(1);
+        }
+        var expectedKinds = kinds.Distinct().Order().ToArray();
+        var allPersisted = await associations.ReadAssociationsAsync(
+                options.Value.RawIngressRoot,
+                captureId,
+                cancellationToken).ConfigureAwait(false);
+        var persisted = allPersisted
+            .GroupBy(static association => association.PolicyIdentitySha256, StringComparer.Ordinal)
+            .Select(group => group.ToArray())
+            .Where(group => expectedKinds.All(kind => group.Any(association => association.Kind == kind)))
+            .OrderBy(static group => group.Length)
+            .ThenBy(static group => group[0].PolicyIdentitySha256, StringComparer.Ordinal)
+            .FirstOrDefault() ?? [];
+        persisted = persisted
+            .Where(association => expectedKinds.Contains(association.Kind))
+            .ToArray();
+        ValidatePersisted(
+            persisted, captureSequence, exposureFromUtc, exposureThroughUtc, rigId, expectedKinds);
+        return persisted.Length == expectedKinds.Length
+            ? persisted.OrderBy(static association => association.Kind).ToArray()
+            : null;
+    }
+
+    private static void ValidateRequest(
+        Guid captureId,
+        long captureSequence,
+        DateTimeOffset exposureFromUtc,
+        DateTimeOffset exposureThroughUtc,
+        string? rigId,
+        IReadOnlyList<EnvironmentalObservationKind> kinds)
+    {
+        ArgumentNullException.ThrowIfNull(kinds);
+        if (captureId == Guid.Empty || captureSequence < 1 || exposureFromUtc.Offset != TimeSpan.Zero ||
+            exposureThroughUtc.Offset != TimeSpan.Zero || exposureFromUtc >= exposureThroughUtc ||
+            rigId is { Length: > 128 } || rigId is not null && rigId != rigId.Trim() ||
+            kinds.Count == 0 || kinds.Any(static kind => !Enum.IsDefined(kind)))
+        {
+            throw new ArgumentException("The environmental capture association request is invalid.");
+        }
+    }
+
+    private static string CreatePolicyIdentity(IReadOnlyList<EnvironmentalObservationKind> expectedKinds)
+        => CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            Schema = AlgorithmVersion,
+            SourcePriority,
+            QualityPriority,
+            Kinds = expectedKinds
+        });
+
+    private static void ValidatePersisted(
+        LocalEnvironmentalCaptureAssociation[] persisted,
+        long captureSequence,
+        DateTimeOffset exposureFromUtc,
+        DateTimeOffset exposureThroughUtc,
+        string? rigId,
+        IReadOnlyCollection<EnvironmentalObservationKind> expectedKinds)
+    {
+        if (persisted.Any(association => association.CaptureSequence != captureSequence ||
+            association.ExposureFromUtc != exposureFromUtc || association.ExposureThroughUtc != exposureThroughUtc ||
+            !string.Equals(association.RigId, rigId, StringComparison.Ordinal) ||
+            !expectedKinds.Contains(association.Kind)) ||
+            persisted.Select(static association => association.Kind).Distinct().Count() != persisted.Length)
+        {
+            throw new EnvironmentalObservationIdentityConflictException(
+                "The durable environmental association set conflicts with the capture context or policy.");
+        }
     }
 
     private LocalEnvironmentalCaptureAssociation CreateAssociation(

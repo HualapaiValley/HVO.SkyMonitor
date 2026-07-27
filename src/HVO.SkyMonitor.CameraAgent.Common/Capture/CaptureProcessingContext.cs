@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -22,6 +23,7 @@ public sealed class CaptureProcessingContext
     private string? _currentNodeId;
     private IReadOnlyList<string> _currentDependencies = [];
     private IReadOnlyList<ProcessingArtifact> _historicalInputs = [];
+    private readonly List<DurableProcessingNodeInput> _currentInputs = [];
 
     public CaptureProcessingContext(
         CameraModuleConfig config,
@@ -137,6 +139,7 @@ public sealed class CaptureProcessingContext
     {
         _currentNodeId = nodeId;
         _currentDependencies = dependencies;
+        _currentInputs.Clear();
     }
 
     internal IReadOnlyList<FrameArtifact> GetDependencyArtifacts()
@@ -152,12 +155,148 @@ public sealed class CaptureProcessingContext
             .Select(artifactId => _processingProductsByArtifactId[artifactId])
             .ToArray();
 
+    internal IReadOnlyList<CaptureProcessingStepTelemetry> GetDependencyStepTelemetry()
+        => _stepTelemetry
+            .Where(telemetry => _currentDependencies.Contains(telemetry.Name, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+
     internal bool HasDeclaredDependencies => _currentDependencies.Count > 0;
 
     internal void SetHistoricalInputs(IReadOnlyList<ProcessingArtifact> historicalInputs)
         => _historicalInputs = historicalInputs;
 
     internal IReadOnlyList<ProcessingArtifact> GetHistoricalInputs() => _historicalInputs;
+
+    internal IReadOnlyList<DurableProcessingNodeInput> GetCurrentInputEvidence() => _currentInputs.ToArray();
+
+    internal void RecordExecutionRequest(ProcessingExecutionRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var selectedArtifactId = request.InputArtifactId;
+        if (selectedArtifactId is not null &&
+            request.Inputs.Count(input => input.ArtifactId == selectedArtifactId) != 1)
+        {
+            throw new InvalidOperationException("The selected processing input must identify exactly one submitted artifact.");
+        }
+        var evidence = new List<DurableProcessingNodeInput>();
+        foreach (var input in request.Inputs)
+        {
+            evidence.Add(new DurableProcessingNodeInput(
+                _currentInputs.Count + evidence.Count, "Artifact", null, input.ArtifactId, input.Role, input.Variant,
+                input.RecipeIdentitySha256, null, null, input.ArtifactId == selectedArtifactId));
+        }
+        foreach (var auxiliary in request.AuxiliaryInputs ?? [])
+        {
+            evidence.Add(new DurableProcessingNodeInput(
+                _currentInputs.Count + evidence.Count,
+                auxiliary.Kind == ProcessingAuxiliaryInputKind.Artifact ? "AuxiliaryArtifact" : "CanonicalContext",
+                auxiliary.Name,
+                auxiliary.ArtifactId,
+                auxiliary.Selector?.Role,
+                auxiliary.Selector?.Variant,
+                auxiliary.Selector?.RecipeIdentitySha256,
+                auxiliary.SchemaVersion,
+                auxiliary.IdentitySha256,
+                false));
+        }
+        if (request.Annotation is { } annotation)
+        {
+            evidence.Add(new DurableProcessingNodeInput(
+                _currentInputs.Count + evidence.Count, "CanonicalContext", "annotation", null, null, null, null,
+                "processing-annotation-v1", annotation.ProvenanceSha256, false));
+        }
+        AppendInputEvidence(evidence);
+    }
+
+    internal void RecordExecutionOutcome(ProcessingOutcome outcome)
+    {
+        ArgumentNullException.ThrowIfNull(outcome);
+        var selectedArtifactIds = outcome.Products
+            .SelectMany(static product => product.SourceArtifactIds)
+            .ToHashSet();
+        if (selectedArtifactIds.Count == 0)
+        {
+            return;
+        }
+        for (var index = 0; index < _currentInputs.Count; index++)
+        {
+            var input = _currentInputs[index];
+            if (input.ArtifactId is { } artifactId && selectedArtifactIds.Contains(artifactId))
+            {
+                _currentInputs[index] = input with { Selected = true };
+            }
+        }
+    }
+
+    internal void RecordConsumedArtifacts(
+        IReadOnlyList<FrameArtifact> artifacts,
+        IReadOnlyList<ProcessingProduct> products)
+    {
+        var evidence = new List<DurableProcessingNodeInput>(artifacts.Count + products.Count);
+        var recordedIds = new HashSet<Guid>();
+        foreach (var artifact in artifacts)
+        {
+            var product = GetProcessingProduct(artifact.ArtifactId);
+            evidence.Add(new DurableProcessingNodeInput(
+                _currentInputs.Count + evidence.Count,
+                "Artifact",
+                null,
+                artifact.ArtifactId,
+                artifact.Role,
+                product?.Variant ?? (ReconstructionDescriptor?.Artifact.ArtifactId == artifact.ArtifactId
+                    ? ReconstructionDescriptor.Artifact.Variant
+                    : null),
+                product?.Recipe.IdentitySha256 ?? (artifact.RecipeVersion is { } recipeVersion && IsSha256(recipeVersion)
+                    ? recipeVersion
+                    : null),
+                null,
+                null,
+                true));
+            recordedIds.Add(artifact.ArtifactId);
+        }
+        foreach (var product in products)
+        {
+            var artifactId = CreateArtifactId(product.OutputIdentitySha256);
+            if (!recordedIds.Add(artifactId))
+            {
+                continue;
+            }
+            evidence.Add(new DurableProcessingNodeInput(
+                _currentInputs.Count + evidence.Count,
+                "Artifact",
+                null,
+                artifactId,
+                product.Role,
+                product.Variant,
+                product.Recipe.IdentitySha256,
+                null,
+                null,
+                true));
+        }
+        AppendInputEvidence(evidence);
+    }
+
+    internal void RecordCanonicalInput(string name, string schemaVersion, string identitySha256)
+        => AppendInputEvidence([
+            new DurableProcessingNodeInput(
+                _currentInputs.Count, "CanonicalContext", name, null, null, null, null,
+                schemaVersion, identitySha256, false)
+        ]);
+
+    private void AppendInputEvidence(List<DurableProcessingNodeInput> evidence)
+    {
+        if (_currentInputs.Count + evidence.Count > 128 || evidence.Any(static input =>
+                input.Ordinal is < 0 or >= 128 || input.Name is { Length: 0 or > 64 } ||
+                input.Variant is { Length: 0 or > 128 } || input.SchemaVersion is { Length: 0 or > 128 } ||
+                input.RecipeIdentitySha256 is { } recipe && !IsSha256(recipe) ||
+                input.IdentitySha256 is { } identity && !IsSha256(identity)))
+        {
+            throw new InvalidOperationException("Processing input evidence exceeds its durable bounds.");
+        }
+        _currentInputs.AddRange(evidence);
+    }
+
+    private static bool IsSha256(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
 
     internal FrameArtifact FindArtifact(ProcessingProduct product)
         => _processingProductsByArtifactId

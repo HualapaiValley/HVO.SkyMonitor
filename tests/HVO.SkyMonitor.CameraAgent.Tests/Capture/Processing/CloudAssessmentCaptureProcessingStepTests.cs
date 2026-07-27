@@ -70,7 +70,12 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
                 currentFrame.TimestampUtc,
                 currentFrame.Metadata.Exposure,
                 TimeSpan.Zero));
-        context.BeginNode("cloud", []);
+        context.BeginNode("calibration", []);
+        var calibrated = context.AddDerivative(
+            FrameArtifactRole.Calibrated,
+            currentFrame,
+            "calibration-v1");
+        context.BeginNode("cloud", ["calibration"]);
         var step = new CloudAssessmentCaptureProcessingStep(
             new CaptureProcessingStepMetadata("cloud", "CloudAssessment", 80),
             new CloudAssessmentProcessingStepOptions
@@ -97,8 +102,11 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
         Assert.AreEqual(CloudAssessmentStatus.InsufficientEvidence, assessment.Status);
         Assert.IsNull(assessment.CoverageMillionths);
         Assert.HasCount(1, product.SourceArtifactIds);
-        Assert.HasCount(1, context.AllArtifacts);
+        Assert.AreEqual(calibrated.ArtifactId, product.SourceArtifactIds[0]);
+        Assert.HasCount(2, context.AllArtifacts);
         Assert.IsFalse(context.AllArtifacts.Any(static artifact => artifact.Role == FrameArtifactRole.Metadata));
+        Assert.IsTrue(context.GetCurrentInputEvidence().Any(static input =>
+            input.Kind == "CanonicalContext" && input.Name == "environment" && input.IdentitySha256 is { Length: 64 }));
     }
 
     [TestMethod]
@@ -185,9 +193,14 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
                 []);
             using var store = new SqliteEnvironmentalObservationOutbox();
             var committed = await store.CommitLocalAsync(root, fact, CancellationToken.None).ConfigureAwait(false);
-            var configured = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var configured = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions { Enabled = true }
+            });
+            var associations = new EnvironmentalAssociationService(store, store, configured, TimeProvider.System);
             var environment = new CameraAgentCloudEnvironment(
-                new EnvironmentalAssociationService(store, store, configured, TimeProvider.System),
+                associations,
                 store,
                 configured);
             var frame = CreateFrame(static (_, _) => 1);
@@ -207,8 +220,18 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
                 new string('A', 64));
             var context = new CaptureProcessingContext(ProcessingConformanceFixture.CameraConfig, submission, receipt);
 
+            Assert.IsNull(await environment.CreateInputAsync(context, CancellationToken.None).ConfigureAwait(false));
+            _ = await associations.AssociateAsync(
+                manifest.Descriptor.Capture.CaptureId,
+                manifest.Descriptor.Capture.CaptureSequence,
+                timing.ExposureStartedUtc,
+                timing.ExposureEndedUtc,
+                manifest.Descriptor.Capture.RigId,
+                [EnvironmentalObservationKind.RainState],
+                CancellationToken.None).ConfigureAwait(false);
             var input = await environment.CreateInputAsync(context, CancellationToken.None).ConfigureAwait(false);
-            using var payload = JsonDocument.Parse(input.Payload);
+            Assert.IsNotNull(input);
+            using var payload = JsonDocument.Parse(input!.Payload);
             var rootElement = payload.RootElement;
 
             Assert.AreEqual("Fresh", rootElement.GetProperty("precipitationStatus").GetString());

@@ -98,7 +98,7 @@ public sealed class CaptureLaneTelemetry : IDisposable
         {
             _retries.Add(1, tags);
         }
-        else
+        else if (outcome == CaptureLaneHandlerOutcome.TerminalFailure)
         {
             _quarantined.Add(1, tags);
         }
@@ -157,6 +157,7 @@ public sealed class CaptureLaneTelemetry : IDisposable
     private static string Outcome(CaptureLaneHandlerOutcome outcome) => outcome switch
     {
         CaptureLaneHandlerOutcome.Completed => "completed",
+        CaptureLaneHandlerOutcome.Deferred => "waiting",
         CaptureLaneHandlerOutcome.RetryableFailure => "retry",
         _ => "terminal"
     };

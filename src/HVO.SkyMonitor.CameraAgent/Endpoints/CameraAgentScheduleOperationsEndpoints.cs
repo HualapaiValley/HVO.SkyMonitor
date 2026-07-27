@@ -126,8 +126,9 @@ internal static class CameraAgentScheduleOperationsEndpoints
                 var profile = CameraAgentScheduleOperatorProjection.RestoreOpaqueOptions(
                     request.Profile,
                     basis.Profile);
-                return await runtime.StageAsync(
-                    profile, key, expectedVersion, actor, request.Reason, token).ConfigureAwait(false);
+                return await runtime.StageFromBasisAsync(
+                    profile, request.BasisRevisionId, key, expectedVersion, actor, request.Reason, token)
+                    .ConfigureAwait(false);
             },
             cancellationToken);
 
@@ -211,7 +212,7 @@ internal static class CameraAgentScheduleOperationsEndpoints
         }
         catch (CaptureProfileCompatibilityException)
         {
-            return Invalid("The local capture profile is incompatible with this CameraAgent.");
+            return Unprocessable("The local capture profile is incompatible with this CameraAgent.");
         }
         catch (KeyNotFoundException)
         {
@@ -251,6 +252,9 @@ internal static class CameraAgentScheduleOperationsEndpoints
 
     private static IResult Invalid(string title)
         => Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: title);
+
+    private static IResult Unprocessable(string title)
+        => Results.Problem(statusCode: StatusCodes.Status422UnprocessableEntity, title: title);
 
     private sealed record SchedulePreviewRequest(
         LocalCaptureProfileDefinition Profile,

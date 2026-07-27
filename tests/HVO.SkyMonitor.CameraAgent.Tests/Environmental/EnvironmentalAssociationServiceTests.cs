@@ -69,6 +69,17 @@ public sealed class EnvironmentalAssociationServiceTests
             association => association.Kind == EnvironmentalObservationKind.RelativeHumidity).Status);
         Assert.AreEqual(LocalEnvironmentalAssociationStatus.Missing, associations.Single(
             association => association.Kind == EnvironmentalObservationKind.AtmosphericPressure).Status);
+        var subset = await service.ReadCompletedAsync(
+            associations[0].CaptureId,
+            1,
+            Epoch.AddSeconds(4),
+            Epoch.AddSeconds(5),
+            "rig-1",
+            [EnvironmentalObservationKind.AirTemperature],
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(subset);
+        Assert.HasCount(1, subset);
+        Assert.AreEqual(LocalEnvironmentalAssociationStatus.Fresh, subset[0].Status);
         var persisted = await store.ReadAssociationsAsync(
             _root!, associations[0].CaptureId, CancellationToken.None).ConfigureAwait(false);
         Assert.HasCount(3, persisted);

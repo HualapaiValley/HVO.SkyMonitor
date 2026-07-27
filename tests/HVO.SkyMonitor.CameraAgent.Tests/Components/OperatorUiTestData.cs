@@ -67,9 +67,9 @@ internal static class OperatorUiTestData
         var previewId = Guid.Parse("00000000-0000-0000-0000-000000000102");
         var artifacts = new List<CameraAgentGalleryArtifact>
         {
-            new(rawId, FrameArtifactRole.Raw, "source-1", null, Now, "application/x-hvo-raw", new string('A', 64), 2048, null, [], null),
+            new(rawId, FrameArtifactRole.Raw, "source-1", null, Now, "application/x-skymonitor-mono16", new string('A', 64), 2048, null, [], null),
             new(previewId, annotated ? FrameArtifactRole.AnnotatedPreview : FrameArtifactRole.Preview, "source-2", "display", Now,
-                "image/jpeg", new string('B', 64), 1024,
+                "application/x-hvo-packed-image", new string('B', 64), 1024,
                 new CameraAgentGalleryRecipe("preview", "1.0.0", "build-7", new string('C', 64), new string('D', 64)),
                 [rawId], "preview-node")
         };
@@ -85,7 +85,10 @@ internal static class OperatorUiTestData
                 new CameraAgentGalleryArtifactState(rawId, "Held", "Available", [new("raw-ingress", "Pending")]),
                 new CameraAgentGalleryArtifactState(previewId, "Retained", "Available", [new("raw-ingress", "Acknowledged")])
             ],
-            [new CameraAgentGalleryProcessingNodeDetail("preview-node", ["source"], 1, nodeCompleted, null)],
+            [new CameraAgentGalleryProcessingNodeDetail(
+                "preview-node", ["source"], 1, nodeCompleted, null, new string('F', 64),
+                nodeCompleted.AddMilliseconds(-5), 5, "Produced",
+                [new(0, "Artifact", "raw", rawId, FrameArtifactRole.Raw, "native", new string('G', 64), null, null, true)])],
             new CameraAgentGalleryCloudAssessment(
                 "Available", "Quantified", "Degraded", 250000, 900000, ["environment-missing"], true, 640, 480, new string('E', 64)));
         return new CameraAgentGalleryCapture(

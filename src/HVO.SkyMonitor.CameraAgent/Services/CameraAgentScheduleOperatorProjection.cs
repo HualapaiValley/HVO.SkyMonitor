@@ -48,11 +48,19 @@ internal static class CameraAgentScheduleOperatorProjection
             : candidate.Module;
         var steps = candidate.ProcessingSteps.Select((step, index) =>
         {
+            var explicitV2 = string.Equals(
+                candidate.SchemaVersion,
+                LocalCaptureProfileDefinition.CurrentSchemaVersion,
+                StringComparison.Ordinal);
+            var effectiveId = EffectiveId(step, explicitV2);
             var matching = basis.ProcessingSteps.FirstOrDefault(item =>
-                step.Id is not null &&
-                string.Equals(item.Id, step.Id, StringComparison.OrdinalIgnoreCase) &&
+                effectiveId is not null &&
+                string.Equals(
+                    EffectiveId(item, explicitV2),
+                    effectiveId,
+                    StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(item.Type, step.Type, StringComparison.OrdinalIgnoreCase));
-            if (matching is null && step.Id is null && index < basis.ProcessingSteps.Count &&
+            if (matching is null && !explicitV2 && step.Id is null && index < basis.ProcessingSteps.Count &&
                 basis.ProcessingSteps[index].Id is null &&
                 string.Equals(basis.ProcessingSteps[index].Type, step.Type, StringComparison.OrdinalIgnoreCase))
             {
@@ -61,5 +69,10 @@ internal static class CameraAgentScheduleOperatorProjection
             return matching is null ? step : step with { Options = matching.Options };
         }).ToArray();
         return candidate with { Module = module, ProcessingSteps = steps };
+
+        static string? EffectiveId(CaptureProcessingStepConfig step, bool explicitV2)
+            => explicitV2
+                ? string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()
+                : step.Id;
     }
 }

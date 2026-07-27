@@ -163,6 +163,9 @@ public sealed class OwnerAuthorizationTests
         using var anonymousSchedule = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/schedule", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousSchedule.StatusCode);
+        using var anonymousPipeline = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/pipeline", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousPipeline.StatusCode);
         using var anonymousCalibration = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/calibration/status", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousCalibration.StatusCode);
@@ -178,6 +181,9 @@ public sealed class OwnerAuthorizationTests
         using var nonOwnerSchedule = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/schedule", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerSchedule.StatusCode);
+        using var nonOwnerPipeline = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/pipeline", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerPipeline.StatusCode);
         using var nonOwnerCalibration = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/calibration/status", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerCalibration.StatusCode);
@@ -204,6 +210,13 @@ public sealed class OwnerAuthorizationTests
         Assert.AreEqual(HttpStatusCode.OK, ownerSchedule.StatusCode);
         var scheduleJson = await ownerSchedule.Content.ReadAsStringAsync().ConfigureAwait(false);
         Assert.IsFalse(scheduleJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
+        using var ownerPipeline = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/pipeline", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerPipeline.StatusCode);
+        var pipelineJson = await ownerPipeline.Content.ReadAsStringAsync().ConfigureAwait(false);
+        StringAssert.Contains(pipelineJson, "desiredSha256", StringComparison.Ordinal);
+        StringAssert.Contains(pipelineJson, "effectiveSha256", StringComparison.Ordinal);
+        Assert.IsFalse(pipelineJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
         using var ownerCalibration = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/calibration/status", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, ownerCalibration.StatusCode);
@@ -284,6 +297,37 @@ public sealed class OwnerAuthorizationTests
             });
             using var missingVersion = await ownerClient.SendAsync(missingVersionRequest).ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.BadRequest, missingVersion.StatusCode);
+        }
+        using (var scheduleDocument = JsonDocument.Parse(scheduleJson))
+        using (var staleBasisRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/schedule/stage", UriKind.Relative)))
+        {
+            staleBasisRequest.Headers.Add("Idempotency-Key", $"integration-stale-basis-{Guid.NewGuid():N}");
+            staleBasisRequest.Headers.Add("RequestVerificationToken", token);
+            staleBasisRequest.Content = JsonContent.Create(new
+            {
+                profile = scheduleDocument.RootElement.GetProperty("activeRevision").GetProperty("profile"),
+                basisRevisionId = Guid.NewGuid().ToString("N"),
+                expectedVersion = scheduleDocument.RootElement.GetProperty("stateVersion").GetInt64(),
+                reason = "stale basis verification"
+            });
+            using var staleBasis = await ownerClient.SendAsync(staleBasisRequest).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.NotFound, staleBasis.StatusCode);
+        }
+        using (var scheduleDocument = JsonDocument.Parse(scheduleJson))
+        {
+            using var pipelinePreview = await ownerClient.PostAsJsonAsync(
+                new Uri("/api/v1/operations/pipeline/preview", UriKind.Relative),
+                new
+                {
+                    profile = scheduleDocument.RootElement.GetProperty("activeRevision").GetProperty("profile"),
+                    basisRevisionId = scheduleDocument.RootElement.GetProperty("activeRevision").GetProperty("revisionId")
+                }).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, pipelinePreview.StatusCode);
+            var previewJson = await pipelinePreview.Content.ReadAsStringAsync().ConfigureAwait(false);
+            StringAssert.Contains(previewJson, "desiredNodes", StringComparison.Ordinal);
+            Assert.IsFalse(previewJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
         }
         using var request = new HttpRequestMessage(
             HttpMethod.Post,

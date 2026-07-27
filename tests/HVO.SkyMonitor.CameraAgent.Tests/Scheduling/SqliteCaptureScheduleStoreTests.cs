@@ -42,6 +42,43 @@ public sealed class SqliteCaptureScheduleStoreTests
     }
 
     [TestMethod]
+    public async Task InitializeAsync_ExplicitPipelinePreservesV2ProfileAndHash()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            using var store = new SqliteCaptureScheduleStore(
+                new JournalInitializer(root), options, TimeProvider.System);
+            var baseline = Configuration();
+            var configuration = baseline with
+            {
+                ProcessingSteps = null,
+                Pipeline = new CapturePipelineConfig(
+                    [new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"])],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent),
+                Schedule = Definition("night", 2)
+            };
+
+            var snapshot = await store.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+            var effective = snapshot.ActiveRevision.Profile.ApplyTo(configuration);
+
+            Assert.AreEqual(LocalCaptureProfileDefinition.CurrentSchemaVersion, snapshot.ActiveRevision.Profile.SchemaVersion);
+            Assert.AreEqual(
+                LocalCaptureProfileContract.ComputeSha256(
+                    LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule)),
+                snapshot.ActiveRevision.ProfileSha256);
+            Assert.IsNull(effective.ProcessingSteps);
+            Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, effective.Pipeline!.SchemaVersion);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task Mutations_RequireExpectedDurableVersion()
     {
         var root = CreateRoot();
@@ -119,20 +156,23 @@ public sealed class SqliteCaptureScheduleStoreTests
             using (var store = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System))
             {
                 var initial = await store.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
-                var staged = await store.StageAsync(
-                    LocalCaptureProfileDefinition.Create(Configuration(), Definition("night", 2)),
+                var profile = LocalCaptureProfileDefinition.Create(Configuration(), Definition("night", 2));
+                var staged = (await store.StageWithCurrentFromBasisAsync(
+                    profile,
+                    initial.ActiveRevision.RevisionId,
                     "stage-1",
                     initial.Version,
                     "owner",
                     "night operations",
-                    CancellationToken.None).ConfigureAwait(false);
-                var replay = await store.StageAsync(
-                    LocalCaptureProfileDefinition.Create(Configuration(), Definition("night", 2)),
+                    CancellationToken.None).ConfigureAwait(false)).Receipt;
+                var replay = (await store.StageWithCurrentFromBasisAsync(
+                    profile,
+                    initial.ActiveRevision.RevisionId,
                     "stage-1",
                     initial.Version,
                     "owner",
                     "night operations",
-                    CancellationToken.None).ConfigureAwait(false);
+                    CancellationToken.None).ConfigureAwait(false)).Receipt;
                 Assert.AreEqual(staged.Version, replay.Version);
 
                 activated = await store.ActivateAsync(
@@ -142,16 +182,26 @@ public sealed class SqliteCaptureScheduleStoreTests
                     "owner",
                     "approved",
                     CancellationToken.None).ConfigureAwait(false);
-                var lateReplay = await store.StageAsync(
-                    LocalCaptureProfileDefinition.Create(Configuration(), Definition("night", 2)),
+                var lateReplay = (await store.StageWithCurrentFromBasisAsync(
+                    profile,
+                    initial.ActiveRevision.RevisionId,
                     "stage-1",
                     initial.Version,
                     "owner",
                     "night operations",
-                    CancellationToken.None).ConfigureAwait(false);
+                    CancellationToken.None).ConfigureAwait(false)).Receipt;
                 Assert.AreEqual(staged.Version, lateReplay.Version);
                 Assert.AreEqual(staged.ActiveRevision.RevisionId, lateReplay.ActiveRevision.RevisionId);
                 Assert.AreEqual(staged.PendingRevision!.RevisionId, lateReplay.PendingRevision!.RevisionId);
+                _ = await Assert.ThrowsAsync<CaptureScheduleStoreConflictException>(() =>
+                    store.StageWithCurrentFromBasisAsync(
+                        profile,
+                        initial.ActiveRevision.RevisionId,
+                        "stage-stale-basis",
+                        activated.Version,
+                        "owner",
+                        "stale basis",
+                        CancellationToken.None)).ConfigureAwait(false);
                 var now = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 var scheduleOverride = new CaptureScheduleOverride(
                     "override-1",

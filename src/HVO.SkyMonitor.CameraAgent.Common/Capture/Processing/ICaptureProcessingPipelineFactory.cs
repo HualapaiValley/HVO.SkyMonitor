@@ -14,4 +14,7 @@ public interface ICaptureProcessingPipelineFactory
             .Select(static step => new CaptureProcessingGraphNode(
                 step.Name, step, [], true, null, null, null))
             .ToArray());
+
+    CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+        => throw new NotSupportedException("This processing pipeline factory does not expose effective-plan previews.");
 }

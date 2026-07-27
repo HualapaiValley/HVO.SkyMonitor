@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Environmental;
@@ -47,7 +48,7 @@ internal sealed class EnvironmentalAssociationCaptureLaneHandler(IServiceProvide
             exposureFromUtc,
             exposureThroughUtc,
             capture.RigId,
-            coordinator.Sources.Select(static source => source.Kind).Distinct().ToArray(),
+            Enum.GetValues<EnvironmentalObservationKind>(),
             cancellationToken).ConfigureAwait(false);
         return CaptureLaneHandlerResult.Success;
     }

@@ -282,6 +282,45 @@ public sealed class ProcessingRecipeTests
         Assert.IsTrue(outcome.Products[0].Algorithms.Any(item => item.Name == "jpeg-decode"));
         Assert.AreEqual(8, JpegImageCodec.DecodeJpeg(outcome.Products[0].Payload).Width);
 
+        var metadata = new MetadataCornerOverlay(["identity"], ["schedule"], ["environment"], ["provenance"]);
+        var metadataOutcome = await executor.ExecuteAsync(Request(
+            BuiltInProcessingRecipes.Annotation,
+            EmptyOptions(),
+            ProcessingInputSelector.RecipeResult(
+                FrameArtifactRole.Preview,
+                previewProduct.Variant,
+                previewProduct.Recipe.IdentitySha256),
+            [previewArtifact],
+            "metadata",
+            annotation with { MetadataOverlay = metadata })).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, metadataOutcome.Status);
+
+        MetadataCornerOverlay[] invalidMetadata =
+        [
+            metadata with { Scale = 0 },
+            metadata with { Inset = 65 },
+            metadata with { LineSpacing = 17 },
+            metadata with { TopLeft = null! },
+            metadata with { TopLeft = Enumerable.Repeat("line", 9).ToArray() },
+            metadata with { TopLeft = [""] },
+            metadata with { TopLeft = [new string('X', 65)] },
+            metadata with { TopLeft = ["control\nline"] }
+        ];
+        foreach (var invalid in invalidMetadata)
+        {
+            var invalidMetadataOutcome = await executor.ExecuteAsync(Request(
+                BuiltInProcessingRecipes.Annotation,
+                EmptyOptions(),
+                ProcessingInputSelector.RecipeResult(
+                    FrameArtifactRole.Preview,
+                    previewProduct.Variant,
+                    previewProduct.Recipe.IdentitySha256),
+                [previewArtifact],
+                "invalid-metadata",
+                annotation with { MetadataOverlay = invalid })).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidAnnotation, invalidMetadataOutcome.ReasonCode);
+        }
+
         var differentGeometry = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.Annotation,
             EmptyOptions(),

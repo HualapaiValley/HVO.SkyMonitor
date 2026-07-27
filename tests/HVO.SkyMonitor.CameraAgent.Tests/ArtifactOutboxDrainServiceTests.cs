@@ -76,7 +76,7 @@ public sealed class ArtifactOutboxDrainServiceTests
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
             [new CaptureProcessingStepConfig(
-                nameof(NoOpFileStorageProcessingStep),
+                NoOpFileStorageProcessingStep.StableAlias,
                 Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
                 {
                     StorageRoot = root,
@@ -105,7 +105,7 @@ public sealed class ArtifactOutboxDrainServiceTests
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
             [new CaptureProcessingStepConfig(
-                nameof(NoOpFileStorageProcessingStep),
+                NoOpFileStorageProcessingStep.StableAlias,
                 Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
                 {
                     StorageRoot = archiveRoot,
@@ -127,6 +127,21 @@ public sealed class ArtifactOutboxDrainServiceTests
         Assert.AreEqual(Path.GetFullPath(rawRoot), locations[0].Root);
         Assert.AreEqual(Path.GetFullPath(archiveRoot), locations[1].Root);
         Assert.IsFalse(locations.Any(location => location.Alias.Contains("private", StringComparison.OrdinalIgnoreCase)));
+
+        var defaulted = config with
+        {
+            ProcessingSteps = [new CaptureProcessingStepConfig(NoOpFileStorageProcessingStep.StableAlias)]
+        };
+        var defaultRoots = ArtifactOutboxDrainService.ResolveLocalStorageRoots(defaulted, options);
+        Assert.HasCount(2, defaultRoots);
+        Assert.AreEqual(Path.GetFullPath("/tmp/camera"), defaultRoots[1]);
+        var disabled = defaulted with
+        {
+            ProcessingSteps = [new CaptureProcessingStepConfig(
+                NoOpFileStorageProcessingStep.StableAlias,
+                Enabled: false)]
+        };
+        Assert.HasCount(1, ArtifactOutboxDrainService.ResolveLocalStorageRoots(disabled, options));
     }
 
     [TestMethod]

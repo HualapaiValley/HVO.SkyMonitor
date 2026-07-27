@@ -2,6 +2,14 @@ using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Astronomy;
 
+public sealed record ProjectionAnnotationLandmarks(
+    PixelPoint Center,
+    double ImageCircleRadius,
+    PixelPoint North,
+    PixelPoint East,
+    PixelPoint South,
+    PixelPoint West);
+
 /// <summary>Creates calibrated projection contexts from transport-neutral camera rig profiles.</summary>
 public static class RigProjectionContextFactory
 {
@@ -24,6 +32,30 @@ public static class RigProjectionContextFactory
         }
         var readout = SensorReadoutResolver.Resolve(rig.Sensor, rig.Readout).Geometry;
         return TransformReadout(native, readout, divideByBins: true);
+    }
+
+    /// <summary>Resolves deterministic image-circle and cardinal landmarks without sensor-bound clipping.</summary>
+    public static ProjectionAnnotationLandmarks? CreateAnnotationLandmarks(ProjectionContext projection)
+    {
+        if (projection.ImageCircleRadiusPixels is not { } radius)
+        {
+            return null;
+        }
+
+        var projector = ProjectorFactory.Create(projection with { EnforceSensorBounds = false });
+        var north = projector.Project(new AltAzPoint(0, 0));
+        var east = projector.Project(new AltAzPoint(0, 90));
+        var south = projector.Project(new AltAzPoint(0, 180));
+        var west = projector.Project(new AltAzPoint(0, 270));
+        return north is null || east is null || south is null || west is null
+            ? null
+            : new ProjectionAnnotationLandmarks(
+                new PixelPoint(projection.PrincipalPointX, projection.PrincipalPointY),
+                radius,
+                north.Value,
+                east.Value,
+                south.Value,
+                west.Value);
     }
 
     /// <summary>Creates the calibrated native-sensor projection before readout.</summary>

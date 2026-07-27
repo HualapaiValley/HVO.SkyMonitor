@@ -108,10 +108,12 @@ internal sealed class FrameProcessingWorker
         int attempt,
         ILogger logger,
         CancellationToken cancellationToken,
-        int maximumAttempts = int.MaxValue)
+        int maximumAttempts = int.MaxValue,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(telemetry);
+        timeProvider ??= TimeProvider.System;
         var graphStopwatch = Stopwatch.StartNew();
         using var graphActivity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-graph.execute");
         telemetry.GraphStarted();
@@ -123,12 +125,15 @@ internal sealed class FrameProcessingWorker
             var outcome = result.Outcome switch
             {
                 CaptureLaneHandlerOutcome.Completed => "completed",
+                CaptureLaneHandlerOutcome.Deferred => "waiting",
                 CaptureLaneHandlerOutcome.RetryableFailure => "retry",
                 _ => "terminal"
             };
             telemetry.RecordGraph(outcome, graphStopwatch.Elapsed);
             graphActivity?.SetStatus(
-                result.Outcome == CaptureLaneHandlerOutcome.Completed ? ActivityStatusCode.Ok : ActivityStatusCode.Error,
+                result.Outcome is CaptureLaneHandlerOutcome.Completed or CaptureLaneHandlerOutcome.Deferred
+                    ? ActivityStatusCode.Ok
+                    : ActivityStatusCode.Error,
                 result.Reason);
             logger.CaptureProcessingGraphCompleted(outcome);
             return result;
@@ -164,9 +169,10 @@ internal sealed class FrameProcessingWorker
                     if (persistence is not null && rawCapture is not null)
                     {
                         await persistence.WriteNodeAsync(
-                                rawCapture, node, DurableProcessingNodeStatus.Skipped, dependencyReason, attempt,
-                                item.WorkId, item.LeaseToken,
-                                [], context, cancellationToken).ConfigureAwait(false);
+                            rawCapture, node, DurableProcessingNodeStatus.Skipped, dependencyReason, attempt,
+                            null, timeProvider.GetUtcNow(), null, ProcessingOutcomeStatus.Skipped,
+                            item.WorkId, item.LeaseToken,
+                            [], context, cancellationToken).ConfigureAwait(false);
                     }
                     statuses[node.Id] = DurableProcessingNodeStatus.Skipped;
                     dependencyStopwatch.Stop();
@@ -196,6 +202,11 @@ internal sealed class FrameProcessingWorker
                             logger.CaptureProcessingOutputExisting(node.Id);
                         }
                         statuses[node.Id] = durable.Status;
+                        context.AddStepTelemetry(new CaptureProcessingStepTelemetry(
+                            node.Id,
+                            durable.Duration ?? TimeSpan.Zero,
+                            durable.Status == DurableProcessingNodeStatus.Completed,
+                            durable.Reason));
                         if (node.Required && durable.Status == DurableProcessingNodeStatus.Skipped)
                         {
                             return Finish(CaptureLaneHandlerResult.Terminal(durable.Reason ?? "processing.skipped"));
@@ -205,6 +216,11 @@ internal sealed class FrameProcessingWorker
                     if (durable?.Status == DurableProcessingNodeStatus.TerminalFailure)
                     {
                         statuses[node.Id] = durable.Status;
+                        context.AddStepTelemetry(new CaptureProcessingStepTelemetry(
+                            node.Id,
+                            durable.Duration ?? TimeSpan.Zero,
+                            false,
+                            durable.Reason));
                         if (node.Required)
                         {
                             return Finish(CaptureLaneHandlerResult.Terminal(durable.Reason ?? "processing.terminal"));
@@ -240,7 +256,8 @@ internal sealed class FrameProcessingWorker
 
                 var outcomeStart = context.ProcessingOutcomes.Count;
                 Exception? exception = null;
-                var stopwatch = Stopwatch.StartNew();
+                var startedUtc = timeProvider.GetUtcNow();
+                var startedTimestamp = timeProvider.GetTimestamp();
                 dependencyStopwatch.Stop();
                 telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
                 using var nodeActivity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-step.execute");
@@ -258,10 +275,8 @@ internal sealed class FrameProcessingWorker
                     exception = caught;
                     logger.CaptureProcessingStepFailed(node.Id, context.Submission.CaptureStartedUtc, caught);
                 }
-                finally
-                {
-                    stopwatch.Stop();
-                }
+                var duration = timeProvider.GetElapsedTime(startedTimestamp);
+                var completedUtc = timeProvider.GetUtcNow();
 
                 var outcomes = context.ProcessingOutcomes.Skip(outcomeStart).ToArray();
                 var outcome = outcomes.LastOrDefault();
@@ -278,20 +293,23 @@ internal sealed class FrameProcessingWorker
                 {
                     context.RegisterProcessingProduct(product);
                 }
-                telemetry.RecordNode(node, status, reason, stopwatch.Elapsed);
+                telemetry.RecordNode(node, status, reason, duration);
                 logger.CaptureProcessingNodeOutcome(node.Id, status.ToString());
                 nodeActivity?.SetStatus(
                     status == DurableProcessingNodeStatus.Completed ? ActivityStatusCode.Ok : ActivityStatusCode.Error,
                     reason);
                 context.AddStepTelemetry(new CaptureProcessingStepTelemetry(
                     node.Id,
-                    stopwatch.Elapsed,
+                    duration,
                     status == DurableProcessingNodeStatus.Completed,
                     reason));
                 if (persistence is not null && rawCapture is not null)
                 {
                     await persistence.WriteNodeAsync(
-                        rawCapture, node, status, reason, attempt, item.WorkId, item.LeaseToken,
+                        rawCapture, node, status, reason, attempt,
+                        startedUtc, completedUtc, duration,
+                        outcome?.Status,
+                        item.WorkId, item.LeaseToken,
                         products, context, cancellationToken).ConfigureAwait(false);
                 }
                 statuses[node.Id] = status;
@@ -300,7 +318,7 @@ internal sealed class FrameProcessingWorker
                     if (status == DurableProcessingNodeStatus.RetryableFailure)
                     {
                         logger.CaptureProcessingNodeRetry(node.Id, reason ?? "processing.retryable");
-                        return Finish(CaptureLaneHandlerResult.Retry(reason ?? "processing.retryable"));
+                        return Finish(RetryOrWait(reason ?? "processing.retryable"));
                     }
                     if (status is DurableProcessingNodeStatus.TerminalFailure or DurableProcessingNodeStatus.Skipped)
                     {
@@ -315,7 +333,7 @@ internal sealed class FrameProcessingWorker
             }
             return Finish(deferredRetryReason is null
                 ? CaptureLaneHandlerResult.Success
-                : CaptureLaneHandlerResult.Retry(deferredRetryReason));
+                : RetryOrWait(deferredRetryReason));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -359,6 +377,11 @@ internal sealed class FrameProcessingWorker
             ? (DurableProcessingNodeStatus.Completed, null)
             : (DurableProcessingNodeStatus.Skipped, ProcessingReasonCodes.MissingInput);
     }
+
+    private static CaptureLaneHandlerResult RetryOrWait(string reason)
+        => string.Equals(reason, ProcessingReasonCodes.EnvironmentAssociationPending, StringComparison.Ordinal)
+            ? CaptureLaneHandlerResult.Wait(reason)
+            : CaptureLaneHandlerResult.Retry(reason);
 
     private static async ValueTask<CaptureProcessingContext> CreateContextAsync(
         FrameProcessingItem item,

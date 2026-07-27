@@ -18,6 +18,18 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
         CancellationToken cancellationToken) =>
         _executor.ExecuteAsync(request, cancellationToken);
 
+    public async ValueTask<ProcessingOutcome> ExecuteAsync(
+        CaptureProcessingContext context,
+        ProcessingExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        context.RecordExecutionRequest(request);
+        var outcome = await _executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+        context.RecordExecutionOutcome(outcome);
+        return outcome;
+    }
+
     public static ProcessingArtifact CreateArtifact(
         CameraModuleConfig config,
         FrameArtifact artifact,

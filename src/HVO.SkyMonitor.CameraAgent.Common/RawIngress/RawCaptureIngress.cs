@@ -595,9 +595,12 @@ internal sealed class RawCaptureIngress :
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         var actualOutcome = await _laneStore.FailAsync(lease, result, cancellationToken).ConfigureAwait(false);
         var reason = NormalizeLaneReason(result.Reason);
-        if (actualOutcome == CaptureLaneHandlerOutcome.RetryableFailure)
+        if (actualOutcome is CaptureLaneHandlerOutcome.RetryableFailure or CaptureLaneHandlerOutcome.Deferred)
         {
-            _logger.CaptureLaneRetryScheduled(lease.Lane, lease.Attempt + 1, reason);
+            _logger.CaptureLaneRetryScheduled(
+                lease.Lane,
+                actualOutcome == CaptureLaneHandlerOutcome.Deferred ? lease.Attempt : lease.Attempt + 1,
+                reason);
         }
         else
         {

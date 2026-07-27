@@ -51,7 +51,8 @@ public sealed record CameraAgentGalleryCaptureDetail(
     bool? RawRetentionHold,
     IReadOnlyList<CameraAgentGalleryArtifactState> ArtifactStates,
     IReadOnlyList<CameraAgentGalleryProcessingNodeDetail> ProcessingNodes,
-    CameraAgentGalleryCloudAssessment CloudAssessment);
+    CameraAgentGalleryCloudAssessment CloudAssessment,
+    ProfileIdentityDescriptor? ProcessingProfile = null);
 
 public sealed record CameraAgentGalleryLayout(
     int Width,
@@ -98,7 +99,25 @@ public sealed record CameraAgentGalleryProcessingNodeDetail(
     IReadOnlyList<string> Dependencies,
     int Attempt,
     DateTimeOffset CompletedUtc,
-    string? FailureCategory);
+    string? FailureCategory,
+    string? ProcessingProfileIdentitySha256 = null,
+    DateTimeOffset? StartedUtc = null,
+    double? DurationMilliseconds = null,
+    string? Outcome = null,
+    IReadOnlyList<CameraAgentGalleryProcessingNodeInput>? Inputs = null,
+    bool InputsTruncated = false);
+
+public sealed record CameraAgentGalleryProcessingNodeInput(
+    int Ordinal,
+    string Kind,
+    string? Name,
+    Guid? ArtifactId,
+    FrameArtifactRole? Role,
+    string? Variant,
+    string? RecipeIdentitySha256,
+    string? SchemaVersion,
+    string? IdentitySha256,
+    bool Selected);
 
 public sealed record CameraAgentGalleryCloudAssessment(
     string Availability,
@@ -123,7 +142,10 @@ public sealed record CameraAgentGalleryArtifact(
     long? ByteLength,
     CameraAgentGalleryRecipe? Recipe,
     IReadOnlyList<Guid> SourceArtifactIds,
-    string? ProcessingNodeId);
+    string? ProcessingNodeId,
+    IReadOnlyList<CameraAgentGalleryAlgorithm>? Algorithms = null);
+
+public sealed record CameraAgentGalleryAlgorithm(string Name, string Version);
 
 public sealed record CameraAgentGalleryRecipe(
     string Name,
