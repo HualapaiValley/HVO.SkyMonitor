@@ -20,7 +20,7 @@ env:
 jobs:
   changes:
     name: Change Classification
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 5
     outputs:
       mode: ${{ steps.classify.outputs.mode }}
@@ -40,7 +40,7 @@ jobs:
 
   quality:
     name: Quality
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -90,7 +90,7 @@ jobs:
     name: Build
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -114,7 +114,7 @@ jobs:
     name: Unit Tests
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 20
     env:
       DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
@@ -153,7 +153,7 @@ jobs:
     name: Integration Tests
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 35
     env:
       INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
@@ -189,7 +189,7 @@ jobs:
     name: Architecture & Publish
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -246,7 +246,7 @@ jobs:
     name: Migrations
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -271,7 +271,7 @@ jobs:
 
   coverage:
     name: Coverage
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 10
     needs: [changes, unit, integration, architecture]
     if: needs.changes.outputs.mode == 'full'
@@ -369,7 +369,7 @@ jobs:
   badges:
     name: Coverage Badges
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 5
     needs: coverage
     steps:
@@ -399,7 +399,7 @@ jobs:
   required:
     name: Required CI
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 5
     needs: [changes, quality, build, unit, integration, architecture, migrations, coverage]
     steps:
