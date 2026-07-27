@@ -193,6 +193,12 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "Preview", typeof(PreviewCaptureProcessingStep), typeof(PreviewProcessingStepOptions), 50));
         services.AddSingleton(new CaptureProcessingStepRegistration(
+            "CalibratedPreview", typeof(CalibratedPreviewCaptureProcessingStep),
+            typeof(CalibratedPreviewProcessingStepOptions), 50, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "CombinedPreview", typeof(CombinedPreviewCaptureProcessingStep),
+            typeof(CombinedPreviewProcessingStepOptions), 50, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
             "RollingCombination", typeof(RollingCombinationCaptureProcessingStep), typeof(RollingCombinationProcessingStepOptions), 25));
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "Annotation", typeof(AnnotationCaptureProcessingStep), typeof(AnnotationProcessingStepOptions), 75));
@@ -204,6 +210,15 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "CloudAssessment", typeof(CloudAssessmentCaptureProcessingStep),
             typeof(CloudAssessmentProcessingStepOptions), 80, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "ImageQuality", typeof(ImageQualityCaptureProcessingStep),
+            typeof(ImageQualityProcessingStepOptions), 70, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "Storage", typeof(NoOpFileStorageProcessingStep),
+            typeof(NoOpFileStorageProcessingStepOptions), 100, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "Telemetry", typeof(TelemetryCaptureProcessingStep),
+            typeof(TelemetryProcessingStepOptions), 200, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "WeatherCloudOverlay", typeof(WeatherCloudOverlayCaptureProcessingStep),
             typeof(WeatherCloudOverlayProcessingStepOptions), 90, AutoInclude: false));

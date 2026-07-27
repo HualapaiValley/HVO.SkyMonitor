@@ -69,6 +69,26 @@ public sealed class AnnotationRendererTests
     }
 
     [TestMethod]
+    public void AnnotateMono8WithSegments_DrawsExactFourCornerMetadata()
+    {
+        var result = AnnotationRenderer.AnnotateMono8WithSegments(
+            new byte[80 * 40],
+            80,
+            40,
+            [],
+            [],
+            new PreviewTransform(1, 1),
+            new AnnotationOptions { DrawLabels = false },
+            projectionOverlay: null,
+            metadataOverlay: new MetadataCornerOverlay(["A"], ["B"], ["C"], ["D"], 200, Inset: 0, LineSpacing: 0));
+
+        Assert.AreEqual((byte)200, result.Pixels.Span[1]);
+        Assert.AreEqual((byte)200, result.Pixels.Span[75]);
+        Assert.AreEqual((byte)200, result.Pixels.Span[33 * 80 + 1]);
+        Assert.AreEqual((byte)200, result.Pixels.Span[33 * 80 + 75]);
+    }
+
+    [TestMethod]
     public void AnnotateRgb24WithSegments_UsesConfiguredColorThicknessAndOpacity()
     {
         var source = new byte[9 * 9 * 3];
@@ -197,7 +217,7 @@ public sealed class AnnotationRendererTests
         using var cancellation = new CancellationTokenSource();
         Assert.ThrowsExactly<OperationCanceledException>(() => AnnotationRenderer.AnnotateMono8WithSegments(
             source, 20, 20, CancelAfterEnumeration(cancellation), [], new PreviewTransform(1, 1), options, overlay,
-            cancellation.Token));
+            cancellationToken: cancellation.Token));
     }
 
     private static IEnumerable<ProjectedAnnotationObject> CancelAfterEnumeration(CancellationTokenSource cancellation)

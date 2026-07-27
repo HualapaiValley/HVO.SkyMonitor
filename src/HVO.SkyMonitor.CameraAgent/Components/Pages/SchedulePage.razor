@@ -71,6 +71,25 @@
             </article>
         </section>
 
+        <section class="pipeline-console" aria-labelledby="pipeline-heading">
+            <header><div><p class="eyebrow">Versioned processing authority</p><h2 id="pipeline-heading">Desired and effective graph</h2></div>@if (_pipelinePlan is not null) { <dl><div><dt>Desired SHA-256</dt><dd><code>@ShortHash(_pipelinePlan.DesiredSha256)</code></dd></div><div><dt>Effective SHA-256</dt><dd><code>@ShortHash(_pipelinePlan.EffectiveSha256)</code></dd></div></dl> }</header>
+            @if (_pipelinePlan is null)
+            {
+                <p class="pipeline-unavailable">The processing graph preview is unavailable. Validate the canonical profile editor.</p>
+            }
+            else
+            {
+                @if (!_pipelineCanToggle)
+                {
+                    <p class="pipeline-unavailable">This immutable revision uses legacy graph inference. Stage a cameraagent-local-profile-v2 revision before using node toggles.</p>
+                }
+                <div class="pipeline-columns">
+                    <article><h3>Desired graph</h3><p>Disabled nodes remain visible here and are absent from the effective graph.</p><ol>@foreach (var node in _pipelinePlan.DesiredNodes) { <li><div><strong>@node.Id</strong><span>@node.Alias / @(node.Required ? "required" : "optional")</span><small>@(node.Dependencies is null ? "Dependencies unavailable" : string.Join(" <- ", node.Dependencies))</small></div><button class="btn btn-sm @(node.Enabled ? "btn-outline-warning" : "btn-outline-light")" disabled="@(_busy || !_pipelineCanToggle)" @onclick="() => TogglePipelineAsync(node.Id, !node.Enabled)">@(node.Enabled ? "Disable" : "Enable")</button></li> }</ol></article>
+                    <article><h3>Effective graph</h3><p>Validated execution order for the next activated profile revision.</p><ol>@foreach (var node in _pipelinePlan.EffectiveNodes) { <li><div><strong>@node.Id</strong><span>@(node.OutputRole is null ? "Infrastructure" : $"{node.OutputRole}/{node.OutputVariant}")</span><small>@(node.Dependencies is null ? "No declared dependencies" : string.Join(" <- ", node.Dependencies))</small></div></li> }</ol></article>
+                </div>
+            }
+        </section>
+
         @if (_confirmRevisionId is not null)
         {
             <section class="confirmation-panel" role="alertdialog" aria-labelledby="apply-heading" tabindex="-1" @ref="_confirmationPanel">

@@ -301,6 +301,7 @@ public class Program
         app.MapCameraAgentArtifactEndpoints();
         app.MapCameraAgentOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
+        app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentCalibrationOperationsEndpoints();
         app.MapCameraAgentOutboxOperationsEndpoints();
         app.MapCameraAgentEnvironmentalOperationsEndpoints();

@@ -8,6 +8,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
 
@@ -22,7 +23,8 @@ public sealed class ArtifactOutboxDrainService(
     ILogger<ArtifactOutboxDrainService> logger,
     ArtifactOutboxState state,
     ArtifactOutboxTelemetry telemetry,
-    FleetRuntimeState fleetRuntimeState) : BackgroundService
+    FleetRuntimeState fleetRuntimeState,
+    CaptureScheduleRuntimeCoordinator? scheduleCoordinator = null) : BackgroundService
 {
     private static readonly System.Text.Json.JsonSerializerOptions SerializerOptions = new(System.Text.Json.JsonSerializerDefaults.Web)
     {
@@ -66,6 +68,7 @@ public sealed class ArtifactOutboxDrainService(
         while (!stoppingToken.IsCancellationRequested)
         {
             var config = await configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
+            config = scheduleCoordinator?.Snapshot?.Configuration ?? config;
             var storageRoots = ResolveStorageRoots(config, hostOptions.Value);
             if (storageRoots.Count == 0)
             {
@@ -288,18 +291,9 @@ public sealed class ArtifactOutboxDrainService(
     {
         foreach (var step in config.ResolveProcessingSteps())
         {
-            if (step.Type.Contains(nameof(NoOpFileStorageProcessingStep), StringComparison.OrdinalIgnoreCase) && step.Options is { } options)
+            if (IsStorageStep(step.Type) && step.Enabled != false)
             {
-                NoOpFileStorageProcessingStepOptions? parsed;
-                try
-                {
-                    parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(
-                        options.GetRawText(), SerializerOptions);
-                }
-                catch (System.Text.Json.JsonException)
-                {
-                    continue;
-                }
+                var parsed = ParseStorageOptions(step.Options);
                 if (parsed is not null && IsUploadEnabled(parsed) && !string.IsNullOrWhiteSpace(parsed.StorageRoot))
                 {
                     return parsed.StorageRoot;
@@ -327,20 +321,11 @@ public sealed class ArtifactOutboxDrainService(
         }
         foreach (var step in config.ResolveProcessingSteps())
         {
-            if (!step.Type.Contains(nameof(NoOpFileStorageProcessingStep), StringComparison.OrdinalIgnoreCase) || step.Options is not { } stepOptions)
+            if (!IsStorageStep(step.Type) || step.Enabled == false)
             {
                 continue;
             }
-            NoOpFileStorageProcessingStepOptions? parsed;
-            try
-            {
-                parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(
-                    stepOptions.GetRawText(), SerializerOptions);
-            }
-            catch (System.Text.Json.JsonException)
-            {
-                continue;
-            }
+            var parsed = ParseStorageOptions(step.Options);
             if (parsed is not null && IsUploadEnabled(parsed) && !string.IsNullOrWhiteSpace(parsed.StorageRoot))
             {
                 var root = Path.GetFullPath(parsed.StorageRoot);
@@ -362,22 +347,12 @@ public sealed class ArtifactOutboxDrainService(
         var roots = new List<string> { Path.GetFullPath(options.RawIngressRoot) };
         foreach (var step in config.ResolveProcessingSteps())
         {
-            if (!step.Type.Contains(nameof(NoOpFileStorageProcessingStep), StringComparison.OrdinalIgnoreCase) ||
-                step.Options is not { } stepOptions)
+            if (!IsStorageStep(step.Type) || step.Enabled == false)
             {
                 continue;
             }
 
-            NoOpFileStorageProcessingStepOptions? parsed;
-            try
-            {
-                parsed = System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(
-                    stepOptions.GetRawText(), SerializerOptions);
-            }
-            catch (System.Text.Json.JsonException)
-            {
-                continue;
-            }
+            var parsed = ParseStorageOptions(step.Options);
             if (parsed is null || string.IsNullOrWhiteSpace(parsed.StorageRoot))
             {
                 continue;
@@ -394,6 +369,27 @@ public sealed class ArtifactOutboxDrainService(
 
     private static bool IsUploadEnabled(NoOpFileStorageProcessingStepOptions options)
         => options.QueueForUpload || (options.Policies ?? []).Any(static policy => policy.QueueForUpload == true);
+
+    private static bool IsStorageStep(string typeName)
+        => string.Equals(typeName, NoOpFileStorageProcessingStep.StableAlias, StringComparison.OrdinalIgnoreCase) ||
+            typeName.Contains(nameof(NoOpFileStorageProcessingStep), StringComparison.OrdinalIgnoreCase);
+
+    private static NoOpFileStorageProcessingStepOptions? ParseStorageOptions(System.Text.Json.JsonElement? options)
+    {
+        if (options is null)
+        {
+            return new NoOpFileStorageProcessingStepOptions();
+        }
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(
+                options.Value.GetRawText(), SerializerOptions);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
 
     private static bool PathsEqual(string left, string right)
         => string.Equals(

@@ -1,6 +1,7 @@
 using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
@@ -12,6 +13,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 {
     private CaptureScheduleOperatorState? _state;
     private CaptureSchedulePreview? _preview;
+    private CaptureProcessingPlanPreview? _pipelinePlan;
     private string _editorJson = string.Empty;
     private string _overrideMode = "ForceClosed";
     private string _overrideStart = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -24,6 +26,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     private bool _overrideOneShot;
     private bool _loading = true;
     private bool _busy;
+    private bool _pipelineCanToggle;
     private string? _stageKey;
     private string? _stagePayload;
     private long _stageExpectedVersion;
@@ -83,6 +86,21 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
                 var editorRevision = _state.PendingRevision ?? _state.ActiveRevision;
                 _editorJson = CameraAgentScheduleUiService.SerializeProfile(editorRevision.Profile);
                 _editorBasisRevisionId = editorRevision.RevisionId;
+                var pipelineResult = await ScheduleService.GetPipelineAsync(CancellationToken.None).ConfigureAwait(false);
+                if (pipelineResult.IsSuccess && pipelineResult.Value is { } pipelineState)
+                {
+                    var selected = pipelineState.Pending is not null &&
+                        string.Equals(pipelineState.Pending.RevisionId, editorRevision.RevisionId, StringComparison.Ordinal)
+                            ? pipelineState.Pending
+                            : pipelineState.Active;
+                    _pipelinePlan = selected.Plan;
+                    _pipelineCanToggle = selected.CanToggle;
+                }
+                else
+                {
+                    _pipelinePlan = null;
+                    _pipelineCanToggle = false;
+                }
                 _preview = null;
                 _overrideProfile = _state.Decision.SetpointProfileId ?? _state.ActiveRevision.Definition.SetpointProfiles[0].Id;
                 _message = null;
@@ -126,12 +144,68 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         if (result.IsSuccess)
         {
             _preview = result.Value;
-            SetMessage("Preview is valid. No durable state changed.", error: false);
+            var pipelineResult = await ScheduleService.PreviewPipelineAsync(
+                editorJson, basisRevisionId, CancellationToken.None).ConfigureAwait(false);
+            if (pipelineResult.IsSuccess && pipelineResult.Value is { } pipeline)
+            {
+                _pipelinePlan = pipeline.Plan;
+                _pipelineCanToggle = string.Equals(
+                    pipeline.Plan.SchemaVersion,
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    StringComparison.Ordinal);
+                SetMessage("Schedule and desired graph previews are valid. No durable state changed.", error: false);
+            }
+            else
+            {
+                _pipelinePlan = null;
+                SetMessage(pipelineResult.Message ?? "Graph preview validation failed.", error: true);
+            }
         }
         else
         {
             _preview = null;
             SetMessage(result.Message ?? "Preview validation failed.", error: true);
+        }
+    }
+
+    private async Task TogglePipelineAsync(string nodeId, bool enabled)
+    {
+        if (_editorBasisRevisionId is null)
+        {
+            return;
+        }
+        var basisRevisionId = _editorBasisRevisionId;
+        var editorJson = _editorJson;
+        _busy = true;
+        OperatorUiResult<CameraAgentPipelineProfilePreview> result;
+        try
+        {
+            result = await ScheduleService.TogglePipelineAsync(
+                editorJson,
+                basisRevisionId,
+                nodeId,
+                enabled,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _busy = false;
+        }
+        if (!string.Equals(editorJson, _editorJson, StringComparison.Ordinal) ||
+            !string.Equals(basisRevisionId, _editorBasisRevisionId, StringComparison.Ordinal))
+        {
+            return;
+        }
+        if (result.IsSuccess && result.Value is { } preview)
+        {
+            _editorJson = preview.ProfileJson;
+            _pipelinePlan = preview.Plan;
+            _preview = null;
+            SetMessage("Desired graph updated in the editor. Save the immutable draft to persist it.", error: false);
+        }
+        else
+        {
+            SetMessage(result.Message ?? "The desired graph toggle is invalid.", error: true);
         }
     }
 
@@ -317,6 +391,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     private void EditorChanged()
     {
         _preview = null;
+        _pipelinePlan = null;
         _message = null;
     }
 

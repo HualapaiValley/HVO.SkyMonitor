@@ -72,6 +72,22 @@ public sealed class WeatherCloudOverlayRecipeTests
         CollectionAssert.AreEqual(
             new[] { preview.ArtifactId, assessmentArtifact.ArtifactId },
             product.SourceArtifactIds.ToArray());
+
+        var annotated = preview with
+        {
+            Role = FrameArtifactRole.AnnotatedPreview,
+            Variant = "sky-annotation"
+        };
+        var annotatedOutcome = await new ProcessingRecipeExecutor().ExecuteAsync(request with
+        {
+            Input = ProcessingInputSelector.RecipeResult(
+                annotated.Role,
+                annotated.Variant,
+                annotated.RecipeIdentitySha256),
+            Inputs = [annotated, assessmentArtifact],
+            InputArtifactId = annotated.ArtifactId
+        }).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, annotatedOutcome.Status, annotatedOutcome.ReasonCode);
     }
 
     private static ProcessingArtifact CreatePreview()

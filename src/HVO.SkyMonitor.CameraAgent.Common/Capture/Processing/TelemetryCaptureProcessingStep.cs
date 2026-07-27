@@ -6,6 +6,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -15,7 +16,7 @@ internal sealed class TelemetryCaptureProcessingStep(
     TelemetryProcessingStepOptions options,
     ICaptureTelemetrySink telemetrySink,
     CaptureTelemetryMetricsRecorder metricsRecorder,
-    ILogger<TelemetryCaptureProcessingStep> logger) : ConfigurableCaptureProcessingStep<TelemetryProcessingStepOptions>(metadata, options)
+    ILogger<TelemetryCaptureProcessingStep> logger) : ConfigurableCaptureProcessingStep<TelemetryProcessingStepOptions>(metadata, options), ICaptureProcessingOutcomeConsumer
 {
     private readonly ICaptureTelemetrySink _telemetrySink = telemetrySink;
     private readonly CaptureTelemetryMetricsRecorder _metricsRecorder = metricsRecorder;
@@ -42,6 +43,24 @@ internal sealed class TelemetryCaptureProcessingStep(
             result.Mode,
             result.RequiresImmediateUpload);
 
+        var processingSteps = context.Config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 }
+            ? context.GetDependencyStepTelemetry()
+            : context.StepTelemetry;
+        var input = CaptureContractJson.SerializeToElement(new
+        {
+            schemaVersion = "capture-processing-telemetry-input-v1",
+            steps = processingSteps.Select(static step => new
+            {
+                step.Name,
+                durationTicks = step.Duration.Ticks,
+                step.Succeeded,
+                step.ErrorMessage
+            })
+        });
+        context.RecordCanonicalInput(
+            "dependency-telemetry",
+            "capture-processing-telemetry-input-v1",
+            CaptureContractJson.ComputeCanonicalJsonSha256(input));
         var sample = new CaptureTelemetrySample(
             StartedUtc: context.Submission.CaptureStartedUtc,
             Interval: context.Submission.EffectiveInterval,
@@ -53,9 +72,9 @@ internal sealed class TelemetryCaptureProcessingStep(
             FrameStored: result.Frame is not null,
             ProcessingLatency: result.ProcessingLatency,
             LoopDuration: context.Submission.LoopDuration,
-            ProcessingSteps: context.StepTelemetry.Count == 0
+            ProcessingSteps: processingSteps.Count == 0
                 ? Array.Empty<CaptureProcessingStepTelemetry>()
-                : context.StepTelemetry.ToArray(),
+                : processingSteps.ToArray(),
             TemperatureC: result.Frame?.Metadata.TemperatureC);
 
         _telemetrySink.Report(sample);

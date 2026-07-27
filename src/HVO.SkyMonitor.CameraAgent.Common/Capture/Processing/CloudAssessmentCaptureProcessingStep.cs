@@ -27,12 +27,18 @@ internal sealed class CloudAssessmentCaptureProcessingStep(
     public string OutputVariant => Options.OutputVariant;
 
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
-        new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw, FrameArtifactRole.Calibrated };
 
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (!Options.Enabled || context.Artifacts?.Raw is not { } currentArtifact)
+        var currentArtifact = context.GetDependencyArtifacts()
+            .SingleOrDefault(artifact => AcceptedInputRoles.Contains(artifact.Role));
+        if (currentArtifact is null && !context.HasDeclaredDependencies)
+        {
+            currentArtifact = context.Artifacts?.Raw;
+        }
+        if (!Options.Enabled || currentArtifact is null)
         {
             return;
         }
@@ -63,10 +69,17 @@ internal sealed class CloudAssessmentCaptureProcessingStep(
                 CreateSelector(clear),
                 ArtifactId: clear.ArtifactId));
         }
-        auxiliary.Add(cloudEnvironment is null
+        var environment = cloudEnvironment is null
             ? CameraAgentCloudEnvironment.CreateMissingInput(context)
-            : await cloudEnvironment.CreateInputAsync(context, cancellationToken).ConfigureAwait(false));
-        var outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
+            : await cloudEnvironment.CreateInputAsync(context, cancellationToken).ConfigureAwait(false);
+        if (environment is null)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.RetryableFailure(
+                ProcessingReasonCodes.EnvironmentAssociationPending));
+            return;
+        }
+        auxiliary.Add(environment);
+        var outcome = await adapter.ExecuteAsync(context, new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.CloudAssessment,
             JsonSerializer.SerializeToElement(new CloudAssessmentOptions(
                 Options.GridColumns,
@@ -140,12 +153,16 @@ internal sealed class CameraAgentCloudEnvironment(
     ILocalEnvironmentalObservationStore observations,
     IOptions<CameraAgentHostOptions> options)
 {
-    internal async ValueTask<ProcessingAuxiliaryInput> CreateInputAsync(
+    internal async ValueTask<ProcessingAuxiliaryInput?> CreateInputAsync(
         CaptureProcessingContext context,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
         if (context.RawCapture?.Manifest.Descriptor is not { } descriptor)
+        {
+            return CreateMissingInput(context);
+        }
+        if (!options.Value.EnvironmentalAcquisition.Enabled)
         {
             return CreateMissingInput(context);
         }
@@ -157,14 +174,19 @@ internal sealed class CameraAgentCloudEnvironment(
         {
             exposureThroughUtc = exposureFromUtc.AddTicks(1);
         }
-        var association = (await associations.AssociateAsync(
+        var completed = await associations.ReadCompletedAsync(
             capture.CaptureId,
             capture.CaptureSequence,
             exposureFromUtc,
             exposureThroughUtc,
             capture.RigId,
             [EnvironmentalObservationKind.RainState],
-            cancellationToken).ConfigureAwait(false)).Single();
+            cancellationToken).ConfigureAwait(false);
+        if (completed is null)
+        {
+            return null;
+        }
+        var association = completed.Single();
         LocalEnvironmentalObservationRecord? selected = null;
         if (association.SelectedRecordId is { } selectedRecordId)
         {

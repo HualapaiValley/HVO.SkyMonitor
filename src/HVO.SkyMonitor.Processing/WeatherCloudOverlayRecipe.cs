@@ -44,7 +44,7 @@ internal sealed class WeatherCloudOverlayRecipe : IProcessingRecipe
         {
             return ValueTask.FromResult(failure!);
         }
-        if (preview.Role != FrameArtifactRole.Preview)
+        if (preview.Role is not (FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview))
         {
             return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.InvalidSelector,

@@ -36,6 +36,40 @@
             <dl class="capture-facts"><div><dt>Capture ID</dt><dd><code>@_capture.CaptureId</code></dd></div><div><dt>Agent</dt><dd>@_capture.AgentId</dd></div><div><dt>Rig</dt><dd>@(_capture.RigId ?? "Unspecified")</dd></div><div><dt>Sequence</dt><dd>@_capture.CaptureSequence</dd></div><div><dt>Exposure started</dt><dd><time datetime="@_capture.ExposureStartedUtc.ToString("O")">@GalleryPage.FormatCaptureTime(_capture.ExposureStartedUtc)</time></dd></div><div><dt>Durable ingress</dt><dd><time datetime="@_capture.DurableIngressUtc.ToString("O")">@GalleryPage.FormatCaptureTime(_capture.DurableIngressUtc)</time></dd></div><div><dt>Raw state</dt><dd>@OperationsPage.SplitWords(_capture.RawState)</dd></div><div><dt>Evidence origin</dt><dd>@EvidenceLabel(_capture.EvidenceOrigin)</dd></div></dl>
         </section>
 
+        <section class="fact-section comparison-section" aria-labelledby="comparison-heading">
+            <header><p class="eyebrow">Bounded same-capture view</p><h2 id="comparison-heading">Artifact comparison</h2></header>
+            @if (ComparisonArtifacts.Count < 2)
+            {
+                <p class="unavailable-state">Two reconstructable artifacts from this capture are required for comparison.</p>
+            }
+            else
+            {
+                <div class="comparison-selectors">
+                    <label for="comparison-left">Left artifact</label><select id="comparison-left" class="form-select" value="@_comparisonLeftArtifactId" @onchange="SelectComparisonLeft">@foreach (var artifact in ComparisonArtifacts) { <option value="@artifact.ArtifactId.ToString("D")" disabled="@(artifact.ArtifactId.ToString("D") == _comparisonRightArtifactId)">@OperationsPage.SplitWords(artifact.Role.ToString()) / @(artifact.Variant ?? "Unspecified")</option> }</select>
+                    <label for="comparison-right">Right artifact</label><select id="comparison-right" class="form-select" value="@_comparisonRightArtifactId" @onchange="SelectComparisonRight">@foreach (var artifact in ComparisonArtifacts) { <option value="@artifact.ArtifactId.ToString("D")" disabled="@(artifact.ArtifactId.ToString("D") == _comparisonLeftArtifactId)">@OperationsPage.SplitWords(artifact.Role.ToString()) / @(artifact.Variant ?? "Unspecified")</option> }</select>
+                </div>
+                <div class="comparison-grid">
+                    @foreach (var artifact in new[] { ComparisonLeft, ComparisonRight })
+                    {
+                        if (artifact is not null)
+                        {
+                            var node = FindArtifactNode(artifact);
+                            var nodeSummary = FindArtifactNodeSummary(artifact);
+                            <article>
+                                <img src="@GalleryPage.PreviewUrl(artifact.ArtifactId)" alt="@OperationsPage.SplitWords(artifact.Role.ToString()) @(artifact.Variant ?? "artifact") comparison preview" />
+                                <h3>@OperationsPage.SplitWords(artifact.Role.ToString()) / @(artifact.Variant ?? "Unspecified")</h3>
+                                <dl><div><dt>Artifact ID</dt><dd><code>@artifact.ArtifactId</code></dd></div><div><dt>SHA-256</dt><dd><code>@artifact.ChecksumSha256</code></dd></div><div><dt>Recipe</dt><dd>@(artifact.Recipe?.Name ?? "Acquisition")</dd></div><div><dt>Recipe identity</dt><dd><code>@(artifact.Recipe?.IdentitySha256 ?? "Unavailable")</code></dd></div><div><dt>Algorithms</dt><dd>@(artifact.Algorithms is null || artifact.Algorithms.Count == 0 ? "None recorded" : string.Join(", ", artifact.Algorithms.Select(static algorithm => $"{algorithm.Name}/{algorithm.Version}")))</dd></div><div><dt>Node status</dt><dd>@(nodeSummary is null ? "Acquisition" : OperationsPage.SplitWords(nodeSummary.Status))</dd></div><div><dt>Node outcome</dt><dd>@FormatComparisonOutcome(artifact, node)</dd></div><div><dt>Duration</dt><dd>@FormatArtifactDuration(artifact, node)</dd></div><div><dt>Execution profile</dt><dd><code>@FormatArtifactProfile(artifact, node)</code></dd></div></dl>
+                                <h4>Ordered lineage</h4>@if (artifact.SourceArtifactIds.Count == 0) { <p>Origin artifact.</p> } else { <ol>@foreach (var sourceId in artifact.SourceArtifactIds) { <li><code>@sourceId</code></li> }</ol> }
+                                <h4>Inputs and contexts</h4>@if (node?.Inputs is null) { <p>Unavailable.</p> } else if (node.Inputs.Count == 0) { <p>None recorded.</p> } else { <ol>@foreach (var input in node.Inputs) { <li>@InputEvidence(input)</li> }</ol> }
+                                @if (node?.InputsTruncated == true) { <p>Additional input evidence is retained but omitted from this bounded view.</p> }
+                                @if (node?.FailureCategory is not null) { <p><strong>Failure category:</strong> @node.FailureCategory</p> }
+                            </article>
+                        }
+                    }
+                </div>
+            }
+        </section>
+
         <section class="fact-section evidence-section" aria-labelledby="evidence-heading">
             <header><p class="eyebrow">Reconstruction evidence</p><h2 id="evidence-heading">Manifest, layout, timing, and controls</h2></header>
             @if (_capture.Detail is null)
@@ -44,7 +78,7 @@
             }
             else
             {
-                <dl class="evidence-facts"><div><dt>Evidence availability</dt><dd>@_capture.Detail.EvidenceAvailability</dd></div><div><dt>Manifest schema</dt><dd>@(_capture.Detail.ManifestSchemaVersion ?? "Unavailable")</dd></div><div><dt>Raw retention hold</dt><dd>@(_capture.Detail.RawRetentionHold is null ? "Unavailable" : _capture.Detail.RawRetentionHold.Value ? "Held" : "Not held")</dd></div></dl>
+                <dl class="evidence-facts"><div><dt>Evidence availability</dt><dd>@_capture.Detail.EvidenceAvailability</dd></div><div><dt>Manifest schema</dt><dd>@(_capture.Detail.ManifestSchemaVersion ?? "Unavailable")</dd></div><div><dt>Raw retention hold</dt><dd>@(_capture.Detail.RawRetentionHold is null ? "Unavailable" : _capture.Detail.RawRetentionHold.Value ? "Held" : "Not held")</dd></div><div><dt>Processing profile</dt><dd>@(_capture.Detail.ProcessingProfile is null ? "Unavailable" : $"{_capture.Detail.ProcessingProfile.Name} / {_capture.Detail.ProcessingProfile.Version}")</dd></div><div class="wide"><dt>Processing profile SHA-256</dt><dd><code>@(_capture.Detail.ProcessingProfile?.Sha256 ?? "Unavailable")</code></dd></div></dl>
                 <div class="projection-grid">
                     <article><h3>Layout</h3>@if (_capture.Detail.Layout is null) { <p>Unavailable</p> } else { var layoutFacts = _capture.Detail.Layout; <dl><div><dt>Dimensions</dt><dd>@layoutFacts.Width x @layoutFacts.Height</dd></div><div><dt>Stride</dt><dd>@layoutFacts.StrideBytes bytes</dd></div><div><dt>Pixel format</dt><dd>@layoutFacts.PixelFormat</dd></div><div><dt>Byte order</dt><dd>@layoutFacts.ByteOrder</dd></div><div><dt>Sample / container</dt><dd>@layoutFacts.SampleDepthBits / @layoutFacts.ContainerDepthBits bits</dd></div><div><dt>Packing</dt><dd>@layoutFacts.Packing</dd></div><div><dt>CFA pattern</dt><dd>@layoutFacts.CfaPattern</dd></div><div><dt>Black / white</dt><dd>@(layoutFacts.BlackLevel?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "Unavailable") / @(layoutFacts.WhiteLevel?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "Unavailable")</dd></div><div><dt>Byte length</dt><dd>@OperationsPage.FormatBytes(layoutFacts.ByteLength)</dd></div></dl> }</article>
                     <article><h3>Timing</h3>@if (_capture.Detail.Timing is null) { <p>Unavailable</p> } else { var timing = _capture.Detail.Timing; <dl><div><dt>Requested start</dt><dd>@GalleryPage.FormatCaptureTime(timing.RequestedStartUtc)</dd></div><div><dt>Exposure start</dt><dd>@GalleryPage.FormatCaptureTime(timing.ExposureStartedUtc)</dd></div><div><dt>Exposure end</dt><dd>@GalleryPage.FormatCaptureTime(timing.ExposureEndedUtc)</dd></div><div><dt>Readout complete</dt><dd>@GalleryPage.FormatCaptureTime(timing.ReadoutCompletedUtc)</dd></div><div><dt>Durable ingress</dt><dd>@GalleryPage.FormatCaptureTime(timing.DurableIngressUtc)</dd></div><div><dt>Setpoint applied</dt><dd>@(timing.SetpointAppliedUtc is null ? "Unavailable" : GalleryPage.FormatCaptureTime(timing.SetpointAppliedUtc.Value))</dd></div></dl> }</article>
@@ -77,7 +111,40 @@
 
         <section class="fact-section" aria-labelledby="nodes-heading"><header><p class="eyebrow">Capture-time graph</p><h2 id="nodes-heading">Processing nodes</h2></header>
             @if (_capture.ProcessingNodes.Count == 0) { <p>No processing nodes are recorded for this capture.</p> }
-            else { <div class="node-grid">@foreach (var node in _capture.ProcessingNodes) { var nodeDetail = FindNodeDetail(node.NodeId); <article><header><h3>@node.NodeId</h3><span>@OperationsPage.SplitWords(node.Status)</span></header><dl><div><dt>Required</dt><dd>@(node.Required ? "Yes" : "No")</dd></div><div><dt>Recipe</dt><dd>@(node.RecipeName ?? "Unspecified")</dd></div><div><dt>Output role</dt><dd>@(node.OutputRole is null ? "None" : OperationsPage.SplitWords(node.OutputRole.Value.ToString()))</dd></div><div><dt>Output variant</dt><dd>@(node.OutputVariant ?? "Unspecified")</dd></div><div><dt>Dependencies</dt><dd>@(nodeDetail is null || nodeDetail.Dependencies.Count == 0 ? "None recorded" : string.Join(", ", nodeDetail.Dependencies))</dd></div><div><dt>Attempt</dt><dd>@(nodeDetail?.Attempt.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "Unavailable")</dd></div><div><dt>Completed</dt><dd>@(nodeDetail is null ? "Unavailable" : GalleryPage.FormatCaptureTime(nodeDetail.CompletedUtc))</dd></div><div><dt>Failure category</dt><dd>@(nodeDetail?.FailureCategory ?? "None recorded")</dd></div></dl><h4>Artifact IDs</h4>@if (node.ArtifactIds.Count == 0) { <p>None recorded.</p> } else { <ul>@foreach (var artifactId in node.ArtifactIds) { <li><code>@artifactId</code></li> }</ul> }</article> }</div> }
+            else
+            {
+                <div class="node-grid">
+                    @foreach (var node in _capture.ProcessingNodes)
+                    {
+                        var nodeDetail = FindNodeDetail(node.NodeId);
+                        <article>
+                            <header><h3>@node.NodeId</h3><span>@OperationsPage.SplitWords(node.Status)</span></header>
+                            <dl>
+                                <div><dt>Required</dt><dd>@(node.Required ? "Yes" : "No")</dd></div>
+                                <div><dt>Recipe</dt><dd>@(node.RecipeName ?? "Unspecified")</dd></div>
+                                <div><dt>Output role</dt><dd>@(node.OutputRole is null ? "None" : OperationsPage.SplitWords(node.OutputRole.Value.ToString()))</dd></div>
+                                <div><dt>Output variant</dt><dd>@(node.OutputVariant ?? "Unspecified")</dd></div>
+                                <div><dt>Dependencies</dt><dd>@(nodeDetail is null || nodeDetail.Dependencies.Count == 0 ? "None recorded" : string.Join(", ", nodeDetail.Dependencies))</dd></div>
+                                <div><dt>Attempt</dt><dd>@(nodeDetail?.Attempt.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "Unavailable")</dd></div>
+                                <div><dt>Outcome</dt><dd>@FormatNodeOutcome(node, nodeDetail)</dd></div>
+                                <div><dt>Started</dt><dd>@FormatNodeStarted(nodeDetail)</dd></div>
+                                <div><dt>Duration</dt><dd>@FormatNodeDuration(nodeDetail)</dd></div>
+                                <div><dt>Completed</dt><dd>@(nodeDetail is null ? "Unavailable" : GalleryPage.FormatCaptureTime(nodeDetail.CompletedUtc))</dd></div>
+                                <div><dt>Failure category</dt><dd>@(nodeDetail?.FailureCategory ?? "None recorded")</dd></div>
+                                <div class="wide"><dt>Execution profile SHA-256</dt><dd><code>@FormatNodeProfile(nodeDetail)</code></dd></div>
+                            </dl>
+                            <h4>Inputs and contexts</h4>
+                            @if (nodeDetail?.Inputs is null) { <p>Unavailable for legacy processing record.</p> }
+                            else if (nodeDetail.Inputs.Count == 0) { <p>No recipe inputs submitted.</p> }
+                            else { <ol>@foreach (var input in nodeDetail.Inputs) { <li>@InputEvidence(input)</li> }</ol> }
+                            @if (nodeDetail?.InputsTruncated == true) { <p>Additional input evidence is retained but omitted from this bounded view.</p> }
+                            <h4>Artifact IDs</h4>
+                            @if (node.ArtifactIds.Count == 0) { <p>None recorded.</p> }
+                            else { <ul>@foreach (var artifactId in node.ArtifactIds) { <li><code>@artifactId</code></li> }</ul> }
+                        </article>
+                    }
+                </div>
+            }
         </section>
 
         <section class="fact-section" aria-labelledby="cloud-heading"><header><p class="eyebrow">Derived environmental evidence</p><h2 id="cloud-heading">Cloud assessment</h2></header>

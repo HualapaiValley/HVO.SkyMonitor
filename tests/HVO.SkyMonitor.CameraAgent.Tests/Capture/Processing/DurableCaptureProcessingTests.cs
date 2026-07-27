@@ -76,6 +76,14 @@ public sealed class DurableCaptureProcessingTests
             Assert.AreEqual(0, restartedStep.ExecutionCount);
             Assert.IsNotNull(durable);
             Assert.AreEqual(DurableProcessingNodeStatus.Completed, durable.Status);
+            Assert.AreEqual(
+                fixture.Manifest.Descriptor.Profiles.Processing.Sha256,
+                durable.ProcessingProfileIdentitySha256);
+            Assert.IsNotNull(durable.StartedUtc);
+            Assert.IsTrue(durable.Duration >= TimeSpan.Zero);
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, durable.Outcome);
+            Assert.IsNotNull(durable.Inputs);
+            Assert.IsEmpty(durable.Inputs);
             Assert.HasCount(1, durable.Outputs);
             var output = durable.Outputs[0];
             Assert.AreEqual(fixture.Manifest.Descriptor.CycleEvidence, output.Descriptor!.CycleEvidence);
@@ -165,6 +173,7 @@ public sealed class DurableCaptureProcessingTests
             Assert.AreEqual(0, restartedStep.ExecutionCount);
             Assert.IsTrue(inspector.SawExactProduct);
             Assert.IsNotNull(durable);
+            Assert.AreEqual(durable.Duration, inspector.RestoredDependencyDuration);
             Assert.HasCount(1, durable.Outputs);
             var output = durable.Outputs[0];
             Assert.IsNull(output.Descriptor);
@@ -173,6 +182,59 @@ public sealed class DurableCaptureProcessingTests
             Assert.IsTrue(File.Exists(Path.Combine(root, output.PayloadRelativePath)));
             Assert.IsTrue(File.Exists(Path.Combine(root, output.SidecarRelativePath)));
             Assert.IsFalse(Directory.Exists(Path.Combine(root, "frames")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task FallbackProfileMismatchAndInfrastructureOutcomeRemainUnavailable()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var fallbackConfig = fixture.Item.Config with
+            {
+                Pipeline = new CapturePipelineConfig(
+                    [new CaptureProcessingStepConfig("Changed", Enabled: false)],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+            var item = fixture.Item with { Config = fallbackConfig };
+            var step = new CountingStep();
+            var node = new CaptureProcessingGraphNode(
+                "infrastructure", step, [], true, null, null, null, new string('I', 64));
+            DurableProcessingNode? durable;
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    item,
+                    new CaptureProcessingGraph([node]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    telemetry,
+                    1,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome);
+                durable = await store.ReadNodeAsync(
+                    fixture.Manifest.Descriptor.Capture.CaptureId,
+                    node.Id,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            Assert.AreEqual(1, step.ExecutionCount);
+            Assert.IsNotNull(durable);
+            Assert.IsNull(durable.ProcessingProfileIdentitySha256);
+            Assert.IsNull(durable.Outcome);
+            Assert.IsNotNull(durable.Inputs);
+            Assert.IsEmpty(durable.Inputs);
         }
         finally
         {
@@ -425,6 +487,8 @@ public sealed class DurableCaptureProcessingTests
             await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
                 await store.WriteNodeAsync(
                     Guid.NewGuid(), node, DurableProcessingNodeStatus.Completed, null, 1,
+                    new string('A', 64), DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch,
+                    TimeSpan.Zero, ProcessingOutcomeStatus.Produced, [],
                     1, "stale-token", [], CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
             {
@@ -436,6 +500,8 @@ public sealed class DurableCaptureProcessingTests
             await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
                 await store.WriteNodeAsync(
                     Guid.NewGuid(), node, DurableProcessingNodeStatus.Completed, null, 1,
+                    new string('A', 64), DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch,
+                    TimeSpan.Zero, ProcessingOutcomeStatus.Produced, [],
                     1, "current-token", [], CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
         }
         finally
@@ -729,6 +795,17 @@ public sealed class DurableCaptureProcessingTests
         var payload = new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 };
         var manifest = ReconstructableCaptureContractTests.CreateManifest(
             CameraPixelFormat.Mono16, 2, 2, 4, payload);
+        var config = CreateConfig();
+        manifest = manifest with
+        {
+            Descriptor = manifest.Descriptor with
+            {
+                Profiles = manifest.Descriptor.Profiles with
+                {
+                    Processing = RawCaptureDescriptorFactory.CreateProcessingProfile(config)
+                }
+            }
+        };
         if (includeCycleEvidence)
         {
             manifest = manifest with
@@ -771,7 +848,6 @@ public sealed class DurableCaptureProcessingTests
         {
             frame = frame! with { Metadata = frame.Metadata with { Scene = scene } };
         }
-        var config = CreateConfig();
         var submission = CreateSubmission(frame!) with
         {
             CycleEvidence = manifest.Descriptor.CycleEvidence
@@ -1029,6 +1105,7 @@ public sealed class DurableCaptureProcessingTests
         public string Name => "inspect";
         public int Order => 1;
         public bool SawExactProduct { get; private set; }
+        public TimeSpan? RestoredDependencyDuration { get; private set; }
 
         public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
         {
@@ -1052,6 +1129,7 @@ public sealed class DurableCaptureProcessingTests
             Assert.IsNull(actual.Layout);
             Assert.HasCount(1, context.AllArtifacts);
             Assert.AreEqual(FrameArtifactRole.Raw, context.AllArtifacts[0].Role);
+            RestoredDependencyDuration = context.GetDependencyStepTelemetry().Single().Duration;
             SawExactProduct = true;
             return ValueTask.CompletedTask;
         }

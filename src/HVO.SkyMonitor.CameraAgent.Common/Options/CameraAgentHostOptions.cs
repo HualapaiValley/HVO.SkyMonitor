@@ -243,13 +243,13 @@ public sealed class CentralIntegrationOptions
 
 public sealed class ArtifactReadOptions
 {
-    [Range(1, 32_768)]
-    public int MaximumPreviewDimension { get; init; } = 8_192;
+    [Range(1, 2_048)]
+    public int MaximumPreviewDimension { get; init; } = 2_048;
 
     [Range(1, 1_073_741_824)]
     public long MaximumPreviewSourceBytes { get; init; } = 64L * 1024 * 1024;
 
-    [Range(1, 268_435_456)]
+    [Range(1, 16_777_216)]
     public int MaximumPreviewEncodedBytes { get; init; } = 16 * 1024 * 1024;
 
     [Range(1, 32)]

@@ -272,8 +272,29 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var activeHash = page.Locator(".schedule-card:has-text('Active immutable profile') code");
         var originalActiveHash = (await activeHash.InnerTextAsync().ConfigureAwait(false)).Trim();
         var preview = page.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" });
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Desired and effective graph" }))
+            .ConfigureAwait(false);
+        var desiredGraph = page.Locator(".pipeline-columns article").First;
+        var telemetryToggle = desiredGraph.Locator("li:has(strong:text-is('Telemetry'))")
+            .GetByRole(AriaRole.Button, new() { Name = "Disable" });
+        await telemetryToggle.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.GetByText(
+            "Desired graph updated in the editor. Save the immutable draft to persist it.",
+            new() { Exact = true })).ConfigureAwait(false);
+        await desiredGraph.Locator("li:has(strong:text-is('Telemetry'))")
+            .GetByRole(AriaRole.Button, new() { Name = "Enable" }).ClickAsync().ConfigureAwait(false);
+        await desiredGraph.Locator("li:has(strong:text-is('Calibration'))")
+            .GetByRole(AriaRole.Button, new() { Name = "Disable" }).ClickAsync().ConfigureAwait(false);
+        var graphAlert = page.Locator(".schedule-banner[role='alert']");
+        await VisibleAsync(graphAlert).ConfigureAwait(false);
+        StringAssert.Contains(
+            await graphAlert.InnerTextAsync().ConfigureAwait(false),
+            "depends on the disabled node",
+            StringComparison.OrdinalIgnoreCase);
         await preview.ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.GetByText("Preview is valid. No durable state changed.", new() { Exact = true }))
+        await VisibleAsync(page.GetByText(
+            "Schedule and desired graph previews are valid. No durable state changed.",
+            new() { Exact = true }))
             .ConfigureAwait(false);
         var previewTimes = page.Locator(".preview-card time");
         Assert.IsGreaterThanOrEqualTo(2, await previewTimes.CountAsync().ConfigureAwait(false));
@@ -414,17 +435,17 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await AssertPageStructureAsync(page, "/gallery").ConfigureAwait(false);
         var evidenceBadge = page.Locator(".capture-card .evidence").First;
         await VisibleAsync(evidenceBadge).ConfigureAwait(false);
-        Assert.AreEqual("Developer fixture", await evidenceBadge.InnerTextAsync().ConfigureAwait(false));
+        Assert.AreEqual("Simulated evidence", await evidenceBadge.InnerTextAsync().ConfigureAwait(false));
         await VisibleAsync(page.GetByText("Older captures", new() { Exact = true })).ConfigureAwait(false);
 
         for (var attempt = 0; attempt < 10; attempt++)
         {
-            await page.GetByLabel("Evidence origin").SelectOptionAsync("DeveloperFixture").ConfigureAwait(false);
+            await page.GetByLabel("Evidence origin").SelectOptionAsync("Simulated").ConfigureAwait(false);
             await page.GetByLabel("Page size").SelectOptionAsync("24").ConfigureAwait(false);
             await page.GetByRole(AriaRole.Button, new() { Name = "Apply filters" }).ClickAsync().ConfigureAwait(false);
             try
             {
-                await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=DeveloperFixture", StringComparison.Ordinal),
+                await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal),
                     new PageWaitForURLOptions { Timeout = 2_000 }).ConfigureAwait(false);
                 break;
             }
@@ -436,7 +457,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(page.Locator(".capture-card").First).ConfigureAwait(false);
         await AssertVisibleImagesDecodeAsync(page).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Older captures" }).ClickAsync().ConfigureAwait(false);
-        await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=DeveloperFixture", StringComparison.Ordinal) &&
+        await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal) &&
             new Uri(url).Query.Contains("cursor=", StringComparison.Ordinal)).ConfigureAwait(false);
 
         var detailLink = page.Locator(".capture-card a[aria-label^='Open capture']").First;
@@ -453,6 +474,18 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.AreEqual("contain", await image.EvaluateAsync<string>("image => getComputedStyle(image).objectFit").ConfigureAwait(false));
         Assert.IsTrue(await image.EvaluateAsync<bool>("image => image.getBoundingClientRect().width <= innerWidth && image.getBoundingClientRect().height <= innerHeight")
             .ConfigureAwait(false));
+        var comparisonImages = page.Locator(".comparison-grid img");
+        await VisibleAsync(comparisonImages.First).ConfigureAwait(false);
+        Assert.AreEqual(2, await comparisonImages.CountAsync().ConfigureAwait(false));
+        await page.WaitForFunctionAsync(
+            "() => [...document.querySelectorAll('.comparison-grid img')].length === 2 && " +
+            "[...document.querySelectorAll('.comparison-grid img')].every(image => image.complete && image.naturalWidth > 0)")
+            .ConfigureAwait(false);
+        Assert.IsTrue(await comparisonImages.EvaluateAllAsync<bool>(
+            "images => images.every(image => image.complete && image.naturalWidth > 0)").ConfigureAwait(false));
+        Assert.AreNotEqual(
+            await page.GetByLabel("Left artifact").InputValueAsync().ConfigureAwait(false),
+            await page.GetByLabel("Right artifact").InputValueAsync().ConfigureAwait(false));
 
         var previewUrl = await image.GetAttributeAsync("src").ConfigureAwait(false);
         var contentUrl = await page.Locator("a[download]").First.GetAttributeAsync("href").ConfigureAwait(false);
@@ -476,7 +509,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         }
 
         await page.GetByRole(AriaRole.Link, new() { Name = "Gallery results", Exact = true }).ClickAsync().ConfigureAwait(false);
-        await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=DeveloperFixture", StringComparison.Ordinal) &&
+        await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal) &&
             new Uri(url).Query.Contains("cursor=", StringComparison.Ordinal)).ConfigureAwait(false);
         return detailUrl;
     }
@@ -626,7 +659,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             }
             await Task.Delay(500).ConfigureAwait(false);
         }
-        Assert.Fail($"The real RandomImage pipeline did not produce {minimumCards} durable gallery captures within 45 seconds.");
+        Assert.Fail($"The real VirtualSky pipeline did not produce {minimumCards} durable gallery captures within 45 seconds.");
     }
 
     private static async Task AssertVisibleImagesDecodeAsync(IPage page)

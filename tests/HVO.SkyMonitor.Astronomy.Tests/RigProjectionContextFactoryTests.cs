@@ -29,6 +29,11 @@ public sealed class RigProjectionContextFactoryTests
         Assert.AreEqual(12, projection.BoresightAzimuthDegrees);
         Assert.AreEqual(3, projection.RollDegrees);
         Assert.IsTrue(projection.HorizontalFlip);
+        var landmarks = RigProjectionContextFactory.CreateAnnotationLandmarks(RigProjectionContextFactory.Create(
+            rig with { Orientation = new RigOrientation(90, 0, 0) }));
+        Assert.IsNotNull(landmarks);
+        Assert.AreEqual(new PixelPoint(968, 608), landmarks.Center);
+        Assert.AreEqual(595.84, landmarks.ImageCircleRadius);
     }
 
     [TestMethod]

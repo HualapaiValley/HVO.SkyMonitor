@@ -76,6 +76,17 @@ public sealed record ProjectedAnnotationOverlay(
     PixelPoint South,
     PixelPoint West);
 
+/// <summary>Exact bounded metadata lines placed at the four image corners.</summary>
+public sealed record MetadataCornerOverlay(
+    IReadOnlyList<string> TopLeft,
+    IReadOnlyList<string> TopRight,
+    IReadOnlyList<string> BottomLeft,
+    IReadOnlyList<string> BottomRight,
+    byte Value = byte.MaxValue,
+    int Scale = 1,
+    int Inset = 4,
+    int LineSpacing = 2);
+
 /// <summary>An annotated Mono8 copy and its transformed anchors.</summary>
 public sealed record AnnotationResult(
     ReadOnlyMemory<byte> Pixels,
@@ -84,7 +95,7 @@ public sealed record AnnotationResult(
 /// <summary>Draws annotations using only coordinates already present in projected scene records.</summary>
 public static class AnnotationRenderer
 {
-    public const string AlgorithmVersion = "projected-annotation-raster-v2";
+    public const string AlgorithmVersion = "projected-annotation-raster-v3";
 
     /// <summary>Composes the existing monochrome annotation mask over packed RGB24 without altering source pixels.</summary>
     public static AnnotationResult AnnotateRgb24WithSegments(
@@ -96,6 +107,20 @@ public static class AnnotationRenderer
         PreviewTransform transform,
         AnnotationOptions? options = null,
         ProjectedAnnotationOverlay? projectionOverlay = null,
+        CancellationToken cancellationToken = default)
+        => AnnotateRgb24WithSegments(
+            preview, width, height, objects, segments, transform, options, projectionOverlay, null, cancellationToken);
+
+    public static AnnotationResult AnnotateRgb24WithSegments(
+        ReadOnlyMemory<byte> preview,
+        int width,
+        int height,
+        IEnumerable<ProjectedAnnotationObject> objects,
+        IEnumerable<ProjectedAnnotationSegment> segments,
+        PreviewTransform transform,
+        AnnotationOptions? options,
+        ProjectedAnnotationOverlay? projectionOverlay,
+        MetadataCornerOverlay? metadataOverlay,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -112,7 +137,7 @@ public static class AnnotationRenderer
         DrawRgbSegments(pixels, width, height, segments, transform, options, cancellationToken);
         var overlay = AnnotateMono8WithSegments(
             new byte[checked(width * height)], width, height, objects, [], transform, options, projectionOverlay,
-            cancellationToken);
+            metadataOverlay, cancellationToken);
         for (var pixel = 0; pixel < width * height; pixel++)
         {
             if (pixel % width == 0)
@@ -142,6 +167,20 @@ public static class AnnotationRenderer
         AnnotationOptions? options = null,
         ProjectedAnnotationOverlay? projectionOverlay = null,
         CancellationToken cancellationToken = default)
+        => AnnotateMono8WithSegments(
+            preview, width, height, objects, segments, transform, options, projectionOverlay, null, cancellationToken);
+
+    public static AnnotationResult AnnotateMono8WithSegments(
+        ReadOnlyMemory<byte> preview,
+        int width,
+        int height,
+        IEnumerable<ProjectedAnnotationObject> objects,
+        IEnumerable<ProjectedAnnotationSegment> segments,
+        PreviewTransform transform,
+        AnnotationOptions? options,
+        ProjectedAnnotationOverlay? projectionOverlay,
+        MetadataCornerOverlay? metadataOverlay,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(segments);
@@ -156,6 +195,11 @@ public static class AnnotationRenderer
         if (projectionOverlay is not null)
         {
             DrawProjectionOverlay(pixels, width, height, transform, projectionOverlay, options, cancellationToken);
+        }
+
+        if (metadataOverlay is not null)
+        {
+            DrawMetadataOverlay(pixels, width, height, metadataOverlay);
         }
 
         return new AnnotationResult(pixels, result.Anchors);
@@ -275,6 +319,48 @@ public static class AnnotationRenderer
     }
 
     private static int Round(double value) => (int)Math.Round(value, MidpointRounding.AwayFromZero);
+
+    private static void DrawMetadataOverlay(
+        byte[] pixels,
+        int width,
+        int height,
+        MetadataCornerOverlay overlay)
+    {
+        ArgumentNullException.ThrowIfNull(overlay);
+        if (overlay.Scale is < 1 or > 4 || overlay.Inset is < 0 or > 64 ||
+            overlay.LineSpacing is < 0 or > 16)
+        {
+            throw new ArgumentOutOfRangeException(nameof(overlay));
+        }
+
+        DrawCorner(overlay.TopLeft, rightAligned: false, bottomAligned: false);
+        DrawCorner(overlay.TopRight, rightAligned: true, bottomAligned: false);
+        DrawCorner(overlay.BottomLeft, rightAligned: false, bottomAligned: true);
+        DrawCorner(overlay.BottomRight, rightAligned: true, bottomAligned: true);
+
+        void DrawCorner(IReadOnlyList<string> lines, bool rightAligned, bool bottomAligned)
+        {
+            ArgumentNullException.ThrowIfNull(lines);
+            if (lines.Count > 8 || lines.Any(static line =>
+                    string.IsNullOrWhiteSpace(line) || line.Length > 64 || line.Any(char.IsControl)))
+            {
+                throw new ArgumentException("Metadata corner lines are invalid.", nameof(overlay));
+            }
+            var lineHeight = 7 * overlay.Scale;
+            var blockHeight = lines.Count == 0
+                ? 0
+                : lines.Count * lineHeight + (lines.Count - 1) * overlay.LineSpacing;
+            var firstY = bottomAligned ? height - overlay.Inset - blockHeight : overlay.Inset;
+            for (var index = 0; index < lines.Count; index++)
+            {
+                var line = lines[index];
+                var textWidth = Math.Max(0, line.Length * 6 * overlay.Scale - overlay.Scale);
+                var x = rightAligned ? width - overlay.Inset - textWidth : overlay.Inset;
+                var y = firstY + index * (lineHeight + overlay.LineSpacing);
+                DrawLabel(pixels, width, height, x, y, line, overlay.Value, overlay.Scale);
+            }
+        }
+    }
 
     private static void SetPixel(byte[] pixels, int width, int height, int x, int y, byte value)
     {
@@ -636,7 +722,7 @@ public static class AnnotationRenderer
                     {
                         for (var scaleX = 0; scaleX < scale; scaleX++)
                         {
-                            SetPixel(pixels, width, height,
+                            SetPixelMaximum(pixels, width, height,
                                 x + characterIndex * 6 * scale + column * scale + scaleX,
                                 y + row * scale + scaleY, value);
                         }
@@ -686,6 +772,9 @@ public static class AnnotationRenderer
         '9' => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E],
         '-' => [0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00],
         '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C],
+        ':' => [0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00],
+        '/' => [0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10],
+        '%' => [0x19, 0x1A, 0x02, 0x04, 0x08, 0x0B, 0x13],
         _ => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
     };
 }

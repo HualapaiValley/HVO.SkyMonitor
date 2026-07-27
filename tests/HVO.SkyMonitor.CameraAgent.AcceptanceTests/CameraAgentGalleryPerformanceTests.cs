@@ -630,10 +630,19 @@ public sealed class CameraAgentGalleryPerformanceTests
     {
         internal int Count { get; private set; }
 
-        public byte[] Encode(FrameLayoutDescriptor layout, ReadOnlyMemory<byte> payload)
+        public CameraAgentEncodedPreview Encode(
+            FrameLayoutDescriptor layout,
+            ReadOnlyMemory<byte> payload,
+            int maximumDimension)
         {
             Count++;
-            return [0xFF, 0xD8, .. payload.ToArray(), 0xFF, 0xD9];
+            var scale = Math.Min(1d, Math.Min(
+                (double)maximumDimension / layout.Width,
+                (double)maximumDimension / layout.Height));
+            return new(
+                [0xFF, 0xD8, .. payload.ToArray(), 0xFF, 0xD9],
+                Math.Max(1, (int)Math.Floor(layout.Width * scale)),
+                Math.Max(1, (int)Math.Floor(layout.Height * scale)));
         }
     }
 }

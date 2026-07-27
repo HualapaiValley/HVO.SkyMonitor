@@ -133,6 +133,8 @@ public sealed class SqliteCameraAgentGalleryTests
         var outputArtifact = detail.Artifacts.Single(artifact => artifact.Role == FrameArtifactRole.Preview);
         CollectionAssert.AreEqual(new[] { rawArtifact.ArtifactId }, outputArtifact.SourceArtifactIds.ToArray());
         Assert.AreEqual(output.Artifact.ArtifactId, outputArtifact.ArtifactId);
+        Assert.IsNotNull(outputArtifact.Algorithms);
+        Assert.IsNotEmpty(outputArtifact.Algorithms);
         Assert.AreEqual("preview", outputArtifact.ProcessingNodeId);
         Assert.AreEqual("TerminalFailure", AssertSingle(detail.ProcessingNodes).Status);
         Assert.IsNotNull(detail.Detail);
@@ -142,8 +144,14 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.AreEqual(raw.Descriptor.Controls.EffectiveGain, detail.Detail.Controls!.EffectiveGain);
         Assert.AreEqual(raw.Descriptor.Timing.ExposureEndedUtc, detail.Detail.Timing!.ExposureEndedUtc);
         Assert.IsTrue(detail.Detail.RawRetentionHold);
-        Assert.AreEqual(2, AssertSingle(detail.Detail.ProcessingNodes).Attempt);
-        Assert.AreEqual("unavailable", AssertSingle(detail.Detail.ProcessingNodes).FailureCategory);
+        var legacyNode = AssertSingle(detail.Detail.ProcessingNodes);
+        Assert.AreEqual(2, legacyNode.Attempt);
+        Assert.AreEqual("unavailable", legacyNode.FailureCategory);
+        Assert.IsNull(legacyNode.Inputs);
+        Assert.IsNull(legacyNode.ProcessingProfileIdentitySha256);
+        Assert.IsNull(legacyNode.StartedUtc);
+        Assert.IsNull(legacyNode.DurationMilliseconds);
+        Assert.IsNull(legacyNode.Outcome);
         Assert.AreEqual("Unavailable", detail.Detail.ArtifactStates[0].DeliveryAvailability);
         Assert.AreEqual("Unavailable", detail.Detail.CloudAssessment.Availability);
         var json = JsonSerializer.Serialize(detail);
@@ -199,7 +207,7 @@ public sealed class SqliteCameraAgentGalleryTests
             DurableProcessingNodeStatus.TerminalFailure,
             required: false,
             dependencies: ["source"],
-            reason: "processing.optional-exhausted").ConfigureAwait(false);
+            reason: "calibration.library.corrupt").ConfigureAwait(false);
         await fixture.SetDeliveryStatusesAsync(
             requiredRaw.Descriptor.Artifact.ArtifactId,
             ["pending", "retry", "acknowledged", "quarantined"]).ConfigureAwait(false);
@@ -215,7 +223,7 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.AreEqual("processing.step-exception", requiredNode.FailureCategory);
         var optionalNode = AssertSingle(optional!.Detail!.ProcessingNodes);
         Assert.IsFalse(AssertSingle(optional.ProcessingNodes).Required);
-        Assert.AreEqual("processing.optional-exhausted", optionalNode.FailureCategory);
+        Assert.AreEqual("calibration.library.corrupt", optionalNode.FailureCategory);
         var delivery = required.Detail.ArtifactStates.Single(state =>
             state.ArtifactId == requiredRaw.Descriptor.Artifact.ArtifactId);
         CollectionAssert.AreEqual(
@@ -236,6 +244,21 @@ public sealed class SqliteCameraAgentGalleryTests
                 $"node-{index:D3}",
                 DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
         }
+        await fixture.ExecuteAsync("""
+            UPDATE processing_nodes SET input_evidence_version = 1;
+            WITH RECURSIVE ordinals(value) AS (
+                SELECT 0
+                UNION ALL
+                SELECT value + 1 FROM ordinals WHERE value < 127
+            )
+            INSERT INTO processing_node_inputs(
+                capture_id, node_id, input_ordinal, kind, name, artifact_id, role, variant,
+                recipe_identity_sha256, schema_version, identity_sha256, selected_flag)
+            SELECT capture_id, node_id, value, 'CanonicalContext', 'bounded-context', NULL, NULL, NULL,
+                   NULL, 'bounded-context-v1',
+                   'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 0
+            FROM processing_nodes CROSS JOIN ordinals;
+            """).ConfigureAwait(false);
 
         var page = await fixture.Gallery.GetPageAsync(
             new CameraAgentGalleryQuery(PageSize: 1), CancellationToken.None).ConfigureAwait(false);
@@ -251,10 +274,31 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.IsNotNull(detail);
         Assert.IsTrue(detail.ProcessingNodesTruncated);
         Assert.IsTrue(detail.ArtifactsTruncated);
+        var unboundedInputs = detail.Detail!.ProcessingNodes
+            .Where(static node => !node.InputsTruncated ||
+                node.Inputs?.Count != SqliteCaptureProcessingStore.MaximumGalleryInputsPerNode)
+            .Select(static node => $"{node.NodeId}:{node.Inputs?.Count}:{node.InputsTruncated}")
+            .ToArray();
+        Assert.IsEmpty(unboundedInputs, string.Join(", ", unboundedInputs));
         Assert.IsLessThanOrEqualTo(
             256 * 1024,
             JsonSerializer.SerializeToUtf8Bytes(detail).Length,
             "Oversized durable graphs must remain a bounded operator response.");
+
+        var nodeBoundRaw = await fixture.AddRawAsync(Utc(8), "Physical", null).ConfigureAwait(false);
+        for (var index = 0; index <= SqliteCameraAgentGallery.MaximumProcessingNodesPerCapture; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                nodeBoundRaw,
+                $"bounded-node-{index:D3}",
+                DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
+        }
+        var nodeBoundDetail = await fixture.Gallery.GetCaptureAsync(
+            nodeBoundRaw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(nodeBoundDetail);
+        Assert.IsTrue(nodeBoundDetail.ProcessingNodesTruncated);
+        Assert.IsTrue(nodeBoundDetail.ArtifactsTruncated,
+            "Outputs attached to omitted nodes must mark the artifact projection as truncated.");
     }
 
     [TestMethod]
@@ -320,7 +364,9 @@ public sealed class SqliteCameraAgentGalleryTests
     }
 
     [TestMethod]
-    public async Task ProcessingSchemaV1MigratesWithoutLosingTablesAsync()
+    [DataRow(1)]
+    [DataRow(2)]
+    public async Task ProcessingSchemaMigratesWithoutLosingLegacyRowsAsync(int schemaVersion)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-gallery-processing-migration-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -339,19 +385,51 @@ public sealed class SqliteCameraAgentGalleryTests
                        $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
             {
                 await connection.OpenAsync().ConfigureAwait(false);
+                if (schemaVersion == 1)
+                {
+                    using var dropV2Indexes = connection.CreateCommand();
+                    dropV2Indexes.CommandText = """
+                        DROP INDEX ix_processing_nodes_status;
+                        DROP INDEX ix_processing_nodes_recipe;
+                        DROP INDEX ix_processing_outputs_role;
+                        DROP INDEX ix_processing_outputs_recipe;
+                        """;
+                    await dropV2Indexes.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
                 using var downgrade = connection.CreateCommand();
                 downgrade.CommandText = """
-                    DROP INDEX ix_processing_nodes_status;
-                    DROP INDEX ix_processing_nodes_recipe;
-                    DROP INDEX ix_processing_outputs_role;
-                    DROP INDEX ix_processing_outputs_recipe;
+                    DROP TABLE processing_node_inputs;
+                    ALTER TABLE processing_nodes DROP COLUMN outcome;
+                    ALTER TABLE processing_nodes DROP COLUMN duration_ticks;
+                    ALTER TABLE processing_nodes DROP COLUMN started_unix_ms;
+                    ALTER TABLE processing_nodes DROP COLUMN processing_profile_identity_sha256;
+                    ALTER TABLE processing_nodes DROP COLUMN input_evidence_version;
                     DROP TABLE capture_processing_schema;
                     CREATE TABLE capture_processing_schema(
                         schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-                        version INTEGER NOT NULL CHECK(version = 1)
+                        version INTEGER NOT NULL CHECK(version IN (1, 2))
                     ) STRICT;
-                    INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 1);
+                    INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, $version);
+                    INSERT INTO processing_nodes(
+                        capture_id, node_id, required, dependencies_json, recipe_name, output_role,
+                        output_variant, plan_sha256, status, reason, attempt, completed_unix_ms)
+                    VALUES(
+                        '10000000000000000000000000000001', 'legacy-node', 1, '[]', 'legacy-recipe',
+                        'Preview', 'legacy', $plan, 'Completed', NULL, 2, 1000);
+                    INSERT INTO processing_outputs(
+                        output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
+                        payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
+                        algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
+                        legacy_recipe_version, committed_unix_ms)
+                    VALUES(
+                        $output, '10000000000000000000000000000001', 'legacy-agent', 'legacy-node',
+                        '20000000000000000000000000000002', 'Preview', 'legacy', 'legacy.bin', 'legacy.json',
+                        X'7B7D', $recipe, X'5B5D', X'7B7D', 1, 1, 'legacy-v1', 1000);
                     """;
+                downgrade.Parameters.AddWithValue("$version", schemaVersion);
+                downgrade.Parameters.AddWithValue("$plan", new string('A', 64));
+                downgrade.Parameters.AddWithValue("$output", new string('B', 64));
+                downgrade.Parameters.AddWithValue("$recipe", new string('C', 64));
                 await downgrade.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
 
@@ -369,12 +447,31 @@ public sealed class SqliteCameraAgentGalleryTests
                     (SELECT version FROM capture_processing_schema WHERE schema_key = 1),
                     (SELECT COUNT(*) FROM sqlite_master WHERE name IN (
                         'processing_nodes', 'processing_outputs', 'ix_processing_nodes_status',
-                        'ix_processing_nodes_recipe', 'ix_processing_outputs_role', 'ix_processing_outputs_recipe'));
+                        'ix_processing_nodes_recipe', 'ix_processing_outputs_role', 'ix_processing_outputs_recipe',
+                        'processing_node_inputs', 'ix_processing_node_inputs_artifact')),
+                    status,
+                    attempt,
+                    processing_profile_identity_sha256 IS NULL,
+                    started_unix_ms IS NULL,
+                    duration_ticks IS NULL,
+                    outcome IS NULL,
+                    input_evidence_version IS NULL,
+                    (SELECT artifact_id FROM processing_outputs WHERE node_id = 'legacy-node')
+                FROM processing_nodes
+                WHERE node_id = 'legacy-node';
                 """;
             using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
             Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
-            Assert.AreEqual(2L, reader.GetInt64(0));
-            Assert.AreEqual(6L, reader.GetInt64(1));
+            Assert.AreEqual(3L, reader.GetInt64(0));
+            Assert.AreEqual(8L, reader.GetInt64(1));
+            Assert.AreEqual("Completed", reader.GetString(2));
+            Assert.AreEqual(2L, reader.GetInt64(3));
+            Assert.IsTrue(reader.GetBoolean(4));
+            Assert.IsTrue(reader.GetBoolean(5));
+            Assert.IsTrue(reader.GetBoolean(6));
+            Assert.IsTrue(reader.GetBoolean(7));
+            Assert.IsTrue(reader.GetBoolean(8));
+            Assert.AreEqual("20000000000000000000000000000002", reader.GetString(9));
         }
         finally
         {

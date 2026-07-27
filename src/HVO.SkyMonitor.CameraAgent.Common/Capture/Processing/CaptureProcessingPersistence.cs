@@ -163,6 +163,10 @@ internal sealed class CaptureProcessingPersistence(
         DurableProcessingNodeStatus status,
         string? reason,
         int attempt,
+        DateTimeOffset? startedUtc,
+        DateTimeOffset completedUtc,
+        TimeSpan? duration,
+        ProcessingOutcomeStatus? outcome,
         long workId,
         string? leaseToken,
         IReadOnlyList<ProcessingProduct> products,
@@ -229,6 +233,17 @@ internal sealed class CaptureProcessingPersistence(
                 status,
                 reason,
                 attempt,
+                string.Equals(
+                    RawCaptureDescriptorFactory.CreateProcessingProfile(context.Config).Sha256,
+                    rawCapture.Manifest.Descriptor.Profiles.Processing.Sha256,
+                    StringComparison.Ordinal)
+                    ? rawCapture.Manifest.Descriptor.Profiles.Processing.Sha256
+                    : null,
+                startedUtc,
+                completedUtc,
+                duration,
+                outcome,
+                context.GetCurrentInputEvidence(),
                 workId,
                 leaseToken,
                 outputs,
@@ -325,6 +340,32 @@ internal sealed class CaptureProcessingPersistence(
         CaptureProcessingGraphNode node,
         ProcessingProduct product,
         CancellationToken cancellationToken)
+        => await PersistMetadataProductAsync(
+            _storageRoot,
+            sourceDescriptor,
+            node.Id,
+            product,
+            cancellationToken).ConfigureAwait(false);
+
+    internal static async ValueTask CopyMetadataProductAsync(
+        string storageRoot,
+        ReconstructionDescriptor sourceDescriptor,
+        string sourceId,
+        ProcessingProduct product,
+        CancellationToken cancellationToken)
+        => _ = await PersistMetadataProductAsync(
+            Path.GetFullPath(storageRoot),
+            sourceDescriptor,
+            sourceId,
+            product,
+            cancellationToken).ConfigureAwait(false);
+
+    private static async ValueTask<DurableProcessingOutput> PersistMetadataProductAsync(
+        string storageRoot,
+        ReconstructionDescriptor sourceDescriptor,
+        string sourceId,
+        ProcessingProduct product,
+        CancellationToken cancellationToken)
     {
         var checksum = ProcessingIdentity.ComputePayloadSha256(product.Payload);
         var expectedOutputIdentity = ProcessingIdentity.CreateOutputIdentity(
@@ -350,7 +391,7 @@ internal sealed class CaptureProcessingPersistence(
 
         var createdUtc = sourceDescriptor.Timing.ReadoutCompletedUtc.ToUniversalTime();
         var directory = Path.Combine(
-            _storageRoot,
+            storageRoot,
             "derived",
             createdUtc.Year.ToString("D4", CultureInfo.InvariantCulture),
             createdUtc.Month.ToString("D2", CultureInfo.InvariantCulture),
@@ -362,12 +403,12 @@ internal sealed class CaptureProcessingPersistence(
             artifactId.ToString("N"));
         var payloadPath = Path.Combine(directory, string.Concat(stem, ".json"));
         var sidecarPath = Path.Combine(directory, string.Concat(stem, ".manifest.json"));
-        var payloadRelativePath = NormalizeRelativePath(Path.GetRelativePath(_storageRoot, payloadPath));
-        var sidecarRelativePath = NormalizeRelativePath(Path.GetRelativePath(_storageRoot, sidecarPath));
+        var payloadRelativePath = NormalizeRelativePath(Path.GetRelativePath(storageRoot, payloadPath));
+        var sidecarRelativePath = NormalizeRelativePath(Path.GetRelativePath(storageRoot, sidecarPath));
         var artifact = new ArtifactDescriptor(
             artifactId,
             product.Role,
-            node.Id,
+            sourceId,
             product.Variant,
             createdUtc,
             product.SourceArtifactIds,
@@ -390,20 +431,20 @@ internal sealed class CaptureProcessingPersistence(
 
         var directoryExisted = Directory.Exists(directory);
         Directory.CreateDirectory(directory);
-        RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, directory);
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, directory);
         if (!directoryExisted)
         {
-            RawIngressFileStore.SyncDirectoryHierarchy(_storageRoot, directory);
+            RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
         }
         await ValidateExistingMetadataEvidenceAsync(
             payloadPath, sidecarPath, product.Payload, product.ChecksumSha256, evidenceJson, cancellationToken).ConfigureAwait(false);
         if (!File.Exists(payloadPath))
         {
-            await WriteAtomicallyAsync(payloadPath, product.Payload, cancellationToken).ConfigureAwait(false);
+            await WriteAtomicallyAsync(storageRoot, payloadPath, product.Payload, cancellationToken).ConfigureAwait(false);
         }
         if (!File.Exists(sidecarPath))
         {
-            await WriteAtomicallyAsync(sidecarPath, evidenceJson, cancellationToken).ConfigureAwait(false);
+            await WriteAtomicallyAsync(storageRoot, sidecarPath, evidenceJson, cancellationToken).ConfigureAwait(false);
         }
 
         return new DurableProcessingOutput(
@@ -501,7 +542,8 @@ internal sealed class CaptureProcessingPersistence(
             product);
     }
 
-    private async Task WriteAtomicallyAsync(
+    private static async Task WriteAtomicallyAsync(
+        string storageRoot,
         string destinationPath,
         ReadOnlyMemory<byte> content,
         CancellationToken cancellationToken)
@@ -523,7 +565,7 @@ internal sealed class CaptureProcessingPersistence(
                 stream.Flush(flushToDisk: true);
 #pragma warning restore CA1849
             }
-            RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, Path.GetDirectoryName(destinationPath)!);
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, Path.GetDirectoryName(destinationPath)!);
             try
             {
                 File.Move(temporaryPath, destinationPath, overwrite: false);
@@ -537,7 +579,7 @@ internal sealed class CaptureProcessingPersistence(
                 }
                 return;
             }
-            RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, destinationPath);
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
             RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationPath)!);
         }
         finally

@@ -263,6 +263,9 @@ public sealed class CaptureProcessingContextTests
         Assert.AreEqual((ushort)200, BitConverter.ToUInt16(secondContext.Artifacts![FrameArtifactRole.Combined].Frame.PixelData.Span));
         Assert.AreSame(second, secondContext.Artifacts.Raw.Frame);
         Assert.AreEqual(2, step.BufferedFrameCount);
+        var selectedWindow = secondContext.GetCurrentInputEvidence();
+        Assert.HasCount(2, selectedWindow);
+        Assert.IsTrue(selectedWindow.All(static input => input.Selected));
 
         var ageBoundedStep = new RollingCombinationCaptureProcessingStep(
             new CaptureProcessingStepMetadata("Rolling", "Rolling", 0),
@@ -276,6 +279,9 @@ public sealed class CaptureProcessingContextTests
         Assert.AreEqual((ushort)300, BitConverter.ToUInt16(
             laterContext.Artifacts![FrameArtifactRole.Combined].Frame.PixelData.Span));
         Assert.AreEqual(1, ageBoundedStep.BufferedFrameCount);
+        var selectedAgeBounded = laterContext.GetCurrentInputEvidence().Where(static input => input.Selected).ToArray();
+        Assert.HasCount(1, selectedAgeBounded);
+        Assert.AreEqual(laterContext.Artifacts.Raw.ArtifactId, selectedAgeBounded[0].ArtifactId);
     }
 
     [TestMethod]
@@ -441,27 +447,62 @@ public sealed class CaptureProcessingContextTests
     [TestMethod]
     public async Task AnnotationStep_UsesPersistedProjectedObjectsAfterSceneCacheLoss()
     {
+        var config = new CameraModuleConfig(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            new CameraModuleDescriptor("Test"),
+            new CameraRigConfig(
+                new SensorProfile("Test", 16, 16, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+                new OpticsProfile(
+                    "EquidistantFisheye", 0, 180, 0, LensKind.Fisheye,
+                    PrincipalPointX: 8, PrincipalPointY: 8, ImageCircleRadiusPixels: 7),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(
+                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)));
         var provenance = new SceneProvenance(
             "persisted-scene", "rig-v1", "test", "1", new string('0', 64),
             "equidistant", "v1", "v1", "v1",
-            Objects: [new ProjectedObjectProvenance("star", "Star", 1, 1, 0)]);
-        var raw = CreateFrame([0, 0, 0, 0]) with
+            RigProfileHashSha256: RigProjectionContextFactory.CreateProfileHashSha256(config.Rig),
+            Objects: [new ProjectedObjectProvenance("star", "Star", 8, 8, 0)]);
+        var raw = new CameraFrame(
+            DateTimeOffset.UnixEpoch,
+            16,
+            16,
+            CameraPixelFormat.Mono8,
+            new byte[256],
+            new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0)) with
         {
             Metadata = new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0, Scene: provenance)
         };
-        var preview = new CameraFrame(DateTimeOffset.UnixEpoch, 2, 2, CameraPixelFormat.Mono8,
-            new byte[] { 0, 0, 0, 0 }, raw.Metadata);
-        var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
+        var preview = new CameraFrame(DateTimeOffset.UnixEpoch, 16, 16, CameraPixelFormat.Mono8,
+            new byte[256], raw.Metadata);
+        var context = new CaptureProcessingContext(config, CreateSubmission(raw));
         context.AddDerivative(FrameArtifactRole.Preview, preview, "preview-v1");
         var step = new AnnotationCaptureProcessingStep(
             new CaptureProcessingStepMetadata("Annotation", "Annotation", 0),
-            new AnnotationProcessingStepOptions { MarkRadius = 0, DrawLabels = false },
+            new AnnotationProcessingStepOptions
+            {
+                MarkRadius = 0,
+                DrawLabels = false,
+                DrawImageCircle = true,
+                DrawCardinalDirections = true,
+                CardinalScale = 1,
+                DrawMetadataCorners = true,
+                TopLeftTokens = [AnnotationMetadataTokens.AgentIdentity],
+                TopRightTokens = [],
+                BottomLeftTokens = [],
+                BottomRightTokens = [],
+                MetadataValue = 200,
+                MetadataInset = 0,
+                MetadataLineSpacing = 0
+            },
             new ProjectedSceneStore(), new UnexpectedAnnotationSceneProvider(), Adapter);
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual((byte)144,
-            context.Artifacts![FrameArtifactRole.AnnotatedPreview].Frame.PixelData.Span[3]);
+        var pixels = context.Artifacts![FrameArtifactRole.AnnotatedPreview].Frame.PixelData.Span;
+        Assert.IsTrue(pixels.Contains((byte)96));
+        Assert.IsTrue(pixels.Contains(byte.MaxValue));
+        Assert.IsTrue(pixels.Contains((byte)200));
     }
 
     [TestMethod]

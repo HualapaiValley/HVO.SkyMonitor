@@ -18,6 +18,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     private readonly ILogger<CaptureProcessingPipelineFactory> _logger;
     private readonly CaptureProcessingTelemetry _telemetry;
     private readonly Dictionary<string, CaptureProcessingStepRegistration> _registrationsByAlias = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CaptureProcessingStepRegistration> _registrationsByCanonicalAlias = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<Type, CaptureProcessingStepRegistration> _registrationsByType = new();
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -42,26 +43,135 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
 
         foreach (var registration in registrations)
         {
+            if (_registrationsByCanonicalAlias.TryGetValue(registration.Alias, out var existing) &&
+                existing != registration)
+            {
+                throw new InvalidOperationException(
+                    $"Capture processing step alias '{registration.Alias}' has conflicting registrations.");
+            }
             RegisterStep(registration);
+            _registrationsByCanonicalAlias[registration.Alias] = registration;
         }
     }
 
     public IReadOnlyList<ICaptureProcessingStep> CreatePipeline(CameraModuleConfig config)
         => CreateGraph(config).Nodes.Select(static node => node.Step).ToArray();
 
+    public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        var pipeline = config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 }
+            ? config.Pipeline
+            : new CapturePipelineConfig(config.ResolveProcessingSteps());
+        var schemaVersion = pipeline.EffectiveSchemaVersion;
+        var desired = pipeline.Steps.Select(static step => new CaptureProcessingPlanNode(
+            string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim(),
+            step.Type,
+            step.Enabled != false,
+            step.Required,
+            step.Order,
+            step.Options,
+            step.DependsOn?.ToArray(),
+            null,
+            null,
+            null)).ToArray();
+        var graph = CreateGraph(config);
+        try
+        {
+            var configuredById = desired.ToDictionary(static node => node.Id, StringComparer.OrdinalIgnoreCase);
+            var effective = graph.Nodes.Select(node => new CaptureProcessingPlanNode(
+                node.Id,
+                node.Alias ?? configuredById.GetValueOrDefault(node.Id)?.Alias ?? node.Step.GetType().Name,
+                true,
+                node.Required,
+                node.EffectiveOrder,
+                node.EffectiveOptions,
+                node.DeclaredDependencies ?? node.Dependencies,
+                node.RecipeName,
+                node.OutputRole,
+                node.OutputVariant)).ToArray();
+            var projectedDesired = desired.Select(static node => node with
+            {
+                Options = RedactOptions(node.Options)
+            }).ToArray();
+            var projectedEffective = effective.Select(static node => node with
+            {
+                Options = RedactOptions(node.Options)
+            }).ToArray();
+            return new CaptureProcessingPlanPreview(
+                schemaVersion,
+                pipeline.DependencyPolicy,
+                CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new
+                {
+                    SchemaVersion = schemaVersion,
+                    pipeline.DependencyPolicy,
+                    Nodes = desired
+                })),
+                CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new
+                {
+                    SchemaVersion = schemaVersion,
+                    pipeline.DependencyPolicy,
+                    Nodes = graph.Nodes.Select(static node => node.PlanSha256).ToArray()
+                })),
+                projectedDesired,
+                projectedEffective);
+        }
+        finally
+        {
+            graph.DisposeSteps();
+        }
+    }
+
     public CaptureProcessingGraph CreateGraph(CameraModuleConfig config)
     {
         var stopwatch = Stopwatch.StartNew();
         using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-graph.validate");
         ArgumentNullException.ThrowIfNull(config);
-        var configuredSteps = config.ResolveProcessingSteps();
+        var explicitV2 = config.Pipeline is
+        {
+            SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2,
+            DependencyPolicy: CapturePipelineDependencyPolicy.RejectEnabledDependent
+        };
+        if (explicitV2 && config.ProcessingSteps is not null)
+        {
+            throw new InvalidOperationException(
+                "Capture pipeline v2 cannot be combined with the legacy processingSteps property.");
+        }
+        var configuredSteps = explicitV2 ? config.Pipeline!.Steps : config.ResolveProcessingSteps();
+        if (config.Pipeline is { SchemaVersion: not null } pipeline && pipeline.SchemaVersion is not
+            (CapturePipelineSchemaVersions.LegacyV1 or CapturePipelineSchemaVersions.ExplicitV2))
+        {
+            throw new InvalidOperationException($"Unsupported capture pipeline schema '{pipeline.SchemaVersion}'.");
+        }
+        if (config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 } explicitPipeline &&
+            explicitPipeline.DependencyPolicy != CapturePipelineDependencyPolicy.RejectEnabledDependent)
+        {
+            throw new InvalidOperationException(
+                $"Unsupported capture pipeline v2 dependency policy '{explicitPipeline.DependencyPolicy}'.");
+        }
+        if (!explicitV2 && config.Pipeline is { DependencyPolicy: not CapturePipelineDependencyPolicy.LegacyInference } legacyPipeline)
+        {
+            throw new InvalidOperationException(
+                $"Capture pipeline schema '{legacyPipeline.EffectiveSchemaVersion}' cannot use dependency policy '{legacyPipeline.DependencyPolicy}'.");
+        }
         var effectiveLayout = config.Rig.Readout is null
             ? null
             : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout).Layout;
         var effectivePixelFormat = effectiveLayout?.PixelFormat ?? config.Rig.Sensor.PixelFormat;
         IReadOnlyList<CaptureProcessingStepConfig> pipelineConfig = configuredSteps;
 
-        if (pipelineConfig.Count == 0 && _registrationsByType.Count > 0)
+        if (!explicitV2 && configuredSteps.Any(static step => step.Enabled is not null))
+        {
+            throw new InvalidOperationException("The top-level enabled field is supported only by capture pipeline v2.");
+        }
+
+        if (explicitV2)
+        {
+            ValidateExplicitConfiguration(configuredSteps);
+            pipelineConfig = configuredSteps.Where(static step => step.Enabled != false).ToArray();
+        }
+
+        if (!explicitV2 && pipelineConfig.Count == 0 && _registrationsByType.Count > 0)
         {
             pipelineConfig = _registrationsByType.Values
                 .Where(registration => registration.AutoInclude &&
@@ -84,16 +194,25 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         {
             foreach (var stepConfig in pipelineConfig)
             {
-                var step = CreateStep(stepConfig, identifiers);
+                var step = CreateStep(stepConfig, identifiers, explicitV2, out var effectiveConfig);
                 if (step is ICaptureProcessingGraphStep { Enabled: false })
                 {
+                    if (explicitV2)
+                    {
+                        (step as IDisposable)?.Dispose();
+                        throw new InvalidOperationException(
+                            $"Capture processing step '{step.Name}' must use the v2 enabled field instead of an options-level enabled value.");
+                    }
                     (step as IDisposable)?.Dispose();
                     continue;
                 }
-                configured.Add((stepConfig, step));
+                configured.Add((effectiveConfig, step));
             }
 
-            InferLegacyDependencies(configured);
+            if (!explicitV2)
+            {
+                InferLegacyDependencies(configured);
+            }
 
             var nodesById = configured.ToDictionary(
                 static item => item.Step.Name,
@@ -102,6 +221,10 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             {
                 foreach (var dependency in item.Config.DependsOn ?? [])
                 {
+                    if (explicitV2 && IsRawDependency(dependency))
+                    {
+                        continue;
+                    }
                     if (!nodesById.ContainsKey(dependency))
                     {
                         throw new InvalidOperationException(
@@ -115,8 +238,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 }
             }
 
-            ValidateOutputs(config, effectiveLayout, configured, nodesById);
-            var nodes = TopologicalSort(configured, nodesById);
+            ValidateOutputs(config, effectiveLayout, configured, nodesById, explicitV2);
+            var nodes = TopologicalSort(configured, nodesById, explicitV2);
             stopwatch.Stop();
             _telemetry.RecordValidation(nodes.Count, stopwatch.Elapsed);
             activity?.SetStatus(ActivityStatusCode.Ok);
@@ -132,6 +255,61 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
             activity?.SetStatus(ActivityStatusCode.Error);
             throw;
+        }
+    }
+
+    private void ValidateExplicitConfiguration(IReadOnlyList<CaptureProcessingStepConfig> configuredSteps)
+    {
+        var byId = new Dictionary<string, CaptureProcessingStepConfig>(StringComparer.OrdinalIgnoreCase);
+        foreach (var step in configuredSteps)
+        {
+            if (string.IsNullOrWhiteSpace(step.Type) || !_registrationsByCanonicalAlias.ContainsKey(step.Type))
+            {
+                throw new InvalidOperationException(
+                    $"Capture pipeline v2 step type '{step.Type}' is not a registered stable alias.");
+            }
+            var id = string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim();
+            if (IsRawDependency(id))
+            {
+                throw new InvalidOperationException("'$raw' is reserved and cannot be used as a processing step identifier.");
+            }
+            if (!byId.TryAdd(id, step))
+            {
+                throw new InvalidOperationException($"Duplicate capture processing step identifier '{id}'.");
+            }
+            if (step.Options is { ValueKind: JsonValueKind.Object } options &&
+                options.EnumerateObject().Any(static property => string.Equals(
+                    property.Name, "enabled", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    $"Capture pipeline v2 step '{id}' must use the top-level enabled field, not options.enabled.");
+            }
+        }
+
+        foreach (var (id, step) in byId.Where(static item => item.Value.Enabled != false))
+        {
+            if (step.DependsOn is null || step.DependsOn.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Capture pipeline v2 step '{id}' must declare an explicit dependency, including '$raw' for a raw input.");
+            }
+            foreach (var dependency in step.DependsOn)
+            {
+                if (IsRawDependency(dependency))
+                {
+                    continue;
+                }
+                if (!byId.TryGetValue(dependency, out var producer))
+                {
+                    throw new InvalidOperationException(
+                        $"Capture processing step '{id}' depends on missing step '{dependency}'.");
+                }
+                if (producer.Enabled == false)
+                {
+                    throw new InvalidOperationException(
+                        $"Capture pipeline v2 step '{id}' depends on disabled step '{dependency}'.");
+                }
+            }
         }
     }
 
@@ -169,11 +347,35 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         CameraModuleConfig config,
         FrameLayoutDescriptor? effectiveLayout,
         List<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
-        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById,
+        bool explicitV2)
     {
         var outputs = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in configured)
         {
+            if (explicitV2 && item.Step is ICaptureProcessingArtifactConsumer consumer)
+            {
+                var consumerDependencies = item.Config.DependsOn ?? [];
+                if (consumerDependencies.Any(IsRawDependency) || consumerDependencies
+                    .Where(static dependency => !IsRawDependency(dependency))
+                    .Select(dependency => nodesById[dependency].Step)
+                    .Any(dependency => dependency is not ICaptureProcessingGraphStep producer ||
+                        !consumer.AcceptedDependencyRoles.Contains(producer.OutputRole)))
+                {
+                    throw new InvalidOperationException(
+                        $"Capture processing step '{item.Step.Name}' declares an unsupported artifact dependency.");
+                }
+                continue;
+            }
+            if (explicitV2 && item.Step is ICaptureProcessingOutcomeConsumer)
+            {
+                if ((item.Config.DependsOn ?? []).Any(IsRawDependency))
+                {
+                    throw new InvalidOperationException(
+                        $"Capture processing step '{item.Step.Name}' declares an unsupported outcome dependency.");
+                }
+                continue;
+            }
             if (item.Step is not ICaptureProcessingGraphStep graphStep)
             {
                 continue;
@@ -185,7 +387,11 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     $"Capture processing graph declares duplicate output {graphStep.OutputRole}/{graphStep.OutputVariant} from recipe '{graphStep.RecipeName}'.");
             }
 
-            var dependencies = item.Config.DependsOn ?? [];
+            var declaredDependencies = item.Config.DependsOn ?? [];
+            var usesRaw = explicitV2 && declaredDependencies.Any(IsRawDependency);
+            var dependencies = explicitV2
+                ? declaredDependencies.Where(static dependency => !IsRawDependency(dependency)).ToArray()
+                : declaredDependencies.ToArray();
             var effectiveFormat = effectiveLayout?.PixelFormat ?? config.Rig.Sensor.PixelFormat;
             if (RequiresLinear16(graphStep.RecipeName) &&
                 effectiveFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
@@ -193,7 +399,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 throw new InvalidOperationException(
                     $"Capture processing step '{item.Step.Name}' requires a linear 16-bit input, but the configured readout emits {effectiveFormat}.");
             }
-            if (effectiveLayout is not null && dependencies.Count == 0 &&
+            if (effectiveLayout is not null && dependencies.Length == 0 &&
                 (!ProcessingStoredCodeIsSupported(effectiveLayout) ||
                  effectiveLayout.ContainerDepthBits > 8 && effectiveLayout.ByteOrder != FrameByteOrder.LittleEndian))
             {
@@ -204,7 +410,16 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             {
                 continue;
             }
-            if (dependencies.Count == 0)
+            if (usesRaw)
+            {
+                if (dependencies.Length != 0 || !graphStep.AcceptedInputRoles.Contains(FrameArtifactRole.Raw))
+                {
+                    throw new InvalidOperationException(
+                        $"Capture processing step '{item.Step.Name}' declares an incompatible '$raw' dependency.");
+                }
+                continue;
+            }
+            if (dependencies.Length == 0)
             {
                 if (!graphStep.AcceptedInputRoles.Contains(FrameArtifactRole.Raw))
                 {
@@ -225,9 +440,13 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 .ToArray();
             if (item.Step is ICompoundCaptureProcessingGraphStep compound)
             {
-                var roles = matching.Select(static dependency => dependency.OutputRole).ToHashSet();
-                if (matching.Length != producers.Length || matching.Length != compound.RequiredDependencyRoles.Count ||
-                    !compound.RequiredDependencyRoles.SetEquals(roles))
+                if (matching.Length != producers.Length ||
+                    matching.Length != compound.RequiredDependencyRoleGroups.Count ||
+                    compound.RequiredDependencyRoleGroups.Any(group =>
+                        matching.Count(dependency => group.Contains(dependency.OutputRole)) != 1) ||
+                    compound.RequiredDependencyRecipes.Any(requirement =>
+                        matching.Count(dependency => dependency.OutputRole == requirement.Key &&
+                            requirement.Value.Contains(dependency.RecipeName)) != 1))
                 {
                     throw new InvalidOperationException(
                         $"Capture processing step '{item.Step.Name}' does not have its required compound inputs.");
@@ -256,13 +475,21 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             _ => false
         };
 
+    private static bool IsRawDependency(string dependency)
+        => string.Equals(dependency, "$raw", StringComparison.OrdinalIgnoreCase);
+
     private static List<CaptureProcessingGraphNode> TopologicalSort(
         List<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
-        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById,
+        bool explicitV2)
     {
         var remainingDependencies = configured.ToDictionary(
             static item => item.Step.Name,
-            static item => new HashSet<string>(item.Config.DependsOn ?? [], StringComparer.OrdinalIgnoreCase),
+            item => new HashSet<string>(
+                explicitV2
+                    ? (item.Config.DependsOn ?? []).Where(static dependency => !IsRawDependency(dependency))
+                    : item.Config.DependsOn ?? [],
+                StringComparer.OrdinalIgnoreCase),
             StringComparer.OrdinalIgnoreCase);
         var ordered = new List<CaptureProcessingGraphNode>(configured.Count);
         while (ordered.Count < configured.Count)
@@ -280,7 +507,9 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             foreach (var item in ready)
             {
                 var graphStep = item.Step as ICaptureProcessingGraphStep;
-                var dependencies = item.Config.DependsOn?.ToArray() ?? [];
+                var dependencies = explicitV2
+                    ? item.Config.DependsOn?.Where(static dependency => !IsRawDependency(dependency)).ToArray() ?? []
+                    : item.Config.DependsOn?.ToArray() ?? [];
                 ordered.Add(new CaptureProcessingGraphNode(
                     item.Step.Name,
                     item.Step,
@@ -301,7 +530,11 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                             recipe = graphStep?.RecipeName,
                             outputRole = graphStep?.OutputRole,
                             outputVariant = graphStep?.OutputVariant
-                        }))));
+                        })),
+                    item.Config.Type,
+                    item.Step.Order,
+                    item.Config.Options,
+                    item.Config.DependsOn?.ToArray()));
                 remainingDependencies.Remove(item.Step.Name);
                 foreach (var unresolved in remainingDependencies.Values)
                 {
@@ -312,9 +545,13 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         return ordered;
     }
 
-    private ICaptureProcessingStep CreateStep(CaptureProcessingStepConfig config, HashSet<string> identifiers)
+    private ICaptureProcessingStep CreateStep(
+        CaptureProcessingStepConfig config,
+        HashSet<string> identifiers,
+        bool aliasesOnly,
+        out CaptureProcessingStepConfig effectiveConfig)
     {
-        var registration = ResolveRegistration(config.Type);
+        var registration = ResolveRegistration(config.Type, aliasesOnly);
 
         var id = string.IsNullOrWhiteSpace(config.Id) ? registration.Alias : config.Id.Trim();
         if (!identifiers.Add(id))
@@ -327,11 +564,108 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             registration.ImplementationType.FullName ?? registration.ImplementationType.Name,
             order);
         var options = CreateOptionsInstance(config.Options, registration.OptionsType);
+        var effectiveOptions = SerializeEffectiveOptions(options, aliasesOnly);
+        effectiveConfig = aliasesOnly
+            ? config with
+            {
+                Type = registration.Alias,
+                Id = id,
+                Order = order,
+                Options = effectiveOptions,
+                Enabled = config.Enabled != false
+            }
+            : config;
         return (ICaptureProcessingStep)ActivatorUtilities.CreateInstance(
             _serviceProvider,
             registration.ImplementationType,
             metadata,
             options);
+    }
+
+    private static JsonElement SerializeEffectiveOptions(object options, bool omitLegacyEnabled)
+    {
+        var serialized = CaptureContractJson.SerializeToElement(options);
+        if (!omitLegacyEnabled || serialized.ValueKind is not JsonValueKind.Object)
+        {
+            return serialized;
+        }
+
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            foreach (var property in serialized.EnumerateObject())
+            {
+                if (!string.Equals(property.Name, "enabled", StringComparison.OrdinalIgnoreCase))
+                {
+                    property.WriteTo(writer);
+                }
+            }
+            writer.WriteEndObject();
+        }
+        using var document = JsonDocument.Parse(stream.ToArray());
+        return document.RootElement.Clone();
+    }
+
+    private static JsonElement? RedactOptions(JsonElement? options)
+    {
+        if (options is null)
+        {
+            return null;
+        }
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            WriteElement(options.Value, writer);
+        }
+        using var document = JsonDocument.Parse(stream.ToArray());
+        return document.RootElement.Clone();
+
+        static void WriteElement(JsonElement element, Utf8JsonWriter writer)
+        {
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                writer.WriteStartObject();
+                foreach (var property in element.EnumerateObject())
+                {
+                    writer.WritePropertyName(property.Name);
+                    if (IsSensitiveName(property.Name))
+                    {
+                        writer.WriteStringValue("[redacted]");
+                    }
+                    else
+                    {
+                        WriteElement(property.Value, writer);
+                    }
+                }
+                writer.WriteEndObject();
+                return;
+            }
+            if (element.ValueKind == JsonValueKind.Array)
+            {
+                writer.WriteStartArray();
+                foreach (var item in element.EnumerateArray())
+                {
+                    WriteElement(item, writer);
+                }
+                writer.WriteEndArray();
+                return;
+            }
+            element.WriteTo(writer);
+        }
+
+        static bool IsSensitiveName(string name)
+            => name.Contains("path", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("root", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("secret", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("password", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("credential", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("connection", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("endpoint", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("url", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("uri", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("token", StringComparison.OrdinalIgnoreCase) ||
+                name.EndsWith("key", StringComparison.OrdinalIgnoreCase);
     }
 
     private void RegisterStep(CaptureProcessingStepRegistration registration)
@@ -352,16 +686,23 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         _registrationsByType[registration.ImplementationType] = registration;
     }
 
-    private CaptureProcessingStepRegistration ResolveRegistration(string typeName)
+    private CaptureProcessingStepRegistration ResolveRegistration(string typeName, bool aliasesOnly)
     {
         if (string.IsNullOrWhiteSpace(typeName))
         {
             throw new InvalidOperationException("Capture processing step type is required.");
         }
 
-        if (_registrationsByAlias.TryGetValue(typeName, out var registration))
+        var registrations = aliasesOnly ? _registrationsByCanonicalAlias : _registrationsByAlias;
+        if (registrations.TryGetValue(typeName, out var registration))
         {
             return registration;
+        }
+
+        if (aliasesOnly)
+        {
+            throw new InvalidOperationException(
+                $"Capture pipeline v2 step type '{typeName}' is not a registered stable alias.");
         }
 
         var implementationType = TypeResolution.ResolveRequired(typeName, typeof(ICaptureProcessingStep));

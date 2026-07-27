@@ -513,7 +513,7 @@ public sealed record AnnotationRecipeOptions(
 internal sealed class AnnotationRecipe : IProcessingRecipe
 {
     public ProcessingRecipeDefinition Definition { get; } = new(
-        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v2",
+        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v3",
         ProcessingOperationKind.Transform);
 
     public JsonElement NormalizeOptions(JsonElement options)
@@ -566,11 +566,11 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
             ? AnnotationRenderer.AnnotateRgb24WithSegments(
                 display.PixelData, display.Width, display.Height, request.Annotation.Objects,
                 request.Annotation.Segments, request.Annotation.Transform, annotationOptions,
-                request.Annotation.ProjectionOverlay, cancellationToken)
+                request.Annotation.ProjectionOverlay, request.Annotation.MetadataOverlay, cancellationToken)
             : AnnotationRenderer.AnnotateMono8WithSegments(
                 display.PixelData, display.Width, display.Height, request.Annotation.Objects,
                 request.Annotation.Segments, request.Annotation.Transform, annotationOptions,
-                request.Annotation.ProjectionOverlay, cancellationToken);
+                request.Annotation.ProjectionOverlay, request.Annotation.MetadataOverlay, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         var packedStride = checked(display.Width * ImageLayout.BytesPerPixel(format));
         algorithms.Add(new("annotation-renderer", AnnotationRenderer.AlgorithmVersion));

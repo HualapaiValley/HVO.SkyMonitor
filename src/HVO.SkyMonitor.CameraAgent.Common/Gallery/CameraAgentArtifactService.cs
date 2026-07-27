@@ -14,36 +14,97 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
 internal interface ICameraAgentPreviewEncoder
 {
-    byte[] Encode(FrameLayoutDescriptor layout, ReadOnlyMemory<byte> payload);
+    CameraAgentEncodedPreview Encode(
+        FrameLayoutDescriptor layout,
+        ReadOnlyMemory<byte> payload,
+        int maximumDimension);
 }
+
+internal sealed record CameraAgentEncodedPreview(byte[] Content, int Width, int Height);
 
 internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
 {
-    public byte[] Encode(FrameLayoutDescriptor layout, ReadOnlyMemory<byte> payload)
+    public CameraAgentEncodedPreview Encode(
+        FrameLayoutDescriptor layout,
+        ReadOnlyMemory<byte> payload,
+        int maximumDimension)
     {
+        var resized = Downsample(layout, payload, maximumDimension);
         var result = layout.PixelFormat switch
         {
             CameraPixelFormat.Mono8 => SkiaPreviewEncoder.EncodeMono8ToJpeg(
-                layout.Width, layout.Height, payload),
+                resized.Width, resized.Height, resized.Payload),
             CameraPixelFormat.Mono16 => SkiaPreviewEncoder.EncodeMono16ToJpeg(
-                layout.Width, layout.Height, payload),
+                resized.Width, resized.Height, resized.Payload),
             CameraPixelFormat.Rgb24 => SkiaPreviewEncoder.EncodeRgb24ToJpeg(
-                layout.Width, layout.Height, payload),
+                resized.Width, resized.Height, resized.Payload),
             CameraPixelFormat.BayerRggb16 => SkiaPreviewEncoder.EncodeBayerRggb16ToJpeg(
-                layout.Width, layout.Height, payload),
+                resized.Width, resized.Height, resized.Payload),
             _ => throw new NotSupportedException()
         };
         if (result.IsFailure)
         {
             throw new InvalidDataException("The durable preview could not be encoded.", result.Error);
         }
-        return result.Value;
+        return new(result.Value, resized.Width, resized.Height);
     }
+
+    internal static (int Width, int Height, ReadOnlyMemory<byte> Payload) Downsample(
+        FrameLayoutDescriptor layout,
+        ReadOnlyMemory<byte> payload,
+        int maximumDimension)
+    {
+        var scale = Math.Min(1d, Math.Min(
+            (double)maximumDimension / layout.Width,
+            (double)maximumDimension / layout.Height));
+        var width = Math.Max(1, (int)Math.Floor(layout.Width * scale));
+        var height = Math.Max(1, (int)Math.Floor(layout.Height * scale));
+        if (layout.PixelFormat == CameraPixelFormat.BayerRggb16 && scale < 1)
+        {
+            width -= width > 1 ? width % 2 : 0;
+            height -= height > 1 ? height % 2 : 0;
+        }
+        if (width == layout.Width && height == layout.Height)
+        {
+            return (width, height, payload);
+        }
+
+        var bytesPerPixel = ImageLayout.BytesPerPixel(layout.PixelFormat);
+        var resized = new byte[checked(width * height * bytesPerPixel)];
+        var source = payload.Span;
+        for (var y = 0; y < height; y++)
+        {
+            var sourceY = SourceCoordinate(y, height, layout.Height, layout.PixelFormat);
+            for (var x = 0; x < width; x++)
+            {
+                var sourceX = SourceCoordinate(x, width, layout.Width, layout.PixelFormat);
+                source.Slice(
+                    checked((sourceY * layout.Width + sourceX) * bytesPerPixel),
+                    bytesPerPixel).CopyTo(resized.AsSpan(
+                        checked((y * width + x) * bytesPerPixel),
+                        bytesPerPixel));
+            }
+        }
+        return (width, height, resized);
+
+        static int SourceCoordinate(int destination, int destinationLength, int sourceLength, CameraPixelFormat format)
+        {
+            var coordinate = Math.Min(sourceLength - 1, checked(destination * sourceLength / destinationLength));
+            if (format != CameraPixelFormat.BayerRggb16 || (coordinate & 1) == (destination & 1))
+            {
+                return coordinate;
+            }
+            return coordinate + 1 < sourceLength ? coordinate + 1 : coordinate - 1;
+        }
+    }
+
 }
 
 internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, IDisposable
 {
     private const long MaximumEvidenceBytes = 4L * 1024 * 1024;
+    private const int AbsoluteMaximumPreviewDimension = 2_048;
+    private const int AbsoluteMaximumPreviewEncodedBytes = 16 * 1024 * 1024;
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
@@ -129,16 +190,16 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 payload = null;
                 return new(CameraAgentArtifactReadStatus.Conflict);
             }
+            Interlocked.Increment(ref _payloadValidationReads);
+            var checksum = await PayloadChecksum.ComputeSha256Async(payload, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(checksum, validated.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                await payload.DisposeAsync().ConfigureAwait(false);
+                payload = null;
+                return new(CameraAgentArtifactReadStatus.Conflict);
+            }
             if (!cachedValidation)
             {
-                Interlocked.Increment(ref _payloadValidationReads);
-                var checksum = await PayloadChecksum.ComputeSha256Async(payload, cancellationToken).ConfigureAwait(false);
-                if (!string.Equals(checksum, validated.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
-                {
-                    await payload.DisposeAsync().ConfigureAwait(false);
-                    payload = null;
-                    return new(CameraAgentArtifactReadStatus.Conflict);
-                }
                 AddValidatedArtifact(row, validated, payloadPath, sidecarPath);
             }
             payload.Position = 0;
@@ -212,23 +273,21 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             return new(opened.Status);
         }
         CameraAgentArtifactContentStream? content = opened.Content;
-        if (content.Role is not (FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview) ||
-            !IsPreviewMediaType(content.MediaType) || content.Descriptor is null)
+        if (!IsReconstructablePreviewRole(content.Role) || content.Descriptor is null ||
+            !IsSupportedPreviewMediaType(content.MediaType, content.Descriptor.Layout.PixelFormat))
         {
             await content.DisposeAsync().ConfigureAwait(false);
             return new(CameraAgentArtifactReadStatus.UnsupportedMediaType);
         }
         var descriptor = content.Descriptor;
         var layout = descriptor.Layout;
-        if (layout.Width > _options.MaximumPreviewDimension ||
-            layout.Height > _options.MaximumPreviewDimension ||
-            content.ByteLength > _options.MaximumPreviewSourceBytes ||
+        if (content.ByteLength > _options.MaximumPreviewSourceBytes ||
             content.ByteLength > int.MaxValue)
         {
             await content.DisposeAsync().ConfigureAwait(false);
             return new(CameraAgentArtifactReadStatus.TooLarge);
         }
-        if (!HasPackedLayout(layout))
+        if (!HasPackedLayout(layout) || !HasSupportedByteOrder(layout))
         {
             await content.DisposeAsync().ConfigureAwait(false);
             return new(CameraAgentArtifactReadStatus.UnsupportedMediaType);
@@ -280,10 +339,13 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             {
                 return new(CameraAgentArtifactReadStatus.Conflict);
             }
-            byte[] encoded;
+            CameraAgentEncodedPreview encoded;
             try
             {
-                encoded = _previewEncoder.Encode(descriptor.Layout, source);
+                encoded = _previewEncoder.Encode(
+                    descriptor.Layout,
+                    source,
+                    Math.Min(_options.MaximumPreviewDimension, AbsoluteMaximumPreviewDimension));
             }
             catch (NotSupportedException)
             {
@@ -293,16 +355,18 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             {
                 return new(CameraAgentArtifactReadStatus.Conflict);
             }
-            if (encoded.Length > _options.MaximumPreviewEncodedBytes)
+            if (encoded.Content.Length > Math.Min(
+                    _options.MaximumPreviewEncodedBytes,
+                    AbsoluteMaximumPreviewEncodedBytes))
             {
                 return new(CameraAgentArtifactReadStatus.TooLarge);
             }
             var result = new CameraAgentArtifactPreviewResult(
                 CameraAgentArtifactReadStatus.Found,
-                encoded,
-                PayloadChecksum.ComputeSha256(encoded),
-                descriptor.Layout.Width,
-                descriptor.Layout.Height);
+                encoded.Content,
+                PayloadChecksum.ComputeSha256(encoded.Content),
+                encoded.Width,
+                encoded.Height);
             AddCached(cacheKey, result);
             return result;
         }
@@ -622,9 +686,25 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         }
     }
 
-    private static bool IsPreviewMediaType(string mediaType)
+    private static bool HasSupportedByteOrder(FrameLayoutDescriptor layout)
+        => layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16
+            ? layout.ByteOrder == FrameByteOrder.LittleEndian
+            : layout.ByteOrder == FrameByteOrder.NotApplicable;
+
+    private static bool IsSupportedPreviewMediaType(string mediaType, CameraPixelFormat pixelFormat)
         => string.Equals(mediaType, "application/x-hvo-packed-image", StringComparison.OrdinalIgnoreCase) ||
-           mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+            string.Equals(mediaType, pixelFormat switch
+            {
+                CameraPixelFormat.Mono8 => "application/x-skymonitor-mono8",
+                CameraPixelFormat.Mono16 => "application/x-skymonitor-mono16",
+                CameraPixelFormat.Rgb24 => "application/x-skymonitor-rgb24",
+                CameraPixelFormat.BayerRggb16 => "application/x-skymonitor-bayer-rggb16",
+                _ => string.Empty
+            }, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsReconstructablePreviewRole(FrameArtifactRole role)
+        => role is FrameArtifactRole.Raw or FrameArtifactRole.Calibrated or FrameArtifactRole.Combined or
+            FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview;
 
     private static string CreateFileName(Guid artifactId, string mediaType)
     {

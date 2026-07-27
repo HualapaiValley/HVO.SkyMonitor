@@ -191,16 +191,25 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
         }
 
         var overlay = annotation.ProjectionOverlay;
-        return overlay is null ||
+        var projectionValid = overlay is null ||
             double.IsFinite(overlay.ImageCircleRadius) && overlay.ImageCircleRadius > 0 &&
             IsFinite(overlay.Center.X, overlay.Center.Y) &&
             IsFinite(overlay.North.X, overlay.North.Y) &&
             IsFinite(overlay.East.X, overlay.East.Y) &&
             IsFinite(overlay.South.X, overlay.South.Y) &&
             IsFinite(overlay.West.X, overlay.West.Y);
+        var metadata = annotation.MetadataOverlay;
+        return projectionValid && (metadata is null ||
+            metadata.Scale is >= 1 and <= 4 && metadata.Inset is >= 0 and <= 64 &&
+            metadata.LineSpacing is >= 0 and <= 16 &&
+            ValidLines(metadata.TopLeft) && ValidLines(metadata.TopRight) &&
+            ValidLines(metadata.BottomLeft) && ValidLines(metadata.BottomRight));
 
         static bool IsFinite(double x, double y) => double.IsFinite(x) && double.IsFinite(y);
         static bool IsFiniteNonZero(double value) => double.IsFinite(value) && value != 0;
+        static bool ValidLines(IReadOnlyList<string>? lines) => lines is { Count: <= 8 } &&
+            lines.All(static line => !string.IsNullOrWhiteSpace(line) && line.Length <= 64 &&
+                !line.Any(char.IsControl));
     }
 
     private static bool AreValidAuxiliaryInputs(IReadOnlyList<ProcessingAuxiliaryInput>? inputs)

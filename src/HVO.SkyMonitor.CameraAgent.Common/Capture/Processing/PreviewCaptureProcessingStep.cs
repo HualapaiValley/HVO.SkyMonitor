@@ -6,11 +6,12 @@ using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-/// <summary>Creates a deterministic Mono8 display preview while retaining the source raw artifact.</summary>
-internal sealed class PreviewCaptureProcessingStep(
+internal abstract class PreviewCaptureProcessingStepBase<TOptions>(
     CaptureProcessingStepMetadata metadata,
-    PreviewProcessingStepOptions options,
-    CameraAgentRecipeExecutionAdapter adapter) : ConfigurableCaptureProcessingStep<PreviewProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep
+    TOptions options,
+    CameraAgentRecipeExecutionAdapter adapter,
+    IReadOnlySet<FrameArtifactRole> acceptedInputRoles) : ConfigurableCaptureProcessingStep<TOptions>(metadata, options), ICaptureProcessingGraphStep
+    where TOptions : PreviewProcessingStepOptions, new()
 {
     public bool Enabled => Options.Enabled;
 
@@ -20,8 +21,7 @@ internal sealed class PreviewCaptureProcessingStep(
 
     public string OutputVariant => Options.OutputVariant;
 
-    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
-        new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw, FrameArtifactRole.Calibrated, FrameArtifactRole.Combined };
+    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = acceptedInputRoles;
 
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
@@ -52,12 +52,13 @@ internal sealed class PreviewCaptureProcessingStep(
             Options.WhitePercentile,
             Options.AsinhStrength,
             OutputEncoding: "Packed"));
-        var outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
+        var outcome = await adapter.ExecuteAsync(context, new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.EncodedPreview,
             recipeOptions,
             CameraAgentRecipeExecutionAdapter.CreateSelector(sourceArtifact, sourceProduct, "source"),
             [input],
-            Options.OutputVariant), cancellationToken).ConfigureAwait(false);
+            Options.OutputVariant,
+            InputArtifactId: input.ArtifactId), cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
         if (outcome.Status != ProcessingOutcomeStatus.Produced)
         {
@@ -73,15 +74,58 @@ internal sealed class PreviewCaptureProcessingStep(
     }
 }
 
-public sealed class PreviewProcessingStepOptions : IValidatableObject
+/// <summary>Creates a deterministic Mono8 display preview while retaining the source artifact.</summary>
+internal sealed class PreviewCaptureProcessingStep(
+    CaptureProcessingStepMetadata metadata,
+    PreviewProcessingStepOptions options,
+    CameraAgentRecipeExecutionAdapter adapter) : PreviewCaptureProcessingStepBase<PreviewProcessingStepOptions>(
+        metadata,
+        options,
+        adapter,
+        new HashSet<FrameArtifactRole>
+        {
+            FrameArtifactRole.Raw,
+            FrameArtifactRole.Calibrated,
+            FrameArtifactRole.Combined
+        });
+
+internal sealed class CalibratedPreviewCaptureProcessingStep(
+    CaptureProcessingStepMetadata metadata,
+    CalibratedPreviewProcessingStepOptions options,
+    CameraAgentRecipeExecutionAdapter adapter) : PreviewCaptureProcessingStepBase<CalibratedPreviewProcessingStepOptions>(
+        metadata,
+        options,
+        adapter,
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Calibrated });
+
+internal sealed class CombinedPreviewCaptureProcessingStep(
+    CaptureProcessingStepMetadata metadata,
+    CombinedPreviewProcessingStepOptions options,
+    CameraAgentRecipeExecutionAdapter adapter) : PreviewCaptureProcessingStepBase<CombinedPreviewProcessingStepOptions>(
+        metadata,
+        options,
+        adapter,
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Combined });
+
+public class PreviewProcessingStepOptions : IValidatableObject
 {
+    public PreviewProcessingStepOptions()
+        : this("default")
+    {
+    }
+
+    protected PreviewProcessingStepOptions(string outputVariant)
+    {
+        OutputVariant = outputVariant;
+    }
+
     public bool Enabled { get; init; } = true;
 
     [Required(AllowEmptyStrings = false)]
     public string RecipeVersion { get; init; } = "mono16-asinh-v2";
 
     [Required(AllowEmptyStrings = false)]
-    public string OutputVariant { get; init; } = "default";
+    public string OutputVariant { get; init; }
 
     [Range(0, 0.999999)]
     public double BlackPercentile { get; init; } = 0.5;
@@ -100,5 +144,21 @@ public sealed class PreviewProcessingStepOptions : IValidatableObject
                 "BlackPercentile must be less than WhitePercentile.",
                 [nameof(BlackPercentile), nameof(WhitePercentile)]);
         }
+    }
+}
+
+public sealed class CalibratedPreviewProcessingStepOptions : PreviewProcessingStepOptions
+{
+    public CalibratedPreviewProcessingStepOptions()
+        : base("calibrated-preview")
+    {
+    }
+}
+
+public sealed class CombinedPreviewProcessingStepOptions : PreviewProcessingStepOptions
+{
+    public CombinedPreviewProcessingStepOptions()
+        : base("combined-preview")
+    {
     }
 }

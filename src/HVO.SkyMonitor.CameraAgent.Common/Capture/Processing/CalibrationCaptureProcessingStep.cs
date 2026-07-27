@@ -80,7 +80,7 @@ internal sealed class CalibrationCaptureProcessingStep(
                         cancellationToken).ConfigureAwait(false);
                     var inputs = new List<ProcessingArtifact> { input };
                     inputs.AddRange(CalibrationReferenceKinds.All.Select(kind => bundle.References[kind]));
-                    outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
+                    outcome = await adapter.ExecuteAsync(context, new ProcessingExecutionRequest(
                         BuiltInProcessingRecipes.ReferenceCalibration,
                         JsonSerializer.SerializeToElement(new ReferenceCalibrationOptions()),
                         ProcessingInputSelector.Raw("source"),
@@ -157,7 +157,7 @@ internal sealed class CalibrationCaptureProcessingStep(
                             SchemaVersion: "calibration-library-selection-v1",
                             IdentitySha256: PayloadChecksum.ComputeSha256(selectionJson),
                             Payload: selectionJson));
-                        outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
+                        outcome = await adapter.ExecuteAsync(context, new ProcessingExecutionRequest(
                             BuiltInProcessingRecipes.ReferenceCalibration,
                             JsonSerializer.SerializeToElement(new ReferenceCalibrationOptions()),
                             ProcessingInputSelector.Raw("source"),
@@ -177,12 +177,13 @@ internal sealed class CalibrationCaptureProcessingStep(
         }
         else
         {
-            outcome = await adapter.ExecuteAsync(new ProcessingExecutionRequest(
+            outcome = await adapter.ExecuteAsync(context, new ProcessingExecutionRequest(
                 BuiltInProcessingRecipes.LinearNormalization,
                 JsonSerializer.SerializeToElement(new LinearNormalizationOptions(Options.Strategy)),
                 ProcessingInputSelector.Raw("source"),
                 [input],
-                Options.OutputVariant), cancellationToken).ConfigureAwait(false);
+                Options.OutputVariant,
+                InputArtifactId: input.ArtifactId), cancellationToken).ConfigureAwait(false);
         }
         context.AddProcessingOutcome(outcome);
         if (outcome.Status == ProcessingOutcomeStatus.Produced)

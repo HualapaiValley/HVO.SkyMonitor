@@ -131,7 +131,8 @@ public sealed record ProcessingAnnotationInput(
     IReadOnlyList<ProjectedAnnotationSegment> Segments,
     PreviewTransform Transform,
     ProjectedAnnotationOverlay? ProjectionOverlay,
-    string ProvenanceSha256);
+    string ProvenanceSha256,
+    MetadataCornerOverlay? MetadataOverlay = null);
 
 public enum ProcessingAuxiliaryInputKind
 {
@@ -193,6 +194,7 @@ public static class ProcessingReasonCodes
     public const string MissingAnnotation = "processing.missing-annotation";
     public const string InvalidAnnotation = "processing.invalid-annotation";
     public const string ExecutionFailed = "processing.execution-failed";
+    public const string EnvironmentAssociationPending = "environment.association-pending";
     public const string MissingCalibrationProfile = "calibration.missing-profile";
     public const string MissingCalibrationReference = "calibration.missing-reference";
     public const string AmbiguousCalibrationReference = "calibration.ambiguous-reference";

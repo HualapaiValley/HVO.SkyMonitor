@@ -40,8 +40,18 @@ code { color: var(--hvo-info-fg); overflow-wrap: anywhere; }
 .cloud-facts .wide { grid-column: 1 / -1; }
 .unavailable-state { padding: .8rem; border-left: 3px solid var(--hvo-warning-strong); color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
 .back-action { display: flex; justify-content: flex-end; margin: 1rem 0 0; }
+.comparison-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; margin-top: .8rem; }
+.comparison-selectors label { display: grid; gap: .35rem; color: var(--hvo-muted); }
+.comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; margin-top: .8rem; }
+.comparison-grid article { min-width: 0; padding: .8rem; border: 1px solid var(--hvo-border-muted); background: rgba(2, 6, 23, .38); }
+.comparison-grid img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #020617; }
+.comparison-grid h3 { margin: .7rem 0 0; font-size: 1rem; }
+.comparison-grid h4 { margin: .8rem 0 .35rem; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; }
+.comparison-grid dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.comparison-grid dl > div { min-width: 0; padding: .45rem 0; border-top: 1px solid var(--hvo-border-muted); }
+.comparison-grid ol { margin: 0; padding-left: 1.2rem; }
 :is(a, button):focus-visible { outline: 3px solid var(--hvo-info-strong); outline-offset: 3px; }
 @media (max-width: 900px) { .projection-grid { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .detail-page { padding: 1rem .75rem 2rem; } .detail-heading { display: grid; } .detail-hero, .node-grid { grid-template-columns: 1fr; } .detail-hero figure { min-height: 14rem; } .evidence-facts, .cloud-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .detail-page { padding: 1rem .75rem 2rem; } .detail-heading { display: grid; } .detail-hero, .node-grid, .comparison-grid, .comparison-selectors { grid-template-columns: 1fr; } .detail-hero figure { min-height: 14rem; } .evidence-facts, .cloud-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 440px) { .artifact-list dl, .recipe dl, .node-grid dl, .evidence-facts, .cloud-facts { grid-template-columns: 1fr; } .artifact-list .wide, .recipe .wide, .cloud-facts .wide { grid-column: auto; } .artifact-list article > header { display: grid; } }
 @media (max-height: 500px) and (orientation: landscape) { .detail-hero img { max-height: 64vh; } .detail-hero figure { min-height: 12rem; } }

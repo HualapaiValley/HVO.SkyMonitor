@@ -68,7 +68,7 @@ internal sealed class RollingCombinationCaptureProcessingStep(
             .TakeLast(Options.WindowSize)
             .ToList();
 
-        var outcome = await adapter.ExecuteAsync(CreateRequest(candidateWindow), cancellationToken).ConfigureAwait(false);
+        var outcome = await adapter.ExecuteAsync(context, CreateRequest(candidateWindow), cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
         if (outcome.Status != ProcessingOutcomeStatus.Produced)
         {

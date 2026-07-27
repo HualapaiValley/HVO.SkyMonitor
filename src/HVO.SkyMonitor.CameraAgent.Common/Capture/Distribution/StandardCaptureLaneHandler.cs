@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Logging;
 using System.Security.Cryptography;
@@ -69,8 +70,7 @@ internal sealed class StandardCaptureLaneHandler(
         await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var pipelineKey = Convert.ToHexString(SHA256.HashData(
-                JsonSerializer.SerializeToUtf8Bytes(item.Config.ResolveProcessingSteps())));
+            var pipelineKey = ComputePipelineKey(item.Config);
             CaptureProcessingGraph graph;
             lock (_pipelineGate)
             {
@@ -104,6 +104,17 @@ internal sealed class StandardCaptureLaneHandler(
         {
             _executionGate.Release();
         }
+    }
+
+    internal static string ComputePipelineKey(CameraModuleConfig configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        return Convert.ToHexString(SHA256.HashData(
+            JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                configuration.ProcessingSteps,
+                configuration.Pipeline
+            })));
     }
 
     public void Dispose()

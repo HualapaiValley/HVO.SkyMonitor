@@ -1169,7 +1169,7 @@ public sealed class ArtifactIngestTests
         outputs[executions[BuiltInProcessingRecipes.EncodedPreview].ArtifactId!.Value].Recipe!.ImplementationVersion
             .Should().Be("encoded-preview-v1");
         outputs[executions[BuiltInProcessingRecipes.Annotation].ArtifactId!.Value].Recipe!.ImplementationVersion
-            .Should().Be("projected-annotation-v2");
+            .Should().Be("projected-annotation-v3");
     }
 
     [TestMethod]

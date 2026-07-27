@@ -88,7 +88,7 @@ public sealed class SqliteCaptureScheduleStore(
             if (snapshot is null)
             {
                 var initialSchedule = fileConfiguration.Schedule ?? CreateLegacySchedule(fileConfiguration.Rig);
-                var initial = LocalCaptureProfileDefinition.Create(fileConfiguration, initialSchedule);
+                var initial = LocalCaptureProfileDefinition.CreateForConfiguration(fileConfiguration, initialSchedule);
                 var source = fileConfiguration.Schedule is null ? "legacy-bootstrap" : "file-bootstrap";
                 var revision = await InsertRevisionAsync(
                     connection, transaction, initial, source, "system", "initial configuration", cancellationToken)
@@ -112,7 +112,7 @@ public sealed class SqliteCaptureScheduleStore(
             else
             {
                 var fileSchedule = fileConfiguration.Schedule ?? CreateLegacySchedule(fileConfiguration.Rig);
-                var fileProfile = LocalCaptureProfileDefinition.Create(fileConfiguration, fileSchedule);
+                var fileProfile = LocalCaptureProfileDefinition.CreateForConfiguration(fileConfiguration, fileSchedule);
                 var fileSha256 = LocalCaptureProfileContract.ComputeSha256(fileProfile);
                 if (!string.Equals(fileSha256, snapshot.ActiveRevision.ProfileSha256, StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(fileSha256, snapshot.PendingRevision?.ProfileSha256, StringComparison.OrdinalIgnoreCase))
@@ -165,6 +165,40 @@ public sealed class SqliteCaptureScheduleStore(
         string actor,
         string? reason,
         CancellationToken cancellationToken)
+        => await StageWithCurrentCoreAsync(
+            profile, profile, basisRevisionId: null, idempotencyKey, expectedVersion, actor, reason, cancellationToken)
+            .ConfigureAwait(false);
+
+    internal async Task<CaptureScheduleMutationResult> StageWithCurrentFromBasisAsync(
+        LocalCaptureProfileDefinition profile,
+        string basisRevisionId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(basisRevisionId);
+        return await StageWithCurrentCoreAsync(
+            profile,
+            new StageFromBasisCommand(profile, basisRevisionId),
+            basisRevisionId,
+            idempotencyKey,
+            expectedVersion,
+            actor,
+            reason,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<CaptureScheduleMutationResult> StageWithCurrentCoreAsync<TCommand>(
+        LocalCaptureProfileDefinition profile,
+        TCommand command,
+        string? basisRevisionId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
     {
         ValidateCommand(idempotencyKey, expectedVersion, actor, reason);
         var validation = LocalCaptureProfileContract.Validate(profile);
@@ -172,9 +206,15 @@ public sealed class SqliteCaptureScheduleStore(
         {
             throw new ArgumentException($"The local capture profile is invalid ({validation.FieldPath}).", nameof(profile));
         }
-        return await MutateWithCurrentAsync(idempotencyKey, "stage", profile, expectedVersion, actor, reason,
+        return await MutateWithCurrentAsync(idempotencyKey, "stage", command, expectedVersion, actor, reason,
             async (connection, transaction, snapshot, now, token) =>
             {
+                if (basisRevisionId is not null &&
+                    !string.Equals(snapshot.ActiveRevision.RevisionId, basisRevisionId, StringComparison.Ordinal) &&
+                    !string.Equals(snapshot.PendingRevision?.RevisionId, basisRevisionId, StringComparison.Ordinal))
+                {
+                    throw new CaptureScheduleStoreConflictException("The profile basis revision is stale.");
+                }
                 var sha256 = LocalCaptureProfileContract.ComputeSha256(profile);
                 var pending = await FindRevisionBySha256Async(connection, transaction, sha256, token)
                     .ConfigureAwait(false) ?? await InsertRevisionAsync(
@@ -1284,6 +1324,10 @@ public sealed class SqliteCaptureScheduleStore(
             throw new ArgumentException("The reason is too long.", nameof(reason));
         }
     }
+
+    private sealed record StageFromBasisCommand(
+        LocalCaptureProfileDefinition Profile,
+        string BasisRevisionId);
 
     private DateTimeOffset Now()
         => DateTimeOffset.FromUnixTimeMilliseconds(_timeProvider.GetUtcNow().ToUnixTimeMilliseconds());

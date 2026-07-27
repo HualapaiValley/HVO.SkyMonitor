@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -32,7 +33,8 @@ public sealed class RetentionBackgroundService(
     StoragePressureState pressureState,
     ILogger<RetentionBackgroundService> logger,
     IRawIngressRetentionHolds? rawIngressHolds = null,
-    IProcessingRetentionHolds? processingHolds = null) : BackgroundService
+    IProcessingRetentionHolds? processingHolds = null,
+    CaptureScheduleRuntimeCoordinator? scheduleCoordinator = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly CameraAgentHostOptions _hostOptions = hostOptions.Value;
@@ -43,6 +45,9 @@ public sealed class RetentionBackgroundService(
     private readonly ILogger<RetentionBackgroundService> _logger = logger;
     private readonly IRawIngressRetentionHolds? _rawIngressHolds = rawIngressHolds;
     private readonly IProcessingRetentionHolds? _processingHolds = processingHolds;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
+        Justification = "The dependency injection container owns the schedule coordinator.")]
+    private readonly CaptureScheduleRuntimeCoordinator? _scheduleCoordinator = scheduleCoordinator;
     private readonly IRawIngressPressureReporter? _rawIngressPressureReporter = rawIngressHolds as IRawIngressPressureReporter;
     private static readonly JsonSerializerOptions StepSerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -65,7 +70,9 @@ public sealed class RetentionBackgroundService(
         {
             try
             {
-                await ApplyRetentionAsync(config, stoppingToken).ConfigureAwait(false);
+                await ApplyRetentionAsync(
+                    _scheduleCoordinator?.Snapshot?.Configuration ?? config,
+                    stoppingToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -183,14 +190,16 @@ public sealed class RetentionBackgroundService(
         var plans = new List<StorageRetentionPlan>();
         foreach (var step in config.ResolveProcessingSteps())
         {
-            if (!IsFileStorageStep(step.Type) || step.Options is null)
+            if (!IsFileStorageStep(step.Type) || step.Enabled == false)
             {
                 continue;
             }
 
             try
             {
-                var options = JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(step.Options.Value.GetRawText(), StepSerializerOptions);
+                var options = step.Options is { } configuredOptions
+                    ? JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(configuredOptions.GetRawText(), StepSerializerOptions)
+                    : new NoOpFileStorageProcessingStepOptions();
                 if (options is null)
                 {
                     continue;
@@ -239,7 +248,8 @@ public sealed class RetentionBackgroundService(
         }
 
         var implementationName = typeName.Split(',', 2)[0].Trim();
-        return implementationName.Equals(FileStorageStepName, StringComparison.OrdinalIgnoreCase)
+        return implementationName.Equals(NoOpFileStorageProcessingStep.StableAlias, StringComparison.OrdinalIgnoreCase)
+            || implementationName.Equals(FileStorageStepName, StringComparison.OrdinalIgnoreCase)
             || (FileStorageStepFullName is not null && implementationName.Equals(FileStorageStepFullName, StringComparison.OrdinalIgnoreCase))
             || implementationName.EndsWith(FileStorageStepName, StringComparison.OrdinalIgnoreCase);
     }

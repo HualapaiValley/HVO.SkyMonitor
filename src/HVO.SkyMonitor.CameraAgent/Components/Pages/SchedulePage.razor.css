@@ -23,6 +23,18 @@
 .decision-chip--open { color: #8fd4be; border-color: #427765; }.decision-chip--closed { color: #ef947f; border-color: #814b43; }
 .confirmation-panel { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.2rem; border: 1px solid #e9c986; background: #292617; }
 .confirmation-panel h2 { margin: 0; }.confirmation-panel div:last-child { display: flex; gap: .6rem; }
+.pipeline-console { padding: 1.1rem; border: 1px solid #3c5265; background: linear-gradient(145deg, #13232b, #0c151d); }
+.pipeline-console > header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; }
+.pipeline-console h2,.pipeline-console h3 { margin: .2rem 0 .65rem; font-family: Georgia, serif; }
+.pipeline-console header dl { display: flex; gap: 1rem; margin: 0; }
+.pipeline-console header dl div { display: grid; gap: .15rem; }
+.pipeline-console dt { color: #8fa0b3; font-size: .68rem; text-transform: uppercase; }.pipeline-console dd { margin: 0; }
+.pipeline-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; margin-top: 1rem; }
+.pipeline-columns article { min-width: 0; padding: .9rem; border: 1px solid #354253; background: #09101799; }
+.pipeline-columns article > p,.pipeline-unavailable { color: #aeb9c8; }
+.pipeline-columns ol { display: grid; gap: .45rem; margin: 0; padding: 0; list-style: none; }
+.pipeline-columns li { display: flex; justify-content: space-between; gap: .7rem; align-items: center; min-width: 0; padding: .6rem; background: #111c25; }
+.pipeline-columns li div { display: grid; min-width: 0; gap: .15rem; }.pipeline-columns span,.pipeline-columns small { color: #8fa0b3; overflow-wrap: anywhere; }
 .editor-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(19rem, .7fr); gap: 1rem; }
 .editor-card header { display: flex; justify-content: space-between; }.editor-card textarea { width: 100%; min-height: 28rem; resize: vertical; border: 1px solid #415268; background: #091017; color: #dce6f2; padding: 1rem; font: .78rem/1.55 ui-monospace, monospace; }
 .editor-actions { display: flex; gap: .65rem; margin-top: .8rem; }
@@ -30,4 +42,4 @@
 .preview-card li { display: grid; grid-template-columns: 1fr 1fr; gap: .2rem .5rem; padding: .55rem; background: #0b131b; }.preview-card time { color: #9baabd; font-size: .75rem; }
 .lower-grid { grid-template-columns: .8fr 1fr 1.2fr; }.schedule-card label { display: grid; gap: .3rem; margin: .65rem 0; color: #aeb9c8; }.schedule-card .check { display: flex; grid-template-columns: auto 1fr; align-items: center; }
 .override-list,.history-card ol { list-style: none; margin: 0; padding: 0; }.override-list li,.history-card li { display: flex; justify-content: space-between; gap: .6rem; align-items: center; padding: .65rem 0; border-top: 1px solid #354253; }.override-list li div,.history-card li div { display: grid; gap: .15rem; }.override-list span,.history-card span { color: #8fa0b3; font-size: .76rem; }
-@media (max-width: 900px) { .schedule-grid,.editor-layout,.lower-grid { grid-template-columns: 1fr; }.schedule-header,.confirmation-panel { align-items: stretch; flex-direction: column; }.editor-card textarea { min-height: 20rem; } }
+@media (max-width: 900px) { .schedule-grid,.editor-layout,.lower-grid,.pipeline-columns { grid-template-columns: 1fr; }.schedule-header,.confirmation-panel,.pipeline-console > header { align-items: stretch; flex-direction: column; }.pipeline-console header dl { display: grid; grid-template-columns: 1fr 1fr; }.editor-card textarea { min-height: 20rem; } }
