@@ -77,6 +77,7 @@ done
 # Fix .dotnet directory ownership
 echo "Fixing .dotnet directory ownership..."
 sudo chown -R vscode:vscode /home/vscode/.dotnet || true
+sudo mkdir -p /home/vscode/.cache
 sudo chown -R vscode:vscode /home/vscode/.cache
 sudo chown -R vscode:vscode /home/vscode/.config/opencode /home/vscode/.local/share/opencode
 sudo chown -R vscode:vscode /tmp/opencode /var/lib/hvo-agent-state

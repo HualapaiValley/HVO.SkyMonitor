@@ -135,6 +135,8 @@ test "$(stat -c %a "$TEMP_DIR/custom-config/opencode.jsonc")" = 600
 
 grep -Fq 'persistent in-container server' "$REPO_ROOT/README.md"
 grep -Fq 'publishes it to every Docker-host interface' "$REPO_ROOT/README.md"
+grep -Fq 'The HTTP endpoint does not use TLS.' "$REPO_ROOT/README.md"
+grep -Fq 'Host firewall rules must restrict port `4097`' "$REPO_ROOT/README.md"
 grep -Fq 'scripts/opencode:remote-connect --continue' "$REPO_ROOT/README.md"
 grep -Fq '`opencode-worktrees` is mounted at `/tmp/opencode`' "$REPO_ROOT/README.md"
 grep -Fq 'Normal `/tmp` remains disposable' "$REPO_ROOT/README.md"
@@ -150,22 +152,30 @@ if env \
 fi
 grep -Fq 'is not a dedicated persistent mount' "$TEMP_DIR/persistence-failure.out"
 
-mkdir -p "$TEMP_DIR/legacy-worktrees/agent-one" "$TEMP_DIR/persistent-worktrees"
-printf 'uncommitted worktree data\n' > "$TEMP_DIR/legacy-worktrees/agent-one/state.txt"
-env \
-    HVO_AGENT_WORKTREE_ROOT="$TEMP_DIR/legacy-worktrees" \
-    HVO_AGENT_WORKTREE_SOURCE="$TEMP_DIR/persistent-worktrees" \
-    OPENCODE_TMUX_SESSION="hvo-opencode-migration-test-$$" \
-    bash "$PREPARE_REBUILD_SCRIPT" > "$TEMP_DIR/prepare-rebuild.out"
-cmp "$TEMP_DIR/legacy-worktrees/agent-one/state.txt" \
-    "$TEMP_DIR/persistent-worktrees/agent-one/state.txt"
-grep -Fq 'Do not resume agents; rebuild the devcontainer now.' "$TEMP_DIR/prepare-rebuild.out"
-env \
-    HVO_AGENT_WORKTREE_ROOT="$TEMP_DIR/legacy-worktrees" \
-    HVO_AGENT_WORKTREE_SOURCE="$TEMP_DIR/persistent-worktrees" \
-    OPENCODE_TMUX_SESSION="hvo-opencode-migration-test-$$" \
-    bash "$PREPARE_REBUILD_SCRIPT" > "$TEMP_DIR/prepare-rebuild-again.out"
-grep -Fq 'already match the persistent source' "$TEMP_DIR/prepare-rebuild-again.out"
+if [[ -f /.dockerenv ]]; then
+    mkdir -p "$TEMP_DIR/legacy-worktrees/agent-one" "$TEMP_DIR/persistent-worktrees"
+    printf 'uncommitted worktree data\n' > "$TEMP_DIR/legacy-worktrees/agent-one/state.txt"
+    env \
+        HVO_AGENT_WORKTREE_ROOT="$TEMP_DIR/legacy-worktrees" \
+        HVO_AGENT_WORKTREE_SOURCE="$TEMP_DIR/persistent-worktrees" \
+        OPENCODE_TMUX_SESSION="hvo-opencode-migration-test-$$" \
+        bash "$PREPARE_REBUILD_SCRIPT" > "$TEMP_DIR/prepare-rebuild.out"
+    cmp "$TEMP_DIR/legacy-worktrees/agent-one/state.txt" \
+        "$TEMP_DIR/persistent-worktrees/agent-one/state.txt"
+    grep -Fq 'Do not resume agents; rebuild the devcontainer now.' "$TEMP_DIR/prepare-rebuild.out"
+    env \
+        HVO_AGENT_WORKTREE_ROOT="$TEMP_DIR/legacy-worktrees" \
+        HVO_AGENT_WORKTREE_SOURCE="$TEMP_DIR/persistent-worktrees" \
+        OPENCODE_TMUX_SESSION="hvo-opencode-migration-test-$$" \
+        bash "$PREPARE_REBUILD_SCRIPT" > "$TEMP_DIR/prepare-rebuild-again.out"
+    grep -Fq 'already match the persistent source' "$TEMP_DIR/prepare-rebuild-again.out"
+else
+    if bash "$PREPARE_REBUILD_SCRIPT" > "$TEMP_DIR/prepare-rebuild.out" 2>&1; then
+        echo "OpenCode rebuild migration unexpectedly ran outside the devcontainer." >&2
+        exit 1
+    fi
+    grep -Fq 'Run this script inside the devcontainer' "$TEMP_DIR/prepare-rebuild.out"
+fi
 
 if [[ ! -f /.dockerenv ]]; then
     for lifecycle_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"; do
