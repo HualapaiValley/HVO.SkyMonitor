@@ -56,7 +56,7 @@ is_reduced_path() {
     tests/fixtures/catalog/SOURCE.md | tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md)
       return 0
       ;;
-    scripts/opencode:connect | scripts/opencode:disable | scripts/opencode:enable | scripts/test:opencode)
+    scripts/opencode:connect | scripts/opencode:disable | scripts/opencode:enable | scripts/opencode:prepare-rebuild | scripts/opencode:remote-connect | scripts/test:opencode)
       return 0
       ;;
   esac

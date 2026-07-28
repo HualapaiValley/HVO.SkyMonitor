@@ -54,6 +54,18 @@
 
 ## Roadmap Execution
 
+### Rebuild-Safe Agent State
+
+- Create agent Git worktrees only beneath `$HVO_AGENT_WORKTREE_ROOT`, which is
+  mounted at `/tmp/opencode` from ignored host state. Do not create authoritative
+  worktrees in any other `/tmp` location.
+- Store resumable non-Git scratch state beneath `$HVO_AGENT_STATE_ROOT`. Normal
+  `/tmp` remains intentionally ephemeral for sockets, locks, caches, and files
+  that are safe to discard.
+- OpenCode configuration, credentials, sessions, worktrees, and resumable agent
+  state are host bind mounts. The devcontainer must fail its persistence check
+  rather than start OpenCode against container-layer fallback directories.
+
 - Virtual-first completion is coordinated by GitHub epic #89 and the `Virtual-First Platform Completion` milestone.
 - Before implementing a roadmap issue, follow `docs/planning/agent-execution.md` and the relevant section of `docs/planning/agent-prompts.md`.
 - Use `docs/planning/requirements-crosswalk.md` for the owning detailed specification and `docs/planning/performance-validation.md` for canonical workloads and evidence.

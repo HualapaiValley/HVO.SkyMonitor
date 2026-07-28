@@ -11,7 +11,10 @@ readonly REPO_ROOT
 readonly ENABLE_SCRIPT="$REPO_ROOT/scripts/opencode:enable"
 readonly DISABLE_SCRIPT="$REPO_ROOT/scripts/opencode:disable"
 readonly CONNECT_SCRIPT="$REPO_ROOT/scripts/opencode:connect"
+readonly PREPARE_REBUILD_SCRIPT="$REPO_ROOT/scripts/opencode:prepare-rebuild"
+readonly REMOTE_CONNECT_SCRIPT="$REPO_ROOT/scripts/opencode:remote-connect"
 readonly CONFIGURE_SCRIPT="$REPO_ROOT/.devcontainer/configure-opencode.sh"
+readonly PERSISTENCE_SCRIPT="$REPO_ROOT/.devcontainer/verify-persistent-agent-state.sh"
 readonly HOST_CONFIG_FILE="$REPO_ROOT/.devcontainer/opencode-host.conf"
 readonly DEVCONTAINER_FILE="$REPO_ROOT/.devcontainer/devcontainer.json"
 TEMP_DIR="$(mktemp -d -t hvo-opencode-test.XXXXXX)"
@@ -32,6 +35,8 @@ bash -n \
     "$ENABLE_SCRIPT" \
     "$DISABLE_SCRIPT" \
     "$CONNECT_SCRIPT" \
+    "$PREPARE_REBUILD_SCRIPT" \
+    "$REMOTE_CONNECT_SCRIPT" \
     "$REPO_ROOT/scripts/test:opencode"
 
 for lifecycle_script in "$ENABLE_SCRIPT" "$DISABLE_SCRIPT"; do
@@ -55,21 +60,38 @@ grep -Fq 'Cleared exited OpenCode tmux session' "$DISABLE_SCRIPT"
 grep -Fq 'leaving it running.' "$DISABLE_SCRIPT"
 grep -Fq 'if [[ -f /.dockerenv ]]' "$CONNECT_SCRIPT"
 grep -Fq 'OpenCode port must be an integer from 1 through 65535.' "$CONNECT_SCRIPT"
-grep -Fq 'exec "$OPENCODE_BINARY" attach "http://127.0.0.1:${PORT}" "$@"' "$CONNECT_SCRIPT"
+grep -Fq 'exec "$OPENCODE_BINARY" attach --username opencode "http://127.0.0.1:${PORT}" "$@"' "$CONNECT_SCRIPT"
+grep -Fq 'Migrate legacy ephemeral worktrees' "$PREPARE_REBUILD_SCRIPT"
+grep -Fq 'cp -a "$WORKTREE_ROOT/." "$PERSISTENT_SOURCE/"' "$PREPARE_REBUILD_SCRIPT"
+grep -Fq 'Stop OpenCode from a separate terminal' "$PREPARE_REBUILD_SCRIPT"
+grep -Fq 'Run this script on the Docker host, not inside the devcontainer.' "$REMOTE_CONNECT_SCRIPT"
+grep -Fq 'exec "$OPENCODE_BINARY" attach --username opencode "$server_url" "$@"' "$REMOTE_CONNECT_SCRIPT"
 grep -Fq 'scripts/opencode:enable' "$REPO_ROOT/.devcontainer/post-start.sh"
+grep -Fq 'bash "$PERSISTENCE_SCRIPT"' "$ENABLE_SCRIPT"
+grep -Fq 'verify-persistent-agent-state.sh' "$REPO_ROOT/.devcontainer/post-create.sh"
+grep -Fq 'verify-persistent-agent-state.sh' "$REPO_ROOT/.devcontainer/post-start.sh"
+grep -Fq 'findmnt --noheadings --raw --output TARGET --target "$path"' "$PERSISTENCE_SCRIPT"
+grep -Fq 'filesystem_type" == "tmpfs"' "$PERSISTENCE_SCRIPT"
+grep -Fq 'expected_source_suffix' "$PERSISTENCE_SCRIPT"
+grep -Fq 'OpenCode configuration root' "$PERSISTENCE_SCRIPT"
+grep -Fq 'OpenCode data root' "$PERSISTENCE_SCRIPT"
 
 # shellcheck source=.devcontainer/opencode-host.conf
 source "$HOST_CONFIG_FILE"
 [[ "$OPENCODE_TMUX_SESSION" =~ ^[A-Za-z0-9_.-]+$ ]]
 test "$OPENCODE_CONTAINER_PORT" = 4096
 test "$OPENCODE_HOST_PORT" = 4097
-grep -Fq "\"127.0.0.1:${OPENCODE_HOST_PORT}:${OPENCODE_CONTAINER_PORT}\"" "$DEVCONTAINER_FILE"
-if grep -Fq "\"0.0.0.0:${OPENCODE_HOST_PORT}:${OPENCODE_CONTAINER_PORT}\"" "$DEVCONTAINER_FILE"; then
-    echo "OpenCode must not be published on every Docker-host interface." >&2
-    exit 1
-fi
-grep -Fq '"label": "OpenCode server (SSH tunnel only)"' "$DEVCONTAINER_FILE"
+grep -Fq "\"0.0.0.0:${OPENCODE_HOST_PORT}:${OPENCODE_CONTAINER_PORT}\"" "$DEVCONTAINER_FILE"
+grep -Fq '"label": "OpenCode server (Docker host port 4097)"' "$DEVCONTAINER_FILE"
 grep -Fq '"onAutoForward": "ignore"' "$DEVCONTAINER_FILE"
+grep -Fq '"HVO_AGENT_WORKTREE_ROOT": "/tmp/opencode"' "$DEVCONTAINER_FILE"
+grep -Fq '"HVO_AGENT_STATE_ROOT": "/var/lib/hvo-agent-state"' "$DEVCONTAINER_FILE"
+grep -Fq '"source": "${localWorkspaceFolder}/.devcontainer/state/opencode-worktrees"' "$DEVCONTAINER_FILE"
+grep -Fq '"target": "/tmp/opencode"' "$DEVCONTAINER_FILE"
+grep -Fq '"source": "${localWorkspaceFolder}/.devcontainer/state/agent-scratch"' "$DEVCONTAINER_FILE"
+grep -Fq '"target": "/var/lib/hvo-agent-state"' "$DEVCONTAINER_FILE"
+grep -Fq '"$state_root/opencode-worktrees"' "$REPO_ROOT/.devcontainer/initialize.sh"
+grep -Fq '"$state_root/agent-scratch"' "$REPO_ROOT/.devcontainer/initialize.sh"
 if grep -Fq 'opencode-bin' "$DEVCONTAINER_FILE"; then
     echo "The root-owned OpenCode executable must not be replaced by writable persisted state." >&2
     exit 1
@@ -112,12 +134,47 @@ grep -Fqx '{"permission":"ask"}' "$TEMP_DIR/custom-config/opencode.jsonc"
 test "$(stat -c %a "$TEMP_DIR/custom-config/opencode.jsonc")" = 600
 
 grep -Fq 'persistent in-container server' "$REPO_ROOT/README.md"
-grep -Fq '127.0.0.1:4097' "$REPO_ROOT/README.md"
-grep -Fq 'ssh -o ExitOnForwardFailure=yes -N -L 127.0.0.1:4097:127.0.0.1:4097' \
-    "$REPO_ROOT/README.md"
-if grep -Fq 'publishes it to every Docker-host interface' "$REPO_ROOT/README.md"; then
-    echo "README must not recommend plaintext all-interface publication." >&2
+grep -Fq 'publishes it to every Docker-host interface' "$REPO_ROOT/README.md"
+grep -Fq 'The HTTP endpoint does not use TLS.' "$REPO_ROOT/README.md"
+grep -Fq 'Host firewall rules must restrict port `4097`' "$REPO_ROOT/README.md"
+grep -Fq 'scripts/opencode:remote-connect --continue' "$REPO_ROOT/README.md"
+grep -Fq '`opencode-worktrees` is mounted at `/tmp/opencode`' "$REPO_ROOT/README.md"
+grep -Fq 'Normal `/tmp` remains disposable' "$REPO_ROOT/README.md"
+grep -Fq 'scripts/opencode:prepare-rebuild' "$REPO_ROOT/README.md"
+
+mkdir -p "$TEMP_DIR/ephemeral-worktrees" "$TEMP_DIR/ephemeral-state"
+if env \
+    HVO_AGENT_WORKTREE_ROOT="$TEMP_DIR/ephemeral-worktrees" \
+    HVO_AGENT_STATE_ROOT="$TEMP_DIR/ephemeral-state" \
+    bash "$PERSISTENCE_SCRIPT" > "$TEMP_DIR/persistence-failure.out" 2>&1; then
+    echo "Persistence verification accepted directories without dedicated mounts." >&2
     exit 1
+fi
+grep -Fq 'is not a dedicated persistent mount' "$TEMP_DIR/persistence-failure.out"
+
+if [[ -f /.dockerenv ]]; then
+    mkdir -p "$TEMP_DIR/legacy-worktrees/agent-one" "$TEMP_DIR/persistent-worktrees"
+    printf 'uncommitted worktree data\n' > "$TEMP_DIR/legacy-worktrees/agent-one/state.txt"
+    env \
+        HVO_AGENT_WORKTREE_ROOT="$TEMP_DIR/legacy-worktrees" \
+        HVO_AGENT_WORKTREE_SOURCE="$TEMP_DIR/persistent-worktrees" \
+        OPENCODE_TMUX_SESSION="hvo-opencode-migration-test-$$" \
+        bash "$PREPARE_REBUILD_SCRIPT" > "$TEMP_DIR/prepare-rebuild.out"
+    cmp "$TEMP_DIR/legacy-worktrees/agent-one/state.txt" \
+        "$TEMP_DIR/persistent-worktrees/agent-one/state.txt"
+    grep -Fq 'Do not resume agents; rebuild the devcontainer now.' "$TEMP_DIR/prepare-rebuild.out"
+    env \
+        HVO_AGENT_WORKTREE_ROOT="$TEMP_DIR/legacy-worktrees" \
+        HVO_AGENT_WORKTREE_SOURCE="$TEMP_DIR/persistent-worktrees" \
+        OPENCODE_TMUX_SESSION="hvo-opencode-migration-test-$$" \
+        bash "$PREPARE_REBUILD_SCRIPT" > "$TEMP_DIR/prepare-rebuild-again.out"
+    grep -Fq 'already match the persistent source' "$TEMP_DIR/prepare-rebuild-again.out"
+else
+    if bash "$PREPARE_REBUILD_SCRIPT" > "$TEMP_DIR/prepare-rebuild.out" 2>&1; then
+        echo "OpenCode rebuild migration unexpectedly ran outside the devcontainer." >&2
+        exit 1
+    fi
+    grep -Fq 'Run this script inside the devcontainer' "$TEMP_DIR/prepare-rebuild.out"
 fi
 
 if [[ ! -f /.dockerenv ]]; then
@@ -138,6 +195,7 @@ if [[ -f /.dockerenv ]] \
     && command -v ss >/dev/null 2>&1 \
     && command -v tmux >/dev/null 2>&1; then
     LIFECYCLE_SESSION="hvo-opencode-test-$$"
+    export HVO_OPENCODE_PERSISTENCE_VERIFIER=/bin/true
     lifecycle_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
     lifecycle_data="$TEMP_DIR/lifecycle-data"
     mkdir -p "$lifecycle_data"

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Migrate legacy ephemeral worktrees before enabling the persistent bind mount.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+readonly REPO_ROOT
+GIT_COMMON_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+readonly GIT_COMMON_DIR
+if [[ "$(basename "$GIT_COMMON_DIR")" != ".git" ]]; then
+    echo "OpenCode rebuild migration requires a non-bare primary checkout." >&2
+    exit 1
+fi
+CONTROL_REPO_ROOT="$(dirname "$GIT_COMMON_DIR")"
+readonly CONTROL_REPO_ROOT
+# shellcheck source=.devcontainer/opencode-host.conf disable=SC1091
+source "$CONTROL_REPO_ROOT/.devcontainer/opencode-host.conf"
+readonly WORKTREE_ROOT="${HVO_AGENT_WORKTREE_ROOT:-/tmp/opencode}"
+readonly PERSISTENT_SOURCE="${HVO_AGENT_WORKTREE_SOURCE:-$CONTROL_REPO_ROOT/.devcontainer/state/opencode-worktrees}"
+
+if [[ ! -f /.dockerenv ]]; then
+    echo "Run this script inside the devcontainer before its first persistence-enabled rebuild." >&2
+    exit 1
+fi
+
+mkdir -p "$PERSISTENT_SOURCE"
+chmod 700 "$PERSISTENT_SOURCE"
+mount_target="$(findmnt --noheadings --raw --output TARGET --target "$WORKTREE_ROOT" 2>/dev/null || true)"
+if [[ "$mount_target" == "$WORKTREE_ROOT" ]]; then
+    mount_source="$(findmnt --noheadings --raw --output SOURCE --target "$WORKTREE_ROOT")"
+    filesystem_type="$(findmnt --noheadings --raw --output FSTYPE --target "$WORKTREE_ROOT")"
+    if [[ "$filesystem_type" == "tmpfs" || "$filesystem_type" == "overlay" ||
+          "$mount_source" != *"/.devcontainer/state/opencode-worktrees"* ]]; then
+        echo "Agent worktree mount is not the expected persistent bind: source=$mount_source type=$filesystem_type" >&2
+        exit 1
+    fi
+    echo "Agent worktrees are already on the persistent mount at $WORKTREE_ROOT."
+    exit 0
+fi
+if [[ ! -d "$WORKTREE_ROOT" ]]; then
+    echo "No legacy worktree directory exists at $WORKTREE_ROOT; nothing to migrate."
+    exit 0
+fi
+if tmux has-session -t "$OPENCODE_TMUX_SESSION" 2>/dev/null; then
+    echo "Stop OpenCode from a separate terminal with scripts/opencode:disable before migration." >&2
+    exit 1
+fi
+if [[ -n "$(ls -A "$PERSISTENT_SOURCE")" ]]; then
+    if diff --brief --recursive "$WORKTREE_ROOT" "$PERSISTENT_SOURCE" >/dev/null; then
+        echo "Legacy worktrees already match the persistent source. Rebuild the devcontainer now."
+        exit 0
+    fi
+    echo "Persistent worktree source differs from legacy state; refusing to merge: $PERSISTENT_SOURCE" >&2
+    exit 1
+fi
+
+cp -a "$WORKTREE_ROOT/." "$PERSISTENT_SOURCE/"
+if ! diff --brief --recursive "$WORKTREE_ROOT" "$PERSISTENT_SOURCE" >/dev/null; then
+    echo "Legacy worktree migration verification failed." >&2
+    exit 1
+fi
+echo "Migrated legacy worktrees into $PERSISTENT_SOURCE. Do not resume agents; rebuild the devcontainer now."
