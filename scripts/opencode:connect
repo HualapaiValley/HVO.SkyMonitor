@@ -39,4 +39,4 @@ fi
 
 server_password="$(<"$PASSWORD_FILE")"
 export OPENCODE_SERVER_PASSWORD="$server_password"
-exec "$OPENCODE_BINARY" attach "http://127.0.0.1:${PORT}" "$@"
+exec "$OPENCODE_BINARY" attach --username opencode "http://127.0.0.1:${PORT}" "$@"

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Attach a Docker-host terminal client to this workspace's published OpenCode server.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+readonly REPO_ROOT
+# shellcheck source=.devcontainer/opencode-host.conf disable=SC1091
+source "$REPO_ROOT/.devcontainer/opencode-host.conf"
+
+readonly HOST_PORT="${OPENCODE_HOST_PORT:?OPENCODE_HOST_PORT is required}"
+readonly PASSWORD_FILE="$REPO_ROOT/.devcontainer/state/opencode-data/server-password"
+
+if [[ -f /.dockerenv ]]; then
+    echo "Run this script on the Docker host, not inside the devcontainer." >&2
+    exit 1
+fi
+if [[ ! -t 0 || ! -t 1 ]]; then
+    echo "OpenCode connection requires an interactive terminal." >&2
+    exit 1
+fi
+OPENCODE_BINARY="$(command -v opencode 2>/dev/null || true)"
+readonly OPENCODE_BINARY
+if [[ -z "$OPENCODE_BINARY" || ! -x "$OPENCODE_BINARY" ]]; then
+    echo "A compatible OpenCode CLI is not installed on the Docker host." >&2
+    exit 1
+fi
+if [[ ! "$HOST_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$HOST_PORT > 65535 )); then
+    echo "OpenCode port must be an integer from 1 through 65535." >&2
+    exit 1
+fi
+if [[ ! -s "$PASSWORD_FILE" ]]; then
+    echo "OpenCode password is missing at $PASSWORD_FILE." >&2
+    exit 1
+fi
+
+server_password="$(<"$PASSWORD_FILE")"
+export OPENCODE_SERVER_PASSWORD="$server_password"
+server_url="http://127.0.0.1:${HOST_PORT}"
+exec "$OPENCODE_BINARY" attach --username opencode "$server_url" "$@"

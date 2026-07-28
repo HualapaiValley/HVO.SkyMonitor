@@ -146,17 +146,9 @@ OpenCode runs as a persistent in-container server supervised by an internal `tmu
 ./scripts/opencode:disable
 ```
 
-The server listens on container port `4096`; Docker publishes it only on the Docker host's loopback interface at `127.0.0.1:4097`. Inside the devcontainer, `./scripts/opencode:connect --continue` attaches through port `4096`. On the Docker host, the same command reads the persisted password and attaches through port `4097`. Use `--session <session-id>` to attach to a specific session.
+The server listens on container port `4096`; Docker publishes it to every Docker-host interface at port `4097`. Browser and desktop clients can use `http://<docker-host>:4097`. A terminal client must set `OPENCODE_SERVER_PASSWORD` from the protected password file and run `opencode attach --username opencode http://<docker-host>:4097`; the host-side `./scripts/opencode:remote-connect --continue` helper does this automatically through `http://127.0.0.1:4097`. Inside the devcontainer, `./scripts/opencode:connect --continue` attaches a new TUI client to `http://127.0.0.1:4096`. Use `--session <session-id>` to attach to a specific session.
 
-For a browser, desktop client, or TUI on another machine, create an SSH tunnel to the Docker host:
-
-```bash
-ssh -o ExitOnForwardFailure=yes -N -L 127.0.0.1:4097:127.0.0.1:4097 hvo-dev-01
-```
-
-The remote client can then connect to `http://127.0.0.1:4097`. Alternatively, allocate an SSH terminal and run the host-side connection command directly with `ssh -t hvo-dev-01 'cd /path/to/HVO.SkyMonitor && ./scripts/opencode:connect --continue'`. Host-side TUI attachment requires an OpenCode CLI compatible with the image-pinned server version.
-
-The endpoint requires OpenCode Basic Auth. Its username is `opencode`; post-create setup generates a random password at `.devcontainer/state/opencode-data/server-password` and retains it across rebuilds. The SSH tunnel protects the otherwise plaintext HTTP connection. Only one client should actively control a particular session at a time.
+The endpoint requires OpenCode Basic Auth. Its username is `opencode`; post-create setup generates a random password at `.devcontainer/state/opencode-data/server-password` and retains it across rebuilds. The HTTP endpoint does not use TLS. Host firewall rules must restrict port `4097` to an encrypted private overlay such as Tailscale, or the endpoint must sit behind a TLS reverse proxy; never expose it to an untrusted LAN or the public Internet. Only one client should actively control a particular session at a time.
 
 The non-secret [`.devcontainer/opencode-host.conf`](.devcontainer/opencode-host.conf) keeps the internal tmux identity, container port, and Docker-host port consistent with [`.devcontainer/devcontainer.json`](.devcontainer/devcontainer.json).
 
@@ -168,9 +160,13 @@ OPENCODE_CONTAINER_PORT=4096
 OPENCODE_HOST_PORT=4098
 ```
 
-Its devcontainer would publish `127.0.0.1:4098:4096`. Host ports and tmux session names must be unique for concurrently running workspaces. Stop the repository's managed session before changing these values and recreate the devcontainer for the Docker port change.
+Its devcontainer would publish `0.0.0.0:4098:4096`. Host ports and tmux session names must be unique for concurrently running workspaces. Stop the repository's managed session before changing these values and recreate the devcontainer for the Docker port change.
 
-The OpenCode executable is pinned, checksum-verified, and installed root-owned in the container image. Provider credentials, configuration, and sessions remain in ignored `.devcontainer/state/` mounts across rebuilds.
+The OpenCode executable is pinned, checksum-verified, and installed root-owned in the container image. Provider credentials, configuration, sessions, agent worktrees, and resumable scratch state remain in ignored host bind mounts beneath `.devcontainer/state/` across container rebuilds and Docker daemon restarts. Specifically, `opencode-worktrees` is mounted at `/tmp/opencode`, while `agent-scratch` is mounted at `/var/lib/hvo-agent-state`. Normal `/tmp` remains disposable and must contain only caches, sockets, locks, and other reproducible files.
+
+Post-create and post-start checks refuse to start OpenCode unless both agent-state paths are dedicated writable mounts. This avoids the dangerous fallback where a missing mount appears to work but stores in-progress files on the disposable container layer. The bind-mounted state still belongs to the local checkout: back up `.devcontainer/state/` separately before deleting the clone, running an ignored-file cleanup such as `git clean -xfd`, or replacing the host disk.
+
+Before the first rebuild that introduces these mounts, stop OpenCode from a separate terminal with `./scripts/opencode:disable`, then run `./scripts/opencode:prepare-rebuild` inside the old container. It resolves the primary checkout, copies any legacy `/tmp/opencode` worktrees into its host bind source, and verifies the copy. Do not resume agents between migration and rebuild. Once the persistence-enabled container is running, the command verifies the expected bind source and reports that migration is no longer needed.
 
 ### Extensions
 

@@ -101,7 +101,7 @@ The workflow always triggers for pull requests. A lightweight classifier uses th
 - `deploy/hvo-docker/README.md` and `tools/asi-capture/README.md`
 - one-level `src/*/README.md` and `tests/*/README.md`
 - `tests/fixtures/catalog/SOURCE.md` and `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
-- `scripts/opencode:enable`, `scripts/opencode:disable`, `scripts/opencode:connect`, and `scripts/test:opencode`
+- `scripts/opencode:enable`, `scripts/opencode:disable`, `scripts/opencode:connect`, `scripts/opencode:prepare-rebuild`, `scripts/opencode:remote-connect`, and `scripts/test:opencode`
 
 Reduced mode still runs **Quality** and **Required CI**. It intentionally skips Build, Unit Tests, Integration Tests, Architecture & Publish, Migrations, and Coverage. `Required CI` accepts those skipped results only when classification succeeded in reduced pull-request mode. This preserves the stable protected check while avoiding approximately 25 of the 30.4 aggregate runner-minutes observed in baseline run `29673206708`.
 

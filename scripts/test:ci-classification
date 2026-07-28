@@ -54,6 +54,8 @@ allowlisted_paths=(
   "scripts/opencode:disable"
   "scripts/opencode:enable"
   "scripts/opencode:connect"
+  "scripts/opencode:prepare-rebuild"
+  "scripts/opencode:remote-connect"
   "scripts/test:opencode"
 )
 
