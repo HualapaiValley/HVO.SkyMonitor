@@ -45,11 +45,18 @@ public enum CaptureScheduleAdmissionReason
 
 /// <summary>Defines a fixed or solar-relative local schedule boundary.</summary>
 public sealed record CaptureScheduleBoundary(
-    CaptureScheduleBoundaryKind Kind,
+    [property: JsonRequired] CaptureScheduleBoundaryKind Kind,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TimeOnly? LocalTime = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] TimeSpan Offset = default,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int DayOffset = 0,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TimeOnly? NoEventFallbackLocalTime = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TimeOnly? NoEventFallbackLocalTime = null)
+{
+    [JsonConstructor]
+    public CaptureScheduleBoundary()
+        : this(CaptureScheduleBoundaryKind.FixedLocalTime)
+    {
+    }
+}
 
 /// <summary>Defines exposure, gain, and minimum-start cadence defaults selected by a schedule window.</summary>
 public sealed record CaptureScheduleSetpointProfile(
