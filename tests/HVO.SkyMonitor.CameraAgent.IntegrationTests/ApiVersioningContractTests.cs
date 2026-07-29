@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Text.Json;
 using Asp.Versioning.ApiExplorer;
+using HVO.SkyMonitor.AgentCore;
 using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -31,6 +32,8 @@ public sealed class ApiVersioningContractTests
     [TestMethod]
     public async Task CameraAgentRoutesAndDescribesVersionedFramesApiAsync()
     {
+        Assert.ThrowsExactly<JsonException>(() =>
+            JsonSerializer.Deserialize<CaptureScheduleBoundary>("{}"));
         using var client = AssemblyHooks.Fixture.CreateCameraAgentClient();
 
         using var supported = await client.GetAsync(

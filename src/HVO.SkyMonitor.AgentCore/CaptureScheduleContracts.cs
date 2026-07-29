@@ -45,7 +45,7 @@ public enum CaptureScheduleAdmissionReason
 
 /// <summary>Defines a fixed or solar-relative local schedule boundary.</summary>
 public sealed record CaptureScheduleBoundary(
-    CaptureScheduleBoundaryKind Kind,
+    [property: JsonRequired] CaptureScheduleBoundaryKind Kind,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TimeOnly? LocalTime = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] TimeSpan Offset = default,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int DayOffset = 0,
