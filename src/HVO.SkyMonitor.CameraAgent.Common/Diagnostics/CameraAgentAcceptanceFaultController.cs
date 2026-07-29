@@ -24,7 +24,7 @@ internal sealed class CameraAgentAcceptanceFaultController(string controlRoot) :
     public void Inject(RawIngressFaultPoint point) => Inject($"raw.{point}", null);
 
     public void Inject(CalibrationPublicationFaultPoint point, string relativePath)
-        => Inject($"calibration.{point}", null);
+        => Inject($"calibration.{point}", relativePath);
 
     public void Inject(TransientCandidateFaultPoint point) => Inject($"transient-candidate.{point}", null);
 

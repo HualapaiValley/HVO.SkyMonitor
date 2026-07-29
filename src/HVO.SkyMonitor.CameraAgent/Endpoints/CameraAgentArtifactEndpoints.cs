@@ -150,7 +150,6 @@ internal static class CameraAgentArtifactEndpoints
             context.Response.Headers.ETag = etag;
             context.Response.Headers[ChecksumHeader] = preview.ChecksumSha256;
             context.Response.Headers.XContentTypeOptions = "nosniff";
-            outputBytes = preview.Content.Length;
             if (MatchesIfNoneMatch(context.Request, etag))
             {
                 outcome = "not_modified";
@@ -158,6 +157,7 @@ internal static class CameraAgentArtifactEndpoints
                 return;
             }
             outcome = "found";
+            outputBytes = preview.Content.Length;
             context.Response.StatusCode = StatusCodes.Status200OK;
             context.Response.ContentType = "image/jpeg";
             context.Response.ContentLength = preview.Content.Length;

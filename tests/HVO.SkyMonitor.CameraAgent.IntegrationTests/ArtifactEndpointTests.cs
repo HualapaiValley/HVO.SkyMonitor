@@ -1,10 +1,12 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.Metrics;
 using System.Net;
 using System.Net.Http.Headers;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
+using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -94,6 +96,23 @@ public sealed class ArtifactEndpointTests
     [TestMethod]
     public async Task PreviewHeadAndFailuresDoNotDiscloseStorageDetailsAsync()
     {
+        var comparisonOutputBytes = new List<(long Bytes, string? Outcome)>();
+        using var meterListener = new MeterListener
+        {
+            InstrumentPublished = (instrument, listener) =>
+            {
+                if (instrument.Meter.Name == CameraAgentOperatorTelemetry.InstrumentationName &&
+                    instrument.Name == "camera_agent.processing.comparison.output.bytes")
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            }
+        };
+        meterListener.SetMeasurementEventCallback<long>((_, measurement, tags, _) =>
+            comparisonOutputBytes.Add((
+                measurement,
+                GetTagValue(tags, "outcome") as string)));
+        meterListener.Start();
         var service = new StubArtifactService();
         using var factory = AssemblyHooks.Fixture.CreateCameraAgentFactory(services =>
         {
@@ -111,6 +130,12 @@ public sealed class ArtifactEndpointTests
         CollectionAssert.AreEqual(service.Preview, await preview.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
         var previewETag = preview.Headers.ETag?.Tag;
         Assert.IsNotNull(previewETag);
+
+        using var conditionalRequest = new HttpRequestMessage(HttpMethod.Get, previewUri);
+        conditionalRequest.Headers.IfNoneMatch.Add(new EntityTagHeaderValue(previewETag));
+        using var conditional = await client.SendAsync(conditionalRequest).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotModified, conditional.StatusCode);
+        Assert.IsTrue(comparisonOutputBytes.Contains((0, "not_modified")));
 
         using var previewHeadRequest = new HttpRequestMessage(HttpMethod.Head, previewUri);
         using var previewHead = await client.SendAsync(previewHeadRequest).ConfigureAwait(false);
@@ -149,6 +174,18 @@ public sealed class ArtifactEndpointTests
             Assert.IsTrue(created.Succeeded, string.Join(", ", created.Errors.Select(static error => error.Description)));
         }
         return (owner.Id, nonOwner.Id);
+    }
+
+    private static object? GetTagValue(ReadOnlySpan<KeyValuePair<string, object?>> tags, string key)
+    {
+        foreach (var tag in tags)
+        {
+            if (tag.Key == key)
+            {
+                return tag.Value;
+            }
+        }
+        return null;
     }
 
     private sealed class StubArtifactService : ICameraAgentArtifactService
