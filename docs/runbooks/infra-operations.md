@@ -217,8 +217,10 @@ or restore SQL Server or MinIO.
 Ordinary start, rebuild, reset, backup, restore, and production-catalog
 install/rollback share one nonblocking operation lock outside the runtime root.
 The lock helper creates a missing runtime parent but never chmods an existing
-parent. The parent must be owned by the current user, must not be a symlink, and
-must not be group- or world-writable; an existing safe mode such as `0751` is
+parent. Before creating it, the nearest existing ancestor must satisfy the same
+current-user ownership, nonsymlink, and no-group/world-write policy. An unsafe
+ancestor is rejected without creating the missing parent or lock. The parent
+must remain safe after creation; an existing safe mode such as `0751` is
 preserved. Control files must be owned nonsymlink regular files. A restore
 passes its already-held file descriptor and inode identity to its internal
 LogicHost/CameraAgent starts; environment variables without that held descriptor
