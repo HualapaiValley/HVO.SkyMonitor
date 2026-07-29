@@ -176,6 +176,11 @@ fi
 EOF
 cat > "$TEMP_DIR/stat" <<'EOF'
 #!/usr/bin/env bash
+if [[ -n "${HVO_TEST_NONOWNED_PATH:-}" && "$*" == *'-c %u'* &&
+    "${*: -1}" == "$HVO_TEST_NONOWNED_PATH" ]]; then
+    printf '%s\n' "$(( $(id -u) == 0 ? 1 : 0 ))"
+    exit 0
+fi
 if [[ -n "${HVO_TEST_NONOWNED_HOST_PARENT:-}" && "$*" == *'-c %u'* &&
     "${*: -1}" == */"$HVO_TEST_NONOWNED_HOST_PARENT" ]]; then
     printf '99999\n'
@@ -191,14 +196,62 @@ chmod 0751 "$TEMP_DIR/parent-mode"
 PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/parent-mode/runtime" \
     "$REPO_ROOT/scripts/infra:start" logichost >/dev/null
 test "$(stat -c '%a' "$TEMP_DIR/parent-mode")" = 751
+test "$(stat -c '%a' "$TEMP_DIR/parent-mode/.hvo-application-state.lock")" = 600
+
+mkdir -m 0700 "$TEMP_DIR/private-ancestor"
+PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" \
+    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/private-ancestor/missing-parent/runtime" \
+    "$REPO_ROOT/scripts/infra:start" logichost >/dev/null
+test "$(stat -c '%a' "$TEMP_DIR/private-ancestor/missing-parent")" = 700
+test "$(stat -c '%a' "$TEMP_DIR/private-ancestor/missing-parent/.hvo-application-state.lock")" = 600
 
 mkdir -p "$TEMP_DIR/parent-world-writable/runtime"
 chmod 0777 "$TEMP_DIR/parent-world-writable"
 if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/parent-world-writable/runtime" \
-    "$REPO_ROOT/scripts/infra:start" logichost >/dev/null 2>&1; then
+    "$REPO_ROOT/scripts/infra:start" logichost >"$TEMP_DIR/parent-world-writable.log" 2>&1; then
     fail 'Start accepted a group/world-writable runtime parent.'
 fi
 test "$(stat -c '%a' "$TEMP_DIR/parent-world-writable")" = 777
+test "$(<"$TEMP_DIR/parent-world-writable.log")" = 'Runtime parent must not be group- or world-writable.'
+test ! -e "$TEMP_DIR/parent-world-writable/.hvo-application-state.lock"
+
+mkdir -p "$TEMP_DIR/parent-wrong-owner/runtime"
+chmod 0700 "$TEMP_DIR/parent-wrong-owner"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" \
+    HVO_TEST_NONOWNED_PATH="$TEMP_DIR/parent-wrong-owner" \
+    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/parent-wrong-owner/runtime" \
+    "$REPO_ROOT/scripts/infra:start" logichost >"$TEMP_DIR/parent-wrong-owner.log" 2>&1; then
+    fail 'Start accepted a runtime parent owned by another user.'
+fi
+test "$(<"$TEMP_DIR/parent-wrong-owner.log")" = 'Runtime parent must be owned by the current user.'
+test ! -e "$TEMP_DIR/parent-wrong-owner/.hvo-application-state.lock"
+
+mkdir -m 0700 "$TEMP_DIR/real-runtime-parent"
+ln -s "$TEMP_DIR/real-runtime-parent" "$TEMP_DIR/symlink-runtime-parent"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" \
+    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/symlink-runtime-parent/runtime" \
+    "$REPO_ROOT/scripts/infra:start" logichost >"$TEMP_DIR/symlink-runtime-parent.log" 2>&1; then
+    fail 'Start accepted a symbolic-link runtime parent.'
+fi
+test "$(<"$TEMP_DIR/symlink-runtime-parent.log")" = 'Refusing unsafe runtime parent.'
+test ! -e "$TEMP_DIR/real-runtime-parent/.hvo-application-state.lock"
+
+mkdir -m 0777 "$TEMP_DIR/unsafe-missing-ancestor"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" \
+    HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/unsafe-missing-ancestor/missing-parent/runtime" \
+    "$REPO_ROOT/scripts/infra:start" logichost >"$TEMP_DIR/unsafe-missing-ancestor.log" 2>&1; then
+    fail 'Start created a runtime parent beneath an unsafe ancestor.'
+fi
+test "$(<"$TEMP_DIR/unsafe-missing-ancestor.log")" = 'Runtime parent ancestor must not be group- or world-writable.'
+test ! -e "$TEMP_DIR/unsafe-missing-ancestor/missing-parent"
+
+if HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/parent-world-writable/runtime" \
+    "$REPO_ROOT/scripts/catalog/install-hyg-v42.sh" install "$TEMP_DIR/not-a-bundle" \
+    "$TEMP_DIR/parent-world-writable/runtime/catalog" >"$TEMP_DIR/catalog-parent-rejection.log" 2>&1; then
+    fail 'Catalog install accepted a group/world-writable runtime parent.'
+fi
+test "$(<"$TEMP_DIR/catalog-parent-rejection.log")" = 'Runtime parent must not be group- or world-writable.'
+test ! -e "$TEMP_DIR/parent-world-writable/.hvo-application-state.lock"
 
 mkdir -p "$TEMP_DIR/runtime-root-writable/runtime"
 chmod 0700 "$TEMP_DIR/runtime-root-writable"
@@ -350,6 +403,33 @@ grep -Fqx '.hvo-application-state-inventory' "$TEMP_DIR/archive.list"
 if grep -Eq '(^|/)(catalog|unmanaged\.sentinel)(/|$)' "$TEMP_DIR/archive.list"; then
     fail 'A new backup included unsupported runtime-root state.'
 fi
+
+# Every application-state caller preserves the rejection without a lock or application-state mutation.
+mkdir -p "$TEMP_DIR/rejected-callers/runtime"
+chmod 0777 "$TEMP_DIR/rejected-callers"
+mkdir -m 0700 "$TEMP_DIR/rejected-backup"
+printf 'preserved\n' > "$TEMP_DIR/rejected-callers/runtime/sentinel"
+: > "$TEMP_DIR/docker.log"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/rejected-callers/runtime" \
+    "$REPO_ROOT/scripts/infra:reset" cameraagent >"$TEMP_DIR/rejected-reset.log" 2>&1; then
+    fail 'Reset accepted a group/world-writable runtime parent.'
+fi
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/rejected-callers/runtime" \
+    "$REPO_ROOT/scripts/infra:backup-app-state" "$TEMP_DIR/rejected-backup" >"$TEMP_DIR/rejected-backup.log" 2>&1; then
+    fail 'Backup accepted a group/world-writable runtime parent.'
+fi
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/rejected-callers/runtime" \
+    HVO_SKIP_RUNTIME_HEALTHCHECK=true \
+    "$REPO_ROOT/scripts/infra:restore-app-state" "$VALID_ARCHIVE" >"$TEMP_DIR/rejected-restore.log" 2>&1; then
+    fail 'Restore accepted a group/world-writable runtime parent.'
+fi
+for rejection_log in rejected-reset rejected-backup rejected-restore; do
+    test "$(<"$TEMP_DIR/$rejection_log.log")" = 'Runtime parent must not be group- or world-writable.'
+done
+test ! -s "$TEMP_DIR/docker.log"
+test ! -e "$TEMP_DIR/rejected-callers/.hvo-application-state.lock"
+test "$(<"$TEMP_DIR/rejected-callers/runtime/sentinel")" = preserved
+test -z "$(find "$TEMP_DIR/rejected-backup" -mindepth 1 -print -quit)"
 
 if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
     "$REPO_ROOT/scripts/infra:backup-app-state" "$TEMP_DIR/backups" >/dev/null 2>&1; then

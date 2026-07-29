@@ -25,6 +25,7 @@ hvo_validate_existing_private_directory() {
 hvo_prepare_runtime_parent() {
     local runtime_root="$1"
     local parent
+    local existing_ancestor
     local current_uid
 
     [[ -n "$runtime_root" && "$runtime_root" == /* && "$runtime_root" != / ]] || {
@@ -32,14 +33,20 @@ hvo_prepare_runtime_parent() {
         return 1
     }
     parent="$(dirname "$runtime_root")"
+    current_uid="$(id -u)"
     if [[ ! -e "$parent" && ! -L "$parent" ]]; then
+        existing_ancestor="$parent"
+        while [[ ! -e "$existing_ancestor" && ! -L "$existing_ancestor" ]]; do
+            existing_ancestor="$(dirname "$existing_ancestor")"
+        done
+        hvo_validate_existing_private_directory \
+            "$existing_ancestor" 'Runtime parent ancestor' "$current_uid" || return 1
         install -d -m 700 -- "$parent"
     fi
     [[ -d "$parent" && ! -L "$parent" && "$(realpath -m "$parent")" == "$parent" ]] || {
         printf 'Refusing unsafe runtime parent.\n' >&2
         return 1
     }
-    current_uid="$(id -u)"
     [[ "$(stat -c '%u' "$parent")" == "$current_uid" ]] || {
         printf 'Runtime parent must be owned by the current user.\n' >&2
         return 1
@@ -51,11 +58,12 @@ hvo_prepare_runtime_parent() {
         return 1
     }
     if [[ -e "$runtime_root" || -L "$runtime_root" ]]; then
-        hvo_validate_existing_private_directory "$runtime_root" 'Runtime data root' "$current_uid"
+        hvo_validate_existing_private_directory "$runtime_root" 'Runtime data root' "$current_uid" || return 1
         local host_parent
         for host_parent in "$runtime_root/logichost" "$runtime_root/cameraagent"; do
             if [[ -e "$host_parent" || -L "$host_parent" ]]; then
-                hvo_validate_existing_private_directory "$host_parent" 'Application-state host parent' "$current_uid"
+                hvo_validate_existing_private_directory \
+                    "$host_parent" 'Application-state host parent' "$current_uid" || return 1
             fi
         done
     fi
@@ -82,7 +90,7 @@ hvo_acquire_application_state_lock() {
     local expected_identity="${HVO_APPLICATION_STATE_LOCK_IDENTITY:-}"
     local actual_identity
 
-    hvo_prepare_runtime_parent "$runtime_root"
+    hvo_prepare_runtime_parent "$runtime_root" || return 1
     HVO_APPLICATION_LOCK_WAS_INHERITED=false
     if [[ -n "$inherited_fd" || -n "$expected_identity" ]]; then
         [[ "$inherited_fd" == 200 && -n "$expected_identity" && -e /proc/$$/fd/200 ]] || {
