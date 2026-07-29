@@ -166,6 +166,8 @@ public sealed class SqliteTransientCandidateJournalTests
         var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
         await fixture.Journal.PersistCandidateAsync(
             reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("Provisional", await fixture.ScalarStringAsync(
+            "SELECT candidate_state FROM transient_candidates;").ConfigureAwait(false));
         if (mode == TransientOperatingMode.Edge)
         {
             await fixture.Journal.PersistFinalizationAsync(
@@ -722,11 +724,37 @@ public sealed class SqliteTransientCandidateJournalTests
 
         await fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: false).ConfigureAwait(false);
 
-        Assert.AreEqual(9L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual(10L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual(1L, await fixture.ScalarLongAsync(
+            "SELECT COUNT(*) FROM pragma_table_info('transient_candidates') WHERE name = 'candidate_state';")
+            .ConfigureAwait(false));
         Assert.AreEqual(
             "edge",
             await fixture.ScalarStringAsync(
                 "SELECT mode FROM transient_runtime_policy WHERE policy_key = 1;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task SchemaV9Migration_BackfillsCanonicalCandidateState()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
+        var reservation = Fixture.CreateReservation(source);
+        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
+        await fixture.Journal.PersistCandidateAsync(
+            reservation.CandidateId,
+            reservation.EventId,
+            CreateCandidate(reservation, TransientCandidateState.Provisional),
+            CancellationToken.None).ConfigureAwait(false);
+        await fixture.ExecuteAsync(
+            "ALTER TABLE transient_candidates DROP COLUMN candidate_state; PRAGMA user_version = 9;")
+            .ConfigureAwait(false);
+
+        await fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: false).ConfigureAwait(false);
+
+        Assert.AreEqual(10L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual("Provisional", await fixture.ScalarStringAsync(
+            "SELECT candidate_state FROM transient_candidates;").ConfigureAwait(false));
     }
 
     [TestMethod]

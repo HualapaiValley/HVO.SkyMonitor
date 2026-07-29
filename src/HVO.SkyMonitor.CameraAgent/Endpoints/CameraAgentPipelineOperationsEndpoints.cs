@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -60,8 +61,12 @@ internal static class CameraAgentPipelineOperationsEndpoints
         SqliteCaptureScheduleStore store,
         ICaptureProcessingPipelineFactory pipelineFactory,
         ICameraAgentConfigurationAccessor configurationAccessor,
+        CameraAgentOperatorTelemetry telemetry,
         CancellationToken cancellationToken)
     {
+        var timer = Stopwatch.StartNew();
+        using var activity = telemetry.StartPlanPreview();
+        var outcome = "failed";
         try
         {
             await EnsureInitializedAsync(runtime, configurationAccessor, cancellationToken).ConfigureAwait(false);
@@ -70,15 +75,18 @@ internal static class CameraAgentPipelineOperationsEndpoints
             var current = runtime.Snapshot ?? throw new InvalidOperationException("The pipeline runtime is unavailable.");
             var plan = CameraAgentPipelineOperatorProjection.Preview(
                 profile, current.Configuration, pipelineFactory);
+            outcome = "valid";
             return Results.Ok(plan);
         }
         catch (InvalidOperationException exception)
         {
+            outcome = "invalid";
             return Invalid(CameraAgentPipelineOperatorProjection.SanitizeValidationFailure(exception));
         }
         catch (Exception exception) when (exception is ArgumentException or KeyNotFoundException or
             CaptureProfileCompatibilityException or ValidationException or JsonException)
         {
+            outcome = "invalid";
             return Invalid("The local profile or desired graph is invalid.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -90,6 +98,12 @@ internal static class CameraAgentPipelineOperationsEndpoints
             return Results.Problem(
                 statusCode: StatusCodes.Status500InternalServerError,
                 title: "The processing graph preview could not be completed.");
+        }
+        finally
+        {
+            timer.Stop();
+            activity?.SetTag("outcome", outcome);
+            telemetry.RecordPlanPreview(timer.Elapsed, outcome);
         }
     }
 

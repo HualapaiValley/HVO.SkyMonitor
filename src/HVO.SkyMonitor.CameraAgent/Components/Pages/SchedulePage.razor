@@ -64,9 +64,10 @@
                 }
                 else
                 {
+                    var rollback = _state.PendingRevision.RevisionNumber < _state.ActiveRevision.RevisionNumber;
                     <h2>Revision @_state.PendingRevision.RevisionNumber</h2>
                     <code>@ShortHash(_state.PendingRevision.ProfileSha256)</code>
-                    <button id="@PendingActivationTriggerId(_state.PendingRevision.RevisionId)" class="btn btn-primary" disabled="@_busy" @onclick="() => BeginActivation(_state.PendingRevision.RevisionId, PendingActivationTriggerId(_state.PendingRevision.RevisionId))">Review apply</button>
+                    <button id="@PendingActivationTriggerId(_state.PendingRevision.RevisionId)" class="btn btn-primary" disabled="@_busy" @onclick="() => BeginActivation(_state.PendingRevision.RevisionId, PendingActivationTriggerId(_state.PendingRevision.RevisionId), rollback)">@(rollback ? "Review rollback" : "Review apply")</button>
                 }
             </article>
         </section>
@@ -93,8 +94,8 @@
         @if (_confirmRevisionId is not null)
         {
             <section class="confirmation-panel" role="alertdialog" aria-labelledby="apply-heading" tabindex="-1" @ref="_confirmationPanel">
-                <div><p class="eyebrow">Capture-boundary confirmation</p><h2 id="apply-heading">Apply revision?</h2><p>The current admitted capture will finish durable publication before this revision becomes active.</p></div>
-                <div><button class="btn btn-primary" disabled="@_busy" @onclick="ConfirmActivationAsync">Confirm apply</button><button class="btn btn-outline-light" disabled="@_busy" @onclick="CancelActivation">Cancel</button></div>
+                <div><p class="eyebrow">Capture-boundary confirmation</p><h2 id="apply-heading">@(_confirmRollback ? "Rollback revision?" : "Apply revision?")</h2><p>The current admitted capture will finish durable publication before this revision becomes active.</p></div>
+                <div><button class="btn btn-primary" disabled="@_busy" @onclick="ConfirmActivationAsync">@(_confirmRollback ? "Confirm rollback" : "Confirm apply")</button><button class="btn btn-outline-light" disabled="@_busy" @onclick="CancelActivation">Cancel</button></div>
             </section>
         }
 
@@ -172,11 +173,11 @@
             </article>
 
             <article class="schedule-card history-card">
-                <p class="eyebrow">Immutable history</p><h2>Rollback targets</h2>
+                <p class="eyebrow">Immutable history</p><h2>Revision history</h2>
                 <ol>
                     @foreach (var revision in _state.History)
                     {
-                        <li><div><strong>Revision @revision.RevisionNumber</strong><code>@ShortHash(revision.ProfileSha256)</code><span>@revision.CreatedUtc.ToString("u")</span></div>@if (revision.RevisionId != _state.ActiveRevision.RevisionId) { <button id="@HistoryActivationTriggerId(revision)" class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => BeginActivation(revision.RevisionId, HistoryActivationTriggerId(revision))">Review rollback</button> }</li>
+                        <li><div><strong>Revision @revision.RevisionNumber</strong><code>@ShortHash(revision.ProfileSha256)</code><span>@revision.CreatedUtc.ToString("u")</span></div>@if (revision.RevisionId != _state.ActiveRevision.RevisionId) { var rollback = revision.RevisionNumber < _state.ActiveRevision.RevisionNumber; <button id="@HistoryActivationTriggerId(revision)" class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => BeginActivation(revision.RevisionId, HistoryActivationTriggerId(revision), rollback)">@(rollback ? "Review rollback" : "Review apply")</button> }</li>
                     }
                 </ol>
             </article>

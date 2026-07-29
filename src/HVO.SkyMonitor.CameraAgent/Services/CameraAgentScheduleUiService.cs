@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
 using System.Text.Json;
@@ -31,6 +32,13 @@ internal interface ICameraAgentScheduleUiService
         CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ActivateAsync(
+        string revisionId,
+        long expectedVersion,
+        string idempotencyKey,
+        string? reason,
+        CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> RollbackAsync(
         string revisionId,
         long expectedVersion,
         string idempotencyKey,
@@ -80,6 +88,7 @@ internal sealed class CameraAgentScheduleUiService(
     SqliteCaptureScheduleStore store,
     ICameraAgentConfigurationAccessor configurationAccessor,
     ICaptureProcessingPipelineFactory pipelineFactory,
+    CameraAgentOperatorTelemetry telemetry,
     ILogger<CameraAgentScheduleUiService> logger) : ICameraAgentScheduleUiService
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
@@ -140,18 +149,54 @@ internal sealed class CameraAgentScheduleUiService(
                 profile!, basisRevisionId, idempotencyKey, expectedVersion, actor, reason, token),
             cancellationToken);
 
-    public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ActivateAsync(
+    public async ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ActivateAsync(
         string revisionId,
         long expectedVersion,
         string idempotencyKey,
         string? reason,
         CancellationToken cancellationToken)
-        => ExecuteMutationAsync(
-            profileJson: null,
-            basisRevisionId: null,
-            (_, actor, token) => runtime.ActivateAsync(
-                revisionId, idempotencyKey, expectedVersion, actor, reason, token),
-            cancellationToken);
+        => await ApplyRevisionAsync(
+            "activate", revisionId, expectedVersion, idempotencyKey, reason, cancellationToken)
+            .ConfigureAwait(false);
+
+    public async ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> RollbackAsync(
+        string revisionId,
+        long expectedVersion,
+        string idempotencyKey,
+        string? reason,
+        CancellationToken cancellationToken)
+        => await ApplyRevisionAsync(
+            "rollback", revisionId, expectedVersion, idempotencyKey, reason, cancellationToken)
+            .ConfigureAwait(false);
+
+    private async ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ApplyRevisionAsync(
+        string action,
+        string revisionId,
+        long expectedVersion,
+        string idempotencyKey,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        using var activity = telemetry.StartPlanMutation(action);
+        var outcome = "failed";
+        try
+        {
+            var result = await ExecuteMutationAsync(
+                profileJson: null,
+                basisRevisionId: null,
+                (_, actor, token) => action == "rollback"
+                    ? runtime.RollbackAsync(revisionId, idempotencyKey, expectedVersion, actor, reason, token)
+                    : runtime.ActivateAsync(revisionId, idempotencyKey, expectedVersion, actor, reason, token),
+                cancellationToken).ConfigureAwait(false);
+            outcome = result.IsSuccess ? "applied" : "failed";
+            return result;
+        }
+        finally
+        {
+            activity?.SetTag("outcome", outcome);
+            telemetry.RecordPlanMutation(action, outcome);
+        }
+    }
 
     public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> AddOverrideAsync(
         CaptureScheduleOverride scheduleOverride,
@@ -207,15 +252,31 @@ internal sealed class CameraAgentScheduleUiService(
         }
     }
 
-    public ValueTask<OperatorUiResult<CameraAgentPipelineProfilePreview>> PreviewPipelineAsync(
+    public async ValueTask<OperatorUiResult<CameraAgentPipelineProfilePreview>> PreviewPipelineAsync(
         string profileJson,
         string basisRevisionId,
         CancellationToken cancellationToken)
-        => ExecutePipelinePreviewAsync(
-            profileJson,
-            basisRevisionId,
-            static profile => profile,
-            cancellationToken);
+    {
+        var timer = Stopwatch.StartNew();
+        using var activity = telemetry.StartPlanPreview();
+        var outcome = "failed";
+        try
+        {
+            var result = await ExecutePipelinePreviewAsync(
+                profileJson,
+                basisRevisionId,
+                static profile => profile,
+                cancellationToken).ConfigureAwait(false);
+            outcome = result.IsSuccess ? "valid" : "invalid";
+            return result;
+        }
+        finally
+        {
+            timer.Stop();
+            activity?.SetTag("outcome", outcome);
+            telemetry.RecordPlanPreview(timer.Elapsed, outcome);
+        }
+    }
 
     public ValueTask<OperatorUiResult<CameraAgentPipelineProfilePreview>> TogglePipelineAsync(
         string profileJson,

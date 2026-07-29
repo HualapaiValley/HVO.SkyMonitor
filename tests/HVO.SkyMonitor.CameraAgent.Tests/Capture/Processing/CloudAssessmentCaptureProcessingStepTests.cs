@@ -48,6 +48,27 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
     }
 
     [TestMethod]
+    public async Task MissingConfiguredReferenceDoesNotCreateRetentionHold()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-missing-reference", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var loader = new CameraAgentClearReferenceLoader(Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root
+            }));
+            loader.RegisterRetentionHold("w6/clear-reference.manifest.json");
+
+            Assert.IsEmpty(await loader.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task MissingConfiguredReferenceProducesMetadataWithoutFabricatingFrame()
     {
         var currentFrame = CreateFrame((x, y) =>
@@ -80,6 +101,7 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
             new CaptureProcessingStepMetadata("cloud", "CloudAssessment", 80),
             new CloudAssessmentProcessingStepOptions
             {
+                ClearReferenceManifestPath = $"missing-{Guid.NewGuid():N}.manifest.json",
                 GridColumns = 1,
                 GridRows = 1,
                 TransmissionThresholdMillionths = 750_000,
@@ -137,6 +159,9 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
 
             Assert.AreEqual(manifest.Descriptor.Artifact.ArtifactId, reference.ArtifactId);
             Assert.AreEqual(manifest.Descriptor.Layout, reference.Layout);
+            Assert.AreEqual(
+                CameraAgentRecipeExecutionAdapter.CreateCompatibility(manifest.Descriptor),
+                reference.Compatibility);
             CollectionAssert.AreEqual(payload, reference.Payload.ToArray());
             Assert.HasCount(1, holds);
             var hold = holds[0];

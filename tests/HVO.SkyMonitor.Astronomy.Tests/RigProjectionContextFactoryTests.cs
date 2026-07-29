@@ -37,6 +37,28 @@ public sealed class RigProjectionContextFactoryTests
     }
 
     [TestMethod]
+    public void CreateAnnotationLandmarks_ClipsHorizonDirectionsToNarrowFisheyeAperture()
+    {
+        var rig = CreateRig(new OpticsProfile(
+            "EquidistantFisheye", 2.5, 170, 0, LensKind.Fisheye,
+            PrincipalPointX: 1776, PrincipalPointY: 1776, ImageCircleRadiusPixels: 1627.5,
+            FocalLengthXPixels: 1097.0456, FocalLengthYPixels: 1097.0456));
+
+        var projection = RigProjectionContextFactory.Create(rig);
+        var landmarks = RigProjectionContextFactory.CreateAnnotationLandmarks(projection);
+
+        Assert.IsNotNull(landmarks);
+        Assert.AreEqual(1776, landmarks.North.X, 1e-9);
+        Assert.AreEqual(148.5, landmarks.North.Y, 1e-9);
+        Assert.AreEqual(3403.5, landmarks.East.X, 1e-9);
+        Assert.AreEqual(1776, landmarks.East.Y, 1e-9);
+        Assert.AreEqual(1776, landmarks.South.X, 1e-9);
+        Assert.AreEqual(3403.5, landmarks.South.Y, 1e-9);
+        Assert.AreEqual(148.5, landmarks.West.X, 1e-9);
+        Assert.AreEqual(1776, landmarks.West.Y, 1e-9);
+    }
+
+    [TestMethod]
     public void Create_DerivesPerspectiveFocalLengthsFromFieldOfView()
     {
         var rig = CreateRig(new OpticsProfile(

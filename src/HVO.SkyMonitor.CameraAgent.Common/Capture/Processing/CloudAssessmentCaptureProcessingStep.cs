@@ -59,15 +59,21 @@ internal sealed class CloudAssessmentCaptureProcessingStep(
         var auxiliary = new List<ProcessingAuxiliaryInput>();
         if (!string.IsNullOrWhiteSpace(Options.ClearReferenceManifestPath))
         {
-            var clear = await clearReferenceLoader.LoadAsync(
-                Options.ClearReferenceManifestPath,
-                cancellationToken).ConfigureAwait(false);
-            inputs.Add(clear);
-            auxiliary.Add(new ProcessingAuxiliaryInput(
-                "clear-reference",
-                ProcessingAuxiliaryInputKind.Artifact,
-                CreateSelector(clear),
-                ArtifactId: clear.ArtifactId));
+            try
+            {
+                var clear = await clearReferenceLoader.LoadAsync(
+                    Options.ClearReferenceManifestPath,
+                    cancellationToken).ConfigureAwait(false);
+                inputs.Add(clear);
+                auxiliary.Add(new ProcessingAuxiliaryInput(
+                    "clear-reference",
+                    ProcessingAuxiliaryInputKind.Artifact,
+                    CreateSelector(clear),
+                    ArtifactId: clear.ArtifactId));
+            }
+            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            {
+            }
         }
         var environment = cloudEnvironment is null
             ? CameraAgentCloudEnvironment.CreateMissingInput(context)

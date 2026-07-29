@@ -183,16 +183,19 @@ public sealed class OperationsPageTests
     public async Task Disposal_CancelsPendingReadAndAwaitsPollingCleanupAsync()
     {
         using var context = new BunitContext();
+        var readStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var service = Configure(context);
         service.OperationsHandler = async token =>
         {
             using var registration = token.Register(() => cancellationObserved.TrySetResult());
+            readStarted.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
             return OperatorUiResult<CameraAgentOperationsView>.Success(OperatorUiTestData.Operations());
         };
 
         var cut = context.Render<OperationsPage>();
+        await readStarted.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
         await cut.Instance.DisposeAsync().ConfigureAwait(false);
 
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);

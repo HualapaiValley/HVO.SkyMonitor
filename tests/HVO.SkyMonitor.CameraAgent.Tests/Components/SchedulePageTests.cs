@@ -29,7 +29,7 @@ public sealed class SchedulePageTests
             Assert.IsTrue(cut.Markup.Contains("Revision 2", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Canonical JSON", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Create override", StringComparison.Ordinal));
-            Assert.IsTrue(cut.Markup.Contains("Rollback targets", StringComparison.Ordinal));
+            Assert.IsTrue(cut.Markup.Contains("Revision history", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Desired and effective graph", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Preview / required", StringComparison.Ordinal));
         });
@@ -72,6 +72,76 @@ public sealed class SchedulePageTests
 
         Assert.IsTrue(context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>()
             .Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void HistoricalRevision_UsesRollbackMutation()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = new ScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.FindAll("button").Any(button =>
+            button.TextContent.Contains("Review rollback", StringComparison.Ordinal))));
+        cut.FindAll("button").Single(button =>
+            button.TextContent.Contains("Review rollback", StringComparison.Ordinal)).Click();
+        cut.FindAll("button").Single(button =>
+            button.TextContent.Contains("Confirm rollback", StringComparison.Ordinal)).Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.HasCount(1, service.RollbackRevisionIds);
+            Assert.AreEqual("profile-00000001-123456ABCDEF", service.RollbackRevisionIds[0]);
+        });
+    }
+
+    [TestMethod]
+    public void NewerHistoricalRevision_UsesActivationMutation()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var state = State();
+        var prior = state.History.Single(static revision => revision.RevisionNumber == 1);
+        var service = new ScheduleUiService(state with { ActiveRevision = prior });
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.FindAll("button").Any(button =>
+            button.TextContent.Contains("Review apply", StringComparison.Ordinal))));
+        cut.FindAll("button").Single(button =>
+            button.TextContent.Contains("Review apply", StringComparison.Ordinal)).Click();
+        cut.FindAll("button").Single(button =>
+            button.TextContent.Contains("Confirm apply", StringComparison.Ordinal)).Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.HasCount(1, service.ActivationRevisionIds);
+            Assert.AreEqual("profile-00000002-ABCDEF123456", service.ActivationRevisionIds[0]);
+        });
+    }
+
+    [TestMethod]
+    public void OlderPendingRevision_UsesRollbackMutation()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var state = State();
+        var prior = state.History.Single(static revision => revision.RevisionNumber == 1);
+        var service = new ScheduleUiService(state with { PendingRevision = prior });
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.FindAll("button").Any(button =>
+            button.TextContent.Contains("Review rollback", StringComparison.Ordinal))));
+        cut.FindAll("button").First(button =>
+            button.TextContent.Contains("Review rollback", StringComparison.Ordinal)).Click();
+        cut.FindAll("button").Single(button =>
+            button.TextContent.Contains("Confirm rollback", StringComparison.Ordinal)).Click();
+
+        cut.WaitForAssertion(() =>
+            CollectionAssert.Contains(service.RollbackRevisionIds, prior.RevisionId));
     }
 
     [TestMethod]
@@ -226,6 +296,9 @@ public sealed class SchedulePageTests
 
     private sealed class ScheduleUiService(CaptureScheduleOperatorState? state) : ICameraAgentScheduleUiService
     {
+        internal List<string> RollbackRevisionIds { get; } = [];
+        internal List<string> ActivationRevisionIds { get; } = [];
+
         public ValueTask<OperatorUiResult<CaptureScheduleOperatorState>> GetAsync(CancellationToken cancellationToken)
             => ValueTask.FromResult(state is null
                 ? OperatorUiResult<CaptureScheduleOperatorState>.Failure(
@@ -272,7 +345,20 @@ public sealed class SchedulePageTests
         public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ActivateAsync(
             string revisionId, long expectedVersion, string idempotencyKey, string? reason,
             CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+        {
+            ActivationRevisionIds.Add(revisionId);
+            return ValueTask.FromResult(OperatorUiResult<CaptureScheduleStoreSnapshot>.Failure(
+                OperatorUiResultKind.Invalid, "Synthetic activation result."));
+        }
+
+        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> RollbackAsync(
+            string revisionId, long expectedVersion, string idempotencyKey, string? reason,
+            CancellationToken cancellationToken)
+        {
+            RollbackRevisionIds.Add(revisionId);
+            return ValueTask.FromResult(OperatorUiResult<CaptureScheduleStoreSnapshot>.Failure(
+                OperatorUiResultKind.Invalid, "Synthetic rollback result."));
+        }
 
         public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> AddOverrideAsync(
             CaptureScheduleOverride scheduleOverride, long expectedVersion, string idempotencyKey,
@@ -306,6 +392,11 @@ public sealed class SchedulePageTests
         }
 
         public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ActivateAsync(
+            string revisionId, long expectedVersion, string idempotencyKey, string? reason,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> RollbackAsync(
             string revisionId, long expectedVersion, string idempotencyKey, string? reason,
             CancellationToken cancellationToken)
             => throw new NotSupportedException();

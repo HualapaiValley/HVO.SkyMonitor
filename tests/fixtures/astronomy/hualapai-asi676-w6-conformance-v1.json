@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "hualapai-asi676-w6-conformance-v1",
+  "referenceModel": "Astropy FK5/ERFA rounded independent reference",
+  "sceneUtc": "2026-01-15T08:00:20Z",
+  "observer": {
+    "latitudeDegrees": 35.5599378,
+    "longitudeDegrees": -113.9119818,
+    "elevationMeters": 520,
+    "identitySha256": "0B3F2F069338CBD420FF214926E97760A9B59EEACB444F0B8F08149DF698DF6E"
+  },
+  "projection": {
+    "model": "EquidistantFisheye",
+    "width": 3552,
+    "height": 3552,
+    "principalPoint": { "x": 1776.0, "y": 1776.0 },
+    "imageCircleRadiusPixels": 1627.5,
+    "rigSha256": "7B395B8DD577024944C263E1EA642BB472E3144110FF3FE75DBBCE67B187F172"
+  },
+  "tolerances": {
+    "projectedSensorPixels": 0.35,
+    "rawCentroidPixels": 2.0,
+    "renderedMarkerPixels": 2.0,
+    "cardinalSensorPixels": 0.35
+  },
+  "objects": [
+    { "rowId": "11734", "name": "Polaris", "hipparcosId": "11767", "rightAscensionHours": 2.52975, "declinationDegrees": 89.264109, "expectedPixel": { "x": 1762.48, "y": 736.89 } },
+    { "rowId": "24378", "name": "Rigel", "hipparcosId": "24436", "rightAscensionHours": 5.242298, "declinationDegrees": -8.201640, "expectedPixel": { "x": 903.11, "y": 2491.93 } },
+    { "rowId": "24549", "name": "Capella", "hipparcosId": "24608", "rightAscensionHours": 5.278150, "declinationDegrees": 45.997991, "expectedPixel": { "x": 1245.07, "y": 1449.22 } },
+    { "rowId": "27919", "name": "Betelgeuse", "hipparcosId": "27989", "rightAscensionHours": 5.919529, "declinationDegrees": 7.407063, "expectedPixel": { "x": 1151.83, "y": 2235.85 } },
+    { "rowId": "32263", "name": "Sirius", "hipparcosId": "32349", "rightAscensionHours": 6.752481, "declinationDegrees": -16.716116, "expectedPixel": { "x": 1366.38, "y": 2755.23 } },
+    { "rowId": "37173", "name": "Procyon", "hipparcosId": "37279", "rightAscensionHours": 7.655033, "declinationDegrees": 5.224993, "expectedPixel": { "x": 1660.28, "y": 2355.45 } }
+  ],
+  "cardinalLandmarks": {
+    "center": { "x": 1776.0, "y": 1776.0 },
+    "radius": 1627.5,
+    "north": { "x": 1776.0, "y": 148.5 },
+    "east": { "x": 3403.5, "y": 1776.0 },
+    "south": { "x": 1776.0, "y": 3403.5 },
+    "west": { "x": 148.5, "y": 1776.0 }
+  }
+}

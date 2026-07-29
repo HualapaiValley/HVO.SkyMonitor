@@ -31,8 +31,8 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 using Scalar.AspNetCore;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
@@ -159,6 +159,7 @@ public class Program
                 });
 
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks();
+        builder.Services.AddSingleton<CameraAgentOperatorTelemetry>();
         healthChecks.AddDbContextCheck<ApplicationDbContext>("identity-database", tags: ["dependency"]);
         healthChecks.AddInstalledCelestialCatalogHealthCheck();
         healthChecks.AddCheck<DeploymentLocationHealthCheck>("deployment-location", tags: ["dependency"]);
@@ -174,22 +175,26 @@ public class Program
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
                 metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
+                metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
             })
-            .WithTracing(tracing => tracing
-                .AddSource(TransientWorkerTelemetry.ActivitySourceName)
-                .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
-                .AddSource(EnvironmentalObservationDeliveryTelemetry.ActivitySourceName)
-                .AddSource(EnvironmentalAcquisitionTelemetry.InstrumentationName)
-                .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName));
-
-        builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
-        {
-            options.RecordException = true;
-        });
+            .WithTracing(tracing =>
+            {
+                if (builder.Environment.IsEnvironment("StandaloneW6"))
+                {
+                    tracing.SetSampler(new AlwaysOnSampler());
+                }
+                tracing.AddSource(TransientWorkerTelemetry.ActivitySourceName)
+                    .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
+                    .AddSource(EnvironmentalObservationDeliveryTelemetry.ActivitySourceName)
+                    .AddSource(EnvironmentalAcquisitionTelemetry.InstrumentationName)
+                    .AddSource(CameraAgentOperatorTelemetry.InstrumentationName)
+                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName);
+            });
 
         builder.Services.AddCentralIdentityAuthentication(builder.Configuration);
         builder.Services.AddSingleton<IConfigureOptions<CentralIdentityOptions>, DeviceSecretsCentralIdentityConfigurator>();
         builder.Services.AddSkyMonitorApiClient(builder.Configuration);
+        RegisterAcceptanceCentralAttemptRecorder(builder);
         builder.Services.AddSingleton<IFleetHeartbeatTransport, CameraAgentFleetHeartbeatTransport>();
         builder.Services.AddSingleton<DeploymentLocationReconciliationState>();
         builder.Services.AddHostedService<DeploymentLocationReconciliationWorker>();
@@ -215,6 +220,7 @@ public class Program
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
         builder.Services.AddScoped<ICameraAgentCalibrationUiService, CameraAgentCalibrationUiService>();
         builder.Services.AddScoped<ICameraAgentEnvironmentalUiService, CameraAgentEnvironmentalUiService>();
+        builder.Services.AddScoped<ICameraAgentTransientUiService, CameraAgentTransientUiService>();
 
         builder.Services.AddOptions<CapturePreviewOptions>()
             .Bind(builder.Configuration.GetSection("CapturePreview"))
@@ -320,6 +326,35 @@ public class Program
         }
 
         await app.RunAsync().ConfigureAwait(false);
+    }
+
+    private static void RegisterAcceptanceCentralAttemptRecorder(WebApplicationBuilder builder)
+    {
+        var configuredPath = builder.Configuration["CameraAgent:AcceptanceCentralAttemptLogPath"];
+        if (string.IsNullOrWhiteSpace(configuredPath))
+        {
+            return;
+        }
+        if (!builder.Environment.IsEnvironment("StandaloneW6") || !string.Equals(
+                builder.Configuration["CameraAgent:CentralIntegration:Mode"],
+                "Disabled",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Central-attempt recording is permitted only in StandaloneW6 with central integration disabled.");
+        }
+        var root = Path.GetFullPath(builder.Configuration["CameraAgent:RawIngressRoot"]
+            ?? throw new InvalidOperationException("CameraAgent:RawIngressRoot is required."));
+        var path = Path.GetFullPath(configuredPath);
+        var relative = Path.GetRelativePath(root, path);
+        if (relative == ".." || relative.StartsWith(string.Concat("..", Path.DirectorySeparatorChar), StringComparison.Ordinal) ||
+            Path.IsPathRooted(relative))
+        {
+            throw new InvalidOperationException("The central-attempt log must remain beneath the raw-ingress root.");
+        }
+        builder.Services.AddSingleton(new CameraAgentCentralHttpAttemptRecorder(path));
+        builder.Services.AddSingleton<Microsoft.Extensions.Http.IHttpMessageHandlerBuilderFilter,
+            CameraAgentCentralHttpAttemptFilter>();
     }
 
     internal static void ConfigureApplicationCookie(

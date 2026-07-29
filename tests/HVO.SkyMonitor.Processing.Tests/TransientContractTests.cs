@@ -122,7 +122,10 @@ public sealed class TransientContractTests
         var value = TransientTestData.CreateEvent();
         AssertReason(TransientContractReasonCodes.InvalidIdentity, value with { EventId = Guid.Empty });
         AssertReason(TransientContractReasonCodes.InvalidIdentity, value with { Version = 1 });
-        AssertReason(TransientContractReasonCodes.InvalidTime, value with { LastObservedUtc = value.LastObservedUtc.AddTicks(1) });
+        AssertReason(TransientContractReasonCodes.InvalidTime, value with
+        {
+            LastObservedUtc = value.VersionCreatedUtc.AddTicks(1)
+        });
         AssertReason(TransientContractReasonCodes.InvalidLineage, value with
         {
             Observations = [value.Observations[0], value.Observations[1] with { Ordinal = 0 }]
@@ -430,9 +433,22 @@ public sealed class TransientContractTests
     public void EventAndVersionTimesBoundEveryContainedRecordAndPredecessor()
     {
         var value = TransientTestData.CreateEvent();
+        var laterObservation = value.Observations[1] with
+        {
+            Source = value.Observations[1].Source with
+            {
+                ObservationStartedUtc = value.EventCreatedUtc.AddTicks(1),
+                ObservationEndedUtc = value.EventCreatedUtc.AddSeconds(1)
+            }
+        };
+        Assert.IsTrue(TransientContractJson.Validate(value with
+        {
+            LastObservedUtc = laterObservation.Source.ObservationEndedUtc,
+            Observations = [value.Observations[0], laterObservation]
+        }).IsValid);
         AssertReason(TransientContractReasonCodes.InvalidTime, value with
         {
-            EventCreatedUtc = value.LastObservedUtc.AddTicks(-1)
+            EventCreatedUtc = value.FirstObservedUtc.AddTicks(-1)
         });
         AssertReason(TransientContractReasonCodes.InvalidTime, value with
         {

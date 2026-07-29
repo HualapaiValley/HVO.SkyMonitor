@@ -19,7 +19,7 @@ internal sealed class SqliteRawCaptureJournal(
     Func<DateTimeOffset>? utcNow = null,
     TransientDetectionOptions? transientOptions = null)
 {
-    internal const int CurrentSchemaVersion = 9;
+    internal const int CurrentSchemaVersion = 10;
     private const int CoordinateScrubbedSchemaVersion = 7;
     private const int PendingCoordinateScrubSchemaVersion = -7;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
@@ -138,6 +138,14 @@ internal sealed class SqliteRawCaptureJournal(
                 {
                     await RedactLaneContextsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 }
+                if (version < 10 && !await HasColumnAsync(
+                        connection, transaction, "transient_candidates", "candidate_state", cancellationToken)
+                    .ConfigureAwait(false))
+                {
+                    await ExecuteNonQueryAsync(
+                        connection, transaction, TransientCandidateStateV10MigrationSql, cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 await ExecuteNonQueryAsync(
                     connection, transaction, CaptureScheduleSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
@@ -164,13 +172,10 @@ internal sealed class SqliteRawCaptureJournal(
                 throw;
             }
         }
-        else if (version == CurrentSchemaVersion)
-        {
-            // Schema v9 is not shipped yet; keep branch-local v9 databases aligned with additive v9 corrections.
-            await ExecuteNonQueryAsync(
-                connection, transaction: null, CalibrationAcquisitionV9CorrectionSql, cancellationToken)
-                .ConfigureAwait(false);
-        }
+        // Keep existing and newly migrated v9 databases aligned with additive v9 corrections.
+        await ExecuteNonQueryAsync(
+            connection, transaction: null, AdditiveV9CorrectionSql, cancellationToken)
+            .ConfigureAwait(false);
 
         await SynchronizeTransientPolicyAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
         await SynchronizeLaneDefinitionsAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
@@ -196,7 +201,8 @@ internal sealed class SqliteRawCaptureJournal(
                 'ix_capture_lane_work_claim', 'ix_capture_lane_work_lease',
                 'ix_capture_lane_work_backlog', 'ix_capture_lane_work_raw', 'ix_capture_lane_work_ordered',
                 'transient_event_identities', 'transient_candidates', 'transient_candidate_sources',
-                'ix_transient_candidates_backlog', 'ix_transient_candidate_sources_raw',
+                'ix_transient_candidates_backlog', 'ix_transient_candidates_operator',
+                'ix_transient_candidate_sources_raw',
                 'transient_runtime_policy', 'transient_capture_work', 'transient_candidate_conflicts',
                  'ix_transient_capture_work_backlog', 'ix_transient_candidate_conflicts_observed',
                  'ix_transient_candidate_conflicts_candidate',
@@ -215,7 +221,7 @@ internal sealed class SqliteRawCaptureJournal(
                   'ix_calibration_acquisition_jobs_camera', 'ux_calibration_acquisition_jobs_camera_nonterminal',
                   'ix_calibration_library_reconciliation_state');
             """, cancellationToken).ConfigureAwait(false);
-        if (schemaObjectCount != 60)
+        if (schemaObjectCount != 61)
         {
             throw new InvalidDataException("Raw ingress SQLite schema is incomplete or drifted.");
         }
@@ -275,6 +281,7 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyIndexAsync(connection, "ix_capture_lane_work_raw", "raw_capture_row_id,required,state", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_lane_work_ordered", "lane_name,agent_id,capture_sequence", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_transient_candidates_backlog", "state,created_unix_ms,candidate_id", cancellationToken).ConfigureAwait(false);
+        await VerifyIndexAsync(connection, "ix_transient_candidates_operator", "created_unix_ms,candidate_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_transient_candidate_sources_raw", "raw_capture_row_id,candidate_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_transient_capture_work_backlog", "state,created_unix_ms,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_transient_candidate_conflicts_observed", "observed_unix_ms,conflict_id", cancellationToken).ConfigureAwait(false);
@@ -1830,7 +1837,7 @@ internal sealed class SqliteRawCaptureJournal(
     private const string TransientEventIdentityColumns =
         "event_id,agent_id,created_unix_ms";
     private const string TransientCandidateColumns =
-        "candidate_id,event_id,agent_id,mode,required,reservation_identity_sha256,state,phase,candidate_payload,candidate_payload_sha256,finalization_payload,finalization_receipt_identity_sha256,submission_payload,submission_identity_sha256,acknowledgement_payload,acknowledgement_payload_sha256,source_hold_released,quarantine_reason,timeout_unix_ms,created_unix_ms,updated_unix_ms";
+        "candidate_id,event_id,agent_id,mode,required,reservation_identity_sha256,state,phase,candidate_payload,candidate_payload_sha256,finalization_payload,finalization_receipt_identity_sha256,submission_payload,submission_identity_sha256,acknowledgement_payload,acknowledgement_payload_sha256,source_hold_released,quarantine_reason,timeout_unix_ms,created_unix_ms,updated_unix_ms,candidate_state";
     private const string TransientCandidateSourceColumns =
         "candidate_id,source_ordinal,evidence_id,raw_capture_row_id,source_schema,locator_schema,locator_kind,artifact_id,artifact_role,artifact_variant,recipe_identity_sha256,checksum_sha256,observation_started_utc_ticks,observation_ended_utc_ticks,timing_quality,timing_source,timing_version";
     private const string TransientRuntimePolicyColumns =
@@ -2299,10 +2306,12 @@ internal sealed class SqliteRawCaptureJournal(
             ON calibration_library_reconciliation(operation_state, observed_unix_ms, reconciliation_id);
         """;
 
-    private const string CalibrationAcquisitionV9CorrectionSql = """
+    private const string AdditiveV9CorrectionSql = """
         CREATE UNIQUE INDEX IF NOT EXISTS ux_calibration_acquisition_jobs_camera_nonterminal
             ON calibration_acquisition_jobs(camera_key)
             WHERE state NOT IN ('published', 'failed', 'cancelled');
+        CREATE INDEX IF NOT EXISTS ix_transient_candidates_operator
+            ON transient_candidates(created_unix_ms DESC, candidate_id DESC);
         """;
 
     private const string LaneSchemaSql = """
@@ -2394,6 +2403,7 @@ internal sealed class SqliteRawCaptureJournal(
             timeout_unix_ms INTEGER NOT NULL,
             created_unix_ms INTEGER NOT NULL,
             updated_unix_ms INTEGER NOT NULL,
+            candidate_state TEXT CHECK (candidate_state IS NULL OR candidate_state IN ('PendingContext', 'Provisional', 'Complete', 'Rejected')),
             FOREIGN KEY (event_id) REFERENCES transient_event_identities(event_id)
         ) STRICT;
         CREATE TABLE IF NOT EXISTS transient_candidate_sources (
@@ -2441,6 +2451,8 @@ internal sealed class SqliteRawCaptureJournal(
         ) STRICT;
         CREATE INDEX IF NOT EXISTS ix_transient_candidates_backlog
             ON transient_candidates(state, created_unix_ms, candidate_id);
+        CREATE INDEX IF NOT EXISTS ix_transient_candidates_operator
+            ON transient_candidates(created_unix_ms DESC, candidate_id DESC);
         CREATE INDEX IF NOT EXISTS ix_transient_candidate_sources_raw
             ON transient_candidate_sources(raw_capture_row_id, candidate_id);
         CREATE INDEX IF NOT EXISTS ix_transient_capture_work_backlog
@@ -2449,6 +2461,14 @@ internal sealed class SqliteRawCaptureJournal(
             ON transient_candidate_conflicts(observed_unix_ms, conflict_id);
         CREATE INDEX IF NOT EXISTS ix_transient_candidate_conflicts_candidate
             ON transient_candidate_conflicts(candidate_id, conflict_id);
+        """;
+
+    private const string TransientCandidateStateV10MigrationSql = """
+        ALTER TABLE transient_candidates ADD COLUMN candidate_state TEXT
+            CHECK (candidate_state IS NULL OR candidate_state IN ('PendingContext', 'Provisional', 'Complete', 'Rejected'));
+        UPDATE transient_candidates
+        SET candidate_state = json_extract(CAST(candidate_payload AS TEXT), '$.state')
+        WHERE candidate_payload IS NOT NULL;
         """;
 
     private const string TransientCaptureWorkV5MigrationSql = """

@@ -1,0 +1,56 @@
+@page "/transients"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Transients</PageTitle>
+
+<div class="transient-page">
+    <header class="page-heading">
+        <div><p class="eyebrow">Protected local evidence</p><h1>Transient candidates</h1><p>Bounded durable candidate and event workflow state, newest first.</p></div>
+        @if (_page is not null) { <span class="result-count">@_page.Items.Count candidate@(_page.Items.Count == 1 ? string.Empty : "s")</span> }
+    </header>
+
+    @if (_isLoading)
+    {
+        <section class="page-state" role="status"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><strong>Loading transient evidence</strong></section>
+    }
+    else if (_errorMessage is not null)
+    {
+        <section class="page-state page-state--error" role="alert"><div><strong>Transient evidence unavailable</strong><p>@_errorMessage</p></div><button class="btn btn-outline-light" @onclick="LoadAsync">Try again</button></section>
+    }
+    else if (_page is null || _page.Items.Count == 0)
+    {
+        <section class="page-state" role="status"><div><strong>No transient candidates</strong><p>No durable candidate workflow evidence is present on this page.</p></div></section>
+    }
+    else
+    {
+        @if (_page.NextCursor is not null) { <p class="bounded-state">This bounded page omits older candidates.</p> }
+        <section class="candidate-list" aria-label="Transient candidates">
+            @foreach (var candidate in _page.Items)
+            {
+                <article>
+                    <header><div><p class="eyebrow">@FormatTime(candidate.CreatedUtc)</p><h2><a href="@DetailUrl(candidate.CandidateId)">@candidate.CandidateId</a></h2></div><span class="event-state">@SplitWords(candidate.EventState)</span></header>
+                    <dl>
+                        <div><dt>Candidate state</dt><dd>@SplitWords(candidate.CandidateState)</dd></div>
+                        <div><dt>Workflow phase</dt><dd>@SplitWords(candidate.WorkflowPhase)</dd></div>
+                        <div><dt>Event ID</dt><dd><code>@candidate.EventId</code></dd></div>
+                        <div><dt>Updated</dt><dd>@FormatTime(candidate.UpdatedUtc)</dd></div>
+                    </dl>
+                    <div class="stage-strip" aria-label="Evidence stages">
+                        <span class="@StageClass(candidate.CausalEvidenceState)"><strong>Causal</strong>@candidate.CausalEvidenceState</span>
+                        <span class="@StageClass(candidate.CenteredEvidenceState)"><strong>Centered</strong>@candidate.CenteredEvidenceState</span>
+                        <span class="@StageClass(candidate.AssessmentEvidenceState)"><strong>Assessment</strong>@candidate.AssessmentEvidenceState</span>
+                        <span class="@StageClass(candidate.FinalEvidenceState)"><strong>Final</strong>@candidate.FinalEvidenceState</span>
+                    </div>
+                    <a class="detail-link" href="@DetailUrl(candidate.CandidateId)">Inspect candidate evidence <span aria-hidden="true">&rarr;</span></a>
+                </article>
+            }
+        </section>
+        <nav class="cursor-nav" aria-label="Transient pages">
+            @if (!string.IsNullOrWhiteSpace(Cursor)) { <button class="btn btn-outline-light" @onclick="ShowNewest">Newest candidates</button> }
+            @if (_page.NextCursor is not null) { <button class="btn btn-primary" @onclick="ShowOlder">Older candidates</button> }
+        </nav>
+    }
+</div>

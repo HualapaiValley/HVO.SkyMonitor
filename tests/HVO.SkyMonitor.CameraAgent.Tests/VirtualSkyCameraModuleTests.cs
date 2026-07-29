@@ -1145,6 +1145,44 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
+    public async Task CaptureAsyncWithFixedSequenceStartUsesEffectiveRequestCadence()
+    {
+        var sequenceStartUtc = FixtureUtc.AddDays(-30);
+        using var options = JsonDocument.Parse($$"""
+            {
+              "fixedSequenceStartUtc": "{{sequenceStartUtc:O}}"
+            }
+            """);
+        var config = CreateConfig() with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", options.RootElement.Clone()),
+            Rig = CreateConfig().Rig with
+            {
+                Pipeline = CreateConfig().Rig.Pipeline with { CaptureInterval = TimeSpan.FromSeconds(10) }
+            }
+        };
+        var module = CreateModule(FixtureUtc);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+        var first = await module.CaptureAsync(
+            new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(7), CaptureMode.Still),
+            CancellationToken.None).ConfigureAwait(false);
+        var second = await module.CaptureAsync(
+            new CaptureRequest(FixtureUtc.AddHours(1), TimeSpan.FromSeconds(11), CaptureMode.Still),
+            CancellationToken.None).ConfigureAwait(false);
+        var third = await module.CaptureAsync(
+            new CaptureRequest(FixtureUtc.AddHours(2), TimeSpan.FromSeconds(3), CaptureMode.Still),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(sequenceStartUtc, first.Frame!.Metadata.Scene!.SceneUtc);
+        Assert.AreEqual(sequenceStartUtc.AddSeconds(7), second.Frame!.Metadata.Scene!.SceneUtc);
+        Assert.AreEqual(sequenceStartUtc.AddSeconds(18), third.Frame!.Metadata.Scene!.SceneUtc);
+        Assert.AreEqual(FixtureUtc, first.Frame.TimestampUtc);
+        Assert.AreEqual(FixtureUtc.AddHours(1), second.Frame.TimestampUtc);
+        Assert.AreEqual(FixtureUtc.AddHours(2), third.Frame.TimestampUtc);
+    }
+
+    [TestMethod]
     public async Task CaptureAsyncWithFullAsi174ProfileProducesCanonicalMono16Frame()
     {
         var module = CreateModule(FixtureUtc);

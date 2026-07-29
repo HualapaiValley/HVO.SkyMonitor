@@ -22,6 +22,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -48,17 +49,54 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IDeploymentLocationStore, ProtectedDeploymentLocationStore>();
         services.AddSingleton<ICameraAgentConfigurationLoader, FileCameraAgentConfigurationLoader>();
         services.AddSingleton<IFrameStorageService, FileSystemFrameStorageService>();
-        services.AddSingleton<IStorageCapacityProvider, FileSystemStorageCapacityProvider>();
+        var acceptanceFaultRoot = configuration["CameraAgent:AcceptanceFaultControlRoot"];
+        if (!string.IsNullOrWhiteSpace(acceptanceFaultRoot))
+        {
+            if (!string.Equals(
+                    Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
+                    "StandaloneW6",
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    configuration["CameraAgent:CentralIntegration:Mode"],
+                    "Disabled",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Acceptance fault control is permitted only in StandaloneW6 with central integration disabled.");
+            }
+            services.AddSingleton(new CameraAgentAcceptanceFaultController(acceptanceFaultRoot));
+            services.AddSingleton<IStorageCapacityProvider>(provider =>
+                provider.GetRequiredService<CameraAgentAcceptanceFaultController>());
+            services.AddSingleton<IRawIngressFaultInjector>(provider =>
+                provider.GetRequiredService<CameraAgentAcceptanceFaultController>());
+            services.AddSingleton<ICalibrationPublicationFaultInjector>(provider =>
+                provider.GetRequiredService<CameraAgentAcceptanceFaultController>());
+            services.AddSingleton<ITransientCandidateFaultInjector>(provider =>
+                provider.GetRequiredService<CameraAgentAcceptanceFaultController>());
+            services.AddSingleton<ITransientRuntimeFaultInjector>(provider =>
+                provider.GetRequiredService<CameraAgentAcceptanceFaultController>());
+            services.AddSingleton<ICaptureProcessingFaultInjector>(provider =>
+                provider.GetRequiredService<CameraAgentAcceptanceFaultController>());
+            services.AddSingleton<IAcceptanceRetentionControl>(provider =>
+                provider.GetRequiredService<CameraAgentAcceptanceFaultController>());
+        }
+        else
+        {
+            services.AddSingleton<IStorageCapacityProvider, FileSystemStorageCapacityProvider>();
+            services.AddSingleton<IRawIngressFaultInjector, NullRawIngressFaultInjector>();
+            services.AddSingleton<ICalibrationPublicationFaultInjector>(
+                NullCalibrationPublicationFaultInjector.Instance);
+            services.AddSingleton<ITransientCandidateFaultInjector>(NullTransientCandidateFaultInjector.Instance);
+            services.AddSingleton<ITransientRuntimeFaultInjector>(NullTransientRuntimeFaultInjector.Instance);
+            services.AddSingleton<ICaptureProcessingFaultInjector>(NullCaptureProcessingFaultInjector.Instance);
+        }
         services.AddSingleton<StoragePressureState>();
         services.AddSingleton<RawIngressState>();
         services.AddSingleton<RawIngressTelemetry>();
         services.AddSingleton<CaptureLaneState>();
         services.AddSingleton<CaptureLaneTelemetry>();
-        services.AddSingleton<IRawIngressFaultInjector, NullRawIngressFaultInjector>();
         services.AddSingleton<ICaptureLaneFaultInjector, NullCaptureLaneFaultInjector>();
         services.AddSingleton<CalibrationTelemetry>();
-        services.AddSingleton<ITransientCandidateFaultInjector>(NullTransientCandidateFaultInjector.Instance);
-        services.AddSingleton<ITransientRuntimeFaultInjector>(NullTransientRuntimeFaultInjector.Instance);
         services.AddSingleton<CaptureLanePolicy>();
         services.AddSingleton<RawCaptureIngress>();
         services.AddSingleton<IRawCaptureIngress>(provider => provider.GetRequiredService<RawCaptureIngress>());
@@ -66,8 +104,6 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICaptureLaneStore>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<SqliteCaptureScheduleStore>();
         services.AddSingleton<SqliteCalibrationLibraryStore>();
-        services.AddSingleton<ICalibrationPublicationFaultInjector>(
-            NullCalibrationPublicationFaultInjector.Instance);
         services.AddSingleton<CalibrationArtifactPublisher>();
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
@@ -75,6 +111,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<SqliteTransientCandidateJournal>();
         services.AddSingleton<ITransientCandidateJournal>(provider =>
             provider.GetRequiredService<SqliteTransientCandidateJournal>());
+        services.AddSingleton<ICameraAgentTransientOperatorProjection, SqliteCameraAgentTransientOperatorProjection>();
         services.AddSingleton<SqliteTransientRuntimeStore>();
         services.AddSingleton<ITransientRuntimeManagement>(provider =>
             provider.GetRequiredService<SqliteTransientRuntimeStore>());
@@ -173,7 +210,8 @@ public static class CameraAgentServiceCollectionExtensions
             new CompositeProcessingRetentionHolds(
                 provider.GetRequiredService<CaptureProcessingPersistence>(),
                 provider.GetRequiredService<CameraAgentClearReferenceLoader>(),
-                provider.GetRequiredService<SqliteCalibrationLibraryStore>()));
+                provider.GetRequiredService<SqliteCalibrationLibraryStore>(),
+                provider.GetService<IAcceptanceRetentionControl>()));
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         services.AddSingleton<CameraAgentRecipeExecutionAdapter>();
         services.AddSingleton<ArtifactOutboxState>();

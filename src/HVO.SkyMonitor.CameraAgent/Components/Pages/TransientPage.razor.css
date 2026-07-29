@@ -1,0 +1,24 @@
+.transient-page { display: grid; gap: 1.4rem; }
+.page-heading, .candidate-list article > header, .cursor-nav { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+h1, h2, p { margin: 0; }
+h2 { font-size: 1rem; overflow-wrap: anywhere; }
+h2 a, .detail-link { color: #9ce8dd; text-decoration: none; }
+.eyebrow { color: var(--hvo-accent, #79d9ca); font-size: .74rem; letter-spacing: .11em; text-transform: uppercase; }
+.result-count, .event-state { border: 1px solid rgba(121,217,202,.35); border-radius: 999px; padding: .35rem .7rem; white-space: nowrap; }
+.page-state, .candidate-list article { background: rgba(10,20,29,.76); border: 1px solid rgba(255,255,255,.11); border-radius: .85rem; padding: 1rem; }
+.page-state { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.page-state--error { color: #ffbf7a; }
+.bounded-state { color: rgba(236,245,247,.67); }
+.candidate-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 390px), 1fr)); gap: 1rem; }
+.candidate-list article { display: grid; gap: 1rem; }
+dl { display: grid; gap: .45rem; margin: 0; }
+dl div { display: flex; justify-content: space-between; gap: 1rem; }
+dt { color: rgba(236,245,247,.67); }
+dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.stage-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: .45rem; }
+.stage { display: grid; gap: .1rem; border: 1px solid rgba(255,255,255,.12); border-radius: .55rem; padding: .5rem; color: rgba(236,245,247,.65); font-size: .78rem; }
+.stage strong { color: #edf8f7; font-size: .72rem; text-transform: uppercase; }
+.stage--available { border-color: rgba(125,226,184,.45); color: #7de2b8; }
+.stage--pending { border-color: rgba(255,191,122,.35); color: #ffbf7a; }
+.detail-link { justify-self: end; }
+@media (max-width: 680px) { .page-heading { align-items: flex-start; flex-direction: column; }.stage-strip { grid-template-columns: repeat(2, 1fr); }.cursor-nav { align-items: stretch; flex-direction: column; }.cursor-nav button { width: 100%; } }

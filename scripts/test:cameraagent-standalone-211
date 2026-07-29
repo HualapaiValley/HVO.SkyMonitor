@@ -1,0 +1,1205 @@
+#!/usr/bin/env bash
+# Run the opt-in full-catalog ASI676MC standalone milestone for issue #211.
+
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+script_directory="${BASH_SOURCE[0]%/*}"
+[[ "$script_directory" != "${BASH_SOURCE[0]}" ]] || script_directory='.'
+readonly SCRIPT_DIR="$(cd "$script_directory" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
+readonly COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/issue-211/compose.yml"
+readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/issue-197/otel-collector.yml"
+readonly CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6.json"
+readonly MONO_CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6-mono8.json"
+readonly RESULTS_BASE="$REPO_ROOT/TestResults/issue-211"
+readonly BIND_LOCAL_ROOT="$REPO_ROOT/data/agent/issue-211"
+readonly COLLECTOR_DIGEST='sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6'
+readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b'
+readonly HTTP_PORT="${HVO_ISSUE_211_HTTP_PORT:-52110}"
+readonly TRIAL_COUNT="${HVO_ISSUE_211_TRIAL_COUNT:-5}"
+readonly WARMUP_CAPTURE_COUNT=2
+readonly MEASURED_CAPTURE_COUNT=10
+
+if [[ $# -ne 0 || -z "${HVO_CATALOG_PERF_ROOT:-}" || -z "${HVO_OTEL_COLLECTOR_IMAGE:-}" ]]; then
+    printf 'Usage: HVO_CATALOG_PERF_ROOT=INSTALLED_PRODUCTION_CATALOG_ROOT HVO_OTEL_COLLECTOR_IMAGE=IMAGE@sha256:DIGEST %s\n' "${0##*/}" >&2
+    exit 2
+fi
+if [[ ! -d "$HVO_CATALOG_PERF_ROOT" ]]; then
+    printf 'Production catalog installation root does not exist: %s\n' "$HVO_CATALOG_PERF_ROOT" >&2
+    exit 2
+fi
+if [[ "$HVO_OTEL_COLLECTOR_IMAGE" != *@"$COLLECTOR_DIGEST" ]]; then
+    printf 'Collector image must use the reviewed digest %s.\n' "$COLLECTOR_DIGEST" >&2
+    exit 2
+fi
+if [[ "$TRIAL_COUNT" != 5 ]]; then
+    printf 'HVO_ISSUE_211_TRIAL_COUNT must be exactly 5.\n' >&2
+    exit 2
+fi
+for command in cat chmod cp curl date dirname docker dotnet flock git hostname id jq mkdir mv openssl rg rm sha256sum stat tr; do
+    command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
+done
+readonly LOCAL_UID="$(id -u)"
+readonly LOCAL_GID="$(id -g)"
+
+compute_dirty_sha256() {
+    {
+        git -C "$REPO_ROOT" diff --binary HEAD
+        while IFS= read -r -d '' path; do
+            printf 'untracked\0%s\0' "$path"
+            git -C "$REPO_ROOT" hash-object -- "$path"
+        done < <(git -C "$REPO_ROOT" ls-files --others --exclude-standard -z)
+    } | sha256sum | { read -r hash _; printf '%s' "$hash"; }
+}
+
+readonly REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+readonly BRANCH="$(git -C "$REPO_ROOT" branch --show-current)"
+readonly DIRTY_SHA256="$(compute_dirty_sha256)"
+readonly WORKTREE_FINGERPRINT="${REVISION:0:12}-${DIRTY_SHA256:0:12}"
+readonly RUN_ID="$(date -u +'%Y%m%dT%H%M%SZ')-$$"
+readonly RESULTS="$RESULTS_BASE/$WORKTREE_FINGERPRINT/$RUN_ID"
+readonly DOTNET_SDK_VERSION="$(dotnet --version)"
+readonly DOCKER_SERVER_VERSION="$(docker version --format '{{.Server.Version}}')"
+
+assert_worktree_unchanged() {
+    local current_revision current_dirty_sha256
+    current_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    current_dirty_sha256="$(compute_dirty_sha256)"
+    if [[ "$current_revision" != "$REVISION" || "$current_dirty_sha256" != "$DIRTY_SHA256" ]]; then
+        printf 'The issue #211 worktree changed after fingerprint capture; refusing mixed-source evidence.\n' >&2
+        return 1
+    fi
+}
+
+assert_no_owned_acceptance_resources() {
+    local resources=()
+    mapfile -t resources < <(
+        docker ps --all --quiet --filter 'name=hvo211-'
+        docker network ls --quiet --filter 'name=hvo211-'
+        docker volume ls --quiet --filter 'name=hvo211-'
+    )
+    if ((${#resources[@]} != 0)); then
+        printf 'Owned hvo211 acceptance resources remain: %s\n' "${resources[*]}" >&2
+        return 1
+    fi
+}
+
+git_common_directory="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+container_workspace="$(dirname "$git_common_directory")"
+host_workspace=""
+if docker inspect "$(hostname)" >/dev/null 2>&1; then
+    host_workspace="$(docker inspect "$(hostname)" --format '{{json .Mounts}}' |
+        jq -er --arg destination "$container_workspace" '
+          [.[] | select(.Destination == $destination and .Type == "bind") | .Source] |
+          if length <= 1 then .[0] // "" else error("multiple workspace bind mounts matched") end')"
+fi
+if [[ -n "$host_workspace" ]]; then
+    readonly BIND_HOST_ROOT="$host_workspace/data/agent/issue-211"
+    if [[ -n "${HVO_ISSUE_211_DOCKER_HOST_ADDRESS:-}" ]]; then
+        docker_host_address="$HVO_ISSUE_211_DOCKER_HOST_ADDRESS"
+    else
+        docker_host_address="$(docker inspect "$(hostname)" |
+            jq -er '
+              [.[0].NetworkSettings.Networks | to_entries[] | .value.Gateway |
+                select(type == "string" and length > 0)] |
+              if length == 1 then .[0] else error("expected exactly one container gateway") end')"
+    fi
+else
+    readonly BIND_HOST_ROOT="$BIND_LOCAL_ROOT"
+    docker_host_address="${HVO_ISSUE_211_DOCKER_HOST_ADDRESS:-127.0.0.1}"
+fi
+if [[ -z "$docker_host_address" || "$docker_host_address" =~ [[:space:]] ]]; then
+    printf 'HVO_ISSUE_211_DOCKER_HOST_ADDRESS must resolve to exactly one non-empty address.\n' >&2
+    exit 2
+fi
+readonly DOCKER_HOST_ADDRESS="$docker_host_address"
+
+mkdir -p "$(dirname "$BIND_LOCAL_ROOT")"
+exec 8> "$(dirname "$BIND_LOCAL_ROOT")/.issue-211.lock"
+flock -n 8 || { printf 'Another issue #211 runner owns the bind root.\n' >&2; exit 2; }
+assert_no_owned_acceptance_resources
+
+mkdir -p "$RESULTS"
+if [[ -e "$BIND_LOCAL_ROOT" ]]; then
+    [[ -f "$BIND_LOCAL_ROOT/.hvo-issue-211-owned" ]] || {
+        printf 'Refusing to delete an unmarked issue #211 bind root: %s\n' "$BIND_LOCAL_ROOT" >&2
+        exit 2
+    }
+    chmod -R u+w "$BIND_LOCAL_ROOT" 2>/dev/null || true
+    rm -rf -- "$BIND_LOCAL_ROOT"
+fi
+mkdir -p "$BIND_LOCAL_ROOT"
+printf '%s\n' 'hvo-issue-211-owned-v1' > "$BIND_LOCAL_ROOT/.hvo-issue-211-owned"
+read -r available_blocks block_size < <(stat -f --format='%a %S' "$BIND_LOCAL_ROOT")
+available_bytes=$((available_blocks * block_size))
+readonly DECLARED_BOUNDED_TRIAL_FOOTPRINT_BYTES=$((12 * 1024 * 1024 * 1024))
+readonly MINIMUM_FREE_BYTES=$((20 * 1024 * 1024 * 1024))
+required_footprint_headroom_bytes=$((4 * DECLARED_BOUNDED_TRIAL_FOOTPRINT_BYTES))
+readonly REQUIRED_FREE_BYTES=$((required_footprint_headroom_bytes > MINIMUM_FREE_BYTES ? required_footprint_headroom_bytes : MINIMUM_FREE_BYTES))
+if ((available_bytes < REQUIRED_FREE_BYTES)); then
+    printf 'Issue #211 requires at least %s bytes free (20 GiB and four times the bounded trial footprint); found %s bytes.\n' "$REQUIRED_FREE_BYTES" "$available_bytes" >&2
+    exit 2
+fi
+
+collector_config="$RESULTS/docker-config"
+mkdir -p "$collector_config"
+printf '{"auths":{}}\n' > "$collector_config/config.json"
+for image in "$HVO_OTEL_COLLECTOR_IMAGE" "$CENTRAL_DENY_IMAGE"; do
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        DOCKER_CONFIG="$collector_config" docker pull "$image"
+    fi
+done
+
+image_iid_file="$RESULTS/cameraagent-image-id"
+assert_worktree_unchanged
+docker build --iidfile "$image_iid_file" -f "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT" 8>&-
+assert_worktree_unchanged
+readonly CAMERA_AGENT_IMAGE="$(<"$image_iid_file")"
+[[ "$CAMERA_AGENT_IMAGE" == sha256:* ]] || { printf 'CameraAgent image is not content addressed.\n' >&2; exit 1; }
+assert_worktree_unchanged
+dotnet build "$PROJECT" --configuration Release -warnaserror 8>&-
+assert_worktree_unchanged
+
+active_project=""
+active_env=""
+active_client_network=""
+active_owner_email=""
+active_owner_password=""
+cleanup() {
+    if [[ -n "$active_project" ]]; then
+        local failure_log="$RESULTS/failure-$active_project.log"
+        while IFS= read -r line; do
+            line="${line//$active_owner_email/[REDACTED-OWNER]}"
+            line="${line//$active_owner_password/[REDACTED-PASSWORD]}"
+            if [[ "$line" =~ [Aa]uthorization:[[:space:]]*(Basic|Bearer)|[Ss]et-[Cc]ookie:|[Rr]equest[Vv]erification[Tt]oken|[Aa]ntiforgery|[Cc]lient[_-]?[Ss]ecret|[Cc]onnection[_-]?[Ss]tring ]]; then
+                printf '%s\n' '[REDACTED-SENSITIVE-LOG-LINE]'
+            else
+                printf '%s\n' "$line"
+            fi
+        done < <(docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" logs --no-color --tail 20000 2>&1 || true) \
+            > "$failure_log"
+        if [[ -n "$active_client_network" ]]; then
+            docker network disconnect "$active_client_network" "$(hostname)" >/dev/null 2>&1 || true
+            active_client_network=""
+        fi
+        docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+run_profile_trial() {
+    local trial="$1"
+    local config_template="$2"
+    local agent_id="$3"
+    local calibration_required="$4"
+    local test_filter="$5"
+    local result_file="$6"
+    local warmup_capture_count="$7"
+    local measured_capture_count="$8"
+    local transient_mode="$9"
+    local transient_required="${10}"
+    assert_worktree_unchanged
+    local trial_result="$RESULTS/$trial"
+    local trial_local="$BIND_LOCAL_ROOT/$trial"
+    local trial_host="$BIND_HOST_ROOT/$trial"
+    mkdir -p "$trial_result/evidence" "$trial_local"/{config,runtime/home,dataprotection,secrets,telemetry,catalog}
+    jq '
+      .schedule.blackouts = [{
+        "id": "w6-bootstrap-closed",
+        "startUtc": "2020-01-01T00:00:00Z",
+        "endUtc": "2100-01-01T00:00:00Z"
+      }]
+    ' "$config_template" > "$trial_local/config/cameraagent.json"
+    cp "$COLLECTOR_CONFIG" "$trial_local/config/otel-collector.yml"
+    cp -a "$HVO_CATALOG_PERF_ROOT/." "$trial_local/catalog/"
+    local owner_password="Aa!$(openssl rand -base64 36 | tr -d '\n')"
+    local owner_email='standalone-owner@cameraagent.test'
+    active_owner_email="$owner_email"
+    active_owner_password="$owner_password"
+    printf '%s\n' "$owner_password" > "$trial_local/secrets/owner-password"
+    chmod 600 "$trial_local/secrets/owner-password"
+
+    local suffix="${REVISION:0:8}-${trial//[^a-zA-Z0-9]/}-$$"
+    active_project="hvo211-$suffix"
+    active_env="$trial_local/compose.env"
+    cat > "$active_env" <<EOF
+CAMERA_AGENT_IMAGE=$CAMERA_AGENT_IMAGE
+CAMERA_AGENT_CONTAINER=hvo211-$suffix-camera
+ISSUE211_PROXY_CONTAINER=hvo211-$suffix-proxy
+CAMERA_AGENT_ID=$agent_id
+CAMERA_AGENT_CALIBRATION_REQUIRED=$calibration_required
+CAMERA_AGENT_TRANSIENT_MODE=$transient_mode
+CAMERA_AGENT_TRANSIENT_REQUIRED=$transient_required
+ISSUE211_BIND_ADDRESS=$DOCKER_HOST_ADDRESS
+ISSUE211_HTTP_PORT=$HTTP_PORT
+CAMERA_AGENT_RUNTIME_SOURCE=$trial_host/runtime
+CAMERA_AGENT_DATA_PROTECTION_SOURCE=$trial_host/dataprotection
+CAMERA_AGENT_CONFIG_SOURCE=$trial_host/config/cameraagent.json
+CAMERA_AGENT_CATALOG_SOURCE=$trial_host/catalog
+CAMERA_AGENT_OWNER_PASSWORD_FILE=$trial_host/secrets/owner-password
+CAMERA_AGENT_OWNER_EMAIL=$owner_email
+OTEL_COLLECTOR_IMAGE=$HVO_OTEL_COLLECTOR_IMAGE
+OTEL_COLLECTOR_CONTAINER=hvo211-$suffix-collector
+OTEL_COLLECTOR_CONFIG_SOURCE=$trial_host/config/otel-collector.yml
+OTEL_EVIDENCE_SOURCE=$trial_host/telemetry
+CENTRAL_DENY_IMAGE=$CENTRAL_DENY_IMAGE
+CENTRAL_DENY_CONTAINER=hvo211-$suffix-central-deny
+LOCAL_UID=$LOCAL_UID
+LOCAL_GID=$LOCAL_GID
+EOF
+    docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" config --quiet
+    docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" up --detach
+    local base_uri="http://$DOCKER_HOST_ADDRESS:$HTTP_PORT"
+    if [[ -n "$host_workspace" ]]; then
+        active_client_network="${active_project}_isolated"
+        docker network connect "$active_client_network" "$(hostname)"
+        local camera_ip
+        camera_ip="$(docker inspect "hvo211-$suffix-camera" |
+            jq -er --arg network "$active_client_network" '
+              .[0].NetworkSettings.Networks[$network].IPAddress |
+              select(type == "string" and length > 0)')"
+        base_uri="http://$camera_ip:8080"
+    fi
+
+    HVO_ISSUE_211_TRIAL="$trial" \
+    HVO_ISSUE_211_REVISION="$REVISION" \
+    HVO_ISSUE_211_BRANCH="$BRANCH" \
+    HVO_ISSUE_211_DIRTY_SHA256="$DIRTY_SHA256" \
+    HVO_ISSUE_211_EVIDENCE_ROOT="$trial_result/evidence" \
+    HVO_ISSUE_211_BASE_URI="$base_uri" \
+    HVO_ISSUE_211_RUNTIME_ROOT="$trial_local/runtime" \
+    HVO_ISSUE_211_CONTAINER="hvo211-$suffix-camera" \
+    HVO_ISSUE_211_PROXY_CONTAINER="hvo211-$suffix-proxy" \
+    HVO_ISSUE_211_COLLECTOR_CONTAINER="hvo211-$suffix-collector" \
+    HVO_ISSUE_211_CENTRAL_DENY_CONTAINER="hvo211-$suffix-central-deny" \
+    HVO_ISSUE_211_CENTRAL_HANDLER_LOG="$trial_local/runtime/central-http-attempts.log" \
+    HVO_ISSUE_211_OWNER_PASSWORD_FILE="$trial_local/secrets/owner-password" \
+    HVO_ISSUE_211_CAMERA_IMAGE="$CAMERA_AGENT_IMAGE" \
+    HVO_ISSUE_211_WORKTREE_FINGERPRINT="$WORKTREE_FINGERPRINT" \
+    HVO_ISSUE_211_BOUNDED_FOOTPRINT_BYTES="$DECLARED_BOUNDED_TRIAL_FOOTPRINT_BYTES" \
+    HVO_ISSUE_211_REQUIRED_FREE_BYTES="$REQUIRED_FREE_BYTES" \
+    HVO_ISSUE_211_DOTNET_SDK_VERSION="$DOTNET_SDK_VERSION" \
+    HVO_ISSUE_211_DOCKER_SERVER_VERSION="$DOCKER_SERVER_VERSION" \
+    HVO_ISSUE_211_COLLECTOR_IMAGE="$HVO_OTEL_COLLECTOR_IMAGE" \
+    HVO_ISSUE_211_CENTRAL_DENY_IMAGE="$CENTRAL_DENY_IMAGE" \
+    HVO_ISSUE_211_WARMUP_CAPTURES="$warmup_capture_count" \
+    HVO_ISSUE_211_MEASURED_CAPTURES="$measured_capture_count" \
+        dotnet test "$PROJECT" --no-build --configuration Release \
+        --filter "FullyQualifiedName~$test_filter" \
+        --results-directory "$trial_result" \
+        --logger "trx;LogFileName=$result_file" \
+        --logger 'console;verbosity=normal' 8>&-
+    assert_worktree_unchanged
+
+    local profile_evidence_file='issue-211-w6.json'
+    if [[ "$calibration_required" != true ]]; then
+        profile_evidence_file='issue-211-mono8.json'
+    fi
+    docker stop --timeout 30 "hvo211-$suffix-camera" >/dev/null
+    cp "$trial_local/runtime/central-http-attempts.log" \
+        "$trial_result/evidence/central-http-attempts.log"
+    while IFS= read -r line; do
+        printf '%s\n' "${line//$owner_email/[REDACTED-OWNER]}"
+    done < <(docker logs --timestamps --tail 20000 "hvo211-$suffix-camera" 2>&1) \
+        > "$trial_result/evidence/cameraagent.log"
+    docker logs --timestamps --tail 20000 "hvo211-$suffix-collector" > "$trial_result/evidence/collector.log" 2>&1
+    docker logs --timestamps --tail 20000 "hvo211-$suffix-central-deny" > "$trial_result/evidence/central-deny.log" 2>&1
+    local deny_rg_status=0
+    local final_deny_hits=0
+    final_deny_hits="$(rg --count-matches --fixed-strings 'HVO211_DENY_HIT' \
+        "$trial_result/evidence/central-deny.log")" || deny_rg_status=$?
+    if ((deny_rg_status > 1)); then
+        printf 'Unable to scan the final central-deny log for %s (rg exit %s).\n' "$trial" "$deny_rg_status" >&2
+        return 1
+    fi
+    if ((deny_rg_status == 1)); then
+        final_deny_hits=0
+    fi
+    local final_handler_rg_status=0
+    local final_central_handler_attempts=0
+    rg --text --invert-match '^(HVO211_HANDLER_READY|HVO211_HANDLER_ATTEMPT .+)$' \
+        "$trial_local/runtime/central-http-attempts.log" >/dev/null || final_handler_rg_status=$?
+    if ((final_handler_rg_status == 0 || final_handler_rg_status > 1)); then
+        printf 'The final central-handler log is invalid for %s (rg exit %s).\n' \
+            "$trial" "$final_handler_rg_status" >&2
+        return 1
+    fi
+    final_handler_rg_status=0
+    final_central_handler_attempts="$(rg --count-matches '^HVO211_HANDLER_ATTEMPT ' \
+        "$trial_local/runtime/central-http-attempts.log")" || final_handler_rg_status=$?
+    if ((final_handler_rg_status > 1)); then
+        printf 'Unable to scan final central-handler attempts for %s (rg exit %s).\n' \
+            "$trial" "$final_handler_rg_status" >&2
+        return 1
+    fi
+    if ((final_handler_rg_status == 1)); then
+        final_central_handler_attempts=0
+    fi
+    local final_handler_ready_count=0
+    final_handler_rg_status=0
+    final_handler_ready_count="$(rg --count-matches '^HVO211_HANDLER_READY$' \
+        "$trial_local/runtime/central-http-attempts.log")" || final_handler_rg_status=$?
+    if ((final_handler_rg_status > 1)); then
+        printf 'Unable to scan final central-handler readiness for %s (rg exit %s).\n' \
+            "$trial" "$final_handler_rg_status" >&2
+        return 1
+    fi
+    if ((final_handler_rg_status == 1)); then
+        final_handler_ready_count=0
+    fi
+    if ((final_handler_ready_count < 1)); then
+        printf 'The final central-handler log has no ready record for %s.\n' "$trial" >&2
+        return 1
+    fi
+    local in_test_central_attempts
+    in_test_central_attempts="$(jq -er '.centralTrafficAttempts | select(type == "number")' \
+        "$trial_result/evidence/$profile_evidence_file")"
+    local in_test_central_handler_attempts
+    in_test_central_handler_attempts="$(jq -er '.centralHandlerAttempts | select(type == "number")' \
+        "$trial_result/evidence/$profile_evidence_file")"
+    jq -n \
+        --arg trial "$trial" \
+        --argjson inTestCentralTrafficAttempts "$in_test_central_attempts" \
+        --argjson inTestCentralHandlerAttempts "$in_test_central_handler_attempts" \
+        --argjson finalCentralHandlerAttempts "$final_central_handler_attempts" \
+        --argjson finalCentralHandlerReadyRecords "$final_handler_ready_count" \
+        --argjson finalDenyHits "$final_deny_hits" '
+      {
+        schemaVersion: "issue-211-central-traffic-gate-v1",
+        trial: $trial,
+        inTestCentralTrafficAttempts: $inTestCentralTrafficAttempts,
+        inTestCentralHandlerAttempts: $inTestCentralHandlerAttempts,
+        finalCentralHandlerAttempts: $finalCentralHandlerAttempts,
+        finalCentralHandlerReadyRecords: $finalCentralHandlerReadyRecords,
+        finalDenyHits: $finalDenyHits,
+        passed: ($inTestCentralTrafficAttempts == 0 and $inTestCentralHandlerAttempts == 0 and
+          $finalCentralHandlerAttempts == 0 and $finalCentralHandlerReadyRecords >= 1 and $finalDenyHits == 0)
+      }
+    ' > "$trial_result/evidence/central-traffic-gate.json"
+    docker stop --timeout 10 "hvo211-$suffix-collector" "hvo211-$suffix-central-deny" >/dev/null
+    jq --exit-status '.passed == true' "$trial_result/evidence/central-traffic-gate.json" >/dev/null
+    cp -a "$trial_local/telemetry" "$trial_result/evidence/runtime"
+    local raw_logs="$trial_local/raw-telemetry-logs.json"
+    cp "$trial_result/evidence/runtime/logs.json" "$raw_logs"
+    local raw_log_scan_status=0
+    rg --text --ignore-case \
+        '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret|connection[_-]?string|owner[_-]?password)' \
+        "$raw_logs" >/dev/null || raw_log_scan_status=$?
+    if ((raw_log_scan_status == 0)); then
+        printf 'Unsanitized telemetry logs contain a forbidden credential pattern for %s.\n' "$trial" >&2
+        return 1
+    fi
+    if ((raw_log_scan_status > 1)); then
+        printf 'Unable to scan unsanitized telemetry logs for %s (rg exit %s).\n' "$trial" "$raw_log_scan_status" >&2
+        return 1
+    fi
+    for sensitive_file in "$trial_local/secrets/owner-password"; do
+        raw_log_scan_status=0
+        rg --text --fixed-strings --file "$sensitive_file" "$raw_logs" >/dev/null || raw_log_scan_status=$?
+        if ((raw_log_scan_status == 0)); then
+            printf 'Unsanitized telemetry logs contain generated credentials for %s.\n' "$trial" >&2
+            return 1
+        fi
+        if ((raw_log_scan_status > 1)); then
+            printf 'Unable to scan generated credentials in telemetry logs for %s (rg exit %s).\n' \
+                "$trial" "$raw_log_scan_status" >&2
+            return 1
+        fi
+    done
+    raw_log_scan_status=0
+    rg --text --fixed-strings "$owner_email" "$raw_logs" >/dev/null || raw_log_scan_status=$?
+    if ((raw_log_scan_status == 0)); then
+        printf 'Unsanitized telemetry logs contain the synthetic owner identity for %s.\n' "$trial" >&2
+        return 1
+    fi
+    if ((raw_log_scan_status > 1)); then
+        printf 'Unable to scan the synthetic owner identity in telemetry logs for %s (rg exit %s).\n' \
+            "$trial" "$raw_log_scan_status" >&2
+        return 1
+    fi
+    jq --arg ownerEmail "$owner_email" '
+      def forbidden_key:
+        . != "EventId" and . != "RequestPath" and
+        test("(artifact|capture|candidate|event|agent)[._-]?id|hash|sha256|path|payload|token|secret|connection[._-]?string"; "i");
+      def forbidden_value:
+        test("(^|[^0-9A-Fa-f])[0-9A-Fa-f]{64}([^0-9A-Fa-f]|$)|[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}|/(var|run|tmp|app|home|workspaces)/[^[:space:]]+|://");
+      def scrub_string:
+        split($ownerEmail) | join("[REDACTED-OWNER]") |
+        if forbidden_value then "[REDACTED]" else . end;
+      walk(
+        if type == "object" and has("attributes") and (.attributes | type == "array") then
+          .attributes |= map(select((.key | forbidden_key) | not))
+        elif type == "string" then
+          scrub_string
+        else
+          .
+        end)
+    ' "$trial_result/evidence/runtime/logs.json" > "$trial_result/evidence/runtime/logs.sanitized.json"
+    mv "$trial_result/evidence/runtime/logs.sanitized.json" "$trial_result/evidence/runtime/logs.json"
+    mv "$trial_result/evidence/runtime/logs.json" "$trial_result/evidence/runtime/logs.jsonl"
+    mv "$trial_result/evidence/runtime/traces.json" "$trial_result/evidence/runtime/traces.jsonl"
+    cp "$trial_result/evidence/health.json" "$trial_result/evidence/runtime/health.json"
+    cp "$trial_result/evidence/process.csv" "$trial_result/evidence/runtime/process.csv"
+    jq -n \
+        --argjson strict "$calibration_required" \
+        --arg trial "$trial" \
+        --slurpfile traces "$trial_result/evidence/runtime/traces.jsonl" \
+        --slurpfile metrics "$trial_result/evidence/runtime/metrics.json" \
+        --slurpfile logs "$raw_logs" '
+      def attribute_values: .value | .. | scalars | tostring;
+      def attribute_value: first(attribute_values) // "";
+      def trace_names: [$traces[] | .resourceSpans[]?.scopeSpans[]?.spans[]?.name] | unique;
+      def metric_points: [$metrics[] | .resourceMetrics[]? | .scopeMetrics[]? as $scope |
+        $scope.metrics[]? as $metric |
+        ($metric.sum.dataPoints[]?, $metric.gauge.dataPoints[]?, $metric.histogram.dataPoints[]?) |
+        {scope: $scope.scope.name, metric: $metric.name, unit: ($metric.unit // ""), attributes: (.attributes // [])}];
+      def metric_names: [metric_points[].metric] | unique;
+      def metric_scopes: [metric_points[].scope] | unique;
+      def metric_units: reduce metric_points[] as $point ({}; .[$point.metric] = $point.unit);
+       def log_records: [$logs[] | .resourceLogs[]?.scopeLogs[]?.logRecords[]?];
+       def log_event_id:
+         first(.attributes[]? | select(.key == "EventId") | attribute_values | tonumber?) // null;
+       def severe_logs: [log_records[] |
+         select(.severityNumber >= 17) | {severity: .severityText}];
+       def warning_limits: {"15": 16, "35": 4, "103": 64, "2013": 4, "2029": 2, "2048": 64, "2055": 4, "2067": 2};
+       def log_body: [.body? | .. | strings] | first // "";
+       def log_source:
+         first(.attributes[]? | select(.key == "SourceContext") | attribute_values) // "";
+       def expected_warning:
+         (log_event_id) as $event_id | (log_body) as $body | (log_source) as $source |
+         if $event_id == 15 then
+           $body == "[REDACTED]" and $source == "Microsoft.AspNetCore.Hosting.Diagnostics"
+         elif $event_id == 35 then
+           $body == "[REDACTED]" and
+           $source == "Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager"
+         elif $event_id == 103 then
+           $source == "Microsoft.Extensions.Diagnostics.HealthChecks.DefaultHealthCheckService" and
+           ($body == "[REDACTED]" or
+             (($body | test("^Health check \"(calibration-library|capture-processing|environmental-acquisition|raw-ingress)\" with status Degraded ")) and
+              ($body | test("Calibration is required but no bundle is active|active calibration bundle has not completed startup validation|Calibration acquisition or reconciliation requires attention|Capture processing has retryable graph work|Environmental acquisition has stale, missing, or failed sources|Raw ingress is accepting with reconciliation or pressure findings"))))
+         elif $event_id == 2029 then
+           $strict and $body == "[REDACTED]" and
+           $source == "HVO.SkyMonitor.CameraAgent.Common.Background.RetentionBackgroundService"
+         elif $event_id == 2048 then
+           $source == "HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureIngress" and
+           ($body | test("^Raw ingress SQLite operation \"(checkpoint|commit)\" completed with result \"success\"$"))
+         elif $event_id == 2013 then
+           $trial == "trial-1" and
+           $source == "HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.StandardCaptureLaneHandler" and
+           ($body | startswith("Capture processing step \"weather-overlay\" failed"))
+         elif $event_id == 2055 then
+           $source == "HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureIngress" and
+           (($trial == "trial-1" and ($body | test("^Capture lane \"standard\" scheduled retry attempt [23] because \"handler-failure\"$"))) or
+            ($trial == "mono8-control" and $body == "Capture lane \"standard\" scheduled retry attempt 1 because \"handler-failure\""))
+         elif $event_id == 2067 then
+           $trial == "mono8-control" and
+           $source == "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingPersistence" and
+           $body == "Capture processing node \"annotation\" requested retry because \"environment.association-pending\""
+         else false end;
+      def application_metric_dimensions: [metric_points[] |
+        select(.scope | startswith("HVO.SkyMonitor.")) as $point | $point.attributes[]? |
+        {metric: $point.metric, key: .key, value: attribute_value}];
+      def telemetry_dimension($signal; $location):
+        {signal: $signal, location: $location, key: .key, value: attribute_values};
+      def forbidden_key:
+        . != "EventId" and . != "RequestPath" and
+        test("(artifact|capture|candidate|event|agent)[._-]?id|hash|sha256|path|payload|token|secret|connection[._-]?string"; "i");
+      def forbidden_value:
+        test("(^|[^0-9A-Fa-f])[0-9A-Fa-f]{64}([^0-9A-Fa-f]|$)|[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}|/(var|run|tmp|app|home|workspaces)/[^[:space:]]+|://");
+       def telemetry_dimensions: [
+         ($traces[] | .resourceSpans[]? |
+           .resource.attributes as $resource_attributes |
+           .scopeSpans[]? |
+             ($resource_attributes[]? | telemetry_dimension("trace"; "resource")),
+             (.scope.attributes[]? | telemetry_dimension("trace"; "scope")),
+             (.spans[]? |
+               (.attributes[]? | telemetry_dimension("trace"; "span")),
+               (.events[]?.attributes[]? | telemetry_dimension("trace"; "event")))),
+         ($metrics[] | .resourceMetrics[]? |
+           .resource.attributes as $resource_attributes |
+           .scopeMetrics[]? |
+             ($resource_attributes[]? | telemetry_dimension("metric"; "resource")),
+             (.scope.attributes[]? | telemetry_dimension("metric"; "scope")),
+             (.metrics[]? |
+               (.sum.dataPoints[]?.attributes[]?, .gauge.dataPoints[]?.attributes[]?,
+                .histogram.dataPoints[]?.attributes[]?) |
+               telemetry_dimension("metric"; "data-point"))),
+         ($logs[] | .resourceLogs[]? |
+           .resource.attributes as $resource_attributes |
+           .scopeLogs[]? |
+             ($resource_attributes[]? | telemetry_dimension("log"; "resource")),
+             (.scope.attributes[]? | telemetry_dimension("log"; "scope")),
+             (.logRecords[]? |
+               (.attributes[]? | telemetry_dimension("log"; "record")),
+               ((.body? // empty) | .. | scalars | tostring |
+                 {signal: "log", location: "body", key: null, value: .})))
+       ];
+      def required_units: {
+        "camera_agent.capture.interval_ms": "ms",
+        "camera_agent.capture_control.cycle.duration": "s",
+        "camera_agent.ingress.committed.bytes": "By",
+        "camera_agent.ingress.commit.duration": "s",
+        "camera_agent.lanes.processing.duration": "s",
+        "camera_agent.lanes.pending.bytes": "By",
+        "camera_agent.processing.graph.duration": "s",
+        "camera_agent.processing.output.bytes": "By",
+        "camera_agent.calibration.acquisition.duration": "ms",
+        "skymonitor.environment.local.acquisition.duration": "ms",
+        "skymonitor.environment.local.payload.size": "By",
+        "hvo.transient.worker.duration": "ms",
+        "hvo.transient.worker.evidence.bytes": "By",
+        "hvo.cameraagent.outbox.pending.bytes": "By",
+        "hvo.transient.operator.query.duration": "ms",
+        "hvo.transient.operator.response.bytes": "By"
+      };
+      def allowed_metric_keys: ["action", "association_status", "boundary", "cadence", "command", "kind",
+        "lane", "mode", "observation_kind", "operation", "outcome", "phase", "reason", "recipe", "regime",
+        "required", "result", "role", "root", "schema", "segment", "source", "stage", "state", "step",
+        "target", "trigger", "variant"];
+      (if $strict then
+        ["capture-cycle", "capture-control", "capture-ingress-handoff",
+         "raw-ingress.migrate", "raw-ingress.reconcile", "raw-ingress.accept", "payload.publish",
+         "sidecar.publish", "sqlite.commit", "capture-lanes.initialize", "capture-lanes.claim",
+         "capture-lanes.process", "capture-lanes.ack",
+         "processing-graph.validate", "processing-graph.execute", "processing-step.execute",
+          "processing-artifact.persist", "processing-plan.preview",
+          "processing-plan.activate", "processing-plan.rollback", "artifact.compare", "calibration.activate", "environment.acquire",
+         "environment.local.commit", "environment.associate", "environment.history.query",
+         "transient.causal", "transient.centered", "transient.operator.query"] +
+         (if $trial == "trial-1" then ["processing-graph.recover"] else [] end)
+        else ["capture-cycle", "capture-ingress-handoff", "raw-ingress.accept", "capture-lanes.process",
+          "processing-graph.execute"] end) as $required_spans |
+      (if $strict then
+        ["camera_agent.capture.count", "camera_agent.capture.interval_ms",
+         "camera_agent.capture_control.cycles", "camera_agent.capture_control.cycle.duration",
+         "camera_agent.ingress.committed",
+         "camera_agent.ingress.committed.bytes", "camera_agent.ingress.commit.duration",
+         "camera_agent.lanes.completed", "camera_agent.lanes.processing.duration",
+         "camera_agent.lanes.pending.bytes", "camera_agent.processing.graphs",
+         "camera_agent.processing.graph.duration", "camera_agent.processing.output.bytes",
+         "camera_agent.calibration.acquisitions", "camera_agent.calibration.acquisition.duration",
+         "skymonitor.environment.local.acquisitions", "skymonitor.environment.local.payload.size",
+         "hvo.transient.worker.outcomes", "hvo.transient.worker.duration",
+         "hvo.transient.worker.evidence.bytes", "hvo.cameraagent.outbox.pending",
+         "hvo.cameraagent.outbox.pending.bytes",
+         "camera_agent.processing.plan.previews", "camera_agent.processing.plan.mutations",
+         "camera_agent.processing.comparison.requests", "camera_agent.processing.plan.preview.duration",
+         "camera_agent.processing.comparison.duration", "camera_agent.processing.comparison.output.bytes",
+         "hvo.transient.operator.queries", "hvo.transient.operator.query.duration",
+         "hvo.transient.operator.response.bytes"]
+        else ["camera_agent.capture.count", "camera_agent.ingress.committed",
+          "camera_agent.processing.graphs"] end) as $required_metrics |
+      (if $strict then
+        ["HVO.SkyMonitor.CameraAgent.Capture", "HVO.SkyMonitor.CameraAgent.CaptureControl",
+         "HVO.SkyMonitor.CameraAgent.RawIngress", "HVO.SkyMonitor.CameraAgent.CaptureLanes",
+         "HVO.SkyMonitor.CameraAgent.ProcessingGraph", "HVO.SkyMonitor.CameraAgent.Calibration",
+         "HVO.SkyMonitor.CameraAgent.EnvironmentalAcquisition", "HVO.SkyMonitor.CameraAgent.Transients",
+         "HVO.SkyMonitor.CameraAgent.Outbox", "HVO.SkyMonitor.CameraAgent.Operator"]
+       else ["HVO.SkyMonitor.CameraAgent.Capture", "HVO.SkyMonitor.CameraAgent.CaptureControl",
+         "HVO.SkyMonitor.CameraAgent.RawIngress", "HVO.SkyMonitor.CameraAgent.CaptureLanes",
+         "HVO.SkyMonitor.CameraAgent.ProcessingGraph"] end) as $required_scopes |
+      (if $strict then required_units else {
+        "camera_agent.capture.interval_ms": "ms",
+        "camera_agent.ingress.committed.bytes": "By",
+        "camera_agent.ingress.commit.duration": "s",
+        "camera_agent.lanes.processing.duration": "s",
+        "camera_agent.processing.graph.duration": "s"
+      } end) as $required_unit_map |
+       (trace_names) as $spans | (metric_names) as $metric_surface | (metric_scopes) as $scopes |
+       (metric_units) as $units | (application_metric_dimensions) as $dimensions |
+       (telemetry_dimensions) as $telemetry_dimensions | (log_records) as $log_records |
+       ([$log_records[] | log_event_id | select(. != null)] | unique) as $event_ids |
+       (warning_limits) as $warning_limits |
+       (if $strict then [
+          {name: "configuration", present: any($event_ids[]; . == 2002 or . == 2003)},
+          {name: "camera-module", present: any($event_ids[]; . == 2009 or . == 2011)},
+          {name: "raw-ingress", present: any($event_ids[]; . >= 2040 and . <= 2049)},
+          {name: "capture-lanes", present: any($event_ids[]; . >= 2050 and . <= 2063)},
+          {name: "processing-graph", present: any($event_ids[]; . >= 2064 and . <= 2075)},
+          {name: "transient-worker", present: any($event_ids[]; . >= 2200 and . <= 2201)},
+          {name: "environmental-acquisition", present: any($event_ids[]; . >= 2520 and . <= 2529)},
+          {name: "plan-comparison", present: any($event_ids[]; . >= 2530 and . <= 2539)},
+          {name: "calibration", present: any($event_ids[]; . >= 2610 and . <= 2617)},
+          {name: "catalog", present: any($event_ids[]; . == 3000)},
+          {name: "deployment-location", present: any($event_ids[]; . == 7301)}
+        ] else [
+          {name: "configuration", present: any($event_ids[]; . == 2002 or . == 2003)},
+          {name: "camera-module", present: any($event_ids[]; . == 2009 or . == 2011)},
+          {name: "raw-ingress", present: any($event_ids[]; . >= 2040 and . <= 2049)},
+          {name: "capture-lanes", present: any($event_ids[]; . >= 2050 and . <= 2063)},
+          {name: "processing-graph", present: any($event_ids[]; . >= 2064 and . <= 2075)},
+          {name: "catalog", present: any($event_ids[]; . == 3000)},
+          {name: "deployment-location", present: any($event_ids[]; . == 7301)}
+        ] end) as $required_event_families |
+      {
+        schemaVersion: "issue-211-telemetry-scan-v1",
+        notApplicableSignals: (if $strict then ([
+            {name: "capture-meter", reason: "W6 uses fixed setpoints without adaptive metering."},
+            {name: "camera_agent.capture_control.metering.scanned", reason: "W6 uses fixed setpoints without adaptive metering."},
+            {name: "transient.handoff", reason: "W6 runs the Edge transient mode without central handoff."}
+          ] + (if $trial == "trial-1" then [] else [
+            {name: "processing-graph.recover", reason: "The semantic restart/fault matrix runs once in trial-1."}
+          ] end)) else [
+            {name: "transient.*", reason: "The Mono8 control runs with transient processing disabled."}
+          ] end),
+        requiredSpans: $required_spans,
+        missingSpans: ($required_spans - $spans),
+        requiredMetricScopes: $required_scopes,
+        missingMetricScopes: ($required_scopes - $scopes),
+        requiredMetrics: $required_metrics,
+        missingMetrics: ($required_metrics - $metric_surface),
+        unitMismatches: [$required_unit_map | to_entries[] |
+          select($units[.key] != .value) | {metric: .key, expected: .value, actual: ($units[.key] // null)}],
+         severeLogs: severe_logs,
+         observedEventIds: $event_ids,
+         requiredEventFamilies: $required_event_families,
+         missingEventFamilies: ($required_event_families | map(select(.present | not) | .name)),
+         notApplicableEventFamilies: (if $strict then [
+           {name: "artifact-outbox", reason: "Successful outbox work is debug-level; warning events indicate failure."},
+           {name: "capture-control", reason: "Fixed W6 control decisions are debug-level."}
+         ] else [
+           {name: "artifact-outbox", reason: "Successful outbox work is debug-level; warning events indicate failure."},
+           {name: "capture-control", reason: "Fixed Mono8 control decisions are debug-level."},
+           {name: "transient-worker", reason: "Mono8 control disables transient processing."},
+           {name: "calibration", reason: "Mono8 control does not require calibration."},
+           {name: "environmental-acquisition", reason: "Mono8 validates the reduced control graph."}
+          ] end),
+         warningDispositions: [
+           {eventId: 15, disposition: "Container URL binding intentionally overrides the base-image port variables."},
+           {eventId: 35, disposition: "Ephemeral acceptance Data Protection keys intentionally have no XML encryptor."},
+           {eventId: 103, disposition: "Only allowlisted transient Degraded health states are accepted during injected faults and startup convergence."},
+           {eventId: 2029, disposition: "W6 explicitly injects one bounded disk-pressure transition."},
+           {eventId: 2048, disposition: "Fault/restart checks explicitly exercise successful SQLite commit and checkpoint boundaries."},
+           {eventId: 2013, disposition: "Trial 1 explicitly injects the optional weather-overlay failure."},
+           {eventId: 2055, disposition: "Trial 1 and Mono8 explicitly inject bounded standard-lane retries."},
+           {eventId: 2067, disposition: "Mono8 explicitly exercises bounded annotation retry while environment association converges."}
+         ],
+         unexpectedWarnings: [$log_records[] | select(.severityNumber >= 13) |
+           (log_event_id) as $event_id | select(expected_warning | not) |
+           {severity: .severityText, eventId: $event_id, body: log_body}],
+         excessiveWarningCounts: [$log_records[] | select(.severityNumber >= 13) |
+           (log_event_id) as $event_id | select($event_id != null) |
+           {eventId: $event_id, limit: $warning_limits[$event_id | tostring]}] |
+           group_by(.eventId) | map({eventId: .[0].eventId, count: length, limit: .[0].limit} |
+             select(.limit != null and .count > .limit)),
+        forbiddenAttributeKeys: [$telemetry_dimensions[] |
+          select(.key != null and (.key | forbidden_key))] |
+          unique_by([.signal, .location, .key]),
+        forbiddenAttributeValues: [$telemetry_dimensions[] |
+          select(.value | forbidden_value) | {signal, location, key}] |
+          unique_by([.signal, .location, .key]),
+        unsupportedMetricKeys: (([$dimensions[].key] | unique) - allowed_metric_keys),
+        forbiddenMetricValues: ([$dimensions[] | select(.value | test("(^|[^0-9A-Fa-f])[0-9A-Fa-f]{64}([^0-9A-Fa-f]|$)|[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}|(^|[[:space:]])/[^[:space:]]|://")) |
+          {metric, key}] | unique_by([.metric, .key])),
+        excessiveMetricCardinality: [$dimensions | group_by([.metric, .key])[] |
+          {metric: .[0].metric, key: .[0].key, cardinality: ([.[].value] | unique | length)} |
+          select(.cardinality > 32)],
+        spanCount: ($spans | length),
+        metricCount: ($metric_surface | length),
+        metricScopeCount: ($scopes | length)
+      }
+    ' > "$trial_result/evidence/runtime/telemetry-scan.json"
+    jq --exit-status '
+      (.missingSpans | length) == 0 and
+      (.missingMetricScopes | length) == 0 and
+      (.missingMetrics | length) == 0 and
+       (.unitMismatches | length) == 0 and
+       (.severeLogs | length) == 0 and
+       (.missingEventFamilies | length) == 0 and
+       (.unexpectedWarnings | length) == 0 and
+       (.excessiveWarningCounts | length) == 0 and
+      (.forbiddenAttributeKeys | length) == 0 and
+      (.forbiddenAttributeValues | length) == 0 and
+      (.unsupportedMetricKeys | length) == 0 and
+      (.forbiddenMetricValues | length) == 0 and
+      (.excessiveMetricCardinality | length) == 0
+    ' "$trial_result/evidence/runtime/telemetry-scan.json" >/dev/null
+    rm -f "$raw_logs"
+    local sanitization_scan="$trial_result/evidence/runtime/sanitization-scan.json"
+    local sanitization_matches="$trial_local/.sanitization-matches"
+    local matched_paths=()
+    local sanitization_rg_status=0
+    rg --text --files-with-matches --null --hidden \
+        '(?i)(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret|connection[_-]?string|owner[_-]?password)' \
+        "$trial_result" > "$sanitization_matches" || sanitization_rg_status=$?
+    if ((sanitization_rg_status > 1)); then
+        printf 'Unable to scan forbidden evidence patterns for %s (rg exit %s).\n' "$trial" "$sanitization_rg_status" >&2
+        return 1
+    fi
+    sanitization_rg_status=0
+    rg --text --files-with-matches --null --hidden --fixed-strings \
+        --file "$trial_local/secrets/owner-password" \
+        "$trial_result" >> "$sanitization_matches" || sanitization_rg_status=$?
+    if ((sanitization_rg_status > 1)); then
+        printf 'Unable to scan the generated owner password for %s (rg exit %s).\n' "$trial" "$sanitization_rg_status" >&2
+        return 1
+    fi
+    sanitization_rg_status=0
+    rg --text --files-with-matches --null --hidden --fixed-strings "$owner_email" \
+        "$trial_result" >> "$sanitization_matches" || sanitization_rg_status=$?
+    if ((sanitization_rg_status > 1)); then
+        printf 'Unable to scan the synthetic owner email for %s (rg exit %s).\n' "$trial" "$sanitization_rg_status" >&2
+        return 1
+    fi
+    while IFS= read -r -d '' path; do
+        matched_paths+=("${path#"$trial_result/"}")
+    done < "$sanitization_matches"
+    jq -n \
+        --arg schemaVersion 'issue-211-sanitization-scan-v1' \
+        --argjson matches "$(printf '%s\n' "${matched_paths[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+        '{schemaVersion: $schemaVersion, matchedFiles: ($matches | unique), passed: ($matches | length == 0)}' \
+        > "$sanitization_scan"
+    rm -f "$sanitization_matches"
+    jq --exit-status '.passed == true' "$sanitization_scan" >/dev/null
+    local collector_rg_status=0
+    rg --ignore-case 'exporter.*(error|failed)|connection refused|retrying' \
+        "$trial_result/evidence/collector.log" >/dev/null || collector_rg_status=$?
+    if ((collector_rg_status == 0)); then
+        printf 'Collector reported an exporter failure for %s.\n' "$trial" >&2
+        return 1
+    fi
+    if ((collector_rg_status > 1)); then
+        printf 'Unable to scan the collector log for %s (rg exit %s).\n' "$trial" "$collector_rg_status" >&2
+        return 1
+    fi
+    local inventory_rows="$trial_result/evidence/.inventory.jsonl"
+    : > "$inventory_rows"
+    shopt -s globstar nullglob dotglob
+    local evidence_file relative_path file_sha file_bytes
+    for evidence_file in "$trial_result"/**/*; do
+        [[ -f "$evidence_file" && "$evidence_file" != "$inventory_rows" &&
+            "$evidence_file" != "$trial_result/evidence/evidence-manifest.json" ]] || continue
+        relative_path="${evidence_file#"$trial_result/"}"
+        read -r file_sha _ < <(sha256sum "$evidence_file")
+        file_bytes="$(stat --format='%s' "$evidence_file")"
+        jq -cn --arg path "$relative_path" --arg sha256 "$file_sha" --argjson bytes "$file_bytes" \
+            '{path: $path, bytes: $bytes, sha256: ($sha256 | ascii_upcase)}' >> "$inventory_rows"
+    done
+    jq -s --arg fingerprint "$WORKTREE_FINGERPRINT" --arg runId "$RUN_ID" \
+        '{schemaVersion: "issue-211-evidence-manifest-v1", worktreeFingerprint: $fingerprint,
+          runId: $runId, files: sort_by(.path), totalBytes: (map(.bytes) | add // 0)}' \
+        "$inventory_rows" > "$trial_result/evidence/evidence-manifest.json"
+    rm -f "$inventory_rows"
+    local final_trial_scan_status=0
+    rg --text --hidden --ignore-case \
+        '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret|connection[_-]?string|owner[_-]?password)' \
+        "$trial_result" >/dev/null || final_trial_scan_status=$?
+    if ((final_trial_scan_status == 0 || final_trial_scan_status > 1)); then
+        printf 'The final retained trial tree failed sanitization for %s (rg exit %s).\n' \
+            "$trial" "$final_trial_scan_status" >&2
+        return 1
+    fi
+    for sensitive_file in "$trial_local/secrets/owner-password"; do
+        final_trial_scan_status=0
+        rg --text --hidden --fixed-strings --file "$sensitive_file" \
+            "$trial_result" >/dev/null || final_trial_scan_status=$?
+        if ((final_trial_scan_status == 0 || final_trial_scan_status > 1)); then
+            printf 'The final retained trial tree contains generated credentials for %s (rg exit %s).\n' \
+                "$trial" "$final_trial_scan_status" >&2
+            return 1
+        fi
+    done
+    final_trial_scan_status=0
+    rg --text --hidden --fixed-strings "$owner_email" \
+        "$trial_result" >/dev/null || final_trial_scan_status=$?
+    if ((final_trial_scan_status == 0 || final_trial_scan_status > 1)); then
+        printf 'The final retained trial tree contains the synthetic owner identity for %s (rg exit %s).\n' \
+            "$trial" "$final_trial_scan_status" >&2
+        return 1
+    fi
+    if [[ -n "$active_client_network" ]]; then
+        docker network disconnect "$active_client_network" "$(hostname)"
+        active_client_network=""
+    fi
+    docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" down --volumes --remove-orphans
+    active_project=""
+    active_env=""
+    active_owner_email=""
+    active_owner_password=""
+    chmod -R u+w "$trial_local" 2>/dev/null || true
+    rm -rf -- "$trial_local"
+    assert_no_owned_acceptance_resources
+    assert_worktree_unchanged
+}
+
+for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
+    run_profile_trial \
+        "trial-$trial_number" \
+        "$CONFIG_TEMPLATE" \
+        'cameraagent-standalone-w6-asi676mc' \
+        'true' \
+        'StandaloneW6DockerAcceptanceTests.FullCatalogAsi676StandaloneAsync' \
+        'issue-211-w6.trx' \
+        "$WARMUP_CAPTURE_COUNT" \
+        "$MEASURED_CAPTURE_COUNT" \
+        'Edge' \
+        'true'
+done
+
+run_profile_trial \
+    'mono8-control' \
+    "$MONO_CONFIG_TEMPLATE" \
+    'cameraagent-standalone-w6-asi174-mono8' \
+    'false' \
+    'StandaloneW6DockerAcceptanceTests.Asi174Mono8ControlAsync' \
+    'issue-211-mono8.trx' \
+    1 \
+    5 \
+    'Off' \
+    'false'
+
+jq -s '
+  {
+    schemaVersion: "issue-211-final-central-traffic-summary-v1",
+    trials: sort_by(.trial),
+    centralHandlerAttempts: (map(.inTestCentralHandlerAttempts) | add // 0),
+    finalCentralHandlerAttempts: (map(.finalCentralHandlerAttempts) | add // 0),
+    finalDenyHits: (map(.finalDenyHits) | add // 0),
+    allPassed: all(.passed == true)
+  }
+' "$RESULTS"/*/evidence/central-traffic-gate.json > "$RESULTS/final-central-traffic-summary.json"
+
+jq -s \
+    --arg fingerprint "$WORKTREE_FINGERPRINT" \
+    --argjson declaredBoundedTrialFootprintBytes "$DECLARED_BOUNDED_TRIAL_FOOTPRINT_BYTES" \
+    --slurpfile finalCentralTraffic "$RESULTS/final-central-traffic-summary.json" '
+  def percent_change($baseline; $candidate): (($candidate / $baseline) - 1) * 100;
+  def stats:
+    sort as $values |
+    {
+      sampleCount: ($values | length),
+      minimum: $values[0],
+      median: (if ($values | length) % 2 == 0 then
+        (($values[(($values | length) / 2 - 1)] + $values[(($values | length) / 2)]) / 2)
+      else $values[(($values | length) / 2 | floor)] end),
+      p95: (if ($values | length) >= 30 then $values[((($values | length) * 0.95 | ceil) - 1)] else null end),
+       maximum: $values[-1]
+     };
+  ($finalCentralTraffic[0].trials) as $final_central_traffic |
+  (map(.centralTrafficAttempts) | add // 0) as $central_traffic_attempts |
+  ($final_central_traffic | map(.finalDenyHits) | add // 0) as $final_deny_hits |
+  ($final_central_traffic | map(.finalCentralHandlerAttempts) | add // 0) as $central_handler_attempts |
+  ([
+    percent_change(
+      (37.973 / (14 * 4708352 / 1073741824));
+      ((map(.performance.cpuSeconds) | stats).median / (10 * 25233408 / 1073741824))),
+    percent_change(
+      (13320000000 / (14 * 4708352));
+      ((map(.performance.allocatedBytes) | stats).median / (10 * 25233408))),
+    percent_change(
+      (1101000000 / 4708352);
+      ((map(.performance.peakRssBytes) | stats).median / 25233408)),
+    percent_change(
+      (2703000000 / (14 * 4708352));
+      ((map(.performance.processWriteBytes) | stats).median / (10 * 25233408)))
+  ]) as $normalized_percent_changes |
+  {
+    schemaVersion: "issue-211-w6-summary-v1",
+    worktreeFingerprint: $fingerprint,
+    trialCount: length,
+    declaredBoundedTrialFootprintBytes: $declaredBoundedTrialFootprintBytes,
+    elapsedMilliseconds: (map(.performance.elapsedMilliseconds) | stats),
+    cpuSeconds: (map(.performance.cpuSeconds) | stats),
+    peakRssBytes: (map(.performance.peakRssBytes) | stats),
+    allocatedBytes: (map(.performance.allocatedBytes) | stats),
+    peakContainerMemoryUsageBytes: (map(.performance.peakContainerMemoryUsageBytes) | stats),
+    maximumObservedLastCollectionLohBytes:
+      (map(.performance.maximumObservedLastCollectionLohBytes) | stats),
+    operationalCaptureRatePerSecond: (map(.performance.operationalCaptureRatePerSecond) | stats),
+    rawStorageGrowthBytes: (map(.performance.rawStorageGrowthBytes) | stats),
+    declaredRawBytesPerDay: (map(.performance.declaredRawBytesPerDay) | stats),
+    hypotheticalFiveSecondStartIntervalRawBytesPerDay:
+      (map(.performance.hypotheticalFiveSecondStartIntervalRawBytesPerDay) | stats),
+    derivativeStorageGrowthBytes: (map(.performance.derivativeStorageGrowthBytes) | stats),
+    sqliteFootprintGrowthBytes: (map(.performance.sqliteFootprintGrowthBytes) | stats),
+    processReadBytes: (map(.performance.processReadBytes) | stats),
+    processWriteBytes: (map(.performance.processWriteBytes) | stats),
+    containerBlockReadBytes: (map(.performance.containerBlockReadBytes) | stats),
+    containerBlockWriteBytes: (map(.performance.containerBlockWriteBytes) | stats),
+    maximumBacklogCount: (map(.performance.maximumBacklogCount) | stats),
+    maximumBacklogBytes: (map(.performance.maximumBacklogBytes) | stats),
+    maximumBacklogAgeSeconds: (map(.performance.maximumBacklogAgeSeconds) | stats),
+    peakFilesystemBytes: (map(.performance.peakFilesystemBytes) | stats),
+    retainedFilesystemBytes: (map(.performance.retainedFilesystemBytes) | stats),
+    durableQueueMaxima: ([.[].performance.maximumDurableQueues[]] | group_by(.name) | map({
+      name: .[0].name,
+      count: (map(.count) | max),
+      bytes: (map(.bytes) | max),
+      ageSeconds: (map(.ageSeconds) | max)
+    })),
+    comparison: {
+      baseline: {
+        source: "main@42b6dee issue-171 attempted trial-1",
+        profile: "ASI174 1936x1216 Mono16, five-second cadence, smaller graph",
+        rawBytesPerCapture: 4708352,
+        captureCount: 14,
+        cpuSeconds: 37.973,
+        allocatedBytes: 13320000000,
+        peakRssBytes: 1101000000,
+        processWriteBytes: 2703000000
+      },
+      candidate: {
+        profile: "W6 ASI676MC 3552x3552 Bayer12-in-16, ten-second cadence, complete standalone graph",
+        rawBytesPerCapture: 25233408,
+        captureCountPerTrial: 10
+      },
+      normalized: {
+        cpuSecondsPerRawGiB: {
+          baseline: (37.973 / (14 * 4708352 / 1073741824)),
+          candidate: ((map(.performance.cpuSeconds) | stats).median / (10 * 25233408 / 1073741824)),
+          percentChange: percent_change(
+            (37.973 / (14 * 4708352 / 1073741824));
+            ((map(.performance.cpuSeconds) | stats).median / (10 * 25233408 / 1073741824)))
+        },
+        allocatedBytesPerRawByte: {
+          baseline: (13320000000 / (14 * 4708352)),
+          candidate: ((map(.performance.allocatedBytes) | stats).median / (10 * 25233408)),
+          percentChange: percent_change(
+            (13320000000 / (14 * 4708352));
+            ((map(.performance.allocatedBytes) | stats).median / (10 * 25233408)))
+        },
+        peakRssBytesPerRawFrameByte: {
+          baseline: (1101000000 / 4708352),
+          candidate: ((map(.performance.peakRssBytes) | stats).median / 25233408),
+          percentChange: percent_change(
+            (1101000000 / 4708352);
+            ((map(.performance.peakRssBytes) | stats).median / 25233408))
+        },
+        processWriteBytesPerRawByte: {
+          baseline: (2703000000 / (14 * 4708352)),
+          candidate: ((map(.performance.processWriteBytes) | stats).median / (10 * 25233408)),
+          percentChange: percent_change(
+            (2703000000 / (14 * 4708352));
+            ((map(.performance.processWriteBytes) | stats).median / (10 * 25233408)))
+        }
+      },
+      disposition: "Issue #171 and W6 use different cadence, frame size, graph, and measurement boundaries. The normalized values are descriptive, but the conservative <=15% regression guard remains executable."
+    },
+    pipeline: {
+      moduleDurationMilliseconds: ([.[].performance.pipeline.moduleDurationMilliseconds.samples[]] | stats),
+      moduleOverheadMilliseconds: ([.[].performance.pipeline.moduleOverheadMilliseconds.samples[]] | stats),
+      ingressDurationMilliseconds: ([.[].performance.pipeline.ingressDurationMilliseconds.samples[]] | stats),
+      graphDurationMilliseconds: ([.[].performance.pipeline.graphDurationMilliseconds.samples[]] | stats),
+      endToEndDurationMilliseconds: ([.[].performance.pipeline.endToEndDurationMilliseconds.samples[]] | stats),
+      cadenceHeadroomMilliseconds: ([.[].performance.pipeline.cadenceHeadroomMilliseconds.samples[]] | stats),
+      nodes: ([.[].performance.pipeline.nodes[]] | group_by(.nodeId) | map({
+        nodeId: .[0].nodeId,
+        durationMilliseconds: ([.[].durationMilliseconds.samples[]] | stats)
+      }))
+    },
+    centralTrafficAttempts: $central_traffic_attempts,
+    centralHandlerAttempts: $central_handler_attempts,
+    finalDenyGateCount: ($final_central_traffic | length),
+    finalDenyHits: $final_deny_hits,
+    allPassed: all(.result.passed),
+    retainedFilesystemWithinDeclaredBound:
+      all(.performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes),
+    candidateGates: {
+      exactlyFiveTrials: (length == 5),
+      allFiveTestResultsPassed: (length == 5 and all(.result.passed == true)),
+      zeroCentralTrafficAttempts: ($central_traffic_attempts == 0),
+      zeroCentralHandlerAttempts: ($central_handler_attempts == 0),
+      sixFinalDenyChecksPassed:
+        (($final_central_traffic | length) == 6 and all($final_central_traffic[]; .passed == true)),
+      zeroFinalDenyHits: ($final_deny_hits == 0),
+      durableQueuesWithinDeclaredBounds:
+        all(.performance.durableQueuesWithinDeclaredBounds == true),
+      normalizedRegressionWithinFifteenPercent:
+        all($normalized_percent_changes[]; . <= 15),
+      retainedFilesystemWithinDeclaredBound:
+        all(.performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes)
+    },
+    w6Ready: (
+      length == 5 and
+      all(.result.passed == true) and
+      $central_traffic_attempts == 0 and
+      $central_handler_attempts == 0 and
+      ($final_central_traffic | length) == 6 and
+      all($final_central_traffic[]; .passed == true) and
+      $final_deny_hits == 0 and
+      all(.performance.durableQueuesWithinDeclaredBounds == true) and
+      all($normalized_percent_changes[]; . <= 15) and
+      all(.performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes))
+  }
+' "$RESULTS"/trial-*/evidence/issue-211-w6.json > "$RESULTS/five-trial-summary.json"
+
+jq --exit-status --argjson declaredBoundedTrialFootprintBytes "$DECLARED_BOUNDED_TRIAL_FOOTPRINT_BYTES" \
+    '.trialCount == 5 and
+     .declaredBoundedTrialFootprintBytes == $declaredBoundedTrialFootprintBytes and
+     .peakFilesystemBytes.maximum <= $declaredBoundedTrialFootprintBytes and
+     .centralTrafficAttempts == 0 and .centralHandlerAttempts == 0 and
+     .finalDenyGateCount == 6 and .finalDenyHits == 0 and
+     .allPassed == true and .retainedFilesystemWithinDeclaredBound == true and
+     ([.candidateGates[]] | all) and .w6Ready == true' \
+    "$RESULTS/five-trial-summary.json" >/dev/null
+jq --exit-status '.result.passed == true and (.captures | length) == 5 and
+    .centralTrafficAttempts == 0 and .centralHandlerAttempts == 0' \
+    "$RESULTS/mono8-control/evidence/issue-211-mono8.json" >/dev/null
+jq --exit-status '.passed == true and .finalDenyHits == 0' \
+    "$RESULTS/mono8-control/evidence/central-traffic-gate.json" >/dev/null
+jq -s '
+  {
+    schemaVersion: "issue-211-telemetry-summary-v1",
+    trialCount: length,
+    failedTrials: [to_entries[] | select(
+      (.value.missingSpans | length) != 0 or
+      (.value.missingMetricScopes | length) != 0 or
+      (.value.missingMetrics | length) != 0 or
+      (.value.unitMismatches | length) != 0 or
+      (.value.severeLogs | length) != 0 or
+      (.value.missingEventFamilies | length) != 0 or
+      (.value.unexpectedWarnings | length) != 0 or
+      (.value.excessiveWarningCounts | length) != 0 or
+      (.value.forbiddenAttributeKeys | length) != 0 or
+      (.value.forbiddenAttributeValues | length) != 0 or
+      (.value.unsupportedMetricKeys | length) != 0 or
+      (.value.forbiddenMetricValues | length) != 0 or
+      (.value.excessiveMetricCardinality | length) != 0) | .key],
+    passed: (length == 6 and all(.[];
+      (.missingSpans | length) == 0 and
+      (.missingMetricScopes | length) == 0 and
+      (.missingMetrics | length) == 0 and
+      (.unitMismatches | length) == 0 and
+      (.severeLogs | length) == 0 and
+      (.missingEventFamilies | length) == 0 and
+      (.unexpectedWarnings | length) == 0 and
+      (.excessiveWarningCounts | length) == 0 and
+      (.forbiddenAttributeKeys | length) == 0 and
+      (.forbiddenAttributeValues | length) == 0 and
+      (.unsupportedMetricKeys | length) == 0 and
+      (.forbiddenMetricValues | length) == 0 and
+      (.excessiveMetricCardinality | length) == 0))
+  }
+' "$RESULTS"/*/evidence/runtime/telemetry-scan.json > "$RESULTS/telemetry-summary.json"
+jq -s '{schemaVersion: "issue-211-trial-sanitization-summary-v1", trialCount: length,
+  failedTrials: [to_entries[] | select(.value.passed != true) | .key],
+  passed: (length == 6 and all(.[]; .passed == true))}' \
+  "$RESULTS"/*/evidence/runtime/sanitization-scan.json > "$RESULTS/trial-sanitization-summary.json"
+jq --exit-status '.passed == true' "$RESULTS/telemetry-summary.json" >/dev/null
+jq --exit-status '.passed == true' "$RESULTS/trial-sanitization-summary.json" >/dev/null
+root_scan_matches="$RESULTS/.root-sanitization-matches"
+root_scan_status=0
+rg --text --files-with-matches --null --hidden --ignore-case \
+    '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret|connection[_-]?string|owner[_-]?password)' \
+    "$RESULTS" > "$root_scan_matches" || root_scan_status=$?
+if ((root_scan_status > 1)); then
+    printf 'Unable to scan the retained run tree (rg exit %s).\n' "$root_scan_status" >&2
+    exit 1
+fi
+root_scan_status=0
+rg --text --files-with-matches --null --hidden --fixed-strings 'standalone-owner@cameraagent.test' \
+    "$RESULTS" >> "$root_scan_matches" || root_scan_status=$?
+if ((root_scan_status > 1)); then
+    printf 'Unable to scan retained synthetic owner identities (rg exit %s).\n' "$root_scan_status" >&2
+    exit 1
+fi
+root_matched_paths=()
+while IFS= read -r -d '' path; do
+    root_matched_paths+=("${path#"$RESULTS/"}")
+done < "$root_scan_matches"
+jq -n \
+    --argjson matches "$(printf '%s\n' "${root_matched_paths[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+    '{schemaVersion: "issue-211-root-sanitization-scan-v1", matchedFiles: ($matches | unique),
+      passed: ($matches | length == 0)}' > "$RESULTS/root-sanitization-scan.json"
+rm -f "$root_scan_matches"
+jq --exit-status '.passed == true' "$RESULTS/root-sanitization-scan.json" >/dev/null
+assert_no_owned_acceptance_resources
+jq -n '{schemaVersion: "issue-211-cleanup-gate-v1", ownedResourceCount: 0, passed: true}' \
+    > "$RESULTS/cleanup-gate.json"
+assert_worktree_unchanged
+jq -n --arg fingerprint "$WORKTREE_FINGERPRINT" \
+    '{schemaVersion: "issue-211-source-integrity-gate-v1", worktreeFingerprint: $fingerprint,
+      unchangedAfterBuildAndTrials: true, passed: true}' > "$RESULTS/source-integrity-gate.json"
+jq -n \
+    --arg fingerprint "$WORKTREE_FINGERPRINT" \
+    --slurpfile w6 "$RESULTS/five-trial-summary.json" \
+    --slurpfile mono "$RESULTS/mono8-control/evidence/issue-211-mono8.json" \
+    --slurpfile monoTraffic "$RESULTS/mono8-control/evidence/central-traffic-gate.json" \
+    --slurpfile sanitization "$RESULTS/root-sanitization-scan.json" \
+    --slurpfile telemetry "$RESULTS/telemetry-summary.json" \
+    --slurpfile trialSanitization "$RESULTS/trial-sanitization-summary.json" \
+    --slurpfile cleanup "$RESULTS/cleanup-gate.json" \
+    --slurpfile sourceIntegrity "$RESULTS/source-integrity-gate.json" '
+  {
+    schemaVersion: "issue-211-final-acceptance-summary-v1",
+    worktreeFingerprint: $fingerprint,
+    gates: {
+      w6: $w6[0].w6Ready,
+      mono8: ($mono[0].result.passed == true and ($mono[0].captures | length) == 5),
+      mono8CentralIsolation: $monoTraffic[0].passed,
+      telemetry: $telemetry[0].passed,
+      trialSanitization: $trialSanitization[0].passed,
+      retainedEvidenceSanitized: $sanitization[0].passed,
+      ownedResourcesCleaned: $cleanup[0].passed,
+      sourceUnchanged: $sourceIntegrity[0].passed
+    },
+    acceptanceReady: (
+      $w6[0].w6Ready and
+      $mono[0].result.passed == true and
+      ($mono[0].captures | length) == 5 and
+      $monoTraffic[0].passed and
+      $telemetry[0].passed and
+      $trialSanitization[0].passed and
+      $sanitization[0].passed and
+      $cleanup[0].passed and
+      $sourceIntegrity[0].passed)
+  }
+' > "$RESULTS/final-acceptance-summary.json"
+jq --exit-status '.acceptanceReady == true and ([.gates[]] | all)' \
+    "$RESULTS/final-acceptance-summary.json" >/dev/null
+run_inventory="$RESULTS/.run-manifest.jsonl"
+: > "$run_inventory"
+shopt -s globstar nullglob dotglob
+for retained_output in "$RESULTS"/**/*; do
+    [[ -f "$retained_output" && "$retained_output" != "$run_inventory" &&
+        "$retained_output" != "$RESULTS/run-manifest.json" ]] || continue
+    read -r retained_sha _ < <(sha256sum "$retained_output")
+    retained_bytes="$(stat --format='%s' "$retained_output")"
+    retained_relative="${retained_output#"$RESULTS/"}"
+    jq -cn \
+        --arg path "$retained_relative" \
+        --arg sha256 "$retained_sha" \
+        --argjson bytes "$retained_bytes" \
+        '{path: $path, bytes: $bytes, sha256: ($sha256 | ascii_upcase)}' >> "$run_inventory"
+done
+jq -s \
+    --arg fingerprint "$WORKTREE_FINGERPRINT" \
+    --arg runId "$RUN_ID" \
+    --arg revision "$REVISION" \
+    --arg dirtyStateSha256 "$DIRTY_SHA256" \
+    --arg cameraImage "$CAMERA_AGENT_IMAGE" '
+  {
+    schemaVersion: "issue-211-run-manifest-v1",
+    worktreeFingerprint: $fingerprint,
+    runId: $runId,
+    revision: $revision,
+    dirtyStateSha256: ($dirtyStateSha256 | ascii_upcase),
+    cameraImage: $cameraImage,
+    excludedSelf: "run-manifest.json",
+    retainedOutputs: sort_by(.path),
+    totalBytes: (map(.bytes) | add // 0)
+  }
+' "$run_inventory" > "$RESULTS/run-manifest.json"
+rm -f "$run_inventory"
+assert_worktree_unchanged
+assert_no_owned_acceptance_resources
+final_root_scan_status=0
+rg --text --hidden --ignore-case \
+    '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret|connection[_-]?string|owner[_-]?password)' \
+    "$RESULTS" >/dev/null || final_root_scan_status=$?
+if ((final_root_scan_status == 0 || final_root_scan_status > 1)); then
+    printf 'The final retained run tree failed sanitization (rg exit %s).\n' "$final_root_scan_status" >&2
+    exit 1
+fi
+final_root_scan_status=0
+rg --text --hidden --fixed-strings 'standalone-owner@cameraagent.test' \
+    "$RESULTS" >/dev/null || final_root_scan_status=$?
+if ((final_root_scan_status == 0 || final_root_scan_status > 1)); then
+    printf 'The final retained run tree contains the synthetic owner identity (rg exit %s).\n' \
+        "$final_root_scan_status" >&2
+    exit 1
+fi
+printf 'Issue #211 W6 evidence: %s\n' "$RESULTS/final-acceptance-summary.json"

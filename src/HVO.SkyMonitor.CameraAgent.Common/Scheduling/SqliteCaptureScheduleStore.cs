@@ -219,6 +219,28 @@ public sealed class SqliteCaptureScheduleStore(
                 var pending = await FindRevisionBySha256Async(connection, transaction, sha256, token)
                     .ConfigureAwait(false) ?? await InsertRevisionAsync(
                         connection, transaction, profile, "operator-draft", actor, reason, token).ConfigureAwait(false);
+                if (pending.RevisionId == snapshot.ActiveRevision.RevisionId)
+                {
+                    if (snapshot.PendingRevision is null)
+                    {
+                        return snapshot;
+                    }
+                    await ExecuteAsync(connection, transaction, """
+                        UPDATE capture_schedule_state
+                        SET pending_revision_id = NULL, version = version + 1, updated_unix_ms = $now
+                        WHERE state_key = 1;
+                        """, token, ("$now", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+                    return snapshot with
+                    {
+                        PendingRevision = null,
+                        Version = snapshot.Version + 1,
+                        UpdatedUtc = now
+                    };
+                }
+                if (pending.RevisionId == snapshot.PendingRevision?.RevisionId)
+                {
+                    return snapshot;
+                }
                 await ExecuteAsync(connection, transaction, """
                     UPDATE capture_schedule_state
                     SET pending_revision_id = $pending, version = version + 1, updated_unix_ms = $now
@@ -324,11 +346,51 @@ public sealed class SqliteCaptureScheduleStore(
             throw new ArgumentException("A valid schedule revision identifier is required.", nameof(revisionId));
         }
         ValidateCommand(idempotencyKey, expectedVersion, actor, reason);
-        return MutateWithCurrentAsync(idempotencyKey, "activate", revisionId, expectedVersion, actor, reason,
+        return ApplyRevisionWithCurrentAsync(
+            revisionId, idempotencyKey, expectedVersion, actor, reason, rollback: false, cancellationToken);
+    }
+
+    internal Task<CaptureScheduleMutationResult> RollbackWithCurrentAsync(
+        string revisionId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(revisionId) || revisionId.Length > 128)
+        {
+            throw new ArgumentException("A valid schedule revision identifier is required.", nameof(revisionId));
+        }
+        ValidateCommand(idempotencyKey, expectedVersion, actor, reason);
+        return ApplyRevisionWithCurrentAsync(
+            revisionId, idempotencyKey, expectedVersion, actor, reason, rollback: true, cancellationToken);
+    }
+
+    private Task<CaptureScheduleMutationResult> ApplyRevisionWithCurrentAsync(
+        string revisionId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        bool rollback,
+        CancellationToken cancellationToken)
+        => MutateWithCurrentAsync(idempotencyKey, rollback ? "rollback" : "activate", revisionId,
+            expectedVersion, actor, reason,
             async (connection, transaction, snapshot, now, token) =>
             {
                 var target = await ReadRevisionAsync(connection, transaction, revisionId, token).ConfigureAwait(false)
                     ?? throw new KeyNotFoundException("The capture schedule revision was not found.");
+                if (rollback && target.RevisionNumber >= snapshot.ActiveRevision.RevisionNumber)
+                {
+                    throw new CaptureScheduleStoreConflictException(
+                        "A rollback target must be older than the active capture schedule revision.");
+                }
+                if (!rollback && target.RevisionNumber <= snapshot.ActiveRevision.RevisionNumber)
+                {
+                    throw new CaptureScheduleStoreConflictException(
+                        "An activation target must be newer than the active capture schedule revision.");
+                }
                 var nextVersion = snapshot.Version + 1;
                 await ExecuteAsync(connection, transaction, """
                     UPDATE capture_schedule_state
@@ -359,7 +421,6 @@ public sealed class SqliteCaptureScheduleStore(
                     UpdatedUtc = now
                 };
             }, cancellationToken);
-    }
 
     public async Task PersistPreviewAsync(
         CaptureScheduleRevisionSnapshot revision,

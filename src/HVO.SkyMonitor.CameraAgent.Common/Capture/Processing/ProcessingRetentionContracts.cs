@@ -14,10 +14,13 @@ public interface IProcessingRetentionHolds
         CancellationToken cancellationToken);
 }
 
+internal interface IAcceptanceRetentionControl : IProcessingRetentionHolds;
+
 internal sealed class CompositeProcessingRetentionHolds(
     CaptureProcessingPersistence persistence,
     CameraAgentClearReferenceLoader clearReferences,
-    SqliteCalibrationLibraryStore calibrationLibrary) : IProcessingRetentionHolds
+    SqliteCalibrationLibraryStore calibrationLibrary,
+    IAcceptanceRetentionControl? acceptanceControl = null) : IProcessingRetentionHolds
 {
     public async ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
@@ -26,6 +29,9 @@ internal sealed class CompositeProcessingRetentionHolds(
         var persisted = await persistence.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         var configured = await clearReferences.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         var calibration = await calibrationLibrary.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
-        return persisted.Concat(configured).Concat(calibration).Distinct().ToArray();
+        var acceptance = acceptanceControl is null
+            ? []
+            : await acceptanceControl.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
+        return persisted.Concat(configured).Concat(calibration).Concat(acceptance).Distinct().ToArray();
     }
 }
