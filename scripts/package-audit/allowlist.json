@@ -13,7 +13,7 @@
     "deprecationReasons": ["Other"],
     "alternativePackage": null,
     "expiresOn": "2026-10-13",
-    "reason": "Accepted only as a transitive Microsoft.Data.SqlClient 6.1.1 dependency through EF Core 10.0.9; review upstream replacement before expiry."
+    "reason": "Accepted only as a transitive Microsoft.Data.SqlClient 6.1.1 dependency through EF Core 10.0.10; review upstream replacement before expiry."
   },
   {
     "id": "Microsoft.Identity.Client",
