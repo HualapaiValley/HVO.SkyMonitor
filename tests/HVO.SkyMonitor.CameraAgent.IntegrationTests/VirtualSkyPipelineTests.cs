@@ -168,7 +168,6 @@ public sealed class VirtualSkyPipelineTests
         var services = scope.ServiceProvider;
         var telemetry = services.GetRequiredService<ICaptureTelemetryProvider>();
         var latest = services.GetRequiredService<ILatestFrameAccessor>();
-        var initialStartedUtc = telemetry.Latest?.StartedUtc ?? DateTimeOffset.MinValue;
         using var logger = new RecordingLoggerProvider();
         services.GetRequiredService<ILoggerFactory>().AddProvider(logger);
         hostTelemetryScope.ServiceProvider.GetRequiredService<ILoggerFactory>().AddProvider(logger);
@@ -179,9 +178,10 @@ public sealed class VirtualSkyPipelineTests
         var activityNames = new ConcurrentBag<string>();
         var activityTagValues = new ConcurrentBag<string>();
         using var activityListener = CreateActivityListener(activityNames, activityTagValues);
+        var listenerStartedUtc = DateTimeOffset.UtcNow;
 
         await WaitUntilAsync(() => telemetry.Latest is { FrameStored: true } sample &&
-            sample.StartedUtc > initialStartedUtc &&
+            sample.StartedUtc > listenerStartedUtc &&
             latest.TryGetSnapshot(FrameArtifactRole.Raw, out _) &&
             latest.TryGetSnapshot(FrameArtifactRole.Combined, out _) &&
             latest.TryGetSnapshot(out _), TimeSpan.FromSeconds(20)).ConfigureAwait(false);
