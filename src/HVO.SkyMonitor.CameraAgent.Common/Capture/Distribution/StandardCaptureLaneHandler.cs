@@ -16,7 +16,8 @@ internal sealed class StandardCaptureLaneHandler(
     CaptureProcessingTelemetry processingTelemetry,
     ILogger<StandardCaptureLaneHandler> logger,
     IRawCaptureIngress rawCaptureIngress,
-    IOptions<CameraAgentHostOptions>? hostOptions = null) : ICaptureLaneHandler, IDisposable
+    IOptions<CameraAgentHostOptions>? hostOptions = null,
+    ICaptureProcessingFaultInjector? faultInjector = null) : ICaptureLaneHandler, IDisposable
 {
     private readonly ICaptureProcessingPipelineFactory _pipelineFactory = pipelineFactory;
     private readonly CaptureProcessingPersistence? _processingPersistence = processingPersistence;
@@ -25,6 +26,8 @@ internal sealed class StandardCaptureLaneHandler(
     private readonly ILogger<StandardCaptureLaneHandler> _logger = logger;
     private readonly IRawIngressRecoveryControl? _rawIngressControl = rawCaptureIngress as IRawIngressRecoveryControl;
     private readonly int _maximumAttempts = hostOptions?.Value.CaptureDistribution.MaximumAttempts ?? 5;
+    private readonly ICaptureProcessingFaultInjector _faultInjector =
+        faultInjector ?? NullCaptureProcessingFaultInjector.Instance;
     private readonly object _pipelineGate = new();
     private readonly SemaphoreSlim _executionGate = new(1, 1);
     private CaptureProcessingGraph? _graph;
@@ -36,7 +39,7 @@ internal sealed class StandardCaptureLaneHandler(
         ICaptureProcessingPipelineFactory pipelineFactory,
         ILogger<StandardCaptureLaneHandler> logger,
         IRawCaptureIngress rawCaptureIngress)
-        : this(pipelineFactory, null, new CaptureProcessingTelemetry(), logger, rawCaptureIngress, null)
+        : this(pipelineFactory, null, new CaptureProcessingTelemetry(), logger, rawCaptureIngress, null, null)
     {
         _ownsProcessingTelemetry = true;
     }
@@ -92,7 +95,8 @@ internal sealed class StandardCaptureLaneHandler(
                     attempt,
                     _logger,
                     cancellationToken,
-                    _maximumAttempts).ConfigureAwait(false);
+                    _maximumAttempts,
+                    faultInjector: _faultInjector).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
             {

@@ -35,8 +35,16 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         {
             cancellationToken.ThrowIfCancellationRequested();
             var manifestPath = ResolveSafePath(relativeManifestPath);
-            var parsed = CaptureContractJson.ParseManifest(
-                await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false));
+            byte[] manifestBytes;
+            try
+            {
+                manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            {
+                continue;
+            }
+            var parsed = CaptureContractJson.ParseManifest(manifestBytes);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
             {
                 throw new InvalidDataException("Configured clear-reference manifest is invalid.");

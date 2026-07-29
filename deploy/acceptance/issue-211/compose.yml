@@ -1,0 +1,123 @@
+services:
+  cameraagent:
+    image: ${CAMERA_AGENT_IMAGE:?CAMERA_AGENT_IMAGE must be a content-addressed image ID}
+    pull_policy: never
+    container_name: ${CAMERA_AGENT_CONTAINER:?CAMERA_AGENT_CONTAINER must be set}
+    hostname: cameraagent-w6
+    user: "${LOCAL_UID:?LOCAL_UID must be set}:${LOCAL_GID:?LOCAL_GID must be set}"
+    read_only: true
+    environment:
+      ASPNETCORE_ENVIRONMENT: StandaloneW6
+      ASPNETCORE_URLS: http://+:8080
+      HOME: /var/lib/hvo/data/agent/home
+      TMPDIR: /tmp
+      CameraAgent__AgentId: ${CAMERA_AGENT_ID:?CAMERA_AGENT_ID must be set}
+      CameraAgent__ConfigFilePath: /run/hvo/cameraagent.json
+      CameraAgent__RawIngressRoot: /var/lib/hvo/data/agent
+      CameraAgent__AcceptanceFaultControlRoot: /var/lib/hvo/data/agent/acceptance-faults
+      CameraAgent__AcceptanceCentralAttemptLogPath: /var/lib/hvo/data/agent/central-http-attempts.log
+      Catalog__Root: /var/lib/hvo/data/catalog
+      LocalIdentity__AdminEmail: ${CAMERA_AGENT_OWNER_EMAIL:?CAMERA_AGENT_OWNER_EMAIL must be set}
+      LocalIdentity__CookieName: CameraAgent.Standalone211.Auth
+      LocalIdentity__DatabasePath: /var/lib/hvo/data/agent/identity/cameraagent_identity.db
+      LocalIdentity__AdminPasswordFile: /run/secrets/owner_password
+      DeviceProvisioning__StateDirectory: /var/lib/hvo/data/agent/provisioning
+      Calibration__Required: ${CAMERA_AGENT_CALIBRATION_REQUIRED:-true}
+      CameraAgent__TransientDetection__Mode: ${CAMERA_AGENT_TRANSIENT_MODE:-Edge}
+      CameraAgent__TransientDetection__Required: ${CAMERA_AGENT_TRANSIENT_REQUIRED:-true}
+      OTEL_SERVICE_NAME: hvo-camera-w6
+      OTEL_RESOURCE_ATTRIBUTES: service.instance.id=standalone-acceptance
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_METRIC_EXPORT_INTERVAL: 5000
+    volumes:
+      - type: bind
+        source: ${CAMERA_AGENT_CONFIG_SOURCE:?CAMERA_AGENT_CONFIG_SOURCE must be set}
+        target: /run/hvo/cameraagent.json
+        read_only: true
+      - type: bind
+        source: ${CAMERA_AGENT_RUNTIME_SOURCE:?CAMERA_AGENT_RUNTIME_SOURCE must be set}
+        target: /var/lib/hvo/data/agent
+      - type: bind
+        source: ${CAMERA_AGENT_DATA_PROTECTION_SOURCE:?CAMERA_AGENT_DATA_PROTECTION_SOURCE must be set}
+        target: /app/DataProtection-Keys
+      - type: bind
+        source: ${CAMERA_AGENT_CATALOG_SOURCE:?CAMERA_AGENT_CATALOG_SOURCE must be set}
+        target: /var/lib/hvo/data/catalog
+        read_only: true
+      - type: bind
+        source: ${CAMERA_AGENT_OWNER_PASSWORD_FILE:?CAMERA_AGENT_OWNER_PASSWORD_FILE must be set}
+        target: /run/secrets/owner_password
+        read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    depends_on:
+      collector:
+        condition: service_started
+      central-deny:
+        condition: service_started
+    stop_grace_period: 45s
+    networks:
+      - isolated
+
+  test-proxy:
+    image: ${CENTRAL_DENY_IMAGE:?CENTRAL_DENY_IMAGE must be pinned by digest}
+    pull_policy: missing
+    container_name: ${ISSUE211_PROXY_CONTAINER:?ISSUE211_PROXY_CONTAINER must be set}
+    hostname: test-proxy
+    read_only: true
+    command:
+      - TCP-LISTEN:8080,fork,reuseaddr
+      - TCP:cameraagent:8080
+    ports:
+      - "${ISSUE211_BIND_ADDRESS:?ISSUE211_BIND_ADDRESS must be set}:${ISSUE211_HTTP_PORT:?ISSUE211_HTTP_PORT must be set}:8080"
+    depends_on:
+      cameraagent:
+        condition: service_started
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    networks:
+      - isolated
+      - host-access
+
+  collector:
+    image: ${OTEL_COLLECTOR_IMAGE:?OTEL_COLLECTOR_IMAGE must be pinned by digest}
+    pull_policy: missing
+    container_name: ${OTEL_COLLECTOR_CONTAINER:?OTEL_COLLECTOR_CONTAINER must be set}
+    hostname: collector
+    user: "${LOCAL_UID}:${LOCAL_GID}"
+    read_only: true
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - type: bind
+        source: ${OTEL_COLLECTOR_CONFIG_SOURCE:?OTEL_COLLECTOR_CONFIG_SOURCE must be set}
+        target: /etc/otelcol/config.yml
+        read_only: true
+      - type: bind
+        source: ${OTEL_EVIDENCE_SOURCE:?OTEL_EVIDENCE_SOURCE must be set}
+        target: /evidence
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    networks:
+      - isolated
+
+  central-deny:
+    image: ${CENTRAL_DENY_IMAGE:?CENTRAL_DENY_IMAGE must be pinned by digest}
+    pull_policy: missing
+    container_name: ${CENTRAL_DENY_CONTAINER:?CENTRAL_DENY_CONTAINER must be set}
+    hostname: central-deny
+    read_only: true
+    command:
+      - TCP-LISTEN:8080,fork,reuseaddr
+      - SYSTEM:echo HVO211_DENY_HIT >&2; exit 1
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    networks:
+      - isolated
+
+networks:
+  isolated:
+    driver: bridge
+    internal: true
+  host-access:
+    driver: bridge

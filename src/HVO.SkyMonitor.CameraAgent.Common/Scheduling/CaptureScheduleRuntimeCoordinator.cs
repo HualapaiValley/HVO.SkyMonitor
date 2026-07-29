@@ -357,6 +357,29 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         string actor,
         string? reason,
         CancellationToken cancellationToken)
+        => await ApplyRevisionAsync(
+            revisionId, idempotencyKey, expectedVersion, actor, reason, rollback: false, cancellationToken)
+            .ConfigureAwait(false);
+
+    public async Task<CaptureScheduleStoreSnapshot> RollbackAsync(
+        string revisionId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+        => await ApplyRevisionAsync(
+            revisionId, idempotencyKey, expectedVersion, actor, reason, rollback: true, cancellationToken)
+            .ConfigureAwait(false);
+
+    private async Task<CaptureScheduleStoreSnapshot> ApplyRevisionAsync(
+        string revisionId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        bool rollback,
+        CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -374,8 +397,11 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             return await _admissionCoordinator.ExecuteCaptureBoundaryAsync(
                 async boundaryToken =>
                 {
-                    var result = await _store.ActivateWithCurrentAsync(
-                        revisionId, idempotencyKey, expectedVersion, actor, reason, boundaryToken).ConfigureAwait(false);
+                    var result = rollback
+                        ? await _store.RollbackWithCurrentAsync(
+                            revisionId, idempotencyKey, expectedVersion, actor, reason, boundaryToken).ConfigureAwait(false)
+                        : await _store.ActivateWithCurrentAsync(
+                            revisionId, idempotencyKey, expectedVersion, actor, reason, boundaryToken).ConfigureAwait(false);
                     var actual = result.Current;
                     if (string.Equals(actual.ActiveRevision.RevisionId, target.RevisionId, StringComparison.Ordinal) &&
                         !string.Equals(current.Revision.RevisionId, target.RevisionId, StringComparison.Ordinal))

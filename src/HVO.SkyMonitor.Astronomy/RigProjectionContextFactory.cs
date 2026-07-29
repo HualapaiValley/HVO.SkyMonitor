@@ -13,7 +13,7 @@ public sealed record ProjectionAnnotationLandmarks(
 /// <summary>Creates calibrated projection contexts from transport-neutral camera rig profiles.</summary>
 public static class RigProjectionContextFactory
 {
-    public const string AlgorithmVersion = "rig-projection-v1";
+    public const string AlgorithmVersion = "rig-projection-v2";
 
     /// <summary>Creates a deterministic content hash for the complete rig profile.</summary>
     public static string CreateProfileHashSha256(CameraRigConfig rig)
@@ -42,11 +42,16 @@ public static class RigProjectionContextFactory
             return null;
         }
 
-        var projector = ProjectorFactory.Create(projection with { EnforceSensorBounds = false });
-        var north = projector.Project(new AltAzPoint(0, 0));
-        var east = projector.Project(new AltAzPoint(0, 90));
-        var south = projector.Project(new AltAzPoint(0, 180));
-        var west = projector.Project(new AltAzPoint(0, 270));
+        var landmarkProjection = projection with
+        {
+            ImageCircleRadiusPixels = MaximumModelRadius(projection),
+            EnforceSensorBounds = false
+        };
+        var projector = ProjectorFactory.Create(landmarkProjection);
+        var north = ProjectToAperture(projector, projection, radius, new AltAzPoint(0, 0));
+        var east = ProjectToAperture(projector, projection, radius, new AltAzPoint(0, 90));
+        var south = ProjectToAperture(projector, projection, radius, new AltAzPoint(0, 180));
+        var west = ProjectToAperture(projector, projection, radius, new AltAzPoint(0, 270));
         return north is null || east is null || south is null || west is null
             ? null
             : new ProjectionAnnotationLandmarks(
@@ -57,6 +62,41 @@ public static class RigProjectionContextFactory
                 south.Value,
                 west.Value);
     }
+
+    private static PixelPoint? ProjectToAperture(
+        IImageProjector projector,
+        ProjectionContext projection,
+        double apertureRadius,
+        AltAzPoint direction)
+    {
+        if (projector.Project(direction) is not { } projected)
+        {
+            return null;
+        }
+
+        var x = projected.X - projection.PrincipalPointX;
+        var y = projected.Y - projection.PrincipalPointY;
+        var projectedRadius = Math.Sqrt(x * x + y * y);
+        if (projectedRadius <= apertureRadius || projectedRadius <= 1e-12)
+        {
+            return projected;
+        }
+
+        var scale = apertureRadius / projectedRadius;
+        return new PixelPoint(
+            projection.PrincipalPointX + x * scale,
+            projection.PrincipalPointY + y * scale);
+    }
+
+    private static double MaximumModelRadius(ProjectionContext projection)
+        => projection.Model switch
+        {
+            ProjectionModel.EquidistantFisheye => Math.PI * projection.FocalLengthXPixels,
+            ProjectionModel.EquisolidFisheye => 2 * projection.FocalLengthXPixels,
+            ProjectionModel.OrthographicFisheye => projection.FocalLengthXPixels,
+            ProjectionModel.StereographicFisheye => double.MaxValue / 4,
+            _ => projection.ImageCircleRadiusPixels!.Value
+        };
 
     /// <summary>Creates the calibrated native-sensor projection before readout.</summary>
     public static ProjectionContext CreateNative(CameraRigConfig rig)

@@ -1,6 +1,8 @@
 using System.Globalization;
+using System.Diagnostics;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace HVO.SkyMonitor.CameraAgent.Endpoints;
@@ -120,32 +122,56 @@ internal static class CameraAgentArtifactEndpoints
         Guid artifactId,
         HttpContext context,
         ICameraAgentArtifactService artifacts,
+        CameraAgentOperatorTelemetry telemetry,
         CancellationToken cancellationToken)
     {
-        var preview = await artifacts.GetPreviewAsync(artifactId, cancellationToken).ConfigureAwait(false);
-        if (preview.Status != CameraAgentArtifactReadStatus.Found || preview.ChecksumSha256 is null)
+        var timer = Stopwatch.StartNew();
+        using var activity = telemetry.StartArtifactComparison();
+        var outcome = "failed";
+        long outputBytes = 0;
+        try
         {
-            await WriteFailureAsync(context, preview.Status, cancellationToken).ConfigureAwait(false);
-            return;
-        }
+            var preview = await artifacts.GetPreviewAsync(artifactId, cancellationToken).ConfigureAwait(false);
+            if (preview.Status != CameraAgentArtifactReadStatus.Found || preview.ChecksumSha256 is null)
+            {
+                outcome = preview.Status switch
+                {
+                    CameraAgentArtifactReadStatus.NotFound => "not_found",
+                    CameraAgentArtifactReadStatus.TooLarge => "too_large",
+                    CameraAgentArtifactReadStatus.UnsupportedMediaType => "unsupported_media_type",
+                    _ => "failed"
+                };
+                await WriteFailureAsync(context, preview.Status, cancellationToken).ConfigureAwait(false);
+                return;
+            }
 
-        var etag = CreateETag(preview.ChecksumSha256);
-        SetPrivateHeaders(context.Response, immutable: true);
-        context.Response.Headers.ETag = etag;
-        context.Response.Headers[ChecksumHeader] = preview.ChecksumSha256;
-        context.Response.Headers.XContentTypeOptions = "nosniff";
-        if (MatchesIfNoneMatch(context.Request, etag))
-        {
-            context.Response.StatusCode = StatusCodes.Status304NotModified;
-            return;
+            var etag = CreateETag(preview.ChecksumSha256);
+            SetPrivateHeaders(context.Response, immutable: true);
+            context.Response.Headers.ETag = etag;
+            context.Response.Headers[ChecksumHeader] = preview.ChecksumSha256;
+            context.Response.Headers.XContentTypeOptions = "nosniff";
+            outputBytes = preview.Content.Length;
+            if (MatchesIfNoneMatch(context.Request, etag))
+            {
+                outcome = "not_modified";
+                context.Response.StatusCode = StatusCodes.Status304NotModified;
+                return;
+            }
+            outcome = "found";
+            context.Response.StatusCode = StatusCodes.Status200OK;
+            context.Response.ContentType = "image/jpeg";
+            context.Response.ContentLength = preview.Content.Length;
+            context.Response.Headers.ContentDisposition = $"inline; filename=\"{artifactId:D}.jpg\"";
+            if (HttpMethods.IsGet(context.Request.Method))
+            {
+                await context.Response.Body.WriteAsync(preview.Content, cancellationToken).ConfigureAwait(false);
+            }
         }
-        context.Response.StatusCode = StatusCodes.Status200OK;
-        context.Response.ContentType = "image/jpeg";
-        context.Response.ContentLength = preview.Content.Length;
-        context.Response.Headers.ContentDisposition = $"inline; filename=\"{artifactId:D}.jpg\"";
-        if (HttpMethods.IsGet(context.Request.Method))
+        finally
         {
-            await context.Response.Body.WriteAsync(preview.Content, cancellationToken).ConfigureAwait(false);
+            timer.Stop();
+            activity?.SetTag("outcome", outcome);
+            telemetry.RecordComparison(timer.Elapsed, outputBytes, outcome);
         }
     }
 

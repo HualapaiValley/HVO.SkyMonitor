@@ -17,13 +17,16 @@ internal sealed class CaptureProcessingPersistence(
     SqliteCaptureProcessingStore store,
     IFrameStorageService frameStorage,
     CaptureProcessingTelemetry telemetry,
-    ILogger<CaptureProcessingPersistence> logger) : IProcessingRetentionHolds
+    ILogger<CaptureProcessingPersistence> logger,
+    ICaptureProcessingFaultInjector? faultInjector = null) : IProcessingRetentionHolds
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     private readonly SqliteCaptureProcessingStore _store = store;
     private readonly IFrameStorageService _frameStorage = frameStorage;
     private readonly CaptureProcessingTelemetry _telemetry = telemetry;
     private readonly ILogger<CaptureProcessingPersistence> _logger = logger;
+    private readonly ICaptureProcessingFaultInjector _faultInjector =
+        faultInjector ?? NullCaptureProcessingFaultInjector.Instance;
 
     internal ValueTask InitializeAsync(CancellationToken cancellationToken)
         => _store.InitializeAsync(cancellationToken);
@@ -227,6 +230,7 @@ internal sealed class CaptureProcessingPersistence(
                 _telemetry.RecordPersistence(node, product, stopwatch.Elapsed);
                 activity?.SetStatus(ActivityStatusCode.Ok);
             }
+            _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, node.Id);
             await _store.WriteNodeAsync(
                 rawCapture.Manifest.Descriptor.Capture.CaptureId,
                 node,

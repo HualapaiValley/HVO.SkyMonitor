@@ -1,5 +1,6 @@
 using System.Linq;
 using System.Globalization;
+using System.Diagnostics.CodeAnalysis;
 using HVO.Enterprise.Telemetry;
 using HVO.Enterprise.Telemetry.OpenTelemetry;
 using HVO.Enterprise.Telemetry.Serilog;
@@ -30,7 +31,7 @@ public static class SkyMonitorObservabilityExtensions
     private const string AlivenessEndpointPath = "/alive";
     private static readonly HashSet<string> CatalogHealthDataKeys = new(StringComparer.Ordinal)
     {
-        "Kind", "CatalogVersion", "SchemaVersion", "PreprocessingVersion", "DatabaseSha256", "RowCount"
+        "Kind", "CatalogVersion", "SchemaVersion", "PreprocessingVersion", "RowCount"
     };
     private static readonly HashSet<string> RawIngressHealthDataKeys = new(StringComparer.Ordinal)
     {
@@ -202,7 +203,7 @@ public static class SkyMonitorObservabilityExtensions
                 status = entry.Value.Status.ToString(),
                 description = entry.Value.Description,
                 duration = entry.Value.Duration.TotalMilliseconds,
-                error = entry.Value.Exception?.Message,
+                error = entry.Value.Exception is null ? null : "Health check failed.",
                 tags = entry.Value.Tags,
                 data = SelectHealthData(entry.Key, entry.Value.Data)
             })
@@ -249,6 +250,8 @@ public static class SkyMonitorObservabilityExtensions
         return !string.IsNullOrWhiteSpace(configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]);
     }
 
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
+        Justification = "The created Serilog root logger owns and disposes its registered telemetry sink.")]
     private static void ConfigureSerilog(IHostApplicationBuilder builder)
     {
         var loggerConfiguration = new LoggerConfiguration()
@@ -263,15 +266,22 @@ public static class SkyMonitorObservabilityExtensions
         if (!string.IsNullOrWhiteSpace(endpoint))
         {
             var serviceName = builder.Configuration["OTEL_SERVICE_NAME"] ?? builder.Environment.ApplicationName;
-            loggerConfiguration.WriteTo.OpenTelemetry(options =>
-            {
-                options.Endpoint = endpoint.TrimEnd('/') + "/v1/logs";
-                options.Protocol = OtlpProtocol.HttpProtobuf;
-                options.ResourceAttributes = new Dictionary<string, object>
+            var telemetryLogger = new LoggerConfiguration()
+                .MinimumLevel.Verbose()
+                .WriteTo.OpenTelemetry(options =>
                 {
-                    ["service.name"] = serviceName
-                };
-            });
+                    options.Endpoint = endpoint.TrimEnd('/') + "/v1/logs";
+                    options.Protocol = OtlpProtocol.HttpProtobuf;
+                    options.IncludedData = IncludedData.TraceIdField |
+                        IncludedData.SpanIdField |
+                        IncludedData.SourceContextAttribute;
+                    options.ResourceAttributes = new Dictionary<string, object>
+                    {
+                        ["service.name"] = serviceName
+                    };
+                })
+                .CreateLogger();
+            loggerConfiguration.WriteTo.Sink(new SanitizedOpenTelemetryLogSink(telemetryLogger));
         }
 
         Log.Logger = loggerConfiguration.CreateLogger();

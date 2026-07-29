@@ -606,7 +606,7 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         Assert.AreEqual(HttpStatusCode.OK, health.StatusCode);
         var healthBody = await health.Content.ReadAsStringAsync().ConfigureAwait(false);
         StringAssert.Contains(healthBody, "Production celestial catalog snapshot is installed", StringComparison.Ordinal);
-        StringAssert.Contains(healthBody, ProductionDatabaseSha256, StringComparison.Ordinal);
+        Assert.IsFalse(healthBody.Contains(ProductionDatabaseSha256, StringComparison.OrdinalIgnoreCase));
         StringAssert.Contains(healthBody, ProductionRowCount.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
 
         var summary = await client.GetFromJsonAsync<CameraAgentOperationsSummary>(

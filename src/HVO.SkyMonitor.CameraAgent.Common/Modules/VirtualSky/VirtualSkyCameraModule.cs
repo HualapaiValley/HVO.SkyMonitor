@@ -31,8 +31,10 @@ public sealed class VirtualSkyCameraModule(
     private VirtualTransientScenario? _transientScenario;
     private ResolvedSensorReadout? _resolvedReadout;
     private readonly object _virtualCalibrationCacheLock = new();
+    private readonly object _fixedSequenceLock = new();
     private PreparedVirtualCalibration? _preparedVirtualCalibration;
     private long _captureSequence;
+    private long _fixedSequenceElapsedTicks;
 
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public string DisplayName => "Virtual Sky Camera";
@@ -87,6 +89,7 @@ public sealed class VirtualSkyCameraModule(
             : new VirtualTransientScenario(_options.TransientScenario);
         ValidatePixelFormat(config, _options);
         _captureSequence = 0;
+        _fixedSequenceElapsedTicks = 0;
         return Task.CompletedTask;
     }
 
@@ -149,7 +152,18 @@ public sealed class VirtualSkyCameraModule(
             _options.CatalogLicense,
             _options.CatalogSchemaVersion);
         var metadata = (catalog as ICelestialCatalogMetadataSource)?.Metadata ?? configuredMetadata;
-        var sceneUtc = _options.FixedSceneUtc ?? request.RequestedStartUtc;
+        long? fixedSequence = null;
+        var timelineUtc = request.RequestedStartUtc;
+        if (_options.FixedSequenceStartUtc is { } fixedSequenceStartUtc)
+        {
+            lock (_fixedSequenceLock)
+            {
+                fixedSequence = _captureSequence++;
+                timelineUtc = fixedSequenceStartUtc.AddTicks(_fixedSequenceElapsedTicks);
+                _fixedSequenceElapsedTicks = checked(_fixedSequenceElapsedTicks + request.TargetInterval.Ticks);
+            }
+        }
+        var sceneUtc = _options.FixedSceneUtc ?? timelineUtc;
         var observatory = config.ResolveObservatory(sceneUtc);
         var sceneRequest = new VisibleSceneRequest(
             sceneUtc,
@@ -193,16 +207,16 @@ public sealed class VirtualSkyCameraModule(
                 "\n",
                 CaptureContractJson.ComputeCanonicalJsonSha256(config.Rig.Readout)))));
         }
-        var captureSequence = _cloudField is null && _transientScenario is null
+        var captureSequence = fixedSequence ?? (_cloudField is null && _transientScenario is null
             ? Interlocked.Increment(ref _captureSequence) - 1
-            : CreateDeterministicCaptureSequence(sceneId);
+            : CreateDeterministicCaptureSequence(sceneId));
         var cloud = _cloudField is null
             ? null
-            : new VirtualCloudRenderContext(_cloudField, request.RequestedStartUtc, setpoint.Exposure);
+            : new VirtualCloudRenderContext(_cloudField, timelineUtc, setpoint.Exposure);
         var transient = _transientScenario is null
             ? null
             : new VirtualTransientRenderContext(
-                _transientScenario, request.RequestedStartUtc, setpoint.Exposure);
+                _transientScenario, timelineUtc, setpoint.Exposure);
         var render = useNativeReadout
             ? RenderNativeReadout(
                 renderScene, layout, setpoint, captureSequence, renderProjection, cloud, transient, cancellationToken)
@@ -258,9 +272,9 @@ public sealed class VirtualSkyCameraModule(
             };
         }
         sceneStore.Put(sceneId, scene);
-        var cloudProvenance = CreateCloudProvenance(_options.CloudScenario, request.RequestedStartUtc, setpoint.Exposure);
+        var cloudProvenance = CreateCloudProvenance(_options.CloudScenario, timelineUtc, setpoint.Exposure);
         var transientProvenance = CreateTransientProvenance(
-            _options.TransientScenario, request.RequestedStartUtc, setpoint.Exposure);
+            _options.TransientScenario, timelineUtc, setpoint.Exposure);
         var provenance = new SceneProvenance(
             sceneId,
             config.Rig.ProfileVersion,
@@ -1042,6 +1056,8 @@ public sealed class VirtualSkyCameraModuleOptions
     public int Seed { get; init; } = 2025;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTimeOffset? FixedSceneUtc { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? FixedSequenceStartUtc { get; init; }
     public double MaximumMagnitude { get; init; } = 6.5;
     public int MaximumResults { get; init; } = 2000;
     public double MagnitudeZeroElectronsPerSecond { get; init; } = 1000;
@@ -1084,7 +1100,8 @@ public sealed class VirtualSkyCameraModuleOptions
             BackgroundElectronsPerSecond is { } background && (!double.IsFinite(background) || background < 0) ||
             !double.IsFinite(BortleThreeBackgroundElectronsPerSecond) || BortleThreeBackgroundElectronsPerSecond < 0 ||
             CatalogSourceUrl is null || !CatalogSourceUrl.IsAbsoluteUri || CatalogChecksumSha256.Length != 64 ||
-            FixedSceneUtc is { Offset: var offset } && offset != TimeSpan.Zero ||
+            FixedSceneUtc is { Offset: var sceneOffset } && sceneOffset != TimeSpan.Zero ||
+            FixedSequenceStartUtc is { Offset: var sequenceOffset } && sequenceOffset != TimeSpan.Zero ||
             Asi174Sensor is null || Asi178Sensor is null ||
             (Asi174Sensor.Enabled ? 1 : 0) + (Asi178Sensor.Enabled ? 1 : 0) +
             (Asi676Enabled ? 1 : 0) > 1 ||

@@ -262,3 +262,24 @@ ingress/lane/outbox fan-out, processing, USB acquisition, memory pressure, or
 sustained thermal behavior. Final evidence must run the canonical CameraAgent
 W3P path in an isolated ARM64 container, followed by the physical ASI676MM SDK
 mode at the intended ROI/bin/rate after a reboot with `get_throttled=0x0`.
+
+### Future `allsky01` W6 Pipeline Baseline
+
+Issue #211's required W6 acceptance runs on the development host. A later,
+non-blocking Raspberry Pi 5 baseline should run on `allsky01` using the exact
+full-catalog ASI676MC standalone profile, five-second logical exposure, and
+ten-second cadence from the accepted revision. It should report camera-module
+wall time, module overhead beyond exposure, durable-ingress time, graph wall
+time, end-to-end time, completion-to-next-start cadence headroom, and every
+processing node's timing distribution. Collect at least 30 independent measured
+captures before reporting p95; shorter diagnostics must report median and range
+without labeling the maximum as p95.
+
+Run the workload in a native ARM64 container against NVMe-backed Docker state.
+Also retain CPU samples, peak RSS, filesystem growth, backlog, temperature, and
+throttle state. Record the exact commit, dirty-state identity, image digest,
+catalog identity, rig identity, processing identity, and local profile identity
+so the Pi result can be compared directly with the development-host evidence.
+Do not treat a cadence-limited elapsed time as pipeline throughput, and do not
+accept the hardware baseline after a reboot unless `get_throttled=0x0` remains
+clean throughout the measured window.

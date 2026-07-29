@@ -286,7 +286,8 @@ public static class TransientContractJson
         if (!Utc(transientEvent.EventCreatedUtc) || !Utc(transientEvent.VersionCreatedUtc) ||
             !Utc(transientEvent.FirstObservedUtc) || !Utc(transientEvent.LastObservedUtc) ||
             transientEvent.FirstObservedUtc > transientEvent.LastObservedUtc ||
-            transientEvent.LastObservedUtc > transientEvent.EventCreatedUtc ||
+            transientEvent.FirstObservedUtc > transientEvent.EventCreatedUtc ||
+            transientEvent.LastObservedUtc > transientEvent.VersionCreatedUtc ||
             transientEvent.EventCreatedUtc > transientEvent.VersionCreatedUtc ||
             transientEvent.PreviousVersionCreatedUtc is { } previousCreated &&
                 (!Utc(previousCreated) || previousCreated < transientEvent.EventCreatedUtc ||

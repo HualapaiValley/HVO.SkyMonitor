@@ -25,6 +25,8 @@ public sealed class OperatorRouteTests
             typeof(SchedulePage),
             typeof(CalibrationPage),
             typeof(EnvironmentalPage),
+            typeof(TransientPage),
+            typeof(TransientDetail),
             typeof(SystemStatusPage),
             typeof(DeviceBootstrap),
             typeof(FramesController)
@@ -48,7 +50,8 @@ public sealed class OperatorRouteTests
         CollectionAssert.AreEqual(
             new[]
             {
-                ("Operations", "/"), ("Gallery", "/gallery"), ("Schedule", "/schedule"),
+                ("Operations", "/"), ("Gallery", "/gallery"), ("Transients", "/transients"),
+                ("Schedule", "/schedule"),
                 ("Calibration", "/calibration"),
                 ("Environment", "/environmental"),
                 ("System", "/system"), ("Device", "/devices/bootstrap")

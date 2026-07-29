@@ -540,6 +540,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
             candidate.ContextSources,
             state,
             TransientCandidateWorkflowPhase.CandidatePersisted,
+            candidate.State,
             "candidate_payload",
             "candidate_payload_sha256",
             payload,
@@ -574,6 +575,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
             originatingSources,
             receipt.Event.State,
             TransientCandidateWorkflowPhase.Finalized,
+            null,
             "finalization_payload",
             "finalization_receipt_identity_sha256",
             payload,
@@ -608,6 +610,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
             submission.Candidate.ContextSources,
             TransientEventState.Provisional,
             TransientCandidateWorkflowPhase.HandoffPending,
+            null,
             "submission_payload",
             "submission_identity_sha256",
             payload,
@@ -755,6 +758,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         IReadOnlyList<TransientSourceEvidenceReferenceV1>? sources,
         TransientEventState state,
         TransientCandidateWorkflowPhase phase,
+        TransientCandidateState? candidateState,
         string payloadColumn,
         string identityColumn,
         byte[] payload,
@@ -839,6 +843,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
                             WHEN phase = 'handoff_pending' AND $phase = 'finalized' THEN phase
                             ELSE $phase
                         END,
+                        candidate_state = COALESCE($candidate_state, candidate_state),
                         {payloadColumn} = $payload,
                         {identityColumn} = $identity,
                         updated_unix_ms = $now
@@ -846,6 +851,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
                     """;
                 update.Parameters.AddWithValue("$state", WriteState(state));
                 update.Parameters.AddWithValue("$phase", WritePhase(phase));
+                update.Parameters.AddWithValue("$candidate_state", candidateState?.ToString() ?? (object)DBNull.Value);
                 update.Parameters.AddWithValue("$payload", payload);
                 update.Parameters.AddWithValue("$identity", identity);
                 update.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());

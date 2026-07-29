@@ -32,7 +32,7 @@ internal static class CameraAgentScheduleOperationsEndpoints
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance)
             .WithName("ActivateCameraAgentSchedule");
-        schedule.MapPost("/rollback", ActivateAsync)
+        schedule.MapPost("/rollback", RollbackAsync)
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance)
             .WithName("RollbackCameraAgentSchedule");
@@ -132,21 +132,73 @@ internal static class CameraAgentScheduleOperationsEndpoints
             },
             cancellationToken);
 
-    private static Task<IResult> ActivateAsync(
+    private static async Task<IResult> ActivateAsync(
         HttpContext context,
         [FromBody] ScheduleActivationRequest request,
         CaptureScheduleRuntimeCoordinator runtime,
         ICameraAgentConfigurationAccessor configurationAccessor,
+        CameraAgentOperatorTelemetry telemetry,
         CancellationToken cancellationToken)
-        => request.ExpectedVersion is not { } expectedVersion
-            ? Task.FromResult(Invalid("The expected durable state version is required."))
-            : ExecuteMutationAsync(
+        => await ApplyRevisionAsync(
+            "activate",
+            context,
+            request,
+            runtime,
+            configurationAccessor,
+            telemetry,
+            cancellationToken).ConfigureAwait(false);
+
+    private static async Task<IResult> RollbackAsync(
+        HttpContext context,
+        [FromBody] ScheduleActivationRequest request,
+        CaptureScheduleRuntimeCoordinator runtime,
+        ICameraAgentConfigurationAccessor configurationAccessor,
+        CameraAgentOperatorTelemetry telemetry,
+        CancellationToken cancellationToken)
+        => await ApplyRevisionAsync(
+            "rollback",
+            context,
+            request,
+            runtime,
+            configurationAccessor,
+            telemetry,
+            cancellationToken).ConfigureAwait(false);
+
+    private static async Task<IResult> ApplyRevisionAsync(
+        string action,
+        HttpContext context,
+        ScheduleActivationRequest request,
+        CaptureScheduleRuntimeCoordinator runtime,
+        ICameraAgentConfigurationAccessor configurationAccessor,
+        CameraAgentOperatorTelemetry telemetry,
+        CancellationToken cancellationToken)
+    {
+        if (request.ExpectedVersion is not { } expectedVersion)
+        {
+            telemetry.RecordPlanMutation(action, "invalid");
+            return Invalid("The expected durable state version is required.");
+        }
+        using var activity = telemetry.StartPlanMutation(action);
+        var result = await ExecuteMutationAsync(
             context,
             runtime,
             configurationAccessor,
-            (key, actor, token) => runtime.ActivateAsync(
-                request.RevisionId, key, expectedVersion, actor, request.Reason, token),
-            cancellationToken);
+            (key, actor, token) => action == "rollback"
+                ? runtime.RollbackAsync(request.RevisionId, key, expectedVersion, actor, request.Reason, token)
+                : runtime.ActivateAsync(request.RevisionId, key, expectedVersion, actor, request.Reason, token),
+            cancellationToken).ConfigureAwait(false);
+        var outcome = ClassifyMutationOutcome(result);
+        activity?.SetTag("outcome", outcome);
+        telemetry.RecordPlanMutation(action, outcome);
+        return result;
+    }
+
+    internal static string ClassifyMutationOutcome(IResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        var statusCode = (result as IStatusCodeHttpResult)?.StatusCode ?? StatusCodes.Status200OK;
+        return statusCode < StatusCodes.Status400BadRequest ? "applied" : "failed";
+    }
 
     private static Task<IResult> AddOverrideAsync(
         HttpContext context,

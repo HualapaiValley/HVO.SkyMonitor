@@ -787,7 +787,8 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
                 {
                     var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                     if (body.Contains("Production celestial catalog snapshot is installed", StringComparison.Ordinal) &&
-                        body.Contains(ExpectedCatalogSha256, StringComparison.OrdinalIgnoreCase))
+                        body.Contains("119625", StringComparison.Ordinal) &&
+                        !body.Contains(ExpectedCatalogSha256, StringComparison.OrdinalIgnoreCase))
                     {
                         return;
                     }

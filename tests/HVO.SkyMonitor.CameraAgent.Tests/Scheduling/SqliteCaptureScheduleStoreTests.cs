@@ -263,6 +263,115 @@ public sealed class SqliteCaptureScheduleStoreTests
         }
     }
 
+    [TestMethod]
+    public async Task RollbackIsDurableIdempotentAndRejectsNonHistoricalTargets()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var initializer = new JournalInitializer(root);
+            using var store = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System);
+            var initial = await store.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+            var profile = LocalCaptureProfileDefinition.Create(Configuration(), Definition("night", 2));
+            var staged = await store.StageAsync(
+                profile, "stage-for-rollback", initial.Version, "owner", null, CancellationToken.None)
+                .ConfigureAwait(false);
+            var activated = await store.ActivateAsync(
+                staged.PendingRevision!.RevisionId,
+                "activate-before-rollback",
+                staged.Version,
+                "owner",
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+            var unchanged = await store.StageAsync(
+                activated.ActiveRevision.Profile,
+                "stage-active-noop",
+                activated.Version,
+                "owner",
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(activated.Version, unchanged.Version);
+            Assert.IsNull(unchanged.PendingRevision);
+            _ = await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() =>
+                store.ActivateWithCurrentAsync(
+                    initial.ActiveRevision.RevisionId,
+                    "activate-backward",
+                    activated.Version,
+                    "owner",
+                    null,
+                    CancellationToken.None)).ConfigureAwait(false);
+            var historical = await store.StageAsync(
+                initial.ActiveRevision.Profile,
+                "stage-historical",
+                activated.Version,
+                "owner",
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(initial.ActiveRevision.RevisionId, historical.PendingRevision!.RevisionId);
+            var cancelled = await store.StageAsync(
+                activated.ActiveRevision.Profile,
+                "cancel-pending",
+                historical.Version,
+                "owner",
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(cancelled.PendingRevision);
+            Assert.AreEqual(historical.Version + 1, cancelled.Version);
+            historical = await store.StageAsync(
+                initial.ActiveRevision.Profile,
+                "stage-historical-again",
+                cancelled.Version,
+                "owner",
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+
+            var rolledBack = (await store.RollbackWithCurrentAsync(
+                initial.ActiveRevision.RevisionId,
+                "rollback-1",
+                historical.Version,
+                "owner",
+                "restore previous schedule",
+                CancellationToken.None).ConfigureAwait(false)).Receipt;
+            var replay = (await store.RollbackWithCurrentAsync(
+                initial.ActiveRevision.RevisionId,
+                "rollback-1",
+                historical.Version,
+                "owner",
+                "restore previous schedule",
+                CancellationToken.None).ConfigureAwait(false)).Receipt;
+
+            Assert.AreEqual(initial.ActiveRevision.RevisionId, rolledBack.ActiveRevision.RevisionId);
+            Assert.AreEqual(rolledBack.Version, replay.Version);
+            _ = await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() =>
+                store.RollbackWithCurrentAsync(
+                    activated.ActiveRevision.RevisionId,
+                    "rollback-forward",
+                    rolledBack.Version,
+                    "owner",
+                    null,
+                    CancellationToken.None)).ConfigureAwait(false);
+            _ = await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() =>
+                store.ActivateWithCurrentAsync(
+                    initial.ActiveRevision.RevisionId,
+                    "rollback-1",
+                    rolledBack.Version,
+                    "owner",
+                    "restore previous schedule",
+                    CancellationToken.None)).ConfigureAwait(false);
+
+            using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT command_kind FROM capture_schedule_commands WHERE idempotency_key = 'rollback-1';";
+            Assert.AreEqual("rollback", await command.ExecuteScalarAsync().ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static string CreateRoot()
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-schedule-store", Guid.NewGuid().ToString("N"));

@@ -109,7 +109,8 @@ internal sealed class FrameProcessingWorker
         ILogger logger,
         CancellationToken cancellationToken,
         int maximumAttempts = int.MaxValue,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        ICaptureProcessingFaultInjector? faultInjector = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(telemetry);
@@ -264,6 +265,7 @@ internal sealed class FrameProcessingWorker
                 logger.CaptureProcessingNodeStarted(node.Id, attempt);
                 try
                 {
+                    faultInjector?.Inject(CaptureProcessingFaultPoint.BeforeNodeExecution, node.Id);
                     await node.Step.ProcessAsync(context, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

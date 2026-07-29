@@ -21,6 +21,9 @@
     <None Include="..\fixtures\catalog\hyg-v42-bright-stars.sqlite" Link="Fixtures\hyg-v42-bright-stars.sqlite">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\fixtures\astronomy\hualapai-asi676-w6-conformance-v1.json" Link="Fixtures\hualapai-asi676-w6-conformance-v1.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\fixtures\cameraagent.browser.json" Link="Fixtures\cameraagent.browser.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
@@ -28,6 +31,12 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.standalone-production-smoke.json" Link="cameraagent.standalone-production-smoke.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.standalone-w6.json" Link="cameraagent.standalone-w6.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.standalone-w6-mono8.json" Link="cameraagent.standalone-w6-mono8.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

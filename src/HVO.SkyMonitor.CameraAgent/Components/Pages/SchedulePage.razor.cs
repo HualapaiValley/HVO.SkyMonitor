@@ -40,6 +40,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     private IJSObjectReference? _module;
     private ElementReference _confirmationPanel;
     private string? _activationTriggerId;
+    private bool _confirmRollback;
     private bool _focusConfirmation;
     private bool _restoreActivationFocus;
     private readonly Dictionary<string, (string Key, long ExpectedVersion)> _clearOverrideKeys = new(StringComparer.Ordinal);
@@ -239,10 +240,11 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         await CompleteMutationAsync(result, "Draft saved.").ConfigureAwait(false);
     }
 
-    private void BeginActivation(string revisionId, string triggerId)
+    private void BeginActivation(string revisionId, string triggerId, bool rollback)
     {
         _confirmRevisionId = revisionId;
         _activationTriggerId = triggerId;
+        _confirmRollback = rollback;
         _focusConfirmation = true;
     }
 
@@ -266,12 +268,19 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
             _activationExpectedVersion = _state.StateVersion;
         }
         _busy = true;
-        var result = await ScheduleService.ActivateAsync(
-            revisionId,
-            _activationExpectedVersion,
-            _activationKey!,
-            "operator apply",
-            CancellationToken.None).ConfigureAwait(false);
+        var result = _confirmRollback
+            ? await ScheduleService.RollbackAsync(
+                revisionId,
+                _activationExpectedVersion,
+                _activationKey!,
+                "operator rollback",
+                CancellationToken.None).ConfigureAwait(false)
+            : await ScheduleService.ActivateAsync(
+                revisionId,
+                _activationExpectedVersion,
+                _activationKey!,
+                "operator apply",
+                CancellationToken.None).ConfigureAwait(false);
         _busy = false;
         if (result.Kind != OperatorUiResultKind.Unavailable)
         {

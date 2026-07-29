@@ -1,0 +1,35 @@
+@page "/transients/{CandidateId:guid}"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Transient detail</PageTitle>
+
+<div class="transient-detail">
+    <nav class="breadcrumb" aria-label="Breadcrumb"><a href="@BackUrl">Transient candidates</a><span>/</span><span aria-current="page">Candidate detail</span></nav>
+    @if (_isLoading)
+    {
+        <section class="detail-state" role="status"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><strong>Loading candidate evidence</strong></section>
+    }
+    else if (_errorMessage is not null || _detail is null)
+    {
+        <section class="detail-state detail-state--error" role="alert"><div><strong>Candidate unavailable</strong><p>@(_errorMessage ?? "The requested transient candidate was not found.")</p></div><a class="btn btn-outline-light" href="@BackUrl">Return to candidates</a></section>
+    }
+    else
+    {
+        <header class="detail-heading"><div><p class="eyebrow">@TransientPage.FormatTime(_detail.Candidate.CreatedUtc)</p><h1>@_detail.Candidate.CandidateId</h1><p>Sanitized local candidate, event, and stage evidence.</p></div><span>@TransientPage.SplitWords(_detail.Candidate.EventState)</span></header>
+        <section class="identity-card"><dl><div><dt>Candidate ID</dt><dd><code>@_detail.Candidate.CandidateId</code></dd></div><div><dt>Event ID</dt><dd><code>@_detail.Candidate.EventId</code></dd></div><div><dt>Candidate state</dt><dd>@TransientPage.SplitWords(_detail.Candidate.CandidateState)</dd></div><div><dt>Event state</dt><dd>@TransientPage.SplitWords(_detail.Candidate.EventState)</dd></div><div><dt>Workflow phase</dt><dd>@TransientPage.SplitWords(_detail.Candidate.WorkflowPhase)</dd></div><div><dt>Updated</dt><dd>@TransientPage.FormatTime(_detail.Candidate.UpdatedUtc)</dd></div></dl></section>
+
+        <section class="stage-grid" aria-label="Transient evidence stages">
+            <article><header><p class="eyebrow">Detection</p><h2>Candidate evidence</h2><span>@_detail.CandidateEvidence.State</span></header><dl><div><dt>Created</dt><dd>@FormatTime(_detail.CandidateEvidence.CreatedUtc)</dd></div><div><dt>Centered source</dt><dd>@FormatGuid(_detail.CandidateEvidence.CenterEvidenceId)</dd></div><div><dt>Context sources</dt><dd>@_detail.CandidateEvidence.ContextSourceCount</dd></div><div><dt>Reason codes</dt><dd>@FormatList(_detail.CandidateEvidence.ReasonCodes)</dd></div></dl>
+                @if (_detail.CandidateEvidence.Geometry is { } geometry) { <h3>Geometry</h3><dl><div><dt>Coordinates</dt><dd>@geometry.CoordinateWidth x @geometry.CoordinateHeight</dd></div><div><dt>Bounds</dt><dd>@FormatBounds(geometry)</dd></div><div><dt>Polyline points</dt><dd>@geometry.PolylinePointCount</dd></div></dl> } else { <p class="stage-absence">Geometry is absent.</p> }
+                @if (_detail.CandidateEvidence.Features is { } features) { <h3>Features</h3><dl><div><dt>Length / mean width</dt><dd>@features.LengthPixels / @features.MeanWidthPixels px</dd></div><div><dt>Peak / integrated signal</dt><dd>@features.PeakSignalAdu / @features.IntegratedSignalAdu ADU</dd></div><div><dt>Saturated samples</dt><dd>@features.SaturatedSampleCount</dd></div><div><dt>Fragments</dt><dd>@features.FragmentCount</dd></div></dl> } else { <p class="stage-absence">Feature evidence is absent.</p> }
+            </article>
+            <article><header><p class="eyebrow">Extraction receipt</p><h2>Causal window</h2><span>@_detail.CausalEvidence.State</span></header>@if (_detail.CausalEvidence.State == "Available") { <dl><div><dt>Centered context converged</dt><dd>@FormatBoolean(_detail.CausalEvidence.CenteredContextConverged)</dd></div><div><dt>Ordered sources</dt><dd>@_detail.CausalEvidence.SourceCount</dd></div><div><dt>Candidates</dt><dd>@_detail.CausalEvidence.CandidateCount</dd></div><div class="wide"><dt>Extraction identity SHA-256</dt><dd><code>@_detail.CausalEvidence.IdentitySha256</code></dd></div></dl> } else { <p class="stage-absence">Evidence state: @_detail.CausalEvidence.State.</p> }</article>
+            <article><header><p class="eyebrow">Extraction receipt</p><h2>Centered window</h2><span>@_detail.CenteredEvidence.State</span></header>@if (_detail.CenteredEvidence.State == "Available") { <dl><div><dt>Centered context converged</dt><dd>@FormatBoolean(_detail.CenteredEvidence.CenteredContextConverged)</dd></div><div><dt>Ordered sources</dt><dd>@_detail.CenteredEvidence.SourceCount</dd></div><div><dt>Candidates</dt><dd>@_detail.CenteredEvidence.CandidateCount</dd></div><div class="wide"><dt>Extraction identity SHA-256</dt><dd><code>@_detail.CenteredEvidence.IdentitySha256</code></dd></div></dl> } else { <p class="stage-absence">Evidence state: @_detail.CenteredEvidence.State.</p> }</article>
+            <article><header><p class="eyebrow">Classification</p><h2>Assessment</h2><span>@_detail.AssessmentEvidence.State</span></header>@if (_detail.AssessmentEvidence.State == "Available") { <dl><div><dt>Assessment ID</dt><dd>@FormatGuid(_detail.AssessmentEvidence.AssessmentId)</dd></div><div><dt>Authority</dt><dd>@_detail.AssessmentEvidence.Authority</dd></div><div><dt>Classification</dt><dd>@_detail.AssessmentEvidence.Classification</dd></div><div><dt>Meteor severity</dt><dd>@(_detail.AssessmentEvidence.MeteorSeverity ?? "Not applicable")</dd></div><div><dt>Confidence</dt><dd>@FormatConfidence(_detail.AssessmentEvidence.ConfidenceMillionths)</dd></div><div><dt>Evidence observations</dt><dd>@_detail.AssessmentEvidence.EvidenceObservationCount</dd></div><div><dt>Reason codes</dt><dd>@FormatList(_detail.AssessmentEvidence.ReasonCodes)</dd></div><div class="wide"><dt>Execution identity SHA-256</dt><dd><code>@_detail.AssessmentEvidence.IdentitySha256</code></dd></div></dl> } else { <p class="stage-absence">Evidence state: @_detail.AssessmentEvidence.State.</p> }</article>
+            <article><header><p class="eyebrow">Terminal event</p><h2>Final evidence</h2><span>@_detail.FinalEvidence.State</span></header>@if (_detail.FinalEvidence.State == "Available") { <dl><div><dt>Event state</dt><dd>@_detail.FinalEvidence.EventState</dd></div><div><dt>Event version</dt><dd>@_detail.FinalEvidence.EventVersion</dd></div><div><dt>First observed</dt><dd>@FormatTime(_detail.FinalEvidence.FirstObservedUtc)</dd></div><div><dt>Last observed</dt><dd>@FormatTime(_detail.FinalEvidence.LastObservedUtc)</dd></div><div><dt>Observations</dt><dd>@_detail.FinalEvidence.ObservationCount</dd></div><div><dt>Assessments</dt><dd>@_detail.FinalEvidence.AssessmentCount</dd></div><div class="wide"><dt>Receipt identity SHA-256</dt><dd><code>@_detail.FinalEvidence.ReceiptIdentitySha256</code></dd></div></dl> } else { <p class="stage-absence">Evidence state: @_detail.FinalEvidence.State.</p> }</article>
+        </section>
+    }
+</div>
