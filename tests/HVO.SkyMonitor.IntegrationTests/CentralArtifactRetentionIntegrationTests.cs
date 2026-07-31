@@ -108,6 +108,80 @@ public sealed class CentralArtifactRetentionIntegrationTests
     }
 
     [TestMethod]
+    public async Task ReservationDeadlockRetry_ReusesTokenAndCreatesOneTerminalDisposition()
+    {
+        await using var database = await CreateDatabaseAsync("ReservationDeadlockRetry").ConfigureAwait(false);
+        var seeded = await SeedAsync(database.Context, "reservation-deadlock-retry", [53, 54, 55]).ConfigureAwait(false);
+        await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
+        using var telemetry = new CentralArtifactRetentionTelemetry();
+        var injected = new InvalidOperationException("Injected reservation deadlock.");
+        var observedTokens = new List<Guid>();
+        var service = CreateService(database.Context, GetFixtureMinio(), telemetry);
+        service.ReservationDeadlockClassifier = exception => ReferenceEquals(exception, injected);
+        service.ReservationFaultInjector = (attempt, token) =>
+        {
+            observedTokens.Add(token);
+            return attempt == 0 ? injected : null;
+        };
+
+        (await service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None).ConfigureAwait(false))
+            .Should().Be(CentralArtifactRetentionResult.Released);
+        observedTokens.Should().HaveCount(2);
+        observedTokens.Distinct().Should().ContainSingle();
+        database.Context.ChangeTracker.Clear();
+        var disposition = await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
+            .SingleAsync(item => item.CentralArtifactId == seeded.ArtifactId).ConfigureAwait(false);
+        disposition.OperationToken.Should().Be(observedTokens[0]);
+        disposition.State.Should().Be(CentralObjectRecoveryStates.Completed);
+        var completedAt = disposition.CompletedAtUtc;
+
+        (await service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None).ConfigureAwait(false))
+            .Should().Be(CentralArtifactRetentionResult.Released);
+        database.Context.ChangeTracker.Clear();
+        var replayed = await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
+            .Where(item => item.CentralArtifactId == seeded.ArtifactId).ToArrayAsync().ConfigureAwait(false);
+        replayed.Should().ContainSingle();
+        replayed[0].OperationToken.Should().Be(observedTokens[0]);
+        replayed[0].CompletedAtUtc.Should().Be(completedAt);
+    }
+
+    [TestMethod]
+    public async Task ReservationDeadlockRetry_ExhaustionThrowsBoundedFailureWithoutDurableMutation()
+    {
+        await using var database = await CreateDatabaseAsync("ReservationDeadlockExhaustion").ConfigureAwait(false);
+        var seeded = await SeedAsync(database.Context, "reservation-deadlock-exhaustion", [56, 57]).ConfigureAwait(false);
+        using var telemetry = new CentralArtifactRetentionTelemetry();
+        var injected = new InvalidOperationException("Injected reservation deadlock.");
+        var observedTokens = new List<Guid>();
+        var service = CreateService(database.Context, GetFixtureMinio(), telemetry);
+        service.ReservationDeadlockClassifier = exception => ReferenceEquals(exception, injected);
+        service.ReservationFaultInjector = (_, token) =>
+        {
+            observedTokens.Add(token);
+            return injected;
+        };
+
+        CentralArtifactRetentionService.IsSqlServerDeadlock(
+            new InvalidOperationException("unrelated", new DbUpdateException("unrelated"))).Should().BeFalse();
+        var release = () => service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None);
+        await release.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("Central artifact retention reservation exhausted SQL deadlock retries.")
+            .ConfigureAwait(false);
+        observedTokens.Should().HaveCount(CentralArtifactRetentionService.MaximumReservationDeadlockRetries + 1);
+        observedTokens.Distinct().Should().ContainSingle();
+
+        database.Context.ChangeTracker.Clear();
+        var artifact = await database.Context.CentralArtifacts.AsNoTracking()
+            .SingleAsync(item => item.Id == seeded.ArtifactId).ConfigureAwait(false);
+        artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        artifact.RetentionDeletionToken.Should().BeNull();
+        artifact.RetentionDeletionRequestedAtUtc.Should().BeNull();
+        artifact.RetentionDeletionCompletedAtUtc.Should().BeNull();
+        (await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
+            .CountAsync(item => item.CentralArtifactId == seeded.ArtifactId).ConfigureAwait(false)).Should().Be(0);
+    }
+
+    [TestMethod]
     public async Task DelayedDelete_HasNoSqlTransactionAllowsWriterAndRecoversStaleRowVersion()
     {
         var applicationName = $"HVO.Retention.Delay.{Guid.NewGuid():N}";
@@ -321,6 +395,48 @@ public sealed class CentralArtifactRetentionIntegrationTests
         disposition.State.Should().Be(CentralObjectRecoveryStates.Completed);
         disposition.CompletedAtUtc.Should().NotBeNull();
         artifact.RetentionDeletionCompletedAtUtc.Should().NotBeNull();
+    }
+
+    [TestMethod]
+    public async Task FinalizationCommitDeadlock_RetriesOnlyFinalizationAndDeletesOnce()
+    {
+        await using var database = await CreateDatabaseAsync("FinalizeCommitDeadlock").ConfigureAwait(false);
+        var seeded = await SeedAsync(database.Context, "finalize-commit-deadlock", [58, 59, 60]).ConfigureAwait(false);
+        await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
+        var injected = new InvalidOperationException("Injected finalization commit deadlock.");
+        var interceptor = new ThrowSpecificBeforeCommitInterceptor(commitNumber: 3, injected);
+        await using var faultContext = CreateContext(database.ConnectionString, interceptor);
+        using var handler = new BlockingDeleteHandler { InnerHandler = new SocketsHttpHandler() };
+        using var minio = CreateMinio(handler);
+        using var telemetry = new CentralArtifactRetentionTelemetry();
+        var references = new CentralArtifactRetentionReferences(faultContext);
+        var processor = CreateProcessor(faultContext, minio, telemetry, references);
+        processor.SqlDeadlockClassifier = exception => ReferenceEquals(exception, injected);
+        var service = new CentralArtifactRetentionService(
+            faultContext,
+            references,
+            processor,
+            TimeProvider.System,
+            telemetry,
+            NullLogger<CentralArtifactRetentionService>.Instance);
+
+        var release = service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None);
+        await handler.Entered.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        handler.Release();
+        (await release.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false))
+            .Should().Be(CentralArtifactRetentionResult.Released);
+        interceptor.Triggered.Should().BeTrue();
+        handler.DeleteCount.Should().Be(1);
+
+        await using var verifier = CreateContext(database.ConnectionString);
+        var dispositions = await verifier.CentralObjectRecoveryDispositions.AsNoTracking()
+            .Where(item => item.CentralArtifactId == seeded.ArtifactId).ToArrayAsync().ConfigureAwait(false);
+        dispositions.Should().ContainSingle();
+        dispositions[0].State.Should().Be(CentralObjectRecoveryStates.Completed);
+        dispositions[0].AttemptCount.Should().Be(1);
+        (await verifier.CentralArtifacts.AsNoTracking()
+            .SingleAsync(item => item.Id == seeded.ArtifactId).ConfigureAwait(false))
+            .RetentionDeletionCompletedAtUtc.Should().NotBeNull();
     }
 
     [TestMethod]
@@ -1274,6 +1390,29 @@ public sealed class CentralArtifactRetentionIntegrationTests
             return ValueTask.FromResult(result);
         }
     }
+
+    private sealed class ThrowSpecificBeforeCommitInterceptor(int commitNumber, Exception exception)
+        : DbTransactionInterceptor
+    {
+        private int commits;
+
+        public bool Triggered { get; private set; }
+
+        public override ValueTask<InterceptionResult> TransactionCommittingAsync(
+            DbTransaction transaction,
+            TransactionEventData eventData,
+            InterceptionResult result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref commits) == commitNumber)
+            {
+                Triggered = true;
+                throw exception;
+            }
+            return ValueTask.FromResult(result);
+        }
+    }
+
 
     private sealed class StatusDeleteHandler(HttpStatusCode statusCode) : HttpMessageHandler
     {

@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.LogicHost.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
 using System.Data.Common;
@@ -163,6 +164,12 @@ internal sealed partial class CentralArtifactRetentionService(
     CentralArtifactRetentionTelemetry telemetry,
     ILogger<CentralArtifactRetentionService> logger) : ICentralArtifactRetentionService
 {
+    internal const int MaximumReservationDeadlockRetries = 3;
+
+    internal Func<int, Guid, Exception?>? ReservationFaultInjector { get; set; }
+
+    internal Func<Exception, bool>? ReservationDeadlockClassifier { get; set; }
+
     public async Task<CentralArtifactRetentionResult> ReleaseAsync(
         Guid centralArtifactId,
         CancellationToken cancellationToken)
@@ -203,7 +210,7 @@ internal sealed partial class CentralArtifactRetentionService(
                 ReservationResult reservation;
                 try
                 {
-                    reservation = await ReserveAsync(
+                    reservation = await ReserveWithDeadlockRetryAsync(
                         centralArtifactId, storageReference, operationToken, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (IsReservationOutcomeAmbiguous(exception))
@@ -259,10 +266,43 @@ internal sealed partial class CentralArtifactRetentionService(
         }
     }
 
+    private async Task<ReservationResult> ReserveWithDeadlockRetryAsync(
+        Guid centralArtifactId,
+        string storageReference,
+        Guid operationToken,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await ReserveAsync(
+                    centralArtifactId,
+                    storageReference,
+                    operationToken,
+                    attempt,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (IsRetryableReservationDeadlock(exception))
+            {
+                dbContext.ChangeTracker.Clear();
+                if (attempt >= MaximumReservationDeadlockRetries)
+                {
+                    throw new InvalidOperationException(
+                        "Central artifact retention reservation exhausted SQL deadlock retries.",
+                        exception);
+                }
+                var delay = TimeSpan.FromMilliseconds(10 * (1 << attempt));
+                await Task.Delay(delay, timeProvider, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
     private async Task<ReservationResult> ReserveAsync(
         Guid centralArtifactId,
         string storageReference,
         Guid operationToken,
+        int attempt,
         CancellationToken cancellationToken)
     {
         var objectKey = storageReference[CentralObjectOwnershipFence.BucketPrefix.Length..];
@@ -286,8 +326,10 @@ internal sealed partial class CentralArtifactRetentionService(
             return new(null, null, artifact.ByteLength, Retry: true);
         }
 
-        var identityMatches = await dbContext.CentralObjectRecoveryDispositions
-            .Where(item => item.SourceObjectIdentitySha256 == identity)
+        var identityMatches = await dbContext.CentralObjectRecoveryDispositions.FromSqlInterpolated($"""
+                SELECT * FROM [CentralObjectRecoveryDispositions] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [SourceObjectIdentitySha256] = {identity}
+                """)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var disposition = identityMatches.SingleOrDefault(item =>
             string.Equals(item.SourceObjectKey, objectKey, StringComparison.Ordinal));
@@ -377,6 +419,11 @@ internal sealed partial class CentralArtifactRetentionService(
             disposition.ReasonCode = null;
             disposition.UpdatedAtUtc = now;
         }
+        var injectedFault = ReservationFaultInjector?.Invoke(attempt, operationToken);
+        if (injectedFault is not null)
+        {
+            throw injectedFault;
+        }
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         dbContext.ChangeTracker.Clear();
@@ -418,6 +465,42 @@ internal sealed partial class CentralArtifactRetentionService(
     private static bool IsReservationOutcomeAmbiguous(Exception exception)
         => exception is OperationCanceledException or DbException or InvalidOperationException;
 
+    private bool IsRetryableReservationDeadlock(Exception exception)
+        => IsSqlServerDeadlock(exception)
+            || ReservationDeadlockClassifier?.Invoke(exception) == true;
+
+    internal static bool IsSqlServerDeadlock(Exception exception)
+    {
+        var pending = new Stack<Exception>();
+        var visited = new HashSet<Exception>(ReferenceEqualityComparer.Instance);
+        pending.Push(exception);
+        while (pending.TryPop(out var current))
+        {
+            if (!visited.Add(current))
+            {
+                continue;
+            }
+            if (current is SqlException sqlException
+                && (sqlException.Number == 1205
+                    || sqlException.Errors.Cast<SqlError>().Any(error => error.Number == 1205)))
+            {
+                return true;
+            }
+            if (current is AggregateException aggregate)
+            {
+                foreach (var inner in aggregate.InnerExceptions)
+                {
+                    pending.Push(inner);
+                }
+            }
+            else if (current.InnerException is not null)
+            {
+                pending.Push(current.InnerException);
+            }
+        }
+        return false;
+    }
+
     [LoggerMessage(2170, LogLevel.Information,
         "Central artifact retention reservation: Outcome={Outcome} Origin={Origin} State={State} Bytes={Bytes} DurationMs={DurationMs}")]
     private partial void LogReservation(string outcome, string origin, string state, long bytes, double durationMs);
@@ -428,6 +511,7 @@ internal sealed partial class CentralArtifactRetentionService(
         long ByteLength,
         bool Retry = false,
         bool Reserved = false);
+
 }
 
 internal enum CentralArtifactRetentionResult

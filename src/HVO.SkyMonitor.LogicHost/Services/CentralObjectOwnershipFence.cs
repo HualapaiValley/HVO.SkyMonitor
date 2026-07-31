@@ -59,11 +59,15 @@ internal static class CentralObjectOwnershipFence
         Guid centralArtifactId,
         CancellationToken cancellationToken)
     {
-        if (await db.CentralArtifacts.AsNoTracking().AnyAsync(artifact =>
-                artifact.Id != centralArtifactId
-                && EF.Functions.Collate(artifact.StorageReference, BinaryCollation) == storageReference
-                && artifact.ObjectState != CentralArtifactObjectState.Expired,
-                cancellationToken).ConfigureAwait(false))
+        var activeArtifactOwner = await db.Database.SqlQuery<int>($"""
+                SELECT TOP(1) CAST(1 AS int) AS [Value]
+                FROM [CentralArtifacts] WITH (INDEX([IX_CentralArtifacts_StorageReference]))
+                WHERE [StorageReference] = {storageReference}
+                  AND [Id] != {centralArtifactId}
+                  AND [ObjectState] != N'Expired'
+                """)
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (activeArtifactOwner != 0)
         {
             return true;
         }

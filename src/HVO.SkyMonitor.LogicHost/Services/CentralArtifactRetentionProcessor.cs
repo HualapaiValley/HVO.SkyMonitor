@@ -33,6 +33,9 @@ internal sealed partial class CentralArtifactRetentionProcessor(
     ILogger<CentralArtifactRetentionProcessor> logger) : ICentralArtifactRetentionProcessor
 {
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(5);
+    private const int MaximumSqlDeadlockRetries = 3;
+
+    internal Func<Exception, bool>? SqlDeadlockClassifier { get; set; }
 
     public async Task<CentralArtifactRetentionProcessResult> ProcessAsync(
         Guid dispositionId,
@@ -89,7 +92,10 @@ internal sealed partial class CentralArtifactRetentionProcessor(
             return CentralArtifactRetentionProcessResult.Pending;
         }
 
-        snapshot = await PrepareDeleteAsync(snapshot, cancellationToken).ConfigureAwait(false);
+        snapshot = await ExecuteSqlDeadlockRetryAsync(
+            () => PrepareDeleteAsync(snapshot, cancellationToken),
+            "prepare",
+            cancellationToken).ConfigureAwait(false);
         if (snapshot is null)
         {
             telemetry.RecordFinalizationConflict(origin);
@@ -142,11 +148,40 @@ internal sealed partial class CentralArtifactRetentionProcessor(
         telemetry.RecordStage("delete", deleteOutcome, origin, timeProvider.GetElapsedTime(deleteStarted));
         LogDelete(deleteOutcome, origin, "none", snapshot.ByteLength,
             timeProvider.GetElapsedTime(deleteStarted).TotalMilliseconds);
-        var finalized = await TryFinalizeAsync(snapshot, origin, cancellationToken).ConfigureAwait(false);
+        var finalized = await ExecuteSqlDeadlockRetryAsync(
+            () => TryFinalizeAsync(snapshot, origin, cancellationToken),
+            "finalize",
+            cancellationToken).ConfigureAwait(false);
         var elapsed = timeProvider.GetElapsedTime(started);
         telemetry.RecordOperation(finalized ? deleteOutcome : "conflict", origin, snapshot.ByteLength, elapsed);
         activity?.SetTag("retention.outcome", finalized ? deleteOutcome : "conflict");
         return finalized ? CentralArtifactRetentionProcessResult.Released : CentralArtifactRetentionProcessResult.Pending;
+    }
+
+    private async Task<T> ExecuteSqlDeadlockRetryAsync<T>(
+        Func<Task<T>> operation,
+        string stage,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await operation().ConfigureAwait(false);
+            }
+            catch (Exception exception) when (IsSqlDeadlock(exception))
+            {
+                dbContext.ChangeTracker.Clear();
+                if (attempt >= MaximumSqlDeadlockRetries)
+                {
+                    throw new InvalidOperationException(
+                        $"Central artifact retention {stage} exhausted SQL deadlock retries.",
+                        exception);
+                }
+                var delay = TimeSpan.FromMilliseconds(10 * (1 << attempt));
+                await Task.Delay(delay, timeProvider, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     private async Task<RetentionSnapshot?> PrepareDeleteAsync(
@@ -329,7 +364,8 @@ internal sealed partial class CentralArtifactRetentionProcessor(
             {
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception exception) when (IsCommitOutcomeAmbiguous(exception))
+            catch (Exception exception) when (
+                IsCommitOutcomeAmbiguous(exception) && !IsSqlDeadlock(exception))
             {
                 ambiguousCommit = true;
                 try
@@ -500,6 +536,10 @@ internal sealed partial class CentralArtifactRetentionProcessor(
 
     private static bool IsCommitOutcomeAmbiguous(Exception exception)
         => exception is OperationCanceledException or DbException or InvalidOperationException;
+
+    private bool IsSqlDeadlock(Exception exception)
+        => CentralArtifactRetentionService.IsSqlServerDeadlock(exception)
+            || SqlDeadlockClassifier?.Invoke(exception) == true;
 
     private static TimeSpan GetRetryDelay(int attemptCount)
         => TimeSpan.FromSeconds(Math.Min(
