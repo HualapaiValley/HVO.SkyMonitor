@@ -53,6 +53,10 @@ public static class SkyMonitorObservabilityExtensions
     {
         "Condition", "ReconciliationWindowSeconds"
     };
+    private static readonly HashSet<string> ArtifactRetentionHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Condition", "PendingCount", "PendingBytes", "PendingOldestAgeSeconds"
+    };
     private static readonly HashSet<string> CentralDerivativeWorkerHealthDataKeys = new(StringComparer.Ordinal)
     {
         "Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds"
@@ -224,6 +228,7 @@ public static class SkyMonitorObservabilityExtensions
             "capture-processing" => CaptureProcessingHealthDataKeys,
             "artifact-outbox" => ArtifactOutboxHealthDataKeys,
             "artifact-consistency" => ArtifactConsistencyHealthDataKeys,
+            "artifact-retention" => ArtifactRetentionHealthDataKeys,
             "central-derivative-worker" => CentralDerivativeWorkerHealthDataKeys,
             "environmental-observations" => EnvironmentalObservationHealthDataKeys,
             "environmental-delivery" => EnvironmentalDeliveryHealthDataKeys,

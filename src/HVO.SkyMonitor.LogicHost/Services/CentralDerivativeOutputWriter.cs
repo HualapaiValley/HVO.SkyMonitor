@@ -51,6 +51,10 @@ internal sealed partial class CentralDerivativeOutputWriter(
         {
             return null;
         }
+        await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+            dbContext, artifact.StorageReference, cancellationToken).ConfigureAwait(false);
+        await EnsureNotRetiredOrExpireOwnIntentAsync(
+            lease, artifact.StorageReference, cancellationToken).ConfigureAwait(false);
         if (!HasExpectedSources(artifact, lease)
             || HasBoundExpectedIdentity(lease) && !string.Equals(
                 evidence.RecipeIdentitySha256,
@@ -95,11 +99,14 @@ internal sealed partial class CentralDerivativeOutputWriter(
         ArgumentNullException.ThrowIfNull(product);
         ValidateProduct(lease, product);
         var artifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
-        var objectKey = $"derivatives/{lease.SourceDevicePublicId:N}/{product.OutputIdentitySha256}.bin";
+        var storageReference = CreateStorageReference(lease, product);
+        var objectKey = storageReference[$"minio://{Bucket}/".Length..];
+        await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+            dbContext, storageReference, cancellationToken).ConfigureAwait(false);
+        await EnsureNotRetiredOrExpireOwnIntentAsync(lease, storageReference, cancellationToken).ConfigureAwait(false);
         var artifact = await EnsureIntentAsync(lease, product, artifactId, objectKey, cancellationToken)
             .ConfigureAwait(false);
-        await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
-            dbContext, artifact.StorageReference, cancellationToken).ConfigureAwait(false);
+        await EnsureNotRetiredOrExpireOwnIntentAsync(lease, storageReference, cancellationToken).ConfigureAwait(false);
         if (!await HasValidObjectAsync(lease, artifact, cancellationToken).ConfigureAwait(false))
         {
             await PublishAsync(product, objectKey, cancellationToken).ConfigureAwait(false);
@@ -119,8 +126,18 @@ internal sealed partial class CentralDerivativeOutputWriter(
                 throw new CentralDerivativeOutputIntegrityException(exception.ReasonCode, exception);
             }
         }
-        await CompleteAsync(lease, artifact.Id, inputBytes, product.Payload.Length, recipeDuration, cancellationToken)
-            .ConfigureAwait(false);
+        try
+        {
+            await EnsureNotRetiredOrExpireOwnIntentAsync(
+                lease, storageReference, cancellationToken).ConfigureAwait(false);
+            await CompleteAsync(lease, artifact.Id, inputBytes, product.Payload.Length, recipeDuration, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (CentralDerivativeJobStateException)
+        {
+            await ExpireOwnIntentIfRetiredAsync(lease, storageReference).ConfigureAwait(false);
+            throw;
+        }
         return artifactId;
     }
 
@@ -306,6 +323,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
             .MinAsync(input => (DateTimeOffset?)input.SelectedAtUtc, cancellationToken).ConfigureAwait(false);
         var artifact = await dbContext.CentralArtifacts.SingleAsync(
             candidate => candidate.Id == centralArtifactId, cancellationToken).ConfigureAwait(false);
+        await EnsureNotRetiredAsync(artifact.StorageReference, cancellationToken).ConfigureAwait(false);
         if (artifact.ObjectState is CentralArtifactObjectState.Expired or CentralArtifactObjectState.Quarantined)
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -376,6 +394,64 @@ internal sealed partial class CentralDerivativeOutputWriter(
         {
             telemetry.RecordWindowPinDuration(lease.RecipeName, now - pinStartedAtUtc.Value);
         }
+        dbContext.ChangeTracker.Clear();
+    }
+
+    private async Task EnsureNotRetiredAsync(string storageReference, CancellationToken cancellationToken)
+    {
+        if (await CentralObjectOwnershipFence.IsRetiredAsync(
+                dbContext, storageReference, cancellationToken).ConfigureAwait(false))
+        {
+            throw new CentralDerivativeJobStateException(
+                "The immutable derivative object key has been permanently retired.");
+        }
+    }
+
+    private async Task EnsureNotRetiredOrExpireOwnIntentAsync(
+        CentralDerivativeJobLease lease,
+        string storageReference,
+        CancellationToken cancellationToken)
+    {
+        if (!await CentralObjectOwnershipFence.IsRetiredAsync(
+                dbContext, storageReference, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+        await ExpireOwnIntentAsync(lease, storageReference).ConfigureAwait(false);
+        throw new CentralDerivativeJobStateException(
+            "The immutable derivative object key has been permanently retired.");
+    }
+
+    private async Task ExpireOwnIntentIfRetiredAsync(
+        CentralDerivativeJobLease lease,
+        string storageReference)
+    {
+        if (await CentralObjectOwnershipFence.IsRetiredAsync(
+                dbContext, storageReference, CancellationToken.None).ConfigureAwait(false))
+        {
+            await ExpireOwnIntentAsync(lease, storageReference).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ExpireOwnIntentAsync(
+        CentralDerivativeJobLease lease,
+        string storageReference)
+    {
+        var now = timeProvider.GetUtcNow();
+        await dbContext.CentralArtifacts.Where(artifact =>
+                artifact.ObjectState == CentralArtifactObjectState.Pending
+                && artifact.RetentionDeletionToken == null
+                && EF.Functions.Collate(
+                    artifact.StorageReference,
+                    CentralObjectOwnershipFence.BinaryCollation) == storageReference
+                && dbContext.CentralArtifactProcessingEvidence.Any(evidence =>
+                    evidence.CentralArtifactId == artifact.Id
+                    && evidence.CentralDerivativeJobId == lease.JobId))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(artifact => artifact.ObjectState, CentralArtifactObjectState.Expired)
+                .SetProperty(artifact => artifact.StateReasonCode, "retention.publication-rejected")
+                .SetProperty(artifact => artifact.ReconciledAtUtc, now), CancellationToken.None)
+            .ConfigureAwait(false);
         dbContext.ChangeTracker.Clear();
     }
 
@@ -475,6 +551,11 @@ internal sealed partial class CentralDerivativeOutputWriter(
             outputIdentitySha256.ToUpperInvariant());
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
+
+    internal static string CreateStorageReference(
+        CentralDerivativeJobLease lease,
+        ProcessingProduct product)
+        => $"minio://{Bucket}/derivatives/{lease.SourceDevicePublicId:N}/{product.OutputIdentitySha256}.bin";
 
     private static void ValidateProduct(CentralDerivativeJobLease lease, ProcessingProduct product)
     {

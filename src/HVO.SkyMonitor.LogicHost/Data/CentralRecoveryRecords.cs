@@ -56,10 +56,16 @@ internal sealed class CentralObjectRecoveryDisposition
     public string? TargetObjectKey { get; set; }
     public string Kind { get; set; } = string.Empty;
     public string State { get; set; } = string.Empty;
+    public Guid? CentralArtifactId { get; set; }
+    public Guid? OperationToken { get; set; }
     public long ByteLength { get; set; }
     public string? ContentChecksumSha256 { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
+    public int AttemptCount { get; set; }
+    public DateTimeOffset? LastAttemptAtUtc { get; set; }
+    public DateTimeOffset? NextAttemptAtUtc { get; set; }
+    public DateTimeOffset? CompletedAtUtc { get; set; }
     public string? ReasonCode { get; set; }
     public byte[] RowVersion { get; set; } = [];
 }

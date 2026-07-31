@@ -159,6 +159,7 @@ public sealed partial class Program
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks()
             .AddDbContextCheck<ApplicationDbContext>("database", tags: ["dependency"])
             .AddCheck<CentralArtifactConsistencyHealthCheck>("artifact-consistency", tags: ["consistency"])
+            .AddCheck<CentralArtifactRetentionHealthCheck>("artifact-retention", tags: ["worker"])
             .AddCheck<CentralDerivativeWorkerHealthCheck>("central-derivative-worker", tags: ["worker"])
             .AddCheck<CentralTransientLifecycleHealthCheck>("central-transient-lifecycle", tags: ["worker"])
             .AddCheck<FleetStatusHealthCheck>("fleet-status", tags: ["worker"])
@@ -211,6 +212,7 @@ public sealed partial class Program
                 metrics.AddMeter("HVO.SkyMonitor.Authentication");
                 metrics.AddMeter(CentralIngestTelemetry.MeterName);
                 metrics.AddMeter(CentralArtifactRetrievalTelemetry.MeterName);
+                metrics.AddMeter(CentralArtifactRetentionTelemetry.MeterName);
                 metrics.AddMeter(CentralDerivativeWorkerTelemetry.MeterName);
                 metrics.AddMeter(CentralTransientLifecycleTelemetry.MeterName);
                 metrics.AddMeter(FleetStatusTelemetry.MeterName);
@@ -220,6 +222,7 @@ public sealed partial class Program
                 metrics.AddAspNetCoreInstrumentation();
             })
             .WithTracing(tracing => tracing
+                .AddSource(CentralIngestTelemetry.ActivitySourceName)
                 .AddSource(CentralTransientLifecycleTelemetry.ActivitySourceName)
                 .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
                 .AddSource(OperatorUiTelemetry.ActivitySourceName));
@@ -769,6 +772,15 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralTransientValidationExecutor, CentralTransientValidationExecutor>();
         builder.Services.AddScoped<ICentralTransientRetrospectiveScheduler, CentralTransientRetrospectiveScheduler>();
         builder.Services.AddScoped<ICentralArtifactRetentionService, CentralArtifactRetentionService>();
+        builder.Services.AddScoped<CentralArtifactRetentionProcessor>();
+        builder.Services.AddScoped<ICentralArtifactRetentionProcessor>(provider =>
+            provider.GetRequiredService<CentralArtifactRetentionProcessor>());
+        builder.Services.Configure<CentralArtifactRetentionOptions>(_ => { });
+        builder.Services.AddSingleton<CentralArtifactRetentionTelemetry>();
+        if (!builder.Environment.IsEnvironment("Testing"))
+        {
+            builder.Services.AddHostedService<CentralArtifactRetentionWorker>();
+        }
         builder.Services.AddSingleton<CentralArtifactRetrievalTelemetry>();
         builder.Services.AddSingleton<CentralTransientLifecycleTelemetry>();
         builder.Services.AddHostedService<CentralArtifactReconciliationService>();

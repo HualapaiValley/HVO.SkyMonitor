@@ -71,31 +71,57 @@ internal sealed class CentralTransientDerivativeOutputWriter(
         var started = timeProvider.GetTimestamp();
         using var activity = telemetry?.Start("derivative");
         var outputs = CreateOutputs(lease, bundle);
-        var intents = await EnsureIntentsAsync(lease, outputs, cancellationToken).ConfigureAwait(false);
-        var adopted = intents.Any(intent => intent.CommittedAtUtc.HasValue);
-        foreach (var output in outputs)
+        var objectLocks = new List<CentralObjectApplicationLock>(outputs.Count);
+        try
         {
-            var intent = intents.Single(item => item.Kind == output.Kind);
-            var storageETag = await PublishOneAsync(intent, output.Payload, cancellationToken).ConfigureAwait(false);
-            if (!intent.CommittedAtUtc.HasValue)
+            foreach (var storageReference in CreateStorageReferences(outputs))
             {
-                await MarkVerifiedAsync(lease, intent.Id, storageETag, cancellationToken).ConfigureAwait(false);
+                objectLocks.Add(await CentralObjectApplicationLock.AcquireAsync(
+                    dbContext, storageReference, cancellationToken).ConfigureAwait(false));
             }
-            telemetry?.RecordDerivative(
-                output.Kind.ToString(), intent.CommittedAtUtc.HasValue ? "adopted" : "persisted", output.Payload.Length);
+            await EnsureOutputsNotRetiredOrExpireOwnIntentsAsync(
+                lease.JobId, outputs, cancellationToken).ConfigureAwait(false);
+            var intents = await EnsureIntentsAsync(lease, outputs, cancellationToken).ConfigureAwait(false);
+            await EnsureOutputsNotRetiredOrExpireOwnIntentsAsync(
+                lease.JobId, outputs, cancellationToken).ConfigureAwait(false);
+            var adopted = intents.Any(intent => intent.ObjectState == CentralArtifactObjectState.Available);
+            foreach (var output in outputs)
+            {
+                var intent = intents.Single(item => item.Kind == output.Kind);
+                _ = await PublishOneUnderLockAsync(lease, intent, output.Payload, cancellationToken)
+                    .ConfigureAwait(false);
+                telemetry?.RecordDerivative(
+                    output.Kind.ToString(),
+                    intent.ObjectState == CentralArtifactObjectState.Available ? "adopted" : "persisted",
+                    output.Payload.Length);
+            }
+            await EnsureOutputsNotRetiredOrExpireOwnIntentsAsync(
+                lease.JobId, outputs, cancellationToken).ConfigureAwait(false);
+            await CommitBundleAsync(lease, bundle, cancellationToken).ConfigureAwait(false);
+            telemetry?.RecordDerivativeBundle(
+                adopted ? "adopted" : "persisted", outputs.Count, timeProvider.GetElapsedTime(started));
         }
-        await CommitBundleAsync(lease, bundle, cancellationToken).ConfigureAwait(false);
-        telemetry?.RecordDerivativeBundle(
-            adopted ? "adopted" : "persisted", outputs.Count, timeProvider.GetElapsedTime(started));
+        catch (CentralDerivativeJobStateException)
+        {
+            await ExpireOwnIntentsIfRetiredAsync(lease.JobId, outputs).ConfigureAwait(false);
+            throw;
+        }
+        finally
+        {
+            for (var index = objectLocks.Count - 1; index >= 0; index--)
+            {
+                await objectLocks[index].DisposeAsync().ConfigureAwait(false);
+            }
+        }
     }
 
-    private async Task<string> PublishOneAsync(
+    private async Task<string> PublishOneUnderLockAsync(
+        CentralDerivativeJobLease lease,
         CentralTransientDerivativeOutputIntent intent,
         ReadOnlyMemory<byte> payload,
         CancellationToken cancellationToken)
     {
-        await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
-            dbContext, intent.StorageReference, cancellationToken).ConfigureAwait(false);
+        await EnsureNotRetiredAsync(intent.StorageReference, cancellationToken).ConfigureAwait(false);
         var storageETag = await HasValidObjectAsync(intent, cancellationToken).ConfigureAwait(false);
         if (storageETag is null)
         {
@@ -105,6 +131,20 @@ internal sealed class CentralTransientDerivativeOutputWriter(
             {
                 throw new CentralArtifactStorageException("The transient derivative output is not readable after publication.");
             }
+        }
+        if (intent.ObjectState == CentralArtifactObjectState.Pending)
+        {
+            await MarkVerifiedAsync(
+                    lease, intent.Id, intent.StorageReference, intent.RowVersion, storageETag, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else if (intent.ObjectState != CentralArtifactObjectState.Available
+            || intent.ObjectVerifiedAtUtc is null
+            || string.IsNullOrWhiteSpace(intent.StorageETag)
+            || !string.Equals(intent.StorageETag, storageETag, StringComparison.Ordinal))
+        {
+            throw new CentralDerivativeJobStateException(
+                "The verified transient derivative output cannot be adopted.");
         }
         return storageETag;
     }
@@ -160,14 +200,39 @@ internal sealed class CentralTransientDerivativeOutputWriter(
     private async Task MarkVerifiedAsync(
         CentralDerivativeJobLease lease,
         Guid intentId,
+        string storageReference,
+        byte[] expectedRowVersion,
         string storageETag,
         CancellationToken cancellationToken)
     {
         dbContext.ChangeTracker.Clear();
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        await EnsureNotRetiredAsync(storageReference, cancellationToken).ConfigureAwait(false);
+        var storageReferenceSha256 = SHA256.HashData(Encoding.Unicode.GetBytes(storageReference));
         var now = timeProvider.GetUtcNow();
         var affected = await dbContext.CentralTransientDerivativeOutputIntents.Where(intent =>
-                intent.Id == intentId && intent.CentralDerivativeJobId == lease.JobId &&
-                intent.CommittedAtUtc == null && dbContext.CentralDerivativeJobs.Any(job =>
+                intent.Id == intentId
+                && intent.CentralDerivativeJobId == lease.JobId
+                && intent.ObjectState == CentralArtifactObjectState.Pending
+                && intent.CommittedAtUtc == null
+                && intent.RowVersion == expectedRowVersion
+                && EF.Functions.Collate(intent.StorageReference, CentralObjectOwnershipFence.BinaryCollation)
+                    == storageReference
+                && !dbContext.CentralArtifacts.Any(artifact =>
+                    (artifact.RetentionDeletionToken != null
+                        || artifact.ObjectState == CentralArtifactObjectState.Expired)
+                    && EF.Functions.Collate(
+                        artifact.StorageReference,
+                        CentralObjectOwnershipFence.BinaryCollation) == storageReference)
+                && !dbContext.CentralTransientDerivativeOutputIntents.Any(retired =>
+                    retired.Id != intentId
+                    && EF.Property<byte[]>(retired, "StorageReferenceSha256") == storageReferenceSha256
+                    && retired.ObjectState == CentralArtifactObjectState.Expired
+                    && EF.Functions.Collate(
+                        retired.StorageReference,
+                        CentralObjectOwnershipFence.BinaryCollation) == storageReference)
+                && dbContext.CentralDerivativeJobs.Any(job =>
                     job.Id == lease.JobId && job.Status == CentralDerivativeJobStatus.Leased &&
                     job.LeaseToken == lease.LeaseToken && job.LeaseOwner == lease.WorkerId &&
                     job.LeaseExpiresAtUtc > now))
@@ -179,8 +244,78 @@ internal sealed class CentralTransientDerivativeOutputWriter(
             .ConfigureAwait(false);
         if (affected != 1)
         {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw new CentralDerivativeJobStateException("The transient derivative lease became stale during publication.");
         }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        dbContext.ChangeTracker.Clear();
+    }
+
+    private async Task EnsureNotRetiredAsync(string storageReference, CancellationToken cancellationToken)
+    {
+        if (await CentralObjectOwnershipFence.IsRetiredAsync(
+                dbContext, storageReference, cancellationToken).ConfigureAwait(false))
+        {
+            throw new CentralDerivativeJobStateException(
+                "The immutable transient derivative object key has been permanently retired.");
+        }
+    }
+
+    private async Task EnsureOutputsNotRetiredOrExpireOwnIntentsAsync(
+        Guid centralDerivativeJobId,
+        IReadOnlyList<Output> outputs,
+        CancellationToken cancellationToken)
+    {
+        foreach (var output in outputs)
+        {
+            var storageReference = $"{BucketPrefix}{output.ObjectKey}";
+            if (!await CentralObjectOwnershipFence.IsRetiredAsync(
+                    dbContext, storageReference, cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+            await ExpireOwnIntentsAsync(centralDerivativeJobId, outputs).ConfigureAwait(false);
+            throw new CentralDerivativeJobStateException(
+                "The immutable transient derivative object key has been permanently retired.");
+        }
+    }
+
+    private async Task ExpireOwnIntentsIfRetiredAsync(
+        Guid centralDerivativeJobId,
+        IReadOnlyList<Output> outputs)
+    {
+        foreach (var output in outputs)
+        {
+            if (await CentralObjectOwnershipFence.IsRetiredAsync(
+                    dbContext, $"{BucketPrefix}{output.ObjectKey}", CancellationToken.None).ConfigureAwait(false))
+            {
+                await ExpireOwnIntentsAsync(centralDerivativeJobId, outputs).ConfigureAwait(false);
+                return;
+            }
+        }
+    }
+
+    private async Task ExpireOwnIntentsAsync(
+        Guid centralDerivativeJobId,
+        IReadOnlyList<Output> outputs)
+    {
+        foreach (var rejected in outputs)
+        {
+            var rejectedReference = $"{BucketPrefix}{rejected.ObjectKey}";
+            await dbContext.CentralTransientDerivativeOutputIntents.Where(intent =>
+                    intent.CentralDerivativeJobId == centralDerivativeJobId
+                    && intent.CommittedAtUtc == null
+                    && (intent.ObjectState == CentralArtifactObjectState.Pending
+                        || intent.ObjectState == CentralArtifactObjectState.Available)
+                    && EF.Functions.Collate(
+                        intent.StorageReference,
+                        CentralObjectOwnershipFence.BinaryCollation) == rejectedReference)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(intent => intent.ObjectState, CentralArtifactObjectState.Expired)
+                    .SetProperty(intent => intent.StateReasonCode, "retention.publication-rejected"),
+                    CancellationToken.None).ConfigureAwait(false);
+        }
+        dbContext.ChangeTracker.Clear();
     }
 
     private async Task CommitBundleAsync(
@@ -417,6 +552,16 @@ internal sealed class CentralTransientDerivativeOutputWriter(
                 products.Reconstruction)
         ];
     }
+
+    internal static string[] CreateStorageReferences(
+        CentralDerivativeJobLease lease,
+        CentralTransientDerivativeBundle bundle)
+        => CreateStorageReferences(CreateOutputs(lease, bundle));
+
+    private static string[] CreateStorageReferences(IReadOnlyList<Output> outputs)
+        => outputs.Select(output => $"{BucketPrefix}{output.ObjectKey}")
+            .Order(StringComparer.Ordinal)
+            .ToArray();
 
     private static Output CreateOutput(
         CentralDerivativeJobLease lease,

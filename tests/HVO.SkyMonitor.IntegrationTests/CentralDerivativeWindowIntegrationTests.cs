@@ -8,10 +8,13 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Data.SqlClient;
 using Minio;
 using Minio.DataModel.Args;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Data.Common;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Globalization;
@@ -172,6 +175,268 @@ public sealed class CentralDerivativeWindowIntegrationTests
                     .ClaimNextAsync("transient-derivative-worker", TimeSpan.FromMinutes(2), CancellationToken.None)
                     .ConfigureAwait(false))!;
                 derivativeLease.RecipeName.Should().Be(CentralTransientDerivativeRuntime.RecipeName);
+            }
+            CentralTransientDerivativeBundle derivativeBundle;
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                derivativeBundle = await scope.ServiceProvider.GetRequiredService<ICentralTransientDerivativeBundleFactory>()
+                    .CreateAsync(derivativeLease, CancellationToken.None).ConfigureAwait(false);
+            }
+            var publicationReferences = CentralTransientDerivativeOutputWriter.CreateStorageReferences(
+                derivativeLease, derivativeBundle);
+            var blockedReference = publicationReferences[0];
+            await using (var blockerScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            await using (var publisherScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var blocker = await CentralObjectApplicationLock.AcquireAsync(
+                    blockerScope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+                    blockedReference,
+                    CancellationToken.None).ConfigureAwait(false);
+                try
+                {
+                    var publisherDb = publisherScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                    var blockedWriter = new CentralTransientDerivativeOutputWriter(
+                        publisherDb,
+                        publisherScope.ServiceProvider.GetRequiredService<IMinioClient>(),
+                        new CentralTransientEventVersionAppender(publisherDb),
+                        TimeProvider.System);
+                    var blockedPublication = blockedWriter.PersistAsync(
+                        derivativeLease, derivativeBundle, CancellationToken.None);
+                    await Task.Delay(100).ConfigureAwait(false);
+                    blockedPublication.IsCompleted.Should().BeFalse();
+
+                    var operationToken = Guid.NewGuid();
+                    Guid tombstoneArtifactId;
+                    Guid tombstoneDispositionId;
+                    await using (var tombstoneScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+                    {
+                        var db = tombstoneScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                        var sourceId = await db.CentralDerivativeJobs.AsNoTracking()
+                            .Where(item => item.Id == derivativeLease.JobId)
+                            .Select(item => item.SourceCentralArtifactId).SingleAsync().ConfigureAwait(false);
+                        var source = await db.CentralArtifacts.AsNoTracking()
+                            .SingleAsync(item => item.Id == sourceId).ConfigureAwait(false);
+                        var now = DateTimeOffset.UtcNow;
+                        var tombstone = new CentralArtifact
+                        {
+                            CentralFrameId = source.CentralFrameId,
+                            DevicePublicId = source.DevicePublicId,
+                            ArtifactId = Guid.NewGuid(),
+                            Role = FrameArtifactRole.Metadata,
+                            RecipeVersion = "retention-race-v1",
+                            ManifestSchemaVersion = "central-v1",
+                            MediaType = "application/octet-stream",
+                            ByteLength = 1,
+                            ChecksumSha256 = new string('A', 64),
+                            StorageReference = blockedReference,
+                            ReceivedAtUtc = now,
+                            IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                            ObjectState = CentralArtifactObjectState.Expired,
+                            ReconstructionState = CentralReconstructionState.Complete,
+                            RetentionDeletionToken = operationToken,
+                            RetentionDeletionRequestedAtUtc = now
+                        };
+                        var objectKey = blockedReference[$"minio://{Bucket}/".Length..];
+                        var disposition = new CentralObjectRecoveryDisposition
+                        {
+                            SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
+                            SourceObjectKey = objectKey,
+                            Kind = CentralObjectRecoveryKinds.ExpiredDelete,
+                            State = CentralObjectRecoveryStates.PendingDelete,
+                            CentralArtifactId = tombstone.Id,
+                            OperationToken = operationToken,
+                            ByteLength = 1,
+                            CreatedAtUtc = now,
+                            UpdatedAtUtc = now,
+                            NextAttemptAtUtc = now
+                        };
+                        db.CentralArtifacts.Add(tombstone);
+                        db.CentralObjectRecoveryDispositions.Add(disposition);
+                        await db.SaveChangesAsync().ConfigureAwait(false);
+                        tombstoneArtifactId = tombstone.Id;
+                        tombstoneDispositionId = disposition.Id;
+                        (await db.CentralTransientDerivativeOutputIntents.CountAsync(item =>
+                            item.CentralDerivativeJobId == derivativeLease.JobId).ConfigureAwait(false)).Should().Be(0);
+                    }
+                    await blocker.DisposeAsync().ConfigureAwait(false);
+                    var rejected = async () => await blockedPublication.ConfigureAwait(false);
+                    await rejected.Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
+
+                    await using (var cleanupScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+                    {
+                        var db = cleanupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                        (await db.CentralTransientDerivativeOutputIntents.CountAsync(item =>
+                            item.CentralDerivativeJobId == derivativeLease.JobId).ConfigureAwait(false)).Should().Be(0);
+                        await db.CentralObjectRecoveryDispositions.Where(item => item.Id == tombstoneDispositionId)
+                            .ExecuteDeleteAsync().ConfigureAwait(false);
+                        await db.CentralArtifacts.Where(item => item.Id == tombstoneArtifactId)
+                            .ExecuteDeleteAsync().ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    await blocker.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            var lockLossInterceptor = new BlockAfterRetirementReadInterceptor();
+            var lockLossApplicationName = $"HVO.Retention.PublisherLoss.{Guid.NewGuid():N}";
+            var lockLossConnectionString = new SqlConnectionStringBuilder(
+                AssemblyHooks.Fixture.SqlServerConnectionString)
+            {
+                ApplicationName = lockLossApplicationName
+            }.ConnectionString;
+            await using (var lockLossDb = new ApplicationDbContext(
+                new DbContextOptionsBuilder<ApplicationDbContext>()
+                    .UseSqlServer(lockLossConnectionString)
+                    .AddInterceptors(lockLossInterceptor)
+                    .Options))
+            {
+                var writer = new CentralTransientDerivativeOutputWriter(
+                    lockLossDb,
+                    AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>(),
+                    new CentralTransientEventVersionAppender(lockLossDb),
+                    TimeProvider.System);
+                var stalePublication = writer.PersistAsync(
+                    derivativeLease, derivativeBundle, CancellationToken.None);
+                await lockLossInterceptor.Entered.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                await KillApplicationLockSessionsAsync(
+                    AssemblyHooks.Fixture.SqlServerConnectionString, lockLossApplicationName).ConfigureAwait(false);
+
+                var operationToken = Guid.NewGuid();
+                Guid tombstoneArtifactId;
+                Guid tombstoneDispositionId;
+                await using (var tombstoneScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+                {
+                    var db = tombstoneScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                    var sourceId = await db.CentralDerivativeJobs.AsNoTracking()
+                        .Where(item => item.Id == derivativeLease.JobId)
+                        .Select(item => item.SourceCentralArtifactId).SingleAsync().ConfigureAwait(false);
+                    var source = await db.CentralArtifacts.AsNoTracking()
+                        .SingleAsync(item => item.Id == sourceId).ConfigureAwait(false);
+                    var now = DateTimeOffset.UtcNow;
+                    var tombstone = new CentralArtifact
+                    {
+                        CentralFrameId = source.CentralFrameId,
+                        DevicePublicId = source.DevicePublicId,
+                        ArtifactId = Guid.NewGuid(),
+                        Role = FrameArtifactRole.Metadata,
+                        RecipeVersion = "retention-lock-loss-v1",
+                        ManifestSchemaVersion = "central-v1",
+                        MediaType = "application/octet-stream",
+                        ByteLength = 1,
+                        ChecksumSha256 = new string('B', 64),
+                        StorageReference = blockedReference,
+                        ReceivedAtUtc = now,
+                        IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                        ObjectState = CentralArtifactObjectState.Expired,
+                        ReconstructionState = CentralReconstructionState.Complete,
+                        RetentionDeletionToken = operationToken,
+                        RetentionDeletionRequestedAtUtc = now
+                    };
+                    var objectKey = blockedReference[$"minio://{Bucket}/".Length..];
+                    var disposition = new CentralObjectRecoveryDisposition
+                    {
+                        SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
+                        SourceObjectKey = objectKey,
+                        Kind = CentralObjectRecoveryKinds.ExpiredDelete,
+                        State = CentralObjectRecoveryStates.PendingDelete,
+                        CentralArtifactId = tombstone.Id,
+                        OperationToken = operationToken,
+                        ByteLength = 1,
+                        CreatedAtUtc = now,
+                        UpdatedAtUtc = now,
+                        NextAttemptAtUtc = now
+                    };
+                    db.AddRange(tombstone, disposition);
+                    await db.SaveChangesAsync().ConfigureAwait(false);
+                    tombstoneArtifactId = tombstone.Id;
+                    tombstoneDispositionId = disposition.Id;
+                }
+                lockLossInterceptor.Release();
+                var rejected = async () => await stalePublication.ConfigureAwait(false);
+                await rejected.Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
+
+                await using var cleanupScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+                var cleanup = cleanupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var rejectedIntents = await cleanup.CentralTransientDerivativeOutputIntents.AsNoTracking()
+                    .Where(item => item.CentralDerivativeJobId == derivativeLease.JobId)
+                    .ToArrayAsync().ConfigureAwait(false);
+                rejectedIntents.Length.Should().BeOneOf(0, 5);
+                rejectedIntents.Should().OnlyContain(item =>
+                    item.ObjectState == CentralArtifactObjectState.Expired
+                    && item.StateReasonCode == "retention.publication-rejected");
+                await cleanup.CentralObjectRecoveryDispositions.Where(item => item.Id == tombstoneDispositionId)
+                    .ExecuteDeleteAsync().ConfigureAwait(false);
+                await cleanup.CentralArtifacts.Where(item => item.Id == tombstoneArtifactId)
+                    .ExecuteDeleteAsync().ConfigureAwait(false);
+                if (rejectedIntents.Length != 0)
+                {
+                    await cleanup.CentralTransientDerivativeOutputIntents.Where(item =>
+                            item.CentralDerivativeJobId == derivativeLease.JobId
+                            && item.CommittedAtUtc == null
+                            && item.ObjectState == CentralArtifactObjectState.Expired)
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(item => item.ObjectState, CentralArtifactObjectState.Pending)
+                            .SetProperty(item => item.StateReasonCode, "transient-derivative.output-pending"))
+                        .ConfigureAwait(false);
+                }
+            }
+            using (var copyFault = new FailCanonicalCopyHandler(2) { InnerHandler = new SocketsHttpHandler() })
+            using (var faultMinio = CreateMinio(copyFault))
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var writer = new CentralTransientDerivativeOutputWriter(
+                    db,
+                    faultMinio,
+                    new CentralTransientEventVersionAppender(db),
+                    TimeProvider.System);
+                var action = () => writer.PersistAsync(
+                    derivativeLease, derivativeBundle, CancellationToken.None);
+                await action.Should().ThrowAsync<Exception>().ConfigureAwait(false);
+            }
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var partial = await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                    .CentralTransientDerivativeOutputIntents.AsNoTracking()
+                    .Where(item => item.CentralDerivativeJobId == derivativeLease.JobId)
+                    .ToArrayAsync().ConfigureAwait(false);
+                partial.Should().HaveCount(5);
+                partial.Count(item => item.ObjectState == CentralArtifactObjectState.Available).Should().Be(1);
+                partial.Count(item => item.ObjectState == CentralArtifactObjectState.Pending).Should().Be(4);
+                partial.Should().OnlyContain(item => item.CommittedAtUtc == null);
+            }
+
+            var commitFault = new ThrowBeforeCommitInterceptor(6);
+            await using (var faultDb = new ApplicationDbContext(
+                new DbContextOptionsBuilder<ApplicationDbContext>()
+                    .UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString)
+                    .AddInterceptors(commitFault)
+                    .Options))
+            {
+                var writer = new CentralTransientDerivativeOutputWriter(
+                    faultDb,
+                    AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>(),
+                    new CentralTransientEventVersionAppender(faultDb),
+                    TimeProvider.System);
+                var action = () => writer.PersistAsync(
+                    derivativeLease, derivativeBundle, CancellationToken.None);
+                await action.Should().ThrowAsync<InvalidOperationException>().ConfigureAwait(false);
+                commitFault.Triggered.Should().BeTrue();
+            }
+            await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var verified = await db.CentralTransientDerivativeOutputIntents.AsNoTracking()
+                    .Where(item => item.CentralDerivativeJobId == derivativeLease.JobId)
+                    .ToArrayAsync().ConfigureAwait(false);
+                verified.Should().HaveCount(5).And.OnlyContain(item =>
+                    item.ObjectState == CentralArtifactObjectState.Available
+                    && item.ObjectVerifiedAtUtc != null
+                    && item.StorageETag != null
+                    && item.CommittedAtUtc == null);
+                (await db.CentralTransientDerivatives.CountAsync(item =>
+                    item.CentralDerivativeJobId == derivativeLease.JobId).ConfigureAwait(false)).Should().Be(0);
             }
             await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
             {
@@ -2121,6 +2386,118 @@ public sealed class CentralDerivativeWindowIntegrationTests
             current = parent;
         }
         return false;
+    }
+
+    private static IMinioClient CreateMinio(HttpMessageHandler handler)
+        => new MinioClient()
+            .WithEndpoint(AssemblyHooks.Fixture.MinioEndpoint)
+            .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+            .WithHttpClient(new HttpClient(handler, disposeHandler: false), disposeHttpClient: true)
+            .Build();
+
+    private sealed class FailCanonicalCopyHandler(int failureNumber) : DelegatingHandler
+    {
+        private int copies;
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Method == HttpMethod.Put
+                && request.Headers.Contains("x-amz-copy-source")
+                && Interlocked.Increment(ref copies) == failureNumber)
+            {
+                throw new HttpRequestException("Injected canonical COPY failure.");
+            }
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    private sealed class ThrowBeforeCommitInterceptor(int commitNumber) : DbTransactionInterceptor
+    {
+        private int commits;
+
+        public bool Triggered { get; private set; }
+
+        public override ValueTask<InterceptionResult> TransactionCommittingAsync(
+            DbTransaction transaction,
+            TransactionEventData eventData,
+            InterceptionResult result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref commits) == commitNumber)
+            {
+                Triggered = true;
+                throw new InvalidOperationException("Injected bundle commit rollback.");
+            }
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private sealed class BlockAfterRetirementReadInterceptor : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int blocked;
+
+        public Task Entered => entered.Task;
+
+        public void Release() => release.TrySetResult();
+
+        public override async ValueTask<DbDataReader> ReaderExecutedAsync(
+            DbCommand command,
+            CommandExecutedEventData eventData,
+            DbDataReader result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("[RetentionDeletionToken]", StringComparison.Ordinal)
+                && command.CommandText.Contains("[CentralArtifacts]", StringComparison.Ordinal)
+                && Interlocked.CompareExchange(ref blocked, 1, 0) == 0)
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            return result;
+        }
+    }
+
+    private static async Task KillApplicationLockSessionsAsync(
+        string connectionString,
+        string applicationName)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync().ConfigureAwait(false);
+        var sessionIds = new List<int>();
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT DISTINCT locks.[request_session_id]
+                FROM [sys].[dm_tran_locks] AS locks
+                INNER JOIN [sys].[dm_exec_sessions] AS sessions
+                    ON sessions.[session_id] = locks.[request_session_id]
+                WHERE locks.[resource_type] = N'APPLICATION'
+                  AND locks.[request_owner_type] = N'SESSION'
+                  AND locks.[request_status] = N'GRANT'
+                  AND sessions.[program_name] = @applicationName;
+                """;
+            _ = command.Parameters.AddWithValue("@applicationName", applicationName);
+            await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false))
+            {
+                sessionIds.Add(reader.GetInt32(0));
+            }
+        }
+        sessionIds.Should().NotBeEmpty();
+        foreach (var sessionId in sessionIds)
+        {
+            await using var kill = connection.CreateCommand();
+            kill.CommandText = """
+                DECLARE @command nvarchar(32) = N'KILL ' + CONVERT(nvarchar(11), @sessionId);
+                EXEC [sys].[sp_executesql] @command;
+                """;
+            _ = kill.Parameters.AddWithValue("@sessionId", sessionId);
+            await kill.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
     }
 
     private static byte[] CreatePayload(ushort value)

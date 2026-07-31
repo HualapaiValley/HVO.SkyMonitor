@@ -780,7 +780,18 @@ public sealed class CentralTransientValidationMigrationTests
                 ({frame.Id}, {frame.RegistrationId}, {frame.DevicePublicId}, {frame.ObservatoryId},
                  {frame.AgentId}, {frame.FrameId}, {frame.CapturedAtUtc}, {frame.FirstReceivedAtUtc}, NULL, NULL);
             """);
-        db.CentralArtifacts.Add(artifact);
+        db.Database.ExecuteSqlInterpolated($"""
+            INSERT INTO [CentralArtifacts]
+                ([Id], [CentralFrameId], [DevicePublicId], [ArtifactId], [Role], [RecipeVersion],
+                 [ManifestSchemaVersion], [MediaType], [ByteLength], [ChecksumSha256], [StorageReference],
+                 [ReceivedAtUtc], [IdempotencyKey], [Variant], [CreatedUtc], [ObjectState], [ReconstructionState])
+            VALUES
+                ({artifact.Id}, {artifact.CentralFrameId}, {artifact.DevicePublicId}, {artifact.ArtifactId},
+                 {artifact.Role.ToString()}, {artifact.RecipeVersion}, {artifact.ManifestSchemaVersion},
+                 {artifact.MediaType}, {artifact.ByteLength}, {artifact.ChecksumSha256}, {artifact.StorageReference},
+                 {artifact.ReceivedAtUtc}, {artifact.IdempotencyKey}, {artifact.Variant}, {artifact.CreatedUtc},
+                 {artifact.ObjectState.ToString()}, {artifact.ReconstructionState.ToString()});
+            """);
         return artifact;
     }
 

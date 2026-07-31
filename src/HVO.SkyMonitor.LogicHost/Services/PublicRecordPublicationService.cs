@@ -62,10 +62,34 @@ internal sealed class PublicRecordPublicationService(
             return new(PublicRecordPublicationOutcome.Invalid);
         }
         var isRelational = dbContext.Database.IsRelational();
+        var artifactStorageReference = isRelational && subject.Kind == PublicRecordSubjectKind.Artifact
+            ? await dbContext.CentralArtifacts.AsNoTracking()
+                .Where(item => item.Id == subject.SubjectId)
+                .Select(item => item.StorageReference)
+                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        await using var artifactObjectLock = artifactStorageReference is null
+            ? null
+            : await CentralObjectApplicationLock.AcquireAsync(
+                dbContext, artifactStorageReference, cancellationToken).ConfigureAwait(false);
         await using var transaction = isRelational
             ? await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
                 .ConfigureAwait(false)
             : null;
+        if (isRelational && subject.Kind == PublicRecordSubjectKind.Artifact)
+        {
+            _ = await CentralArtifactRetentionLock.AcquireAsync(
+                dbContext, subject.SubjectId, cancellationToken).ConfigureAwait(false);
+            var currentStorageReference = await dbContext.CentralArtifacts.AsNoTracking()
+                .Where(item => item.Id == subject.SubjectId)
+                .Select(item => item.StorageReference)
+                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (artifactStorageReference is null
+                || !string.Equals(currentStorageReference, artifactStorageReference, StringComparison.Ordinal))
+            {
+                return new(PublicRecordPublicationOutcome.NotFoundOrDenied);
+            }
+        }
         if (!await ObservatoryMembershipAccess.ForOwner(dbContext, actorUserId)
             .AnyAsync(item => item.ObservatoryId == authorityObservatoryId, cancellationToken).ConfigureAwait(false)
             || !await SubjectBelongsToAuthorityAsync(authorityObservatoryId, subject, state, cancellationToken)

@@ -318,8 +318,9 @@ internal sealed partial class CentralArtifactReconciliationService(
             .ConfigureAwait(false);
         var verificationCutoff = now - VerificationInterval;
         if (await db.CentralObjectRecoveryDispositions.AsNoTracking()
-            .AnyAsync(item => item.State == CentralObjectRecoveryStates.PendingCopy
-                || item.State == CentralObjectRecoveryStates.PendingDelete, cancellationToken).ConfigureAwait(false))
+            .AnyAsync(item => item.OperationToken == null
+                && (item.State == CentralObjectRecoveryStates.PendingCopy
+                    || item.State == CentralObjectRecoveryStates.PendingDelete), cancellationToken).ConfigureAwait(false))
         {
             return true;
         }
@@ -628,6 +629,11 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
         else if (owners.All(state => state == CentralArtifactObjectState.Expired))
         {
+            if (await ReopenCompletedRetentionDeletionAsync(
+                    db, objectKey, byteLength, cancellationToken).ConfigureAwait(false))
+            {
+                return;
+            }
             _ = await EnsureDispositionAsync(db, token, objectKey, byteLength,
                 CentralObjectRecoveryKinds.ExpiredDelete, cancellationToken).ConfigureAwait(false);
         }
@@ -672,6 +678,10 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
         if (existing is not null)
         {
+            if (existing.OperationToken is not null)
+            {
+                return false;
+            }
             if (existing.State is not (CentralObjectRecoveryStates.Completed or CentralObjectRecoveryStates.Cancelled))
             {
                 return false;
@@ -731,6 +741,77 @@ internal sealed partial class CentralArtifactReconciliationService(
         return true;
     }
 
+    private async Task<bool> ReopenCompletedRetentionDeletionAsync(
+        ApplicationDbContext db,
+        string objectKey,
+        long byteLength,
+        CancellationToken cancellationToken)
+    {
+        var storageReference = BucketPrefix + objectKey;
+        await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+            db, storageReference, cancellationToken).ConfigureAwait(false);
+        var identity = CreateObjectKeyIdentity(objectKey);
+        var candidate = await db.CentralObjectRecoveryDispositions.AsNoTracking()
+            .Where(item => item.SourceObjectIdentitySha256 == identity
+                && item.OperationToken != null
+                && item.CentralArtifactId != null)
+            .Select(item => new
+            {
+                item.Id,
+                CentralArtifactId = item.CentralArtifactId!.Value
+            })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (candidate is null)
+        {
+            return false;
+        }
+
+        await using var transaction = await db.Database.BeginTransactionAsync(
+            System.Data.IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        _ = await CentralArtifactRetentionLock.AcquireAsync(
+            db, candidate.CentralArtifactId, cancellationToken).ConfigureAwait(false);
+        _ = await CentralArtifactRetentionLock.AcquireDispositionAsync(
+            db, candidate.Id, cancellationToken).ConfigureAwait(false);
+        var linked = await (from disposition in db.CentralObjectRecoveryDispositions
+                            join artifact in db.CentralArtifacts
+                                on disposition.CentralArtifactId equals (Guid?)artifact.Id
+                            where disposition.Id == candidate.Id
+                                && disposition.Kind == CentralObjectRecoveryKinds.ExpiredDelete
+                                && disposition.State == CentralObjectRecoveryStates.Completed
+                                && disposition.OperationToken != null
+                                && disposition.CompletedAtUtc != null
+                                && artifact.Id == candidate.CentralArtifactId
+                                && artifact.ObjectState == CentralArtifactObjectState.Expired
+                                && artifact.RetentionDeletionToken == disposition.OperationToken
+                                && artifact.RetentionDeletionRequestedAtUtc != null
+                                && artifact.RetentionDeletionCompletedAtUtc != null
+                                && EF.Functions.Collate(
+                                    disposition.SourceObjectKey,
+                                    BinaryCollation) == objectKey
+                                && EF.Functions.Collate(
+                                    artifact.StorageReference,
+                                    BinaryCollation) == storageReference
+                            select new { disposition, artifact })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (linked is null)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        var now = timeProvider.GetUtcNow();
+        linked.artifact.RetentionDeletionCompletedAtUtc = null;
+        linked.disposition.State = CentralObjectRecoveryStates.PendingDelete;
+        linked.disposition.ByteLength = byteLength;
+        linked.disposition.NextAttemptAtUtc = now;
+        linked.disposition.CompletedAtUtc = null;
+        linked.disposition.ReasonCode = null;
+        linked.disposition.UpdatedAtUtc = now;
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        db.ChangeTracker.Clear();
+        return true;
+    }
+
     private static string CreateQuarantineObjectKey(string sourceObjectKey)
         => $"quarantine/orphans/{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sourceObjectKey)))}/{Guid.NewGuid():N}.object";
 
@@ -756,8 +837,9 @@ internal sealed partial class CentralArtifactReconciliationService(
         CancellationToken cancellationToken)
     {
         var ids = await db.CentralObjectRecoveryDispositions.AsNoTracking()
-            .Where(item => item.State == CentralObjectRecoveryStates.PendingCopy
-                || item.State == CentralObjectRecoveryStates.PendingDelete)
+            .Where(item => item.OperationToken == null
+                && (item.State == CentralObjectRecoveryStates.PendingCopy
+                    || item.State == CentralObjectRecoveryStates.PendingDelete))
             .OrderBy(item => item.UpdatedAtUtc)
             .ThenBy(item => item.Id)
             .Take(MaximumRecoveryDispositionsPerCycle)
@@ -781,6 +863,19 @@ internal sealed partial class CentralArtifactReconciliationService(
                 if (disposition.State is not (CentralObjectRecoveryStates.PendingCopy or CentralObjectRecoveryStates.PendingDelete))
                 {
                     continue;
+                }
+                if (disposition.Kind == CentralObjectRecoveryKinds.ExpiredDelete
+                    && disposition.State == CentralObjectRecoveryStates.PendingDelete)
+                {
+                    var readyForLegacyDelete = await AdoptOrFenceLegacyExpiredDeleteAsync(
+                        db, disposition.Id, cancellationToken).ConfigureAwait(false);
+                    if (!readyForLegacyDelete)
+                    {
+                        continue;
+                    }
+                    db.ChangeTracker.Clear();
+                    disposition = await db.CentralObjectRecoveryDispositions.SingleAsync(
+                        item => item.Id == id, cancellationToken).ConfigureAwait(false);
                 }
                 if (disposition.State == CentralObjectRecoveryStates.PendingCopy)
                 {
@@ -916,6 +1011,102 @@ internal sealed partial class CentralArtifactReconciliationService(
                 await objectLock.DisposeAsync().ConfigureAwait(false);
             }
         }
+    }
+
+    private async Task<bool> AdoptOrFenceLegacyExpiredDeleteAsync(
+        ApplicationDbContext db,
+        Guid dispositionId,
+        CancellationToken cancellationToken)
+    {
+        db.ChangeTracker.Clear();
+        await using var transaction = await db.Database.BeginTransactionAsync(
+            System.Data.IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        _ = await CentralArtifactRetentionLock.AcquireDispositionAsync(db, dispositionId, cancellationToken)
+            .ConfigureAwait(false);
+        var disposition = await db.CentralObjectRecoveryDispositions.SingleOrDefaultAsync(item =>
+            item.Id == dispositionId
+            && item.OperationToken == null
+            && item.Kind == CentralObjectRecoveryKinds.ExpiredDelete
+            && item.State == CentralObjectRecoveryStates.PendingDelete, cancellationToken).ConfigureAwait(false);
+        if (disposition is null)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        var storageReference = BucketPrefix + disposition.SourceObjectKey;
+        var artifacts = storageReference.Length > 512
+            ? []
+            : await db.CentralArtifacts.FromSqlInterpolated($"""
+                    SELECT * FROM [CentralArtifacts] WITH (UPDLOCK, HOLDLOCK)
+                    WHERE [StorageReference] COLLATE Latin1_General_100_BIN2 = {storageReference}
+                    """)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var storageReferenceSha256 = SHA256.HashData(Encoding.Unicode.GetBytes(storageReference));
+        var transientOwnerStates = await db.CentralTransientDerivativeOutputIntents.AsNoTracking()
+            .Where(intent => EF.Property<byte[]>(intent, "StorageReferenceSha256") == storageReferenceSha256
+                && EF.Functions.Collate(intent.StorageReference, BinaryCollation) == storageReference)
+            .Select(intent => intent.ObjectState)
+            .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var now = timeProvider.GetUtcNow();
+        if (artifacts.Count == 0 && transientOwnerStates.Length == 0)
+        {
+            disposition.Kind = CentralObjectRecoveryKinds.OrphanQuarantine;
+            disposition.TargetObjectKey = CreateQuarantineObjectKey(disposition.SourceObjectKey);
+            disposition.State = CentralObjectRecoveryStates.PendingCopy;
+            disposition.ContentChecksumSha256 = null;
+            disposition.ReasonCode = "ownership.expired-record-removed";
+            disposition.UpdatedAtUtc = now;
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        var artifact = artifacts.Count == 1 ? artifacts[0] : null;
+        var references = new CentralArtifactRetentionReferences(db);
+        var held = false;
+        foreach (var owner in artifacts)
+        {
+            held |= await references.IsHeldAsync(owner.Id, cancellationToken).ConfigureAwait(false);
+        }
+        var activeOwner = artifacts.Any(owner => owner.ObjectState != CentralArtifactObjectState.Expired)
+            || transientOwnerStates.Any(state => state != CentralArtifactObjectState.Expired);
+        var tokenizedOwner = artifacts.Any(owner => owner.RetentionDeletionToken is not null);
+        if (activeOwner || tokenizedOwner || held)
+        {
+            disposition.State = CentralObjectRecoveryStates.Cancelled;
+            disposition.ReasonCode = held ? "ownership.held" : "ownership.ambiguous";
+            disposition.UpdatedAtUtc = now;
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        if (artifact is null)
+        {
+            disposition.ReasonCode = null;
+            disposition.UpdatedAtUtc = now;
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            db.ChangeTracker.Clear();
+            return true;
+        }
+
+        var operationToken = Guid.NewGuid();
+        artifact.RetentionDeletionToken = operationToken;
+        artifact.RetentionDeletionRequestedAtUtc = now;
+        artifact.RetentionDeletionCompletedAtUtc = null;
+        disposition.CentralArtifactId = artifact.Id;
+        disposition.OperationToken = operationToken;
+        disposition.AttemptCount = 0;
+        disposition.LastAttemptAtUtc = null;
+        disposition.NextAttemptAtUtc = now;
+        disposition.CompletedAtUtc = null;
+        disposition.ReasonCode = null;
+        disposition.UpdatedAtUtc = now;
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        db.ChangeTracker.Clear();
+        return false;
     }
 
     private async Task<bool> FenceDispositionOwnershipAsync(
@@ -1135,6 +1326,41 @@ internal sealed partial class CentralArtifactReconciliationService(
             return new RecoveryArtifactResult("unsupported", artifact.ByteLength);
         }
 
+        await using var objectLock = await AcquireCurrentObjectLockAsync(
+            db, artifact, cancellationToken).ConfigureAwait(false);
+        canonical = artifact.StorageReference.StartsWith(BucketPrefix + "artifacts/", StringComparison.Ordinal)
+            || artifact.StorageReference.StartsWith(BucketPrefix + "derivatives/", StringComparison.Ordinal);
+        if (!canonical)
+        {
+            if (recoveryGeneration.HasValue)
+            {
+                artifact.RecoveryGeneration = recoveryGeneration.Value;
+            }
+            ScheduleReferenceRetry(artifact, reconciledAtUtc);
+            if (artifact.ObjectState == CentralArtifactObjectState.Pending)
+            {
+                artifact.StateReasonCode = "object.reference-unsupported";
+                artifact.ReconciledAtUtc = reconciledAtUtc;
+            }
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return new RecoveryArtifactResult("unsupported", artifact.ByteLength);
+        }
+        if (artifact.ObjectState == CentralArtifactObjectState.Expired)
+        {
+            return RecoveryArtifactResult.None;
+        }
+        if (await CentralObjectOwnershipFence.IsRetiredAsync(
+                db, artifact.StorageReference, cancellationToken).ConfigureAwait(false))
+        {
+            artifact.ObjectState = CentralArtifactObjectState.Expired;
+            artifact.StateReasonCode = "retention.key-retired";
+            artifact.ReconciledAtUtc = reconciledAtUtc;
+            await ArtifactIngestService.InvalidateDependentsAsync(db, artifact, cancellationToken)
+                .ConfigureAwait(false);
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return new RecoveryArtifactResult("retired", artifact.ByteLength);
+        }
+
         var verifiedThisAttempt = false;
         RecoveryArtifactResult result = RecoveryArtifactResult.None;
         var verificationDue = !artifact.ObjectVerifiedAtUtc.HasValue
@@ -1218,8 +1444,47 @@ internal sealed partial class CentralArtifactReconciliationService(
             }
             telemetry.RecordReconciled("completed");
         }
+        if (artifact.ObjectState == CentralArtifactObjectState.Available
+            && await CentralObjectOwnershipFence.IsRetiredAsync(
+                db, artifact.StorageReference, cancellationToken).ConfigureAwait(false))
+        {
+            artifact.ObjectState = CentralArtifactObjectState.Expired;
+            artifact.StateReasonCode = "retention.key-retired";
+            await ArtifactIngestService.InvalidateDependentsAsync(db, artifact, cancellationToken)
+                .ConfigureAwait(false);
+        }
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return result.Outcome == "none" ? new RecoveryArtifactResult("matched", artifact.ByteLength) : result;
+    }
+
+    internal static async Task<CentralObjectApplicationLock> AcquireCurrentObjectLockAsync(
+        ApplicationDbContext db,
+        CentralArtifact artifact,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var expectedStorageReference = artifact.StorageReference;
+            var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+                db, expectedStorageReference, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await db.Entry(artifact).ReloadAsync(cancellationToken).ConfigureAwait(false);
+                if (string.Equals(
+                        artifact.StorageReference,
+                        expectedStorageReference,
+                        StringComparison.Ordinal))
+                {
+                    return objectLock;
+                }
+            }
+            catch
+            {
+                await objectLock.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+            await objectLock.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     private async Task<RecoveryArtifactResult> VerifyAndApplyAsync(

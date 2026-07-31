@@ -1794,6 +1794,249 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
+    public async Task MultipartIngestV2_ReservationBeforeIntentRejectsWithoutPendingOwner()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("retention-reservation-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        byte[] payload = [7, 8, 9, 10];
+        var manifest = CreateManifestV2(deviceId, rig, payload, 36);
+        var ingestManifest = ArtifactIngestManifest.Create(ArtifactManifestDocument.FromCurrent(manifest));
+        Guid devicePublicId;
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            devicePublicId = (await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .DeviceRegistrations.AsNoTracking().SingleAsync(item => item.Id == registrationId)
+                .ConfigureAwait(false)).DevicePublicId!.Value;
+        }
+        var storageReference = ArtifactIngestService.CreateCanonicalStorageReference(devicePublicId, ingestManifest);
+        await using var blockerScope = fixture.Factory.Services.CreateAsyncScope();
+        var blocker = await CentralObjectApplicationLock.AcquireAsync(
+            blockerScope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+            storageReference,
+            CancellationToken.None).ConfigureAwait(false);
+        Guid tombstoneArtifactId = default;
+        Guid tombstoneDispositionId = default;
+        Guid tombstoneFrameId = default;
+        try
+        {
+            using var client = fixture.Factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+            var ingest = PostAsync(client, manifest, payload);
+            await Task.Delay(250).ConfigureAwait(false);
+            ingest.IsCompleted.Should().BeFalse();
+
+            await using (var tombstoneScope = fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = tombstoneScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var registration = await db.DeviceRegistrations.AsNoTracking()
+                    .SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
+                var now = DateTimeOffset.UtcNow;
+                var frame = new CentralFrame
+                {
+                    RegistrationId = registration.Id,
+                    DevicePublicId = registration.DevicePublicId!.Value,
+                    ObservatoryId = registration.ObservatoryId,
+                    AgentId = $"retention-tombstone-{Guid.NewGuid():N}",
+                    FrameId = Guid.NewGuid(),
+                    CapturedAtUtc = now,
+                    FirstReceivedAtUtc = now
+                };
+                var operationToken = Guid.NewGuid();
+                var tombstone = new CentralArtifact
+                {
+                    Frame = frame,
+                    CentralFrameId = frame.Id,
+                    DevicePublicId = frame.DevicePublicId,
+                    ArtifactId = Guid.NewGuid(),
+                    Role = FrameArtifactRole.Metadata,
+                    RecipeVersion = "retention-race-v1",
+                    ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+                    MediaType = "application/octet-stream",
+                    ByteLength = 1,
+                    ChecksumSha256 = new string('A', 64),
+                    StorageReference = storageReference,
+                    ReceivedAtUtc = now,
+                    IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                    ObjectState = CentralArtifactObjectState.Expired,
+                    ReconstructionState = CentralReconstructionState.Complete,
+                    RetentionDeletionToken = operationToken,
+                    RetentionDeletionRequestedAtUtc = now
+                };
+                var objectKey = storageReference["minio://skymonitor-artifacts/".Length..];
+                var disposition = new CentralObjectRecoveryDisposition
+                {
+                    SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
+                    SourceObjectKey = objectKey,
+                    Kind = CentralObjectRecoveryKinds.ExpiredDelete,
+                    State = CentralObjectRecoveryStates.PendingDelete,
+                    CentralArtifactId = tombstone.Id,
+                    OperationToken = operationToken,
+                    ByteLength = 1,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now,
+                    NextAttemptAtUtc = now
+                };
+                db.AddRange(frame, tombstone, disposition);
+                await db.SaveChangesAsync().ConfigureAwait(false);
+                tombstoneFrameId = frame.Id;
+                tombstoneArtifactId = tombstone.Id;
+                tombstoneDispositionId = disposition.Id;
+                (await db.CentralArtifacts.CountAsync(item => item.ArtifactId == ingestManifest.ArtifactId)
+                    .ConfigureAwait(false)).Should().Be(0);
+            }
+            await blocker.DisposeAsync().ConfigureAwait(false);
+            using var response = await ingest.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+            await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+            var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            (await assertionDb.CentralArtifacts.CountAsync(item =>
+                item.ArtifactId == ingestManifest.ArtifactId
+                && item.ObjectState == CentralArtifactObjectState.Pending).ConfigureAwait(false)).Should().Be(0);
+        }
+        finally
+        {
+            await blocker.DisposeAsync().ConfigureAwait(false);
+            if (tombstoneDispositionId != Guid.Empty)
+            {
+                await using var cleanupScope = fixture.Factory.Services.CreateAsyncScope();
+                var db = cleanupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                await db.CentralObjectRecoveryDispositions.Where(item => item.Id == tombstoneDispositionId)
+                    .ExecuteDeleteAsync().ConfigureAwait(false);
+                await db.CentralArtifacts.Where(item => item.Id == tombstoneArtifactId)
+                    .ExecuteDeleteAsync().ConfigureAwait(false);
+                await db.CentralFrames.Where(item => item.Id == tombstoneFrameId)
+                    .ExecuteDeleteAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task MultipartIngestV2_CompletedTombstoneSurvivesArtifactOwnerRemovalAndRejectsReplay(
+        bool tokenized)
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("retention-permanent-tombstone-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        byte[] payload = [11, 12, 13, 14];
+        var manifest = CreateManifestV2(deviceId, rig, payload, 37);
+        var ingestManifest = ArtifactIngestManifest.Create(ArtifactManifestDocument.FromCurrent(manifest));
+        Guid dispositionId;
+        string storageReference;
+        string objectKey;
+        await using (var setupScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var registration = await db.DeviceRegistrations.AsNoTracking()
+                .SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
+            storageReference = ArtifactIngestService.CreateCanonicalStorageReference(
+                registration.DevicePublicId!.Value, ingestManifest);
+            objectKey = storageReference["minio://skymonitor-artifacts/".Length..];
+            var now = DateTimeOffset.UtcNow;
+            var token = Guid.NewGuid();
+            var frame = new CentralFrame
+            {
+                RegistrationId = registration.Id,
+                DevicePublicId = registration.DevicePublicId.Value,
+                ObservatoryId = registration.ObservatoryId,
+                AgentId = $"retention-deleted-owner-{Guid.NewGuid():N}",
+                FrameId = Guid.NewGuid(),
+                CapturedAtUtc = now,
+                FirstReceivedAtUtc = now
+            };
+            var artifact = new CentralArtifact
+            {
+                Frame = frame,
+                CentralFrameId = frame.Id,
+                DevicePublicId = frame.DevicePublicId,
+                ArtifactId = Guid.NewGuid(),
+                Role = FrameArtifactRole.Metadata,
+                RecipeVersion = "retention-tombstone-v1",
+                ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+                MediaType = "application/octet-stream",
+                ByteLength = 1,
+                ChecksumSha256 = new string('C', 64),
+                StorageReference = storageReference,
+                ReceivedAtUtc = now,
+                IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                ObjectState = CentralArtifactObjectState.Expired,
+                ReconstructionState = CentralReconstructionState.Complete,
+                RetentionDeletionToken = tokenized ? token : null,
+                RetentionDeletionRequestedAtUtc = tokenized ? now : null,
+                RetentionDeletionCompletedAtUtc = tokenized ? now : null
+            };
+            var disposition = new CentralObjectRecoveryDisposition
+            {
+                SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
+                SourceObjectKey = objectKey,
+                Kind = CentralObjectRecoveryKinds.ExpiredDelete,
+                State = CentralObjectRecoveryStates.Completed,
+                CentralArtifactId = tokenized ? artifact.Id : null,
+                OperationToken = tokenized ? token : null,
+                ByteLength = 1,
+                AttemptCount = 1,
+                LastAttemptAtUtc = now,
+                CompletedAtUtc = now,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            };
+            db.AddRange(frame, artifact, disposition);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            dispositionId = disposition.Id;
+            await db.CentralArtifacts.Where(item => item.Id == artifact.Id).ExecuteDeleteAsync().ConfigureAwait(false);
+            await db.CentralFrames.Where(item => item.Id == frame.Id).ExecuteDeleteAsync().ConfigureAwait(false);
+            if (!tokenized)
+            {
+                disposition.State = CentralObjectRecoveryStates.PendingDelete;
+                await db.SaveChangesAsync().ConfigureAwait(false);
+                (await CentralObjectOwnershipFence.IsRetiredAsync(
+                    db, storageReference, CancellationToken.None).ConfigureAwait(false)).Should().BeFalse();
+                disposition.State = CentralObjectRecoveryStates.Cancelled;
+                await db.SaveChangesAsync().ConfigureAwait(false);
+                (await CentralObjectOwnershipFence.IsRetiredAsync(
+                    db, storageReference, CancellationToken.None).ConfigureAwait(false)).Should().BeFalse();
+                disposition.State = CentralObjectRecoveryStates.Completed;
+                await db.SaveChangesAsync().ConfigureAwait(false);
+            }
+            (await CentralObjectOwnershipFence.IsRetiredAsync(
+                db, storageReference, CancellationToken.None).ConfigureAwait(false)).Should().BeTrue();
+        }
+        try
+        {
+            using var client = fixture.Factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+            using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+            response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+            var stat = () => fixture.Factory.Services.GetRequiredService<IMinioClient>()
+                .StatObjectAsync(new StatObjectArgs().WithBucket("skymonitor-artifacts").WithObject(objectKey));
+            await stat.Should().ThrowAsync<MinioException>().ConfigureAwait(false);
+            await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+            var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            (await assertionDb.CentralObjectRecoveryDispositions.AsNoTracking()
+                .AnyAsync(item => item.Id == dispositionId
+                    && item.State == CentralObjectRecoveryStates.Completed).ConfigureAwait(false)).Should().BeTrue();
+            (await assertionDb.CentralArtifacts.AnyAsync(item =>
+                EF.Functions.Collate(item.StorageReference, CentralObjectOwnershipFence.BinaryCollation)
+                    == storageReference).ConfigureAwait(false)).Should().BeFalse();
+        }
+        finally
+        {
+            await using var cleanupScope = fixture.Factory.Services.CreateAsyncScope();
+            await cleanupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .CentralObjectRecoveryDispositions.Where(item => item.Id == dispositionId)
+                .ExecuteDeleteAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
     public async Task MultipartIngestV2_ConcurrentCorruptPayloadCannotPoisonValidIntent()
     {
         var fixture = AssemblyHooks.Fixture;
