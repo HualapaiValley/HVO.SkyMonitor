@@ -59,6 +59,12 @@ public sealed class ObservatoryLocationAuthorityTests
         created.CurrentLocationVersion.Should().Be(1);
         created.CurrentLocationCanonicalSha256.Should().HaveLength(64);
         (await context.ObservatoryLocationVersions.CountAsync()).Should().Be(1);
+        (await context.ObservatoryMemberships.SingleAsync()).Should().Match<ObservatoryMembership>(item =>
+            item.UserId == "owner" && item.Role == ObservatoryMembershipRole.Owner);
+        (await context.ObservatoryMembershipAudits.SingleAsync()).Should().Match<ObservatoryMembershipAudit>(item =>
+            item.TargetUserId == "owner"
+            && item.Action == ObservatoryMembershipAuditAction.Granted
+            && item.ReasonCode == "observatory-created");
 
         clock.Advance(TimeSpan.FromMinutes(1));
         await service.CreateOrUpdateAsync(new ObservatoryUpsertRequest(
@@ -213,6 +219,21 @@ public sealed class ObservatoryLocationAuthorityTests
             IsActive = true
         };
         context.Observatories.AddRange(windows, invalid);
+        context.ObservatoryMemberships.AddRange(
+            new ObservatoryMembership
+            {
+                ObservatoryId = windows.Id,
+                UserId = "owner",
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = clock.GetUtcNow()
+            },
+            new ObservatoryMembership
+            {
+                ObservatoryId = invalid.Id,
+                UserId = "owner",
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = clock.GetUtcNow()
+            });
         await context.SaveChangesAsync();
 
         var count = await ObservatoryLocationBackfill.RunAsync(context, clock);
@@ -255,9 +276,19 @@ public sealed class ObservatoryLocationAuthorityTests
     }
 
     private static ApplicationDbContext CreateContext()
-        => new(new DbContextOptionsBuilder<ApplicationDbContext>()
+    {
+        var context = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options);
+        context.Users.Add(new ApplicationUser
+        {
+            Id = "owner",
+            UserName = "owner",
+            AccountType = AccountType.User
+        });
+        context.SaveChanges();
+        return context;
+    }
 
     private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
     {

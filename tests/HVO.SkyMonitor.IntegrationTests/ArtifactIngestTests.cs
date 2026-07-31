@@ -90,6 +90,69 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
+    public async Task MultipartIngest_BindsInstallationActiveAtCaptureTime()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var capturedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+        Guid installationId;
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var registration = await db.DeviceRegistrations.SingleAsync(item => item.Id == registrationId)
+                .ConfigureAwait(false);
+            var owner = await db.Users.SingleAsync(user => user.Email == TestUsers.Operator.Email)
+                .ConfigureAwait(false);
+            var camera = new LogicalCamera
+            {
+                ObservatoryId = registration.ObservatoryId,
+                Slug = "capture-time-camera",
+                Name = "Capture-time camera",
+                Description = "Installation binding fixture",
+                CreatedAtUtc = capturedAtUtc.AddDays(-1),
+                CreatedByUserId = owner.Id
+            };
+            var installation = new LogicalCameraInstallation
+            {
+                LogicalCamera = camera,
+                LogicalCameraId = camera.Id,
+                RegistrationId = registration.Id,
+                InstallationPublicId = Guid.NewGuid(),
+                AssignedAtUtc = capturedAtUtc.AddHours(-1),
+                AssignedByUserId = owner.Id,
+                AssignmentReasonCode = "integration-binding"
+            };
+            installationId = installation.Id;
+            db.AddRange(camera, installation);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+        }
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        var manifest = new ArtifactUploadManifest(
+            "v1",
+            deviceId,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            FrameArtifactRole.Raw,
+            "application/octet-stream",
+            4,
+            PayloadChecksum,
+            capturedAtUtc,
+            "raw-v1",
+            "frames/raw.bin");
+
+        using var response = await PostAsync(client, manifest).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var verifyScope = fixture.Factory.Services.CreateAsyncScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await verifyDb.CentralFrames.Where(item => item.FrameId == manifest.FrameId)
+            .Select(item => item.LogicalCameraInstallationId)
+            .SingleAsync().ConfigureAwait(false)).Should().Be(installationId);
+    }
+
+    [TestMethod]
     public async Task LegacyDuplicatePublisher_WaitsForCanonicalObjectApplicationLock()
     {
         var fixture = AssemblyHooks.Fixture;
@@ -3522,6 +3585,14 @@ public sealed class ArtifactIngestTests
             DeviceKeyHash = DeviceRegistrationService.ComputeSha256("artifact-key")
         };
         db.Observatories.Add(observatory);
+        db.ObservatoryMemberships.Add(new ObservatoryMembership
+        {
+            Observatory = observatory,
+            ObservatoryId = observatory.Id,
+            UserId = owner.Id,
+            Role = ObservatoryMembershipRole.Owner,
+            AddedAtUtc = observatory.CreatedAtUtc
+        });
         db.DeviceRegistrations.Add(registration);
         await db.SaveChangesAsync().ConfigureAwait(false);
         return (deviceId, registration.Id);

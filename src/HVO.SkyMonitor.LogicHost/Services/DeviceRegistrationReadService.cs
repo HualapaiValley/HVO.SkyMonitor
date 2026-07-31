@@ -42,12 +42,10 @@ internal sealed class DeviceRegistrationReadService(ApplicationDbContext dbConte
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerUserId);
 
-        return await (from registration in dbContext.DeviceRegistrations
-                      join observatory in dbContext.Observatories
-                          on registration.ObservatoryId equals observatory.Id
-                      where registration.OwnerUserId == ownerUserId
-                          && observatory.OwnerUserId == ownerUserId
-                      select registration)
+        var ownedObservatories = ObservatoryMembershipAccess.ForOwner(dbContext, ownerUserId)
+            .Select(membership => membership.ObservatoryId);
+        return await dbContext.DeviceRegistrations
+            .Where(registration => ownedObservatories.Contains(registration.ObservatoryId))
             .OrderByDescending(registration => registration.IssuedAtUtc)
             .Select(registration => new DeviceRegistrationSummary(
                 registration.Id,

@@ -198,6 +198,11 @@ internal sealed class CentralTransientPayloadReleaseService(
                 }
                 var derivativeIds = await dbContext.CentralTransientDerivatives.AsNoTracking()
                     .Where(item => item.CentralTransientEventId == centralTransientEventId)
+                    .Where(item => !dbContext.PublicRecordPublicationDecisions.Any(decision =>
+                        decision.CentralTransientDerivativeId == item.DerivativeId
+                        && decision.State == PublicationDecisionState.Released
+                        && !dbContext.PublicRecordPublicationDecisions.Any(successor =>
+                            successor.SupersedesDecisionId == decision.Id)))
                     .Select(item => item.OutputIntentId).Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
                 release = new CentralTransientPayloadRelease
                 {

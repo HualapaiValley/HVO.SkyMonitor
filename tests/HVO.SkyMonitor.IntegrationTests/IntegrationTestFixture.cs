@@ -8,6 +8,7 @@ using DotNet.Testcontainers.Containers;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.IntegrationTests.Infrastructure;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.AgentCore;
 using System.Text.Json;
@@ -19,6 +20,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Minio;
 using Minio.DataModel.Args;
 using Testcontainers.MsSql;
@@ -34,6 +36,10 @@ using Program = HVO.SkyMonitor.LogicHost.Program;
 /// </summary>
 public sealed class IntegrationTestFixture : IDisposable
 {
+    internal const string SqlServerImage = "mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04@sha256:c1aa8afe9b06eab64c9774a4802dcd032205d1be785b1fd51e1c0151e7586b74";
+    internal const string RedisImage = "redis:7.4.9-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99";
+    internal const string MinioImage = "minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e";
+    internal const string MailpitImage = "axllent/mailpit:v1.30.4@sha256:5a49a77c5bdbe7c5474450b4f46348d09949df3695257729c93a30369382d4f6";
     private const string SqlServerPassword = "SkyMonitor_test_password1!";
     private readonly IReadOnlyDictionary<string, string?> _configurationOverrides;
     private readonly int _minioHostPort = GetFreeTcpPort();
@@ -199,7 +205,7 @@ public sealed class IntegrationTestFixture : IDisposable
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"));
 
         _sqlServerContainer = new MsSqlBuilder()
-            .WithImage("mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04@sha256:c1aa8afe9b06eab64c9774a4802dcd032205d1be785b1fd51e1c0151e7586b74")
+            .WithImage(SqlServerImage)
             .WithPassword(SqlServerPassword)
             .Build();
 
@@ -213,7 +219,7 @@ public sealed class IntegrationTestFixture : IDisposable
         // Start Redis container (RedisBuilder provides a wait strategy that verifies
         // the server responds to commands, not just that the TCP port is open)
         _redisContainer = new RedisBuilder()
-            .WithImage("redis:7.4.9-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99")
+            .WithImage(RedisImage)
             .Build();
 
         await _redisContainer.StartAsync().ConfigureAwait(false);
@@ -223,7 +229,7 @@ public sealed class IntegrationTestFixture : IDisposable
 
         // Start MinIO container
         _minioContainer = new ContainerBuilder()
-            .WithImage("minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e")
+            .WithImage(MinioImage)
             .WithPortBinding(_minioHostPort, 9000)
             .WithEnvironment(new Dictionary<string, string>
             {
@@ -241,7 +247,7 @@ public sealed class IntegrationTestFixture : IDisposable
 
         // Start SMTP (Mailpit) container
         _smtpContainer = new ContainerBuilder()
-            .WithImage("axllent/mailpit:v1.30.4@sha256:5a49a77c5bdbe7c5474450b4f46348d09949df3695257729c93a30369382d4f6")
+            .WithImage(MailpitImage)
             .WithPortBinding(1025, true)
             .WithPortBinding(8025, true)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(1025))
@@ -254,10 +260,49 @@ public sealed class IntegrationTestFixture : IDisposable
         SmtpHttpEndpoint = $"http://{_smtpHost}:{smtpHttpPort}";
 
         // Create the web application factory
-        Factory = new WebApplicationFactory<Program>()
+        Factory = CreateFactory(minioPort, smtpPort);
+
+        // Seed test data
+        await SeedTestDataAsync().ConfigureAwait(false);
+
+        _initialized = true;
+    }
+
+    internal WebApplicationFactory<Program> CreateKestrelFactory(
+        Issue107RuntimeEvidenceCollector? evidence = null,
+        bool enableArtifactResponseThrottle = false)
+    {
+        var smtpPort = _smtpContainer?.GetMappedPublicPort(1025)
+            ?? throw new InvalidOperationException("The SMTP fixture is not initialized.");
+        var factory = CreateFactory(
+            _minioHostPort, smtpPort, "Development", evidence, enableArtifactResponseThrottle);
+        factory.UseKestrel(0);
+        return factory;
+    }
+
+    internal IContainer GetDependencyContainer(IntegrationDependency dependency) => dependency switch
+    {
+        IntegrationDependency.SqlServer => _sqlServerContainer
+            ?? throw new InvalidOperationException("The SQL Server fixture is not initialized."),
+        IntegrationDependency.Redis => _redisContainer
+            ?? throw new InvalidOperationException("The Redis fixture is not initialized."),
+        IntegrationDependency.Minio => _minioContainer
+            ?? throw new InvalidOperationException("The MinIO fixture is not initialized."),
+        IntegrationDependency.Smtp => _smtpContainer
+            ?? throw new InvalidOperationException("The SMTP fixture is not initialized."),
+        _ => throw new ArgumentOutOfRangeException(nameof(dependency))
+    };
+
+    private WebApplicationFactory<Program> CreateFactory(
+        int minioPort,
+        int smtpPort,
+        string environment = "Testing",
+        Issue107RuntimeEvidenceCollector? evidence = null,
+        bool enableArtifactResponseThrottle = false)
+        => new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
             {
-                builder.UseEnvironment("Testing");
+                builder.UseEnvironment(environment);
 
                 builder.ConfigureAppConfiguration((context, config) =>
                 {
@@ -276,7 +321,7 @@ public sealed class IntegrationTestFixture : IDisposable
                         ["Smtp:Port"] = smtpPort.ToString(CultureInfo.InvariantCulture),
                         ["Smtp:From"] = TestEmail.FromAddress,
                         ["Smtp:FromDisplayName"] = TestEmail.FromDisplayName,
-                        ["Catalog:Root"] = _catalogFixture.Root,
+                        ["Catalog:Root"] = CatalogRoot,
                         ["Catalog:RequiredPackageKind"] = "Fixture",
                         ["DeviceBootstrap:CentralIdentity:ServiceUrl"] = "https://logichost.integration",
                         ["DeviceBootstrap:CentralIdentity:Mode"] = "ClientCredentials",
@@ -317,9 +362,16 @@ public sealed class IntegrationTestFixture : IDisposable
                     services.AddDbContext<ApplicationDbContext>(options =>
                     {
                         options.UseSqlServer(SqlServerConnectionString);
-                        options.EnableSensitiveDataLogging();
+                        if (evidence is null) options.EnableSensitiveDataLogging();
                         options.EnableDetailedErrors();
+                        if (evidence is not null) options.AddInterceptors(evidence);
                     });
+
+                    if (evidence is not null) services.AddSingleton<ILoggerProvider>(evidence);
+                    if (enableArtifactResponseThrottle)
+                    {
+                        services.AddSingleton<IStartupFilter, Issue107ArtifactResponseThrottleStartupFilter>();
+                    }
 
                     // Override distributed cache to use the testcontainer Redis.
                     // ConfigureAppConfiguration overrides may not be visible when
@@ -334,11 +386,8 @@ public sealed class IntegrationTestFixture : IDisposable
 
             });
 
-        // Seed test data
-        await SeedTestDataAsync().ConfigureAwait(false);
-
-        _initialized = true;
-    }
+    private string CatalogRoot => _catalogFixture?.Root
+        ?? throw new InvalidOperationException("The catalog fixture is not initialized.");
 
     /// <summary>
     /// Seeds test data into the database.
@@ -485,6 +534,14 @@ public sealed class IntegrationTestFixture : IDisposable
         listener.Stop();
         return port;
     }
+}
+
+internal enum IntegrationDependency
+{
+    SqlServer,
+    Redis,
+    Minio,
+    Smtp
 }
 
 public sealed record ActiveDeviceFixture(

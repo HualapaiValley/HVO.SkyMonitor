@@ -255,7 +255,21 @@ public sealed class DeviceApiControllerTests
             CreatedAtUtc = DateTimeOffset.UtcNow,
             IsActive = true
         };
+        db.Users.Add(new ApplicationUser
+        {
+            Id = ownerId,
+            UserName = ownerId,
+            AccountType = AccountType.User
+        });
         db.Observatories.Add(observatory);
+        db.ObservatoryMemberships.Add(new ObservatoryMembership
+        {
+            Observatory = observatory,
+            ObservatoryId = observatory.Id,
+            UserId = ownerId,
+            Role = ObservatoryMembershipRole.Owner,
+            AddedAtUtc = observatory.CreatedAtUtc
+        });
         await db.SaveChangesAsync().ConfigureAwait(false);
 
         var deviceId = $"device-{Guid.NewGuid():N}";
@@ -455,7 +469,37 @@ public sealed class DeviceApiControllerTests
             CreatedAtUtc = DateTimeOffset.UtcNow,
             IsActive = true
         };
+        db.Users.AddRange(
+            new ApplicationUser
+            {
+                Id = firstOwnerId,
+                UserName = firstOwnerId,
+                AccountType = AccountType.User
+            },
+            new ApplicationUser
+            {
+                Id = secondOwnerId,
+                UserName = secondOwnerId,
+                AccountType = AccountType.User
+            });
         db.Observatories.AddRange(firstObservatory, secondObservatory);
+        db.ObservatoryMemberships.AddRange(
+            new ObservatoryMembership
+            {
+                Observatory = firstObservatory,
+                ObservatoryId = firstObservatory.Id,
+                UserId = firstOwnerId,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = firstObservatory.CreatedAtUtc
+            },
+            new ObservatoryMembership
+            {
+                Observatory = secondObservatory,
+                ObservatoryId = secondObservatory.Id,
+                UserId = secondOwnerId,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = secondObservatory.CreatedAtUtc
+            });
         await db.SaveChangesAsync().ConfigureAwait(false);
 
         var firstRegistration = await registrationService.CreatePendingAsync(new DeviceRegistrationCreateRequest(

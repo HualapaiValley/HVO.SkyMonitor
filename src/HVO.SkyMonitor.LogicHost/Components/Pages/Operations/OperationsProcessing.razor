@@ -1,0 +1,138 @@
+@page "/app/processing"
+@attribute [Authorize]
+
+<PageTitle>Processing | Network Operations</PageTitle>
+<header class="mb-4">
+    <p class="text-uppercase text-info small fw-bold mb-1">Central processing</p>
+    <h1>Jobs and output policy</h1>
+    <p class="text-muted">Global recipes are read-only here. Observatory overrides affect future central jobs and never alter CameraAgent acquisition settings.</p>
+</header>
+@if (StatusMessage is not null)
+{
+    <div class="alert alert-info" role="status">@StatusMessage</div>
+}
+@if (Observatories.Count == 0)
+{
+    <div class="alert alert-secondary">No observatory processing scopes are available.</div>
+}
+else
+{
+    <div class="mb-4">
+        <label class="form-label" for="processing-observatory">Observatory scope</label>
+        <select id="processing-observatory" class="form-select" value="@SelectedObservatoryId" @onchange="SelectObservatoryAsync">
+            @foreach (var observatory in Observatories)
+            {
+                <option value="@observatory.ObservatoryId">@observatory.Name (@observatory.Role)</option>
+            }
+        </select>
+    </div>
+    @if (Policy is not null)
+    {
+        <div class="row g-3 mb-4">
+            <div class="col-lg-7">
+                <section class="card h-100">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div><p class="text-uppercase text-info small fw-bold mb-1">Versioned observatory policy</p><h2 class="h5">@Policy.ObservatoryName override</h2></div>
+                            <span class="badge text-bg-secondary">@(Policy.Version is null ? "Inherited" : $"Version {Policy.Version}")</span>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label" for="cloud-threshold">Cloud transmission threshold override</label>
+                            <input id="cloud-threshold" class="form-control" type="number" min="1" max="999999"
+                                   disabled="@(Policy.EffectiveRole != HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Owner)"
+                                   @bind="OverrideCloudThresholdMillionths" />
+                            <div class="form-text">Millionths; leave empty to inherit @Policy.GlobalCloudTransmissionThresholdMillionths.</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label" for="validation-policy">Central transient validation</label>
+                            <select id="validation-policy" class="form-select" @bind="ValidationOverride"
+                                    disabled="@(Policy.EffectiveRole != HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Owner)">
+                                <option value="inherit">Inherit (@(Policy.GlobalCentralValidationEnabled ? "enabled" : "disabled"))</option>
+                                @if (Policy.GlobalCentralValidationEnabled)
+                                {
+                                    <option value="enabled">Enabled</option>
+                                    <option value="disabled">Disabled</option>
+                                }
+                            </select>
+                        </div>
+                        <dl class="row small mb-3">
+                            <dt class="col-sm-6">Effective cloud threshold</dt><dd class="col-sm-6">@Policy.EffectiveCloudTransmissionThresholdMillionths</dd>
+                            <dt class="col-sm-6">Effective central validation</dt><dd class="col-sm-6">@(Policy.EffectiveCentralValidationEnabled ? "Enabled" : "Disabled")</dd>
+                        </dl>
+                        @if (Policy.EffectiveRole == HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Owner)
+                        {
+                            <button class="btn btn-info me-2" disabled="@IsBusy" @onclick="SavePolicyAsync">Activate successor version</button>
+                            <button class="btn btn-outline-light" disabled="@IsBusy" @onclick="ClearPolicyAsync">Restore inheritance</button>
+                        }
+                        else
+                        {
+                            <p class="text-muted mb-0">Global defaults and effective overrides are read-only for this role.</p>
+                        }
+                    </div>
+                </section>
+            </div>
+            <div class="col-lg-5">
+                <section class="card h-100">
+                    <div class="card-body">
+                        <p class="text-uppercase text-info small fw-bold mb-1">Canonical output policy</p>
+                        <h2 class="h5">Origin remains explicit</h2>
+                        <ol class="small mb-0">
+                            <li class="mb-2">Use the uploaded edge preview as a labeled temporary fallback.</li>
+                            <li class="mb-2">Prefer a completed central plain preview as the canonical current image.</li>
+                            <li>Retain central and edge annotations as provenance-labeled alternates.</li>
+                        </ol>
+                    </div>
+                </section>
+            </div>
+        </div>
+    }
+    <h2 class="h4">Central jobs</h2>
+    @if (Items.Count == 0)
+    {
+        <div class="alert alert-secondary">No central jobs are visible in this scope.</div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table align-middle">
+                <thead><tr><th>Created</th><th>Target</th><th>Status</th><th>Attempts</th><th>Reason</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+                <tbody>
+                    @foreach (var item in Items)
+                    {
+                        <tr>
+                            <td>@item.CreatedAtUtc.ToString("u")</td>
+                            <td>@item.TargetRole<small class="d-block text-muted">@item.TargetRecipeVersion / @item.TargetVariant</small></td>
+                            <td><span class="badge text-bg-secondary">@item.Status</span></td>
+                            <td>@item.AttemptCount / @item.MaxAttempts</td>
+                            <td>@(item.StateReasonCode ?? "-")</td>
+                            <td>
+                                @if (item.EffectiveRole is HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Manager or HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Owner)
+                                {
+                                    <div class="btn-group btn-group-sm" role="group" aria-label="Actions for processing job @item.JobId">
+                                        @if (item.Status is HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobStatus.Waiting or HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobStatus.Pending or HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobStatus.Leased or HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobStatus.RetryableFailure)
+                                        {
+                                            <button class="btn btn-outline-warning" disabled="@IsBusy" @onclick="() => CancelAsync(item.JobId)">Cancel</button>
+                                        }
+                                        @if (item.Status is HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobStatus.TerminalFailure or HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobStatus.Quarantined or HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobStatus.Canceled or HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobStatus.Skipped)
+                                        {
+                                            <button class="btn btn-outline-info" disabled="@IsBusy" @onclick="() => RequeueAsync(item.JobId)">Retry</button>
+                                        }
+                                        <button class="btn btn-outline-light" disabled="@IsBusy" @onclick="() => ReprocessAsync(item.JobId)">Reprocess</button>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <span class="text-muted small">Read only</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        @if (NextCursor is not null)
+        {
+            <button class="btn btn-outline-light" @onclick="LoadMoreAsync">Load more jobs</button>
+        }
+    }
+}

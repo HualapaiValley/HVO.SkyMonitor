@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Run the opt-in LogicHost UI browser and evidence gate for issue #107.
+
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"
+readonly PROCESSING_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
+readonly CONFIGURATION="Release"
+readonly OUTPUT="$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/bin/$CONFIGURATION/net10.0"
+readonly MANIFEST="$REPO_ROOT/docs/validation/logichost-ui-107-runtime-signals.json"
+readonly baseline_root="${HVO_ISSUE_107_BASELINE_ROOT:-$REPO_ROOT/TestResults/issue-107/baseline-ed7f975}"
+install_browser=false
+
+for argument in "$@"; do
+    case "$argument" in
+        --install-browser)
+            install_browser=true
+            ;;
+        *)
+            printf 'Usage: %s [--install-browser]\n' "${0##*/}" >&2
+            exit 2
+            ;;
+    esac
+done
+
+cd "$REPO_ROOT"
+readonly revision="$(git rev-parse HEAD)"
+readonly dirty_hash="$({ git status --porcelain=v1; git diff --no-ext-diff --binary; git ls-files --others --exclude-standard -z | xargs -0 -r sha256sum; } | sha256sum | cut -d' ' -f1)"
+readonly fingerprint="${revision:0:12}-${dirty_hash:0:12}"
+readonly run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+readonly evidence_root="$REPO_ROOT/TestResults/issue-107/$fingerprint/$run_id"
+mkdir -p "$evidence_root"
+
+dotnet build "$PROJECT" --configuration "$CONFIGURATION" -warnaserror
+dotnet build "$PROCESSING_PROJECT" --configuration "$CONFIGURATION" -warnaserror
+
+if [[ "$install_browser" == true ]]; then
+    PLAYWRIGHT_DRIVER_SEARCH_PATH="$OUTPUT" dotnet exec \
+        --runtimeconfig "$OUTPUT/HVO.SkyMonitor.IntegrationTests.runtimeconfig.json" \
+        --depsfile "$OUTPUT/HVO.SkyMonitor.IntegrationTests.deps.json" \
+        "$OUTPUT/Microsoft.Playwright.dll" install chromium
+fi
+
+export HVO_ISSUE_107_REVISION="$revision"
+export HVO_ISSUE_107_BRANCH="$(git branch --show-current)"
+export HVO_ISSUE_107_DIRTY_SHA256="$dirty_hash"
+export HVO_ISSUE_107_EVIDENCE_ROOT="$evidence_root"
+dotnet test "$PROJECT" \
+    --no-build \
+    --no-restore \
+    --configuration "$CONFIGURATION" \
+    --filter "FullyQualifiedName~LogicHostUiBrowserAcceptanceTests|FullyQualifiedName~LogicHostDependencyOutageAcceptanceTests" \
+    --results-directory "$evidence_root" \
+    --logger "trx;LogFileName=logichost-ui-107.trx" \
+    --logger "console;verbosity=normal"
+
+export HVO_ISSUE_107_EVIDENCE_SET_ROOT="$evidence_root"
+export HVO_ISSUE_107_BASELINE_ROOT="$baseline_root"
+for trial in 1 2 3 4 5; do
+    test -s "$baseline_root/home-trial-$(printf '%02d' "$trial").json"
+    test -s "$baseline_root/encoding-trial-$(printf '%02d' "$trial")/processing-performance-W1-encoded-preview-jpeg.json"
+done
+for trial in 1 2 3 4 5; do
+    trial_root="$evidence_root/candidate/trial-$(printf '%02d' "$trial")"
+    mkdir -p "$trial_root"
+    mkdir -p "$trial_root/encoding"
+    HVO_PERF_WORKLOAD=W1 \
+    HVO_PERF_RECIPE=encoded-preview-jpeg \
+    HVO_PERF_WARMUPS=5 \
+    HVO_PERF_REPETITIONS=30 \
+    HVO_PERF_REVISION="$revision" \
+    HVO_PERF_TRIAL="$trial" \
+    HVO_PERF_OUTPUT="$trial_root/encoding" \
+    dotnet test "$PROCESSING_PROJECT" \
+        --no-build \
+        --no-restore \
+        --configuration "$CONFIGURATION" \
+        --filter "FullyQualifiedName~ProcessingRecipePerformanceTests.WarmSelectedRecipeEvidence" \
+        --results-directory "$trial_root/encoding" \
+        --logger "trx;LogFileName=logichost-ui-107-encoding.trx" \
+        --logger "console;verbosity=normal"
+    HVO_ISSUE_107_TRIAL="$trial" \
+    HVO_ISSUE_107_EVIDENCE_ROOT="$trial_root" \
+    dotnet test "$PROJECT" \
+        --no-build \
+        --no-restore \
+        --configuration "$CONFIGURATION" \
+        --filter "FullyQualifiedName~LogicHostUiPerformanceTests.Issue107_RouteMixesMeetDeclaredConcurrentSessionLatencyAndResourceGates" \
+        --results-directory "$trial_root" \
+        --logger "trx;LogFileName=logichost-ui-107-performance.trx" \
+        --logger "console;verbosity=normal"
+done
+
+readonly evidence_files=(
+    browser-acceptance.json
+    logs.jsonl
+    metrics.json
+    traces.jsonl
+    health.json
+    sql.json
+    map-requests.json
+    cardinality-leak-scan.json
+    dependency-outages.json
+    environment.json
+    performance-candidate-summary.json
+)
+for evidence_file in "${evidence_files[@]}"; do
+    test -s "$evidence_root/$evidence_file"
+done
+for trial in 1 2 3 4 5; do
+    trial_root="$evidence_root/candidate/trial-$(printf '%02d' "$trial")"
+    test -s "$trial_root/performance.json"
+    test -s "$trial_root/process.csv"
+    test -s "$trial_root/logichost-ui-107-performance.trx"
+    test -s "$trial_root/encoding/processing-performance-W1-encoded-preview-jpeg.json"
+    test -s "$trial_root/encoding/logichost-ui-107-encoding.trx"
+done
+rg -q '"Passed": true' "$evidence_root/cardinality-leak-scan.json"
+performance_files=(
+    "$evidence_root"/candidate/trial-*/performance.json
+    "$evidence_root"/candidate/trial-*/process.csv
+    "$evidence_root"/candidate/trial-*/logichost-ui-107-performance.trx
+    "$evidence_root"/candidate/trial-*/encoding/processing-performance-W1-encoded-preview-jpeg.json
+    "$evidence_root"/candidate/trial-*/encoding/logichost-ui-107-encoding.trx
+)
+leak_scan_files=(
+    "${evidence_files[@]/#/$evidence_root/}"
+    "$evidence_root"/candidate/trial-*/performance.json
+    "$evidence_root"/candidate/trial-*/process.csv
+    "$evidence_root"/candidate/trial-*/encoding/processing-performance-W1-encoded-preview-jpeg.json
+)
+sha256sum "$MANIFEST" "${evidence_files[@]/#/$evidence_root/}" "${performance_files[@]}" > "$evidence_root/evidence.sha256"
+sha256sum "$baseline_root"/home-trial-*.json \
+    "$baseline_root"/encoding-trial-*/processing-performance-W1-encoded-preview-jpeg.json \
+    > "$evidence_root/baseline-evidence.sha256"
+
+if rg -n -i \
+    'minio://|connectionstrings:|password=|downloadtoken=|invitationtoken=|operator@skymonitor\.local|19\.812345|-155\.412345|/tmp/opencode/' \
+    "${leak_scan_files[@]}"; then
+    printf 'Issue #107 evidence leakage scan failed.\n' >&2
+    exit 1
+fi
+
+printf 'Issue #107 evidence: %s\n' "$evidence_root"

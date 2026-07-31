@@ -215,6 +215,13 @@ public sealed class DeploymentLocationAuthorityMigrationTests
             await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
             var observatoryId = Guid.NewGuid();
             await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO [AspNetUsers]
+                    ([Id], [AccountType], [UserName], [EmailConfirmed], [PhoneNumberConfirmed],
+                     [TwoFactorEnabled], [LockoutEnabled], [AccessFailedCount])
+                VALUES ({"legacy-repair-owner"}, {(int)AccountType.User}, {"legacy-repair-owner"},
+                        {false}, {false}, {false}, {false}, {0});
+                """).ConfigureAwait(false);
+            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
                 INSERT INTO [Observatories]
                     ([Id], [OwnerUserId], [Name], [LatitudeDegrees], [LongitudeDegrees], [ElevationMeters],
                      [TimeZoneId], [CreatedAtUtc], [UpdatedAtUtc], [IsActive])

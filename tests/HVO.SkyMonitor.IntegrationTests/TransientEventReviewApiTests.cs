@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
+using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
@@ -49,6 +50,24 @@ public sealed class TransientEventReviewApiTests
             IssuedAtUtc = now,
             ActivatedAtUtc = now
         };
+        var viewer = await db.Users.SingleAsync(user => user.Email == TestUsers.Viewer.Email).ConfigureAwait(false);
+        db.ObservatoryMemberships.AddRange(
+            new ObservatoryMembership
+            {
+                Observatory = observatory,
+                ObservatoryId = observatory.Id,
+                UserId = owner.Id,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = now
+            },
+            new ObservatoryMembership
+            {
+                Observatory = observatory,
+                ObservatoryId = observatory.Id,
+                UserId = viewer.Id,
+                Role = ObservatoryMembershipRole.Viewer,
+                AddedAtUtc = now
+            });
         db.DeviceRegistrations.Add(registration);
         await db.SaveChangesAsync().ConfigureAwait(false);
 
@@ -64,6 +83,95 @@ public sealed class TransientEventReviewApiTests
         var current = await db.CentralTransientEventCurrent.AsNoTracking().SingleAsync(item =>
             item.LatestEventVersionId == fixture.Event.EventVersionId).ConfigureAwait(false);
         var path = $"/api/v1.0/transient-events/{current.CentralTransientEventId:D}";
+
+        var excludedObservatory = new Observatory
+        {
+            OwnerUserId = owner.Id,
+            Name = $"Transient review excluded {Guid.NewGuid():N}",
+            TimeZoneId = "UTC",
+            CreatedAtUtc = now,
+            IsActive = true
+        };
+        var excludedRegistration = new DeviceRegistration
+        {
+            DeviceId = $"transient-review-excluded-{Guid.NewGuid():N}",
+            ObservatoryId = excludedObservatory.Id,
+            Observatory = excludedObservatory,
+            FriendlyName = "Excluded transient review fixture",
+            ObservatoryName = excludedObservatory.Name,
+            ObservatoryTimeZoneId = excludedObservatory.TimeZoneId,
+            OwnerUserId = owner.Id,
+            OwnerDisplayName = TestUsers.Operator.FullName,
+            OwnerEmail = owner.Email,
+            OwnerConfirmationMethod = "SelfAttested",
+            OwnerConfirmedAtUtc = now,
+            Status = DeviceRegistrationStatus.Active,
+            VerificationCodeHash = DeviceRegistrationService.ComputeSha256("FGHIJ"),
+            DevicePublicId = Guid.NewGuid(),
+            IssuedAtUtc = now,
+            ActivatedAtUtc = now
+        };
+        db.ObservatoryMemberships.Add(new ObservatoryMembership
+        {
+            Observatory = excludedObservatory,
+            ObservatoryId = excludedObservatory.Id,
+            UserId = owner.Id,
+            Role = ObservatoryMembershipRole.Owner,
+            AddedAtUtc = now
+        });
+        db.DeviceRegistrations.Add(excludedRegistration);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        var excludedFixture = CentralTransientPersistenceFixture.Create();
+        var excludedSeeded = await CentralTransientEventPersistenceIntegrationTests.SeedAsync(
+            db, excludedFixture, registrationId: excludedRegistration.Id).ConfigureAwait(false);
+        _ = await persistence.AppendAsync(excludedFixture.Request with
+        {
+            CentralDerivativeJobId = excludedSeeded.JobId
+        }, CancellationToken.None).ConfigureAwait(false);
+        db.ChangeTracker.Clear();
+        var excludedCurrent = await db.CentralTransientEventCurrent.AsNoTracking().SingleAsync(item =>
+            item.LatestEventVersionId == excludedFixture.Event.EventVersionId).ConfigureAwait(false);
+        var excludedPath = $"/api/v1.0/transient-events/{excludedCurrent.CentralTransientEventId:D}";
+
+        var scopedKey = await scope.ServiceProvider.GetRequiredService<IApiKeyLifecycleService>().CreateAsync(
+            owner.Id,
+            owner.Email!,
+            "Scoped transient review",
+            ApiKeyAccessLevel.ReadWrite,
+            observatory.Id,
+            now.AddMinutes(5),
+            CancellationToken.None).ConfigureAwait(false);
+        using var scopedBaseClient = AssemblyHooks.Fixture.Factory.CreateClient();
+        var scopedClient = HttpHelpers.WithApiKey(scopedBaseClient, scopedKey.PlaintextKey);
+        var scopedEvents = await scopedClient.GetFromJsonAsync<CentralTransientEventPage>(
+            new Uri("/api/v1.0/transient-events", UriKind.Relative)).ConfigureAwait(false);
+        scopedEvents!.Items.Should().Contain(item => item.CentralTransientEventId == current.CentralTransientEventId)
+            .And.NotContain(item => item.CentralTransientEventId == excludedCurrent.CentralTransientEventId);
+        using (var selectedScopedResponse = await scopedClient.GetAsync(new Uri(path, UriKind.Relative))
+                   .ConfigureAwait(false))
+        {
+            selectedScopedResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+        using (var excludedScopedResponse = await scopedClient.GetAsync(new Uri(excludedPath, UriKind.Relative))
+                   .ConfigureAwait(false))
+        {
+            excludedScopedResponse.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        }
+        var excludedReview = new CentralTransientReviewRequest(
+            excludedCurrent.ActiveAssessmentId,
+            TransientReviewDisposition.Rejected,
+            null,
+            ["human.rejected"]);
+        using (var excludedScopedMutation = CreateReviewRequest(
+                   excludedPath,
+                   excludedReview,
+                   CentralTransientEventEtag.Create(excludedCurrent.RowVersion),
+                   $"scope-denied-{Guid.NewGuid():N}"))
+        using (var excludedScopedMutationResponse = await scopedClient.SendAsync(excludedScopedMutation)
+                   .ConfigureAwait(false))
+        {
+            excludedScopedMutationResponse.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        }
 
         using var anonymous = AssemblyHooks.Fixture.Factory.CreateClient();
         var ownerClient = await CreateUserClientAsync(
@@ -216,8 +324,8 @@ public sealed class TransientEventReviewApiTests
 
         var otherClient = await CreateUserClientAsync(
             anonymous, TestUsers.Viewer.Username, TestUsers.Viewer.Password).ConfigureAwait(false);
-        using var hidden = await otherClient.GetAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false);
-        hidden.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        using var viewerDetail = await otherClient.GetAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false);
+        viewerDetail.StatusCode.Should().Be(HttpStatusCode.OK);
         using var hiddenMutationRequest = CreateReviewRequest(
             path, review, reviewed.Headers.ETag.Tag, $"hidden-{Guid.NewGuid():N}");
         using var hiddenMutation = await otherClient.SendAsync(hiddenMutationRequest).ConfigureAwait(false);

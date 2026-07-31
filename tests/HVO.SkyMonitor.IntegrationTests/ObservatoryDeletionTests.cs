@@ -20,7 +20,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class ObservatoryDeletionTests
 {
     [TestMethod]
-    public async Task Delete_EmptyVersionedObservatoryRemovesLocationHistoryBeforeSite()
+    public async Task Delete_EmptyVersionedObservatoryDeactivatesAndPreservesAuthorityHistory()
     {
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -29,6 +29,8 @@ public sealed class ObservatoryDeletionTests
             TimeProvider.System,
             scope.ServiceProvider.GetRequiredService<IDeploymentLocationAuthorityService>());
         var owner = $"empty-observatory-owner-{Guid.NewGuid():N}";
+        db.Users.Add(new ApplicationUser { Id = owner, UserName = owner, AccountType = AccountType.User });
+        await db.SaveChangesAsync().ConfigureAwait(false);
         var observatory = await service.CreateOrUpdateAsync(new ObservatoryUpsertRequest(
             null,
             owner,
@@ -43,9 +45,14 @@ public sealed class ObservatoryDeletionTests
         var deleted = await service.DeleteAsync(observatory.Id, owner).ConfigureAwait(false);
 
         deleted.Should().BeTrue();
-        (await db.Observatories.AnyAsync(item => item.Id == observatory.Id).ConfigureAwait(false)).Should().BeFalse();
+        (await db.Observatories.SingleAsync(item => item.Id == observatory.Id).ConfigureAwait(false))
+            .IsActive.Should().BeFalse();
         (await db.ObservatoryLocationVersions.AnyAsync(item => item.ObservatoryId == observatory.Id)
-            .ConfigureAwait(false)).Should().BeFalse();
+            .ConfigureAwait(false)).Should().BeTrue();
+        (await db.ObservatoryMemberships.AnyAsync(item => item.ObservatoryId == observatory.Id)
+            .ConfigureAwait(false)).Should().BeTrue();
+        (await db.ObservatoryMembershipAudits.AnyAsync(item => item.ObservatoryId == observatory.Id)
+            .ConfigureAwait(false)).Should().BeTrue();
     }
 
     [TestMethod]
@@ -78,6 +85,20 @@ public sealed class ObservatoryDeletionTests
         await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            db.Users.Add(new ApplicationUser
+            {
+                Id = observatory.OwnerUserId,
+                UserName = observatory.OwnerUserId,
+                AccountType = AccountType.User
+            });
+            db.ObservatoryMemberships.Add(new ObservatoryMembership
+            {
+                Observatory = observatory,
+                ObservatoryId = observatory.Id,
+                UserId = observatory.OwnerUserId,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = DateTimeOffset.UnixEpoch
+            });
             db.EnvironmentalObservationSources.Add(source);
             await db.SaveChangesAsync().ConfigureAwait(false);
             var service = new ObservatoryService(
@@ -141,7 +162,21 @@ public sealed class ObservatoryDeletionTests
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            db.Users.Add(new ApplicationUser
+            {
+                Id = observatory.OwnerUserId,
+                UserName = observatory.OwnerUserId,
+                AccountType = AccountType.User
+            });
             db.Observatories.Add(observatory);
+            db.ObservatoryMemberships.Add(new ObservatoryMembership
+            {
+                Observatory = observatory,
+                ObservatoryId = observatory.Id,
+                UserId = observatory.OwnerUserId,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = DateTimeOffset.UnixEpoch
+            });
             db.DeviceRegistrations.Add(registration);
             db.DeviceRigProfiles.Add(profile);
             await db.SaveChangesAsync().ConfigureAwait(false);
@@ -225,7 +260,21 @@ public sealed class ObservatoryDeletionTests
         await using (var setupScope = raceFactory.Services.CreateAsyncScope())
         {
             var setupDb = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            setupDb.Users.Add(new ApplicationUser
+            {
+                Id = raceObservatory.OwnerUserId,
+                UserName = raceObservatory.OwnerUserId,
+                AccountType = AccountType.User
+            });
             setupDb.Observatories.Add(raceObservatory);
+            setupDb.ObservatoryMemberships.Add(new ObservatoryMembership
+            {
+                Observatory = raceObservatory,
+                ObservatoryId = raceObservatory.Id,
+                UserId = raceObservatory.OwnerUserId,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = DateTimeOffset.UtcNow
+            });
             await setupDb.SaveChangesAsync().ConfigureAwait(false);
         }
         lockInterceptor.Arm(raceObservatory.Id);

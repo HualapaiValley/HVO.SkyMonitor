@@ -1,5 +1,6 @@
 using System;
 using System.Net.Sockets;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.LogicHost.Configuration;
@@ -9,7 +10,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.LogicHost.HealthChecks;
 
 /// <summary>
-/// Validates basic TCP connectivity to the configured SMTP relay.
+/// Validates that the configured SMTP relay returns its protocol greeting.
 /// </summary>
 internal sealed class SmtpHealthCheck : IHealthCheck
 {
@@ -33,17 +34,15 @@ internal sealed class SmtpHealthCheck : IHealthCheck
         try
         {
             using var tcpClient = new TcpClient();
-            var connectTask = tcpClient.ConnectAsync(_options.Host, _options.Port);
-            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
-
-            var completed = await Task.WhenAny(connectTask, timeoutTask).ConfigureAwait(false);
-            if (completed == timeoutTask)
-            {
-                return HealthCheckResult.Unhealthy("SMTP connection timed out.");
-            }
-
-            await connectTask.ConfigureAwait(false);
-            return HealthCheckResult.Healthy("SMTP endpoint accepted a TCP connection.");
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            await tcpClient.ConnectAsync(_options.Host, _options.Port, timeout.Token).ConfigureAwait(false);
+            var buffer = new byte[256];
+            var bytesRead = await tcpClient.GetStream().ReadAsync(buffer, timeout.Token).ConfigureAwait(false);
+            var greeting = Encoding.ASCII.GetString(buffer, 0, bytesRead);
+            return greeting.StartsWith("220", StringComparison.Ordinal)
+                ? HealthCheckResult.Healthy("SMTP endpoint returned a ready greeting.")
+                : HealthCheckResult.Unhealthy("SMTP endpoint returned an invalid greeting.");
         }
         catch (SocketException ex)
         {
@@ -51,7 +50,7 @@ internal sealed class SmtpHealthCheck : IHealthCheck
         }
         catch (OperationCanceledException ex)
         {
-            return HealthCheckResult.Unhealthy("SMTP health probe was cancelled.", ex);
+            return HealthCheckResult.Unhealthy("SMTP health probe timed out or was cancelled.", ex);
         }
     }
 }

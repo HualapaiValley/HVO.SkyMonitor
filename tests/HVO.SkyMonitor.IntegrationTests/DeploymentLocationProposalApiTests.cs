@@ -62,6 +62,14 @@ public sealed class DeploymentLocationProposalApiTests
             };
             registrationId = registration.Id;
             db.AddRange(observatory, registration);
+            db.ObservatoryMemberships.Add(new ObservatoryMembership
+            {
+                Observatory = observatory,
+                ObservatoryId = observatory.Id,
+                UserId = owner.Id,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = now
+            });
             await db.SaveChangesAsync().ConfigureAwait(false);
             deployment = DeploymentLocationSnapshot.Create(
                 "active-device-location", 2, "gps-receiver", 3, now.AddHours(-1), null,
@@ -140,6 +148,14 @@ public sealed class DeploymentLocationProposalApiTests
                 ActivatedAtUtc = now
             };
             db.AddRange(observatory, registration);
+            db.ObservatoryMemberships.Add(new ObservatoryMembership
+            {
+                Observatory = observatory,
+                ObservatoryId = observatory.Id,
+                UserId = ownerId,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = now
+            });
             await db.SaveChangesAsync().ConfigureAwait(false);
             registrationId = registration.Id;
             deployment = DeploymentLocationSnapshot.Create(
@@ -234,6 +250,14 @@ public sealed class DeploymentLocationProposalApiTests
                 ActivatedAtUtc = now
             };
             db.AddRange(observatory, registration);
+            db.ObservatoryMemberships.Add(new ObservatoryMembership
+            {
+                Observatory = observatory,
+                ObservatoryId = observatory.Id,
+                UserId = owner.Id,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = now
+            });
             await db.SaveChangesAsync().ConfigureAwait(false);
             var deployment = DeploymentLocationSnapshot.Create(
                 "deployment-api-location",

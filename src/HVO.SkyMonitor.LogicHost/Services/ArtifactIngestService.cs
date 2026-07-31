@@ -536,6 +536,8 @@ internal sealed partial class ArtifactIngestService(
                 RegistrationId = registration.Id,
                 DevicePublicId = devicePublicId,
                 ObservatoryId = registration.ObservatoryId,
+                LogicalCameraInstallationId = await ResolveCaptureInstallationAsync(
+                    registration.Id, manifest.CapturedAtUtc, cancellationToken).ConfigureAwait(false),
                 AgentId = manifest.AgentId,
                 FrameId = manifest.FrameId,
                 CapturedAtUtc = manifest.CapturedAtUtc,
@@ -576,6 +578,17 @@ internal sealed partial class ArtifactIngestService(
         }
         return false;
     }
+
+    private Task<Guid?> ResolveCaptureInstallationAsync(
+        Guid registrationId,
+        DateTimeOffset capturedAtUtc,
+        CancellationToken cancellationToken)
+        => dbContext.LogicalCameraInstallations.AsNoTracking()
+            .Where(installation => installation.RegistrationId == registrationId
+                && installation.AssignedAtUtc <= capturedAtUtc
+                && (installation.RetiredAtUtc == null || installation.RetiredAtUtc > capturedAtUtc))
+            .Select(installation => (Guid?)installation.Id)
+            .SingleOrDefaultAsync(cancellationToken);
 
     private static bool IsCaptureSequenceConflict(Exception exception)
     {
@@ -764,6 +777,8 @@ internal sealed partial class ArtifactIngestService(
                         RegistrationId = registration.Id,
                         DevicePublicId = devicePublicId,
                         ObservatoryId = registration.ObservatoryId,
+                        LogicalCameraInstallationId = await ResolveCaptureInstallationAsync(
+                            registration.Id, manifest.CapturedAtUtc, cancellationToken).ConfigureAwait(false),
                         AgentId = manifest.AgentId,
                         FrameId = manifest.FrameId,
                         CapturedAtUtc = manifest.CapturedAtUtc,

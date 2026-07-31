@@ -30,7 +30,8 @@
                         <thead>
                             <tr>
                                 <th scope="col">Name</th>
-                                <th scope="col">Access</th>
+                                 <th scope="col">Access</th>
+                                <th scope="col">Observatory</th>
                                 <th scope="col">Created</th>
                                 <th scope="col">Expires</th>
                                 <th scope="col">Status</th>
@@ -47,6 +48,7 @@
                                     <td>
                                         <span class="badge api-key-access-badge">@GetAccessLevelLabel(key.AccessLevel)</span>
                                     </td>
+                                    <td>@GetObservatoryLabel(key.ObservatoryId)</td>
                                     <td>@FormatTimestamp(key.CreatedAtUtc)</td>
                                     <td>@FormatExpiration(key.ExpiresAtUtc)</td>
                                     <td>
@@ -105,6 +107,18 @@
                         }
                     </InputSelect>
                     <ValidationMessage For="() => FormModel.AccessLevel" class="text-danger" />
+                </div>
+                <div class="mb-3">
+                    <label for="Input.ObservatoryId" class="form-label">Observatory scope</label>
+                    <InputSelect @bind-Value="FormModel.ObservatoryId" id="Input.ObservatoryId" class="form-select">
+                        <option value="">Select an observatory</option>
+                        @foreach (var observatory in observatoryScopes)
+                        {
+                            <option value="@observatory.Id">@observatory.Name</option>
+                        }
+                    </InputSelect>
+                    <ValidationMessage For="() => FormModel.ObservatoryId" class="text-danger" />
+                    <div class="form-text">The key can never exceed your current role in this observatory.</div>
                 </div>
                 <div class="mb-3">
                     <label for="Input.ExpiresOnUtc" class="form-label">Expires on (UTC, optional)</label>

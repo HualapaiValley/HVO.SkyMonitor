@@ -21,6 +21,7 @@ public sealed partial class ApiKeys
 
     private ApplicationUser? user;
     private List<ApiKeyListItem> apiKeys = new();
+    private List<ObservatoryScopeItem> observatoryScopes = new();
     private string? statusMessage;
     private string? generatedPlaintextKey;
     private string? _busyKeyId;
@@ -96,6 +97,7 @@ public sealed partial class ApiKeys
                 user.Email ?? user.UserName ?? user.Id,
                 GetDisplayName(model.DisplayName, now),
                 model.AccessLevel,
+                model.ObservatoryId,
                 expiresUtc,
                 HttpContext.RequestAborted);
 
@@ -211,12 +213,20 @@ public sealed partial class ApiKeys
                 key.Id,
                 key.DisplayName,
                 key.AccessLevel,
+                key.ObservatoryId,
                 key.IsActive,
                 key.CreatedUtc,
                 key.ExpiresUtc))
             .ToListAsync(cancellationToken);
 
         apiKeys = items.OrderByDescending(key => key.CreatedAtUtc).ToList();
+        observatoryScopes = await DbContext.ObservatoryMemberships
+            .Where(membership => membership.UserId == user.Id)
+            .OrderBy(membership => membership.Observatory!.Name)
+            .Select(membership => new ObservatoryScopeItem(
+                membership.ObservatoryId,
+                membership.Observatory!.Name))
+            .ToListAsync(cancellationToken);
     }
 
     private static string GetAccessLevelLabel(ApiKeyAccessLevel level) => level switch
@@ -225,6 +235,11 @@ public sealed partial class ApiKeys
         ApiKeyAccessLevel.ReadWrite => "Read & Write",
         _ => level.ToString()
     };
+
+    private string GetObservatoryLabel(Guid? observatoryId)
+        => observatoryId is null
+            ? "Legacy account scope"
+            : observatoryScopes.FirstOrDefault(item => item.Id == observatoryId)?.Name ?? "Unavailable observatory";
 
     private static string FormatTimestamp(DateTimeOffset timestamp)
         => timestamp.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
@@ -241,6 +256,7 @@ public sealed partial class ApiKeys
         string Id,
         string DisplayName,
         ApiKeyAccessLevel AccessLevel,
+        Guid? ObservatoryId,
         bool IsActive,
         DateTimeOffset CreatedAtUtc,
         DateTimeOffset? ExpiresAtUtc);
@@ -256,7 +272,13 @@ public sealed partial class ApiKeys
         [Display(Name = "Access level")]
         public ApiKeyAccessLevel AccessLevel { get; set; } = ApiKeyAccessLevel.Read;
 
+        [Required]
+        [Display(Name = "Observatory scope")]
+        public Guid? ObservatoryId { get; set; }
+
         [Display(Name = "Expires on (UTC)")]
         public DateTime? ExpiresOnUtc { get; set; }
     }
+
+    private sealed record ObservatoryScopeItem(Guid Id, string Name);
 }

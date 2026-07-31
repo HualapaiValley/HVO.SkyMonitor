@@ -41,9 +41,14 @@ internal sealed class ArtifactHistoryController(ApplicationDbContext dbContext) 
             parsedRole = parsed;
         }
 
-        var centralQuery = dbContext.CentralArtifacts.AsNoTracking().Where(artifact =>
-            dbContext.DeviceRegistrations.Any(registration => registration.Id == artifact.Frame!.RegistrationId
-                && registration.OwnerUserId == ownerId));
+        var observatories = ObservatoryMembershipAccess.ForUser(dbContext, ownerId)
+            .Select(membership => membership.ObservatoryId);
+        if (CentralArtifactCredentialAccess.GetObservatoryScope(User) is { } observatoryScope)
+        {
+            observatories = observatories.Where(observatoryId => observatoryId == observatoryScope);
+        }
+        var centralQuery = dbContext.CentralArtifacts.AsNoTracking()
+            .Where(artifact => observatories.Contains(artifact.Frame!.ObservatoryId));
         if (!string.IsNullOrWhiteSpace(agentId))
         {
             centralQuery = centralQuery.Where(artifact => artifact.Frame!.AgentId == agentId);
@@ -58,8 +63,7 @@ internal sealed class ArtifactHistoryController(ApplicationDbContext dbContext) 
             .ToListAsync(cancellationToken).ConfigureAwait(false);
 
         var legacyQuery = dbContext.DeviceImageUploads.AsNoTracking().Where(upload =>
-            dbContext.DeviceRegistrations.Any(registration => registration.Id == upload.RegistrationId
-                && registration.OwnerUserId == ownerId)
+            observatories.Contains(upload.ObservatoryId)
             && (upload.IdempotencyKey == null
                 || !dbContext.CentralArtifacts.Any(artifact => artifact.IdempotencyKey == upload.IdempotencyKey)));
         if (!string.IsNullOrWhiteSpace(agentId))

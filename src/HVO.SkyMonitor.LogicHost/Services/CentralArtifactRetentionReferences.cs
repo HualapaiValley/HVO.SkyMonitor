@@ -27,6 +27,10 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
 {
     public async Task<bool> IsHeldAsync(Guid centralArtifactId, CancellationToken cancellationToken)
     {
+        if (await HasCurrentPublicReleaseAsync(centralArtifactId, cancellationToken).ConfigureAwait(false))
+        {
+            return true;
+        }
         if (await dbContext.CentralClearReferenceDesignations.AnyAsync(designation =>
                 designation.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false))
         {
@@ -67,6 +71,10 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
         Guid centralTransientEventId,
         CancellationToken cancellationToken)
     {
+        if (await HasCurrentPublicReleaseAsync(centralArtifactId, cancellationToken).ConfigureAwait(false))
+        {
+            return true;
+        }
         if (await dbContext.CentralClearReferenceDesignations.AnyAsync(designation =>
                 designation.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false))
         {
@@ -120,6 +128,15 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
                 || job.Status == CentralDerivativeJobStatus.RetryableFailure
                 || job.Status == CentralDerivativeJobStatus.CancelRequested), cancellationToken).ConfigureAwait(false);
     }
+
+    private Task<bool> HasCurrentPublicReleaseAsync(
+        Guid centralArtifactId,
+        CancellationToken cancellationToken)
+        => dbContext.PublicRecordPublicationDecisions.AnyAsync(decision =>
+            decision.CentralArtifactId == centralArtifactId
+            && decision.State == PublicationDecisionState.Released
+            && !dbContext.PublicRecordPublicationDecisions.Any(successor =>
+                successor.SupersedesDecisionId == decision.Id), cancellationToken);
 }
 
 internal sealed class CentralArtifactRetentionService(

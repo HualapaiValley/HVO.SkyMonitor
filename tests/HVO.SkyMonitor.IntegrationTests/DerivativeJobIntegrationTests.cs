@@ -18,6 +18,25 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class DerivativeJobIntegrationTests
 {
     [TestMethod]
+    public async Task JobMutation_RejectsFailedTransactionPreconditionWithoutChangingState()
+    {
+        var seeded = await SeedJobAsync().ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var operations = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobOperationsService>();
+
+        Func<Task> cancel = () => operations.CancelAsync(
+            seeded.JobId,
+            "user:removed-manager",
+            CancellationToken.None,
+            _ => Task.FromResult(false));
+
+        await cancel.Should().ThrowAsync<UnauthorizedAccessException>().ConfigureAwait(false);
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await db.CentralDerivativeJobs.AsNoTracking().SingleAsync(job => job.Id == seeded.JobId)
+            .ConfigureAwait(false)).Status.Should().Be(CentralDerivativeJobStatus.Pending);
+    }
+
+    [TestMethod]
     public async Task ConcurrentClaims_LeaseJobToOneWorker()
     {
         await DisableClaimableJobsAsync().ConfigureAwait(false);

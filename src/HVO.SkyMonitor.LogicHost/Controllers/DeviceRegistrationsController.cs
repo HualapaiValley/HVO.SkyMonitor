@@ -5,6 +5,7 @@ using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace HVO.SkyMonitor.LogicHost.Controllers;
 
@@ -13,7 +14,8 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 [Authorize(Policy = AuthorizationPolicyNames.ApiKeyReadWrite)]
 internal sealed class DeviceRegistrationsController(
     IDeviceRegistrationService registrationService,
-    IDeviceRegistrationEnvelopeService envelopeService) : ControllerBase
+    IDeviceRegistrationEnvelopeService envelopeService,
+    ApplicationDbContext? dbContext = null) : ControllerBase
 {
     private const string PortalConfirmationMethod = "PortalSelfAttested";
     private const string PortalRevocationMethod = "PortalSelfServiceRevocation";
@@ -34,6 +36,7 @@ internal sealed class DeviceRegistrationsController(
         {
             return Unauthorized();
         }
+        if (!CentralArtifactCredentialAccess.IsObservatoryAllowed(User, request.ObservatoryId)) return Forbid();
 
         DeviceRegistration registration;
         try
@@ -101,6 +104,7 @@ internal sealed class DeviceRegistrationsController(
         {
             return Unauthorized();
         }
+        if (!CentralArtifactCredentialAccess.IsObservatoryAllowed(User, request.ObservatoryId)) return Forbid();
 
         DeviceRegistrationEnvelopeResponse envelope;
         try
@@ -188,6 +192,13 @@ internal sealed class DeviceRegistrationsController(
         if (string.IsNullOrWhiteSpace(ownerUserId))
         {
             return Unauthorized();
+        }
+        if (CentralArtifactCredentialAccess.GetObservatoryScope(User) is { } observatoryScope
+            && (dbContext is null || !await dbContext.DeviceRegistrations.AnyAsync(registration =>
+                registration.Id == request.RegistrationId
+                && registration.ObservatoryId == observatoryScope, cancellationToken).ConfigureAwait(false)))
+        {
+            return Forbid();
         }
 
         try

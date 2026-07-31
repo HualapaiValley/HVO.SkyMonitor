@@ -22,6 +22,10 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
         }
 
         var items = await observatoryService.GetObservatoriesAsync(ownerId, cancellationToken).ConfigureAwait(false);
+        if (GetApiKeyObservatoryId() is { } scopeId)
+        {
+            items = items.Where(item => item.Id == scopeId).ToList();
+        }
         var response = items.Select(ToResponse).ToList();
         return Ok(response);
     }
@@ -57,6 +61,11 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
         if (string.IsNullOrEmpty(ownerId))
         {
             return Unauthorized();
+        }
+        if (GetApiKeyObservatoryId() is { } scopeId
+            && (request.Id is null || scopeId != request.Id))
+        {
+            return Forbid();
         }
 
         Observatory entity;
@@ -97,6 +106,10 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
         if (string.IsNullOrEmpty(ownerId))
         {
             return Unauthorized();
+        }
+        if (GetApiKeyObservatoryId() is { } scopeId && scopeId != id)
+        {
+            return Forbid();
         }
 
         var deleted = await observatoryService.DeleteAsync(id, ownerId, cancellationToken).ConfigureAwait(false);
@@ -148,6 +161,11 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
         }
         return CentralArtifactCredentialAccess.GetOwnerId(User);
     }
+
+    private Guid? GetApiKeyObservatoryId()
+        => Guid.TryParse(User.FindFirst(ApiKeyClaims.ObservatoryId)?.Value, out var observatoryId)
+            ? observatoryId
+            : null;
 
     private static string CreateEtag(string sha256) => $"\"{sha256.ToUpperInvariant()}\"";
 

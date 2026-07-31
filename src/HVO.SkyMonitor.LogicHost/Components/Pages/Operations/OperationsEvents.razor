@@ -1,0 +1,87 @@
+@page "/app/events"
+@attribute [Authorize]
+
+<PageTitle>Events | Network Operations</PageTitle>
+<header class="mb-4">
+    <p class="text-uppercase text-info small fw-bold mb-1">Central transient review</p>
+    <h1>Candidate and reviewed events</h1>
+    <p class="text-muted">Protected event evidence across every observatory required to view each event.</p>
+</header>
+@if (StatusMessage is not null)
+{
+    <div class="alert alert-info" role="status">@StatusMessage</div>
+}
+@if (IsLoading)
+{
+    <div class="alert alert-secondary" role="status">Loading protected events...</div>
+}
+else if (Items.Count == 0)
+{
+    <div class="alert alert-secondary">No events are visible in your current memberships.</div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <thead><tr><th>Observed</th><th>Classification</th><th>Review</th><th>Confidence</th><th>Publication</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+            <tbody>
+                @foreach (var item in Items)
+                {
+                    var authorities = PublicationAuthoritiesFor(item.CentralTransientEventId);
+                    var isPublicationEligible = item.ReviewState is HVO.SkyMonitor.LogicHost.Data.CentralTransientReviewState.Reviewed
+                        or HVO.SkyMonitor.LogicHost.Data.CentralTransientReviewState.Overridden;
+                    <tr>
+                        <td>@item.EventCreatedUtc.ToString("u")<small class="d-block text-muted">@item.FirstObservedUtc.ToString("u") - @item.LastObservedUtc.ToString("u")</small></td>
+                        <td>@item.EffectiveClassification<small class="d-block text-muted">@(item.EffectiveMeteorSeverity?.ToString() ?? "No meteor severity")</small></td>
+                        <td><span class="badge text-bg-secondary">@item.ReviewState</span></td>
+                        <td>@(item.EffectiveConfidenceMillionths / 10_000d)%</td>
+                        <td>
+                            @if (authorities.Count == 0)
+                            {
+                                <span class="text-muted small">No Owner publication authority</span>
+                            }
+                            else
+                            {
+                                @foreach (var authority in authorities)
+                                {
+                                    var isReleased = authority.CurrentState == HVO.SkyMonitor.LogicHost.Data.PublicationDecisionState.Released;
+                                    <div class="mb-2">
+                                        <span class="d-block small">@authority.ObservatoryName: @(isReleased ? "Released" : "Private")</span>
+                                        @if (isPublicationEligible || isReleased)
+                                        {
+                                            <button class="btn btn-sm btn-outline-info mt-1" disabled="@IsBusy"
+                                                    @onclick="() => SetEventReleaseAsync(item, authority, !isReleased)">
+                                                @(isReleased ? "Withdraw contribution" : "Release sanitized event")
+                                            </button>
+                                        }
+                                        else
+                                        {
+                                            <span class="d-block text-muted small">Complete authoritative review before release.</span>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </td>
+                        <td>
+                            @if (ReviewableEventIds.Contains(item.CentralTransientEventId))
+                            {
+                                <div class="btn-group btn-group-sm" role="group" aria-label="Review event @item.CentralTransientEventId">
+                                    <button class="btn btn-outline-success" disabled="@IsBusy" @onclick="() => ConfirmAsync(item)">Confirm</button>
+                                    <button class="btn btn-outline-danger" disabled="@IsBusy" @onclick="() => RejectAsync(item)">Reject</button>
+                                </div>
+                            }
+                            else
+                            {
+                                <span class="text-muted small">Read only</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    @if (NextCursor is not null)
+    {
+        <button class="btn btn-outline-light" @onclick="LoadMoreAsync">Load more events</button>
+    }
+}

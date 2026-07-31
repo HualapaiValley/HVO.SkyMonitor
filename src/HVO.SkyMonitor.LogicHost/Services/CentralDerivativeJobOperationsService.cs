@@ -16,15 +16,24 @@ internal sealed record CentralDerivativeReprocessRequest(
 
 internal interface ICentralDerivativeJobOperationsService
 {
-    Task CancelAsync(Guid jobId, string actor, CancellationToken cancellationToken);
+    Task CancelAsync(
+        Guid jobId,
+        string actor,
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<bool>>? transactionPrecondition = null);
 
-    Task RequeueAsync(Guid jobId, string actor, CancellationToken cancellationToken);
+    Task RequeueAsync(
+        Guid jobId,
+        string actor,
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<bool>>? transactionPrecondition = null);
 
     Task<Guid> ReprocessAsync(
         Guid jobId,
         CentralDerivativeReprocessRequest request,
         string actor,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<bool>>? transactionPrecondition = null);
 }
 
 internal sealed partial class CentralDerivativeJobOperationsService(
@@ -33,12 +42,22 @@ internal sealed partial class CentralDerivativeJobOperationsService(
     CentralDerivativeWorkerTelemetry telemetry,
     ILogger<CentralDerivativeJobOperationsService> logger) : ICentralDerivativeJobOperationsService
 {
-    public async Task CancelAsync(Guid jobId, string actor, CancellationToken cancellationToken)
+    public async Task CancelAsync(
+        Guid jobId,
+        string actor,
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<bool>>? transactionPrecondition = null)
     {
         ValidateActor(actor);
         var now = timeProvider.GetUtcNow();
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         _ = await CentralDerivativeJobLock.AcquireAsync(dbContext, jobId, cancellationToken).ConfigureAwait(false);
+        if (transactionPrecondition is not null
+            && !await transactionPrecondition(cancellationToken).ConfigureAwait(false))
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            throw new UnauthorizedAccessException("The transaction precondition no longer permits this job mutation.");
+        }
         var job = await dbContext.CentralDerivativeJobs.Include(candidate => candidate.Inputs).SingleOrDefaultAsync(
             candidate => candidate.Id == jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new CentralDerivativeJobStateException("The derivative job does not exist.");
@@ -100,12 +119,22 @@ internal sealed partial class CentralDerivativeJobOperationsService(
         Log.Operation(logger, "cancel", actor, jobId, null);
     }
 
-    public async Task RequeueAsync(Guid jobId, string actor, CancellationToken cancellationToken)
+    public async Task RequeueAsync(
+        Guid jobId,
+        string actor,
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<bool>>? transactionPrecondition = null)
     {
         ValidateActor(actor);
         var now = timeProvider.GetUtcNow();
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         _ = await CentralDerivativeJobLock.AcquireAsync(dbContext, jobId, cancellationToken).ConfigureAwait(false);
+        if (transactionPrecondition is not null
+            && !await transactionPrecondition(cancellationToken).ConfigureAwait(false))
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            throw new UnauthorizedAccessException("The transaction precondition no longer permits this job mutation.");
+        }
         var artifacts = await dbContext.CentralDerivativeJobs.Where(candidate => candidate.Id == jobId)
             .Select(candidate => new
             {
@@ -277,7 +306,8 @@ internal sealed partial class CentralDerivativeJobOperationsService(
         Guid jobId,
         CentralDerivativeReprocessRequest request,
         string actor,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<bool>>? transactionPrecondition = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ValidateActor(actor);
@@ -292,6 +322,12 @@ internal sealed partial class CentralDerivativeJobOperationsService(
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         _ = await CentralDerivativeJobLock.AcquireAsync(dbContext, jobId, cancellationToken).ConfigureAwait(false);
+        if (transactionPrecondition is not null
+            && !await transactionPrecondition(cancellationToken).ConfigureAwait(false))
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            throw new UnauthorizedAccessException("The transaction precondition no longer permits this job mutation.");
+        }
         var artifacts = await dbContext.CentralDerivativeJobs.Where(candidate => candidate.Id == jobId)
             .Select(candidate => new
             {

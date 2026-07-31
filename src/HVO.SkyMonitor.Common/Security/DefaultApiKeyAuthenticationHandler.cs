@@ -61,6 +61,11 @@ public sealed class DefaultApiKeyAuthenticationHandler : AuthenticationHandler<A
             claims.Add(new Claim(ClaimTypes.Email, validationResult.Email));
         }
 
+        if (validationResult.ObservatoryId is { } observatoryId)
+        {
+            claims.Add(new Claim(ApiKeyClaims.ObservatoryId, observatoryId.ToString("D")));
+        }
+
         var identity = new ClaimsIdentity(claims, ApiKeyAuthenticationOptions.AuthenticationScheme);
         var principal = new ClaimsPrincipal(identity);
         var ticket = new AuthenticationTicket(principal, ApiKeyAuthenticationOptions.AuthenticationScheme);
@@ -78,6 +83,7 @@ public sealed class ApiKeyValidationResult
     public string? NameIdentifier { get; init; }
     public string? Email { get; init; }
     public ApiKeyAccessLevel AccessLevel { get; init; } = ApiKeyAccessLevel.Read;
+    public Guid? ObservatoryId { get; init; }
     public string AccountType { get; init; } = "User"; // Default to User for backward compatibility
 }
 

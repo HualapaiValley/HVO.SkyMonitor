@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
 using FluentAssertions;
@@ -14,6 +15,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Data.SqlClient;
 using Minio;
 using Minio.DataModel.Args;
 
@@ -33,8 +35,10 @@ public sealed class ArtifactRetrievalTests
         using var metadataResponse = await client.GetAsync(seeded.MetadataUri).ConfigureAwait(false);
         using var metadata = await JsonDocument.ParseAsync(
             await metadataResponse.Content.ReadAsStreamAsync().ConfigureAwait(false)).ConfigureAwait(false);
-        using var fullResponse = await client.GetAsync(seeded.ContentUri).ConfigureAwait(false);
-        using var rangeRequest = new HttpRequestMessage(HttpMethod.Get, seeded.ContentUri);
+        var fullContentUri = await IssueDownloadAuthorizationAsync(client, seeded.ContentUri, null).ConfigureAwait(false);
+        using var fullResponse = await client.GetAsync(fullContentUri).ConfigureAwait(false);
+        var rangeContentUri = await IssueDownloadAuthorizationAsync(client, seeded.ContentUri, "bytes=10-19").ConfigureAwait(false);
+        using var rangeRequest = new HttpRequestMessage(HttpMethod.Get, rangeContentUri);
         rangeRequest.Headers.Range = new RangeHeaderValue(10, 19);
         using var rangeResponse = await client.SendAsync(rangeRequest).ConfigureAwait(false);
 
@@ -53,6 +57,70 @@ public sealed class ArtifactRetrievalTests
         rangeResponse.StatusCode.Should().Be(HttpStatusCode.PartialContent);
         rangeResponse.Content.Headers.ContentRange!.ToString().Should().Be("bytes 10-19/256");
         (await rangeResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false)).Should().Equal(payload[10..20]);
+
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var artifactId = await db.CentralArtifacts.Where(item => item.ArtifactId == seeded.ArtifactId)
+            .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
+        var authorizations = await db.CentralArtifactDownloadAuthorizations.AsNoTracking()
+            .Where(item => item.CentralArtifactId == artifactId)
+            .OrderBy(item => item.RangeStart)
+            .ToArrayAsync().ConfigureAwait(false);
+        authorizations.Should().HaveCount(2);
+        authorizations.Should().ContainSingle(item => item.RangeStart == null && item.RangeEnd == null
+            && item.MembershipRole == ObservatoryMembershipRole.Owner);
+        authorizations.Should().ContainSingle(item => item.RangeStart == 10 && item.RangeEnd == 19
+            && item.MembershipRole == ObservatoryMembershipRole.Owner);
+        Func<Task> mutateAudit = () => db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE [CentralArtifactDownloadAuthorizations]
+            SET [ExpiresAtUtc] = {DateTimeOffset.UtcNow.AddHours(1)}
+            WHERE [Id] = {authorizations[0].Id}
+            """);
+        await mutateAudit.Should().ThrowAsync<SqlException>().WithMessage("*immutable*").ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task ViewerDownload_RechecksMembershipAndRecordsViewerAuthority()
+    {
+        var seeded = await SeedArtifactAsync(TestUsers.Operator.Email, [1, 2, 3, 4]).ConfigureAwait(false);
+        string viewerId;
+        Guid observatoryId;
+        Guid centralArtifactId;
+        await using (var setupScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var viewer = await db.Users.SingleAsync(user => user.Email == TestUsers.Viewer.Email).ConfigureAwait(false);
+            viewerId = viewer.Id;
+            var artifact = await db.CentralArtifacts.Include(item => item.Frame)
+                .SingleAsync(item => item.ArtifactId == seeded.ArtifactId).ConfigureAwait(false);
+            centralArtifactId = artifact.Id;
+            observatoryId = artifact.Frame!.ObservatoryId;
+            db.ObservatoryMemberships.Add(new ObservatoryMembership
+            {
+                ObservatoryId = observatoryId,
+                UserId = viewerId,
+                Role = ObservatoryMembershipRole.Viewer,
+                AddedAtUtc = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync().ConfigureAwait(false);
+        }
+        using var viewerClient = await CreateUserClientAsync(
+            TestUsers.Viewer.Username, TestUsers.Viewer.Password).ConfigureAwait(false);
+
+        var contentUri = await IssueDownloadAuthorizationAsync(viewerClient, seeded.ContentUri, null).ConfigureAwait(false);
+        using var response = await viewerClient.GetAsync(contentUri).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false)).Should().Equal(1, 2, 3, 4);
+        await using var assertionScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var audit = await assertionDb.CentralArtifactDownloadAuthorizations.AsNoTracking()
+            .SingleAsync(item => item.CentralArtifactId == centralArtifactId
+                && item.ActorUserId == viewerId).ConfigureAwait(false);
+        audit.ObservatoryId.Should().Be(observatoryId);
+        audit.MembershipRole.Should().Be(ObservatoryMembershipRole.Viewer);
+        audit.ExpiresAtUtc.Should().BeAfter(audit.IssuedAtUtc)
+            .And.BeOnOrBefore(audit.IssuedAtUtc.AddMinutes(1));
     }
 
     [TestMethod]
@@ -63,6 +131,7 @@ public sealed class ArtifactRetrievalTests
         using var owner = await CreateUserClientAsync(TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
 
         using var crossOwner = await otherOwner.GetAsync(seeded.ContentUri).ConfigureAwait(false);
+        _ = await IssueDownloadAuthorizationAsync(owner, seeded.ContentUri, null).ConfigureAwait(false);
         using var rangeRequest = new HttpRequestMessage(HttpMethod.Get, seeded.ContentUri);
         rangeRequest.Headers.TryAddWithoutValidation("Range", "bytes=0-0,2-2");
         using var unsupportedMultiRange = await owner.SendAsync(rangeRequest).ConfigureAwait(false);
@@ -139,6 +208,7 @@ public sealed class ArtifactRetrievalTests
             persistedChecksum: new string('A', 64)).ConfigureAwait(false);
         using var client = await CreateUserClientAsync(TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
 
+        _ = await IssueDownloadAuthorizationAsync(client, seeded.ContentUri, null).ConfigureAwait(false);
         using var request = new HttpRequestMessage(HttpMethod.Get, seeded.ContentUri);
         request.Headers.IfNoneMatch.Add(new EntityTagHeaderValue($"\"{seeded.Checksum}\""));
         using var response = await client.SendAsync(request).ConfigureAwait(false);
@@ -161,6 +231,7 @@ public sealed class ArtifactRetrievalTests
             TestUsers.Operator.Email, [13, 14, 15, 16], putObject: false).ConfigureAwait(false);
         using var client = await CreateUserClientAsync(TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
 
+        _ = await IssueDownloadAuthorizationAsync(client, seeded.ContentUri, null).ConfigureAwait(false);
         using var response = await client.GetAsync(seeded.ContentUri).ConfigureAwait(false);
 
         response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
@@ -180,6 +251,7 @@ public sealed class ArtifactRetrievalTests
         var seeded = await SeedArtifactAsync(TestUsers.Operator.Email, payload).ConfigureAwait(false);
         using var client = await CreateUserClientAsync(TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
 
+        _ = await IssueDownloadAuthorizationAsync(client, seeded.ContentUri, null).ConfigureAwait(false);
         var responses = await Task.WhenAll(Enumerable.Range(0, 8)
             .Select(_ => client.GetAsync(seeded.ContentUri))).ConfigureAwait(false);
         try
@@ -206,6 +278,7 @@ public sealed class ArtifactRetrievalTests
             TestUsers.Operator.Email, [31, 32, 33, 34], persistedChecksum: new string('B', 64)).ConfigureAwait(false);
         using var client = await CreateUserClientAsync(TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
 
+        _ = await IssueDownloadAuthorizationAsync(client, seeded.ContentUri, null).ConfigureAwait(false);
         var responses = await Task.WhenAll(Enumerable.Range(0, 8)
             .Select(_ => client.GetAsync(seeded.ContentUri))).ConfigureAwait(false);
         try
@@ -234,14 +307,17 @@ public sealed class ArtifactRetrievalTests
         var seeded = await SeedArtifactAsync(TestUsers.Operator.Email, payload).ConfigureAwait(false);
         using var client = await CreateUserClientAsync(TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
 
+        _ = await IssueDownloadAuthorizationAsync(client, seeded.ContentUri, null).ConfigureAwait(false);
         using var staleRequest = new HttpRequestMessage(HttpMethod.Get, seeded.ContentUri);
         staleRequest.Headers.Range = new RangeHeaderValue(0, 3);
         staleRequest.Headers.TryAddWithoutValidation("If-Range", $"\"{new string('0', 64)}\"");
         using var stale = await client.SendAsync(staleRequest).ConfigureAwait(false);
+        _ = await IssueDownloadAuthorizationAsync(client, seeded.ContentUri, "bytes=0-3").ConfigureAwait(false);
         using var currentRequest = new HttpRequestMessage(HttpMethod.Get, seeded.ContentUri);
         currentRequest.Headers.Range = new RangeHeaderValue(0, 3);
         currentRequest.Headers.TryAddWithoutValidation("If-Range", $"\"{seeded.Checksum}\"");
         using var current = await client.SendAsync(currentRequest).ConfigureAwait(false);
+        _ = await IssueDownloadAuthorizationAsync(client, seeded.ContentUri, null).ConfigureAwait(false);
         using var cachedRequest = new HttpRequestMessage(HttpMethod.Get, seeded.ContentUri);
         cachedRequest.Headers.TryAddWithoutValidation("If-None-Match", $"W/\"{seeded.Checksum}\"");
         using var cached = await client.SendAsync(cachedRequest).ConfigureAwait(false);
@@ -261,7 +337,7 @@ public sealed class ArtifactRetrievalTests
         (await current.Content.ReadAsByteArrayAsync().ConfigureAwait(false)).Should().Equal(payload[..4]);
         cached.StatusCode.Should().Be(HttpStatusCode.NotModified);
         cached.Headers.CacheControl!.NoStore.Should().BeTrue();
-        string.Join(", ", cached.Headers.Vary).Should().Be("Authorization, X-API-Key");
+        string.Join(", ", cached.Headers.Vary).Should().Be("Authorization, X-API-Key, Cookie");
         wildcard.StatusCode.Should().Be(HttpStatusCode.NotModified);
         head.StatusCode.Should().Be(HttpStatusCode.OK);
         head.Content.Headers.ContentLength.Should().Be(payload.LongLength);
@@ -445,6 +521,7 @@ public sealed class ArtifactRetrievalTests
             TestClients.WebUI.ClientId,
             string.Join(' ', TestClients.WebUI.Scopes)).ConfigureAwait(false);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+        _ = await IssueDownloadAuthorizationAsync(client, seeded.ContentUri, null).ConfigureAwait(false);
         using var cancellation = new CancellationTokenSource();
         using var request = new HttpRequestMessage(HttpMethod.Get, seeded.ContentUri);
 
@@ -474,16 +551,18 @@ public sealed class ArtifactRetrievalTests
         var seeded = await SeedArtifactAsync(TestUsers.Operator.Email, [61, 62, 63, 64]).ConfigureAwait(false);
         using (var beforeFactory = CreateReaderFactory(new FailureObjectReader(failDuringCopy: false)))
         using (var beforeClient = await CreateAuthenticatedClientAsync(beforeFactory).ConfigureAwait(false))
-        using (var before = await beforeClient.GetAsync(seeded.ContentUri).ConfigureAwait(false))
         {
+            _ = await IssueDownloadAuthorizationAsync(beforeClient, seeded.ContentUri, null).ConfigureAwait(false);
+            using var before = await beforeClient.GetAsync(seeded.ContentUri).ConfigureAwait(false);
             before.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
             before.Headers.CacheControl!.NoStore.Should().BeTrue();
-            string.Join(", ", before.Headers.Vary).Should().Be("Authorization, X-API-Key");
+            string.Join(", ", before.Headers.Vary).Should().Be("Authorization, X-API-Key, Cookie");
         }
 
         using (var midstreamFactory = CreateReaderFactory(new FailureObjectReader(failDuringCopy: true)))
         using (var midstreamClient = await CreateAuthenticatedClientAsync(midstreamFactory).ConfigureAwait(false))
         {
+            _ = await IssueDownloadAuthorizationAsync(midstreamClient, seeded.ContentUri, null).ConfigureAwait(false);
             var action = () => midstreamClient.GetAsync(seeded.ContentUri);
             await action.Should().ThrowAsync<HttpRequestException>().ConfigureAwait(false);
         }
@@ -607,6 +686,14 @@ public sealed class ArtifactRetrievalTests
                 RigId = "rig-1"
             };
             db.Observatories.Add(observatory);
+            db.ObservatoryMemberships.Add(new ObservatoryMembership
+            {
+                Observatory = observatory,
+                ObservatoryId = observatory.Id,
+                UserId = owner.Id,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = now
+            });
             db.DeviceRegistrations.Add(registration);
             db.CentralFrames.Add(frame);
             db.CentralArtifacts.Add(new CentralArtifact
@@ -657,6 +744,21 @@ public sealed class ArtifactRetrievalTests
             .WithStreamData(stream)
             .WithObjectSize(payload.LongLength)
             .WithContentType("application/octet-stream")).ConfigureAwait(false);
+    }
+
+    private static async Task<Uri> IssueDownloadAuthorizationAsync(
+        HttpClient client,
+        Uri contentUri,
+        string? range)
+    {
+        var basePath = contentUri.OriginalString[..^"/content".Length];
+        using var response = await client.PostAsJsonAsync(
+            new Uri($"{basePath}/download-authorizations", UriKind.Relative),
+            new ArtifactRetrievalController.DownloadAuthorizationRequest(range)).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        using var document = await JsonDocument.ParseAsync(
+            await response.Content.ReadAsStreamAsync().ConfigureAwait(false)).ConfigureAwait(false);
+        return new Uri(document.RootElement.GetProperty("ContentUri").GetString()!, UriKind.Relative);
     }
 
     internal sealed record SeededArtifact(

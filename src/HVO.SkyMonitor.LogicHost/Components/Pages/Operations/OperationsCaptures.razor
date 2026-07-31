@@ -1,0 +1,8 @@
+@page "/app/captures"
+@attribute [Authorize]
+
+<PageTitle>Captures | Network Operations</PageTitle>
+<header class="mb-4"><p class="text-uppercase text-info small fw-bold mb-1">Central archive</p><h1>Captures</h1><p class="text-muted">Server-paged captures with explicit artifact origin, availability, and provenance.</p></header>
+@if(IsLoading){<div class="alert alert-secondary" role="status">Loading captures...</div>}
+else if(Items.Count==0){<div class="alert alert-secondary">No captures match this scope.</div>}
+else{<div class="table-responsive"><table class="table align-middle"><thead><tr><th>Captured</th><th>Observatory / camera</th><th>Rig</th><th>Artifacts</th><th></th></tr></thead><tbody>@foreach(var item in Items){<tr><td><strong>@item.CapturedAtUtc.ToString("u")</strong><small class="d-block text-muted">Received @item.FirstReceivedAtUtc.ToString("u")</small></td><td>@item.ObservatoryName<small class="d-block text-muted">@(item.LogicalCameraName ?? "Unassigned installation")</small></td><td>@(item.RigId ?? "Unknown")</td><td><span class="badge text-bg-secondary">@item.ArtifactCount</span> @if(item.HasRaw){<span class="badge text-bg-info">Raw</span>} @if(item.HasPreview){<span class="badge text-bg-success">Preview</span>}</td><td><a href="@($"app/captures/{item.CaptureId:D}")">Inspect</a></td></tr>}</tbody></table></div>@if(NextCursor is not null){<button class="btn btn-outline-light" @onclick="LoadMoreAsync">Load more</button>}}

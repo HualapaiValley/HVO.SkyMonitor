@@ -147,6 +147,7 @@ public sealed class DeploymentLocationProposalsControllerTests
             DeploymentLocationResolutionStatus? status,
             int take,
             DeploymentLocationProposalCursor? cursor,
+            Guid? observatoryScope = null,
             CancellationToken cancellationToken = default)
         {
             OwnerUserId = ownerUserId;
@@ -158,6 +159,7 @@ public sealed class DeploymentLocationProposalsControllerTests
         public Task<DeploymentLocationProposal?> GetAsync(
             Guid deploymentLocationId,
             string ownerUserId,
+            Guid? observatoryScope = null,
             CancellationToken cancellationToken = default)
         {
             OwnerUserId = ownerUserId;
@@ -170,6 +172,7 @@ public sealed class DeploymentLocationProposalsControllerTests
             DeploymentLocationResolutionStatus status,
             string reason,
             Guid expectedConcurrencyToken,
+            Guid? observatoryScope = null,
             CancellationToken cancellationToken = default)
         {
             OwnerUserId = ownerUserId;

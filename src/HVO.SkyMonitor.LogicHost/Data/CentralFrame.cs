@@ -7,6 +7,10 @@ internal sealed class CentralFrame
 
     public Guid RegistrationId { get; set; }
 
+    public Guid? LogicalCameraInstallationId { get; set; }
+
+    public LogicalCameraInstallation? LogicalCameraInstallation { get; set; }
+
     public Guid DevicePublicId { get; set; }
 
     public Guid ObservatoryId { get; set; }

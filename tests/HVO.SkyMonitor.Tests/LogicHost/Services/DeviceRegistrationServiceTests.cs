@@ -17,7 +17,7 @@ public sealed class DeviceRegistrationServiceTests
         var timeProvider = new TestTimeProvider(now);
         var observatoryId = Guid.NewGuid();
 
-        context.Observatories.Add(new Observatory
+        AddObservatory(context, new Observatory
         {
             Id = observatoryId,
             OwnerUserId = "owner-1",
@@ -72,7 +72,7 @@ public sealed class DeviceRegistrationServiceTests
         var timeProvider = new TestTimeProvider(now);
         var observatoryId = Guid.NewGuid();
 
-        context.Observatories.Add(new Observatory
+        AddObservatory(context, new Observatory
         {
             Id = observatoryId,
             OwnerUserId = "owner-99",
@@ -167,7 +167,8 @@ public sealed class DeviceRegistrationServiceTests
             IssuedAtUtc = now.AddMinutes(-5),
             ExpiresAtUtc = now.AddMinutes(10)
         };
-        context.Observatories.AddRange(firstObservatory, secondObservatory);
+        AddObservatory(context, firstObservatory);
+        AddObservatory(context, secondObservatory);
         context.DeviceRegistrations.Add(existing);
         await context.SaveChangesAsync().ConfigureAwait(false);
         var service = new DeviceRegistrationService(context, new TestTimeProvider(now));
@@ -205,7 +206,7 @@ public sealed class DeviceRegistrationServiceTests
             TimeZoneId = "Pacific/Honolulu",
             IsActive = true
         };
-        context.Observatories.Add(foreignObservatory);
+        AddObservatory(context, foreignObservatory);
         await context.SaveChangesAsync().ConfigureAwait(false);
         var service = new DeviceRegistrationService(context, new TestTimeProvider(DateTimeOffset.UtcNow));
 
@@ -241,6 +242,28 @@ public sealed class DeviceRegistrationServiceTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         return new ApplicationDbContext(options);
+    }
+
+    private static void AddObservatory(ApplicationDbContext context, Observatory observatory)
+    {
+        if (!context.Users.Local.Any(user => user.Id == observatory.OwnerUserId))
+        {
+            context.Users.Add(new ApplicationUser
+            {
+                Id = observatory.OwnerUserId,
+                UserName = observatory.OwnerUserId,
+                AccountType = AccountType.User
+            });
+        }
+        context.Observatories.Add(observatory);
+        context.ObservatoryMemberships.Add(new ObservatoryMembership
+        {
+            Observatory = observatory,
+            ObservatoryId = observatory.Id,
+            UserId = observatory.OwnerUserId,
+            Role = ObservatoryMembershipRole.Owner,
+            AddedAtUtc = DateTimeOffset.UnixEpoch
+        });
     }
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider

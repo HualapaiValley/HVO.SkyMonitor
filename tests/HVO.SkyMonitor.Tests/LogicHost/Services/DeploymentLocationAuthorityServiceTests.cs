@@ -209,6 +209,45 @@ public sealed class DeploymentLocationAuthorityServiceTests
     }
 
     [TestMethod]
+    public async Task ViewerCanReadProposalButCannotResolveIt()
+    {
+        await using var context = CreateContext();
+        var registration = await SeedRegistrationAsync(context, allowedRadiusMeters: null);
+        context.Users.Add(new ApplicationUser
+        {
+            Id = "viewer",
+            UserName = "viewer",
+            AccountType = AccountType.User
+        });
+        context.ObservatoryMemberships.Add(new ObservatoryMembership
+        {
+            ObservatoryId = registration.ObservatoryId,
+            UserId = "viewer",
+            Role = ObservatoryMembershipRole.Viewer,
+            AddedAtUtc = ProposalUtc
+        });
+        await context.SaveChangesAsync();
+        var service = new DeploymentLocationAuthorityService(context, new FixedTimeProvider(ProposalUtc));
+        _ = await service.ProposeAsync(
+            registration, CreateDeployment(), DeploymentLocationSourceKind.Manual, "bootstrap:test");
+        await context.SaveChangesAsync();
+        var proposal = await context.DeviceDeploymentLocationVersions.SingleAsync();
+
+        var page = await service.ListAsync("viewer", DeploymentLocationResolutionStatus.Pending, 100);
+        var detail = await service.GetAsync(proposal.Id, "viewer");
+        var resolution = await service.ResolveAsync(
+            proposal.Id,
+            "viewer",
+            DeploymentLocationResolutionStatus.Acknowledged,
+            "viewer-approved",
+            proposal.ConcurrencyToken);
+
+        page.Proposals.Should().ContainSingle(item => item.Id == proposal.Id);
+        detail.Should().NotBeNull();
+        resolution.Status.Should().Be(DeploymentLocationMutationStatus.NotFound);
+    }
+
+    [TestMethod]
     public async Task DelayedOlderProposal_DoesNotOverwriteCurrentRegistrationEvidence()
     {
         await using var context = CreateContext();
@@ -331,6 +370,23 @@ public sealed class DeploymentLocationAuthorityServiceTests
             Status = DeviceRegistrationStatus.Active,
             IssuedAtUtc = ProposalUtc.AddMinutes(-1)
         };
+        if (!context.Users.Local.Any(user => user.Id == ownerUserId))
+        {
+            context.Users.Add(new ApplicationUser
+            {
+                Id = ownerUserId,
+                UserName = ownerUserId,
+                AccountType = AccountType.User
+            });
+        }
+        context.ObservatoryMemberships.Add(new ObservatoryMembership
+        {
+            Observatory = observatory,
+            ObservatoryId = observatory.Id,
+            UserId = ownerUserId,
+            Role = ObservatoryMembershipRole.Owner,
+            AddedAtUtc = ProposalUtc.AddDays(-1)
+        });
         context.AddRange(observatory, registration);
         await context.SaveChangesAsync();
         return registration;

@@ -1,0 +1,101 @@
+{
+  "schema": "hvo-runtime-signal-manifest-v1",
+  "issue": 107,
+  "component": "LogicHost public Sky Network and authenticated Network Operations UI",
+  "meter": "HVO.SkyMonitor.LogicHost.OperatorUi",
+  "requiredMeters": [
+    "HVO.SkyMonitor.LogicHost.OperatorUi",
+    "HVO.SkyMonitor.LogicHost.Retrieval"
+  ],
+  "activitySource": "HVO.SkyMonitor.LogicHost.OperatorUi",
+  "logs": [
+    { "eventId": 7500, "level": "Information", "operation": "membership", "fields": ["Operation", "Outcome", "Role"] },
+    { "eventId": 7501, "level": "Information", "operation": "invitation", "fields": ["Operation", "Outcome", "Role"] },
+    { "eventId": 7502, "level": "Information", "operation": "publication", "fields": ["Operation", "Outcome", "State"] },
+    { "eventId": 7503, "level": "Information", "operation": "location-disclosure", "fields": ["Outcome", "State"] },
+    { "eventId": 7504, "level": "Information", "operation": "installation", "fields": ["Operation", "Outcome"] },
+    { "eventId": 7505, "level": "Information", "operation": "raw-download", "fields": ["Outcome", "Role", "Range"] },
+    { "eventId": 7506, "level": "Information", "operation": "central-override", "fields": ["Operation", "Outcome"] },
+    { "eventId": 7507, "level": "Information", "operation": "personal-preference", "fields": ["Operation", "Outcome"] },
+    { "eventId": 7508, "level": "Information", "operation": "editorial-placement", "fields": ["Operation", "Outcome", "State"] }
+  ],
+  "metrics": [
+    {
+      "name": "hvo.operator_ui.reads",
+      "unit": "{read}",
+      "labels": {
+        "operation": ["public-home", "public-images", "public-event-detail", "public-observatories", "public-observatory-detail", "public-events", "operations-observatories", "operations-observatory-detail", "operations-captures", "operations-capture-detail", "operations-jobs"],
+        "audience": ["visitor", "member"],
+        "outcome": ["success", "not-found"]
+      }
+    },
+    {
+      "name": "hvo.operator_ui.read.duration",
+      "unit": "ms",
+      "labels": {
+        "operation": ["public-home", "public-images", "public-event-detail", "public-observatories", "public-observatory-detail", "public-events", "operations-observatories", "operations-observatory-detail", "operations-captures", "operations-capture-detail", "operations-jobs"],
+        "audience": ["visitor", "member"],
+        "outcome": ["success", "not-found"]
+      }
+    },
+    {
+      "name": "hvo.operator_ui.read.rows",
+      "unit": "{row}",
+      "labels": {
+        "operation": ["public-home", "public-images", "public-event-detail", "public-observatories", "public-observatory-detail", "public-events", "operations-observatories", "operations-observatory-detail", "operations-captures", "operations-capture-detail", "operations-jobs"],
+        "audience": ["visitor", "member"],
+        "outcome": ["success", "not-found"]
+      }
+    },
+    {
+      "name": "hvo.operator_ui.response.bytes",
+      "unit": "By",
+      "labels": {
+        "operation": ["public-home", "public-images", "public-event-detail", "public-observatories", "public-observatory-detail", "public-events", "operations-observatories", "operations-observatory-detail", "operations-captures", "operations-capture-detail", "operations-jobs", "public-page", "operations-page", "public-artifact"],
+        "audience": ["visitor", "member"],
+        "outcome": ["success", "not-found", "2xx", "3xx", "4xx", "5xx"]
+      }
+    },
+    {
+      "name": "hvo.operator_ui.mutations",
+      "unit": "{mutation}",
+      "labels": {
+        "operation": ["central-job", "central-job-reprocess", "raw-download", "processing-policy"],
+        "outcome": ["applied", "invalid-state", "issued", "invalid", "denied", "unchanged"],
+        "role": ["manager", "viewer", "owner"]
+      }
+    },
+    {
+      "name": "hvo.operator_ui.mutation.duration",
+      "unit": "ms",
+      "labels": {
+        "operation": ["central-job", "central-job-reprocess", "raw-download", "processing-policy"],
+        "outcome": ["applied", "invalid-state", "issued", "invalid", "denied", "unchanged"],
+        "role": ["manager", "viewer", "owner"]
+      }
+    }
+  ],
+  "spans": [
+    { "name": "operator-ui.read", "kind": "Internal", "tags": ["operator_ui.operation"] },
+    { "name": "operator-ui.mutate", "kind": "Internal", "tags": ["operator_ui.operation"] },
+    { "name": "operator-ui.raw-download", "kind": "Internal", "tags": [] }
+  ],
+  "health": {
+    "check": "/health",
+    "reason": "The UI adds no new health boundary; the existing LogicHost checks are collected. The fixture catalog and intentionally disabled startup workers remain explicitly degraded in local evidence.",
+    "healthy": ["self", "database", "redis", "minio", "smtp", "central-derivative-worker", "central-transient-lifecycle", "fleet-status", "deployment-location"],
+    "degraded": ["catalog", "artifact-consistency", "environmental-observations"],
+    "unhealthy": [],
+    "fields": ["name", "status", "duration", "allowlisted data"]
+  },
+  "privacy": {
+    "forbidden": ["actor identity", "user identifier", "observatory identifier", "camera identifier", "capture identifier", "artifact identifier", "job identifier", "exact coordinates", "storage reference", "object credentials", "invitation token", "download token", "connection string", "repository path", "temporary path"],
+    "identifiers": "Logs, metric labels, and span tags contain bounded categorical values only. Durable audit tables retain actor and subject identifiers under authenticated authority but do not export them as telemetry dimensions."
+  },
+  "collection": {
+    "testCommand": "./scripts/test:logichost-ui-107",
+    "retainedArtifactPath": "TestResults/issue-107/<fingerprint>/<run-id>/",
+    "payloadMeasurement": "The HTTP boundary records actual initial response and public artifact bytes; browser evidence separately records route and interactive transfer measurements.",
+    "artifacts": ["logs.jsonl", "metrics.json", "traces.jsonl", "health.json", "process.csv", "sql.json", "map-requests.json", "cardinality-leak-scan.json", "dependency-outages.json"]
+  }
+}

@@ -18,6 +18,7 @@ using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Common.Observability;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
+using HVO.SkyMonitor.LogicHost.Middleware;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -215,11 +216,13 @@ public sealed partial class Program
                 metrics.AddMeter(FleetStatusTelemetry.MeterName);
                 metrics.AddMeter(EnvironmentalObservationTelemetry.MeterName);
                 metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
+                metrics.AddMeter(OperatorUiTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             })
             .WithTracing(tracing => tracing
                 .AddSource(CentralTransientLifecycleTelemetry.ActivitySourceName)
-                .AddSource(DeploymentLocationTelemetry.ActivitySourceName));
+                .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
+                .AddSource(OperatorUiTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
@@ -378,6 +381,19 @@ public sealed partial class Program
         builder.Services.AddSingleton<IEmailNotificationService, SmtpEmailNotificationService>();
         builder.Services.AddSingleton<DeploymentLocationTelemetry>();
         builder.Services.AddScoped<IObservatoryService, ObservatoryService>();
+        builder.Services.AddScoped<IObservatoryMembershipService, ObservatoryMembershipService>();
+        builder.Services.AddScoped<IAccountDeletionService, AccountDeletionService>();
+        builder.Services.AddScoped<IObservatoryPublicationService, ObservatoryPublicationService>();
+        builder.Services.AddScoped<IObservatoryInvitationService, ObservatoryInvitationService>();
+        builder.Services.AddScoped<ILogicalCameraService, LogicalCameraService>();
+        builder.Services.AddScoped<IPublicRecordPublicationService, PublicRecordPublicationService>();
+        builder.Services.AddScoped<IPublicNetworkReadService, PublicNetworkReadService>();
+        builder.Services.AddScoped<INetworkOperationsReadService, NetworkOperationsReadService>();
+        builder.Services.AddScoped<ICuratedPublicPlacementService, CuratedPublicPlacementService>();
+        builder.Services.AddScoped<IRegisteredUserPersonalizationService, RegisteredUserPersonalizationService>();
+        builder.Services.AddScoped<INetworkOperationsMutationService, NetworkOperationsMutationService>();
+        builder.Services.AddScoped<ICentralProcessingPolicyService, CentralProcessingPolicyService>();
+        builder.Services.AddSingleton<OperatorUiTelemetry>();
         builder.Services.AddScoped<IDeploymentLocationAuthorityService, DeploymentLocationAuthorityService>();
 
         // This host owns only the SkyMonitor database; do not point this context at shared identity databases.
@@ -409,6 +425,7 @@ public sealed partial class Program
             options.SignIn.RequireConfirmedAccount = true;
             options.Stores.SchemaVersion = IdentitySchemaVersions.Version3;
         })
+        .AddRoles<IdentityRole>()
         .AddEntityFrameworkStores<ApplicationDbContext>()
         .AddSignInManager()
         .AddDefaultTokenProviders();
@@ -579,6 +596,13 @@ public sealed partial class Program
                     var accessLevel = context.User.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
                     return accessLevel == ApiKeyAccessLevel.ReadWrite.ToString();
                 });
+            });
+
+            options.AddPolicy(AuthorizationPolicyNames.PlatformEditorialWrite, policy =>
+            {
+                policy.AddAuthenticationSchemes(IdentityConstants.ApplicationScheme);
+                policy.RequireAuthenticatedUser();
+                policy.RequireRole(AuthorizationRoleNames.PlatformEditor);
             });
 
             options.AddPolicy("OwnerLocationWrite", policy =>
@@ -873,7 +897,9 @@ public sealed partial class Program
         app.UseRateLimiter();
 
         app.UseAuthentication();
+        app.UseMiddleware<DynamicPageCachePolicyMiddleware>();
         app.UseAuthorization();
+        app.UseMiddleware<OperatorUiResponseMetricsMiddleware>();
         app.UseAntiforgery();
 
         // OpenAPI and Scalar

@@ -1,0 +1,54 @@
+@page "/observatories"
+
+<PageTitle>Observatories | HVO Sky Network</PageTitle>
+
+<header class="public-page-header">
+    <p class="public-kicker">Sky Network directory</p>
+    <h1>Published observatories</h1>
+    <p>Only observatory-approved names, descriptions, and location precision appear here. Exact operational coordinates remain protected unless explicitly released.</p>
+</header>
+
+@if (IsLoading)
+{
+    <div class="public-state" role="status">Loading the observatory directory...</div>
+}
+else if (ErrorMessage is not null)
+{
+    <div class="alert alert-warning" role="alert">@ErrorMessage</div>
+}
+else if (Items.Count == 0)
+{
+    <div class="public-state">No observatories are publicly listed.</div>
+}
+else
+{
+    <div class="directory-layout">
+        <section class="directory-map-shell" aria-label="Published observatory map">
+            <div class="directory-map-toolbar" role="group" aria-label="Map style">
+                <button class="btn btn-sm btn-light" type="button" @onclick='() => SetMapStyleAsync("standard")'>Standard</button>
+                <button class="btn btn-sm btn-outline-light" type="button" @onclick='() => SetMapStyleAsync("satellite")'>Satellite fixture</button>
+            </div>
+            <div id="observatory-map" class="directory-map" aria-label="Interactive world map of published observatories"></div>
+            <p class="directory-map__note">MapLibre local fixture styles. Approximate markers are backend-approved. Production tiles activate only after #151 provider approval.</p>
+        </section>
+        <section class="directory-list" aria-label="Observatory results">
+            @foreach (var item in Items)
+            {
+                <article class="directory-card">
+                    <div>
+                        <span class="public-kicker">@LocationLabel(item)</span>
+                        <h2><a href="@($"observatories/{item.Slug}")">@item.DisplayName</a></h2>
+                        <p>@item.Description</p>
+                    </div>
+                    <span class="directory-count">@item.ReleasedCameraCount camera(s)</span>
+                </article>
+            }
+            @if (NextCursor is not null)
+            {
+                <button class="btn btn-outline-light align-self-start" disabled="@IsLoadingMore" @onclick="LoadMoreAsync">
+                    @(IsLoadingMore ? "Loading..." : "Load more")
+                </button>
+            }
+        </section>
+    </div>
+}

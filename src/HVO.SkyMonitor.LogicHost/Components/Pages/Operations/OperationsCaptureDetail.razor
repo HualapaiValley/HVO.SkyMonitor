@@ -1,0 +1,197 @@
+@page "/app/captures/{CaptureId:guid}"
+@attribute [Authorize]
+
+<PageTitle>Capture Detail | Network Operations</PageTitle>
+
+@if (IsLoading)
+{
+    <div class="alert alert-secondary" role="status">Loading capture provenance...</div>
+}
+else if (Detail is null)
+{
+    <div class="alert alert-warning">@(StatusMessage ?? "Capture not found or access was removed.")</div>
+}
+else
+{
+    <header class="mb-4">
+        <p class="text-uppercase text-info small fw-bold mb-1">@Detail.Capture.ObservatoryName</p>
+        <h1>Capture @Detail.Capture.CapturedAtUtc.ToString("u")</h1>
+        <p class="text-muted">@(Detail.Capture.LogicalCameraName ?? "Unassigned installation") - @(Detail.Capture.RigId ?? "Unknown rig") - sequence @(Detail.Capture.CaptureSequence?.ToString() ?? "unknown")</p>
+        <p class="small text-muted mb-0">Installation @(Detail.Capture.InstallationPublicId?.ToString("D") ?? "unbound") - rig profile @(Detail.Capture.RigProfileVersion?.ToString() ?? "legacy")</p>
+    </header>
+    @if (StatusMessage is not null)
+    {
+        <div class="alert alert-info" role="status">@StatusMessage</div>
+    }
+    <section class="card mb-4">
+        <div class="card-body">
+            <h2 class="h5">Capture provenance</h2>
+            <dl class="row small mb-0">
+                <dt class="col-md-3">Agent / frame</dt><dd class="col-md-9 text-break font-monospace">@Detail.Provenance.AgentId / @Detail.Provenance.FrameId</dd>
+                <dt class="col-md-3">Location evidence</dt><dd class="col-md-9">@Detail.Provenance.LocationEvidenceState - @(Detail.Provenance.LocationId ?? "No reported location") @(Detail.Provenance.LocationVersion is null ? null : $"v{Detail.Provenance.LocationVersion}")</dd>
+                <dt class="col-md-3">Exposure window</dt><dd class="col-md-9">@(Detail.Provenance.ExposureStartedUtc?.ToString("u") ?? "Legacy timing") to @(Detail.Provenance.ExposureEndedUtc?.ToString("u") ?? "unknown")</dd>
+                <dt class="col-md-3">Durable ingress</dt><dd class="col-md-9">@(Detail.Provenance.DurableIngressUtc?.ToString("u") ?? "Legacy timing")</dd>
+                <dt class="col-md-3">Capture control</dt><dd class="col-md-9">Exposure @(Detail.Provenance.EffectiveExposureTicks is null ? "unknown" : TimeSpan.FromTicks(Detail.Provenance.EffectiveExposureTicks.Value).ToString()), gain @(Detail.Provenance.EffectiveGain?.ToString() ?? "unknown"), offset @(Detail.Provenance.EffectiveOffset?.ToString() ?? "unknown"), temperature @(Detail.Provenance.EffectiveTemperatureC?.ToString() ?? "unknown") C</dd>
+            </dl>
+            @if (Detail.Provenance.Profiles.Count > 0)
+            {
+                <h3 class="h6 mt-3">Capture-time profiles</h3>
+                <ul class="list-unstyled small mb-0">
+                    @foreach (var profile in Detail.Provenance.Profiles)
+                    {
+                        <li><strong>@profile.Kind:</strong> @profile.Name @profile.Version <span class="font-monospace text-break">@profile.Sha256</span></li>
+                    }
+                </ul>
+            }
+        </div>
+    </section>
+    <h2 class="h4">Artifact evidence</h2>
+    @if (Detail.ArtifactsNextCursor is not null)
+    {
+        <button class="btn btn-outline-light mb-3" disabled="@IsLoadingMoreArtifacts" @onclick="LoadMoreArtifactsAsync">
+            @(IsLoadingMoreArtifacts ? "Loading..." : "Load more artifacts")
+        </button>
+    }
+    <div class="row g-3">
+        @foreach (var artifact in Detail.Artifacts)
+        {
+            <div class="col-lg-6">
+                <article class="card h-100">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between">
+                            <span class="badge text-bg-info">@artifact.Role</span>
+                            <span class="badge text-bg-secondary">@artifact.ObjectState</span>
+                        </div>
+                        <h2 class="h5 mt-3">@(artifact.Variant ?? artifact.RecipeVersion)</h2>
+                        <dl class="row small">
+                            <dt class="col-4">Media</dt><dd class="col-8">@artifact.MediaType</dd>
+                            <dt class="col-4">Bytes</dt><dd class="col-8">@artifact.ByteLength</dd>
+                            <dt class="col-4">Recipe</dt><dd class="col-8">@artifact.RecipeVersion</dd>
+                            <dt class="col-4">Manifest</dt><dd class="col-8">@artifact.ManifestSchemaVersion</dd>
+                            <dt class="col-4">Origin</dt><dd class="col-8">@artifact.OriginLabel</dd>
+                            <dt class="col-4">Recipe identity</dt><dd class="col-8">@(artifact.RecipeName is null ? "Legacy manifest" : $"{artifact.RecipeName} {artifact.RecipeSemanticVersion}")</dd>
+                            <dt class="col-4">Options</dt><dd class="col-8 text-break font-monospace">@(artifact.RecipeOptionsSha256 ?? "Not supplied")</dd>
+                            <dt class="col-4">Sources</dt><dd class="col-8">@artifact.SourceCount</dd>
+                            <dt class="col-4">Checksum</dt><dd class="col-8 text-break font-monospace">@artifact.ChecksumSha256</dd>
+                            <dt class="col-4">Public</dt><dd class="col-8">@(artifact.IsPubliclyReleased ? "Released" : "Private")</dd>
+                        </dl>
+                        @if (artifact.ObjectState == HVO.SkyMonitor.LogicHost.Data.CentralArtifactObjectState.Available)
+                        {
+                            @if (artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw)
+                            {
+                                <button class="btn btn-sm btn-outline-light" @onclick="() => DownloadRawAsync(artifact.ContentPath)">Authorize raw download</button>
+                            }
+                            else
+                            {
+                                <a class="btn btn-sm btn-outline-light" href="@artifact.ContentPath">Download artifact</a>
+                            }
+                        }
+                        else
+                        {
+                            <p class="text-warning mb-0">Content unavailable: @(artifact.StateReasonCode ?? artifact.ReconstructionState.ToString())</p>
+                        }
+                        @if (Detail.EffectiveRole == HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Owner
+                            && (artifact.IsPubliclyEligible || artifact.IsPubliclyReleased))
+                        {
+                            <button class="btn btn-sm btn-outline-info ms-2" disabled="@IsBusy"
+                                    @onclick="() => SetArtifactReleaseAsync(artifact, !artifact.IsPubliclyReleased)">
+                                @(artifact.IsPubliclyReleased ? "Withdraw public image" : "Release publicly")
+                            </button>
+                        }
+                        else if (!artifact.IsPubliclyEligible && !artifact.IsPubliclyReleased)
+                        {
+                            <p class="text-muted small mt-2 mb-0">Only complete image previews can be publicly released.</p>
+                        }
+                    </div>
+                </article>
+            </div>
+        }
+    </div>
+    @if (Trace is null)
+    {
+        <section class="card mt-4"><div class="card-body">
+            <h2 class="h5">Deep capture trace</h2>
+            <p class="text-muted">Load bounded lineage, processing, environmental, and event evidence when it is needed.</p>
+            <button class="btn btn-outline-info" disabled="@IsLoadingTrace" @onclick="LoadTraceAsync">
+                @(IsLoadingTrace ? "Loading full trace..." : "Load full trace")
+            </button>
+        </div></section>
+    }
+    else
+    {
+    @if (Trace.TraceIsTruncated)
+    {
+        <div class="alert alert-warning mt-4" role="status">This capture has more trace evidence than can be displayed safely in one detail view.</div>
+    }
+    <section class="card mt-4">
+        <div class="card-body">
+            <h2 class="h5">Ordered artifact lineage</h2>
+            @if (Trace.ArtifactLineage.Count == 0)
+            {
+                <p class="text-muted mb-0">No source lineage was persisted for this capture.</p>
+            }
+            else
+            {
+                <div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Output</th><th>Order</th><th>Source</th><th>Resolved evidence</th></tr></thead><tbody>
+                    @foreach (var source in Trace.ArtifactLineage)
+                    {
+                        <tr><td class="font-monospace">@source.ArtifactId</td><td>@source.Ordinal</td><td class="font-monospace">@(source.SourceArtifactId?.ToString("D") ?? "Private or unresolved reference")</td><td>@(source.ResolvedArtifactId is null ? "No authorized resolved evidence" : $"{source.ResolvedRole} / {source.ResolvedVariant ?? "default"} / {source.ResolvedChecksumSha256}")</td></tr>
+                    }
+                </tbody></table></div>
+            }
+        </div>
+    </section>
+    <section class="mt-4">
+        <h2 class="h4">Central processing trace</h2>
+        @if (Trace.Jobs.Count == 0)
+        {
+            <div class="alert alert-secondary">No central derivative jobs reference this capture.</div>
+        }
+        @foreach (var job in Trace.Jobs)
+        {
+            <article class="card mb-3"><div class="card-body">
+                <div class="d-flex justify-content-between gap-3"><h3 class="h5">@job.TargetRole / @job.TargetVariant</h3><span class="badge text-bg-secondary">@job.Status</span></div>
+                <p class="small text-muted">@job.RecipeName @job.TargetRecipeVersion - job <span class="font-monospace">@job.JobId</span></p>
+                @if (job.MissingInputOutcome is not null || job.StateReasonCode is not null)
+                {
+                    <p class="small">Window outcome: @(job.MissingInputOutcome?.ToString() ?? "resolved") - @(job.StateReasonCode ?? "no reason code")</p>
+                }
+                <h4 class="h6">Input window</h4>
+                @if (job.Inputs.Count == 0) { <p class="small text-muted">No persisted input requirements.</p> }
+                else { <ul class="small">@foreach (var input in job.Inputs) { <li>#@input.Ordinal @input.BindingName (@input.SourceKind): @input.ResolutionState @(input.ArtifactId?.ToString("D") ?? input.EnvironmentalObservationId?.ToString("D") ?? input.CanonicalIdentitySha256 ?? input.ResolutionReasonCode)</li> }</ul> }
+                <h4 class="h6">Attempts</h4>
+                @if (job.Attempts.Count == 0) { <p class="small text-muted mb-0">No execution attempt has been recorded.</p> }
+                else { <ul class="small mb-0">@foreach (var attempt in job.Attempts) { <li>Attempt @attempt.AttemptNumber: @attempt.Outcome by @attempt.WorkerId, @attempt.InputBytes input bytes, @attempt.OutputBytes output bytes @(attempt.ReasonCode is null ? null : $"({attempt.ReasonCode})")</li> }</ul> }
+            </div></article>
+        }
+    </section>
+    <div class="row g-3 mt-1">
+        <section class="col-lg-6">
+            <div class="card h-100"><div class="card-body">
+                <h2 class="h5">Weather and cloud evidence</h2>
+                @if (Trace.EnvironmentalEvidence.Count == 0)
+                {
+                    <p class="text-muted mb-0">No environmental evidence was selected by this capture's processing jobs.</p>
+                }
+                else
+                {
+                    <ul class="list-unstyled small mb-0">@foreach (var observation in Trace.EnvironmentalEvidence) { <li class="mb-2"><strong>@observation.Kind:</strong> @(observation.NumericValue?.ToString() ?? observation.BooleanValue?.ToString() ?? "No value") @observation.Unit, @observation.Quality at @observation.ObservedAtUtc.ToString("u")<small class="d-block text-muted">@observation.Provider / @observation.MethodName @observation.MethodVersion - @observation.LineageSourceCount lineage sources</small></li> }</ul>
+                }
+            </div></div>
+        </section>
+        <section class="col-lg-6">
+            <div class="card h-100"><div class="card-body">
+                <h2 class="h5">Transient event assessment</h2>
+                @if (Trace.Events.Count == 0)
+                {
+                    <p class="text-muted mb-0">No transient event references this capture.</p>
+                }
+                else
+                {
+                    <ul class="list-unstyled small mb-0">@foreach (var item in Trace.Events) { <li class="mb-2"><strong>Event @item.EventId</strong> - v@(item.Version?.ToString() ?? "pending") @item.State<small class="d-block">@item.EffectiveClassification, confidence @((item.EffectiveConfidenceMillionths ?? 0) / 10000.0)% - review @item.ReviewState @(item.LatestReviewDisposition is null ? null : $"({item.LatestReviewDisposition})")</small><small class="d-block text-muted">@item.ObservationCount observations, @item.AssessmentCount assessments, @item.ReviewCount reviews</small></li> }</ul>
+                }
+            </div></div>
+        </section>
+    </div>
+    }
+}

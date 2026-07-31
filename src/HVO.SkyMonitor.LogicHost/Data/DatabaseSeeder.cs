@@ -24,6 +24,7 @@ internal static class DatabaseSeeder
     public static async Task SeedAsync(IServiceProvider serviceProvider, ILogger logger)
     {
         var userManager = serviceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var roleManager = serviceProvider.GetRequiredService<RoleManager<IdentityRole>>();
         var apiKeyHasher = serviceProvider.GetRequiredService<IApiKeyHasher>();
         var dbContext = serviceProvider.GetRequiredService<ApplicationDbContext>();
         var options = serviceProvider.GetRequiredService<IOptions<DatabaseSeedOptions>>().Value;
@@ -32,6 +33,7 @@ internal static class DatabaseSeeder
         var bootstrapClient = (bootstrapOptions.CentralIdentity ?? centralIdentityOptions).ClientCredentials;
 
         // Interactive credentials and integration keys are opt-in configuration.
+        await EnsurePlatformEditorRoleAsync(roleManager);
         await SeedDefaultUsersAsync(userManager, options.Users, logger);
 
         // Seed system service account
@@ -77,9 +79,8 @@ internal static class DatabaseSeeder
                 else
                 {
                     logger.LogError("Failed to create user {Email}: {Errors}", descriptor.Email, string.Join(", ", result.Errors.Select(e => e.Description)));
+                    continue;
                 }
-
-                continue;
             }
 
             var needsUpdate = false;
@@ -91,7 +92,13 @@ internal static class DatabaseSeeder
 
             if (needsUpdate)
             {
-                await userManager.UpdateAsync(user);
+                var updateResult = await userManager.UpdateAsync(user);
+                if (!updateResult.Succeeded)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to reconcile user {descriptor.Email}: " +
+                        string.Join(", ", updateResult.Errors.Select(error => error.Description)));
+                }
             }
 
             if (!await userManager.CheckPasswordAsync(user, descriptor.Password))
@@ -107,6 +114,41 @@ internal static class DatabaseSeeder
                     logger.LogError("Failed to update password for {Email}: {Errors}", descriptor.Email, string.Join(", ", passwordResult.Errors.Select(e => e.Description)));
                 }
             }
+
+            var isEditor = await userManager.IsInRoleAsync(user, AuthorizationRoleNames.PlatformEditor);
+            if (descriptor.IsPlatformEditor.HasValue && isEditor != descriptor.IsPlatformEditor.Value)
+            {
+                var roleResult = descriptor.IsPlatformEditor.Value
+                    ? await userManager.AddToRoleAsync(user, AuthorizationRoleNames.PlatformEditor)
+                    : await userManager.RemoveFromRoleAsync(user, AuthorizationRoleNames.PlatformEditor);
+                if (!roleResult.Succeeded)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to reconcile Platform Editor role for {descriptor.Email}: " +
+                        string.Join(", ", roleResult.Errors.Select(error => error.Description)));
+                }
+                var stampResult = await userManager.UpdateSecurityStampAsync(user);
+                if (!stampResult.Succeeded)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to rotate the security stamp for {descriptor.Email} after role reconciliation.");
+                }
+            }
+        }
+    }
+
+    private static async Task EnsurePlatformEditorRoleAsync(RoleManager<IdentityRole> roleManager)
+    {
+        if (await roleManager.RoleExistsAsync(AuthorizationRoleNames.PlatformEditor))
+        {
+            return;
+        }
+        var result = await roleManager.CreateAsync(new IdentityRole(AuthorizationRoleNames.PlatformEditor));
+        if (!result.Succeeded && !await roleManager.RoleExistsAsync(AuthorizationRoleNames.PlatformEditor))
+        {
+            throw new InvalidOperationException(
+                "Failed to seed the Platform Editor role: " +
+                string.Join(", ", result.Errors.Select(error => error.Description)));
         }
     }
 

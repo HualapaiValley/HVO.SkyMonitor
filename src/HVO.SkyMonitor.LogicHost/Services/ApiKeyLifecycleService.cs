@@ -12,6 +12,7 @@ internal interface IApiKeyLifecycleService
         string createdBy,
         string displayName,
         ApiKeyAccessLevel accessLevel,
+        Guid? observatoryId,
         DateTimeOffset? expiresUtc,
         CancellationToken cancellationToken);
 
@@ -40,6 +41,7 @@ internal sealed class ApiKeyLifecycleService(
         string createdBy,
         string displayName,
         ApiKeyAccessLevel accessLevel,
+        Guid? observatoryId,
         DateTimeOffset? expiresUtc,
         CancellationToken cancellationToken)
     {
@@ -50,6 +52,26 @@ internal sealed class ApiKeyLifecycleService(
         {
             throw new ArgumentOutOfRangeException(nameof(accessLevel));
         }
+        var accountType = await dbContext.Users
+            .AsNoTracking()
+            .Where(user => user.Id == userId)
+            .Select(user => (AccountType?)user.AccountType)
+            .SingleOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException("The API key owner was not found.");
+        if (accountType == AccountType.User && observatoryId is null)
+        {
+            throw new InvalidOperationException("New account API keys require an observatory scope.");
+        }
+        if (observatoryId is { } scopeId && !await dbContext.ObservatoryMemberships
+                .AsNoTracking()
+                .AnyAsync(
+                    membership => membership.ObservatoryId == scopeId && membership.UserId == userId,
+                    cancellationToken)
+                .ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("The API key scope requires a current observatory membership.");
+        }
 
         var plaintextKey = GenerateSecret();
         var entity = new ApiKey
@@ -58,6 +80,7 @@ internal sealed class ApiKeyLifecycleService(
             UserId = userId,
             DisplayName = displayName,
             AccessLevel = accessLevel,
+            ObservatoryId = observatoryId,
             HashedKey = keyHasher.Hash(plaintextKey),
             CreatedUtc = timeProvider.GetUtcNow(),
             ExpiresUtc = expiresUtc,

@@ -7,7 +7,7 @@
             <a class="navbar-brand d-flex align-items-center gap-2" href="/">
                 <i class="bi bi-stars"></i>
                 <span>HVO SkyMonitor</span>
-                <span class="text-muted small">Dashboard</span>
+                <span class="text-muted small">@WorkspaceLabel</span>
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#primaryNav"
                 aria-controls="primaryNav" aria-expanded="false" aria-label="Toggle navigation">
@@ -25,16 +25,6 @@
                 </div>
 
                 <div class="nav-toolbar d-flex align-items-center gap-3 mt-3 mt-lg-0 ms-lg-4">
-                    <div class="nav-actions d-flex align-items-center gap-2">
-                        @foreach (var action in AuxiliaryActions)
-                        {
-                            <button type="button" class="nav-icon-button" title="@action.Tooltip"
-                                aria-label="@action.Tooltip">
-                                <i class="@action.IconClass"></i>
-                            </button>
-                        }
-                    </div>
-
                     <AuthorizeView Context="authState">
                         <Authorized>
                             <div class="nav-account-info d-flex align-items-center gap-2 dropdown">
@@ -51,11 +41,27 @@
 
                                 <ul class="dropdown-menu nav-account-menu dropdown-menu-end">
                                     <li>
-                                        <a class="dropdown-item d-flex align-items-center gap-2" href="Account/Manage">
+                                        <a class="dropdown-item d-flex align-items-center gap-2" href="account">
                                             <i class="bi bi-person-badge"></i>
                                             Account Management
                                         </a>
                                     </li>
+                                    <li>
+                                        <a class="dropdown-item d-flex align-items-center gap-2" href="app/notifications">
+                                            <i class="bi bi-bell"></i>
+                                            Subscriptions and notifications
+                                        </a>
+                                    </li>
+                                    <AuthorizeView Policy="@HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.PlatformEditorialWrite" Context="editorState">
+                                        <Authorized>
+                                            <li>
+                                                <a class="dropdown-item d-flex align-items-center gap-2" href="app/editorial">
+                                                    <i class="bi bi-layout-text-window-reverse"></i>
+                                                    Public curation
+                                                </a>
+                                            </li>
+                                        </Authorized>
+                                    </AuthorizeView>
                                     <li>
                                         <form class="nav-logout-form" action="Account/Logout" method="post">
                                             <AntiforgeryToken />
@@ -75,6 +81,17 @@
                                 Sign In
                             </a>
                         </NotAuthorized>
+                    </AuthorizeView>
+                    <AuthorizeView>
+                        <Authorized>
+                            @if (!IsOperationsWorkspace)
+                            {
+                                <a class="nav-login-pill" href="app">
+                                    <i class="bi bi-grid-1x2"></i>
+                                    Open Operations
+                                </a>
+                            }
+                        </Authorized>
                     </AuthorizeView>
                 </div>
             </div>

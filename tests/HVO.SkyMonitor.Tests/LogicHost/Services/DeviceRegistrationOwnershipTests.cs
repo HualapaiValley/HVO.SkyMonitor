@@ -14,7 +14,7 @@ public sealed class DeviceRegistrationOwnershipTests
     private static readonly DateTimeOffset Now = new(2026, 7, 22, 12, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
-    public async Task OwnerScopedReads_ReturnOnlyConsistentlyOwnedObservatoriesAndRegistrationSnapshots()
+    public async Task OwnerScopedReads_UseCurrentObservatoryMembershipNotRegistrationSnapshotOwner()
     {
         await using var context = CreateContext();
         var firstObservatory = CreateObservatory("owner-1", "Owner One Current");
@@ -27,6 +27,8 @@ public sealed class DeviceRegistrationOwnershipTests
             "owner-1", Guid.NewGuid(), "missing-observatory-device", "Missing Snapshot");
 
         context.Observatories.AddRange(firstObservatory, secondObservatory);
+        AddOwnerMembership(context, firstObservatory);
+        AddOwnerMembership(context, secondObservatory);
         context.DeviceRegistrations.AddRange(
             firstRegistration,
             secondRegistration,
@@ -54,18 +56,21 @@ public sealed class DeviceRegistrationOwnershipTests
             item.RegistrationId == firstRegistration.Id
             && item.ObservatoryName == "Owner One Snapshot"
             && item.OwnerUserId == "owner-1");
-        secondRegistrations.Should().ContainSingle(item =>
+        secondRegistrations.Should().HaveCount(2);
+        secondRegistrations.Should().Contain(item =>
             item.RegistrationId == secondRegistration.Id
             && item.ObservatoryName == "Owner Two Snapshot"
             && item.OwnerUserId == "owner-2");
+        secondRegistrations.Should().Contain(item =>
+            item.RegistrationId == inconsistentRegistration.Id
+            && item.OwnerUserId == "owner-1");
         firstRegistrations.Should().NotContain(item =>
             item.RegistrationId == inconsistentRegistration.Id
             || item.RegistrationId == missingObservatoryRegistration.Id);
-        secondRegistrations.Should().NotContain(item => item.RegistrationId == inconsistentRegistration.Id);
     }
 
     [TestMethod]
-    public async Task CreateEnvelopeAsync_CrossOwnerAndInconsistentOwnershipFailWithoutCredentialChanges()
+    public async Task CreateEnvelopeAsync_UsesCurrentObservatoryMembershipNotRegistrationSnapshotOwner()
     {
         await using var context = CreateContext();
         var firstObservatory = CreateObservatory("owner-1", "Owner One");
@@ -75,6 +80,8 @@ public sealed class DeviceRegistrationOwnershipTests
             "owner-1", secondObservatory.Id, "inconsistent-device", "Inconsistent");
 
         context.Observatories.AddRange(firstObservatory, secondObservatory);
+        AddOwnerMembership(context, firstObservatory);
+        AddOwnerMembership(context, secondObservatory);
         context.DeviceRegistrations.AddRange(firstRegistration, inconsistentRegistration);
         await context.SaveChangesAsync().ConfigureAwait(false);
         var service = CreateEnvelopeService(context);
@@ -90,18 +97,26 @@ public sealed class DeviceRegistrationOwnershipTests
                 inconsistentRegistration.DeviceId,
                 secondObservatory.Id,
                 "owner-1"));
-        Func<Task> observatoryOwnerWithForeignRegistration = () => service.CreateEnvelopeAsync(
+        Func<Task> ownedObservatoryWithForeignRegistration = () => service.CreateEnvelopeAsync(
             new DeviceRegistrationEnvelopeRequest(
                 inconsistentRegistration.Id,
                 inconsistentRegistration.DeviceId,
-                secondObservatory.Id,
-                "owner-2"));
-
+                firstObservatory.Id,
+                "owner-1"));
+        Func<Task> wrongDeviceId = () => service.CreateEnvelopeAsync(new DeviceRegistrationEnvelopeRequest(
+            firstRegistration.Id,
+            "wrong-device",
+            firstObservatory.Id,
+            "owner-1"));
         await crossOwner.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*access denied*").ConfigureAwait(false);
         await registrationOwnerWithForeignObservatory.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*access denied*").ConfigureAwait(false);
-        await observatoryOwnerWithForeignRegistration.Should().ThrowAsync<InvalidOperationException>()
+        await ownedObservatoryWithForeignRegistration.Should().ThrowAsync<DeviceRegistrationException>()
+            .Where(exception => exception.ReasonCode == DeviceRegistrationException.NotFoundReasonCode)
+            .WithMessage("*access denied*").ConfigureAwait(false);
+        await wrongDeviceId.Should().ThrowAsync<DeviceRegistrationException>()
+            .Where(exception => exception.ReasonCode == DeviceRegistrationException.NotFoundReasonCode)
             .WithMessage("*access denied*").ConfigureAwait(false);
 
         firstRegistration.DevicePublicId.Should().BeNull();
@@ -110,6 +125,17 @@ public sealed class DeviceRegistrationOwnershipTests
         inconsistentRegistration.DevicePublicId.Should().BeNull();
         inconsistentRegistration.DeviceKeyHash.Should().BeNull();
         inconsistentRegistration.RegistrationTokenHash.Should().BeNull();
+
+        var inconsistentEnvelope = await service.CreateEnvelopeAsync(new DeviceRegistrationEnvelopeRequest(
+            inconsistentRegistration.Id,
+            inconsistentRegistration.DeviceId,
+            secondObservatory.Id,
+            "owner-2")).ConfigureAwait(false);
+
+        inconsistentEnvelope.RegistrationId.Should().Be(inconsistentRegistration.Id);
+        inconsistentRegistration.DevicePublicId.Should().Be(inconsistentEnvelope.DevicePublicId);
+        inconsistentRegistration.DeviceKeyHash.Should().NotBeNullOrWhiteSpace();
+        inconsistentRegistration.RegistrationTokenHash.Should().NotBeNullOrWhiteSpace();
 
         var envelope = await service.CreateEnvelopeAsync(new DeviceRegistrationEnvelopeRequest(
             firstRegistration.Id,
@@ -130,6 +156,7 @@ public sealed class DeviceRegistrationOwnershipTests
         var observatory = CreateObservatory("owner-1", "Inactive Observatory", isActive: false);
         var registration = CreateRegistration("owner-1", observatory.Id, "device-1", "Inactive Snapshot");
         context.Observatories.Add(observatory);
+        AddOwnerMembership(context, observatory);
         context.DeviceRegistrations.Add(registration);
         await context.SaveChangesAsync().ConfigureAwait(false);
         var service = CreateEnvelopeService(context);
@@ -196,6 +223,27 @@ public sealed class DeviceRegistrationOwnershipTests
             IssuedAtUtc = Now.AddMinutes(-5),
             ExpiresAtUtc = Now.AddMinutes(10)
         };
+    }
+
+    private static void AddOwnerMembership(ApplicationDbContext context, Observatory observatory)
+    {
+        if (!context.Users.Local.Any(user => user.Id == observatory.OwnerUserId))
+        {
+            context.Users.Add(new ApplicationUser
+            {
+                Id = observatory.OwnerUserId,
+                UserName = observatory.OwnerUserId,
+                AccountType = AccountType.User
+            });
+        }
+        context.ObservatoryMemberships.Add(new ObservatoryMembership
+        {
+            Observatory = observatory,
+            ObservatoryId = observatory.Id,
+            UserId = observatory.OwnerUserId,
+            Role = ObservatoryMembershipRole.Owner,
+            AddedAtUtc = Now
+        });
     }
 
     private static ApplicationDbContext CreateContext()
