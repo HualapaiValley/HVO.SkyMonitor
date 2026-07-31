@@ -15,6 +15,8 @@ public sealed class ApiKey
 
     public ApiKeyAccessLevel AccessLevel { get; set; } = ApiKeyAccessLevel.Read;
 
+    public Guid? ObservatoryId { get; set; }
+
     public string HashedKey { get; set; } = string.Empty;
 
     public bool IsActive { get; set; } = true;

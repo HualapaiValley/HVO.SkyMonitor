@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Services;
 
 namespace HVO.SkyMonitor.LogicHost.Components.Account.Pages.Manage;
 
@@ -16,6 +17,9 @@ public sealed partial class DeletePersonalData
 
     [Inject]
     private UserManager<ApplicationUser> UserManager { get; set; } = default!;
+
+    [Inject]
+    private IAccountDeletionService AccountDeletionService { get; set; } = default!;
 
     [Inject]
     private SignInManager<ApplicationUser> SignInManager { get; set; } = default!;
@@ -62,8 +66,13 @@ public sealed partial class DeletePersonalData
             return;
         }
 
-        var result = await UserManager.DeleteAsync(user);
-        if (!result.Succeeded)
+        var result = await AccountDeletionService.DeleteAsync(user, HttpContext.RequestAborted);
+        if (result.Outcome == AccountDeletionOutcome.LastOwner)
+        {
+            message = "Error: Transfer ownership or remove the observatory before deleting this account.";
+            return;
+        }
+        if (result.Outcome != AccountDeletionOutcome.Deleted)
         {
             throw new InvalidOperationException("Unexpected error occurred deleting user.");
         }

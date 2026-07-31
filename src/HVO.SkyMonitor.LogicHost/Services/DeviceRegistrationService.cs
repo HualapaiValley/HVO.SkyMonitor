@@ -71,7 +71,8 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
                 "Device registration not found or access denied.",
                 DeviceRegistrationException.NotFoundReasonCode);
 
-        if (!string.Equals(observatoryEntity.OwnerUserId, request.OwnerUserId, StringComparison.Ordinal))
+        if (!await ObservatoryMembershipAccess.ForOwner(dbContext, request.OwnerUserId)
+            .AnyAsync(item => item.ObservatoryId == observatoryEntity.Id, cancellationToken).ConfigureAwait(false))
         {
             throw new DeviceRegistrationException(
                 "Device registration not found or access denied.",
@@ -110,8 +111,7 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
         var existingRegistrations = await registrationQuery
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
-        if (existingRegistrations.Any(registration =>
-                !string.Equals(registration.OwnerUserId, request.OwnerUserId, StringComparison.Ordinal)))
+        if (existingRegistrations.Any(registration => registration.ObservatoryId != request.ObservatoryId))
         {
             throw new DeviceRegistrationException(
                 "Device registration not found or access denied.",
@@ -172,13 +172,37 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
         ArgumentException.ThrowIfNullOrWhiteSpace(request.OwnerDisplayName);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.OwnerConfirmationMethod);
 
-        var registration = await dbContext.DeviceRegistrations
-            .Where(reg => reg.Id == request.RegistrationId)
+        var isRelational = dbContext.Database.IsRelational();
+        await using var transaction = isRelational
+            ? await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+                .ConfigureAwait(false)
+            : null;
+        var registrationAuthority = await dbContext.DeviceRegistrations.AsNoTracking()
+            .Where(registration => registration.Id == request.RegistrationId)
+            .Select(registration => (Guid?)registration.ObservatoryId)
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+            ?? throw new DeviceRegistrationException("Device registration not found.");
+        _ = await (isRelational
+                ? dbContext.Observatories.FromSqlInterpolated($"""
+                    SELECT * FROM [Observatories] WITH (UPDLOCK, HOLDLOCK)
+                    WHERE [Id] = {registrationAuthority}
+                    """)
+                : dbContext.Observatories.Where(item => item.Id == registrationAuthority))
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+            ?? throw new DeviceRegistrationException("Access denied for the specified registration.");
+        var registration = await (isRelational
+                ? dbContext.DeviceRegistrations.FromSqlInterpolated($"""
+                    SELECT * FROM [DeviceRegistrations] WITH (UPDLOCK, HOLDLOCK)
+                    WHERE [Id] = {request.RegistrationId}
+                    """)
+                : dbContext.DeviceRegistrations.Where(registration => registration.Id == request.RegistrationId))
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false)
             ?? throw new DeviceRegistrationException("Device registration not found.");
 
-        if (!string.Equals(registration.OwnerUserId, request.OwnerUserId, StringComparison.Ordinal))
+        if (registration.ObservatoryId != registrationAuthority
+            || !await ObservatoryMembershipAccess.ForOwner(dbContext, request.OwnerUserId)
+            .AnyAsync(item => item.ObservatoryId == registration.ObservatoryId, cancellationToken).ConfigureAwait(false))
         {
             throw new DeviceRegistrationException("Access denied for the specified registration.");
         }
@@ -208,6 +232,10 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
         registration.RegistrationTokenHash = null;
 
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
         return registration;
     }
 

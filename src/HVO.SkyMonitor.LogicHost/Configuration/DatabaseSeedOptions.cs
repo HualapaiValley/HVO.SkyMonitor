@@ -22,6 +22,8 @@ internal sealed class SeedUserOptions
     public string Username { get; set; } = string.Empty;
 
     public string Password { get; set; } = string.Empty;
+
+    public bool? IsPlatformEditor { get; set; }
 }
 
 internal sealed class SeedApiKeyOptions

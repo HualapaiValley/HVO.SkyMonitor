@@ -55,7 +55,10 @@ internal sealed partial class ObservatoryService(
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerUserId);
 
         return await dbContext.Observatories
-            .Where(o => o.OwnerUserId == ownerUserId)
+            .Where(observatory => dbContext.ObservatoryMemberships.Any(membership =>
+                membership.ObservatoryId == observatory.Id
+                && membership.UserId == ownerUserId
+                && membership.User!.AccountType == AccountType.User))
             .OrderBy(o => o.Name)
             .Select(o => new ObservatorySummary(
                 o.Id,
@@ -111,14 +114,17 @@ internal sealed partial class ObservatoryService(
             IQueryable<Observatory> query = isRelational
                 ? dbContext.Observatories.FromSqlInterpolated($"""
                     SELECT * FROM [Observatories] WITH (UPDLOCK, HOLDLOCK)
-                    WHERE [Id] = {existingId} AND [OwnerUserId] = {request.OwnerUserId}
+                    WHERE [Id] = {existingId}
                     """)
-                : dbContext.Observatories.Where(o =>
-                    o.Id == existingId && o.OwnerUserId == request.OwnerUserId);
+                : dbContext.Observatories.Where(o => o.Id == existingId);
             entity = await query
-                .FirstOrDefaultAsync(cancellationToken)
+                .SingleOrDefaultAsync(cancellationToken)
                 .ConfigureAwait(false)
                 ?? throw new InvalidOperationException("Observatory not found or access denied.");
+            if (!await HasOwnerAuthorityAsync(entity.Id, request.OwnerUserId, cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("Observatory not found or access denied.");
+            }
             if (request.ExpectedRepresentationSha256 is { } expected
                 && !string.Equals(
                     expected,
@@ -130,6 +136,10 @@ internal sealed partial class ObservatoryService(
         }
         else
         {
+            if (!await IsHumanUserAsync(request.OwnerUserId, cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("Observatory owner account was not found.");
+            }
             entity = new Observatory
             {
                 OwnerUserId = request.OwnerUserId,
@@ -141,9 +151,56 @@ internal sealed partial class ObservatoryService(
                 AllowedDeploymentRadiusMeters = request.AllowedDeploymentRadiusMeters
             };
             await dbContext.Observatories.AddAsync(entity, cancellationToken).ConfigureAwait(false);
+            dbContext.ObservatoryMemberships.Add(new ObservatoryMembership
+            {
+                Observatory = entity,
+                ObservatoryId = entity.Id,
+                UserId = request.OwnerUserId,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = now
+            });
+            dbContext.ObservatoryMembershipAudits.Add(new ObservatoryMembershipAudit
+            {
+                Observatory = entity,
+                ObservatoryId = entity.Id,
+                TargetUserId = request.OwnerUserId,
+                ActorUserId = request.OwnerUserId,
+                Action = ObservatoryMembershipAuditAction.Granted,
+                NewRole = ObservatoryMembershipRole.Owner,
+                ReasonCode = "observatory-created",
+                OccurredAtUtc = now
+            });
         }
 
         entity.Name = request.Name.Trim();
+        if (request.Id is null)
+        {
+            dbContext.ObservatoryPublicationProfileVersions.Add(new ObservatoryPublicationProfileVersion
+            {
+                Observatory = entity,
+                ObservatoryId = entity.Id,
+                Version = 1,
+                PublicSlug = $"observatory-{entity.Id:N}",
+                PublicDisplayName = entity.Name,
+                PublicDescription = string.Empty,
+                ProfileVisibility = ObservatoryProfileVisibility.Private,
+                EffectiveFromUtc = now,
+                ActorUserId = request.OwnerUserId,
+                ReasonCode = "observatory-private-default",
+                CanonicalSha256 = HashAuthorityDefault($"private:{entity.Id:N}")
+            });
+            dbContext.ObservatoryLocationDisclosureVersions.Add(new ObservatoryLocationDisclosureVersion
+            {
+                Observatory = entity,
+                ObservatoryId = entity.Id,
+                Version = 1,
+                DisclosureLevel = ObservatoryLocationDisclosureLevel.Hidden,
+                EffectiveFromUtc = now,
+                ActorUserId = request.OwnerUserId,
+                ReasonCode = "observatory-hidden-default",
+                CanonicalSha256 = HashAuthorityDefault($"hidden:{entity.Id:N}")
+            });
+        }
         var previousLocationVersion = entity.CurrentLocationVersion;
         var appliedLocation = await ObservatoryLocationAuthority.ApplyAsync(
             dbContext,
@@ -263,6 +320,10 @@ internal sealed partial class ObservatoryService(
             observatory.CurrentLocationCanonicalSha256,
             observatory.IsActive);
 
+    private static string HashAuthorityDefault(string value)
+        => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(value)));
+
     internal static string CreateRepresentationSha256(ObservatorySummary observatory)
         => CreateRepresentationSha256(
             observatory.Id,
@@ -329,15 +390,15 @@ internal sealed partial class ObservatoryService(
         IQueryable<Observatory> observatoryQuery = isRelational
             ? dbContext.Observatories.FromSqlInterpolated($"""
                 SELECT * FROM [Observatories] WITH (UPDLOCK, HOLDLOCK)
-                WHERE [Id] = {id} AND [OwnerUserId] = {ownerUserId}
+                WHERE [Id] = {id}
                 """)
-            : dbContext.Observatories.Where(observatory =>
-                observatory.Id == id && observatory.OwnerUserId == ownerUserId);
+            : dbContext.Observatories.Where(observatory => observatory.Id == id);
         var entity = await observatoryQuery
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (entity is null)
+        if (entity is null
+            || !await HasOwnerAuthorityAsync(id, ownerUserId, cancellationToken).ConfigureAwait(false))
         {
             if (transaction is not null)
             {
@@ -365,19 +426,12 @@ internal sealed partial class ObservatoryService(
         var hasEnvironmentalEvidence = await environmentalSourceQuery
             .AnyAsync(cancellationToken)
             .ConfigureAwait(false);
-        if (registrations.Count == 0 && !hasEnvironmentalEvidence)
-        {
-            var locationVersions = await dbContext.ObservatoryLocationVersions
-                .Where(version => version.ObservatoryId == id)
-                .ToListAsync(cancellationToken).ConfigureAwait(false);
-            dbContext.ObservatoryLocationVersions.RemoveRange(locationVersions);
-            dbContext.Observatories.Remove(entity);
-        }
-        else
+        // Membership and mutation audits retain authority history, so Observatory deletion is always logical.
+        entity.IsActive = false;
+        entity.UpdatedAtUtc = now;
+        if (registrations.Count > 0 || hasEnvironmentalEvidence)
         {
             // Device registrations and exact historical rig profiles are retained as ingest evidence.
-            entity.IsActive = false;
-            entity.UpdatedAtUtc = now;
             foreach (var registration in registrations)
             {
                 registration.Status = DeviceRegistrationStatus.Revoked;
@@ -394,4 +448,20 @@ internal sealed partial class ObservatoryService(
         }
         return true;
     }
+
+    private Task<bool> IsHumanUserAsync(string userId, CancellationToken cancellationToken)
+        => dbContext.Users.AnyAsync(
+            user => user.Id == userId && user.AccountType == AccountType.User,
+            cancellationToken);
+
+    private Task<bool> HasOwnerAuthorityAsync(
+        Guid observatoryId,
+        string userId,
+        CancellationToken cancellationToken)
+        => dbContext.ObservatoryMemberships.AnyAsync(
+            membership => membership.ObservatoryId == observatoryId
+                && membership.UserId == userId
+                && membership.Role == ObservatoryMembershipRole.Owner
+                && membership.User!.AccountType == AccountType.User,
+            cancellationToken);
 }

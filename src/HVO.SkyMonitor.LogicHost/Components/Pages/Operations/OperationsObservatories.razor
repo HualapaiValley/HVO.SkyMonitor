@@ -1,0 +1,7 @@
+@page "/app/observatories"
+@attribute [Authorize]
+
+<PageTitle>Observatories | Network Operations</PageTitle>
+<div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-4"><div><p class="text-uppercase text-info small fw-bold mb-1">Operations scope</p><h1 class="mb-1">Observatories</h1><p class="text-muted mb-0">Protected exact state across your current memberships.</p></div><a class="btn btn-primary" href="app/observatories/manage">Manage exact settings</a></div>
+@if (Items.Count == 0){<div class="alert alert-secondary">No accessible observatories.</div>}
+else{<div class="row g-3">@foreach(var item in Items){<div class="col-md-6"><article class="card h-100"><div class="card-body"><span class="badge text-bg-secondary">@item.Role</span><h2 class="h4 mt-3">@item.Name</h2><p class="text-muted">@item.LogicalCameraCount logical camera(s), @item.ActiveJobCount active central job(s).</p><a href="@($"app/observatories/{item.ObservatoryId:D}")">Open observatory</a></div></article></div>}</div>@if(NextCursor is not null){<button class="btn btn-outline-light mt-3" disabled="@IsLoadingMore" @onclick="LoadMoreAsync">@(IsLoadingMore ? "Loading..." : "Load more observatories")</button>}}

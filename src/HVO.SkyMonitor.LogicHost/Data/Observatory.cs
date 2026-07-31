@@ -42,4 +42,8 @@ internal sealed class Observatory
     public ICollection<DeviceRegistration> DeviceRegistrations { get; } = new List<DeviceRegistration>();
 
     public ICollection<ObservatoryLocationVersion> LocationVersions { get; } = [];
+
+    public ICollection<ObservatoryMembership> Memberships { get; } = [];
+
+    public ICollection<ObservatoryMembershipAudit> MembershipAudits { get; } = [];
 }

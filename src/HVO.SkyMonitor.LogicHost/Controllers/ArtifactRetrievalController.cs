@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -18,6 +19,7 @@ internal sealed partial class ArtifactRetrievalController(
     internal const string JobIdHeader = "X-HVO-Job-Id";
     internal const string LeaseTokenHeader = "X-HVO-Lease-Token";
     internal const string ChecksumHeader = "X-Artifact-SHA256";
+    private const string DownloadAuthorizationCookie = "HVO.RawDownloadAuthorization";
 
     [HttpGet]
     public async Task<ActionResult<CentralArtifactMetadata>> GetMetadataAsync(
@@ -41,6 +43,45 @@ internal sealed partial class ArtifactRetrievalController(
     [HttpHead("content")]
     public Task HeadContentAsync(Guid devicePublicId, Guid artifactId, CancellationToken cancellationToken)
         => WriteContentAsync(devicePublicId, artifactId, headOnly: true, cancellationToken);
+
+    [HttpPost("download-authorizations")]
+    public async Task<ActionResult<DownloadAuthorizationResponse>> IssueDownloadAuthorizationAsync(
+        Guid devicePublicId,
+        Guid artifactId,
+        [FromBody] DownloadAuthorizationRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var lookup = await FindAsync(devicePublicId, artifactId, cancellationToken).ConfigureAwait(false);
+        if (lookup.Status != CentralArtifactLookupStatus.Found || lookup.Artifact!.Role != FrameArtifactRole.Raw)
+        {
+            return NotFound();
+        }
+        if (!CentralArtifactByteRange.TryParse(request.Range, lookup.Artifact.ByteLength, out var range))
+        {
+            return BadRequest(new ProblemDetails { Title = "The requested byte range is invalid." });
+        }
+        var grant = await retrievalService.IssueDownloadAuthorizationAsync(
+            lookup.Artifact, User, range, cancellationToken).ConfigureAwait(false);
+        if (grant is null)
+        {
+            return NotFound();
+        }
+        var contentUri = $"/api/v1.0/devices/{devicePublicId:D}/artifacts/{artifactId:D}/content";
+        Response.Cookies.Append(
+            DownloadAuthorizationCookie,
+            $"{grant.AuthorizationId:D}.{grant.Token}",
+            new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = Request.IsHttps,
+                SameSite = SameSiteMode.Strict,
+                Path = contentUri,
+                Expires = grant.ExpiresAtUtc,
+                IsEssential = true
+            });
+        return Ok(new DownloadAuthorizationResponse(grant.AuthorizationId, grant.ExpiresAtUtc, contentUri));
+    }
 
     private async Task WriteContentAsync(
         Guid devicePublicId,
@@ -68,6 +109,36 @@ internal sealed partial class ArtifactRetrievalController(
             && !string.Equals(Request.Headers.IfRange.ToString(), applicationETag, StringComparison.Ordinal))
         {
             requestedRange = null;
+        }
+        var workerAccess = ReadWorkerAccess();
+        if (workerAccess is not null
+            && !await retrievalService.ReauthorizeWorkerAsync(artifact, User, workerAccess, cancellationToken).ConfigureAwait(false))
+        {
+            await WriteProblemAsync(StatusCodes.Status404NotFound, "Artifact was not found.", cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+        if (!CentralArtifactByteRange.TryParse(requestedRange, artifact.ByteLength, out var range))
+        {
+            Response.StatusCode = StatusCodes.Status416RangeNotSatisfiable;
+            Response.Headers.ContentRange = $"bytes */{artifact.ByteLength}";
+            return;
+        }
+        if (!headOnly && artifact.Role == FrameArtifactRole.Raw
+            && await retrievalService.RequiresDownloadAuthorizationAsync(
+                artifact, User, cancellationToken).ConfigureAwait(false)
+            && (!TryReadDownloadAuthorization(out var authorizationId, out var downloadToken)
+                || !await retrievalService.ValidateDownloadAuthorizationAsync(
+                    artifact,
+                    User,
+                    range,
+                    authorizationId,
+                    downloadToken,
+                    cancellationToken).ConfigureAwait(false)))
+        {
+            await WriteProblemAsync(StatusCodes.Status404NotFound, "Artifact was not found.", cancellationToken)
+                .ConfigureAwait(false);
+            return;
         }
         CentralArtifactObjectSnapshot snapshot;
         try
@@ -137,27 +208,12 @@ internal sealed partial class ArtifactRetrievalController(
             return;
         }
 
-        var workerAccess = ReadWorkerAccess();
-        if (workerAccess is not null
-            && !await retrievalService.ReauthorizeWorkerAsync(artifact, User, workerAccess, cancellationToken).ConfigureAwait(false))
-        {
-            await WriteProblemAsync(StatusCodes.Status404NotFound, "Artifact was not found.", cancellationToken)
-                .ConfigureAwait(false);
-            return;
-        }
         if (MatchesIfNoneMatch(applicationETag))
         {
             Response.StatusCode = StatusCodes.Status304NotModified;
             Response.Headers.ETag = applicationETag;
             return;
         }
-        if (!CentralArtifactByteRange.TryParse(requestedRange, artifact.ByteLength, out var range))
-        {
-            Response.StatusCode = StatusCodes.Status416RangeNotSatisfiable;
-            Response.Headers.ContentRange = $"bytes */{artifact.ByteLength}";
-            return;
-        }
-
         SetContentHeaders(artifact, range);
         if (headOnly)
         {
@@ -206,6 +262,17 @@ internal sealed partial class ArtifactRetrievalController(
         return string.IsNullOrWhiteSpace(workerId) || workerId.Length > 256
             ? null
             : new CentralArtifactWorkerAccess(jobId, workerId, leaseToken);
+    }
+
+    private bool TryReadDownloadAuthorization(out Guid authorizationId, out string token)
+    {
+        authorizationId = default;
+        token = string.Empty;
+        if (!Request.Cookies.TryGetValue(DownloadAuthorizationCookie, out var value)) return false;
+        var separator = value.IndexOf('.', StringComparison.Ordinal);
+        if (separator <= 0 || !Guid.TryParse(value.AsSpan(0, separator), out authorizationId)) return false;
+        token = value[(separator + 1)..];
+        return token.Length != 0;
     }
 
     private void SetContentHeaders(CentralArtifact artifact, CentralArtifactByteRange? range)
@@ -297,7 +364,7 @@ internal sealed partial class ArtifactRetrievalController(
     private void SetPrivateCacheHeaders()
     {
         Response.Headers.CacheControl = "private, no-store";
-        Response.Headers.Vary = "Authorization, X-API-Key";
+        Response.Headers.Vary = "Authorization, X-API-Key, Cookie";
     }
 
     private bool MatchesIfNoneMatch(string applicationETag)
@@ -327,6 +394,13 @@ internal sealed partial class ArtifactRetrievalController(
         string ContentUri,
         DateTimeOffset CapturedAtUtc,
         DateTimeOffset ReceivedAtUtc);
+
+    internal sealed record DownloadAuthorizationRequest(string? Range);
+
+    internal sealed record DownloadAuthorizationResponse(
+        Guid AuthorizationId,
+        DateTimeOffset ExpiresAtUtc,
+        string ContentUri);
 
     private static partial class Log
     {

@@ -20,11 +20,13 @@ internal interface IDeploymentLocationAuthorityService
         DeploymentLocationResolutionStatus? status,
         int take,
         DeploymentLocationProposalCursor? cursor = null,
+        Guid? observatoryScope = null,
         CancellationToken cancellationToken = default);
 
     Task<DeploymentLocationProposal?> GetAsync(
         Guid deploymentLocationId,
         string ownerUserId,
+        Guid? observatoryScope = null,
         CancellationToken cancellationToken = default);
 
     Task<DeploymentLocationResolutionResult> ResolveAsync(
@@ -33,6 +35,7 @@ internal interface IDeploymentLocationAuthorityService
         DeploymentLocationResolutionStatus status,
         string reason,
         Guid expectedConcurrencyToken,
+        Guid? observatoryScope = null,
         CancellationToken cancellationToken = default);
 
     Task ReconcileAsync(
@@ -223,6 +226,7 @@ internal sealed partial class DeploymentLocationAuthorityService(
         DeploymentLocationResolutionStatus? status,
         int take,
         DeploymentLocationProposalCursor? cursor = null,
+        Guid? observatoryScope = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerUserId);
@@ -230,10 +234,16 @@ internal sealed partial class DeploymentLocationAuthorityService(
         {
             throw new ArgumentOutOfRangeException(nameof(take));
         }
+        var observatories = ObservatoryMembershipAccess.ForUser(dbContext, ownerUserId)
+            .Select(membership => membership.ObservatoryId);
         var query = dbContext.DeviceDeploymentLocationVersions.AsNoTracking()
             .Include(item => item.Registration)
             .Include(item => item.ObservatoryLocationVersion)
-            .Where(item => item.Registration!.OwnerUserId == ownerUserId);
+            .Where(item => observatories.Contains(item.ObservatoryId));
+        if (observatoryScope is { } scope)
+        {
+            query = query.Where(item => item.ObservatoryId == scope);
+        }
         if (status.HasValue)
         {
             query = query.Where(item => item.Status == status.Value);
@@ -261,14 +271,19 @@ internal sealed partial class DeploymentLocationAuthorityService(
     public async Task<DeploymentLocationProposal?> GetAsync(
         Guid deploymentLocationId,
         string ownerUserId,
+        Guid? observatoryScope = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerUserId);
+        var observatories = ObservatoryMembershipAccess.ForUser(dbContext, ownerUserId)
+            .Select(membership => membership.ObservatoryId);
         var entity = await dbContext.DeviceDeploymentLocationVersions.AsNoTracking()
             .Include(item => item.Registration)
             .Include(item => item.ObservatoryLocationVersion)
             .SingleOrDefaultAsync(item => item.Id == deploymentLocationId
-                && item.Registration!.OwnerUserId == ownerUserId, cancellationToken).ConfigureAwait(false);
+                && observatories.Contains(item.ObservatoryId)
+                && (observatoryScope == null || item.ObservatoryId == observatoryScope), cancellationToken)
+            .ConfigureAwait(false);
         return entity is null ? null : ToProposal(entity);
     }
 
@@ -278,6 +293,7 @@ internal sealed partial class DeploymentLocationAuthorityService(
         DeploymentLocationResolutionStatus status,
         string reason,
         Guid expectedConcurrencyToken,
+        Guid? observatoryScope = null,
         CancellationToken cancellationToken = default)
     {
         var started = timeProvider.GetTimestamp();
@@ -300,8 +316,12 @@ internal sealed partial class DeploymentLocationAuthorityService(
         }
 
         var isRelational = dbContext.Database.IsRelational();
+        var authorizedObservatories = ObservatoryMembershipAccess.ForManager(dbContext, ownerUserId)
+            .Select(membership => membership.ObservatoryId);
         var identity = await dbContext.DeviceDeploymentLocationVersions.AsNoTracking()
-            .Where(item => item.Id == deploymentLocationId && item.Registration!.OwnerUserId == ownerUserId)
+            .Where(item => item.Id == deploymentLocationId
+                && authorizedObservatories.Contains(item.ObservatoryId)
+                && (observatoryScope == null || item.ObservatoryId == observatoryScope))
             .Select(item => new { item.RegistrationId, item.ObservatoryId })
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         if (identity is null)
@@ -326,7 +346,9 @@ internal sealed partial class DeploymentLocationAuthorityService(
                 SELECT * FROM [DeviceRegistrations] WITH (UPDLOCK, HOLDLOCK)
                 WHERE [Id] = {identity.RegistrationId}
                 """).SingleAsync(cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(registration.OwnerUserId, ownerUserId, StringComparison.Ordinal))
+            if (!await ObservatoryMembershipAccess.ForManager(dbContext, ownerUserId)
+                .AnyAsync(item => item.ObservatoryId == identity.ObservatoryId, cancellationToken)
+                .ConfigureAwait(false))
             {
                 return new DeploymentLocationResolutionResult(DeploymentLocationMutationStatus.NotFound, null);
             }

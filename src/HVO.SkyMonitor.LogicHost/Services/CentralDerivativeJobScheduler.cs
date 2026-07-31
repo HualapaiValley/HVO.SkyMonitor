@@ -39,7 +39,8 @@ internal sealed class CentralDerivativeJobScheduler(
     ApplicationDbContext dbContext,
     ICentralDerivativeRecipeCatalog recipeCatalog,
     ICentralDerivativeWindowResolver windowResolver,
-    IEnvironmentalObservationQueryService? environmentalQuery = null) : ICentralDerivativeJobScheduler
+    IEnvironmentalObservationQueryService? environmentalQuery = null,
+    ICentralProcessingPolicyService? processingPolicy = null) : ICentralDerivativeJobScheduler
 {
     internal const string SourceInvalidatedReason = "The derivative source artifact is not usable.";
     internal const string ResultInvalidatedReason = "The derivative result artifact is not usable.";
@@ -286,7 +287,10 @@ internal sealed class CentralDerivativeJobScheduler(
         {
             return;
         }
-        var sourceRecipes = recipeCatalog.GetRequiredRecipes(artifact.Role);
+        var sourceRecipes = processingPolicy is null
+            ? recipeCatalog.GetRequiredRecipes(artifact.Role)
+            : await processingPolicy.ResolveRequiredRecipesAsync(
+                frame.ObservatoryId, artifact.Role, cancellationToken).ConfigureAwait(false);
         if (artifact.Role == FrameArtifactRole.Raw ||
             artifact.Role == FrameArtifactRole.Calibrated && sourceRecipes.Count > 0)
         {
@@ -399,7 +403,11 @@ internal sealed class CentralDerivativeJobScheduler(
         }
         foreach (var source in sources)
         {
-            var recipe = recipeCatalog.GetRequiredRecipes(source.Role).FirstOrDefault(candidate =>
+            var sourceRecipesForObservatory = processingPolicy is null
+                ? recipeCatalog.GetRequiredRecipes(source.Role)
+                : await processingPolicy.ResolveRequiredRecipesAsync(
+                    frame.ObservatoryId, source.Role, cancellationToken).ConfigureAwait(false);
+            var recipe = sourceRecipesForObservatory.FirstOrDefault(candidate =>
                 candidate.RecipeName != BuiltInProcessingRecipes.CloudAssessment
                 &&
                 candidate.TargetRole == artifact.Role

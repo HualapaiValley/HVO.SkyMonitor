@@ -17,7 +17,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.9")
+                .HasAnnotation("ProductVersion", "10.0.10")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -63,6 +63,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<DateTimeOffset?>("LastUsedUtc")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<Guid?>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("UserId")
                         .IsRequired()
                         .HasColumnType("nvarchar(450)");
@@ -72,9 +75,13 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasIndex("HashedKey")
                         .IsUnique();
 
+                    b.HasIndex("ObservatoryId");
+
                     b.HasIndex("UserId");
 
                     b.HasIndex("IsActive", "ExpiresUtc");
+
+                    b.HasIndex("UserId", "ObservatoryId");
 
                     b.ToTable("ApiKeys", (string)null);
                 });
@@ -265,6 +272,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .IsUnique()
                         .HasFilter("[DevicePublicId] IS NOT NULL");
 
+                    b.HasIndex("CentralFrameId", "ReceivedAtUtc", "ArtifactId");
+
                     b.HasIndex("CentralFrameId", "Role", "RecipeVersion");
 
                     b.HasIndex("ObjectState", "ReconstructionState", "ReceivedAtUtc");
@@ -276,6 +285,67 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasIndex("ReconstructionState", "ReferenceRetryAtUtc", "ReceivedAtUtc", "Id");
 
                     b.ToTable("CentralArtifacts", (string)null);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralArtifactDownloadAuthorization", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<Guid>("CentralArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("IssuedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("MembershipRole")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long?>("RangeEnd")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("RangeStart")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("TokenSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ObservatoryId");
+
+                    b.HasIndex("ActorUserId", "IssuedAtUtc", "Id");
+
+                    b.HasIndex("CentralArtifactId", "IssuedAtUtc", "Id");
+
+                    b.ToTable("CentralArtifactDownloadAuthorizations", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralArtifactDownloadAuthorizations_Immutable");
+
+                            t.HasCheckConstraint("CK_CentralArtifactDownloadAuthorizations_Expiry", "[ExpiresAtUtc] > [IssuedAtUtc]");
+
+                            t.HasCheckConstraint("CK_CentralArtifactDownloadAuthorizations_MembershipRole", "[MembershipRole] IN (N'Viewer', N'Manager', N'Owner')");
+
+                            t.HasCheckConstraint("CK_CentralArtifactDownloadAuthorizations_Range", "([RangeStart] IS NULL AND [RangeEnd] IS NULL) OR ([RangeStart] >= 0 AND [RangeEnd] >= [RangeStart])");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralArtifactIngestIdentity", b =>
@@ -1209,6 +1279,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasColumnType("nvarchar(32)")
                         .HasDefaultValue("LegacyIncomplete");
 
+                    b.Property<Guid?>("LogicalCameraInstallationId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<Guid>("ObservatoryId")
                         .HasColumnType("uniqueidentifier");
 
@@ -1231,6 +1304,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasIndex("LocationEvidenceState");
 
+                    b.HasIndex("LogicalCameraInstallationId");
+
                     b.HasIndex("RegistrationId");
 
                     b.HasIndex("AgentId", "CaptureSequence")
@@ -1247,7 +1322,16 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasIndex("DevicePublicId", "CapturedAtUtc", "FrameId");
 
-                    b.ToTable("CentralFrames", (string)null);
+                    b.HasIndex("LogicalCameraInstallationId", "CapturedAtUtc", "Id");
+
+                    b.HasIndex("ObservatoryId", "CapturedAtUtc", "Id");
+
+                    b.ToTable("CentralFrames", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralFrames_InstallationImmutable");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralObjectRecoveryDisposition", b =>
@@ -1315,6 +1399,61 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasIndex("State", "UpdatedAtUtc", "Id");
 
                     b.ToTable("CentralObjectRecoveryDispositions", (string)null);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingOverrideVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<bool?>("CentralValidationEnabled")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("CloudTransmissionThresholdMillionths")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("EffectiveFromUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset?>("SupersededAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ObservatoryId")
+                        .IsUnique()
+                        .HasFilter("[SupersededAtUtc] IS NULL");
+
+                    b.HasIndex("ObservatoryId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("CentralProcessingOverrideVersions", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralProcessingOverrideVersions_Transitions");
+
+                            t.HasCheckConstraint("CK_CentralProcessingOverrideVersions_Threshold", "[CloudTransmissionThresholdMillionths] IS NULL OR [CloudTransmissionThresholdMillionths] BETWEEN 1 AND 999999");
+
+                            t.HasCheckConstraint("CK_CentralProcessingOverrideVersions_Version", "[Version] > 0");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralRecoveryCheckpoint", b =>
@@ -3703,6 +3842,75 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CuratedPublicPlacementDecision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<int?>("DisplayOrder")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("OccurredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("PublicRecordId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid?>("SupersedesDecisionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Surface")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ObservatoryId");
+
+                    b.HasIndex("SupersedesDecisionId")
+                        .IsUnique()
+                        .HasFilter("[SupersedesDecisionId] IS NOT NULL");
+
+                    b.HasIndex("Surface", "ObservatoryId", "OccurredAtUtc");
+
+                    b.HasIndex("Surface", "PublicRecordId", "OccurredAtUtc");
+
+                    b.ToTable("CuratedPublicPlacementDecisions", null, t =>
+                        {
+                            t.HasTrigger("TR_CuratedPublicPlacementDecisions_Immutable");
+
+                            t.HasCheckConstraint("CK_CuratedPublicPlacementDecisions_Order", "([State] = N'Featured' AND [DisplayOrder] BETWEEN 0 AND 999) OR ([State] <> N'Featured' AND [DisplayOrder] IS NULL)");
+
+                            t.HasCheckConstraint("CK_CuratedPublicPlacementDecisions_State", "[State] IN (N'Featured', N'Suppressed', N'Cleared')");
+
+                            t.HasCheckConstraint("CK_CuratedPublicPlacementDecisions_Subject", "([Surface] = N'HomeObservatory' AND [ObservatoryId] IS NOT NULL AND [PublicRecordId] IS NULL) OR ([Surface] = N'HomeEvent' AND [ObservatoryId] IS NULL AND [PublicRecordId] IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_CuratedPublicPlacementDecisions_Surface", "[Surface] IN (N'HomeObservatory', N'HomeEvent')");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.DeploymentLocationResolutionAudit", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4290,6 +4498,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasIndex("ObservatoryId", "Status");
 
+                    b.HasIndex("ObservatoryId", "Status", "FriendlyName", "Id");
+
                     b.ToTable("DeviceRegistrations", (string)null);
                 });
 
@@ -4604,6 +4814,133 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.ToTable("EnvironmentalObservationSources", (string)null);
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.LogicalCamera", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("CreatedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTimeOffset?>("DeactivatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ObservatoryId", "Slug")
+                        .IsUnique();
+
+                    b.HasIndex("ObservatoryId", "Name", "Id");
+
+                    b.HasIndex("ObservatoryId", "Name", "Slug");
+
+                    b.ToTable("LogicalCameras", (string)null);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.LogicalCameraInstallation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("AssignedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("AssignedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("AssignmentReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<Guid>("InstallationPublicId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("LogicalCameraId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RegistrationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ReplacesInstallationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("RetiredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("RetiredByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("RetirementReasonCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InstallationPublicId")
+                        .IsUnique();
+
+                    b.HasIndex("LogicalCameraId")
+                        .IsUnique()
+                        .HasFilter("[RetiredAtUtc] IS NULL");
+
+                    b.HasIndex("RegistrationId")
+                        .IsUnique();
+
+                    b.HasIndex("ReplacesInstallationId")
+                        .IsUnique()
+                        .HasFilter("[ReplacesInstallationId] IS NOT NULL");
+
+                    b.HasIndex("LogicalCameraId", "AssignedAtUtc", "InstallationPublicId");
+
+                    b.ToTable("LogicalCameraInstallations", null, t =>
+                        {
+                            t.HasTrigger("TR_LogicalCameraInstallations_Transitions");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.Observatory", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4662,6 +4999,198 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasIndex("OwnerUserId");
 
                     b.ToTable("Observatories", (string)null);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryInvitation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AcceptanceTokenSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("CanonicalSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("InvitedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTimeOffset>("IssuedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("OfferedRole")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("TargetEmailSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("TargetUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ObservatoryId", "ExpiresAtUtc", "Id");
+
+                    b.HasIndex("ObservatoryId", "TargetUserId", "IssuedAtUtc");
+
+                    b.ToTable("ObservatoryInvitations", null, t =>
+                        {
+                            t.HasTrigger("TR_ObservatoryInvitations_Immutable");
+
+                            t.HasCheckConstraint("CK_ObservatoryInvitations_Expiry", "[ExpiresAtUtc] > [IssuedAtUtc]");
+
+                            t.HasCheckConstraint("CK_ObservatoryInvitations_OfferedRole", "[OfferedRole] IN (N'Viewer', N'Manager', N'Owner')");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryInvitationDisposition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<Guid>("InvitationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("OccurredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InvitationId")
+                        .IsUnique();
+
+                    b.ToTable("ObservatoryInvitationDispositions", null, t =>
+                        {
+                            t.HasTrigger("TR_ObservatoryInvitationDispositions_Immutable");
+
+                            t.HasCheckConstraint("CK_ObservatoryInvitationDispositions_Action", "[Action] IN (N'Accepted', N'Declined', N'Revoked', N'Expired')");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryLocationDisclosureVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("CanonicalSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("DisclosureLevel")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<DateTimeOffset>("EffectiveFromUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<double?>("PublicLatitudeDegrees")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("PublicLongitudeDegrees")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("PublicPrecisionMeters")
+                        .HasColumnType("float");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("RegionCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("RegionLabel")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid?>("SourceObservatoryLocationVersionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("SupersededAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ObservatoryId")
+                        .IsUnique()
+                        .HasFilter("[SupersededAtUtc] IS NULL");
+
+                    b.HasIndex("SourceObservatoryLocationVersionId");
+
+                    b.HasIndex("ObservatoryId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("ObservatoryLocationDisclosureVersions", null, t =>
+                        {
+                            t.HasTrigger("TR_ObservatoryLocationDisclosureVersions_Transitions");
+
+                            t.HasCheckConstraint("CK_ObservatoryLocationDisclosureVersions_Level", "[DisclosureLevel] IN (N'Hidden', N'Region', N'Approximate', N'Exact')");
+
+                            t.HasCheckConstraint("CK_ObservatoryLocationDisclosureVersions_Projection", "([DisclosureLevel] = N'Hidden' AND [RegionCode] IS NULL AND [RegionLabel] IS NULL AND [PublicLatitudeDegrees] IS NULL AND [PublicLongitudeDegrees] IS NULL AND [PublicPrecisionMeters] IS NULL AND [SourceObservatoryLocationVersionId] IS NULL) OR ([DisclosureLevel] = N'Region' AND [RegionCode] IS NOT NULL AND [RegionLabel] IS NOT NULL AND [PublicLatitudeDegrees] IS NULL AND [PublicLongitudeDegrees] IS NULL AND [PublicPrecisionMeters] IS NULL AND [SourceObservatoryLocationVersionId] IS NULL) OR ([DisclosureLevel] = N'Approximate' AND [PublicLatitudeDegrees] BETWEEN -90 AND 90 AND [PublicLongitudeDegrees] BETWEEN -180 AND 180 AND [PublicPrecisionMeters] > 0 AND [SourceObservatoryLocationVersionId] IS NOT NULL) OR ([DisclosureLevel] = N'Exact' AND [PublicLatitudeDegrees] BETWEEN -90 AND 90 AND [PublicLongitudeDegrees] BETWEEN -180 AND 180 AND [PublicPrecisionMeters] >= 0 AND [SourceObservatoryLocationVersionId] IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_ObservatoryLocationDisclosureVersions_Version", "[Version] > 0");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryLocationVersion", b =>
@@ -4735,6 +5264,433 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                             t.HasCheckConstraint("CK_ObservatoryLocationVersions_Version", "[Version] >= 1");
                         });
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryMembership", b =>
+                {
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("UserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTimeOffset>("AddedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.HasKey("ObservatoryId", "UserId");
+
+                    b.HasIndex("ObservatoryId", "Role");
+
+                    b.HasIndex("UserId", "ObservatoryId");
+
+                    b.HasIndex("ObservatoryId", "AddedAtUtc", "UserId");
+
+                    b.ToTable("ObservatoryMemberships", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ObservatoryMemberships_Role", "[Role] IN (N'Viewer', N'Manager', N'Owner')");
+                        });
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipAudit", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("ActorUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("NewRole")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("OccurredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("PreviousRole")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("TargetUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ObservatoryId", "OccurredAtUtc", "Id");
+
+                    b.ToTable("ObservatoryMembershipAudits", null, t =>
+                        {
+                            t.HasTrigger("TR_ObservatoryMembershipAudits_Immutable");
+
+                            t.HasCheckConstraint("CK_ObservatoryMembershipAudits_Action", "[Action] IN (N'Granted', N'RoleChanged', N'Removed', N'LegacyBackfilled', N'LegacyRejected')");
+
+                            t.HasCheckConstraint("CK_ObservatoryMembershipAudits_NewRole", "[NewRole] IS NULL OR [NewRole] IN (N'Viewer', N'Manager', N'Owner')");
+
+                            t.HasCheckConstraint("CK_ObservatoryMembershipAudits_PreviousRole", "[PreviousRole] IS NULL OR [PreviousRole] IN (N'Viewer', N'Manager', N'Owner')");
+
+                            t.HasCheckConstraint("CK_ObservatoryMembershipAudits_Transition", "([Action] IN (N'Granted', N'LegacyBackfilled') AND [PreviousRole] IS NULL AND [NewRole] IS NOT NULL) OR ([Action] = N'RoleChanged' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NOT NULL AND [PreviousRole] <> [NewRole]) OR ([Action] = N'Removed' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NULL) OR ([Action] = N'LegacyRejected' AND [PreviousRole] IS NULL AND [NewRole] IS NULL)");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryPublicationProfileVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<bool>("AllowAutomaticVerifiedEventInclusion")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("CanonicalSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<DateTimeOffset>("EffectiveFromUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ProfileVisibility")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("PublicDescription")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("PublicDisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PublicSlug")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<bool>("PublishEnvironmentalSummary")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset?>("SupersededAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ObservatoryId")
+                        .IsUnique()
+                        .HasFilter("[SupersededAtUtc] IS NULL");
+
+                    b.HasIndex("PublicSlug")
+                        .IsUnique()
+                        .HasFilter("[SupersededAtUtc] IS NULL AND [ProfileVisibility] = N'Public'");
+
+                    b.HasIndex("ObservatoryId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("ObservatoryPublicationProfileVersions", null, t =>
+                        {
+                            t.HasTrigger("TR_ObservatoryPublicationProfileVersions_Transitions");
+
+                            t.HasCheckConstraint("CK_ObservatoryPublicationProfileVersions_Version", "[Version] > 0");
+
+                            t.HasCheckConstraint("CK_ObservatoryPublicationProfileVersions_Visibility", "[ProfileVisibility] IN (N'Private', N'Public')");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.PublicRecordPublicationDecision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<Guid>("AuthorityObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("CentralArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("CentralTransientDerivativeId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("CentralTransientEventId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("EffectiveUntilUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("LogicalCameraId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("OccurredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ProjectionSchemaVersion")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("PublicId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<Guid?>("SourceEventVersionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("SubjectKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid?>("SupersedesDecisionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CentralArtifactId");
+
+                    b.HasIndex("CentralTransientDerivativeId");
+
+                    b.HasIndex("CentralTransientEventId");
+
+                    b.HasIndex("LogicalCameraId");
+
+                    b.HasIndex("PublicId");
+
+                    b.HasIndex("SourceEventVersionId");
+
+                    b.HasIndex("SupersedesDecisionId")
+                        .IsUnique()
+                        .HasFilter("[SupersedesDecisionId] IS NOT NULL");
+
+                    b.HasIndex("AuthorityObservatoryId", "OccurredAtUtc", "Id");
+
+                    b.ToTable("PublicRecordPublicationDecisions", null, t =>
+                        {
+                            t.HasTrigger("TR_PublicRecordPublicationDecisions_Immutable");
+
+                            t.HasCheckConstraint("CK_PublicRecordPublicationDecisions_State", "[State] IN (N'Released', N'Withdrawn')");
+
+                            t.HasCheckConstraint("CK_PublicRecordPublicationDecisions_Subject", "([SubjectKind] = N'LogicalCamera' AND [LogicalCameraId] IS NOT NULL AND [CentralArtifactId] IS NULL AND [CentralTransientEventId] IS NULL AND [SourceEventVersionId] IS NULL AND [CentralTransientDerivativeId] IS NULL) OR ([SubjectKind] = N'Artifact' AND [LogicalCameraId] IS NULL AND [CentralArtifactId] IS NOT NULL AND [CentralTransientEventId] IS NULL AND [SourceEventVersionId] IS NULL AND [CentralTransientDerivativeId] IS NULL) OR ([SubjectKind] = N'TransientEvent' AND [LogicalCameraId] IS NULL AND [CentralArtifactId] IS NULL AND [CentralTransientEventId] IS NOT NULL AND [SourceEventVersionId] IS NOT NULL AND [CentralTransientDerivativeId] IS NULL) OR ([SubjectKind] = N'TransientDerivative' AND [LogicalCameraId] IS NULL AND [CentralArtifactId] IS NULL AND [CentralTransientEventId] IS NULL AND [SourceEventVersionId] IS NULL AND [CentralTransientDerivativeId] IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_PublicRecordPublicationDecisions_SubjectKind", "[SubjectKind] IN (N'LogicalCamera', N'Artifact', N'TransientEvent', N'TransientDerivative')");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.RegisteredUserNotification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("CentralTransientEventId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("DeduplicationKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("PublicRecordId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("ReadUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CentralTransientEventId");
+
+                    b.HasIndex("UserId", "DeduplicationKey")
+                        .IsUnique();
+
+                    b.HasIndex("UserId", "ReadUtc", "CreatedUtc", "Id");
+
+                    b.ToTable("RegisteredUserNotifications", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_RegisteredUserNotifications_Kind", "[Kind] = N'VerifiedEventReleased'");
+                        });
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.RegisteredUserNotificationPreference", b =>
+                {
+                    b.Property<string>("UserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<bool>("EmailEnabled")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("InAppEnabled")
+                        .HasColumnType("bit");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTimeOffset>("UpdatedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("UserId");
+
+                    b.ToTable("RegisteredUserNotificationPreferences", (string)null);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.RegisteredUserObservatoryFollow", b =>
+                {
+                    b.Property<string>("UserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("UserId", "ObservatoryId");
+
+                    b.HasIndex("ObservatoryId");
+
+                    b.HasIndex("UserId", "CreatedUtc", "ObservatoryId");
+
+                    b.ToTable("RegisteredUserObservatoryFollows", (string)null);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.RegisteredUserSubscription", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Kind")
+                        .IsUnique();
+
+                    b.ToTable("RegisteredUserSubscriptions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_RegisteredUserSubscriptions_Kind", "[Kind] = N'VerifiedEvent'");
+                        });
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.RegisteredUserTransientEventBookmark", b =>
+                {
+                    b.Property<string>("UserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<Guid>("CentralTransientEventId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("UserId", "CentralTransientEventId");
+
+                    b.HasIndex("CentralTransientEventId");
+
+                    b.HasIndex("UserId", "CreatedUtc", "CentralTransientEventId");
+
+                    b.ToTable("RegisteredUserTransientEventBookmarks", (string)null);
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole", b =>
@@ -5104,6 +6060,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             modelBuilder.Entity("HVO.SkyMonitor.Common.Security.ApiKey", b =>
                 {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", null)
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", null)
                         .WithMany("ApiKeys")
                         .HasForeignKey("UserId")
@@ -5120,6 +6081,25 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Frame");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralArtifactDownloadAuthorization", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralArtifact", "CentralArtifact")
+                        .WithMany()
+                        .HasForeignKey("CentralArtifactId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("CentralArtifact");
+
+                    b.Navigation("Observatory");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralArtifactIngestIdentity", b =>
@@ -5397,7 +6377,25 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasForeignKey("DeviceRigProfileId")
                         .OnDelete(DeleteBehavior.Restrict);
 
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.LogicalCameraInstallation", "LogicalCameraInstallation")
+                        .WithMany()
+                        .HasForeignKey("LogicalCameraInstallationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.Navigation("DeviceRigProfile");
+
+                    b.Navigation("LogicalCameraInstallation");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingOverrideVersion", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Observatory");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentObservation", b =>
@@ -6155,6 +7153,23 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("ValidationJob");
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CuratedPublicPlacementDecision", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CuratedPublicPlacementDecision", "SupersedesDecision")
+                        .WithOne()
+                        .HasForeignKey("HVO.SkyMonitor.LogicHost.Data.CuratedPublicPlacementDecision", "SupersedesDecisionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Observatory");
+
+                    b.Navigation("SupersedesDecision");
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.DeploymentLocationResolutionAudit", b =>
                 {
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.DeviceDeploymentLocationVersion", "DeploymentLocation")
@@ -6270,6 +7285,83 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Site");
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.LogicalCamera", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Observatory");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.LogicalCameraInstallation", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.LogicalCamera", "LogicalCamera")
+                        .WithMany("Installations")
+                        .HasForeignKey("LogicalCameraId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.DeviceRegistration", "Registration")
+                        .WithMany()
+                        .HasForeignKey("RegistrationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.LogicalCameraInstallation", "ReplacesInstallation")
+                        .WithOne()
+                        .HasForeignKey("HVO.SkyMonitor.LogicHost.Data.LogicalCameraInstallation", "ReplacesInstallationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("LogicalCamera");
+
+                    b.Navigation("Registration");
+
+                    b.Navigation("ReplacesInstallation");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryInvitation", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Observatory");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryInvitationDisposition", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ObservatoryInvitation", "Invitation")
+                        .WithMany("Dispositions")
+                        .HasForeignKey("InvitationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Invitation");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryLocationDisclosureVersion", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ObservatoryLocationVersion", "SourceObservatoryLocationVersion")
+                        .WithMany()
+                        .HasForeignKey("SourceObservatoryLocationVersionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Observatory");
+
+                    b.Navigation("SourceObservatoryLocationVersion");
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryLocationVersion", b =>
                 {
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
@@ -6279,6 +7371,178 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Observatory");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryMembership", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany("Memberships")
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Observatory");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipAudit", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany("MembershipAudits")
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Observatory");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryPublicationProfileVersion", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Observatory");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.PublicRecordPublicationDecision", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "AuthorityObservatory")
+                        .WithMany()
+                        .HasForeignKey("AuthorityObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralArtifact", "CentralArtifact")
+                        .WithMany()
+                        .HasForeignKey("CentralArtifactId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientDerivativeRecord", "CentralTransientDerivative")
+                        .WithMany()
+                        .HasForeignKey("CentralTransientDerivativeId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientEventRecord", "CentralTransientEvent")
+                        .WithMany()
+                        .HasForeignKey("CentralTransientEventId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.LogicalCamera", "LogicalCamera")
+                        .WithMany()
+                        .HasForeignKey("LogicalCameraId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientEventVersionRecord", "SourceEventVersion")
+                        .WithMany()
+                        .HasForeignKey("SourceEventVersionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.PublicRecordPublicationDecision", "SupersedesDecision")
+                        .WithOne()
+                        .HasForeignKey("HVO.SkyMonitor.LogicHost.Data.PublicRecordPublicationDecision", "SupersedesDecisionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("AuthorityObservatory");
+
+                    b.Navigation("CentralArtifact");
+
+                    b.Navigation("CentralTransientDerivative");
+
+                    b.Navigation("CentralTransientEvent");
+
+                    b.Navigation("LogicalCamera");
+
+                    b.Navigation("SourceEventVersion");
+
+                    b.Navigation("SupersedesDecision");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.RegisteredUserNotification", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientEventRecord", "Event")
+                        .WithMany()
+                        .HasForeignKey("CentralTransientEventId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Event");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.RegisteredUserNotificationPreference", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", "User")
+                        .WithOne()
+                        .HasForeignKey("HVO.SkyMonitor.LogicHost.Data.RegisteredUserNotificationPreference", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.RegisteredUserObservatoryFollow", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Observatory");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.RegisteredUserSubscription", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.RegisteredUserTransientEventBookmark", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientEventRecord", "Event")
+                        .WithMany()
+                        .HasForeignKey("CentralTransientEventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Event");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
@@ -6548,11 +7812,25 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Observations");
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.LogicalCamera", b =>
+                {
+                    b.Navigation("Installations");
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.Observatory", b =>
                 {
                     b.Navigation("DeviceRegistrations");
 
                     b.Navigation("LocationVersions");
+
+                    b.Navigation("MembershipAudits");
+
+                    b.Navigation("Memberships");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ObservatoryInvitation", b =>
+                {
+                    b.Navigation("Dispositions");
                 });
 
             modelBuilder.Entity("OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreApplication", b =>

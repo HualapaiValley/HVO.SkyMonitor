@@ -1,0 +1,19 @@
+.public-page-header { max-width: 52rem; margin-bottom: 2rem; }
+.public-page-header h1 { font: 700 clamp(2.5rem, 6vw, 4.5rem)/1 Georgia, serif; }
+.public-page-header p:last-child, .directory-card p { color: var(--hvo-muted); }
+.public-kicker { color: #a78bfa; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
+.directory-layout { display: grid; grid-template-columns: minmax(20rem, 1.05fr) minmax(20rem, 0.95fr); gap: 1.25rem; }
+.directory-map-shell { position: sticky; top: 1rem; min-height: 35rem; overflow: hidden; border: 1px solid rgba(167,139,250,.25); border-radius: 1.25rem; background: #07101d; }
+.directory-map { min-height: 35rem; }
+.directory-map-toolbar { position: absolute; z-index: 2; top: .75rem; left: .75rem; display: flex; gap: .4rem; }
+.directory-map__note { position: absolute; z-index: 2; right: 1rem; bottom: 1rem; left: 1rem; margin: 0; padding: .65rem; border-radius: .6rem; background: rgba(2,6,23,.82); color: var(--hvo-muted); font-size: .72rem; }
+.directory-map-shell ::deep .directory-map-marker { width: 1rem; height: 1rem; border: 2px solid #ede9fe; border-radius: 50%; background: #8b5cf6; box-shadow: 0 0 0 .45rem rgba(139,92,246,.18); }
+.directory-map-shell ::deep .maplibregl-popup-content { border: 1px solid #334155; background: #0f172a; color: #e2e8f0; }
+.directory-map-shell ::deep .maplibregl-popup-close-button { color: #e2e8f0; }
+.directory-list { display: flex; flex-direction: column; gap: .75rem; }
+.directory-card, .public-state { border: 1px solid var(--hvo-border-strong); border-radius: 1rem; background: rgba(15,23,42,.7); }
+.directory-card { display: flex; justify-content: space-between; gap: 1rem; padding: 1.2rem; }
+.directory-card h2 { margin: .35rem 0; font-size: 1.25rem; }
+.directory-count { align-self: start; white-space: nowrap; color: var(--hvo-muted); font-size: .78rem; }
+.public-state { padding: 3rem; color: var(--hvo-muted); text-align: center; }
+@media (max-width: 767.98px) { .directory-layout { grid-template-columns: 1fr; } .directory-map-shell { position: relative; min-height: 22rem; } .directory-map { min-height: 22rem; } }

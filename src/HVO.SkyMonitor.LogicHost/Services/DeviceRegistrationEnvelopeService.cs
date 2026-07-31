@@ -63,15 +63,16 @@ internal sealed class DeviceRegistrationEnvelopeService : IDeviceRegistrationEnv
         IQueryable<Observatory> observatoryQuery = isRelational
             ? dbContext.Observatories.FromSqlInterpolated($"""
                 SELECT * FROM [Observatories] WITH (UPDLOCK, HOLDLOCK)
-                WHERE [Id] = {request.ObservatoryId} AND [OwnerUserId] = {request.OwnerUserId}
+                WHERE [Id] = {request.ObservatoryId}
                 """)
-            : dbContext.Observatories.Where(observatory =>
-                observatory.Id == request.ObservatoryId
-                && observatory.OwnerUserId == request.OwnerUserId);
+            : dbContext.Observatories.Where(observatory => observatory.Id == request.ObservatoryId);
         var observatory = await observatoryQuery
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
-        if (observatory is null)
+        if (observatory is null
+            || !await ObservatoryMembershipAccess.ForOwner(dbContext, request.OwnerUserId)
+                .AnyAsync(item => item.ObservatoryId == request.ObservatoryId, cancellationToken)
+                .ConfigureAwait(false))
         {
             throw new DeviceRegistrationException(
                 "Device registration not found or access denied.",
@@ -85,11 +86,13 @@ internal sealed class DeviceRegistrationEnvelopeService : IDeviceRegistrationEnv
         IQueryable<DeviceRegistration> registrationQuery = isRelational
             ? dbContext.DeviceRegistrations.FromSqlInterpolated($"""
                 SELECT * FROM [DeviceRegistrations] WITH (UPDLOCK, HOLDLOCK)
-                WHERE [Id] = {request.RegistrationId} AND [OwnerUserId] = {request.OwnerUserId}
+                WHERE [Id] = {request.RegistrationId}
+                  AND [DeviceId] = {request.DeviceId}
+                  AND [ObservatoryId] = {request.ObservatoryId}
                 """)
-            : dbContext.DeviceRegistrations.Where(registration =>
-                registration.Id == request.RegistrationId
-                && registration.OwnerUserId == request.OwnerUserId);
+            : dbContext.DeviceRegistrations.Where(registration => registration.Id == request.RegistrationId
+                && registration.DeviceId == request.DeviceId
+                && registration.ObservatoryId == request.ObservatoryId);
         var registration = await registrationQuery
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -99,16 +102,6 @@ internal sealed class DeviceRegistrationEnvelopeService : IDeviceRegistrationEnv
             throw new DeviceRegistrationException(
                 "Device registration not found or access denied.",
                 DeviceRegistrationException.NotFoundReasonCode);
-        }
-
-        if (!string.Equals(registration.DeviceId, request.DeviceId, StringComparison.Ordinal))
-        {
-            throw new DeviceRegistrationException("Device identifier mismatch.");
-        }
-
-        if (registration.ObservatoryId != request.ObservatoryId)
-        {
-            throw new DeviceRegistrationException("Observatory mismatch for device registration.");
         }
 
         if (registration.Status != DeviceRegistrationStatus.Pending)

@@ -31,6 +31,7 @@ internal sealed class CentralArtifactConfiguration : IEntityTypeConfiguration<Ce
             .HasFilter("[DevicePublicId] IS NOT NULL");
         builder.HasIndex(artifact => new { artifact.CentralFrameId, artifact.Role, artifact.RecipeVersion });
         builder.HasIndex(artifact => new { artifact.CentralFrameId, artifact.ArtifactId }).IsUnique();
+        builder.HasIndex(artifact => new { artifact.CentralFrameId, artifact.ReceivedAtUtc, artifact.ArtifactId });
         builder.HasIndex(artifact => new
         {
             artifact.ObjectState,

@@ -8,27 +8,30 @@ namespace HVO.SkyMonitor.LogicHost.Components.Layout;
 
 public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
 {
-    private static readonly IReadOnlyList<NavigationLink> PrimaryLinks =
+    private static readonly IReadOnlyList<NavigationLink> PublicLinks =
     [
-        new NavigationLink("/", "Dashboard", "bi bi-house", NavLinkMatch.All),
-        new NavigationLink("/observatories", "Observatories", "bi bi-building-gear", NavLinkMatch.Prefix),
-        new NavigationLink("/devices", "Devices", "bi bi-hdd-network", NavLinkMatch.Prefix)
+        new NavigationLink("/", "Discover", "bi bi-stars", NavLinkMatch.All),
+        new NavigationLink("/observatories", "Observatories", "bi bi-globe-americas", NavLinkMatch.Prefix),
+        new NavigationLink("/events", "Events", "bi bi-lightning-charge", NavLinkMatch.Prefix)
     ];
 
-    private static readonly IReadOnlyList<ToolbarAction> ToolbarActions =
+    private static readonly IReadOnlyList<NavigationLink> OperationsLinks =
     [
-        new ToolbarAction("bi bi-bell", "Notifications"),
-        new ToolbarAction("bi bi-gear", "Configuration"),
-        new ToolbarAction("bi bi-question-circle", "Help"),
-        new ToolbarAction("bi bi-chat-dots", "Feedback")
+        new NavigationLink("/app", "Dashboard", "bi bi-grid-1x2", NavLinkMatch.All),
+        new NavigationLink("/app/observatories", "Observatories", "bi bi-building-gear", NavLinkMatch.Prefix),
+        new NavigationLink("/app/captures", "Captures", "bi bi-images", NavLinkMatch.Prefix),
+        new NavigationLink("/app/processing", "Processing", "bi bi-diagram-3", NavLinkMatch.Prefix),
+        new NavigationLink("/app/events", "Events", "bi bi-lightning-charge", NavLinkMatch.Prefix)
     ];
 
     [Inject]
     public NavigationManager NavigationManager { get; set; } = default!;
 
-    private IEnumerable<NavigationLink> PrimaryNavigationLinks => PrimaryLinks;
+    private IEnumerable<NavigationLink> PrimaryNavigationLinks => IsOperationsWorkspace ? OperationsLinks : PublicLinks;
 
-    private IEnumerable<ToolbarAction> AuxiliaryActions => ToolbarActions;
+    private bool IsOperationsWorkspace { get; set; }
+
+    private string WorkspaceLabel => IsOperationsWorkspace ? "Network Operations" : "Sky Network";
 
     private string CurrentReturnUrl = string.Empty;
 
@@ -47,6 +50,9 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
     private void UpdateReturnUrl(string location)
     {
         var baseRelative = NavigationManager.ToBaseRelativePath(location);
+        IsOperationsWorkspace = baseRelative.Equals("app", StringComparison.OrdinalIgnoreCase)
+            || baseRelative.StartsWith("app/", StringComparison.OrdinalIgnoreCase)
+            || baseRelative.StartsWith("devices", StringComparison.OrdinalIgnoreCase);
         CurrentReturnUrl = NormalizeReturnUrl(baseRelative);
     }
 
@@ -129,8 +135,6 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
 
         return "??";
     }
-
-    private sealed record ToolbarAction(string IconClass, string Tooltip);
 
     private sealed record NavigationLink(string Href, string Label, string IconClass, NavLinkMatch Match);
 }

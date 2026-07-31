@@ -66,7 +66,11 @@ internal sealed class CentralTransientDerivativeRetrievalService(
             return new(CentralTransientDerivativeLookupStatus.NotFound);
         }
         var canAccess = await CentralTransientEventReadService.ApplyAccess(
-                dbContext, dbContext.CentralTransientEventCurrent.AsNoTracking(), isAdmin, ownerId)
+                dbContext,
+                dbContext.CentralTransientEventCurrent.AsNoTracking(),
+                isAdmin,
+                ownerId,
+                CentralArtifactCredentialAccess.GetObservatoryScope(principal))
             .AnyAsync(item => item.CentralTransientEventId == centralTransientEventId, cancellationToken)
             .ConfigureAwait(false);
         if (!canAccess)

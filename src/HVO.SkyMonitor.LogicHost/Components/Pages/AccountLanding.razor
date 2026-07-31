@@ -1,0 +1,6 @@
+@page "/account"
+@attribute [Authorize]
+
+<PageTitle>Account | HVO SkyMonitor</PageTitle>
+<header class="mb-4"><p class="text-uppercase text-info small fw-bold mb-1">Registered account</p><h1>Account and subscriptions</h1><p class="text-muted">Manage identity security, account-scoped API keys, follows, subscriptions, and notifications.</p></header>
+<div class="row g-3"><div class="col-md-6"><a class="card h-100 text-decoration-none" href="Account/Manage"><span class="card-body"><i class="bi bi-shield-lock fs-3"></i><strong class="d-block h4 mt-3">Identity and API keys</strong><span class="text-muted">Security settings and keys constrained to your effective authority.</span></span></a></div><div class="col-md-6"><a class="card h-100 text-decoration-none" href="app/notifications"><span class="card-body"><i class="bi bi-bell fs-3"></i><strong class="d-block h4 mt-3">Subscriptions and notifications</strong><span class="text-muted">Verified-event delivery preferences and recent account notifications.</span></span></a></div></div>

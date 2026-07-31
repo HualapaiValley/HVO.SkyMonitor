@@ -72,8 +72,13 @@ internal sealed class FrameHistoryController(ApplicationDbContext dbContext) : C
         string? agentId,
         FrameArtifactRole? role)
     {
-        query = query.Where(frame => dbContext.DeviceRegistrations.Any(registration =>
-            registration.Id == frame.RegistrationId && registration.OwnerUserId == ownerId));
+        var observatories = ObservatoryMembershipAccess.ForUser(dbContext, ownerId)
+            .Select(membership => membership.ObservatoryId);
+        if (CentralArtifactCredentialAccess.GetObservatoryScope(User) is { } observatoryScope)
+        {
+            observatories = observatories.Where(observatoryId => observatoryId == observatoryScope);
+        }
+        query = query.Where(frame => observatories.Contains(frame.ObservatoryId));
         if (!string.IsNullOrWhiteSpace(agentId))
         {
             query = query.Where(frame => frame.AgentId == agentId);

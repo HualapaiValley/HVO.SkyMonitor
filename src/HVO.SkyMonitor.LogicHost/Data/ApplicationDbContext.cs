@@ -19,6 +19,10 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<DeviceHeartbeatRecord> DeviceHeartbeatRecords => Set<DeviceHeartbeatRecord>();
     internal DbSet<CentralFrame> CentralFrames => Set<CentralFrame>();
     internal DbSet<CentralArtifact> CentralArtifacts => Set<CentralArtifact>();
+    internal DbSet<CentralArtifactDownloadAuthorization> CentralArtifactDownloadAuthorizations =>
+        Set<CentralArtifactDownloadAuthorization>();
+    internal DbSet<CentralProcessingOverrideVersion> CentralProcessingOverrideVersions =>
+        Set<CentralProcessingOverrideVersion>();
     internal DbSet<CentralDerivativeJob> CentralDerivativeJobs => Set<CentralDerivativeJob>();
     internal DbSet<CentralDerivativeJobAttempt> CentralDerivativeJobAttempts => Set<CentralDerivativeJobAttempt>();
     internal DbSet<CentralDerivativeJobInputRequirement> CentralDerivativeJobInputRequirements => Set<CentralDerivativeJobInputRequirement>();
@@ -66,10 +70,43 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralTransientValidationOutcomeVersion> CentralTransientValidationOutcomeVersions => Set<CentralTransientValidationOutcomeVersion>();
     internal DbSet<CentralTransientSubmissionAudit> CentralTransientSubmissionAudits => Set<CentralTransientSubmissionAudit>();
     internal DbSet<Observatory> Observatories => Set<Observatory>();
+    internal DbSet<ObservatoryMembership> ObservatoryMemberships => Set<ObservatoryMembership>();
+    internal DbSet<ObservatoryMembershipAudit> ObservatoryMembershipAudits => Set<ObservatoryMembershipAudit>();
+    internal DbSet<ObservatoryPublicationProfileVersion> ObservatoryPublicationProfileVersions =>
+        Set<ObservatoryPublicationProfileVersion>();
+    internal DbSet<ObservatoryLocationDisclosureVersion> ObservatoryLocationDisclosureVersions =>
+        Set<ObservatoryLocationDisclosureVersion>();
+    internal DbSet<PublicRecordPublicationDecision> PublicRecordPublicationDecisions =>
+        Set<PublicRecordPublicationDecision>();
+    internal DbSet<LogicalCamera> LogicalCameras => Set<LogicalCamera>();
+    internal DbSet<LogicalCameraInstallation> LogicalCameraInstallations => Set<LogicalCameraInstallation>();
+    internal DbSet<ObservatoryInvitation> ObservatoryInvitations => Set<ObservatoryInvitation>();
+    internal DbSet<ObservatoryInvitationDisposition> ObservatoryInvitationDispositions =>
+        Set<ObservatoryInvitationDisposition>();
+    internal DbSet<CuratedPublicPlacementDecision> CuratedPublicPlacementDecisions => Set<CuratedPublicPlacementDecision>();
+    internal DbSet<RegisteredUserObservatoryFollow> RegisteredUserObservatoryFollows => Set<RegisteredUserObservatoryFollow>();
+    internal DbSet<RegisteredUserTransientEventBookmark> RegisteredUserTransientEventBookmarks => Set<RegisteredUserTransientEventBookmark>();
+    internal DbSet<RegisteredUserSubscription> RegisteredUserSubscriptions => Set<RegisteredUserSubscription>();
+    internal DbSet<RegisteredUserNotificationPreference> RegisteredUserNotificationPreferences => Set<RegisteredUserNotificationPreference>();
+    internal DbSet<RegisteredUserNotification> RegisteredUserNotifications => Set<RegisteredUserNotification>();
     internal DbSet<ObservatoryLocationVersion> ObservatoryLocationVersions => Set<ObservatoryLocationVersion>();
     internal DbSet<DeviceDeploymentLocationVersion> DeviceDeploymentLocationVersions => Set<DeviceDeploymentLocationVersion>();
     internal DbSet<DeploymentLocationResolutionAudit> DeploymentLocationResolutionAudits => Set<DeploymentLocationResolutionAudit>();
     internal DbSet<CentralCaptureLocation> CentralCaptureLocations => Set<CentralCaptureLocation>();
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        RejectMembershipAuditMutation();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess,
+        CancellationToken cancellationToken = default)
+    {
+        RejectMembershipAuditMutation();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -83,6 +120,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         DeviceFleetConfiguration.Configure(builder);
         builder.ApplyConfiguration(new CentralFrameConfiguration());
         builder.ApplyConfiguration(new CentralArtifactConfiguration());
+        builder.ApplyConfiguration(new CentralArtifactDownloadAuthorizationConfiguration());
+        CentralProcessingOverrideConfiguration.Configure(builder);
         builder.ApplyConfiguration(new CentralDerivativeJobConfiguration());
         CentralDerivativeExecutionConfiguration.Configure(builder);
         CentralDerivativeWindowConfiguration.Configure(builder);
@@ -96,6 +135,9 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         CentralTransientReprocessingConfiguration.Configure(builder);
         CentralTransientPayloadReleaseConfiguration.Configure(builder);
         builder.ApplyConfiguration(new ObservatoryConfiguration());
+        ObservatoryMembershipConfiguration.Configure(builder);
+        NetworkAuthorityConfiguration.Configure(builder);
+        RegisteredUserNetworkConfiguration.Configure(builder);
         DeploymentLocationAuthorityConfiguration.Configure(builder);
 
         // Configure OpenIddict entities to use the default Entity Framework Core conventions
@@ -122,6 +164,11 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             .HasMaxLength(32)
             .IsRequired();
 
+        entity.HasOne<Observatory>()
+            .WithMany()
+            .HasForeignKey(key => key.ObservatoryId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         entity.Property(key => key.IsActive)
             .HasDefaultValue(true)
             .IsRequired();
@@ -145,6 +192,90 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             .IsRequired();
 
         entity.HasIndex(key => key.UserId);
+        entity.HasIndex(key => new { key.UserId, key.ObservatoryId });
         entity.HasIndex(key => new { key.IsActive, key.ExpiresUtc });
+    }
+
+    private void RejectMembershipAuditMutation()
+    {
+        var immutableMutation = ChangeTracker.Entries<ObservatoryMembershipAudit>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted)
+            || ChangeTracker.Entries<CentralArtifactDownloadAuthorization>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted)
+            || ChangeTracker.Entries<PublicRecordPublicationDecision>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted)
+            || ChangeTracker.Entries<ObservatoryInvitation>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted)
+            || ChangeTracker.Entries<ObservatoryInvitationDisposition>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted)
+            || ChangeTracker.Entries<CuratedPublicPlacementDecision>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted)
+            || ChangeTracker.Entries<LogicalCamera>().Any(entry => entry.State == EntityState.Deleted);
+        if (immutableMutation)
+        {
+            throw new InvalidOperationException("Audit records are immutable.");
+        }
+
+        ValidateSingleSupersession<ObservatoryPublicationProfileVersion>(nameof(ObservatoryPublicationProfileVersion.SupersededAtUtc));
+        ValidateSingleSupersession<ObservatoryLocationDisclosureVersion>(nameof(ObservatoryLocationDisclosureVersion.SupersededAtUtc));
+        ValidateInstallationRetirement();
+        if (ChangeTracker.Entries<CentralFrame>().Any(entry =>
+                entry.State == EntityState.Modified
+                && entry.Property(frame => frame.LogicalCameraInstallationId).IsModified))
+        {
+            throw new InvalidOperationException("Capture installation authority is immutable.");
+        }
+    }
+
+    private void ValidateSingleSupersession<TEntity>(string supersededPropertyName)
+        where TEntity : class
+    {
+        foreach (var entry in ChangeTracker.Entries<TEntity>())
+        {
+            if (entry.State == EntityState.Deleted)
+            {
+                throw new InvalidOperationException("Versioned authority records cannot be deleted.");
+            }
+            if (entry.State != EntityState.Modified)
+            {
+                continue;
+            }
+            var property = entry.Property(supersededPropertyName);
+            if (entry.Properties.Any(candidate => candidate.IsModified && candidate.Metadata.Name != supersededPropertyName)
+                || property.OriginalValue is not null
+                || property.CurrentValue is null)
+            {
+                throw new InvalidOperationException("Versioned authority records allow only one terminal supersession.");
+            }
+        }
+    }
+
+    private void ValidateInstallationRetirement()
+    {
+        string[] allowedProperties =
+        [
+            nameof(LogicalCameraInstallation.RetiredAtUtc),
+            nameof(LogicalCameraInstallation.RetiredByUserId),
+            nameof(LogicalCameraInstallation.RetirementReasonCode),
+            nameof(LogicalCameraInstallation.RowVersion)
+        ];
+        foreach (var entry in ChangeTracker.Entries<LogicalCameraInstallation>())
+        {
+            if (entry.State == EntityState.Deleted)
+            {
+                throw new InvalidOperationException("Logical camera installation history cannot be deleted.");
+            }
+            if (entry.State != EntityState.Modified)
+            {
+                continue;
+            }
+            if (entry.Properties.Any(property => property.IsModified
+                    && !allowedProperties.Contains(property.Metadata.Name, StringComparer.Ordinal))
+                || entry.Property(nameof(LogicalCameraInstallation.RetiredAtUtc)).OriginalValue is not null
+                || entry.Property(nameof(LogicalCameraInstallation.RetiredAtUtc)).CurrentValue is null)
+            {
+                throw new InvalidOperationException("Logical camera installations allow only one terminal retirement.");
+            }
+        }
     }
 }

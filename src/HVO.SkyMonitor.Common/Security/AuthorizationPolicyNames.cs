@@ -5,4 +5,10 @@ public static class AuthorizationPolicyNames
     public const string ApiKeyOrCookie = "ApiKeyOrCookie";
     public const string ApiKeyRead = "ApiKeyRead";
     public const string ApiKeyReadWrite = "ApiKeyReadWrite";
+    public const string PlatformEditorialWrite = "PlatformEditorialWrite";
+}
+
+public static class AuthorizationRoleNames
+{
+    public const string PlatformEditor = "PlatformEditor";
 }

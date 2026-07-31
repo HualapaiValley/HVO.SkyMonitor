@@ -262,6 +262,47 @@ creation time, ordered source identities, canonical recipe identity, and the
 capture-time profile identity. A failed optional operation cannot erase raw or
 silently substitute a different role.
 
+### 3.10 Maintainability and structural evolution
+
+Cross-cutting maintainability hypotheses and structural guardrails are tracked by
+[#242 Evaluate maintainability and structural complexity before further platform growth](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/242).
+That review is non-blocking and does not approve a broad refactor. Static review,
+file size, constructor size, and interface count identify candidates only; a
+change must show concrete duplication, ownership ambiguity, test friction, or
+approved extension pressure before becoming focused implementation work.
+
+Sealed composition remains the default. Interfaces describe real plugins,
+infrastructure boundaries, or independently consumed capabilities; abstract
+classes and virtual methods require multiple implementations sharing a stable
+invariant algorithm. New work keeps transaction, lock, lease, retry, and
+compensation ownership explicit, does not grow interfaces through silent no-op
+or throwing defaults, and avoids adding unrelated responsibilities to already
+broad coordinators when a focused collaborator can own the behavior. Generic
+repositories, universal workflow bases, database splits, and additional projects
+require a concrete architectural need rather than organizational preference.
+
+### 3.11 Database engineering and shared-server operations
+
+SQL Server and SQLite critical-section, access-plan, schema-ownership, and
+shared-server readiness work is coordinated by
+[#243 Audit and harden SQL Server and SQLite critical sections and access plans](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/243).
+The existing technology split remains authoritative: LogicHost uses EF Core and
+named parameterized SQL Server-specific operations, CameraAgent workflow state
+uses direct SQLite, local CameraAgent Identity uses isolated EF Core SQLite, and
+catalog snapshots remain immutable read-only SQLite.
+
+Before production rollout, current-head evidence must disposition SQL
+transactions that span external object I/O, SQLite immediate transactions that
+span full-file validation, and unbounded reconciliation inside long database
+transactions. Accepted rollout-blocking corrections use durable intermediate
+state, short fenced transactions, bounded batches, and explicit crash recovery;
+they merge before #151. Database indexes, views, stored procedures, TVPs,
+compiled queries, connection-pool limits, RCSI, and retention changes require
+the exact production query or transaction plus comparable plan, lock, I/O, and
+correctness evidence. Dapper, generic repositories, blanket retries, `NOLOCK`,
+database splits, and provider-wide procedure conversion are not default
+solutions.
+
 ## 4. Performance Is a Design Requirement
 
 Performance-sensitive work is identified by the `performance` GitHub label or a
@@ -293,6 +334,24 @@ Every performance-sensitive issue and PR must link its selected workload and
 evidence; a generic statement that performance was considered is insufficient.
 Tier A/B/C/M selection, evidence invalidation, and milestone benchmark ownership
 are defined in the execution protocol and standalone course correction.
+
+Cross-cutting performance hypotheses and their required current-head evaluation
+are tracked by
+[#241 Evaluate cross-cutting CPU, memory, and I/O performance opportunities](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/241).
+That review is a non-blocking suggestion and evidence backlog, not an accepted
+architecture or final performance conclusion. Historical measurements and static
+code review motivate investigation only; each candidate must be profiled and
+remeasured under a named workload before it becomes separate implementation work
+or an approved milestone requirement.
+
+Low-overhead production metrics, Linux/.NET profiling escalation, telemetry
+cardinality and sampling policy, and diagnostic security are deferred under
+[#244 Define low-overhead production profiling and observability operations](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/244).
+That follow-up does not block the virtual-first milestone merely by existing.
+Routine metrics should identify the pressured stage or resource with bounded
+cost; method-level CPU, allocation, lock, heap-root, syscall, and kernel evidence
+remains short-lived on-demand collection unless soak evidence justifies a
+separately budgeted continuous profiler.
 
 ## 5. Requirement Ownership
 
@@ -348,7 +407,8 @@ central pipeline.
 - Phase 13 is partial: CameraAgent UI #106 is merged, while LogicHost UI #107
   follows standalone gate #211.
 - Phase 14 remains open: #166 and #211 precede deployment automation #151;
-  #151, #107, and #211 precede final two-host gate #108.
+  #243 database disposition and accepted rollout-blocking corrections also
+  precede #151; #151, #107, and #211 precede final two-host gate #108.
 
 ## 7. Phase 0 - Planning, Boundaries, and Quality
 
@@ -861,6 +921,7 @@ Issues:
 - [#111 Package and verify production astronomy catalog snapshots](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/111)
 - [#114 Persist and recover CameraAgent and shared-service state](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/114)
 - [#120 Replace stale identity and security operations guidance](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/120)
+- [#243 Audit and harden SQL Server and SQLite critical sections and access plans](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/243)
 
 Requirements:
 
@@ -872,6 +933,7 @@ Requirements:
 | `E2E-004` | Verify outputs through checksums, numeric invariants, provenance, and expected durable state. |
 | `E2E-005` | Review logs, metrics, traces, queue age, failures, and bounded cardinality. |
 | `E2E-006` | Keep Stellarium, soak, external, and future hardware gates separate from normal CI. |
+| `E2E-007` | Capture current-head SQL Server and SQLite plans, lock/transaction duration, I/O, WAL, shared-instance attribution, and accepted critical-section corrections before production rollout evidence. |
 
 Production-readiness children may begin after their own prerequisites; #109
 closes only after those children and #108 are complete. It is not a Phase 0
@@ -953,7 +1015,7 @@ Exit gate `GATE-P14`:
 
 #94 + #97 + #98 --> #114 persistent state
 #91 --> #120 operations guidance
-#166 + #211 --> #151 split-host deployment
+#166 + #211 + #243 disposition/accepted rollout blockers --> #151 split-host deployment
 #211 --> close #205 standalone CameraAgent epic
 #151 + #107 + all required backend/UI/readiness children --> #108 E2E
 #108 --> close #65, #109, and #89

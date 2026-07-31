@@ -1824,19 +1824,24 @@ public sealed class CentralTransientEventPersistenceIntegrationTests
     {
         var artifacts = new List<CentralArtifact>();
         var sourceOrdinal = 0;
+        var suppliedRegistrationIds = registrationIds ?? (registrationId is { } id ? [id] : []);
+        var observatoriesByRegistration = await db.DeviceRegistrations.AsNoTracking()
+            .Where(item => suppliedRegistrationIds.Contains(item.Id))
+            .ToDictionaryAsync(item => item.Id, item => item.ObservatoryId).ConfigureAwait(false);
         var eventCreatedUtc = fixture.Events.Count > 0
             ? fixture.Event.EventCreatedUtc
             : fixture.Extraction.OrderedSources.Max(item => item.Source.ObservationEndedUtc).AddSeconds(1);
         foreach (var source in fixture.Extraction.OrderedSources)
         {
             var reference = source.Source.Locator.Artifact;
+            var sourceRegistrationId = registrationIds is not null
+                ? registrationIds[sourceOrdinal]
+                : registrationId ?? Guid.NewGuid();
             var frame = new CentralFrame
             {
-                RegistrationId = registrationIds is not null
-                    ? registrationIds[sourceOrdinal]
-                    : registrationId ?? Guid.NewGuid(),
+                RegistrationId = sourceRegistrationId,
                 DevicePublicId = Guid.NewGuid(),
-                ObservatoryId = Guid.NewGuid(),
+                ObservatoryId = observatoriesByRegistration.GetValueOrDefault(sourceRegistrationId, Guid.NewGuid()),
                 AgentId = fixture.AgentId,
                 FrameId = Guid.NewGuid(),
                 CapturedAtUtc = source.Source.ObservationStartedUtc,

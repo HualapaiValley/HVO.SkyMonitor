@@ -20,7 +20,7 @@ Each test invocation owns a category/project-specific result directory and TRX n
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=1536`, `Integration=424`, `Manual=57`, `Soak=1`, `External=0`, and `Hardware=0`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=1559`, `Integration=435`, `Manual=59`, `Soak=1`, `External=0`, and `Hardware=0`.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. No Hardware check is published until real device tests and a suitable runner exist.
 

@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="bunit" />
     <PackageReference Include="coverlet.collector">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
@@ -30,6 +31,9 @@
           CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\docs\validation\transient-review-runtime-signals.json"
           Link="Validation\transient-review-runtime-signals.json"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\validation\logichost-ui-107-runtime-signals.json"
+          Link="Validation\logichost-ui-107-runtime-signals.json"
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

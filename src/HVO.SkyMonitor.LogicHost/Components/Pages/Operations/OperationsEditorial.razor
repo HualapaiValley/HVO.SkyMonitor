@@ -1,0 +1,17 @@
+@page "/app/editorial"
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.PlatformEditorialWrite)]
+
+<PageTitle>Public Curation | Network Operations</PageTitle>
+<header class="mb-4"><p class="text-uppercase text-info small fw-bold mb-1">Platform Editor</p><h1>Public home curation</h1><p class="text-muted">Feature, suppress, or return eligible records to automatic placement without gaining observatory authority.</p></header>
+@if (IsLoading)
+{
+    <div class="card"><div class="card-body" role="status">Loading eligible public records...</div></div>
+}
+else
+{
+    @if (StatusMessage is not null) { <div class="alert alert-info" role="status">@StatusMessage</div> }
+    <div class="row g-4">
+        <section class="col-xl-6" aria-labelledby="observatoryCurationHeading"><div class="card h-100"><div class="card-body"><h2 id="observatoryCurationHeading" class="h4">Observatories</h2><p class="text-muted small">Only current public profiles are eligible.</p>@if (Observatories.Count == 0) { <p>No eligible observatories.</p> } else { <div class="list-group">@foreach (var item in Observatories) { <div class="list-group-item"><strong>@item.DisplayName</strong><small class="d-block text-muted mb-2">/@item.Slug</small><div class="btn-group btn-group-sm" role="group" aria-label="Curate @item.DisplayName"><button class="btn btn-outline-info" @onclick="() => DecideObservatoryAsync(item.Slug, HVO.SkyMonitor.LogicHost.Data.CuratedPlacementState.Featured)">Feature</button><button class="btn btn-outline-warning" @onclick="() => DecideObservatoryAsync(item.Slug, HVO.SkyMonitor.LogicHost.Data.CuratedPlacementState.Suppressed)">Suppress</button><button class="btn btn-outline-light" @onclick="() => DecideObservatoryAsync(item.Slug, HVO.SkyMonitor.LogicHost.Data.CuratedPlacementState.Cleared)">Automatic</button></div></div> }</div> }</div></div></section>
+        <section class="col-xl-6" aria-labelledby="eventCurationHeading"><div class="card h-100"><div class="card-body"><h2 id="eventCurationHeading" class="h4">Verified events</h2><p class="text-muted small">Withdrawal immediately removes an event regardless of placement.</p>@if (Events.Count == 0) { <p>No eligible events.</p> } else { <div class="list-group">@foreach (var item in Events) { <div class="list-group-item"><strong>@(item.MeteorSeverity?.ToString() ?? item.Classification.ToString())</strong><small class="d-block text-muted mb-2">@item.EventCreatedUtc.ToString("u")</small><div class="btn-group btn-group-sm" role="group" aria-label="Curate event @item.PublicId"><button class="btn btn-outline-info" @onclick="() => DecideEventAsync(item.PublicId, HVO.SkyMonitor.LogicHost.Data.CuratedPlacementState.Featured)">Feature</button><button class="btn btn-outline-warning" @onclick="() => DecideEventAsync(item.PublicId, HVO.SkyMonitor.LogicHost.Data.CuratedPlacementState.Suppressed)">Suppress</button><button class="btn btn-outline-light" @onclick="() => DecideEventAsync(item.PublicId, HVO.SkyMonitor.LogicHost.Data.CuratedPlacementState.Cleared)">Automatic</button></div></div> }</div> }</div></div></section>
+    </div>
+}

@@ -29,12 +29,14 @@ internal sealed class EnvironmentalObservationHealthCheck(
         {
             sourceCount = await dbContext.EnvironmentalObservationSources
                 .AsNoTracking()
+                .OrderBy(source => source.Id)
                 .Select(source => source.Id)
                 .Take(10_001)
                 .CountAsync(cancellationToken)
                 .ConfigureAwait(false);
             observationCount = await dbContext.EnvironmentalObservations
                 .AsNoTracking()
+                .OrderBy(observation => observation.Id)
                 .Select(observation => observation.Id)
                 .Take(10_001)
                 .CountAsync(cancellationToken)
@@ -51,6 +53,9 @@ internal sealed class EnvironmentalObservationHealthCheck(
                 .Where(observation => observation.ReceivedAtUtc < receiptCutoff &&
                     observation.ValidThroughUtc < now && !observation.ReferencedBy.Any());
             retentionEligibleCount = await eligible
+                .OrderBy(observation => observation.ReceivedAtUtc)
+                .ThenBy(observation => observation.ValidThroughUtc)
+                .ThenBy(observation => observation.Id)
                 .Select(observation => observation.Id)
                 .Take(10_001)
                 .CountAsync(cancellationToken)

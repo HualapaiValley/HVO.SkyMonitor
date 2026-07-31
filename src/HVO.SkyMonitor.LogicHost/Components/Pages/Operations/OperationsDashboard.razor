@@ -1,0 +1,63 @@
+@page "/app"
+@attribute [Authorize]
+
+<PageTitle>Network Operations | HVO SkyMonitor</PageTitle>
+
+<header class="ops-heading">
+    <div><p>Network Operations</p><h1>Accessible observatories</h1><span>Fleet, capture, processing, weather, and event state from the central durable record.</span></div>
+    <a class="btn btn-outline-light" href="app/observatories/manage"><i class="bi bi-gear"></i> Manage observatories</a>
+</header>
+
+@if (IsLoading)
+{
+    <div class="ops-state" role="status">Loading network operations...</div>
+}
+else if (Items.Count == 0)
+{
+    <div class="ops-state"><h2>No accessible observatories</h2><p>Create an observatory or accept an invitation to begin.</p></div>
+}
+else
+{
+    <div class="ops-grid">
+        @foreach (var item in Items)
+        {
+            <article class="ops-card">
+                <div class="ops-card__title"><div><span>@item.Role</span><h2>@item.Name</h2></div><a href="@($"app/observatories/{item.ObservatoryId:D}")" aria-label="Open @item.Name"><i class="bi bi-arrow-up-right"></i></a></div>
+                <dl>
+                    <div><dt>Cameras</dt><dd>@item.LogicalCameraCount</dd></div>
+                    <div><dt>Installed</dt><dd>@item.ActiveInstallationCount</dd></div>
+                    <div><dt>Location review</dt><dd>@item.PendingDeploymentCount</dd></div>
+                    <div><dt>Active jobs</dt><dd>@item.ActiveJobCount</dd></div>
+                </dl>
+                <div class="d-flex flex-wrap gap-2 mt-3">
+                    <a class="btn btn-sm btn-primary" href="@($"app/captures?observatoryId={item.ObservatoryId:D}")">Captures</a>
+                    @if (item.Role == HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Owner)
+                    {
+                        <a class="btn btn-sm btn-outline-light" href="@($"app/observatories/{item.ObservatoryId:D}/members")">Members</a>
+                    }
+                </div>
+            </article>
+        }
+    </div>
+    @if (NextCursor is not null)
+    {
+        <button class="btn btn-outline-light mt-3" disabled="@IsLoadingMore" @onclick="LoadMoreAsync">@(IsLoadingMore ? "Loading..." : "Load more observatories")</button>
+    }
+}
+<section class="mt-5" aria-labelledby="followedHeading">
+    <p class="text-uppercase text-info small fw-bold mb-1">Personal network</p>
+    <h2 id="followedHeading">Followed observatories</h2>
+    @if (FollowedObservatories.Count == 0)
+    {
+        <div class="ops-state">Follow a public observatory to keep it close without gaining operational access.</div>
+    }
+    else
+    {
+        <div class="ops-grid">
+            @foreach (var item in FollowedObservatories)
+            {
+                <article class="ops-card"><h3 class="h5">@item.DisplayName</h3><p class="text-muted">Followed @item.FollowedUtc.ToString("u")</p><a href="@($"observatories/{item.Slug}")">Open public profile</a></article>
+            }
+        </div>
+    }
+</section>

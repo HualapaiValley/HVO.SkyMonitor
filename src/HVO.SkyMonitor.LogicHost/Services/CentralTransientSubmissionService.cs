@@ -83,7 +83,8 @@ internal sealed class CentralTransientSubmissionService(
     ICentralDerivativeJobScheduler jobScheduler,
     IOptions<CentralTransientOptions> options,
     CentralDerivativeWorkerTelemetry telemetry,
-    TimeProvider timeProvider) : ICentralTransientSubmissionService
+    TimeProvider timeProvider,
+    ICentralProcessingPolicyService? processingPolicy = null) : ICentralTransientSubmissionService
 {
     private const int SubmittedSourceCount = 3;
     private const int CenteredSourceCount = 5;
@@ -127,7 +128,10 @@ internal sealed class CentralTransientSubmissionService(
                 envelope, existingJobId: null, cancellationToken).ConfigureAwait(false);
         }
         var sourceRole = sourceReferences[0].Locator.Artifact.Role;
-        var recipe = recipeCatalog.GetTransientRecipe(sourceRole);
+        var recipe = processingPolicy is null
+            ? recipeCatalog.GetTransientRecipe(sourceRole)
+            : await processingPolicy.ResolveTransientRecipeAsync(
+                registration.ObservatoryId, sourceRole, cancellationToken).ConfigureAwait(false);
         if (recipe?.Transient is null || !string.Equals(
                 recipe.RequestedRecipeIdentitySha256,
                 envelope.RequestedRecipeIdentitySha256,

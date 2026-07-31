@@ -105,6 +105,13 @@ internal sealed class DeviceRegistrationConfiguration : IEntityTypeConfiguration
             .IsUnique()
             .HasFilter("[Status] = N'Active'");
         builder.HasIndex(registration => new { registration.ObservatoryId, registration.Status });
+        builder.HasIndex(registration => new
+        {
+            registration.ObservatoryId,
+            registration.Status,
+            registration.FriendlyName,
+            registration.Id
+        });
         builder.HasIndex(registration => registration.DevicePublicId)
             .IsUnique()
             .HasFilter("[DevicePublicId] IS NOT NULL");

@@ -196,6 +196,7 @@ internal sealed class EnvironmentalObservationQueryService(
                             covering.Where(observation => observation.SourceKind == sourceKind),
                             request.Target,
                             specificity)
+                        .OrderBy(observation => observation.Id)
                         .Select(observation => observation.Id)
                         .Take(2 - overlapCount)
                         .CountAsync(cancellationToken)

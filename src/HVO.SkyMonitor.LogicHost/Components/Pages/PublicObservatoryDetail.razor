@@ -1,0 +1,85 @@
+@page "/observatories/{Slug}"
+
+<PageTitle>@(Detail?.Observatory.DisplayName ?? "Observatory") | HVO Sky Network</PageTitle>
+
+@if (IsLoading)
+{
+    <div class="detail-state" role="status">Loading released observatory profile...</div>
+}
+else if (Detail is null)
+{
+    <div class="detail-state"><h1>Observatory not found</h1><p>This profile is private, withdrawn, or unavailable.</p></div>
+}
+else
+{
+    <header class="detail-hero">
+        <div>
+            <p class="detail-kicker">@LocationLabel</p>
+            <h1>@Detail.Observatory.DisplayName</h1>
+            <p>@Detail.Observatory.Description</p>
+        </div>
+        <dl>
+            <div><dt>Location policy</dt><dd>@Detail.Observatory.Location.DisclosureLevel</dd></div>
+            <div><dt>Released cameras</dt><dd>@Detail.Observatory.ReleasedCameraCount</dd></div>
+            <div><dt>Environmental summary</dt><dd>@(Detail.Observatory.PublishesEnvironmentalSummary ? "Released" : "Private")</dd></div>
+        </dl>
+        <AuthorizeView>
+            <Authorized>
+                <button class="btn btn-outline-light" disabled="@IsPersonalizationBusy" @onclick="ToggleFollowAsync">
+                    <i class="bi @(IsFollowing ? "bi-star-fill" : "bi-star")"></i>
+                    @(IsFollowing ? "Following" : "Follow observatory")
+                </button>
+            </Authorized>
+        </AuthorizeView>
+    </header>
+    <section class="mt-5" aria-labelledby="cameraHeading">
+        <p class="detail-kicker">Published instruments</p>
+        <h2 id="cameraHeading">Logical cameras</h2>
+        @if (Detail.Cameras.Count == 0)
+        {
+            <div class="detail-state">No camera profiles are currently released.</div>
+        }
+        else
+        {
+            <div class="detail-grid">
+                @foreach (var camera in Detail.Cameras)
+                {
+                    <article><i class="bi bi-camera"></i><h3>@camera.Name</h3><p>@camera.Description</p></article>
+                }
+            </div>
+            @if (Detail.CamerasNextCursor is not null)
+            {
+                <button class="btn btn-outline-light mt-3" disabled="@IsLoadingMoreCameras" @onclick="LoadMoreCamerasAsync">
+                    @(IsLoadingMoreCameras ? "Loading..." : "Load more cameras")
+                </button>
+            }
+        }
+    </section>
+    <section class="mt-5" aria-labelledby="productHeading">
+        <p class="detail-kicker">Released products</p>
+        <h2 id="productHeading">Recent imagery and freshness</h2>
+        @if (Detail.Products.Count == 0)
+        {
+            <div class="detail-state">No image products are currently released.</div>
+        }
+        else
+        {
+            <div class="detail-grid">
+                @foreach (var product in Detail.Products)
+                {
+                    <article>
+                        <img src="@product.ContentPath" alt="@product.OriginLabel from @product.ObservatoryName at @product.CapturedAtUtc.ToString("u")" loading="lazy" />
+                        <h3>@product.OriginLabel</h3>
+                        <p>Captured @product.CapturedAtUtc.ToString("u")</p>
+                    </article>
+                }
+            </div>
+            @if (Detail.ProductsNextCursor is not null)
+            {
+                <button class="btn btn-outline-light mt-3" disabled="@IsLoadingMoreProducts" @onclick="LoadMoreProductsAsync">
+                    @(IsLoadingMoreProducts ? "Loading..." : "Load more imagery")
+                </button>
+            }
+        }
+    </section>
+}

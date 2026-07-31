@@ -49,6 +49,8 @@ internal sealed class CentralArtifactRetrievalTelemetry : IDisposable
     public void RecordRetention(string outcome)
         => _retention.Add(1, new TagList { { "outcome", outcome } });
 
+    internal long ActiveStreams => Interlocked.Read(ref _activeStreams);
+
     public IDisposable TrackStream()
     {
         Interlocked.Increment(ref _activeStreams);

@@ -74,6 +74,7 @@ internal sealed class DatabaseApiKeyValidator : IApiKeyValidator
             NameIdentifier = key.UserId,
             Email = user.Email,
             AccessLevel = key.AccessLevel,
+            ObservatoryId = key.ObservatoryId,
             AccountType = user.AccountType.ToString()
         };
     }

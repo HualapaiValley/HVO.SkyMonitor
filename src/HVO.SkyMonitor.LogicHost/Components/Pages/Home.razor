@@ -1,7 +1,108 @@
-﻿@page "/"
+@page "/"
 
-<PageTitle>Home</PageTitle>
+<PageTitle>HVO Sky Network</PageTitle>
 
-<h1>Hello, world!</h1>
+<section class="network-hero" aria-labelledby="networkTitle">
+    <div>
+        <p class="network-kicker">Hualapai Valley Observatory</p>
+        <h1 id="networkTitle">A live window into the night sky</h1>
+        <p class="network-lede">Explore deliberately released imagery, verified atmospheric events, and observatories contributing to the HVO Sky Network.</p>
+        <div class="d-flex flex-wrap gap-2 mt-4">
+            <a class="btn btn-primary" href="observatories">Explore observatories</a>
+            <a class="btn btn-outline-light" href="events">View verified events</a>
+        </div>
+    </div>
+    <div class="network-orbit" aria-hidden="true">
+        <span class="network-orbit__core"><i class="bi bi-stars"></i></span>
+    </div>
+</section>
 
-Welcome to your new app.
+@if (IsLoading)
+{
+    <div class="network-state" role="status">Loading released network activity...</div>
+}
+else if (ErrorMessage is not null)
+{
+    <div class="alert alert-warning" role="alert">@ErrorMessage</div>
+}
+else
+{
+    <section class="network-section" aria-labelledby="stationHeading">
+        <div class="network-section__heading">
+            <div>
+                <p class="network-kicker">Published stations</p>
+                <h2 id="stationHeading">Observatories on the network</h2>
+            </div>
+            <a href="observatories">View directory <span aria-hidden="true">→</span></a>
+        </div>
+        @if (Observatories.Count == 0)
+        {
+            <div class="network-state">No observatories have opted into public visibility yet.</div>
+        }
+        else
+        {
+            <div class="network-card-grid">
+                @foreach (var observatory in Observatories)
+                {
+                    <article class="network-card">
+                        <span class="network-card__eyebrow">@LocationLabel(observatory)</span>
+                        <h3><a href="@($"observatories/{observatory.Slug}")">@observatory.DisplayName</a></h3>
+                        <p>@observatory.Description</p>
+                        <div class="network-card__meta">
+                            <span><i class="bi bi-camera"></i> @observatory.ReleasedCameraCount released camera(s)</span>
+                        </div>
+                    </article>
+                }
+            </div>
+        }
+    </section>
+
+    <section class="network-section" aria-labelledby="imageHeading">
+        <div class="network-section__heading"><div><p class="network-kicker">Released imagery</p><h2 id="imageHeading">Latest network views</h2></div></div>
+        @if (Images.Count == 0)
+        {
+            <div class="network-state">No preview imagery is currently released.</div>
+        }
+        else
+        {
+            <div class="network-card-grid">
+                @foreach (var image in Images)
+                {
+                    <figure class="network-card"><img class="img-fluid rounded mb-3" src="@image.ContentPath" alt="Released sky view from @image.ObservatoryName" loading="lazy" /><figcaption><span class="network-card__eyebrow">@image.OriginLabel</span><strong class="d-block">@image.ObservatoryName</strong><small class="text-muted">@image.CapturedAtUtc.ToString("u")</small></figcaption></figure>
+                }
+            </div>
+        }
+    </section>
+
+    <section class="network-section" aria-labelledby="eventHeading">
+        <div class="network-section__heading">
+            <div>
+                <p class="network-kicker">Reviewed evidence</p>
+                <h2 id="eventHeading">Latest verified events</h2>
+            </div>
+            <a href="events">Open event feed <span aria-hidden="true">→</span></a>
+        </div>
+        @if (Events.Count == 0)
+        {
+            <div class="network-state">No reviewed events are currently released.</div>
+        }
+        else
+        {
+            <div class="network-event-list">
+                @foreach (var item in Events)
+                {
+                    <article class="network-event-row">
+                        <div>
+                            <span class="network-card__eyebrow">@item.EventCreatedUtc.ToString("u")</span>
+                            <h3>@item.Classification</h3>
+                        </div>
+                        <div>
+                            <span>@string.Join(", ", item.ReleasedContributors)</span>
+                            <small>@(item.ConfidenceMillionths / 10_000d)% confidence</small>
+                        </div>
+                    </article>
+                }
+            </div>
+        }
+    </section>
+}

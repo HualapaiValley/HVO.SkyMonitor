@@ -1,6 +1,10 @@
+using System.Diagnostics;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
@@ -31,13 +35,35 @@ internal interface ICentralArtifactRetrievalService
         ClaimsPrincipal principal,
         CentralArtifactWorkerAccess workerAccess,
         CancellationToken cancellationToken);
+
+    Task<CentralArtifactDownloadGrant?> IssueDownloadAuthorizationAsync(
+        CentralArtifact artifact,
+        ClaimsPrincipal principal,
+        CentralArtifactByteRange? range,
+        CancellationToken cancellationToken);
+
+    Task<bool> ValidateDownloadAuthorizationAsync(
+        CentralArtifact artifact,
+        ClaimsPrincipal principal,
+        CentralArtifactByteRange? range,
+        Guid authorizationId,
+        string token,
+        CancellationToken cancellationToken);
+
+    Task<bool> RequiresDownloadAuthorizationAsync(
+        CentralArtifact artifact,
+        ClaimsPrincipal principal,
+        CancellationToken cancellationToken);
 }
+
+internal sealed record CentralArtifactDownloadGrant(Guid AuthorizationId, string Token, DateTimeOffset ExpiresAtUtc);
 
 internal sealed partial class CentralArtifactRetrievalService(
     ApplicationDbContext dbContext,
     TimeProvider timeProvider,
     CentralArtifactRetrievalTelemetry telemetry,
-    ILogger<CentralArtifactRetrievalService> logger) : ICentralArtifactRetrievalService
+    ILogger<CentralArtifactRetrievalService> logger,
+    OperatorUiTelemetry? operatorUiTelemetry = null) : ICentralArtifactRetrievalService
 {
     public async Task<CentralArtifactLookup> FindAsync(
         Guid devicePublicId,
@@ -57,7 +83,7 @@ internal sealed partial class CentralArtifactRetrievalService(
             return Denied("unknown", "not-found", devicePublicId, artifactId);
         }
 
-        var callerKind = CentralArtifactCredentialAccess.IsSystem(principal) ? "worker" : "owner";
+        var callerKind = CentralArtifactCredentialAccess.IsSystem(principal) ? "worker" : "member";
         var authorized = callerKind == "worker"
             ? await AuthorizeWorkerAsync(artifact, principal, workerAccess, cancellationToken).ConfigureAwait(false)
             : await AuthorizeOwnerAsync(artifact, principal, cancellationToken).ConfigureAwait(false);
@@ -168,6 +194,118 @@ internal sealed partial class CentralArtifactRetrievalService(
         CancellationToken cancellationToken)
         => ReauthorizeWorkerCoreAsync(artifact, principal, workerAccess, cancellationToken);
 
+    public async Task<CentralArtifactDownloadGrant?> IssueDownloadAuthorizationAsync(
+        CentralArtifact artifact,
+        ClaimsPrincipal principal,
+        CentralArtifactByteRange? range,
+        CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+        using var activity = OperatorUiTelemetry.StartRawDownload();
+        ArgumentNullException.ThrowIfNull(artifact);
+        ArgumentNullException.ThrowIfNull(principal);
+        if (CentralArtifactCredentialAccess.IsSystem(principal))
+        {
+            return null;
+        }
+        if (!CentralArtifactCredentialAccess.HasOwnerCredential(principal))
+        {
+            return null;
+        }
+        var actorUserId = CentralArtifactCredentialAccess.GetOwnerId(principal);
+        if (string.IsNullOrWhiteSpace(actorUserId))
+        {
+            return null;
+        }
+        if (!CentralArtifactCredentialAccess.IsObservatoryAllowed(principal, artifact.Frame!.ObservatoryId))
+        {
+            return null;
+        }
+        var authority = await dbContext.ObservatoryMemberships.AsNoTracking()
+                .Where(membership => membership.ObservatoryId == artifact.Frame!.ObservatoryId
+                    && membership.UserId == actorUserId
+                    && membership.User!.AccountType == AccountType.User)
+                .Select(membership => new { membership.ObservatoryId, membership.Role })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (authority is null)
+        {
+            return null;
+        }
+
+        var issuedAtUtc = timeProvider.GetUtcNow();
+        var token = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
+        var authorization = new CentralArtifactDownloadAuthorization
+        {
+            CentralArtifactId = artifact.Id,
+            ObservatoryId = authority.ObservatoryId,
+            ActorUserId = actorUserId,
+            MembershipRole = authority.Role,
+            RangeStart = range?.Start,
+            RangeEnd = range?.End,
+            IssuedAtUtc = issuedAtUtc,
+            ExpiresAtUtc = issuedAtUtc.AddMinutes(1),
+            TokenSha256 = HashToken(token)
+        };
+        dbContext.CentralArtifactDownloadAuthorizations.Add(authorization);
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        OperatorUiAuditLog.RawDownload(
+            logger,
+            "issued",
+            authority.Role.ToString(),
+            range is null ? "full" : "range");
+        operatorUiTelemetry?.RecordMutation(
+            "raw-download",
+            "issued",
+            authority.Role.ToString().ToLowerInvariant(),
+            Stopwatch.GetElapsedTime(started));
+        return new(authorization.Id, token, authorization.ExpiresAtUtc);
+    }
+
+    public async Task<bool> ValidateDownloadAuthorizationAsync(
+        CentralArtifact artifact,
+        ClaimsPrincipal principal,
+        CentralArtifactByteRange? range,
+        Guid authorizationId,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        ArgumentNullException.ThrowIfNull(principal);
+        if (CentralArtifactCredentialAccess.IsSystem(principal)) return true;
+        var actorUserId = CentralArtifactCredentialAccess.GetOwnerId(principal);
+        if (string.IsNullOrWhiteSpace(actorUserId) || string.IsNullOrWhiteSpace(token)) return false;
+        var now = timeProvider.GetUtcNow();
+        var tokenSha256 = HashToken(token);
+        return await dbContext.CentralArtifactDownloadAuthorizations.AsNoTracking().AnyAsync(authorization =>
+            authorization.Id == authorizationId
+            && authorization.CentralArtifactId == artifact.Id
+            && authorization.ActorUserId == actorUserId
+            && authorization.TokenSha256 == tokenSha256
+            && authorization.ExpiresAtUtc > now
+            && authorization.RangeStart == (range == null ? null : range.Start)
+            && authorization.RangeEnd == (range == null ? null : range.End)
+            && (CentralArtifactCredentialAccess.GetObservatoryScope(principal) == null
+                || authorization.ObservatoryId == CentralArtifactCredentialAccess.GetObservatoryScope(principal))
+            && dbContext.ObservatoryMemberships.Any(membership =>
+                membership.ObservatoryId == authorization.ObservatoryId
+                && membership.UserId == actorUserId
+                && membership.User!.AccountType == AccountType.User), cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<bool> RequiresDownloadAuthorizationAsync(
+        CentralArtifact artifact,
+        ClaimsPrincipal principal,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        ArgumentNullException.ThrowIfNull(principal);
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(!CentralArtifactCredentialAccess.IsSystem(principal));
+    }
+
+    private static string HashToken(string token)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
+
     private async Task<bool> ReauthorizeWorkerCoreAsync(
         CentralArtifact artifact,
         ClaimsPrincipal principal,
@@ -200,10 +338,17 @@ internal sealed partial class CentralArtifactRetrievalService(
             return false;
         }
         var ownerId = CentralArtifactCredentialAccess.GetOwnerId(principal);
+        if (!CentralArtifactCredentialAccess.IsObservatoryAllowed(principal, artifact.Frame!.ObservatoryId))
+        {
+            return false;
+        }
+        var observatories = string.IsNullOrWhiteSpace(ownerId)
+            ? null
+            : ObservatoryMembershipAccess.ForUser(dbContext, ownerId)
+                .Select(membership => membership.ObservatoryId);
         return !string.IsNullOrWhiteSpace(ownerId)
-            && await dbContext.DeviceRegistrations.AnyAsync(registration =>
-                registration.Id == artifact.Frame!.RegistrationId
-                && registration.OwnerUserId == ownerId, cancellationToken).ConfigureAwait(false);
+            && observatories is not null
+            && await observatories.ContainsAsync(artifact.Frame!.ObservatoryId, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<bool> AuthorizeWorkerAsync(
@@ -342,6 +487,18 @@ internal static class CentralArtifactCredentialAccess
         => GetSingleCredentialIdentity(principal)?.Claims.Where(claim => claim.Type == "scope")
             .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
             .Contains(scope, StringComparer.Ordinal) == true;
+
+    public static Guid? GetObservatoryScope(ClaimsPrincipal principal)
+    {
+        var identity = GetSingleCredentialIdentity(principal);
+        return identity?.FindFirst(ApiKeyClaims.AuthenticationType) is not null
+            && Guid.TryParse(identity.FindFirst(ApiKeyClaims.ObservatoryId)?.Value, out var observatoryId)
+                ? observatoryId
+                : null;
+    }
+
+    public static bool IsObservatoryAllowed(ClaimsPrincipal principal, Guid observatoryId)
+        => GetObservatoryScope(principal) is not { } scope || scope == observatoryId;
 
     public static ClaimsIdentity? GetSingleCredentialIdentity(ClaimsPrincipal principal)
     {

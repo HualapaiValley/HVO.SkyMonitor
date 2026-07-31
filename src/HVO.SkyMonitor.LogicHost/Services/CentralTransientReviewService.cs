@@ -22,10 +22,20 @@ internal interface ICentralTransientEventReadService
         ClaimsPrincipal principal,
         Guid centralTransientEventId,
         CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<CentralTransientPublicationAuthority>> ListPublicationAuthoritiesAsync(
+        ClaimsPrincipal principal,
+        IReadOnlyCollection<Guid> centralTransientEventIds,
+        CancellationToken cancellationToken);
 }
 
 internal interface ICentralTransientReviewService
 {
+    Task<IReadOnlySet<Guid>> ListReviewableEventIdsAsync(
+        ClaimsPrincipal principal,
+        IReadOnlyCollection<Guid> centralTransientEventIds,
+        CancellationToken cancellationToken);
+
     Task<CentralTransientReviewMutationResult> ReviewAsync(
         ClaimsPrincipal principal,
         Guid centralTransientEventId,
@@ -43,6 +53,7 @@ internal sealed record CentralTransientReviewRequest(
 
 internal sealed record CentralTransientEventSummary(
     Guid CentralTransientEventId,
+    Guid LatestEventVersionId,
     Guid EventId,
     string AgentId,
     DateTimeOffset EventCreatedUtc,
@@ -56,6 +67,12 @@ internal sealed record CentralTransientEventSummary(
     TransientMeteorSeverity? EffectiveMeteorSeverity,
     int EffectiveConfidenceMillionths,
     string ETag);
+
+internal sealed record CentralTransientPublicationAuthority(
+    Guid CentralTransientEventId,
+    Guid ObservatoryId,
+    string ObservatoryName,
+    PublicationDecisionState? CurrentState);
 
 internal sealed record CentralTransientEventPage(
     IReadOnlyList<CentralTransientEventSummary> Items,
@@ -122,7 +139,12 @@ internal sealed class CentralTransientEventReadService(ApplicationDbContext dbCo
             return new([], null);
         }
 
-        var query = ApplyAccess(dbContext, dbContext.CentralTransientEventCurrent.AsNoTracking(), isAdmin, ownerId);
+        var query = ApplyAccess(
+            dbContext,
+            dbContext.CentralTransientEventCurrent.AsNoTracking(),
+            isAdmin,
+            ownerId,
+            CentralArtifactCredentialAccess.GetObservatoryScope(principal));
         if (!TryDecodeCursor(cursor, out var cursorValue))
         {
             throw new ArgumentException("The transient event cursor is invalid.", nameof(cursor));
@@ -139,6 +161,7 @@ internal sealed class CentralTransientEventReadService(ApplicationDbContext dbCo
             .Take(take + 1)
             .Select(item => new EventProjection(
                 item.CentralTransientEventId,
+                item.LatestEventVersionId,
                 item.Event!.EventId,
                 item.Event.AgentId,
                 item.Event.EventCreatedUtc,
@@ -174,11 +197,17 @@ internal sealed class CentralTransientEventReadService(ApplicationDbContext dbCo
             return null;
         }
 
-        var row = await ApplyAccess(dbContext, dbContext.CentralTransientEventCurrent.AsNoTracking(), isAdmin, ownerId)
+        var row = await ApplyAccess(
+                dbContext,
+                dbContext.CentralTransientEventCurrent.AsNoTracking(),
+                isAdmin,
+                ownerId,
+                CentralArtifactCredentialAccess.GetObservatoryScope(principal))
             .Where(item => item.CentralTransientEventId == centralTransientEventId)
             .Select(item => new DetailProjection(
                 new EventProjection(
                     item.CentralTransientEventId,
+                    item.LatestEventVersionId,
                     item.Event!.EventId,
                     item.Event.AgentId,
                     item.Event.EventCreatedUtc,
@@ -210,32 +239,128 @@ internal sealed class CentralTransientEventReadService(ApplicationDbContext dbCo
             : throw new InvalidOperationException("Persisted transient event history is invalid.");
     }
 
+    public async Task<IReadOnlyList<CentralTransientPublicationAuthority>> ListPublicationAuthoritiesAsync(
+        ClaimsPrincipal principal,
+        IReadOnlyCollection<Guid> centralTransientEventIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+        ArgumentNullException.ThrowIfNull(centralTransientEventIds);
+        if (centralTransientEventIds.Count > 100)
+        {
+            throw new ArgumentOutOfRangeException(nameof(centralTransientEventIds));
+        }
+        var eventIds = centralTransientEventIds.Where(id => id != Guid.Empty).Distinct().ToArray();
+        var ownerId = CentralArtifactCredentialAccess.GetOwnerId(principal);
+        if (eventIds.Length == 0 || string.IsNullOrWhiteSpace(ownerId)
+            || !CentralArtifactCredentialAccess.HasOwnerCredential(principal))
+        {
+            return [];
+        }
+        var isAdmin = CentralArtifactCredentialAccess.HasScope(principal, "api.admin");
+        var accessibleEventIds = ApplyAccess(
+                dbContext,
+                dbContext.CentralTransientEventCurrent.AsNoTracking(),
+                isAdmin,
+                ownerId,
+                CentralArtifactCredentialAccess.GetObservatoryScope(principal))
+            .Where(current => eventIds.Contains(current.CentralTransientEventId))
+            .Select(current => current.CentralTransientEventId);
+        var authorities = await dbContext.CentralTransientObservationSources.AsNoTracking()
+            .Where(source => accessibleEventIds.Contains(source.Observation!.CentralTransientEventId))
+            .Select(source => new
+            {
+                EventId = source.Observation!.CentralTransientEventId,
+                source.Artifact!.Frame!.ObservatoryId
+            })
+            .Join(ObservatoryMembershipAccess.ForOwner(dbContext, ownerId),
+                source => source.ObservatoryId,
+                membership => membership.ObservatoryId,
+                (source, membership) => new
+                {
+                    source.EventId,
+                    source.ObservatoryId,
+                    ObservatoryName = membership.Observatory!.Name
+                })
+            .Join(dbContext.CentralTransientEventCurrent.AsNoTracking(),
+                source => source.EventId,
+                current => current.CentralTransientEventId,
+                (source, current) => new
+                {
+                    source.EventId,
+                    source.ObservatoryId,
+                    source.ObservatoryName,
+                    current.LatestEventVersionId
+                })
+            .Distinct()
+            .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var authorityObservatoryIds = authorities.Select(item => item.ObservatoryId).Distinct().ToArray();
+        var decisions = await dbContext.PublicRecordPublicationDecisions.AsNoTracking()
+            .Where(decision => decision.SubjectKind == PublicRecordSubjectKind.TransientEvent
+                && decision.CentralTransientEventId != null
+                && decision.SourceEventVersionId != null
+                && eventIds.Contains(decision.CentralTransientEventId.Value)
+                && authorityObservatoryIds.Contains(decision.AuthorityObservatoryId)
+                && !dbContext.PublicRecordPublicationDecisions.Any(successor =>
+                    successor.SupersedesDecisionId == decision.Id))
+            .Select(decision => new
+            {
+                EventId = decision.CentralTransientEventId!.Value,
+                decision.AuthorityObservatoryId,
+                SourceEventVersionId = decision.SourceEventVersionId!.Value,
+                decision.State
+            })
+            .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        return authorities
+            .Select(authority =>
+            {
+                var current = decisions.SingleOrDefault(decision =>
+                    decision.EventId == authority.EventId
+                    && decision.AuthorityObservatoryId == authority.ObservatoryId
+                    && decision.SourceEventVersionId == authority.LatestEventVersionId);
+                return new CentralTransientPublicationAuthority(
+                    authority.EventId,
+                    authority.ObservatoryId,
+                    authority.ObservatoryName,
+                    current?.State);
+            })
+            .OrderBy(item => item.CentralTransientEventId)
+            .ThenBy(item => item.ObservatoryName, StringComparer.Ordinal)
+            .ToArray();
+    }
+
     internal static IQueryable<CentralTransientEventCurrent> ApplyAccess(
         ApplicationDbContext dbContext,
         IQueryable<CentralTransientEventCurrent> query,
         bool isAdmin,
-        string? ownerId)
+        string? ownerId,
+        Guid? observatoryScope)
     {
         if (isAdmin)
         {
             return query;
         }
+        var memberships = ObservatoryMembershipAccess.ForUser(dbContext, ownerId ?? string.Empty);
+        if (observatoryScope is { } scope)
+        {
+            memberships = memberships.Where(membership => membership.ObservatoryId == scope);
+        }
+        var observatories = memberships.Select(membership => membership.ObservatoryId);
         return query.Where(current =>
             dbContext.CentralTransientObservationSources.Any(source =>
                 source.Observation!.CentralTransientEventId == current.CentralTransientEventId) &&
             !dbContext.CentralTransientObservationSources.Any(source =>
                 source.Observation!.CentralTransientEventId == current.CentralTransientEventId &&
-                !dbContext.DeviceRegistrations.Any(registration =>
-                    registration.Id == source.Artifact!.Frame!.RegistrationId && registration.OwnerUserId == ownerId)) &&
+                !observatories.Contains(source.Artifact!.Frame!.ObservatoryId)) &&
             !dbContext.CentralTransientObservationBackgrounds.Any(background =>
                 background.Observation!.CentralTransientEventId == current.CentralTransientEventId &&
-                !dbContext.DeviceRegistrations.Any(registration =>
-                    registration.Id == background.Artifact!.Frame!.RegistrationId && registration.OwnerUserId == ownerId)));
+                !observatories.Contains(background.Artifact!.Frame!.ObservatoryId)));
     }
 
     private static CentralTransientEventSummary Project(EventProjection item)
         => new(
             item.CentralTransientEventId,
+            item.LatestEventVersionId,
             item.EventId,
             item.AgentId,
             item.EventCreatedUtc,
@@ -280,6 +405,7 @@ internal sealed class CentralTransientEventReadService(ApplicationDbContext dbCo
 
     private sealed record EventProjection(
         Guid CentralTransientEventId,
+        Guid LatestEventVersionId,
         Guid EventId,
         string AgentId,
         DateTimeOffset EventCreatedUtc,
@@ -304,6 +430,44 @@ internal sealed class CentralTransientReviewService(
     TimeProvider timeProvider,
     CentralTransientLifecycleTelemetry? telemetry = null) : ICentralTransientReviewService
 {
+    public async Task<IReadOnlySet<Guid>> ListReviewableEventIdsAsync(
+        ClaimsPrincipal principal,
+        IReadOnlyCollection<Guid> centralTransientEventIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+        ArgumentNullException.ThrowIfNull(centralTransientEventIds);
+        if (centralTransientEventIds.Count > 100) throw new ArgumentOutOfRangeException(nameof(centralTransientEventIds));
+        var isAdmin = CentralArtifactCredentialAccess.HasScope(principal, "api.admin");
+        var ownerId = CentralArtifactCredentialAccess.GetOwnerId(principal);
+        if (!isAdmin && (string.IsNullOrWhiteSpace(ownerId)
+            || !CentralArtifactCredentialAccess.HasOwnerCredential(principal)))
+        {
+            return new HashSet<Guid>();
+        }
+        var query = CentralTransientEventReadService.ApplyAccess(
+            dbContext,
+            dbContext.CentralTransientEventCurrent.AsNoTracking(),
+            isAdmin,
+            ownerId,
+            CentralArtifactCredentialAccess.GetObservatoryScope(principal));
+        if (!isAdmin)
+        {
+            var managedObservatories = ObservatoryMembershipAccess.ForManager(dbContext, ownerId ?? string.Empty)
+                .Select(membership => membership.ObservatoryId);
+            query = query.Where(current =>
+                !dbContext.CentralTransientObservationSources.Any(source =>
+                    source.Observation!.CentralTransientEventId == current.CentralTransientEventId
+                    && !managedObservatories.Contains(source.Artifact!.Frame!.ObservatoryId))
+                && !dbContext.CentralTransientObservationBackgrounds.Any(background =>
+                    background.Observation!.CentralTransientEventId == current.CentralTransientEventId
+                    && !managedObservatories.Contains(background.Artifact!.Frame!.ObservatoryId)));
+        }
+        return (await query.Where(item => centralTransientEventIds.Contains(item.CentralTransientEventId))
+            .Select(item => item.CentralTransientEventId)
+            .ToArrayAsync(cancellationToken).ConfigureAwait(false)).ToHashSet();
+    }
+
     public async Task<CentralTransientReviewMutationResult> ReviewAsync(
         ClaimsPrincipal principal,
         Guid centralTransientEventId,
@@ -378,23 +542,25 @@ internal sealed class CentralTransientReviewService(
             telemetry?.RecordReview("invalid", timeProvider.GetElapsedTime(started));
             return new(CentralTransientReviewMutationStatus.Invalid);
         }
-        var ownerIds = await dbContext.DeviceRegistrations.AsNoTracking()
-            .Where(registration =>
-                dbContext.CentralTransientObservationSources.Any(source =>
-                    source.Observation!.CentralTransientEventId == centralTransientEventId &&
-                    source.Artifact!.Frame!.RegistrationId == registration.Id) ||
-                dbContext.CentralTransientObservationBackgrounds.Any(background =>
-                    background.Observation!.CentralTransientEventId == centralTransientEventId &&
-                    background.Artifact!.Frame!.RegistrationId == registration.Id))
-            .Select(registration => registration.OwnerUserId)
-            .Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
-        var recipients = ownerIds.Length == 1
-            ? await dbContext.Users.AsNoTracking()
-                .Where(user => user.Id == ownerIds[0] && user.Email != null && user.EmailConfirmed)
-                .Select(user => user.Email!)
-                .Distinct().OrderBy(email => email)
-                .ToArrayAsync(cancellationToken).ConfigureAwait(false)
-            : [];
+        var observatoryIds = await dbContext.CentralTransientObservationSources.AsNoTracking()
+            .Where(source => source.Observation!.CentralTransientEventId == centralTransientEventId)
+            .Select(source => source.Artifact!.Frame!.ObservatoryId)
+            .Concat(dbContext.CentralTransientObservationBackgrounds.AsNoTracking()
+                .Where(background => background.Observation!.CentralTransientEventId == centralTransientEventId)
+                .Select(background => background.Artifact!.Frame!.ObservatoryId))
+            .Distinct()
+            .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var recipients = await dbContext.ObservatoryMemberships.AsNoTracking()
+            .Where(membership => observatoryIds.Contains(membership.ObservatoryId)
+                && membership.Role == ObservatoryMembershipRole.Owner
+                && membership.User!.AccountType == AccountType.User
+                && membership.User.Email != null
+                && membership.User.EmailConfirmed)
+            .GroupBy(membership => new { membership.UserId, membership.User!.Email })
+            .Where(group => group.Count() == observatoryIds.Length)
+            .Select(group => group.Key.Email!)
+            .OrderBy(email => email)
+            .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
         var reviewId = Guid.NewGuid();
         var notificationPlans = new List<NotificationPlan>();
@@ -522,8 +688,25 @@ internal sealed class CentralTransientReviewService(
         {
             return false;
         }
-        return await CentralTransientEventReadService.ApplyAccess(
-                dbContext, dbContext.CentralTransientEventCurrent.AsNoTracking(), isAdmin, ownerId)
+        var query = CentralTransientEventReadService.ApplyAccess(
+            dbContext,
+            dbContext.CentralTransientEventCurrent.AsNoTracking(),
+            isAdmin,
+            ownerId,
+            CentralArtifactCredentialAccess.GetObservatoryScope(principal));
+        if (!isAdmin)
+        {
+            var managedObservatories = ObservatoryMembershipAccess.ForManager(dbContext, ownerId ?? string.Empty)
+                .Select(membership => membership.ObservatoryId);
+            query = query.Where(current =>
+                !dbContext.CentralTransientObservationSources.Any(source =>
+                    source.Observation!.CentralTransientEventId == current.CentralTransientEventId
+                    && !managedObservatories.Contains(source.Artifact!.Frame!.ObservatoryId))
+                && !dbContext.CentralTransientObservationBackgrounds.Any(background =>
+                    background.Observation!.CentralTransientEventId == current.CentralTransientEventId
+                    && !managedObservatories.Contains(background.Artifact!.Frame!.ObservatoryId)));
+        }
+        return await query
             .AnyAsync(item => item.CentralTransientEventId == centralTransientEventId, cancellationToken)
             .ConfigureAwait(false);
     }

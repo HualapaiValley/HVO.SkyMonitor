@@ -1,6 +1,8 @@
 using System.Text.Json;
+using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.TestSupport;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using OpenIddict.Abstractions;
@@ -12,6 +14,32 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestCategory("Integration")]
 public sealed class DatabaseSeederTests
 {
+    [TestMethod]
+    public async Task SeedAsyncCreatesPlatformEditorRoleAndPreservesUnspecifiedGrant()
+    {
+        using var scope = AssemblyHooks.Fixture.Factory.Services.CreateScope();
+        var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
+        var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var user = await userManager.FindByEmailAsync(TestUsers.Viewer.Email)
+            ?? throw new InvalidOperationException("Viewer was not seeded.");
+        Assert.IsTrue(await roleManager.RoleExistsAsync(AuthorizationRoleNames.PlatformEditor));
+        if (!await userManager.IsInRoleAsync(user, AuthorizationRoleNames.PlatformEditor))
+        {
+            Assert.IsTrue((await userManager.AddToRoleAsync(user, AuthorizationRoleNames.PlatformEditor)).Succeeded);
+        }
+
+        try
+        {
+            await DatabaseSeeder.SeedAsync(scope.ServiceProvider, NullLogger.Instance);
+
+            Assert.IsTrue(await userManager.IsInRoleAsync(user, AuthorizationRoleNames.PlatformEditor));
+        }
+        finally
+        {
+            Assert.IsTrue((await userManager.RemoveFromRoleAsync(user, AuthorizationRoleNames.PlatformEditor)).Succeeded);
+        }
+    }
+
     [TestMethod]
     public async Task SeedAsyncReconcilesExistingBootstrapClient()
     {

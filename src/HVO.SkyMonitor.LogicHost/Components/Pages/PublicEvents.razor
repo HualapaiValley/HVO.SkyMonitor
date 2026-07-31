@@ -1,0 +1,31 @@
+@page "/events"
+
+<PageTitle>Verified Events | HVO Sky Network</PageTitle>
+
+<header class="events-header"><p>Reviewed evidence</p><h1>Verified sky events</h1><span>Only reviewed events with current observatory publication consent appear here. Private contributors remain undisclosed.</span></header>
+
+@if (IsLoading)
+{
+    <div class="events-state" role="status">Loading released events...</div>
+}
+else if (Items.Count == 0)
+{
+    <div class="events-state">No verified events are currently released.</div>
+}
+else
+{
+    <div class="events-list">
+        @foreach (var item in Items)
+        {
+            <article>
+                <div class="events-time"><strong>@item.EventCreatedUtc.ToString("MMM dd")</strong><span>@item.EventCreatedUtc.ToString("HH:mm:ss 'UTC'")</span></div>
+                <div><span class="events-kind">@item.Classification</span><h2>@(item.MeteorSeverity?.ToString() ?? "Reviewed event")</h2><p>Observed by @string.Join(", ", item.ReleasedContributors)</p></div>
+                <div class="events-confidence"><strong>@(item.ConfidenceMillionths / 10_000d)%</strong><span>confidence</span><AuthorizeView><Authorized><button class="btn btn-sm btn-outline-light mt-2" @onclick="() => ToggleBookmarkAsync(item.PublicId)"><i class="bi @(BookmarkedIds.Contains(item.PublicId) ? "bi-bookmark-fill" : "bi-bookmark")"></i> @(BookmarkedIds.Contains(item.PublicId) ? "Saved" : "Save")</button></Authorized></AuthorizeView></div>
+            </article>
+        }
+        @if (NextCursor is not null)
+        {
+            <button class="btn btn-outline-light align-self-start" @onclick="LoadMoreAsync">Load more events</button>
+        }
+    </div>
+}

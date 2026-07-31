@@ -450,6 +450,7 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
                     DeploymentLocationResolutionStatus.Acknowledged,
                     "performance-approved",
                     proposal.ConcurrencyToken,
+                    null,
                     cancellationToken).ConfigureAwait(false);
                 Assert.AreEqual(DeploymentLocationMutationStatus.Applied, result.Status);
                 return;

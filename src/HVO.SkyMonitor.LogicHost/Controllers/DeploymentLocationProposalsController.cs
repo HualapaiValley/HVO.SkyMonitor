@@ -35,7 +35,13 @@ internal sealed class DeploymentLocationProposalsController(
         {
             return BadRequest(new ProblemDetails { Title = "cursor is invalid." });
         }
-        var page = await authorityService.ListAsync(ownerUserId, status, take, parsedCursor, cancellationToken)
+        var page = await authorityService.ListAsync(
+                ownerUserId,
+                status,
+                take,
+                parsedCursor,
+                CentralArtifactCredentialAccess.GetObservatoryScope(User),
+                cancellationToken)
             .ConfigureAwait(false);
         if (page.NextCursor is not null)
         {
@@ -54,7 +60,11 @@ internal sealed class DeploymentLocationProposalsController(
         {
             return Forbid();
         }
-        var proposal = await authorityService.GetAsync(deploymentLocationId, ownerUserId, cancellationToken)
+        var proposal = await authorityService.GetAsync(
+                deploymentLocationId,
+                ownerUserId,
+                CentralArtifactCredentialAccess.GetObservatoryScope(User),
+                cancellationToken)
             .ConfigureAwait(false);
         if (proposal is null)
         {
@@ -103,6 +113,7 @@ internal sealed class DeploymentLocationProposalsController(
                 request.Status,
                 request.Reason,
                 expectedConcurrencyToken,
+                CentralArtifactCredentialAccess.GetObservatoryScope(User),
                 cancellationToken).ConfigureAwait(false);
         }
         catch (ArgumentException)
