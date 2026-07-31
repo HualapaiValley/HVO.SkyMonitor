@@ -29,7 +29,7 @@ using Program = HVO.SkyMonitor.LogicHost.Program;
 [DoNotParallelize]
 [TestCategory("Integration")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
-public sealed class HybridTransientSubmissionIntegrationTests
+public sealed partial class HybridTransientSubmissionIntegrationTests
 {
     private const string DeviceKey = "cameraagent-integration-key";
     private static readonly TransientTemporalPosition[] Positions =
@@ -703,7 +703,8 @@ public sealed class HybridTransientSubmissionIntegrationTests
         HttpClient client,
         string deviceId,
         string deviceKey,
-        TransientCandidateSubmissionEnvelopeV1 envelope)
+        TransientCandidateSubmissionEnvelopeV1 envelope,
+        CancellationToken cancellationToken = default)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, "/api/device/transient-candidates");
         request.Headers.Add("X-HVO-Device-Id", deviceId);
@@ -711,7 +712,7 @@ public sealed class HybridTransientSubmissionIntegrationTests
         request.Headers.Add("Idempotency-Key", envelope.SubmissionIdentitySha256);
         request.Content = new ByteArrayContent(TransientCandidateDeliveryJson.Serialize(envelope));
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-        return await client.SendAsync(request).ConfigureAwait(false);
+        return await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
     private static TransientCandidateSubmissionAcknowledgementV1 ParseAcknowledgement(byte[] payload)

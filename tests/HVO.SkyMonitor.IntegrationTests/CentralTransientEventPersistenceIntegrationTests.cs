@@ -23,7 +23,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestClass]
 [TestCategory("Integration")]
 [DoNotParallelize]
-public sealed class CentralTransientEventPersistenceIntegrationTests
+public sealed partial class CentralTransientEventPersistenceIntegrationTests
 {
     [TestMethod]
     public async Task AppendPersistsVerifiedCanonicalHistoryAndFinalizesEverySlot()

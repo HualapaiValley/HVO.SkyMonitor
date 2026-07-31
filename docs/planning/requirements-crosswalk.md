@@ -24,7 +24,7 @@ behavior. GitHub issues own live issue/PR execution state and evidence.
 | `CFG-001`-`CFG-006` | Separate module/rig options, version rig and pipeline configuration, validate before initialization, stable aliases, actionable incompatibility errors, and no secrets in rig/pipeline files | `docs/project-plan.md` section 3.8; `docs/virtual-camera.md` | #92, #93, #96 |
 | `IDENT-001`-`IDENT-010` | Offline local Identity, separate central registration, verification/envelope flow, per-device scoped credentials, secure import, heartbeat/rotation/revocation, least privilege, and short expiry | `docs/identity/overview.md` | #102, #106, #107, #120 |
 | `SEC-001`-`SEC-008` | Layered configuration, no committed secrets, scoped credentials, provider-neutral secure production storage, key overlap, persistent data protection, TLS, and leakage review | `docs/security/secrets.md` | Cross-cutting; #120 |
-| `OPS-001`-`OPS-010` | Fixture/full catalog distinction, persistent CameraAgent state, SQL/Redis/MinIO/Mailpit ownership, names/prefixes/buckets, safe reset, backup/restore, and reconciliation | `docs/project-plan.md`; `docs/runbooks/*.md` | #111, #114, #120, #108 |
+| `OPS-001`-`OPS-010` | Fixture/full catalog distinction, persistent CameraAgent state, SQL/Redis/MinIO/Mailpit ownership, names/prefixes/buckets, safe reset, backup/restore, and reconciliation | `docs/project-plan.md`; `docs/runbooks/*.md` | #111, #114, #120, #243, #108 |
 
 ## 2. Astronomy, VirtualSky, and Catalog Requirements
 
@@ -81,7 +81,7 @@ behavior. GitHub issues own live issue/PR execution state and evidence.
 | `TRANS-MODE-001`-`TRANS-MODE-006` | Off/Edge/Central/Hybrid, zero disabled allocation, restart-safe edge journal, out-of-order central work, and assessment history | Transient specification section 9 | #63, #64 |
 | `EVENT-001`-`EVENT-010` | Scenario matrix, simulation stage, event separation, structured contracts, linear detection, severity, edge/central execution, persistence, and review/reconstruction | `docs/project-plan.md` phase 12 | #61-#65 and transient child issues |
 | `UI-001`-`UI-008` | Durable read models, authorization, local operations/gallery/config validation, central fleet/jobs/artifacts/weather/events, and audited mutation | `docs/project-plan.md` phase 13 | #106, #107 |
-| `E2E-001`-`E2E-006` | Real outbox two-host path, complete feature flow, fault injection, output/state validation, observability review, and separate long/external/hardware gates | `docs/project-plan.md` phase 14 | #108 |
+| `E2E-001`-`E2E-007` | Real outbox two-host path, complete feature flow, fault injection, output/state validation, observability review, separate long/external/hardware gates, and current-head database critical-section/access-plan disposition | `docs/project-plan.md` phase 14 | #243, #108 |
 | `STANDALONE-001`-`STANDALONE-003` | Full-catalog ASI676MC five-second calibrated standalone operation, real local UI/fault evidence, zero central attempts, and ASI174 Mono8 ROI/bin conformance | `docs/project-plan.md` phase 12A; course-correction plan | #211; epic #205 |
 | `GATE-P00`-`GATE-P14`, `GATE-P12A` | Every phase exit gate | `docs/project-plan.md` phase sections | Owning phase issues |
 | `DONE-001`-`DONE-008` | Virtual-first completion definition | `docs/project-plan.md` final section | Epic #89 |
