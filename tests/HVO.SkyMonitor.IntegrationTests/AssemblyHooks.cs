@@ -18,7 +18,11 @@ public sealed class AssemblyHooks
         {
             Issue170PerformanceEvidence.AcquireExclusiveProcessLock();
         }
-        Fixture = new IntegrationTestFixture();
+        Fixture = new IntegrationTestFixture(
+            suppressRecurringWorkers: string.Equals(
+                Environment.GetEnvironmentVariable("HVO_ISSUE_246_RETENTION_EVIDENCE"),
+                "1",
+                StringComparison.Ordinal));
         await Fixture.InitializeAsync().ConfigureAwait(false);
     }
 

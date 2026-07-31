@@ -42,6 +42,7 @@ public sealed class IntegrationTestFixture : IDisposable
     internal const string MailpitImage = "axllent/mailpit:v1.30.4@sha256:5a49a77c5bdbe7c5474450b4f46348d09949df3695257729c93a30369382d4f6";
     private const string SqlServerPassword = "SkyMonitor_test_password1!";
     private readonly IReadOnlyDictionary<string, string?> _configurationOverrides;
+    private readonly bool _suppressRecurringWorkers;
     private readonly int _minioHostPort = GetFreeTcpPort();
     private MsSqlContainer? _sqlServerContainer;
     private RedisContainer? _redisContainer;
@@ -90,9 +91,12 @@ public sealed class IntegrationTestFixture : IDisposable
     /// </summary>
     public const string MinioSecretKey = "minioadmin";
 
-    public IntegrationTestFixture(IReadOnlyDictionary<string, string?>? configurationOverrides = null)
+    public IntegrationTestFixture(
+        IReadOnlyDictionary<string, string?>? configurationOverrides = null,
+        bool suppressRecurringWorkers = false)
     {
         _configurationOverrides = configurationOverrides ?? new Dictionary<string, string?>();
+        _suppressRecurringWorkers = suppressRecurringWorkers;
     }
 
     public async Task SeedActiveDeviceAsync(string deviceId)
@@ -348,11 +352,19 @@ public sealed class IntegrationTestFixture : IDisposable
                 {
                     foreach (var descriptor in services.Where(static descriptor =>
                              descriptor.ServiceType == typeof(IHostedService)
-                             && (descriptor.ImplementationType == typeof(CentralArtifactReconciliationService)
-                                  || descriptor.ImplementationType == typeof(CentralDerivativeWorker)
-                                  || descriptor.ImplementationType == typeof(EnvironmentalObservationRetentionWorker))).ToArray())
+                              && (descriptor.ImplementationType == typeof(CentralArtifactReconciliationService)
+                                   || descriptor.ImplementationType == typeof(CentralDerivativeWorker)
+                                   || descriptor.ImplementationType == typeof(EnvironmentalObservationRetentionWorker))).ToArray())
                     {
                         services.Remove(descriptor);
+                    }
+                    if (_suppressRecurringWorkers)
+                    {
+                        foreach (var descriptor in services.Where(static descriptor =>
+                                     descriptor.ServiceType == typeof(IHostedService)).ToArray())
+                        {
+                            services.Remove(descriptor);
+                        }
                     }
 
                     // Remove the existing DbContext registration
