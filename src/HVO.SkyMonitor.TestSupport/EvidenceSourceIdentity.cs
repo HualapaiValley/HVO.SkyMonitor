@@ -239,8 +239,8 @@ public static class EvidenceTaskCleanup
         }
         catch (TimeoutException)
         {
-            await cancellation.CancelAsync().ConfigureAwait(false);
-            _ = await task.ConfigureAwait(false);
+            await ObserveCompletionAsync(cancellation.CancelAsync()).ConfigureAwait(false);
+            await ObserveCompletionAsync(task).ConfigureAwait(false);
             throw;
         }
     }
@@ -257,9 +257,19 @@ public static class EvidenceTaskCleanup
         }
         catch (TimeoutException)
         {
-            await cancellation.CancelAsync().ConfigureAwait(false);
-            await completion.ConfigureAwait(false);
+            await ObserveCompletionAsync(cancellation.CancelAsync()).ConfigureAwait(false);
+            await ObserveCompletionAsync(completion).ConfigureAwait(false);
             throw;
         }
     }
+
+    private static Task ObserveCompletionAsync(Task task)
+        => task.ContinueWith(
+            static completed =>
+            {
+                _ = completed.Exception;
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 }
