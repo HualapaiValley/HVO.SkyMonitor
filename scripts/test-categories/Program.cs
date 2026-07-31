@@ -13,8 +13,8 @@ var expected = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringCo
     ["tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj"] = Counts(manual: 3),
     ["tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"] = Counts(unit: 888, integration: 145, manual: 23, soak: 1),
     ["tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"] = Counts(integration: 4, manual: 7),
-    ["tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj"] = Counts(unit: 218, integration: 6, manual: 1),
-    ["tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"] = Counts(integration: 264, manual: 18),
+    ["tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj"] = Counts(unit: 225, integration: 6, manual: 1),
+    ["tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"] = Counts(integration: 266, manual: 18),
     ["tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj"] = Counts(integration: 18)
 };
 var totals = categories.ToDictionary(static category => category, static _ => 0, StringComparer.Ordinal);
