@@ -1485,7 +1485,7 @@ public sealed class SqliteTransientCandidateJournalTests
             .ToArray();
     }
 
-    private sealed class Fixture : IDisposable
+    internal sealed class Fixture : IDisposable
     {
         private static readonly DateTimeOffset Now = new(2026, 7, 20, 12, 0, 0, TimeSpan.Zero);
         private readonly CameraAgentHostOptions _options;

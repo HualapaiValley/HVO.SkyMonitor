@@ -106,7 +106,7 @@ Record complexity and temporary-memory behavior for each full-frame algorithm.
 Recommended primary: Terra
 Recommended reviewers: GPT-5.6 Sol for integration and Luna for fault tests
 
-Use for #94, #95, #97, and the edge parts of #59.
+Use for #94, #95, #97, the edge parts of #59, and the SQLite parts of #243.
 
 ```text
 Treat files as immutable payloads and SQLite WAL as transactional work state.
@@ -139,7 +139,7 @@ CPU, allocations, scan bytes, cadence, control latency, and backlog effects.
 Recommended primary: GPT-5.6 Sol
 Recommended reviewer: Terra for SQL/MinIO concurrency and Luna for API/output tests
 
-Use for #98, #99, #100, #101, and the central parts of #60.
+Use for #98, #99, #100, #101, the central parts of #60, and the SQL Server parts of #243.
 
 ```text
 Use additive SQL migrations and preserve legacy history. Bind capture-time
@@ -208,7 +208,7 @@ memory for realistic gallery sizes.
 Recommended primary: GPT-5.6 Sol
 Recommended reviewers: Terra for infrastructure/performance and Luna for user-visible/output validation
 
-Use for #90, #108, and #109.
+Use for #90, #108, #109, and the cross-store evidence/disposition work in #243.
 
 ```text
 Exercise actual production adapters where possible: real outbox drain, auth,
