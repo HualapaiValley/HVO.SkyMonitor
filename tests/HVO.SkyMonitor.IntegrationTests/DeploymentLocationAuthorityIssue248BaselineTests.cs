@@ -2899,7 +2899,8 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             return new(true, completedWithinDeadline, false, true, null);
         }
         catch (OperationCanceledException exception) when (
-            cancellation.IsCancellationRequested && exception.CancellationToken == cancellation.Token)
+            cancellation.IsCancellationRequested &&
+            (exception.CancellationToken == cancellation.Token || !exception.CancellationToken.CanBeCanceled))
         {
             return new(true, completedWithinDeadline, true, false, null);
         }
