@@ -1438,7 +1438,9 @@ public sealed partial class Issue247TransientCandidateReservationPerformanceTest
         }
         var baselineTrialFiles = b.GetProperty("TrialFiles").EnumerateArray()
             .Select(file => file.GetProperty("Name").GetString()).Order().ToArray();
-        CollectionAssert.AreEqual(expectedFiles.Where(static name => name.Contains("trial-", StringComparison.Ordinal)).ToArray(), baselineTrialFiles);
+        CollectionAssert.AreEqual(
+            expectedFiles.Where(static name => name.StartsWith("../trial-", StringComparison.Ordinal)).ToArray(),
+            baselineTrialFiles);
         foreach (var summaryFile in b.GetProperty("TrialFiles").EnumerateArray())
         {
             var name = summaryFile.GetProperty("Name").GetString();
