@@ -40,78 +40,122 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private const string ManifestFile = "manifest.json";
     private const string ResolutionReason = "issue-248-baseline";
     private static readonly int[] Scales = [10, 100, 1_000, 10_000];
+    private static readonly EvidenceProtocol Protocol = new(
+        "hvo-issue-248-right-censored-protocol-v2",
+        [new(10, 30), new(100, 60), new(1_000, 180), new(10_000, 600)],
+        120, 30, 1_440, 120, 1_800, 30,
+        "Phase-neutral baseline/after-compatible right-censoring; fixed deadlines are lower bounds, never completed elapsed values.");
+    private static readonly string ProtocolSha256 = Hash(JsonSerializer.Serialize(Protocol));
     private static readonly string[] SchedulerPlanMarkers =
         ["CentralProcessingOverrideVersions", "CentralDerivativeJobs", "CentralClearReferenceDesignations"];
+    private static readonly string[] ZeroRollbackCountProperties =
+        ["audits", "bindings", "jobs", "requirements", "inputs", "canonicalInputs"];
+    private static readonly string[] NaturalCompletionFields =
+        ["measurement", "preRetryState", "postRetryConvergence", "reconciliationSelectAndPlan", "writeProxy", "commands"];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private static readonly ConcurrentBag<object> PreservedLiveResources = [];
     private static FileStream? processLock;
 
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
+    [Timeout(1_800_000)]
     public async Task RealScheduler_OneDeploymentScaling_RecordsBaselineEvidence()
     {
         var baseline = Environment.GetEnvironmentVariable("HVO_ISSUE_248_BASELINE_EVIDENCE") == "1";
         var smoke = Environment.GetEnvironmentVariable("HVO_ISSUE_248_SMOKE") == "1";
-        if (!baseline && !smoke)
+        var censoredSmoke = Environment.GetEnvironmentVariable("HVO_ISSUE_248_CENSORED_SMOKE") == "1";
+        var aggregateOnly = Environment.GetEnvironmentVariable("HVO_ISSUE_248_AGGREGATE_ONLY") == "1";
+        if (!baseline && !smoke && !censoredSmoke && !aggregateOnly)
         {
-            Assert.Inconclusive("Issue #248 is opt-in; set HVO_ISSUE_248_BASELINE_EVIDENCE=1 or HVO_ISSUE_248_SMOKE=1.");
+            Assert.Inconclusive("Issue #248 is opt-in; set a supported issue #248 evidence or smoke switch.");
         }
-        if (baseline && smoke)
+        if (new[] { baseline, smoke, censoredSmoke, aggregateOnly }.Count(value => value) != 1)
         {
-            throw new InvalidOperationException("Smoke mode is non-claimable and cannot be combined with baseline mode.");
+            throw new InvalidOperationException("Exactly one issue #248 evidence or smoke mode is required.");
         }
 
         Assert.AreEqual("Release", typeof(DeploymentLocationAuthorityIssue248BaselineTests).Assembly
             .GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration);
         var root = FindRepositoryRoot();
         AcquireLock();
-        if (smoke)
+        var progress = new ProtocolProgress(TestContext, Protocol);
+        if (aggregateOnly)
         {
-            var warmupSmoke = await RunScaleAsync(1, null, measured: false).ConfigureAwait(false);
-            _ = await RunScaleAsync(10, warmupSmoke.Expectations, measured: true).ConfigureAwait(false);
-            _ = await RunContentionAsync(warmupSmoke.Expectations, 10).ConfigureAwait(false);
-            _ = await RunFailureRestartAsync(warmupSmoke.Expectations).ConfigureAwait(false);
-            TestContext.WriteLine("Issue #248 non-claimable smoke completed: warmup + scale-10 natural/contention/failure paths; no evidence published.");
+            var aggregateSource = await CaptureSourceAsync(root).ConfigureAwait(false);
+            await ValidateSourceAsync(root, aggregateSource, requireTrial: false).ConfigureAwait(false);
+            var aggregateEnvironment = await CaptureEnvironmentAsync(root).ConfigureAwait(false);
+            await TryAggregateAsync(root, aggregateSource, HarnessHash(root), aggregateEnvironment.FingerprintSha256,
+                workload: null, protocolSha256: ProtocolSha256, measuredWorkStarted: null, phase: "baseline",
+                requireAllTrials: true, allowExisting: true).ConfigureAwait(false);
+            TestContext.WriteLine("Issue #248 authenticated aggregate-only completion succeeded.");
+            return;
+        }
+        if (smoke || censoredSmoke)
+        {
+            await RunProtocolSelfChecksAsync(progress).ConfigureAwait(false);
+            var warmupSmoke = await RunScaleAsync(1, null, measured: false, ExecutionMode.CompletedSmoke, progress).ConfigureAwait(false);
+            var mode = censoredSmoke ? ExecutionMode.CensoredSmoke : ExecutionMode.CompletedSmoke;
+            var natural = await RunScaleAsync(10, warmupSmoke.Expectations, measured: true, mode, progress).ConfigureAwait(false);
+            var smokeContention = await RunContentionAsync(warmupSmoke.Expectations, 10, mode, progress).ConfigureAwait(false);
+            Assert.AreEqual(censoredSmoke ? "right-censored" : "completed", natural.Public.Outcome);
+            Assert.AreEqual(censoredSmoke ? "right-censored" : "completed", smokeContention.Public.Outcome);
+            if (!censoredSmoke) _ = await RunFailureRestartAsync(
+                warmupSmoke.Expectations, progress, ExecutionMode.CompletedSmoke).ConfigureAwait(false);
+            TestContext.WriteLine("Issue #248 non-claimable {0} smoke completed; no evidence published.", censoredSmoke ? "right-censored" : "completed");
             return;
         }
         var source = await CaptureSourceAsync(root).ConfigureAwait(false);
         await ValidateSourceAsync(root, source).ConfigureAwait(false);
+        const string phase = "baseline";
         var environment = await CaptureEnvironmentAsync(root).ConfigureAwait(false);
         var harnessHash = HarnessHash(root);
 
-        var warmup = await RunScaleAsync(1, null, measured: false).ConfigureAwait(false);
+        var warmup = await RunScaleAsync(1, null, measured: false, ExecutionMode.Claimable, progress).ConfigureAwait(false);
         var expectations = warmup.Expectations;
+        var protocolHash = ProtocolSha256;
         var workloadHash = Hash(JsonSerializer.Serialize(new
         {
-            id = "W3M/issue-248-one-deployment-v1",
+            id = "W3M/issue-248-one-deployment-v2",
             Scales,
             concurrency = 1,
             arrivals = 0,
             eligibleRawArtifactsPerCapture = 1,
+            Protocol,
+            ProtocolSha256 = protocolHash,
             expectations
         }));
 
+        var measuredWorkStarted = Stopwatch.GetTimestamp();
         var runs = new List<ScaleRun>(Scales.Length);
         foreach (var scale in Scales)
         {
-            runs.Add(await RunScaleAsync(scale, expectations, measured: true).ConfigureAwait(false));
+            EnsureMeasuredWorkBudget(measuredWorkStarted);
+            runs.Add(await RunScaleAsync(scale, expectations, measured: true, ExecutionMode.ClaimableAt(measuredWorkStarted), progress).ConfigureAwait(false));
         }
-        var contention = await RunContentionAsync(expectations, 10_000).ConfigureAwait(false);
-        var failureRestart = await RunFailureRestartAsync(expectations).ConfigureAwait(false);
+        EnsureMeasuredWorkBudget(measuredWorkStarted);
+        var contention = await RunContentionAsync(expectations, 10_000, ExecutionMode.ClaimableAt(measuredWorkStarted), progress).ConfigureAwait(false);
+        EnsureMeasuredWorkBudget(measuredWorkStarted);
+        var failureRestart = await RunFailureRestartAsync(
+            expectations, progress, ExecutionMode.ClaimableAt(measuredWorkStarted)).ConfigureAwait(false);
+        EnsureMeasuredWorkBudget(measuredWorkStarted);
 
         var evidence = new
         {
-            Schema = "hvo-issue-248-deployment-location-baseline-v1",
+            Schema = "hvo-issue-248-deployment-location-evidence-v2",
             Issue = 248,
-            Phase = "baseline",
+            Phase = phase,
             Source = ProjectSource(source),
             ProductionRevision,
             HarnessSha256 = harnessHash,
+            Protocol,
+            ProtocolSha256 = protocolHash,
             Environment = environment,
             Workload = new
             {
-                Id = "W3M/issue-248-one-deployment-v1",
+                Id = "W3M/issue-248-one-deployment-v2",
                 WorkloadSha256 = workloadHash,
+                ProtocolSha256 = protocolHash,
                 DeploymentsPerScale = 1,
                 CaptureScales = Scales,
                 AvailableReconstructableRawArtifactsPerCapture = 1,
@@ -143,9 +187,11 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 AlignedStarts = "SQL observer and RSS sampler process setup/first-read readiness complete first; after a final Process.Refresh, the common boundary order is RSS reset/start, CPU baseline, exact-allocation baseline, sampled-allocation reset/start, then elapsed start. Boundary skew is recorded and must remain below 10 ms.",
                 SchedulerPlans = "Exact production SELECT shapes and deterministic parameters are captured and replayed only in a separately configured, equivalently seeded same-scale database that is deleted before the natural measured database starts.",
                 ProcessScope = "CPU, exact allocations, sampled allocations and RSS include the in-process test harness and direct production service graph; recurring hosted workers are suppressed",
-                SqlObserver = "uses a distinct .Observer ApplicationName and filters only the measured ApplicationName"
+                SqlObserver = "uses a distinct .Observer ApplicationName and filters only the measured ApplicationName",
+                RightCensoring = "At the fixed boundary resource/SQL/progress endpoints are captured, cooperative cancellation is requested, and the original task must terminate within 30 seconds before scope disposal or state reads. Timeout values are lower bounds, never completed elapsed values or throughput inputs."
             },
             Command = "DOTNET_gcServer=1 HVO_ISSUE_248_BASELINE_EVIDENCE=1 HVO_EVIDENCE_PHASE=baseline HVO_EVIDENCE_REVISION=<SOURCE_HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=7db3becafd37ec2b0b8a61dbbcc3a9a070819f43 HVO_EVIDENCE_TRIAL=1..5 dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeploymentLocationAuthorityIssue248BaselineTests.RealScheduler_OneDeploymentScaling_RecordsBaselineEvidence",
+            ExternalTimeout = "30 minutes; claimable measured work is bounded to 24 minutes with a separate 2-minute cleanup/publication reserve.",
             Limitations = new
             {
                 DurableWorker = "N/A: baseline production has no durable deployment reconciliation work record or worker.",
@@ -157,22 +203,34 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 FileSystemIo = "N/A: SQL container filesystem bytes are not attributable to one operation.",
                 ActiveLogPeak = "10 ms sampling can understate a shorter transaction-log peak."
             },
-            WorkerSuppression = "AssemblyHooks recognizes the neutral issue #248 baseline/smoke switches before fixture startup; all child-factory IHostedService registrations are also removed.",
+            WorkerSuppression = "AssemblyHooks recognizes the neutral issue #248 baseline/completed-smoke/censored-smoke/aggregate-only switches before fixture startup; all child-factory IHostedService registrations are also removed.",
             SmokeCommand = "DOTNET_gcServer=1 HVO_ISSUE_248_SMOKE=1 dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeploymentLocationAuthorityIssue248BaselineTests.RealScheduler_OneDeploymentScaling_RecordsBaselineEvidence",
+            CensoredSmokeCommand = "DOTNET_gcServer=1 HVO_ISSUE_248_CENSORED_SMOKE=1 dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeploymentLocationAuthorityIssue248BaselineTests.RealScheduler_OneDeploymentScaling_RecordsBaselineEvidence",
+            AggregateOnlyCommand = "DOTNET_gcServer=1 HVO_ISSUE_248_AGGREGATE_ONLY=1 HVO_EVIDENCE_PHASE=baseline HVO_EVIDENCE_REVISION=<SOURCE_HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=7db3becafd37ec2b0b8a61dbbcc3a9a070819f43 dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeploymentLocationAuthorityIssue248BaselineTests.RealScheduler_OneDeploymentScaling_RecordsBaselineEvidence",
             Privacy = "Serialized JSON is bounded and scanned for configured/generated values plus generic credential, connection assignment, path, GUID and payload patterns before publication.",
             RecordedAtUtc = DateTimeOffset.UtcNow
         };
 
         var generated = runs.SelectMany(run => run.GeneratedValues)
             .Concat(contention.GeneratedValues).Concat(failureRestart.GeneratedValues).ToArray();
-        var output = await PublishTrialAsync(root, source, evidence, generated).ConfigureAwait(false);
-        await TryAggregateAsync(root, source, harnessHash, environment.FingerprintSha256, workloadHash)
-            .ConfigureAwait(false);
+        EnsureCleanupPublicationReserve(measuredWorkStarted);
+        string output;
+        await using (progress.Start("publication"))
+            output = await PublishTrialAsync(root, source, evidence, generated, measuredWorkStarted, phase).ConfigureAwait(false);
+        await using (progress.Start("aggregation"))
+            await TryAggregateAsync(root, source, harnessHash, environment.FingerprintSha256, workloadHash, protocolHash, measuredWorkStarted, phase)
+                .ConfigureAwait(false);
         TestContext.WriteLine("Issue #248 baseline trial: {0}", Path.GetRelativePath(root, output));
     }
 
-    private static async Task<ScaleRun> RunScaleAsync(int scale, IReadOnlyList<RecipeExpectation>? expectedRecipes, bool measured)
+    private static async Task<ScaleRun> RunScaleAsync(
+        int scale,
+        IReadOnlyList<RecipeExpectation>? expectedRecipes,
+        bool measured,
+        ExecutionMode mode,
+        ProtocolProgress progress)
     {
+        await using var progressStage = progress.Start(measured ? "natural" : "warmup", scale);
         var fixture = AssemblyHooks.Fixture;
         var database = $"SkyMonitorIssue248_{scale}_{Guid.NewGuid():N}";
         var application = $"HVO.SkyMonitor.Issue248.{scale}.{Guid.NewGuid():N}";
@@ -182,8 +240,13 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             ApplicationName = application
         }.ConnectionString;
         var probe = new Probe();
-        var calls = new CallCounter();
+        var calls = new CallCounter { BlockOnFirstCall = measured && mode.ForceCensor };
         var factory = CreateFactory(fixture, connection, probe, calls);
+        var teardown = new TeardownGuard();
+        AsyncServiceScope operationScope = default;
+        var operationScopeCreated = false;
+        var operationScopeDisposed = false;
+        CancellationTokenSource? operationCancellation = null;
         try
         {
             IReadOnlyList<PlanEvidence>? schedulerPlans = null;
@@ -210,10 +273,16 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             calls.Reset();
             probe.Reset();
             Measurement? measurement = null;
-            DeploymentLocationResolutionResult result;
-            await using (var scope = factory.Services.CreateAsyncScope())
+            CensoringEvidence? censoring = null;
+            CancellationEvidence? cancellation = null;
+            RollbackState? rollback = null;
+            CensoredDiagnostics? censoredDiagnostics = null;
+            DeploymentLocationResolutionResult? result = null;
+            Transactions? observedTransactions = null;
+            operationScope = factory.Services.CreateAsyncScope();
+            operationScopeCreated = true;
             {
-                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var db = operationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 probe.Start(db.ContextId);
                 if (measured)
                 {
@@ -223,10 +292,11 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                     process.Refresh();
                     _ = process.TotalProcessorTime;
                     _ = process.WorkingSet64;
-                    using var cancel = new CancellationTokenSource();
+                    using var resourceCancellation = new CancellationTokenSource();
+                    operationCancellation = new CancellationTokenSource();
                     var sqlReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                    var sqlTask = SampleSqlAsync(connection, application, sqlReady, cancel.Token);
-                    var rssSampler = new RssSampler(cancel.Token);
+                    var sqlTask = SampleSqlAsync(connection, application, sqlReady, resourceCancellation.Token);
+                    var rssSampler = new RssSampler(resourceCancellation.Token);
                     await sqlReady.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
                     await rssSampler.Ready.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
                     process.Refresh();
@@ -240,56 +310,134 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                     var resourceStartBoundarySkew = Stopwatch.GetElapsedTime(boundaryStarted, started);
                     Assert.IsLessThan(TimeSpan.FromMilliseconds(10), resourceStartBoundarySkew,
                         "Resource start boundary setup exceeded the documented negligible skew bound.");
-                    TimeSpan elapsed;
-                    TimeSpan cpuElapsed;
-                    long exactAllocated;
-                    long rssEnd;
-                    Issue170AllocationMeasurement sampled;
+                    var deadline = mode.NaturalDeadline(scale);
+                    var budgetRemaining = mode.MeasuredWorkRemaining();
+                    if (budgetRemaining <= TimeSpan.Zero)
+                    {
+                        await resourceCancellation.CancelAsync().ConfigureAwait(false);
+                        probe.Stop();
+                        _ = await sqlTask.ConfigureAwait(false);
+                        _ = await rssSampler.Completion.ConfigureAwait(false);
+                        throw new TimeoutException("Issue #248 claimable measured-work deadline expired before natural execution.");
+                    }
+                    var absoluteDeadline = AbsoluteDeadline(started, deadline);
+                    var operation = StartTimestampedOperation(() => ResolveAsync(
+                        operationScope, seeded, operationCancellation.Token));
+                    var boundary = await AwaitAbsoluteBoundaryAsync(
+                        operation, absoluteDeadline, AbsoluteMeasuredWorkDeadline(mode)).ConfigureAwait(false);
+                    var completedAtBoundary = boundary.CompletedWithinDeadline;
+                    var measuredWorkExpired = boundary.MeasuredWorkExpired;
+                    var boundaryElapsed = Stopwatch.GetElapsedTime(started);
+                    var completedElapsed = completedAtBoundary
+                        ? Stopwatch.GetElapsedTime(started, boundary.CompletionTimestamp!.Value)
+                        : TimeSpan.Zero;
+                    process.Refresh();
+                    var cpuElapsed = process.TotalProcessorTime - cpu;
+                    var exactAllocated = GC.GetTotalAllocatedBytes(true) - exactAllocation;
+                    var rssEnd = process.WorkingSet64;
+                    var sampled = await allocation.StopAsync().ConfigureAwait(false);
+                    await resourceCancellation.CancelAsync().ConfigureAwait(false);
+                    var sql = await sqlTask.ConfigureAwait(false);
+                    var peakRss = await rssSampler.Completion.ConfigureAwait(false);
+                    DrainResult? drain = null;
                     try
                     {
-                        result = await ResolveAsync(scope, seeded).ConfigureAwait(false);
-                        elapsed = Stopwatch.GetElapsedTime(started);
-                        process.Refresh();
-                        cpuElapsed = process.TotalProcessorTime - cpu;
-                        exactAllocated = GC.GetTotalAllocatedBytes(true) - exactAllocation;
-                        rssEnd = process.WorkingSet64;
-                        sampled = await allocation.StopAsync().ConfigureAwait(false);
+                        if (completedAtBoundary)
+                        {
+                            result = await operation.Original.ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            progressStage.Emit("censor");
+                            drain = await CancelAndDrainAsync(operation, operationCancellation,
+                                TimeSpan.FromSeconds(Protocol.DrainDeadlineSeconds),
+                                TimeSpan.FromSeconds(Protocol.DrainDeadlineSeconds), progressStage).ConfigureAwait(false);
+                            if (!drain.Terminated)
+                            {
+                                progressStage.Terminate("finished");
+                                EnsureTerminationOrPreserve(teardown, drain,
+                                    factory, operationScope, operation.Original, operationCancellation, connection);
+                            }
+                        }
                     }
                     finally
                     {
                         probe.Stop();
-                        await cancel.CancelAsync().ConfigureAwait(false);
                     }
-                    var dbAfter = await DatabaseSizeAsync(connection).ConfigureAwait(false);
-                    var sql = await sqlTask.ConfigureAwait(false);
+                    await operationScope.DisposeAsync().ConfigureAwait(false);
+                    operationScopeDisposed = true;
+                    operationCancellation.Dispose();
+                    operationCancellation = null;
+                    if (drain is not null) EnsureCensoredDrainIsPublishable(drain);
                     Assert.IsNotEmpty(sql);
                     Assert.IsTrue(sql.Any(item => item.OpenTransactions > 0 && item.MaximumIsolationLevel == 4),
                         "SQL sampling must observe the attributed serializable authority transaction.");
-                    var transactions = probe.Transactions.Snapshot();
-                    measurement = new Measurement(
-                        elapsed.TotalMilliseconds, transactions.Durations.Single(),
-                        transactions.Starts, transactions.Commits, transactions.Rollbacks, transactions.Failures,
-                        probe.Commands.Count, calls.Count, scale / elapsed.TotalSeconds,
-                        calls.Count / elapsed.TotalSeconds, 0,
-                        cpuElapsed.TotalMilliseconds,
-                        exactAllocated,
-                        sampled.SampledBytes, sampled.Samples, sampled.IntervalMilliseconds,
-                        rss, rssEnd, await rssSampler.Completion.ConfigureAwait(false),
-                        resourceStartBoundarySkew.TotalMicroseconds,
-                        dbBefore, dbAfter,
-                        dbAfter.DataAllocated - dbBefore.DataAllocated,
-                        dbAfter.DataUsed - dbBefore.DataUsed,
-                        dbAfter.LogAllocated - dbBefore.LogAllocated,
-                        dbAfter.LogUsed - dbBefore.LogUsed,
-                        sql.Count, SamplingMedian(sql), sql.Count == 0 ? 0 : sql.Max(item => item.OpenTransactions),
-                        sql.Count == 0 ? 0 : sql.Max(item => item.ActiveLogBytes));
+                    observedTransactions = probe.Transactions.Snapshot(countActiveAsRollback: !completedAtBoundary);
+                    var dbAfter = await DatabaseSizeAsync(connection).ConfigureAwait(false);
+                    if (measuredWorkExpired)
+                        throw new TimeoutException("Issue #248 claimable measured-work deadline expired; natural result is not publishable.");
+                    if (completedAtBoundary)
+                    {
+                        measurement = new Measurement(
+                            completedElapsed.TotalMilliseconds, observedTransactions.Durations.Single(),
+                            observedTransactions.Starts, observedTransactions.Commits, observedTransactions.Rollbacks, observedTransactions.Failures,
+                            probe.Commands.Count, calls.Count, scale / completedElapsed.TotalSeconds,
+                            calls.Count / completedElapsed.TotalSeconds, 0,
+                            cpuElapsed.TotalMilliseconds,
+                            exactAllocated,
+                            sampled.SampledBytes, sampled.Samples, sampled.IntervalMilliseconds,
+                            rss, rssEnd, peakRss,
+                            resourceStartBoundarySkew.TotalMicroseconds,
+                            dbBefore, dbAfter,
+                            dbAfter.DataAllocated - dbBefore.DataAllocated,
+                            dbAfter.DataUsed - dbBefore.DataUsed,
+                            dbAfter.LogAllocated - dbBefore.LogAllocated,
+                            dbAfter.LogUsed - dbBefore.LogUsed,
+                            sql.Count, SamplingMedian(sql), sql.Max(item => item.OpenTransactions),
+                            sql.Max(item => item.ActiveLogBytes));
+                    }
+                    else
+                    {
+                        censoring = new(deadline.TotalSeconds, deadline.TotalMilliseconds,
+                            "Fixed right-censor lower bound; not a completed elapsed measurement.");
+                        cancellation = new(true, true, true, Protocol.DrainDeadlineSeconds);
+                        censoredDiagnostics = new(
+                            new(boundaryElapsed.TotalMilliseconds, cpuElapsed.TotalMilliseconds, exactAllocated,
+                                sampled.SampledBytes, sampled.Samples, sampled.IntervalMilliseconds,
+                                rss, rssEnd, peakRss, resourceStartBoundarySkew.TotalMicroseconds),
+                            probe.Commands.Count, calls.Count, sql.Count, SamplingMedian(sql),
+                            sql.Max(item => item.OpenTransactions), sql.Max(item => item.ActiveLogBytes),
+                            observedTransactions);
+                    }
                 }
                 else
                 {
-                    try { result = await ResolveAsync(scope, seeded).ConfigureAwait(false); }
+                    try { result = await ResolveAsync(operationScope, seeded, CancellationToken.None).ConfigureAwait(false); }
                     finally { probe.Stop(); }
+                    await operationScope.DisposeAsync().ConfigureAwait(false);
+                    operationScopeDisposed = true;
                 }
             }
+            if (censoring is not null)
+            {
+                var remaining = await ReadAttributedActivityAsync(connection, application).ConfigureAwait(false);
+                Assert.AreEqual(new AttributedActivity(0, 0), remaining);
+                Assert.IsTrue(cancellation!.Attributed);
+                rollback = await ReadRollbackStateAsync(factory, seeded).ConfigureAwait(false);
+                Assert.AreEqual(new RollbackState("Pending", false, "DeploymentPending", scale, 0, 0, 0, 0, 0, 0), rollback);
+                Assert.AreEqual(1, observedTransactions!.Starts);
+                Assert.AreEqual(0, observedTransactions.Commits);
+                Assert.AreEqual(1, observedTransactions.Rollbacks);
+                progressStage.Emit("rollback");
+                progressStage.Terminate("censored");
+                var censoredPublic = new PublicScaleRun(scale, "right-censored", mode.NaturalDeadline(scale).TotalSeconds,
+                    initial, null, censoring, cancellation, rollback, censoredDiagnostics,
+                    null, null, null, schedulerPlans, null, null);
+                return new ScaleRun(censoredPublic, null, computedExpectations,
+                    seeded.GeneratedValues.Append(database).Append(application).ToArray());
+            }
+
+            Assert.IsNotNull(result);
             Assert.AreEqual(DeploymentLocationMutationStatus.Applied, result.Status);
             Assert.AreEqual(scale, calls.Count);
             var preRetryState = await StateAsync(factory, seeded).ConfigureAwait(false);
@@ -324,22 +472,33 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 preRetryState.OrderedIdentitySetSha256 == convergedState.OrderedIdentitySetSha256,
                 convergedState.Inputs - preRetryState.Inputs,
                 "Allowed: standalone scheduling owns a transaction and invokes ResolveAffectedAsync; rolling-window inputs/status may converge without creating jobs.");
-            var publicRun = new PublicScaleRun(scale, initial, measurement, preRetryState,
+            var publicRun = new PublicScaleRun(scale, "completed", measured ? mode.NaturalDeadline(scale).TotalSeconds : 0,
+                initial, measurement, null, null, null, null, preRetryState,
                 new PostRetryConvergence(convergedState, retry), plan, schedulerPlans, writeProxy, commands);
+            progressStage.Terminate("completed");
             return new ScaleRun(publicRun, convergedState, computedExpectations,
                 seeded.GeneratedValues.Append(database).Append(application).ToArray());
         }
         finally
         {
-            await factory.DisposeAsync().ConfigureAwait(false);
-            await DeleteDatabaseAsync(connection).ConfigureAwait(false);
+            if (teardown.CanTeardown)
+            {
+                if (operationScopeCreated && !operationScopeDisposed)
+                    await operationScope.DisposeAsync().ConfigureAwait(false);
+                operationCancellation?.Dispose();
+                await factory.DisposeAsync().ConfigureAwait(false);
+                await DeleteDatabaseAsync(connection).ConfigureAwait(false);
+            }
         }
     }
 
-    private static Task<DeploymentLocationResolutionResult> ResolveAsync(AsyncServiceScope scope, Seed seeded)
+    private static Task<DeploymentLocationResolutionResult> ResolveAsync(
+        AsyncServiceScope scope,
+        Seed seeded,
+        CancellationToken cancellationToken)
         => scope.ServiceProvider.GetRequiredService<IDeploymentLocationAuthorityService>().ResolveAsync(
             seeded.DeploymentId, seeded.OwnerId, DeploymentLocationResolutionStatus.Acknowledged,
-            ResolutionReason, seeded.Token, cancellationToken: CancellationToken.None);
+            ResolutionReason, seeded.Token, cancellationToken: cancellationToken);
 
     private static WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> CreateFactory(
         IntegrationTestFixture fixture, string connection, Probe probe, CallCounter calls)
@@ -348,7 +507,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             services.RemoveAll<DbContextOptions<ApplicationDbContext>>();
             services.RemoveAll<ApplicationDbContext>();
             services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(
-                connection, sql => sql.CommandTimeout(300)).AddInterceptors(probe.Commands, probe.Transactions));
+                connection, sql => sql.CommandTimeout(660)).AddInterceptors(probe.Commands, probe.Transactions));
             services.RemoveAll<ICentralDerivativeJobScheduler>();
             services.RemoveAll<IHostedService>();
             services.AddScoped<CentralDerivativeJobScheduler>();
@@ -356,8 +515,13 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 provider.GetRequiredService<CentralDerivativeJobScheduler>(), calls));
         }));
 
-    private static async Task<ContentionRun> RunContentionAsync(IReadOnlyList<RecipeExpectation> expectations, int count)
+    private static async Task<ContentionRun> RunContentionAsync(
+        IReadOnlyList<RecipeExpectation> expectations,
+        int count,
+        ExecutionMode mode,
+        ProtocolProgress progress)
     {
+        await using var progressStage = progress.Start("contention", count == 10_000 ? 10_000 : 10);
         var fixture = AssemblyHooks.Fixture;
         var database = $"SkyMonitorIssue248_Contention_{Guid.NewGuid():N}";
         var application = $"HVO.SkyMonitor.Issue248.Contention.{Guid.NewGuid():N}";
@@ -369,31 +533,42 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         var probe = new Probe();
         var barrier = new MaterializationBarrier();
         probe.Commands.Barrier = barrier;
-        var calls = new CallCounter();
+        var calls = new CallCounter { BlockOnFirstCall = mode.ForceCensor };
         var factory = CreateFactory(fixture, connection, probe, calls);
+        var teardown = new TeardownGuard();
+        CancellationTokenSource? authorityCancellation = null;
+        TimestampedOperation<DeploymentLocationResolutionResult>? resolution = null;
+        TimestampedOperation<int>? writer = null;
         try
         {
             _ = factory.Services;
             var seed = await SeedAsync(factory, count).ConfigureAwait(false);
             CollectionAssert.AreEqual(expectations.ToArray(), BuildExpectations(
                 await ActiveRecipesAsync(factory, seed.ObservatoryId).ConfigureAwait(false)));
+            authorityCancellation = new CancellationTokenSource();
             var authorityStarted = Stopwatch.GetTimestamp();
-            var resolution = ResolveWithProbeAsync(factory, seed, probe);
+            resolution = StartTimestampedOperation(() => ResolveWithProbeAsync(
+                factory, seed, probe, authorityCancellation.Token));
             await barrier.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
             var writerApplication = application + ".Writer";
             var writerOffered = Stopwatch.GetTimestamp();
-            var writer = RunConflictingWriterAsync(connection, writerApplication, seed.RegistrationId);
+            var writerRun = RunConflictingWriterAsync(connection, writerApplication, seed.RegistrationId);
+            writer = new TimestampedOperation<int>(writerRun.Completion,
+                writerRun.Completion.ContinueWith(task => new OperationCompletion(
+                    Stopwatch.GetTimestamp(), task.Status), CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default));
             var observation = await ObserveWriterAsync(
                 connection, application + ".Observer", application, writerApplication,
-                writerOffered, writer.SessionId, writer.Completion)
+                writerOffered, writerRun.SessionId, writer.Original)
                 .ConfigureAwait(false);
+            var deadline = mode.ContentionDeadline;
+            var releaseStarted = Stopwatch.GetTimestamp();
+            var absoluteDeadline = AbsoluteDeadline(releaseStarted, deadline);
             barrier.Release.TrySetResult();
-            var result = await resolution.WaitAsync(TimeSpan.FromMinutes(10)).ConfigureAwait(false);
-            var authorityDuration = Stopwatch.GetElapsedTime(authorityStarted).TotalMilliseconds;
-            var affected = await writer.Completion.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
-            var writerCompleted = Stopwatch.GetElapsedTime(writerOffered).TotalMilliseconds;
-            Assert.AreEqual(1, affected);
-            Assert.AreEqual(DeploymentLocationMutationStatus.Applied, result.Status);
+            var boundary = await AwaitContentionBoundaryAsync(
+                resolution, writer, absoluteDeadline, AbsoluteMeasuredWorkDeadline(mode)).ConfigureAwait(false);
+            var completedAtBoundary = boundary.CompletedWithinDeadline;
+            var measuredWorkExpired = boundary.MeasuredWorkExpired;
             Assert.IsTrue(observation.BlockerIsAuthority);
             Assert.IsGreaterThan((short)0, observation.BlockingSessionId);
             Assert.IsTrue(observation.WaitType.StartsWith("LCK_M_", StringComparison.Ordinal));
@@ -403,32 +578,115 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             Assert.AreNotEqual("unknown", observation.RequestMode);
             Assert.AreEqual("WAIT", observation.RequestStatus);
             Assert.AreEqual("TRANSACTION", observation.RequestOwnerType);
-            var state = await StateAsync(factory, seed).ConfigureAwait(false);
-            AssertState(count, seed, state,
-                (await ActiveRecipesAsync(factory, seed.ObservatoryId).ConfigureAwait(false)).Where(recipe =>
-                    expectations.Single(item => item.RequestedRecipeIdentitySha256 == recipe.RequestedRecipeIdentitySha256).Applicable).ToArray(),
-                afterRetry: false);
+            string outcome;
+            double? writerCompleted = null;
+            double? authorityDuration = null;
+            CensoringEvidence? censoring = null;
+            CancellationEvidence? cancellation = null;
+            RollbackState? rollback = null;
+            DeploymentLocationResolutionResult? result = null;
+            if (completedAtBoundary)
+            {
+                result = await resolution.Original.ConfigureAwait(false);
+                var affected = await writer.Original.ConfigureAwait(false);
+                var authorityCompletion = await resolution.Completion.ConfigureAwait(false);
+                var writerCompletion = await writer.Completion.ConfigureAwait(false);
+                authorityDuration = Stopwatch.GetElapsedTime(authorityStarted, authorityCompletion.Timestamp).TotalMilliseconds;
+                writerCompleted = Stopwatch.GetElapsedTime(writerOffered, writerCompletion.Timestamp).TotalMilliseconds;
+                Assert.AreEqual(1, affected);
+                outcome = "completed";
+            }
+            else
+            {
+                progressStage.Emit("censor");
+                var drain = await CancelAndDrainAsync(resolution, authorityCancellation,
+                    TimeSpan.FromSeconds(Protocol.DrainDeadlineSeconds),
+                    TimeSpan.FromSeconds(Protocol.DrainDeadlineSeconds), progressStage).ConfigureAwait(false);
+                if (!drain.Terminated)
+                {
+                    progressStage.Terminate("finished");
+                    EnsureTerminationOrPreserve(teardown, drain,
+                        factory, resolution.Original, writer.Original, authorityCancellation, connection);
+                }
+                var writerDrain = TimeSpan.FromSeconds(Protocol.DrainDeadlineSeconds);
+                var writerResult = await DrainWriterOwnershipAsync(writer, teardown, writerDrain, writerDrain,
+                    factory, authorityCancellation, connection).ConfigureAwait(false);
+                if (!writerResult.Terminated)
+                {
+                    progressStage.Terminate("finished");
+                    EnsureWriterDrainIsPublishable(writerResult);
+                }
+                EnsureCensoredDrainIsPublishable(drain);
+                EnsureWriterDrainIsPublishable(writerResult);
+                if (measuredWorkExpired)
+                    throw new TimeoutException("Issue #248 claimable measured-work deadline expired; contention result is not publishable.");
+                censoring = new(deadline.TotalSeconds, deadline.TotalMilliseconds,
+                    "Post-registration-lock-release fixed lower bound; completed authority and writer latency are intentionally null.");
+                cancellation = new(true, true, true, Protocol.DrainDeadlineSeconds);
+                outcome = "right-censored";
+            }
+
+            if (result is not null)
+            {
+                Assert.AreEqual(DeploymentLocationMutationStatus.Applied, result.Status);
+                var state = await StateAsync(factory, seed).ConfigureAwait(false);
+                AssertState(count, seed, state,
+                    (await ActiveRecipesAsync(factory, seed.ObservatoryId).ConfigureAwait(false)).Where(recipe =>
+                        expectations.Single(item => item.RequestedRecipeIdentitySha256 == recipe.RequestedRecipeIdentitySha256).Applicable).ToArray(),
+                    afterRetry: false);
+            }
+            else
+            {
+                rollback = await ReadRollbackStateAsync(factory, seed).ConfigureAwait(false);
+                Assert.AreEqual(new RollbackState("Pending", false, "DeploymentPending", count, 0, 0, 0, 0, 0, 0), rollback);
+                Assert.AreEqual(new AttributedActivity(0, 0), await ReadAttributedActivityAsync(connection, application).ConfigureAwait(false));
+                progressStage.Emit("rollback");
+                progressStage.Terminate("censored");
+            }
+            var transactions = probe.Transactions.Snapshot(countActiveAsRollback: outcome == "right-censored");
+            Assert.AreEqual(1, transactions.Starts);
+            Assert.AreEqual(outcome == "completed" ? 1 : 0, transactions.Commits);
+            Assert.AreEqual(outcome == "right-censored" ? 1 : 0, transactions.Rollbacks);
+            if (outcome == "completed") progressStage.Terminate("completed");
             return new ContentionRun(new(
-                count, "one-row DeviceRegistrations LastSeenUtc UPDATE", true,
+                outcome, count, deadline.TotalSeconds, "one-row DeviceRegistrations LastSeenUtc UPDATE", true,
                 observation.BlockingSessionId, true, observation.BlockerApplicationSha256,
                 observation.WaitType, observation.SessionIsolationLevel,
                 observation.BlockerIsolationLevel,
                 observation.ResourceType, observation.RequestMode, observation.RequestStatus,
                 observation.RequestOwnerType, observation.OfferToObservationMilliseconds,
-                writerCompleted, authorityDuration, 1, affected,
-                "Barrier released immediately after exact SQL attribution; excluded from natural timings."),
+                writerCompleted, authorityDuration,
+                censoring, cancellation, rollback, transactions, 1, 1,
+                "Barrier is the common DeviceRegistrations UPDLOCK/HOLDLOCK boundary; deadline starts at release."),
                 seed.GeneratedValues.Append(database).Append(application).Append(writerApplication).ToArray());
         }
         finally
         {
             barrier.Release.TrySetResult();
-            await factory.DisposeAsync().ConfigureAwait(false);
-            await DeleteDatabaseAsync(connection).ConfigureAwait(false);
+            if (teardown.CanTeardown
+                && (resolution?.Original.IsCompleted == false || writer?.Original.IsCompleted == false))
+            {
+                var liveResources = new List<object> { factory, connection };
+                if (resolution?.Original is { IsCompleted: false } authorityTask) liveResources.Add(authorityTask);
+                if (writer?.Original is { IsCompleted: false } writerTask) liveResources.Add(writerTask);
+                if (authorityCancellation is not null) liveResources.Add(authorityCancellation);
+                teardown.Preserve(liveResources.ToArray());
+            }
+            if (teardown.CanTeardown)
+            {
+                authorityCancellation?.Dispose();
+                await factory.DisposeAsync().ConfigureAwait(false);
+                await DeleteDatabaseAsync(connection).ConfigureAwait(false);
+            }
         }
     }
 
-    private static async Task<FailureRestartRun> RunFailureRestartAsync(IReadOnlyList<RecipeExpectation> expectations)
+    private static async Task<FailureRestartRun> RunFailureRestartAsync(
+        IReadOnlyList<RecipeExpectation> expectations,
+        ProtocolProgress progress,
+        ExecutionMode mode)
     {
+        await using var progressStage = progress.Start("failure-restart", 10);
         const int count = 10;
         var fixture = AssemblyHooks.Fixture;
         var database = $"SkyMonitorIssue248_Failure_{Guid.NewGuid():N}";
@@ -445,10 +703,11 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         {
             _ = failedFactory.Services;
             seed = await SeedAsync(failedFactory, count).ConfigureAwait(false);
+            using var failureCancellation = CreateBoundedOperationCancellation(mode);
             var failure = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
             {
                 await using var scope = failedFactory.Services.CreateAsyncScope();
-                _ = await ResolveAsync(scope, seed).ConfigureAwait(false);
+                _ = await ResolveAsync(scope, seed, failureCancellation.Token).ConfigureAwait(false);
             }).ConfigureAwait(false);
             Assert.AreEqual("issue-248-injected-scheduler-failure", failure.Message);
             Assert.AreEqual(failedCalls.FailAfterDelegatedCall, failedCalls.Count);
@@ -463,12 +722,13 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         try
         {
             _ = retryFactory.Services;
+            using var retryCancellation = CreateBoundedOperationCancellation(mode);
             await using (var scope = retryFactory.Services.CreateAsyncScope())
             {
-                var result = await ResolveAsync(scope, seed).ConfigureAwait(false);
+                var result = await ResolveAsync(scope, seed, retryCancellation.Token).ConfigureAwait(false);
                 Assert.AreEqual(DeploymentLocationMutationStatus.Applied, result.Status);
             }
-            await RetryAllAsync(retryFactory, seed).ConfigureAwait(false);
+            await RetryAllAsync(retryFactory, seed, retryCancellation.Token).ConfigureAwait(false);
             var recipes = await ActiveRecipesAsync(retryFactory, seed.ObservatoryId).ConfigureAwait(false);
             CollectionAssert.AreEqual(expectations.ToArray(), BuildExpectations(recipes));
             var state = await StateAsync(retryFactory, seed).ConfigureAwait(false);
@@ -488,11 +748,12 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private static async Task<DeploymentLocationResolutionResult> ResolveWithProbeAsync(
         WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory,
         Seed seed,
-        Probe probe)
+        Probe probe,
+        CancellationToken cancellationToken)
     {
         await using var scope = factory.Services.CreateAsyncScope();
         probe.Start(scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().ContextId);
-        try { return await ResolveAsync(scope, seed).ConfigureAwait(false); }
+        try { return await ResolveAsync(scope, seed, cancellationToken).ConfigureAwait(false); }
         finally { probe.Stop(); }
     }
 
@@ -578,6 +839,25 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             await db.CentralDerivativeJobInputs.CountAsync(item => item.Job!.SourceArtifact!.Frame!.RegistrationId == seed.RegistrationId).ConfigureAwait(false),
             await db.CentralDerivativeJobCanonicalInputs.CountAsync(item => item.Job!.SourceArtifact!.Frame!.RegistrationId == seed.RegistrationId).ConfigureAwait(false));
     }
+
+    private static async Task<AttributedActivity> ReadAttributedActivityAsync(string connection, string application)
+    {
+        var observer = new SqlConnectionStringBuilder(connection) { ApplicationName = application + ".DrainObserver" }.ConnectionString;
+        await using var sql = new SqlConnection(observer);
+        await sql.OpenAsync().ConfigureAwait(false);
+        await using var command = sql.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(DISTINCT request.[session_id]), COUNT(DISTINCT session_transaction.[session_id])
+            FROM [sys].[dm_exec_sessions] AS session
+            LEFT JOIN [sys].[dm_exec_requests] AS request ON request.[session_id]=session.[session_id]
+            LEFT JOIN [sys].[dm_tran_session_transactions] AS session_transaction ON session_transaction.[session_id]=session.[session_id]
+            WHERE session.[program_name]=@application;
+            """;
+        command.Parameters.Add(new SqlParameter("@application", System.Data.SqlDbType.NVarChar, 128) { Value = application });
+        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+        return new(reader.GetInt32(0), reader.GetInt32(1));
+    }
 }
 
 public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
@@ -587,6 +867,10 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         public async Task EnsureRequiredJobsAsync(CentralArtifact artifact, DateTimeOffset now, CancellationToken token)
         {
             var ordinal = counter.Increment();
+            if (counter.BlockOnFirstCall && ordinal == 1)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            }
             await inner.EnsureRequiredJobsAsync(artifact, now, token).ConfigureAwait(false);
             if (ordinal == counter.FailAfterDelegatedCall)
             {
@@ -603,6 +887,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         private long count;
         internal long Count => Interlocked.Read(ref count);
         internal long FailAfterDelegatedCall { get; set; } = -1;
+        internal bool BlockOnFirstCall { get; set; }
         internal long Increment() => Interlocked.Increment(ref count);
         internal void Reset() => Interlocked.Exchange(ref count, 0);
     }
@@ -643,7 +928,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             DbDataReader result,
             CancellationToken token = default)
         {
-            if (Barrier is { } barrier && Target(data.Context) && IsReconciliation(command.CommandText))
+            if (Barrier is { } barrier && Target(data.Context) && IsRegistrationLock(command.CommandText))
             {
                 barrier.Reached.TrySetResult();
                 await barrier.Release.Task.WaitAsync(TimeSpan.FromSeconds(15), token).ConfigureAwait(false);
@@ -658,6 +943,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         }
         private bool Target(DbContext? db) => Volatile.Read(ref enabled) != 0 && db is not null && db.ContextId.Equals(context);
         private static bool IsReconciliation(string text) => text.Contains("FROM [CentralCaptureLocations]", StringComparison.Ordinal) && text.Contains("[CentralArtifacts]", StringComparison.Ordinal);
+        private static bool IsRegistrationLock(string text) => text.Contains("FROM [DeviceRegistrations] WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal);
     }
 
     private sealed class TransactionProbe : DbTransactionInterceptor
@@ -667,7 +953,8 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         internal void Reset() { starts.Clear(); durations.Clear(); started = committed = rolledBack = failed = 0; }
         internal void Start(DbContextId id) { context = id; Volatile.Write(ref enabled, 1); }
         internal void Stop() => Volatile.Write(ref enabled, 0);
-        internal Transactions Snapshot() => new(started, committed, rolledBack, failed, durations.ToArray());
+        internal Transactions Snapshot(bool countActiveAsRollback = false) => new(started, committed,
+            rolledBack + (countActiveAsRollback ? starts.Count : 0), failed, durations.ToArray());
         public override ValueTask<DbTransaction> TransactionStartedAsync(DbConnection connection, TransactionEndEventData data, DbTransaction result, CancellationToken token = default) { if (Target(data.Context)) { starts[result] = Stopwatch.GetTimestamp(); Interlocked.Increment(ref started); } return ValueTask.FromResult(result); }
         public override Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData data, CancellationToken token = default) { if (Target(data.Context)) { if (starts.TryRemove(transaction, out var value)) durations.Enqueue(Stopwatch.GetElapsedTime(value).TotalMilliseconds); Interlocked.Increment(ref committed); } return Task.CompletedTask; }
         public override Task TransactionRolledBackAsync(DbTransaction transaction, TransactionEndEventData data, CancellationToken token = default) { if (Target(data.Context)) { starts.TryRemove(transaction, out _); Interlocked.Increment(ref rolledBack); } return Task.CompletedTask; }
@@ -705,12 +992,61 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         internal SqlParameter Create() => new(Metadata.Name, Enum.Parse<System.Data.SqlDbType>(Metadata.Type), Metadata.Size) { Precision = Metadata.Precision, Scale = Metadata.Scale, Direction = Enum.Parse<System.Data.ParameterDirection>(Metadata.Direction), IsNullable = Metadata.Nullable, Value = Value };
     }
 
+    private sealed record ScaleDeadline(int Scale, int Seconds);
+    private sealed record EvidenceProtocol(string Schema, IReadOnlyList<ScaleDeadline> NaturalDeadlines,
+        int ContentionPostRegistrationLockReleaseDeadlineSeconds, int DrainDeadlineSeconds,
+        int ClaimableMeasuredWorkDeadlineSeconds, int CleanupPublicationReserveSeconds,
+        int ExternalDeadlineSeconds, int HeartbeatIntervalSeconds, string Semantics);
+    private sealed record ExecutionMode(bool ForceCensor, int? NaturalDeadlineSeconds,
+        int? ContentionDeadlineSeconds, long? MeasuredWorkStarted)
+    {
+        internal static ExecutionMode Claimable { get; } = new(false, null, null, null);
+        internal static ExecutionMode CompletedSmoke { get; } = new(false, null, null, null);
+        internal static ExecutionMode CensoredSmoke { get; } = new(true, 1, 2, null);
+        internal static ExecutionMode ClaimableAt(long started) => new(false, null, null, started);
+        internal TimeSpan NaturalDeadline(int scale) => TimeSpan.FromSeconds(NaturalDeadlineSeconds
+            ?? Protocol.NaturalDeadlines.Single(item => item.Scale == scale).Seconds);
+        internal TimeSpan ContentionDeadline => TimeSpan.FromSeconds(ContentionDeadlineSeconds
+            ?? Protocol.ContentionPostRegistrationLockReleaseDeadlineSeconds);
+        internal TimeSpan? MeasuredWorkRemaining()
+            => MeasuredWorkStarted is { } started
+                ? TimeSpan.FromSeconds(Protocol.ClaimableMeasuredWorkDeadlineSeconds) - Stopwatch.GetElapsedTime(started)
+                : null;
+    }
+    private sealed record OperationCompletion(long Timestamp, TaskStatus Status);
+    private sealed record TimestampedOperation<T>(Task<T> Original, Task<OperationCompletion> Completion);
+    private sealed record BoundaryDecision(bool CompletedWithinDeadline, bool MeasuredWorkExpired,
+        long AbsoluteDeadline, long? CompletionTimestamp);
+    private sealed record DrainResult(bool Terminated, bool CompletedWithinDeadline,
+        bool AttributedCancellation, bool CommittedAfterBoundary, Exception? UnexpectedException);
+    private sealed record WriterDrainResult(bool Terminated, bool CompletedWithinDeadline,
+        int? RowsCommitted, Exception? UnexpectedException);
+    private sealed class TeardownGuard
+    {
+        internal bool CanTeardown { get; private set; } = true;
+        internal void Preserve(params object[] resources)
+        {
+            CanTeardown = false;
+            PreservedLiveResources.Add(resources);
+        }
+    }
     private sealed record Seed(string OwnerId, Guid ObservatoryId, Guid RegistrationId, Guid DevicePublicId, Guid DeploymentId, Guid Token, string LocationId, long LocationVersion, string Source, double? Accuracy, DateTimeOffset EffectiveFrom, IReadOnlyList<Guid> ArtifactIds, IReadOnlyList<string> GeneratedValues);
-    private sealed record ScaleRun(PublicScaleRun Public, State State, IReadOnlyList<RecipeExpectation> Expectations, IReadOnlyList<string> GeneratedValues);
-    private sealed record PublicScaleRun(int Scale, Backlog InitialBacklog, Measurement? Measurement,
-        State PreRetryState, PostRetryConvergence PostRetryConvergence,
+    private sealed record ScaleRun(PublicScaleRun Public, State? State, IReadOnlyList<RecipeExpectation> Expectations, IReadOnlyList<string> GeneratedValues);
+    private sealed record PublicScaleRun(int Scale, string Outcome, double DeadlineSeconds, Backlog InitialBacklog,
+        Measurement? Measurement, CensoringEvidence? Censoring, CancellationEvidence? Cancellation,
+        RollbackState? Rollback, CensoredDiagnostics? CensoredDiagnostics,
+        State? PreRetryState, PostRetryConvergence? PostRetryConvergence,
         PlanEvidence? ReconciliationSelectAndPlan, IReadOnlyList<PlanEvidence>? SchedulerSelectPlans,
         IndexWriteEvidence? WriteProxy, CommandEvidence? Commands);
+    private sealed record CensoringEvidence(double FixedDeadlineSeconds, double FixedLowerBoundMilliseconds,
+        string Interpretation);
+    private sealed record CancellationEvidence(bool Requested, bool Attributed, bool DrainCompleted, int DrainDeadlineSeconds);
+    private sealed record ResourceDiagnostics(double BoundaryObservedMilliseconds, double CpuMilliseconds,
+        long ExactAllocatedBytes, long SampledAllocatedBytes, int AllocationSamples, int AllocationIntervalMilliseconds,
+        long RssStartBytes, long RssEndBytes, long PeakRssBytes, double ResourceStartBoundarySkewMicroseconds);
+    private sealed record CensoredDiagnostics(ResourceDiagnostics Resources, long PartialSqlCommands,
+        long PartialSchedulerCalls, int SqlSamples, double EffectiveSqlSamplingIntervalMilliseconds,
+        int PeakOpenTransactions, long PeakActiveLogBytes, Transactions Transactions);
     private sealed record PostRetryConvergence(State State, RetryConvergence Transition);
     private sealed record RecipeExpectation(string RecipeName, string TargetRole, string TargetRecipeVersion, string TargetVariant, string RequestedRecipeIdentitySha256, bool Windowed, int RequirementsPerJob, bool Applicable, string ApplicabilityReason);
     private sealed record RetryConvergence(bool JobsUnchanged, bool RequestIdentitySetUnchanged, int AllowedWindowInputsAdded, string Interpretation);
@@ -748,6 +1084,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private sealed record CommandShape(string Hash, long Count, string ExactParameterizedText, IReadOnlyList<ParameterMetadata> Parameters);
     private sealed record CommandEvidence(long Count, int UniqueShapes, string ShapeSetSha256, IReadOnlyList<CommandShape> Shapes);
     private sealed record Transactions(long Starts, long Commits, long Rollbacks, long Failures, IReadOnlyList<double> Durations);
+    private sealed record AttributedActivity(int Requests, int OpenTransactions);
     private sealed record EnvironmentVariableEvidence(string Name, string ValueSha256);
     private sealed record SqlEnvironmentEvidence(string ProductVersion, string Edition, byte CompatibilityLevel,
         string RecoveryModel, string PageVerify, bool ReadCommittedSnapshot, bool AutoUpdateStatistics,
@@ -761,6 +1098,11 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private sealed record SqlContainerConstraints(string CpuSet, long CpuQuota, long CpuPeriod,
         long NanoCpus, long MemoryBytes, long MemorySwapBytes, string Interpretation);
     private sealed record AggregateStatistic(double Minimum, double Median, double Maximum);
+    private sealed record AggregateProjection(string Schema, int Issue, string Phase, string SourceHead,
+        string ProductionRevision, string HarnessSha256, string EnvironmentFingerprintSha256,
+        string WorkloadSha256, EvidenceProtocol Protocol, string ProtocolSha256, int TrialCount,
+        string Statistics, IReadOnlyList<object> Scales, object Contention,
+        JsonElement FailureRestartFunctional, DateTimeOffset RecordedAtUtc);
     private sealed record FileRecord(string Name, long ByteLength, string Sha256);
     private sealed record PrivateAssembly(string Name, string Sha256, string Configuration,
         string InformationalVersion, string SourceSha256, DateTime AssemblyWrittenUtc, DateTime LatestSourceWriteUtc);
@@ -775,12 +1117,14 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private sealed record WriterObservation(short BlockingSessionId, string WaitType, short SessionIsolationLevel,
         bool BlockerIsAuthority, string BlockerApplicationSha256, short BlockerIsolationLevel, string ResourceType, string RequestMode, string RequestStatus,
         string RequestOwnerType, double OfferToObservationMilliseconds);
-    private sealed record ContentionEvidence(int CaptureCount, string Writer, bool BlockedAtObservation,
+    private sealed record ContentionEvidence(string Outcome, int CaptureCount, double DeadlineSeconds,
+        string Writer, bool BlockedAtObservation,
         short BlockingSessionId, bool BlockerAttributed, string BlockerApplicationSha256,
         string WaitType, short SessionIsolationLevel, short BlockerIsolationLevel, string ResourceType,
         string RequestMode, string RequestStatus, string RequestOwnerType, double WriterOfferToObservationMilliseconds,
-        double WriterOfferToCompletionMilliseconds, double AuthorityDurationMilliseconds,
-        int BlockedObservationCount, int RowsCommitted, string Isolation);
+        double? WriterOfferToCompletionMilliseconds, double? AuthorityDurationMilliseconds,
+        CensoringEvidence? Censoring, CancellationEvidence? Cancellation, RollbackState? Rollback,
+        Transactions Transactions, int BlockedObservationCount, int RowsCommitted, string Isolation);
     private sealed record ContentionRun(ContentionEvidence Public, IReadOnlyList<string> GeneratedValues);
     private sealed record RollbackState(string AuthorityStatus, bool TokenChanged, string RegistrationState,
         int UnresolvedFrames, int Audits, int Bindings, int Jobs, int Requirements, int Inputs, int CanonicalInputs);
@@ -985,8 +1329,15 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         return values;
     }
 
-    private static async Task<string> PublishTrialAsync(string root, EvidenceSourceSnapshot source, object evidence, IReadOnlyCollection<string> generated)
+    private static async Task<string> PublishTrialAsync(
+        string root,
+        EvidenceSourceSnapshot source,
+        object evidence,
+        IReadOnlyCollection<string> generated,
+        long measuredWorkStarted,
+        string phase)
     {
+        ValidatePhase(phase);
         var endSource = await CaptureSourceAsync(root).ConfigureAwait(false);
         await ValidateSourceAsync(root, endSource).ConfigureAwait(false);
         Assert.AreEqual(
@@ -999,11 +1350,13 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         try
         {
             var bytes = JsonSerializer.SerializeToUtf8Bytes(evidence, JsonOptions); Scan(bytes, root, generated);
+            using (var trialDocument = ParseJson(bytes)) ValidateTrialEvidence(trialDocument.RootElement, phase);
             await WriteAsync(Path.Combine(staging, EvidenceFile), bytes).ConfigureAwait(false);
             var manifest = JsonSerializer.SerializeToUtf8Bytes(new
             {
-                Schema = "hvo-issue-248-trial-manifest-v1",
-                Phase = "baseline",
+                Schema = "hvo-issue-248-trial-manifest-v2",
+                Phase = phase,
+                ProtocolSha256,
                 SourceHead = source.Head,
                 SourceBranch = source.Branch,
                 Claimability = source.Claimability,
@@ -1017,21 +1370,40 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             Assert.AreEqual(bytes.LongLength, stagedEvidence.LongLength); Assert.AreEqual(HashBytes(bytes), HashBytes(stagedEvidence));
             Assert.AreEqual(manifest.LongLength, stagedManifest.LongLength); Assert.AreEqual(HashBytes(manifest), HashBytes(stagedManifest));
             using (var document = ParseJson(stagedEvidence))
-                Assert.AreEqual("hvo-issue-248-deployment-location-baseline-v1", document.RootElement.GetProperty("schema").GetString());
+                Assert.AreEqual("hvo-issue-248-deployment-location-evidence-v2", document.RootElement.GetProperty("schema").GetString());
             using (var document = ParseJson(stagedManifest))
-                Assert.AreEqual("hvo-issue-248-trial-manifest-v1", document.RootElement.GetProperty("schema").GetString());
+                Assert.AreEqual("hvo-issue-248-trial-manifest-v2", document.RootElement.GetProperty("schema").GetString());
+            EnsureCleanupPublicationReserve(measuredWorkStarted);
             Directory.Move(staging, target);
             return target;
         }
         finally { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
     }
 
-    private static async Task TryAggregateAsync(string root, EvidenceSourceSnapshot source, string harness, string environment, string workload)
+    private static async Task TryAggregateAsync(
+        string root,
+        EvidenceSourceSnapshot source,
+        string harness,
+        string environment,
+        string? workload,
+        string protocolSha256,
+        long? measuredWorkStarted,
+        string phase,
+        bool requireAllTrials = false,
+        bool allowExisting = false)
     {
+        ValidatePhase(phase);
         var parent = Path.Combine(root, "TestResults", "issue-248", source.Head);
         var directories = Enumerable.Range(1, 5).Select(i => Path.Combine(parent, $"trial-{i}")).ToArray();
-        if (directories.Any(path => !Directory.Exists(path))) return;
-        var target = Path.Combine(parent, "aggregate-baseline"); if (Directory.Exists(target)) throw new InvalidOperationException("Aggregate output already exists.");
+        if (directories.Any(path => !Directory.Exists(path)))
+        {
+            if (requireAllTrials) throw new InvalidDataException("Aggregate-only mode requires all five trial directories.");
+            return;
+        }
+        var target = Path.Combine(parent, $"aggregate-{phase}");
+        var aggregateFile = $"aggregate-{phase}.json";
+        var targetExists = Directory.Exists(target);
+        if (targetExists && !allowExisting) throw new InvalidOperationException("Aggregate output already exists.");
         var trials = new List<JsonDocument>();
         var retained = new List<FileRecord>();
         try
@@ -1048,24 +1420,27 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 using (var manifest = ParseJson(manifestBytes))
                 {
                     var manifestRoot = manifest.RootElement;
-                    Assert.AreEqual("hvo-issue-248-trial-manifest-v1", manifestRoot.GetProperty("schema").GetString());
-                    Assert.AreEqual("baseline", manifestRoot.GetProperty("phase").GetString());
+                    Assert.AreEqual("hvo-issue-248-trial-manifest-v2", manifestRoot.GetProperty("schema").GetString());
+                    Assert.AreEqual(phase, manifestRoot.GetProperty("phase").GetString());
+                    Assert.AreEqual(protocolSha256, manifestRoot.GetProperty("protocolSha256").GetString());
                     Assert.AreEqual(source.Head, manifestRoot.GetProperty("sourceHead").GetString());
                     Assert.AreEqual(source.Branch, manifestRoot.GetProperty("sourceBranch").GetString());
                     Assert.AreEqual("clean-source-attributed-review-required", manifestRoot.GetProperty("claimability").GetString());
                     Assert.AreEqual(i + 1, manifestRoot.GetProperty("trial").GetInt32());
                     Assert.IsTrue(manifestRoot.GetProperty("selfHash").GetString()!.StartsWith("N/A:", StringComparison.Ordinal));
                     var file = manifestRoot.GetProperty("files").EnumerateArray().Single();
-                    Assert.AreEqual(EvidenceFile, file.GetProperty("name").GetString());
-                    Assert.AreEqual(evidenceBytes.LongLength, file.GetProperty("byteLength").GetInt64());
-                    Assert.AreEqual(HashBytes(evidenceBytes), file.GetProperty("sha256").GetString());
+                    AuthenticateManifestEntry(file, EvidenceFile, evidenceBytes);
                 }
                 trials.Add(ParseJson(evidenceBytes));
                 retained.Add(new($"../trial-{i + 1}/{EvidenceFile}", evidenceBytes.LongLength, HashBytes(evidenceBytes)));
                 retained.Add(new($"../trial-{i + 1}/{ManifestFile}", manifestBytes.LongLength, HashBytes(manifestBytes)));
                 var value = trials[i].RootElement;
-                Assert.AreEqual("hvo-issue-248-deployment-location-baseline-v1", value.GetProperty("schema").GetString());
-                Assert.AreEqual("baseline", value.GetProperty("phase").GetString());
+                ValidateTrialEvidence(value, phase);
+                Assert.AreEqual("hvo-issue-248-deployment-location-evidence-v2", value.GetProperty("schema").GetString());
+                Assert.AreEqual(phase, value.GetProperty("phase").GetString());
+                Assert.AreEqual(protocolSha256, value.GetProperty("protocolSha256").GetString());
+                ValidateProtocolIdentity(value.GetProperty("protocolSha256").GetString()!,
+                    JsonSerializer.Deserialize<EvidenceProtocol>(value.GetProperty("protocol").GetRawText(), JsonOptions)!);
                 Assert.AreEqual(ProductionRevision, value.GetProperty("productionRevision").GetString());
                 var evidenceSource = value.GetProperty("source");
                 Assert.AreEqual(source.Head, evidenceSource.GetProperty("head").GetString());
@@ -1076,11 +1451,33 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 Assert.IsNotEmpty(evidenceSource.GetProperty("assemblies").EnumerateArray().ToArray());
                 Assert.AreEqual(harness, value.GetProperty("harnessSha256").GetString());
                 Assert.AreEqual(environment, value.GetProperty("environment").GetProperty("fingerprintSha256").GetString());
+                workload ??= value.GetProperty("workload").GetProperty("workloadSha256").GetString();
                 Assert.AreEqual(workload, value.GetProperty("workload").GetProperty("workloadSha256").GetString());
+                Assert.AreEqual(protocolSha256, value.GetProperty("workload").GetProperty("protocolSha256").GetString());
                 var scales = value.GetProperty("measurements").EnumerateArray().Select(item => item.GetProperty("scale").GetInt32()).ToArray();
                 CollectionAssert.AreEqual(Scales, scales);
                 foreach (var measurement in value.GetProperty("measurements").EnumerateArray())
                 {
+                    var scale = measurement.GetProperty("scale").GetInt32();
+                    Assert.AreEqual(Protocol.NaturalDeadlines.Single(item => item.Scale == scale).Seconds,
+                        measurement.GetProperty("deadlineSeconds").GetDouble());
+                    var outcome = measurement.GetProperty("outcome").GetString();
+                    Assert.IsTrue(outcome is "completed" or "right-censored");
+                    if (outcome == "completed")
+                    {
+                        Assert.AreNotEqual(JsonValueKind.Null, measurement.GetProperty("measurement").ValueKind);
+                        Assert.AreEqual(JsonValueKind.Null, measurement.GetProperty("censoring").ValueKind);
+                        Assert.AreNotEqual(JsonValueKind.Null, measurement.GetProperty("preRetryState").ValueKind);
+                    }
+                    else
+                    {
+                        Assert.AreEqual(JsonValueKind.Null, measurement.GetProperty("measurement").ValueKind);
+                        Assert.AreEqual(JsonValueKind.Null, measurement.GetProperty("preRetryState").ValueKind);
+                        Assert.AreEqual(JsonValueKind.Null, measurement.GetProperty("postRetryConvergence").ValueKind);
+                        Assert.AreEqual(JsonValueKind.Null, measurement.GetProperty("commands").ValueKind);
+                        Assert.AreNotEqual(JsonValueKind.Null, measurement.GetProperty("censoring").ValueKind);
+                        Assert.AreNotEqual(JsonValueKind.Null, measurement.GetProperty("censoredDiagnostics").ValueKind);
+                    }
                     var schedulerPlans = measurement.GetProperty("schedulerSelectPlans").EnumerateArray().ToArray();
                     Assert.AreEqual(SchedulerPlanMarkers.Length, schedulerPlans.Length);
                     Assert.IsTrue(schedulerPlans.All(plan => plan.GetProperty("rowsReturned").GetInt32() == 0));
@@ -1095,6 +1492,16 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 var contention = value.GetProperty("contention");
                 Assert.AreEqual(10_000, contention.GetProperty("captureCount").GetInt32(),
                     "Every claimable contention trial must use exactly 10,000 captures.");
+                Assert.AreEqual(Protocol.ContentionPostRegistrationLockReleaseDeadlineSeconds,
+                    contention.GetProperty("deadlineSeconds").GetDouble());
+                var contentionOutcome = contention.GetProperty("outcome").GetString();
+                Assert.IsTrue(contentionOutcome is "completed" or "right-censored");
+                if (contentionOutcome == "right-censored")
+                {
+                    Assert.AreEqual(JsonValueKind.Null, contention.GetProperty("writerOfferToCompletionMilliseconds").ValueKind);
+                    Assert.AreEqual(JsonValueKind.Null, contention.GetProperty("authorityDurationMilliseconds").ValueKind);
+                    Assert.AreNotEqual(JsonValueKind.Null, contention.GetProperty("censoring").ValueKind);
+                }
                 Assert.IsTrue(contention.GetProperty("blockedAtObservation").GetBoolean());
                 Assert.IsTrue(contention.GetProperty("blockerAttributed").GetBoolean());
                 Assert.IsGreaterThan(0, contention.GetProperty("blockingSessionId").GetInt32());
@@ -1109,60 +1516,61 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 Assert.AreEqual(1, contention.GetProperty("rowsCommitted").GetInt32());
             }
             RequireCrossTrialEquality(trials, value => value.GetProperty("source").GetProperty("assemblies").GetRawText(), "assembly snapshots");
+            RequireCrossTrialEquality(trials, value => value.GetProperty("protocol").GetRawText(), "V2 protocol");
             RequireCrossTrialEquality(trials, value => value.GetProperty("workload").GetProperty("recipeExpectations").GetRawText(), "recipe expectations");
             for (var scale = 0; scale < Scales.Length; scale++)
             {
                 var index = scale;
-                RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("commands").GetProperty("shapeSetSha256").GetString()!, $"scale {Scales[index]} command shapes");
-                RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("preRetryState").GetProperty("orderedIdentitySetSha256").GetString()!, $"scale {Scales[index]} pre-retry identities");
-                RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("preRetryState").GetProperty("jobsByRecipe").GetRawText(), $"scale {Scales[index]} pre-retry recipes");
-                RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("postRetryConvergence").GetRawText(), $"scale {Scales[index]} post-retry convergence");
                 RequireCrossTrialEquality(trials, value => string.Join('|', value.GetProperty("measurements")[index]
                     .GetProperty("schedulerSelectPlans").EnumerateArray().Select(plan => plan.GetProperty("boundedPlanIdentitySha256").GetString())), $"scale {Scales[index]} scheduler plans");
-                RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("reconciliationSelectAndPlan").GetProperty("boundedPlanIdentitySha256").GetString()!, $"scale {Scales[index]} reconciliation plan");
-                RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("writeProxy").GetProperty("identitySha256").GetString()!, $"scale {Scales[index]} write proxy");
+                var scaleRuns = trials.Select(value => value.RootElement.GetProperty("measurements")[index]).ToArray();
+                if (scaleRuns.All(run => run.GetProperty("outcome").GetString() == "completed"))
+                {
+                    RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("commands").GetProperty("shapeSetSha256").GetString()!, $"scale {Scales[index]} command shapes");
+                    RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("preRetryState").GetProperty("orderedIdentitySetSha256").GetString()!, $"scale {Scales[index]} pre-retry identities");
+                    RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("preRetryState").GetProperty("jobsByRecipe").GetRawText(), $"scale {Scales[index]} pre-retry recipes");
+                    RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("postRetryConvergence").GetRawText(), $"scale {Scales[index]} post-retry convergence");
+                    RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("reconciliationSelectAndPlan").GetProperty("boundedPlanIdentitySha256").GetString()!, $"scale {Scales[index]} reconciliation plan");
+                    RequireCrossTrialEquality(trials, value => value.GetProperty("measurements")[index].GetProperty("writeProxy").GetProperty("identitySha256").GetString()!, $"scale {Scales[index]} write proxy");
+                }
             }
             RequireCrossTrialEquality(trials, value => value.GetProperty("failureRestart").GetRawText(), "functional failure/restart record");
             foreach (var field in new[] { "captureCount", "writer", "blockerAttributed", "waitType", "sessionIsolationLevel", "blockerIsolationLevel", "resourceType", "requestMode", "requestStatus", "requestOwnerType", "rowsCommitted" })
                 RequireCrossTrialEquality(trials, value => value.GetProperty("contention").GetProperty(field).GetRawText(), $"contention {field}");
             Assert.IsTrue(trials.All(item => item.RootElement.GetProperty("contention").GetProperty("captureCount").GetInt32() == 10_000));
-            var aggregate = new
+            Assert.IsNotNull(workload);
+            var authenticatedTrialAssemblies = JsonSerializer.Deserialize<PrivateAssembly[]>(
+                trials[0].RootElement.GetProperty("source").GetProperty("assemblies").GetRawText(), JsonOptions)!;
+            CollectionAssert.AreEqual(authenticatedTrialAssemblies, ProjectSource(source).Assemblies.ToArray(),
+                "Current assembly identity differs from the assembly identity authenticated by all trials.");
+            if (targetExists)
             {
-                Schema = "hvo-issue-248-aggregate-baseline-v1",
-                Issue = 248,
-                Phase = "baseline",
-                SourceHead = source.Head,
-                ProductionRevision,
-                HarnessSha256 = harness,
-                EnvironmentFingerprintSha256 = environment,
-                WorkloadSha256 = workload,
-                TrialCount = 5,
-                Statistics = "minimum/median/maximum over exactly five trials; p95 is not inferred",
-                Scales = Scales.Select((scale, index) => AggregateScale(scale, trials.Select(doc => doc.RootElement.GetProperty("measurements")[index]).ToArray())).ToArray(),
-                Contention = new
-                {
-                    CaptureCount = 10_000,
-                    OfferToObservationMilliseconds = AggregateMetric(trials.Select(item => item.RootElement.GetProperty("contention").GetProperty("writerOfferToObservationMilliseconds").GetDouble())),
-                    WriterLatencyMilliseconds = AggregateMetric(trials.Select(item => item.RootElement.GetProperty("contention").GetProperty("writerOfferToCompletionMilliseconds").GetDouble())),
-                    AuthorityDurationMilliseconds = AggregateMetric(trials.Select(item => item.RootElement.GetProperty("contention").GetProperty("authorityDurationMilliseconds").GetDouble())),
-                    BlockedObservationCount = AggregateMetric(trials.Select(item => item.RootElement.GetProperty("contention").GetProperty("blockedObservationCount").GetDouble())),
-                    AllBlocked = trials.All(item => item.RootElement.GetProperty("contention").GetProperty("blockedAtObservation").GetBoolean()),
-                    AllAttributed = trials.All(item => item.RootElement.GetProperty("contention").GetProperty("blockerAttributed").GetBoolean()
-                        && item.RootElement.GetProperty("contention").GetProperty("blockingSessionId").GetInt32() > 0)
-                },
-                FailureRestartFunctional = trials[0].RootElement.GetProperty("failureRestart").Clone(),
-                RecordedAtUtc = DateTimeOffset.UtcNow
-            };
+                var existingBytes = await ReadBoundedAsync(Path.Combine(target, aggregateFile)).ConfigureAwait(false);
+                using var existingDocument = ParseJson(existingBytes);
+                var recordedAt = existingDocument.RootElement.GetProperty("recordedAtUtc").GetDateTimeOffset();
+                var expectedProjection = BuildAggregateProjection(source.Head, harness, environment, workload,
+                    protocolSha256, phase, trials, recordedAt);
+                var expectedBytes = JsonSerializer.SerializeToUtf8Bytes(expectedProjection, JsonOptions);
+                var expectedFiles = retained.Append(new FileRecord(
+                    aggregateFile, expectedBytes.LongLength, HashBytes(expectedBytes))).ToArray();
+                await AuthenticateExistingAggregateAsync(root, parent, target, aggregateFile, source, phase,
+                    protocolSha256, environment, expectedFiles, expectedBytes)
+                    .ConfigureAwait(false);
+                return;
+            }
+            var aggregate = BuildAggregateProjection(source.Head, harness, environment, workload,
+                protocolSha256, phase, trials, DateTimeOffset.UtcNow);
             var staging = Path.Combine(parent, $".aggregate-{Guid.NewGuid():N}"); Directory.CreateDirectory(staging);
             try
             {
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(aggregate, JsonOptions); Scan(bytes, root, []);
-                await WriteAsync(Path.Combine(staging, "aggregate-baseline.json"), bytes).ConfigureAwait(false);
-                retained.Add(new("aggregate-baseline.json", bytes.LongLength, HashBytes(bytes)));
+                await WriteAsync(Path.Combine(staging, aggregateFile), bytes).ConfigureAwait(false);
+                retained.Add(new(aggregateFile, bytes.LongLength, HashBytes(bytes)));
                 var manifest = JsonSerializer.SerializeToUtf8Bytes(new
                 {
-                    Schema = "hvo-issue-248-aggregate-manifest-v1",
-                    Phase = "baseline",
+                    Schema = "hvo-issue-248-aggregate-manifest-v2",
+                    Phase = phase,
+                    ProtocolSha256 = protocolSha256,
                     SourceHead = source.Head,
                     Files = retained,
                     SelfHash = "N/A: a manifest cannot recursively hash its own finalized bytes"
@@ -1172,7 +1580,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 await WriteAsync(Path.Combine(staging, ManifestFile), manifest).ConfigureAwait(false);
                 foreach (var file in retained)
                 {
-                    var path = file.Name == "aggregate-baseline.json"
+                    var path = file.Name == aggregateFile
                         ? Path.Combine(staging, file.Name)
                         : Path.GetFullPath(Path.Combine(staging, file.Name));
                     var reread = await ReadBoundedAsync(path).ConfigureAwait(false);
@@ -1182,12 +1590,12 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 var stagedManifest = await ReadBoundedAsync(Path.Combine(staging, ManifestFile)).ConfigureAwait(false);
                 Assert.AreEqual(manifest.LongLength, stagedManifest.LongLength);
                 Assert.AreEqual(HashBytes(manifest), HashBytes(stagedManifest));
-                using (var document = ParseJson(await ReadBoundedAsync(Path.Combine(staging, "aggregate-baseline.json")).ConfigureAwait(false)))
-                    Assert.AreEqual("hvo-issue-248-aggregate-baseline-v1", document.RootElement.GetProperty("schema").GetString());
+                using (var document = ParseJson(await ReadBoundedAsync(Path.Combine(staging, aggregateFile)).ConfigureAwait(false)))
+                    Assert.AreEqual("hvo-issue-248-aggregate-v2", document.RootElement.GetProperty("schema").GetString());
                 using (var document = ParseJson(stagedManifest))
-                    Assert.AreEqual("hvo-issue-248-aggregate-manifest-v1", document.RootElement.GetProperty("schema").GetString());
+                    Assert.AreEqual("hvo-issue-248-aggregate-manifest-v2", document.RootElement.GetProperty("schema").GetString());
                 var currentSource = await CaptureSourceAsync(root).ConfigureAwait(false);
-                await ValidateSourceAsync(root, currentSource).ConfigureAwait(false);
+                await ValidateSourceAsync(root, currentSource, requireTrial: source.Trial is not null).ConfigureAwait(false);
                 Assert.AreEqual(source.Head, currentSource.Head, "Harness HEAD changed before aggregate publication.");
                 Assert.AreEqual(harness, HarnessHash(root), "Current harness identity changed before aggregate publication.");
                 Assert.AreEqual(
@@ -1198,6 +1606,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                     trials[0].RootElement.GetProperty("source").GetProperty("assemblies").GetRawText(), JsonOptions)!;
                 CollectionAssert.AreEqual(authenticatedAssemblies, ProjectSource(currentSource).Assemblies.ToArray(),
                     "Current assembly identity differs from the assembly identity authenticated by all trials.");
+                if (measuredWorkStarted is { } started) EnsureCleanupPublicationReserve(started);
                 Directory.Move(staging, target);
             }
             finally { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
@@ -1205,56 +1614,378 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         finally { foreach (var trial in trials) trial.Dispose(); }
     }
 
+    private static async Task AuthenticateExistingAggregateAsync(
+        string root,
+        string parent,
+        string target,
+        string aggregateFile,
+        EvidenceSourceSnapshot source,
+        string phase,
+        string protocolSha256,
+        string environment,
+        IReadOnlyList<FileRecord> expectedFiles,
+        byte[] expectedAggregateBytes)
+    {
+        var names = Directory.EnumerateFiles(target).Select(Path.GetFileName).Order().ToArray();
+        CollectionAssert.AreEqual(new[] { aggregateFile, ManifestFile }.Order().ToArray(), names);
+        var manifestPath = Path.Combine(target, ManifestFile);
+        var manifestBytes = await ReadBoundedAsync(manifestPath).ConfigureAwait(false);
+        Scan(manifestBytes, root, []);
+        using var manifest = ParseJson(manifestBytes);
+        var manifestRoot = manifest.RootElement;
+        Assert.AreEqual("hvo-issue-248-aggregate-manifest-v2", manifestRoot.GetProperty("schema").GetString());
+        Assert.AreEqual(phase, manifestRoot.GetProperty("phase").GetString());
+        Assert.AreEqual(protocolSha256, manifestRoot.GetProperty("protocolSha256").GetString());
+        Assert.AreEqual(source.Head, manifestRoot.GetProperty("sourceHead").GetString());
+        AuthenticateManifestFileSet(manifestRoot.GetProperty("files"), expectedFiles);
+        var files = manifestRoot.GetProperty("files").EnumerateArray().ToArray();
+        foreach (var file in files)
+        {
+            var relative = file.GetProperty("name").GetString()!;
+            ValidateManifestPath(parent, manifestPath, relative);
+            var path = Path.GetFullPath(Path.Combine(target, relative));
+            var bytes = await ReadBoundedAsync(path).ConfigureAwait(false);
+            AuthenticateManifestEntry(file, relative, bytes);
+        }
+        var aggregateBytes = await ReadBoundedAsync(Path.Combine(target, aggregateFile)).ConfigureAwait(false);
+        Scan(aggregateBytes, root, []);
+        AuthenticateAggregateProjection(aggregateBytes, expectedAggregateBytes);
+        using var aggregate = ParseJson(aggregateBytes);
+        Assert.AreEqual("hvo-issue-248-aggregate-v2", aggregate.RootElement.GetProperty("schema").GetString());
+        Assert.AreEqual(phase, aggregate.RootElement.GetProperty("phase").GetString());
+        Assert.AreEqual(protocolSha256, aggregate.RootElement.GetProperty("protocolSha256").GetString());
+        ValidateProtocolIdentity(protocolSha256,
+            JsonSerializer.Deserialize<EvidenceProtocol>(aggregate.RootElement.GetProperty("protocol").GetRawText(), JsonOptions)!);
+        Assert.AreEqual(ProductionRevision, aggregate.RootElement.GetProperty("productionRevision").GetString());
+        Assert.AreEqual(source.Head, aggregate.RootElement.GetProperty("sourceHead").GetString());
+        Assert.AreEqual(HarnessHash(root), aggregate.RootElement.GetProperty("harnessSha256").GetString());
+        Assert.AreEqual(environment, aggregate.RootElement.GetProperty("environmentFingerprintSha256").GetString());
+        Assert.AreEqual(5, aggregate.RootElement.GetProperty("trialCount").GetInt32());
+        var currentSource = await CaptureSourceAsync(root).ConfigureAwait(false);
+        await ValidateSourceAsync(root, currentSource, requireTrial: false).ConfigureAwait(false);
+        Assert.AreEqual(JsonSerializer.Serialize(ProjectSource(source), JsonOptions),
+            JsonSerializer.Serialize(ProjectSource(currentSource), JsonOptions));
+    }
+
+    private static void AuthenticateManifestFileSet(JsonElement filesElement, IReadOnlyList<FileRecord> expectedFiles)
+    {
+        var actual = filesElement.EnumerateArray().Select(file => new FileRecord(
+            file.GetProperty("name").GetString()!, file.GetProperty("byteLength").GetInt64(),
+            file.GetProperty("sha256").GetString()!)).OrderBy(file => file.Name, StringComparer.Ordinal).ToArray();
+        var expected = expectedFiles.OrderBy(file => file.Name, StringComparer.Ordinal).ToArray();
+        if (expected.Length != 11 || expected.Count(file => file.Name.StartsWith("../trial-", StringComparison.Ordinal)) != 10
+            || expected.Count(file => !file.Name.StartsWith("../trial-", StringComparison.Ordinal)) != 1
+            || !actual.SequenceEqual(expected))
+            throw new InvalidDataException("Aggregate manifest retained file descriptor set is not exact.");
+    }
+
+    private static void AuthenticateAggregateProjection(byte[] actual, byte[] expected)
+    {
+        if (!actual.AsSpan().SequenceEqual(expected))
+            throw new InvalidDataException("Existing aggregate is not semantically byte-equivalent to deterministic recomputation.");
+    }
+
+    private static void AuthenticateManifestEntry(JsonElement entry, string expectedName, byte[] bytes)
+    {
+        if (entry.GetProperty("name").GetString() != expectedName
+            || entry.GetProperty("byteLength").GetInt64() != bytes.LongLength
+            || entry.GetProperty("sha256").GetString() != HashBytes(bytes))
+            throw new InvalidDataException("Evidence manifest file authentication failed.");
+    }
+
     private static void RequireCrossTrialEquality(
-        IReadOnlyList<JsonDocument> trials,
+        List<JsonDocument> trials,
         Func<JsonElement, string> selector,
         string identity)
         => Assert.AreEqual(1, trials.Select(trial => selector(trial.RootElement)).Distinct(StringComparer.Ordinal).Count(),
             $"Cross-trial {identity} differs.");
 
+    private static void ValidateProtocolIdentity(string sha256, EvidenceProtocol protocol)
+    {
+        if (!string.Equals(sha256, ProtocolSha256, StringComparison.Ordinal)
+            || !string.Equals(Hash(JsonSerializer.Serialize(protocol)), ProtocolSha256, StringComparison.Ordinal)
+            || !string.Equals(JsonSerializer.Serialize(protocol), JsonSerializer.Serialize(Protocol), StringComparison.Ordinal))
+            throw new InvalidDataException("Issue #248 V2 protocol identity/deadlines are incompatible.");
+    }
+
+    private static void ValidatePhase(string phase)
+    {
+        if (phase is not ("baseline" or "after"))
+            throw new InvalidDataException("Issue #248 V2 aggregation phase must be baseline or after.");
+    }
+
+    private static void ValidateTrialEvidence(JsonElement trial, string expectedPhase)
+    {
+        ValidatePhase(expectedPhase);
+        if (trial.GetProperty("schema").GetString() != "hvo-issue-248-deployment-location-evidence-v2"
+            || trial.GetProperty("phase").GetString() != expectedPhase)
+            throw new InvalidDataException("Issue #248 trial schema or phase is invalid.");
+        ValidateProtocolIdentity(trial.GetProperty("protocolSha256").GetString()!,
+            JsonSerializer.Deserialize<EvidenceProtocol>(trial.GetProperty("protocol").GetRawText(), JsonOptions)!);
+        var measurements = trial.GetProperty("measurements").EnumerateArray().ToArray();
+        if (!measurements.Select(item => item.GetProperty("scale").GetInt32()).SequenceEqual(Scales))
+            throw new InvalidDataException("Issue #248 trial scales are invalid.");
+        foreach (var measurement in measurements)
+            ValidateNaturalUnion(measurement, measurement.GetProperty("scale").GetInt32());
+        ValidateContentionUnion(trial.GetProperty("contention"), expectedCaptureCount: 10_000);
+    }
+
+    private static void ValidateNaturalUnion(JsonElement run, int scale)
+    {
+        var expectedDeadline = Protocol.NaturalDeadlines.Single(item => item.Scale == scale).Seconds;
+        if (run.GetProperty("deadlineSeconds").GetDouble() != expectedDeadline)
+            throw new InvalidDataException("Natural deadline differs from the V2 protocol.");
+        var completed = run.GetProperty("outcome").GetString() == "completed";
+        var censored = run.GetProperty("outcome").GetString() == "right-censored";
+        if (!completed && !censored) throw new InvalidDataException("Natural outcome is outside the V2 union.");
+        if (run.GetProperty("schedulerSelectPlans").ValueKind == JsonValueKind.Null
+            || run.GetProperty("schedulerSelectPlans").GetArrayLength() != SchedulerPlanMarkers.Length)
+            throw new InvalidDataException("Natural record lacks equivalent-scale scheduler plan evidence.");
+        if (completed)
+        {
+            if (NaturalCompletionFields.Any(name => run.GetProperty(name).ValueKind == JsonValueKind.Null)
+                || run.GetProperty("censoring").ValueKind != JsonValueKind.Null
+                || run.GetProperty("cancellation").ValueKind != JsonValueKind.Null
+                || run.GetProperty("rollback").ValueKind != JsonValueKind.Null
+                || run.GetProperty("censoredDiagnostics").ValueKind != JsonValueKind.Null)
+                throw new InvalidDataException("Completed natural record violates the V2 discriminated union.");
+            return;
+        }
+        if (NaturalCompletionFields.Any(name => run.GetProperty(name).ValueKind != JsonValueKind.Null)
+            || run.GetProperty("censoring").ValueKind == JsonValueKind.Null
+            || run.GetProperty("cancellation").ValueKind == JsonValueKind.Null
+            || run.GetProperty("rollback").ValueKind == JsonValueKind.Null
+            || run.GetProperty("censoredDiagnostics").ValueKind == JsonValueKind.Null
+            || run.GetProperty("censoredDiagnostics").TryGetProperty("committedAfterCensorState", out _))
+            throw new InvalidDataException("Right-censored natural record violates the V2 discriminated union.");
+        var censoring = run.GetProperty("censoring");
+        if (censoring.GetProperty("fixedDeadlineSeconds").GetDouble() != expectedDeadline
+            || censoring.GetProperty("fixedLowerBoundMilliseconds").GetDouble() != expectedDeadline * 1000d
+            || censoring.TryGetProperty("completedAfterCensor", out _))
+            throw new InvalidDataException("Right-censored natural lower bound is invalid.");
+        ValidateCancellation(run.GetProperty("cancellation"));
+        if (!ExactRollback(run.GetProperty("rollback"), scale))
+            throw new InvalidDataException("Right-censored natural record does not contain exact rollback state.");
+        var transactions = run.GetProperty("censoredDiagnostics").GetProperty("transactions");
+        if (transactions.GetProperty("starts").GetInt64() != 1
+            || transactions.GetProperty("commits").GetInt64() != 0
+            || transactions.GetProperty("rollbacks").GetInt64() != 1)
+            throw new InvalidDataException("Right-censored natural transaction rollback evidence is invalid.");
+    }
+
+    private static void ValidateContentionUnion(JsonElement run, int expectedCaptureCount)
+    {
+        if (run.GetProperty("captureCount").GetInt32() != expectedCaptureCount
+            || run.GetProperty("deadlineSeconds").GetDouble()
+                != Protocol.ContentionPostRegistrationLockReleaseDeadlineSeconds)
+            throw new InvalidDataException("Contention workload or deadline differs from the V2 protocol.");
+        var completed = run.GetProperty("outcome").GetString() == "completed";
+        var censored = run.GetProperty("outcome").GetString() == "right-censored";
+        if (!completed && !censored) throw new InvalidDataException("Contention outcome is outside the V2 union.");
+        var authorityLatency = run.GetProperty("authorityDurationMilliseconds").ValueKind;
+        var writerLatency = run.GetProperty("writerOfferToCompletionMilliseconds").ValueKind;
+        if (completed)
+        {
+            if (authorityLatency == JsonValueKind.Null || writerLatency == JsonValueKind.Null
+                || run.GetProperty("censoring").ValueKind != JsonValueKind.Null
+                || run.GetProperty("cancellation").ValueKind != JsonValueKind.Null
+                || run.GetProperty("rollback").ValueKind != JsonValueKind.Null)
+                throw new InvalidDataException("Completed contention record violates the V2 discriminated union.");
+            var completedTransactions = run.GetProperty("transactions");
+            if (completedTransactions.GetProperty("starts").GetInt64() != 1
+                || completedTransactions.GetProperty("commits").GetInt64() != 1
+                || completedTransactions.GetProperty("rollbacks").GetInt64() != 0)
+                throw new InvalidDataException("Completed contention transaction evidence is invalid.");
+            return;
+        }
+        if (authorityLatency != JsonValueKind.Null || writerLatency != JsonValueKind.Null
+            || run.GetProperty("censoring").ValueKind == JsonValueKind.Null
+            || run.GetProperty("cancellation").ValueKind == JsonValueKind.Null
+            || run.GetProperty("rollback").ValueKind == JsonValueKind.Null
+            || run.TryGetProperty("completedAfterCensor", out _))
+            throw new InvalidDataException("Right-censored contention record violates the V2 discriminated union.");
+        var contentionCensoring = run.GetProperty("censoring");
+        if (contentionCensoring.GetProperty("fixedDeadlineSeconds").GetDouble()
+                != Protocol.ContentionPostRegistrationLockReleaseDeadlineSeconds
+            || contentionCensoring.GetProperty("fixedLowerBoundMilliseconds").GetDouble()
+                != Protocol.ContentionPostRegistrationLockReleaseDeadlineSeconds * 1000d
+            || contentionCensoring.TryGetProperty("completedAfterCensor", out _))
+            throw new InvalidDataException("Right-censored contention lower bound is invalid.");
+        ValidateCancellation(run.GetProperty("cancellation"));
+        if (!ExactRollback(run.GetProperty("rollback"), expectedCaptureCount)
+            || run.GetProperty("rowsCommitted").GetInt32() != 1)
+            throw new InvalidDataException("Right-censored contention record lacks exact rollback/writer commit state.");
+        var censoredTransactions = run.GetProperty("transactions");
+        if (censoredTransactions.GetProperty("starts").GetInt64() != 1
+            || censoredTransactions.GetProperty("commits").GetInt64() != 0
+            || censoredTransactions.GetProperty("rollbacks").GetInt64() != 1)
+            throw new InvalidDataException("Right-censored contention transaction rollback evidence is invalid.");
+    }
+
+    private static void ValidateCancellation(JsonElement cancellation)
+    {
+        if (!cancellation.GetProperty("requested").GetBoolean()
+            || !cancellation.GetProperty("attributed").GetBoolean()
+            || !cancellation.GetProperty("drainCompleted").GetBoolean()
+            || cancellation.GetProperty("drainDeadlineSeconds").GetInt32() != Protocol.DrainDeadlineSeconds)
+            throw new InvalidDataException("Censored cancellation evidence is invalid.");
+    }
+
+    private static AggregateProjection BuildAggregateProjection(
+        string sourceHead,
+        string harness,
+        string environment,
+        string workload,
+        string protocolSha256,
+        string phase,
+        List<JsonDocument> trials,
+        DateTimeOffset recordedAtUtc)
+        => new(
+            "hvo-issue-248-aggregate-v2",
+            248,
+            phase,
+            sourceHead,
+            ProductionRevision,
+            harness,
+            environment,
+            workload,
+            Protocol,
+            protocolSha256,
+            5,
+            "minimum/median/maximum only when all five trials complete; any censor suppresses completion and throughput metrics; p95 is not inferred",
+            Scales.Select((scale, index) => AggregateScale(scale,
+                trials.Select(document => document.RootElement.GetProperty("measurements")[index]).ToArray())).ToArray(),
+            AggregateContention(trials.Select(document => document.RootElement.GetProperty("contention")).ToArray()),
+            trials[0].RootElement.GetProperty("failureRestart").Clone(),
+            recordedAtUtc);
+
     private static object AggregateScale(int scale, JsonElement[] runs)
     {
-        AggregateStatistic Metric(Func<JsonElement, double> value) { var ordered = runs.Select(value).Order().ToArray(); return new(ordered[0], ordered[2], ordered[4]); }
-        JsonElement M(JsonElement run) => run.GetProperty("measurement");
-        JsonElement S(JsonElement run) => run.GetProperty("preRetryState");
-        JsonElement P(JsonElement run) => run.GetProperty("postRetryConvergence").GetProperty("state");
+        Assert.AreEqual(5, runs.Length);
+        foreach (var run in runs) ValidateNaturalUnion(run, scale);
+        var completed = runs.Where(run => run.GetProperty("outcome").GetString() == "completed").ToArray();
+        var censored = runs.Where(run => run.GetProperty("outcome").GetString() == "right-censored").ToArray();
+        Assert.AreEqual(5, completed.Length + censored.Length);
+        var deadline = Protocol.NaturalDeadlines.Single(item => item.Scale == scale).Seconds;
+        Assert.IsTrue(runs.All(run => run.GetProperty("deadlineSeconds").GetDouble() == deadline));
+        object? completionMetrics = null;
+        if (completed.Length == 5)
+        {
+            AggregateStatistic Metric(Func<JsonElement, double> value)
+                => AggregateMetric(completed.Select(value));
+            JsonElement M(JsonElement run) => run.GetProperty("measurement");
+            JsonElement S(JsonElement run) => run.GetProperty("preRetryState");
+            JsonElement P(JsonElement run) => run.GetProperty("postRetryConvergence").GetProperty("state");
+            completionMetrics = new
+            {
+                ElapsedMilliseconds = Metric(run => M(run).GetProperty("elapsedMilliseconds").GetDouble()),
+                TransactionMilliseconds = Metric(run => M(run).GetProperty("transactionMilliseconds").GetDouble()),
+                SqlCommands = Metric(run => M(run).GetProperty("sqlCommands").GetDouble()),
+                SchedulerCalls = Metric(run => M(run).GetProperty("schedulerCalls").GetDouble()),
+                CapturesPerSecond = Metric(run => M(run).GetProperty("capturesPerSecond").GetDouble()),
+                SchedulerCallsPerSecond = Metric(run => M(run).GetProperty("schedulerCallsPerSecond").GetDouble()),
+                JobsPerSecond = Metric(run => M(run).GetProperty("jobsPerSecond").GetDouble()),
+                CpuMilliseconds = Metric(run => M(run).GetProperty("cpuMilliseconds").GetDouble()),
+                ExactAllocatedBytes = Metric(run => M(run).GetProperty("exactAllocatedBytes").GetDouble()),
+                SampledAllocatedBytes = Metric(run => M(run).GetProperty("sampledAllocatedBytes").GetDouble()),
+                PeakRssBytes = Metric(run => M(run).GetProperty("peakRssBytes").GetDouble()),
+                ResourceStartBoundarySkewMicroseconds = Metric(run => M(run).GetProperty("resourceStartBoundarySkewMicroseconds").GetDouble()),
+                DataUsedDelta = Metric(run => M(run).GetProperty("dataUsedDelta").GetDouble()),
+                LogUsedDelta = Metric(run => M(run).GetProperty("logUsedDelta").GetDouble()),
+                PeakActiveLogBytes = Metric(run => M(run).GetProperty("peakActiveLogBytes").GetDouble()),
+                Jobs = Metric(run => S(run).GetProperty("jobs").GetDouble()),
+                Requirements = Metric(run => S(run).GetProperty("requirements").GetDouble()),
+                Inputs = Metric(run => S(run).GetProperty("inputs").GetDouble()),
+                PreRetryIdentitySetSha256 = completed[0].GetProperty("preRetryState").GetProperty("orderedIdentitySetSha256").GetString(),
+                PostRetry = new
+                {
+                    Jobs = Metric(run => P(run).GetProperty("jobs").GetDouble()),
+                    Requirements = Metric(run => P(run).GetProperty("requirements").GetDouble()),
+                    Inputs = Metric(run => P(run).GetProperty("inputs").GetDouble()),
+                    CanonicalInputs = Metric(run => P(run).GetProperty("canonicalInputs").GetDouble()),
+                    IdentitySetSha256 = completed[0].GetProperty("postRetryConvergence").GetProperty("state").GetProperty("orderedIdentitySetSha256").GetString()
+                },
+                CommandShapeSetSha256 = completed[0].GetProperty("commands").GetProperty("shapeSetSha256").GetString(),
+                ReconciliationPlanIdentitySha256 = completed[0].GetProperty("reconciliationSelectAndPlan").GetProperty("boundedPlanIdentitySha256").GetString(),
+                WriteProxy = completed[0].GetProperty("writeProxy").Clone()
+            };
+        }
         return new
         {
             Scale = scale,
-            ElapsedMilliseconds = Metric(run => M(run).GetProperty("elapsedMilliseconds").GetDouble()),
-            TransactionMilliseconds = Metric(run => M(run).GetProperty("transactionMilliseconds").GetDouble()),
-            SqlCommands = Metric(run => M(run).GetProperty("sqlCommands").GetDouble()),
-            SchedulerCalls = Metric(run => M(run).GetProperty("schedulerCalls").GetDouble()),
-            CapturesPerSecond = Metric(run => M(run).GetProperty("capturesPerSecond").GetDouble()),
-            SchedulerCallsPerSecond = Metric(run => M(run).GetProperty("schedulerCallsPerSecond").GetDouble()),
-            JobsPerSecond = Metric(run => M(run).GetProperty("jobsPerSecond").GetDouble()),
-            CpuMilliseconds = Metric(run => M(run).GetProperty("cpuMilliseconds").GetDouble()),
-            ExactAllocatedBytes = Metric(run => M(run).GetProperty("exactAllocatedBytes").GetDouble()),
-            SampledAllocatedBytes = Metric(run => M(run).GetProperty("sampledAllocatedBytes").GetDouble()),
-            PeakRssBytes = Metric(run => M(run).GetProperty("peakRssBytes").GetDouble()),
-            ResourceStartBoundarySkewMicroseconds = Metric(run => M(run).GetProperty("resourceStartBoundarySkewMicroseconds").GetDouble()),
-            DataUsedDelta = Metric(run => M(run).GetProperty("dataUsedDelta").GetDouble()),
-            LogUsedDelta = Metric(run => M(run).GetProperty("logUsedDelta").GetDouble()),
-            PeakActiveLogBytes = Metric(run => M(run).GetProperty("peakActiveLogBytes").GetDouble()),
-            Jobs = Metric(run => S(run).GetProperty("jobs").GetDouble()),
-            Requirements = Metric(run => S(run).GetProperty("requirements").GetDouble()),
-            Inputs = Metric(run => S(run).GetProperty("inputs").GetDouble()),
-            PreRetryIdentitySetSha256 = runs[0].GetProperty("preRetryState").GetProperty("orderedIdentitySetSha256").GetString(),
-            PostRetry = new
+            CompletedCount = completed.Length,
+            RightCensoredCount = censored.Length,
+            FixedLowerBoundMilliseconds = deadline * 1000d,
+            CompletionMetrics = completionMetrics,
+            AllCancellationRollbacks = censored.Length > 0 && censored.All(run =>
+                run.GetProperty("cancellation").GetProperty("attributed").GetBoolean()
+                && run.GetProperty("cancellation").GetProperty("drainCompleted").GetBoolean()
+                && ExactRollback(run.GetProperty("rollback"), scale)),
+            CensoredDiagnostics = censored.Select(run => new
             {
-                Jobs = Metric(run => P(run).GetProperty("jobs").GetDouble()),
-                Requirements = Metric(run => P(run).GetProperty("requirements").GetDouble()),
-                Inputs = Metric(run => P(run).GetProperty("inputs").GetDouble()),
-                CanonicalInputs = Metric(run => P(run).GetProperty("canonicalInputs").GetDouble()),
-                IdentitySetSha256 = runs[0].GetProperty("postRetryConvergence").GetProperty("state").GetProperty("orderedIdentitySetSha256").GetString()
-            },
-            CommandShapeSetSha256 = runs[0].GetProperty("commands").GetProperty("shapeSetSha256").GetString(),
-            ReconciliationPlanIdentitySha256 = runs[0].GetProperty("reconciliationSelectAndPlan").GetProperty("boundedPlanIdentitySha256").GetString(),
+                Censoring = run.GetProperty("censoring").Clone(),
+                Cancellation = run.GetProperty("cancellation").Clone(),
+                Resources = run.GetProperty("censoredDiagnostics").GetProperty("resources").Clone(),
+                PartialSqlCommands = run.GetProperty("censoredDiagnostics").GetProperty("partialSqlCommands").GetInt64(),
+                PartialSchedulerCalls = run.GetProperty("censoredDiagnostics").GetProperty("partialSchedulerCalls").GetInt64(),
+                SqlSamples = run.GetProperty("censoredDiagnostics").GetProperty("sqlSamples").GetInt32(),
+                PeakOpenTransactions = run.GetProperty("censoredDiagnostics").GetProperty("peakOpenTransactions").GetInt32(),
+                PeakActiveLogBytes = run.GetProperty("censoredDiagnostics").GetProperty("peakActiveLogBytes").GetInt64()
+            }).ToArray(),
             SchedulerPlanIdentitySha256 = runs[0].GetProperty("schedulerSelectPlans").EnumerateArray()
                 .Select(plan => plan.GetProperty("boundedPlanIdentitySha256").GetString()).ToArray(),
-            WriteProxy = runs[0].GetProperty("writeProxy").Clone()
+            Semantics = completed.Length == 5
+                ? "All five completed; completion and throughput statistics are claimable."
+                : "Fail-closed: at least one right-censor suppresses all completion and throughput statistics."
         };
     }
+
+    private static object AggregateContention(JsonElement[] runs)
+    {
+        Assert.AreEqual(5, runs.Length);
+        foreach (var run in runs) ValidateContentionUnion(run, expectedCaptureCount: 10_000);
+        var completed = runs.Where(run => run.GetProperty("outcome").GetString() == "completed").ToArray();
+        var censored = runs.Where(run => run.GetProperty("outcome").GetString() == "right-censored").ToArray();
+        object? completionMetrics = completed.Length == 5
+            ? new
+            {
+                WriterLatencyMilliseconds = AggregateMetric(completed.Select(run => run.GetProperty("writerOfferToCompletionMilliseconds").GetDouble())),
+                AuthorityDurationMilliseconds = AggregateMetric(completed.Select(run => run.GetProperty("authorityDurationMilliseconds").GetDouble()))
+            }
+            : null;
+        return new
+        {
+            CaptureCount = 10_000,
+            CompletedCount = completed.Length,
+            RightCensoredCount = censored.Length,
+            FixedPostReleaseLowerBoundMilliseconds = Protocol.ContentionPostRegistrationLockReleaseDeadlineSeconds * 1000d,
+            CompletionMetrics = completionMetrics,
+            OfferToObservationMilliseconds = AggregateMetric(runs.Select(run => run.GetProperty("writerOfferToObservationMilliseconds").GetDouble())),
+            BlockedObservationCount = AggregateMetric(runs.Select(run => run.GetProperty("blockedObservationCount").GetDouble())),
+            AllBlocked = runs.All(run => run.GetProperty("blockedAtObservation").GetBoolean()),
+            AllAttributed = runs.All(run => run.GetProperty("blockerAttributed").GetBoolean()
+                && run.GetProperty("blockingSessionId").GetInt32() > 0),
+            AllCancellationRollbacks = censored.Length > 0 && censored.All(run =>
+                run.GetProperty("cancellation").GetProperty("attributed").GetBoolean()
+                && ExactRollback(run.GetProperty("rollback"), 10_000)),
+            CensoredDiagnostics = censored.Select(run => new
+            {
+                Censoring = run.GetProperty("censoring").Clone(),
+                Cancellation = run.GetProperty("cancellation").Clone(),
+                Rollback = run.GetProperty("rollback").Clone(),
+                Transactions = run.GetProperty("transactions").Clone(),
+                RowsCommitted = run.GetProperty("rowsCommitted").GetInt32()
+            }).ToArray()
+        };
+    }
+
+    private static bool ExactRollback(JsonElement rollback, int scale)
+        => rollback.ValueKind != JsonValueKind.Null
+            && rollback.GetProperty("authorityStatus").GetString() == "Pending"
+            && !rollback.GetProperty("tokenChanged").GetBoolean()
+            && rollback.GetProperty("registrationState").GetString() == "DeploymentPending"
+            && rollback.GetProperty("unresolvedFrames").GetInt32() == scale
+            && ZeroRollbackCountProperties.All(name => rollback.GetProperty(name).GetInt32() == 0);
 
     private static AggregateStatistic AggregateMetric(IEnumerable<double> values)
     {
@@ -1263,14 +1994,18 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         return new(ordered[0], ordered[2], ordered[4]);
     }
 
-    private static async Task ValidateSourceAsync(string root, EvidenceSourceSnapshot source)
+    private static async Task ValidateSourceAsync(
+        string root,
+        EvidenceSourceSnapshot source,
+        bool requireTrial = true)
     {
-        if (Environment.GetEnvironmentVariable("HVO_EVIDENCE_PHASE") != "baseline" || source.Dirty || source.Trial is null
+        if (Environment.GetEnvironmentVariable("HVO_EVIDENCE_PHASE") != "baseline" || source.Dirty
+            || requireTrial && source.Trial is null || !requireTrial && source.Trial is not null
             || source.RequestedRevision is null || source.OutputDirectoryName != source.Head || string.IsNullOrWhiteSpace(source.Branch)
             || source.Claimability != "clean-source-attributed-review-required"
             || source.Assemblies.Any(assembly => assembly.Configuration != "Release"
                 || !assembly.InformationalVersion.Contains(source.Head, StringComparison.OrdinalIgnoreCase)))
-            throw new InvalidOperationException("Baseline requires phase=baseline, a clean named exact source revision, and trial 1..5.");
+            throw new InvalidOperationException("Baseline requires phase=baseline and a clean named exact source revision with the mode-appropriate trial contract.");
         var requested = Environment.GetEnvironmentVariable("HVO_EVIDENCE_PRODUCTION_REVISION") ?? throw new InvalidOperationException("Production revision is required.");
         var resolved = (await RunAsync(root, "git", "rev-parse", $"{requested}^{{commit}}").ConfigureAwait(false)).Trim();
         if (!resolved.Equals(ProductionRevision, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Production revision is not the pinned issue #248 base.");
@@ -1837,7 +2572,10 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private static RecipeExpectation[] BuildExpectations(IEnumerable<CentralDerivativeRecipe> awaitable)
         => BuildExpectations(awaitable.ToArray());
 
-    private static async Task RetryAllAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory, Seed seed)
+    private static async Task RetryAllAsync(
+        WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory,
+        Seed seed,
+        CancellationToken cancellationToken = default)
     {
         foreach (var id in seed.ArtifactIds)
         {
@@ -1845,9 +2583,9 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var artifact = await db.CentralArtifacts.Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
                 .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
-                .SingleAsync(item => item.ArtifactId == id).ConfigureAwait(false);
+                .SingleAsync(item => item.ArtifactId == id, cancellationToken).ConfigureAwait(false);
             await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>()
-                .EnsureRequiredJobsAsync(artifact, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+                .EnsureRequiredJobsAsync(artifact, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -1947,6 +2685,488 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             return peak;
         }
     }
+
+    private sealed record ProgressRecord(string Event, string Stage, int? Scale, int ElapsedSeconds);
+
+    private sealed class ProtocolProgress(TestContext context, EvidenceProtocol protocol)
+    {
+        private static readonly string[] Events = ["started", "heartbeat", "censor", "cancel", "drain", "rollback", "completed", "censored", "finished"];
+        private static readonly string[] Stages = ["warmup", "natural", "contention", "failure-restart", "publication", "aggregation", "self-check"];
+        private readonly ConcurrentQueue<ProgressRecord> records = new();
+
+        internal ProgressStage Start(string stage, int? scale = null) => new(this, stage, scale, protocol.HeartbeatIntervalSeconds);
+        internal ProgressRecord[] Snapshot() => records.ToArray();
+
+        internal void Emit(string eventName, string stage, int? scale, long started)
+        {
+            var record = new ProgressRecord(eventName, stage, scale,
+                checked((int)Math.Min(protocol.ExternalDeadlineSeconds, Math.Floor(Stopwatch.GetElapsedTime(started).TotalSeconds))));
+            Validate(record, protocol);
+            if (records.Count >= 256) throw new InvalidOperationException("Issue #248 progress record bound exceeded.");
+            records.Enqueue(record);
+            var json = JsonSerializer.Serialize(record);
+            context.WriteLine("HVO248_PROGRESS {0}", json);
+            Console.Error.WriteLine($"HVO248_PROGRESS {json}");
+        }
+
+        internal static void Validate(ProgressRecord record, EvidenceProtocol expectedProtocol)
+        {
+            if (!Events.Contains(record.Event, StringComparer.Ordinal)
+                || !Stages.Contains(record.Stage, StringComparer.Ordinal)
+                || record.Scale is not null && record.Scale is not (1 or 10 or 100 or 1_000 or 10_000)
+                || record.ElapsedSeconds is < 0 || record.ElapsedSeconds > expectedProtocol.ExternalDeadlineSeconds)
+                throw new InvalidDataException("Issue #248 progress record is outside the bounded public protocol.");
+            var json = JsonSerializer.Serialize(record);
+            if (json.Length > 256 || GuidRegex().IsMatch(json) || AbsolutePathRegex().IsMatch(json)
+                || SecretAssignmentRegex().IsMatch(json))
+                throw new InvalidDataException("Issue #248 progress record failed privacy validation.");
+        }
+    }
+
+    private sealed class ProgressStage : IAsyncDisposable
+    {
+        private readonly ProtocolProgress owner;
+        private readonly string stage;
+        private readonly int? scale;
+        private readonly long started = Stopwatch.GetTimestamp();
+        private readonly CancellationTokenSource cancellation = new();
+        private readonly Task heartbeat;
+        private int terminal;
+
+        internal ProgressStage(ProtocolProgress owner, string stage, int? scale, int heartbeatSeconds)
+        {
+            this.owner = owner;
+            this.stage = stage;
+            this.scale = scale;
+            owner.Emit("started", stage, scale, started);
+            heartbeat = HeartbeatAsync(heartbeatSeconds);
+        }
+
+        internal void Emit(string eventName)
+        {
+            if (eventName is "completed" or "censored" or "finished")
+            {
+                if (Interlocked.CompareExchange(ref terminal, 1, 0) != 0)
+                    throw new InvalidOperationException("Progress stage already has a terminal event.");
+            }
+            else if (Volatile.Read(ref terminal) != 0) return;
+            owner.Emit(eventName, stage, scale, started);
+        }
+
+        internal void Terminate(string eventName)
+        {
+            if (eventName is not ("completed" or "censored" or "finished"))
+                throw new ArgumentOutOfRangeException(nameof(eventName));
+            if (Interlocked.CompareExchange(ref terminal, 1, 0) == 0)
+                owner.Emit(eventName, stage, scale, started);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            try { await heartbeat.ConfigureAwait(false); }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+            if (Interlocked.CompareExchange(ref terminal, 1, 0) == 0)
+                owner.Emit("finished", stage, scale, started);
+            cancellation.Dispose();
+        }
+
+        private async Task HeartbeatAsync(int seconds)
+        {
+            while (true)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(seconds), cancellation.Token).ConfigureAwait(false);
+                owner.Emit("heartbeat", stage, scale, started);
+            }
+        }
+    }
+
+    private static void EnsureMeasuredWorkBudget(long started)
+    {
+        if (Stopwatch.GetElapsedTime(started) >= TimeSpan.FromSeconds(Protocol.ClaimableMeasuredWorkDeadlineSeconds))
+            throw new TimeoutException("Issue #248 claimable measured-work deadline expired; publication is prohibited.");
+    }
+
+    private static void EnsureCleanupPublicationReserve(long started)
+    {
+        if (Stopwatch.GetElapsedTime(started) >= TimeSpan.FromSeconds(
+                Protocol.ClaimableMeasuredWorkDeadlineSeconds + Protocol.CleanupPublicationReserveSeconds))
+            throw new TimeoutException("Issue #248 cleanup/publication reserve expired; publication is prohibited.");
+    }
+
+    private static CancellationTokenSource CreateBoundedOperationCancellation(ExecutionMode mode)
+    {
+        var remaining = mode.MeasuredWorkRemaining() ?? TimeSpan.FromSeconds(Protocol.DrainDeadlineSeconds);
+        if (remaining <= TimeSpan.Zero)
+            throw new TimeoutException("Issue #248 measured-work budget expired before failure/restart operation start.");
+        return new CancellationTokenSource(remaining);
+    }
+
+    private static TimestampedOperation<T> StartTimestampedOperation<T>(Func<Task<T>> operation)
+    {
+        var original = operation();
+        var completion = original.ContinueWith(
+            task => new OperationCompletion(Stopwatch.GetTimestamp(), task.Status),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return new(original, completion);
+    }
+
+    private static long AbsoluteDeadline(long started, TimeSpan duration)
+        => checked(started + (long)Math.Ceiling(duration.TotalSeconds * Stopwatch.Frequency));
+
+    private static long? AbsoluteMeasuredWorkDeadline(ExecutionMode mode)
+        => mode.MeasuredWorkStarted is { } started
+            ? AbsoluteDeadline(started, TimeSpan.FromSeconds(Protocol.ClaimableMeasuredWorkDeadlineSeconds))
+            : null;
+
+    private static async Task<BoundaryDecision> AwaitAbsoluteBoundaryAsync<T>(
+        TimestampedOperation<T> operation,
+        long absoluteDeadline,
+        long? absoluteMeasuredWorkDeadline = null)
+    {
+        var effectiveDeadline = absoluteMeasuredWorkDeadline is { } work
+            ? Math.Min(absoluteDeadline, work)
+            : absoluteDeadline;
+        while (!operation.Completion.IsCompleted)
+        {
+            var remainingTicks = effectiveDeadline - Stopwatch.GetTimestamp();
+            if (remainingTicks <= 0) break;
+            var remaining = TimeSpan.FromSeconds((double)remainingTicks / Stopwatch.Frequency);
+            _ = await Task.WhenAny(operation.Completion, Task.Delay(remaining)).ConfigureAwait(false);
+        }
+        if (!operation.Completion.IsCompleted)
+            return new(false, absoluteMeasuredWorkDeadline is { } budget && effectiveDeadline == budget,
+                absoluteDeadline, null);
+        var completion = await operation.Completion.ConfigureAwait(false);
+        return new(completion.Timestamp <= absoluteDeadline
+                && (absoluteMeasuredWorkDeadline is null || completion.Timestamp <= absoluteMeasuredWorkDeadline.Value),
+            absoluteMeasuredWorkDeadline is { } measured && completion.Timestamp > measured,
+            absoluteDeadline, completion.Timestamp);
+    }
+
+    private static async Task<BoundaryDecision> AwaitContentionBoundaryAsync<TAuthority>(
+        TimestampedOperation<TAuthority> authority,
+        TimestampedOperation<int> writer,
+        long absoluteDeadline,
+        long? absoluteMeasuredWorkDeadline = null)
+    {
+        var effectiveDeadline = absoluteMeasuredWorkDeadline is { } work
+            ? Math.Min(absoluteDeadline, work)
+            : absoluteDeadline;
+        var both = Task.WhenAll(authority.Completion, writer.Completion);
+        while (!both.IsCompleted)
+        {
+            var remainingTicks = effectiveDeadline - Stopwatch.GetTimestamp();
+            if (remainingTicks <= 0) break;
+            _ = await Task.WhenAny(both, Task.Delay(TimeSpan.FromSeconds((double)remainingTicks / Stopwatch.Frequency)))
+                .ConfigureAwait(false);
+        }
+        if (!both.IsCompleted)
+            return new(false, absoluteMeasuredWorkDeadline is { } budget && effectiveDeadline == budget,
+                absoluteDeadline, null);
+        var completions = await both.ConfigureAwait(false);
+        var latest = completions.Max(item => item.Timestamp);
+        return new(latest <= absoluteDeadline
+                && (absoluteMeasuredWorkDeadline is null || latest <= absoluteMeasuredWorkDeadline.Value),
+            absoluteMeasuredWorkDeadline is { } measured && latest > measured,
+            absoluteDeadline, latest);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The drain must report unexpected terminal outcomes so contention can secure the writer before rethrowing.")]
+    private static async Task<DrainResult> CancelAndDrainAsync<T>(
+        TimestampedOperation<T> operation,
+        CancellationTokenSource cancellation,
+        TimeSpan drain,
+        TimeSpan emergencyDrain,
+        ProgressStage? progress = null)
+    {
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        progress?.Emit("cancel");
+        var completedWithinDeadline = await CompletesWithinAsync(operation.Completion, drain).ConfigureAwait(false);
+        if (!completedWithinDeadline)
+        {
+            progress?.Emit("drain");
+            if (!await CompletesWithinAsync(operation.Completion, emergencyDrain).ConfigureAwait(false))
+                return new(false, false, false, false, null);
+        }
+        progress?.Emit("drain");
+        try
+        {
+            _ = await operation.Original.ConfigureAwait(false);
+            return new(true, completedWithinDeadline, false, true, null);
+        }
+        catch (OperationCanceledException exception) when (
+            cancellation.IsCancellationRequested && exception.CancellationToken == cancellation.Token)
+        {
+            return new(true, completedWithinDeadline, true, false, null);
+        }
+        catch (Exception exception)
+        {
+            return new(true, completedWithinDeadline, false, false, exception);
+        }
+    }
+
+    private static async Task<bool> CompletesWithinAsync(Task operation, TimeSpan timeout)
+        => await Task.WhenAny(operation, Task.Delay(timeout)).ConfigureAwait(false) == operation;
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Writer ownership must be established before any authority validation exception is rethrown.")]
+    private static async Task<WriterDrainResult> DrainWriterOwnershipAsync(
+        TimestampedOperation<int> writer,
+        TeardownGuard teardown,
+        TimeSpan drain,
+        TimeSpan emergencyDrain,
+        params object[] resources)
+    {
+        var completedWithinDeadline = await CompletesWithinAsync(writer.Completion, drain).ConfigureAwait(false);
+        if (!completedWithinDeadline
+            && !await CompletesWithinAsync(writer.Completion, emergencyDrain).ConfigureAwait(false))
+        {
+            teardown.Preserve(resources.Append(writer.Original).ToArray());
+            return new(false, false, null, null);
+        }
+        try
+        {
+            return new(true, completedWithinDeadline, await writer.Original.ConfigureAwait(false), null);
+        }
+        catch (Exception exception)
+        {
+            return new(true, completedWithinDeadline, null, exception);
+        }
+    }
+
+    private static void EnsureWriterDrainIsPublishable(WriterDrainResult writer)
+    {
+        if (!writer.Terminated)
+            throw new InvalidOperationException("Contention writer remained live after normal and emergency drains; teardown and publication are prohibited.");
+        if (!writer.CompletedWithinDeadline)
+            throw new InvalidOperationException("Contention writer exceeded the fixed drain; emergency termination permits teardown but not publication.");
+        if (writer.UnexpectedException is not null)
+            throw new InvalidOperationException("Contention writer terminated unexpectedly.", writer.UnexpectedException);
+        if (writer.RowsCommitted != 1)
+            throw new InvalidOperationException("Contention writer did not commit exactly one row.");
+    }
+
+    private static void EnsureCensoredDrainIsPublishable(DrainResult drain)
+    {
+        if (!drain.Terminated)
+            throw new InvalidOperationException("Original operation remained live after cancellation and emergency drains; teardown and publication are prohibited.");
+        if (!drain.CompletedWithinDeadline)
+            throw new InvalidOperationException("Original operation exceeded the fixed cancellation drain; the trial is not claimable even though emergency drain later terminated it.");
+        if (drain.UnexpectedException is not null)
+            throw new InvalidOperationException("Censored operation terminated with an unexpected result.", drain.UnexpectedException);
+        if (drain.CommittedAfterBoundary)
+            throw new InvalidOperationException("Operation committed after the absolute censor boundary; the trial is invalid and publication is prohibited.");
+        if (!drain.AttributedCancellation)
+            throw new InvalidOperationException("Censored operation did not terminate through attributed cooperative cancellation.");
+    }
+
+    private static void EnsureTerminationOrPreserve(
+        TeardownGuard teardown,
+        DrainResult drain,
+        params object[] resources)
+    {
+        if (!drain.Terminated) teardown.Preserve(resources);
+        EnsureCensoredDrainIsPublishable(drain);
+    }
+
+    private static async Task RunProtocolSelfChecksAsync(ProtocolProgress progress)
+    {
+        ProtocolProgress.Validate(new ProgressRecord("heartbeat", "self-check", 10, 30), Protocol);
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            ProtocolProgress.Validate(new ProgressRecord("heartbeat", "private/path", 10, 30), Protocol));
+        var progressCount = progress.Snapshot().Length;
+        await using (var stage = progress.Start("self-check", 10)) stage.Terminate("censored");
+        var terminalRecords = progress.Snapshot().Skip(progressCount).ToArray();
+        Assert.AreEqual(1, terminalRecords.Count(item => item.Event == "censored"));
+        Assert.IsFalse(terminalRecords.Any(item => item.Event is "completed" or "finished"));
+        Assert.AreEqual(64, ProtocolSha256.Length);
+        ValidateProtocolIdentity(ProtocolSha256, Protocol);
+        Assert.ThrowsExactly<InvalidDataException>(() => ValidateProtocolIdentity(new string('0', 64), Protocol));
+
+        var absoluteStarted = Stopwatch.GetTimestamp();
+        var late = StartTimestampedOperation(() =>
+        {
+            Thread.Sleep(TimeSpan.FromMilliseconds(20));
+            return Task.FromResult(1);
+        });
+        var lateDecision = await AwaitAbsoluteBoundaryAsync(
+            late, AbsoluteDeadline(absoluteStarted, TimeSpan.FromMilliseconds(5))).ConfigureAwait(false);
+        Assert.IsFalse(lateDecision.CompletedWithinDeadline,
+            "Synchronous startup crossing the absolute deadline must be right-censored.");
+
+        using (var committedCancellation = new CancellationTokenSource())
+        {
+            var committed = StartTimestampedOperation(() => Task.FromResult(1));
+            var committedDrain = await CancelAndDrainAsync(committed, committedCancellation,
+                TimeSpan.FromMilliseconds(5), TimeSpan.FromMilliseconds(5)).ConfigureAwait(false);
+            Assert.ThrowsExactly<InvalidOperationException>(() => EnsureCensoredDrainIsPublishable(committedDrain));
+        }
+
+        var noncooperativeSource = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var noncooperative = StartTimestampedOperation(() => noncooperativeSource.Task);
+        using (var noncooperativeCancellation = new CancellationTokenSource())
+        {
+            var noncooperativeDrain = await CancelAndDrainAsync(noncooperative, noncooperativeCancellation,
+                TimeSpan.FromMilliseconds(5), TimeSpan.FromMilliseconds(5)).ConfigureAwait(false);
+            var guard = new TeardownGuard();
+            Assert.ThrowsExactly<InvalidOperationException>(() =>
+                EnsureTerminationOrPreserve(guard, noncooperativeDrain, noncooperative.Original));
+            Assert.IsFalse(guard.CanTeardown);
+        }
+
+        var authoritySource = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var writerSource = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var authority = StartTimestampedOperation(() => authoritySource.Task);
+        var writer = StartTimestampedOperation(() => writerSource.Task);
+        var contentionBoundary = AwaitContentionBoundaryAsync(authority, writer,
+            AbsoluteDeadline(Stopwatch.GetTimestamp(), TimeSpan.FromSeconds(1)));
+        authoritySource.SetResult(1);
+        Assert.IsFalse(contentionBoundary.IsCompleted, "Contention cannot complete before the writer completes.");
+        writerSource.SetResult(1);
+        Assert.IsTrue((await contentionBoundary.ConfigureAwait(false)).CompletedWithinDeadline);
+
+        var completed = SyntheticScaleRun(completed: true);
+        var censored = SyntheticScaleRun(completed: false);
+        ValidateNaturalUnion(completed, 10);
+        ValidateNaturalUnion(censored, 10);
+        ValidateContentionUnion(SyntheticContentionRun(completed: true), 10_000);
+        ValidateContentionUnion(SyntheticContentionRun(completed: false), 10_000);
+        var completedAggregate = JsonSerializer.SerializeToElement(AggregateScale(10, Enumerable.Repeat(completed, 5).ToArray()), JsonOptions);
+        Assert.AreEqual(5, completedAggregate.GetProperty("completedCount").GetInt32());
+        Assert.AreNotEqual(JsonValueKind.Null, completedAggregate.GetProperty("completionMetrics").ValueKind);
+        var censoredAggregate = JsonSerializer.SerializeToElement(AggregateScale(10, Enumerable.Repeat(censored, 5).ToArray()), JsonOptions);
+        Assert.AreEqual(5, censoredAggregate.GetProperty("rightCensoredCount").GetInt32());
+        Assert.AreEqual(JsonValueKind.Null, censoredAggregate.GetProperty("completionMetrics").ValueKind);
+        Assert.IsTrue(censoredAggregate.GetProperty("allCancellationRollbacks").GetBoolean());
+        var mixed = new[] { completed, completed, completed, completed, censored };
+        var mixedAggregate = JsonSerializer.SerializeToElement(AggregateScale(10, mixed), JsonOptions);
+        Assert.AreEqual(JsonValueKind.Null, mixedAggregate.GetProperty("completionMetrics").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, censored.GetProperty("measurement").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, censored.GetProperty("preRetryState").ValueKind);
+
+        var manifestBytes = new byte[] { 1, 2, 3 };
+        var validManifestEntry = JsonSerializer.SerializeToElement(new
+        {
+            Name = EvidenceFile,
+            ByteLength = manifestBytes.LongLength,
+            Sha256 = HashBytes(manifestBytes)
+        }, JsonOptions);
+        AuthenticateManifestEntry(validManifestEntry, EvidenceFile, manifestBytes);
+        var tamperedManifestEntry = JsonSerializer.SerializeToElement(new
+        {
+            Name = EvidenceFile,
+            ByteLength = manifestBytes.LongLength,
+            Sha256 = new string('0', 64)
+        }, JsonOptions);
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            AuthenticateManifestEntry(tamperedManifestEntry, EvidenceFile, manifestBytes));
+
+        var retained = Enumerable.Range(1, 5).SelectMany(trial => new[]
+        {
+            new FileRecord($"../trial-{trial}/{EvidenceFile}", trial, Hash($"evidence-{trial}")),
+            new FileRecord($"../trial-{trial}/{ManifestFile}", trial + 10, Hash($"manifest-{trial}"))
+        }).Append(new FileRecord("aggregate-baseline.json", 100, Hash("aggregate"))).ToArray();
+        var retainedElement = JsonSerializer.SerializeToElement(retained, JsonOptions);
+        AuthenticateManifestFileSet(retainedElement, retained);
+        var staleRetained = retained.ToArray();
+        staleRetained[0] = staleRetained[0] with { Sha256 = new string('0', 64) };
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            AuthenticateManifestFileSet(JsonSerializer.SerializeToElement(staleRetained, JsonOptions), retained));
+
+        var deterministicAggregate = JsonSerializer.SerializeToUtf8Bytes(new { Schema = "aggregate", Value = 1 }, JsonOptions);
+        AuthenticateAggregateProjection(deterministicAggregate, deterministicAggregate);
+        var staleAggregate = JsonSerializer.SerializeToUtf8Bytes(new { Schema = "aggregate", Value = 2 }, JsonOptions);
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            AuthenticateAggregateProjection(staleAggregate, deterministicAggregate));
+
+        var liveWriterSource = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var liveWriter = StartTimestampedOperation(() => liveWriterSource.Task);
+        var writerGuard = new TeardownGuard();
+        var liveWriterResult = await DrainWriterOwnershipAsync(liveWriter, writerGuard,
+            TimeSpan.FromMilliseconds(5), TimeSpan.FromMilliseconds(5), liveWriterSource.Task).ConfigureAwait(false);
+        Assert.IsFalse(writerGuard.CanTeardown);
+        Assert.ThrowsExactly<InvalidOperationException>(() => EnsureWriterDrainIsPublishable(liveWriterResult));
+        var invalidAuthority = new DrainResult(true, true, false, true, null);
+        Assert.ThrowsExactly<InvalidOperationException>(() => EnsureCensoredDrainIsPublishable(invalidAuthority));
+        _ = progress.Snapshot();
+    }
+
+    private static JsonElement SyntheticScaleRun(bool completed)
+    {
+        var state = new
+        {
+            Jobs = 10,
+            Requirements = 10,
+            Inputs = 10,
+            CanonicalInputs = 0,
+            OrderedIdentitySetSha256 = new string('A', 64),
+            JobsByRecipe = Array.Empty<object>()
+        };
+        var rollback = new RollbackState("Pending", false, "DeploymentPending", 10, 0, 0, 0, 0, 0, 0);
+        return JsonSerializer.SerializeToElement(new
+        {
+            Scale = 10,
+            Outcome = completed ? "completed" : "right-censored",
+            DeadlineSeconds = 30,
+            Measurement = completed ? new
+            {
+                ElapsedMilliseconds = 100d,
+                TransactionMilliseconds = 90d,
+                SqlCommands = 10d,
+                SchedulerCalls = 10d,
+                CapturesPerSecond = 100d,
+                SchedulerCallsPerSecond = 100d,
+                JobsPerSecond = 100d,
+                CpuMilliseconds = 50d,
+                ExactAllocatedBytes = 1_000d,
+                SampledAllocatedBytes = 1_000d,
+                PeakRssBytes = 1_000d,
+                ResourceStartBoundarySkewMicroseconds = 10d,
+                DataUsedDelta = 100d,
+                LogUsedDelta = 100d,
+                PeakActiveLogBytes = 100d
+            } : null,
+            Censoring = completed ? null : new CensoringEvidence(30, 30_000, "synthetic"),
+            Cancellation = completed ? null : new CancellationEvidence(true, true, true, 30),
+            Rollback = completed ? null : rollback,
+            CensoredDiagnostics = completed ? null : new
+            {
+                Resources = new ResourceDiagnostics(30_000, 50, 1_000, 1_000, 1, 100, 1_000, 1_000, 1_000, 10),
+                PartialSqlCommands = 1L,
+                PartialSchedulerCalls = 1L,
+                SqlSamples = 1,
+                PeakOpenTransactions = 1,
+                PeakActiveLogBytes = 100L,
+                Transactions = new Transactions(1, 0, 1, 0, Array.Empty<double>())
+            },
+            PreRetryState = completed ? state : null,
+            PostRetryConvergence = completed ? new { State = state } : null,
+            Commands = completed ? new { ShapeSetSha256 = new string('B', 64) } : null,
+            ReconciliationSelectAndPlan = completed ? new { BoundedPlanIdentitySha256 = new string('C', 64) } : null,
+            SchedulerSelectPlans = Enumerable.Range(0, SchedulerPlanMarkers.Length)
+                .Select(_ => new { BoundedPlanIdentitySha256 = new string('D', 64) }).ToArray(),
+            WriteProxy = completed ? new { IdentitySha256 = new string('E', 64) } : null
+        }, JsonOptions);
+    }
+
+    private static JsonElement SyntheticContentionRun(bool completed)
+        => JsonSerializer.SerializeToElement(new
+        {
+            Outcome = completed ? "completed" : "right-censored",
+            CaptureCount = 10_000,
+            DeadlineSeconds = 120,
+            WriterOfferToCompletionMilliseconds = completed ? 100d : (double?)null,
+            AuthorityDurationMilliseconds = completed ? 90d : (double?)null,
+            Censoring = completed ? null : new CensoringEvidence(120, 120_000, "synthetic"),
+            Cancellation = completed ? null : new CancellationEvidence(true, true, true, 30),
+            Rollback = completed ? null : new RollbackState("Pending", false, "DeploymentPending", 10_000, 0, 0, 0, 0, 0, 0),
+            Transactions = new Transactions(1, completed ? 1 : 0, completed ? 0 : 1, 0, Array.Empty<double>()),
+            RowsCommitted = 1
+        }, JsonOptions);
 
     private static double SamplingMedian(IReadOnlyList<SqlSample> samples)
     {

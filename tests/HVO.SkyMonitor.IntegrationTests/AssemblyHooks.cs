@@ -13,7 +13,9 @@ public sealed class AssemblyHooks
     [
         "HVO_ISSUE_246_RETENTION_EVIDENCE",
         "HVO_ISSUE_248_BASELINE_EVIDENCE",
-        "HVO_ISSUE_248_SMOKE"
+        "HVO_ISSUE_248_SMOKE",
+        "HVO_ISSUE_248_CENSORED_SMOKE",
+        "HVO_ISSUE_248_AGGREGATE_ONLY"
     ];
     internal static IntegrationTestFixture Fixture { get; private set; } = null!;
 
