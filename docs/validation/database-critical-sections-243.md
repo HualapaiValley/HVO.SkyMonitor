@@ -169,18 +169,38 @@ one candidate and five ordered sources, and the sentinel state is durable. Its
 evidence schema is `hvo-issue-243-sqlite-critical-section-v2`; it supplements
 rather than overwrites the historical v1 observation.
 
-Issue [#247](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/247#issuecomment-5150461920)
-has a reviewed replacement baseline for the scaled W2/W3M/W3P, four-writer and
-separate FIFO-barrier workload. The replacement checkpoint is rooted at harness
-source `d437b221fcf173c6e31885742713e2a6ceaaeb56`.
+Issue [#247](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/247#issuecomment-5150805047)
+has a reviewed baseline/after comparison for the scaled W2/W3M/W3P,
+four-writer and separate FIFO-barrier workload. The replacement baseline is
+rooted at frozen harness source `d437b221fcf173c6e31885742713e2a6ceaaeb56`.
 The reviewed baseline directory is
 `TestResults/issue-247/d437b221fcf173c6e31885742713e2a6ceaaeb56/aggregate-baseline/`;
 its summary SHA-256 is
 `3670C81B611A6785D98609953B43AE67A5C6CD1AA8181CB9033195C16BC56E9C`
 and manifest SHA-256 is
 `C2ED62001DB2EFFBCF65D6EE6B9F740E4431F4C5AE7F80CDCB00FB66E0F308B3`.
-The baseline is complete; only corrected-head after comparison remains evidence
-work for #247.
+
+The review-corrected production candidate is
+`0540245f1859b9c71f5e9fa75daa9c30d7d72fdd`. Its after summary, manifest and
+comparison SHA-256 values are respectively
+`A846E92EECD03B642FDE8F244238D808837EE30B36F2FB8E72717B48EBFEAFAD`,
+`74FF00B65E19733F9897EB81FA9B77CDE674B2BB3FF0BA3807C58B4C3662D323`
+and `CFEDA3D91F4882E7555F01CD26A31E57AF99763435059001352ACEFFCD9AC7AD`.
+The barrier-writer maximum median fell from 2,136.9784 ms to 3.1433 ms;
+the worst after trial was 3.6525 ms, below the absolute 250 ms gate. Normal
+writer p95 fell from 36.9662 ms to 3.4877 ms. No comparison metric had a
+material regression.
+
+The frozen comparison calls `ReserveAsync` service-time throughput
+"reservation throughput"; it intentionally excludes the four writers' complete
+300 ms offer cadence and is not an end-to-end operation-throughput claim.
+Process I/O and checkpoint values are retained but not part of the automatic
+materiality array. Manual five-trial review found zero read bytes, 3,375,104
+write bytes and 1,340 write operations in every baseline and after trial. Read
+operations rose from 35,268-35,353 to 35,852-35,854 (about 1.6%), and every
+checkpoint remained zero busy with 902 log and 902 checkpointed frames. This is
+not material. Corrected-query plan coverage remains non-exhaustive; no plan or
+index claim is made.
 
 ### Deployment-location reconciliation
 
@@ -381,9 +401,9 @@ busy/locked duration, cadence blocking and context size; do not combine it with
    must baseline a durable-state/crash-reconciliation design that shortens the
    artifact-retention SQL/MinIO DELETE critical section.
 2. Candidate rollout blocker correction: [#247](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/247)
-   has the reviewed declared W2/W3M/W3P baseline and implements the shorter
-   transient-candidate reservation; corrected-head after comparison remains the
-   outstanding performance proof.
+   has the reviewed declared W2/W3M/W3P baseline/after comparison and implements
+   the shorter transient-candidate reservation. The deterministic writer-freedom,
+   exact durable-state and no-material-regression gates pass.
 3. Rollout-blocking investigation: [#248](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/248)
    must collect the real-scheduler multi-trial baseline and actual plan before it
    may commit authority separately from bounded, durable, restart-safe capture
