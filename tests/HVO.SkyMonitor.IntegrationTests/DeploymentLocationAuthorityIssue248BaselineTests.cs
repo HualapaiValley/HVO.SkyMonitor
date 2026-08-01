@@ -80,6 +80,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             .GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration);
         var root = FindRepositoryRoot();
         AcquireLock();
+        RunPrivacyScannerSelfChecks(root);
         var progress = new ProtocolProgress(TestContext, Protocol);
         if (aggregateOnly)
         {
@@ -2176,15 +2177,33 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
 
     private static void Scan(byte[] bytes, string root, IEnumerable<string> values)
     {
-        var json = Encoding.UTF8.GetString(bytes); var fixture = AssemblyHooks.Fixture;
+        var json = Encoding.UTF8.GetString(bytes);
+        using var document = ParseJson(bytes);
+        var jsonStrings = EnumerateJsonStrings(document.RootElement).ToArray();
+        var fixture = AssemblyHooks.Fixture;
         var builder = new SqlConnectionStringBuilder(fixture.SqlServerConnectionString);
-        foreach (var value in values.Append(root).Append(fixture.SqlServerConnectionString)
-                     .Append(builder.Password).Append(builder.DataSource).Append(builder.InitialCatalog).Append(builder.UserID)
-                     .Append(IntegrationTestFixture.MinioAccessKey).Append(IntegrationTestFixture.MinioSecretKey)
-                     .Where(value => !string.IsNullOrEmpty(value)))
+        var candidates = values.Select(value => new PrivateValueCandidate("generated", value, PrivateValueMatch.Substring))
+            .Concat([
+                new("repository-root", root, PrivateValueMatch.Substring),
+                new("sql-connection-string", fixture.SqlServerConnectionString, PrivateValueMatch.Substring),
+                new("sql-password", builder.Password, PrivateValueMatch.Substring),
+                new("sql-data-source", builder.DataSource, PrivateValueMatch.Substring),
+                new("sql-initial-catalog", builder.InitialCatalog, PrivateValueMatch.ExactJsonString),
+                new("sql-user-id", builder.UserID, PrivateValueMatch.ExactJsonString),
+                new("minio-access-key", IntegrationTestFixture.MinioAccessKey, PrivateValueMatch.Substring),
+                new("minio-secret-key", IntegrationTestFixture.MinioSecretKey, PrivateValueMatch.Substring)
+            ]).Where(candidate => !string.IsNullOrEmpty(candidate.Value));
+        foreach (var candidate in candidates)
         {
-            Assert.IsFalse(json.Contains(value, StringComparison.OrdinalIgnoreCase), "Evidence contains a configured/generated private value.");
-            if (Guid.TryParse(value, out var id))
+            var matched = candidate.Match switch
+            {
+                PrivateValueMatch.Substring => json.Contains(candidate.Value, StringComparison.OrdinalIgnoreCase),
+                PrivateValueMatch.ExactJsonString => jsonStrings.Contains(candidate.Value, StringComparer.OrdinalIgnoreCase),
+                _ => throw new UnreachableException()
+            };
+            Assert.IsFalse(matched,
+                $"Evidence contains private value category '{candidate.Category}' using '{candidate.Match}' matching.");
+            if (Guid.TryParse(candidate.Value, out var id))
             {
                 Assert.IsFalse(json.Contains(id.ToString("D"), StringComparison.OrdinalIgnoreCase));
                 Assert.IsFalse(json.Contains(id.ToString("N"), StringComparison.OrdinalIgnoreCase));
@@ -2196,6 +2215,53 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         Assert.IsFalse(PayloadAssignmentRegex().IsMatch(json), "Evidence contains a raw payload assignment.");
         Assert.IsLessThan(10 * 1024 * 1024, bytes.LongLength);
     }
+
+    private static IEnumerable<string> EnumerateJsonStrings(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            yield return element.GetString()!;
+            yield break;
+        }
+        var children = element.ValueKind switch
+        {
+            JsonValueKind.Object => element.EnumerateObject().Select(property => property.Value),
+            JsonValueKind.Array => element.EnumerateArray(),
+            _ => []
+        };
+        foreach (var child in children)
+            foreach (var value in EnumerateJsonStrings(child))
+                yield return value;
+    }
+
+    private static void RunPrivacyScannerSelfChecks(string root)
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString);
+        var benign = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            SampledAllocatedBytes = 1,
+            UserVocabulary = $"ordinary-{builder.UserID}-vocabulary",
+            CatalogVocabulary = $"ordinary-{builder.InitialCatalog}-vocabulary"
+        }, JsonOptions);
+        Scan(benign, root, []);
+
+        foreach (var configured in new[] { builder.InitialCatalog, builder.UserID }.Where(value => !string.IsNullOrEmpty(value)))
+        {
+            var exactLeak = JsonSerializer.SerializeToUtf8Bytes(new { Value = configured }, JsonOptions);
+            Assert.ThrowsExactly<AssertFailedException>(() => Scan(exactLeak, root, []));
+        }
+        foreach (var alias in new[] { "User ID", "User", "UID" })
+        {
+            var assignmentLeak = JsonSerializer.SerializeToUtf8Bytes(new { Value = $"{alias}={builder.UserID}" }, JsonOptions);
+            Assert.ThrowsExactly<AssertFailedException>(() => Scan(assignmentLeak, root, []));
+        }
+        const string generatedMarker = "issue-248-private-self-check-7d491ef3";
+        var generatedLeak = JsonSerializer.SerializeToUtf8Bytes(new { Value = $"prefix-{generatedMarker}-suffix" }, JsonOptions);
+        Assert.ThrowsExactly<AssertFailedException>(() => Scan(generatedLeak, root, [generatedMarker]));
+    }
+
+    private enum PrivateValueMatch { Substring, ExactJsonString }
+    private sealed record PrivateValueCandidate(string Category, string Value, PrivateValueMatch Match);
 
     private static async Task WriteAsync(string path, byte[] bytes) { await using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 16384, FileOptions.Asynchronous | FileOptions.WriteThrough); await stream.WriteAsync(bytes).ConfigureAwait(false); await stream.FlushAsync().ConfigureAwait(false); }
     private static async Task<byte[]> ReadBoundedAsync(string path)
@@ -2228,7 +2294,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private static string FindRepositoryRoot() { for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent) if (File.Exists(Path.Combine(dir.FullName, "HVO.SkyMonitor.v9.slnx"))) return dir.FullName; throw new InvalidOperationException("Repository root not found."); }
     private static void AcquireLock() { try { processLock = new FileStream(Path.Combine(Path.GetTempPath(), "hvo-issue-248-baseline.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); } catch (IOException ex) { throw new InvalidOperationException("Another issue #248 evidence process is running.", ex); } }
     [GeneratedRegex(@"logical reads (?<reads>\d+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)] private static partial Regex LogicalReadsRegex();
-    [GeneratedRegex(@"(?i)(?:Data Source|Server|Database|Initial Catalog|User ID|Password|Pwd|ConnectionString|Secret)\s*[=:]\s*[^\s,;\""}]+", RegexOptions.CultureInvariant)] private static partial Regex SecretAssignmentRegex();
+    [GeneratedRegex(@"(?i)(?:Data Source|Server|Database|Initial Catalog|User ID|User|UID|Password|Pwd|ConnectionString|Secret)\s*[=:]\s*[^\s,;\""}]+", RegexOptions.CultureInvariant)] private static partial Regex SecretAssignmentRegex();
     [GeneratedRegex(@"(?<![A-Za-z0-9.])(?:/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+|[A-Za-z]:\\[^\r\n\""<>|]+)", RegexOptions.CultureInvariant)] private static partial Regex AbsolutePathRegex();
     [GeneratedRegex(@"(?i)(?<![0-9a-f])(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})(?![0-9a-f])", RegexOptions.CultureInvariant)] private static partial Regex GuidRegex();
     [GeneratedRegex(@"(?i)\""(?:payload|payloadBytes|rawBytes|contentBytes)\""\s*:\s*(?:\""|\[)", RegexOptions.CultureInvariant)] private static partial Regex PayloadAssignmentRegex();
