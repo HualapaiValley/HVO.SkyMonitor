@@ -169,16 +169,16 @@ one candidate and five ordered sources, and the sentinel state is durable. Its
 evidence schema is `hvo-issue-243-sqlite-critical-section-v2`; it supplements
 rather than overwrites the historical v1 observation.
 
-Issue [#247](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/247#issuecomment-5150429093)
+Issue [#247](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/247#issuecomment-5150461920)
 has a reviewed replacement baseline for the scaled W2/W3M/W3P, four-writer and
 separate FIFO-barrier workload. The replacement checkpoint is rooted at harness
-source `68b61f838eb180ad2b4d911425329ec5c7231248`.
+source `d437b221fcf173c6e31885742713e2a6ceaaeb56`.
 The reviewed baseline directory is
-`TestResults/issue-247/68b61f838eb180ad2b4d911425329ec5c7231248/aggregate-baseline/`;
+`TestResults/issue-247/d437b221fcf173c6e31885742713e2a6ceaaeb56/aggregate-baseline/`;
 its summary SHA-256 is
-`73407FEB40C8C1DFCA8A1A3EFA9F06992779D56A026373DEB547B7243643973D`
+`3670C81B611A6785D98609953B43AE67A5C6CD1AA8181CB9033195C16BC56E9C`
 and manifest SHA-256 is
-`114559BC45B308D536ADBC22E1E11A128F0C77DA0615C9A6A6C1776CD2E36EB0`.
+`C2ED62001DB2EFFBCF65D6EE6B9F740E4431F4C5AE7F80CDCB00FB66E0F308B3`.
 The baseline is complete; only corrected-head after comparison remains evidence
 work for #247.
 
