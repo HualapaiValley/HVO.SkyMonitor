@@ -187,7 +187,7 @@ internal sealed partial class CentralArtifactRetentionService(
                 .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
             if (storageReference is null)
             {
-                telemetry.RecordOperation("conflict", "request", 0, timeProvider.GetElapsedTime(started));
+                telemetry.RecordOperation("not-found", "request", 0, timeProvider.GetElapsedTime(started));
                 return CentralArtifactRetentionResult.NotFound;
             }
             if (!storageReference.StartsWith(CentralObjectOwnershipFence.BucketPrefix, StringComparison.Ordinal)
@@ -236,7 +236,14 @@ internal sealed partial class CentralArtifactRetentionService(
                 if (reservation.Result.HasValue)
                 {
                     telemetry.RecordOperation(
-                        reservation.Result == CentralArtifactRetentionResult.Held ? "held" : "conflict",
+                        reservation.Result switch
+                        {
+                            CentralArtifactRetentionResult.Released => "deleted",
+                            CentralArtifactRetentionResult.Held => "held",
+                            CentralArtifactRetentionResult.NotFound => "not-found",
+                            CentralArtifactRetentionResult.Pending => "conflict",
+                            _ => "failed"
+                        },
                         "request",
                         reservation.ByteLength,
                         timeProvider.GetElapsedTime(started));

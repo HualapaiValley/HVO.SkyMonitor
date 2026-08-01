@@ -88,6 +88,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             "central-artifact.retention.finalize"
         ]);
         signals.Logs.Select(item => item.EventId).Should().Contain([2170, 2171, 2172]);
+        signals.OperationOutcomes.Should().BeEquivalentTo(["deleted", "deleted", "not-found"]);
         signals.MetricTagKeys.Should().BeSubsetOf(["outcome", "origin", "stage"]);
         signals.ActivityTagKeys.Should().BeSubsetOf(["retention.origin", "retention.outcome"]);
         signals.Logs.SelectMany(item => item.FieldNames).Distinct().Should().BeSubsetOf(
@@ -1895,6 +1896,10 @@ public sealed class CentralArtifactRetentionIntegrationTests
                 {
                     RecoveryMeasurements.Add(new(value, GetTag(tags, "outcome")));
                 }
+                if (instrument.Name == "skymonitor.central.retention.operations")
+                {
+                    OperationOutcomes.Add(GetTag(tags, "outcome"));
+                }
             });
             meter.SetMeasurementEventCallback<double>((instrument, _, tags, _) =>
             {
@@ -1927,6 +1932,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         public HashSet<string> MetricTagKeys { get; } = new(StringComparer.Ordinal);
         public HashSet<string> ActivityTagKeys { get; } = new(StringComparer.Ordinal);
         public List<RecoveryMeasurement> RecoveryMeasurements { get; } = [];
+        public List<string?> OperationOutcomes { get; } = [];
         public List<RetryMeasurement> RetryMeasurements { get; } = [];
         public List<string> Activities { get; } = [];
         public List<RetentionLog> Logs { get; } = [];
