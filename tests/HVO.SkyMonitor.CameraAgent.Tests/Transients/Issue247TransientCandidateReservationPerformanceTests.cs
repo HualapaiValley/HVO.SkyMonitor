@@ -249,12 +249,25 @@ public sealed partial class Issue247TransientCandidateReservationPerformanceTest
             Assert.HasCount(1, barrierStageTelemetry.SnapshotMilliseconds);
             Assert.HasCount(1, barrierStageTelemetry.ImmediateMilliseconds);
         }
-        else
+        else if (phase == "baseline")
         {
             Assert.IsEmpty(measuredStageTelemetry.SnapshotMilliseconds);
             Assert.IsEmpty(measuredStageTelemetry.ImmediateMilliseconds);
             Assert.IsEmpty(barrierStageTelemetry.SnapshotMilliseconds);
             Assert.IsEmpty(barrierStageTelemetry.ImmediateMilliseconds);
+        }
+        else
+        {
+            var unavailable = measuredStageTelemetry.SnapshotMilliseconds.Count == 0
+                && measuredStageTelemetry.ImmediateMilliseconds.Count == 0
+                && barrierStageTelemetry.SnapshotMilliseconds.Count == 0
+                && barrierStageTelemetry.ImmediateMilliseconds.Count == 0;
+            var available = measuredStageTelemetry.SnapshotMilliseconds.Count == scale.Measured
+                && measuredStageTelemetry.ImmediateMilliseconds.Count == scale.Measured
+                && barrierStageTelemetry.SnapshotMilliseconds.Count == 1
+                && barrierStageTelemetry.ImmediateMilliseconds.Count == 1;
+            Assert.IsTrue(unavailable || available,
+                "Development smoke requires either no stage telemetry or a complete corrected-protocol stage set.");
         }
         await AssertConvergenceAsync(fixture, seed, normal, barrier, scale).ConfigureAwait(false);
         var backlog = await fixture.Journal.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1179,7 +1192,11 @@ public sealed partial class Issue247TransientCandidateReservationPerformanceTest
         }
         for (var trial = 1; trial <= 5; trial++)
         {
-            var path = Path.Combine(Path.GetDirectoryName(manifestPath)!, $"trial-{trial}", "transient-candidate-reservation-evidence.json");
+            var path = Path.Combine(
+                Path.GetDirectoryName(manifestPath)!,
+                "..",
+                $"trial-{trial}",
+                "transient-candidate-reservation-evidence.json");
             using var document = JsonDocument.Parse(await File.ReadAllBytesAsync(path).ConfigureAwait(false));
             var trialValue = document.RootElement;
             Assert.AreEqual(BaselineRevision, trialValue.GetProperty("ProductionRevision").GetString());
