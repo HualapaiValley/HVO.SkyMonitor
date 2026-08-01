@@ -1100,7 +1100,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         long integer => $"integer:{integer.ToString(CultureInfo.InvariantCulture)}",
         double real => $"real:{real.ToString("R", CultureInfo.InvariantCulture)}",
         string text => $"text:{Convert.ToBase64String(Encoding.UTF8.GetBytes(text))}",
-        byte[] bytes => $"blob:{Convert.ToHexString(bytes)}",
+        byte[] bytes => $"blob:{bytes.Length.ToString(CultureInfo.InvariantCulture)}:{Convert.ToHexString(SHA256.HashData(bytes))}",
         _ => throw new InvalidDataException("Transient reservation snapshot contains an unsupported SQLite value.")
     };
 
