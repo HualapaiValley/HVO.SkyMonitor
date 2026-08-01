@@ -2266,7 +2266,9 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             UserVocabulary = $"ordinary-{builder.UserID}-vocabulary",
             CatalogVocabulary = $"ordinary-{builder.InitialCatalog}-vocabulary",
             SuffixedAssignment = "endUser=value",
-            CommandFragment = "DOTNET_gcServer=1"
+            CommandFragment = "DOTNET_gcServer=1",
+            ContainerImage = IntegrationTestFixture.SqlServerImage,
+            EndpointDescription = "https://server:443"
         }, JsonOptions);
         Scan(benign, root, []);
 
@@ -2329,7 +2331,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private static string FindRepositoryRoot() { for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent) if (File.Exists(Path.Combine(dir.FullName, "HVO.SkyMonitor.v9.slnx"))) return dir.FullName; throw new InvalidOperationException("Repository root not found."); }
     private static void AcquireLock() { try { processLock = new FileStream(Path.Combine(Path.GetTempPath(), "hvo-issue-248-baseline.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); } catch (IOException ex) { throw new InvalidOperationException("Another issue #248 evidence process is running.", ex); } }
     [GeneratedRegex(@"logical reads (?<reads>\d+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)] private static partial Regex LogicalReadsRegex();
-    [GeneratedRegex(@"(?i)(?<![\p{L}\p{N}_])(?:Data Source|Server|Database|Initial Catalog|User ID|User|UID|Password|Pwd|ConnectionString|Secret)\s*[=:]\s*(?:""[^""]+""|'[^']+'|[^\s,;""}]+)", RegexOptions.CultureInvariant)] private static partial Regex SecretAssignmentRegex();
+    [GeneratedRegex(@"(?i)(?<![\p{L}\p{N}_./])(?:Data Source|Server|Database|Initial Catalog|User ID|User|UID|Password|Pwd|ConnectionString|Secret)\s*[=:]\s*(?:""[^""]+""|'[^']+'|[^\s,;""}]+)", RegexOptions.CultureInvariant)] private static partial Regex SecretAssignmentRegex();
     [GeneratedRegex(@"(?i)(?:Password|Pwd|ConnectionString|Secret)$", RegexOptions.CultureInvariant)] private static partial Regex SensitivePropertyNameRegex();
     [GeneratedRegex(@"(?<![A-Za-z0-9.])(?:/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+|[A-Za-z]:\\[^\r\n\""<>|]+)", RegexOptions.CultureInvariant)] private static partial Regex AbsolutePathRegex();
     [GeneratedRegex(@"(?i)(?<![0-9a-f])(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})(?![0-9a-f])", RegexOptions.CultureInvariant)] private static partial Regex GuidRegex();
