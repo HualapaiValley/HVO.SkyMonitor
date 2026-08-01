@@ -1451,7 +1451,11 @@ public sealed partial class Issue247TransientCandidateReservationPerformanceTest
         var baselineAssemblies = b.GetProperty("Source").GetProperty("Assemblies").GetRawText();
         for (var trial = 1; trial <= 5; trial++)
         {
-            var trialPath = Path.Combine(Path.GetDirectoryName(baselineManifestPath)!, $"trial-{trial}", "transient-candidate-reservation-evidence.json");
+            var trialPath = Path.Combine(
+                Path.GetDirectoryName(baselineManifestPath)!,
+                "..",
+                $"trial-{trial}",
+                "transient-candidate-reservation-evidence.json");
             using var trialDocument = JsonDocument.Parse(await File.ReadAllBytesAsync(trialPath).ConfigureAwait(false));
             var trialRoot = trialDocument.RootElement;
             Assert.AreEqual("baseline", trialRoot.GetProperty("Phase").GetString());
