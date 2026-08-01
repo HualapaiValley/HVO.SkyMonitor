@@ -53,6 +53,8 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         ["audits", "bindings", "jobs", "requirements", "inputs", "canonicalInputs"];
     private static readonly string[] NaturalCompletionFields =
         ["measurement", "preRetryState", "postRetryConvergence", "reconciliationSelectAndPlan", "writeProxy", "commands"];
+    private static readonly string[] EvidenceAssemblyNames =
+        ["HVO.SkyMonitor.AgentCore", "HVO.SkyMonitor.IntegrationTests", "HVO.SkyMonitor.LogicHost", "HVO.SkyMonitor.Processing", "HVO.SkyMonitor.TestSupport"];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly ConcurrentBag<object> PreservedLiveResources = [];
     private static FileStream? processLock;
@@ -87,9 +89,11 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             var aggregateSource = await CaptureSourceAsync(root).ConfigureAwait(false);
             await ValidateSourceAsync(root, aggregateSource, requireTrial: false).ConfigureAwait(false);
             var aggregateEnvironment = await CaptureEnvironmentAsync(root).ConfigureAwait(false);
-            await TryAggregateAsync(root, aggregateSource, HarnessHash(root), aggregateEnvironment.FingerprintSha256,
+            await TryAggregateAsync(root, aggregateSource, HarnessHash(root), ComparableEnvironmentFingerprint(
+                    JsonSerializer.SerializeToElement(aggregateEnvironment, JsonOptions)),
                 workload: null, protocolSha256: ProtocolSha256, measuredWorkStarted: null, phase: "baseline",
-                requireAllTrials: true, allowExisting: true).ConfigureAwait(false);
+                requireAllTrials: true, allowExisting: true,
+                trialSourceHead: Environment.GetEnvironmentVariable("HVO_EVIDENCE_TRIAL_REVISION")).ConfigureAwait(false);
             TestContext.WriteLine("Issue #248 authenticated aggregate-only completion succeeded.");
             return;
         }
@@ -209,7 +213,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             WorkerSuppression = "AssemblyHooks recognizes the neutral issue #248 baseline/completed-smoke/censored-smoke/aggregate-only switches before fixture startup; all child-factory IHostedService registrations are also removed.",
             SmokeCommand = "DOTNET_gcServer=1 HVO_ISSUE_248_SMOKE=1 dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeploymentLocationAuthorityIssue248BaselineTests.RealScheduler_OneDeploymentScaling_RecordsBaselineEvidence",
             CensoredSmokeCommand = "DOTNET_gcServer=1 HVO_ISSUE_248_CENSORED_SMOKE=1 dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeploymentLocationAuthorityIssue248BaselineTests.RealScheduler_OneDeploymentScaling_RecordsBaselineEvidence",
-            AggregateOnlyCommand = "DOTNET_gcServer=1 HVO_ISSUE_248_AGGREGATE_ONLY=1 HVO_EVIDENCE_PHASE=baseline HVO_EVIDENCE_REVISION=<SOURCE_HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=7db3becafd37ec2b0b8a61dbbcc3a9a070819f43 dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeploymentLocationAuthorityIssue248BaselineTests.RealScheduler_OneDeploymentScaling_RecordsBaselineEvidence",
+            AggregateOnlyCommand = "DOTNET_gcServer=1 HVO_ISSUE_248_AGGREGATE_ONLY=1 HVO_EVIDENCE_PHASE=baseline HVO_EVIDENCE_REVISION=<AGGREGATOR_SOURCE_HEAD> HVO_EVIDENCE_TRIAL_REVISION=<TRIAL_SOURCE_HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=7db3becafd37ec2b0b8a61dbbcc3a9a070819f43 dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeploymentLocationAuthorityIssue248BaselineTests.RealScheduler_OneDeploymentScaling_RecordsBaselineEvidence",
             Privacy = "Serialized JSON is bounded and scanned for configured/generated values plus generic credential, connection assignment, path, GUID and payload patterns before publication.",
             RecordedAtUtc = DateTimeOffset.UtcNow
         };
@@ -221,7 +225,8 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         await using (progress.Start("publication"))
             output = await PublishTrialAsync(root, source, evidence, generated, measuredWorkStarted, phase).ConfigureAwait(false);
         await using (progress.Start("aggregation"))
-            await TryAggregateAsync(root, source, harnessHash, environment.FingerprintSha256, workloadHash, protocolHash, measuredWorkStarted, phase)
+            await TryAggregateAsync(root, source, harnessHash, ComparableEnvironmentFingerprint(
+                    JsonSerializer.SerializeToElement(environment, JsonOptions)), workloadHash, protocolHash, measuredWorkStarted, phase)
                 .ConfigureAwait(false);
         TestContext.WriteLine("Issue #248 baseline trial: {0}", Path.GetRelativePath(root, output));
     }
@@ -1113,6 +1118,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         long NanoCpus, long MemoryBytes, long MemorySwapBytes, string Interpretation);
     private sealed record AggregateStatistic(double Minimum, double Median, double Maximum);
     private sealed record AggregateProjection(string Schema, int Issue, string Phase, string SourceHead,
+        string AggregatorSourceHead, string AggregatorHarnessSha256, string AggregatorEnvironmentFingerprintSha256,
         string ProductionRevision, string HarnessSha256, string EnvironmentFingerprintSha256,
         string WorkloadSha256, EvidenceProtocol Protocol, string ProtocolSha256, int TrialCount,
         string Statistics, IReadOnlyList<object> Scales, object Contention,
@@ -1405,10 +1411,18 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         long? measuredWorkStarted,
         string phase,
         bool requireAllTrials = false,
-        bool allowExisting = false)
+        bool allowExisting = false,
+        string? trialSourceHead = null)
     {
         ValidatePhase(phase);
-        var parent = Path.Combine(root, "TestResults", "issue-248", source.Head);
+        trialSourceHead = string.IsNullOrWhiteSpace(trialSourceHead) ? source.Head : trialSourceHead;
+        if (!Regex.IsMatch(trialSourceHead, "^[0-9a-f]{40}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            throw new InvalidDataException("Trial source revision must be a full commit SHA.");
+        var resolvedTrialSource = (await RunAsync(root, "git", "rev-parse", $"{trialSourceHead}^{{commit}}").ConfigureAwait(false)).Trim();
+        Assert.AreEqual(trialSourceHead, resolvedTrialSource, ignoreCase: true);
+        _ = await RunAsync(root, "git", "merge-base", "--is-ancestor", ProductionRevision, trialSourceHead).ConfigureAwait(false);
+        var parent = Path.Combine(root, "TestResults", "issue-248", trialSourceHead);
+        EnsureDirectoryChainHasNoLinks(Path.Combine(root, "TestResults"), parent);
         var directories = Enumerable.Range(1, 5).Select(i => Path.Combine(parent, $"trial-{i}")).ToArray();
         if (directories.Any(path => !Directory.Exists(path)))
         {
@@ -1418,13 +1432,18 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         var target = Path.Combine(parent, $"aggregate-{phase}");
         var aggregateFile = $"aggregate-{phase}.json";
         var targetExists = Directory.Exists(target);
+        if (targetExists) EnsureDirectoryChainHasNoLinks(parent, target);
         if (targetExists && !allowExisting) throw new InvalidOperationException("Aggregate output already exists.");
         var trials = new List<JsonDocument>();
         var retained = new List<FileRecord>();
+        string? trialBranch = null;
+        string? trialHarness = null;
+        string? comparableEnvironment = null;
         try
         {
             for (var i = 0; i < 5; i++)
             {
+                EnsureDirectoryChainHasNoLinks(parent, directories[i]);
                 var names = Directory.EnumerateFiles(directories[i]).Select(Path.GetFileName).Order().ToArray();
                 CollectionAssert.AreEqual(new[] { EvidenceFile, ManifestFile }.Order().ToArray(), names);
                 var evidencePath = Path.Combine(directories[i], EvidenceFile);
@@ -1438,8 +1457,9 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                     Assert.AreEqual("hvo-issue-248-trial-manifest-v2", manifestRoot.GetProperty("schema").GetString());
                     Assert.AreEqual(phase, manifestRoot.GetProperty("phase").GetString());
                     Assert.AreEqual(protocolSha256, manifestRoot.GetProperty("protocolSha256").GetString());
-                    Assert.AreEqual(source.Head, manifestRoot.GetProperty("sourceHead").GetString());
-                    Assert.AreEqual(source.Branch, manifestRoot.GetProperty("sourceBranch").GetString());
+                    Assert.AreEqual(trialSourceHead, manifestRoot.GetProperty("sourceHead").GetString());
+                    trialBranch ??= manifestRoot.GetProperty("sourceBranch").GetString();
+                    Assert.AreEqual(trialBranch, manifestRoot.GetProperty("sourceBranch").GetString());
                     Assert.AreEqual("clean-source-attributed-review-required", manifestRoot.GetProperty("claimability").GetString());
                     Assert.AreEqual(i + 1, manifestRoot.GetProperty("trial").GetInt32());
                     Assert.IsTrue(manifestRoot.GetProperty("selfHash").GetString()!.StartsWith("N/A:", StringComparison.Ordinal));
@@ -1458,14 +1478,28 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                     JsonSerializer.Deserialize<EvidenceProtocol>(value.GetProperty("protocol").GetRawText(), JsonOptions)!);
                 Assert.AreEqual(ProductionRevision, value.GetProperty("productionRevision").GetString());
                 var evidenceSource = value.GetProperty("source");
-                Assert.AreEqual(source.Head, evidenceSource.GetProperty("head").GetString());
-                Assert.AreEqual(source.Branch, evidenceSource.GetProperty("branch").GetString());
+                Assert.AreEqual(trialSourceHead, evidenceSource.GetProperty("head").GetString());
+                Assert.AreEqual(trialBranch, evidenceSource.GetProperty("branch").GetString());
                 Assert.IsFalse(evidenceSource.GetProperty("dirty").GetBoolean());
                 Assert.AreEqual("clean-source-attributed-review-required", evidenceSource.GetProperty("claimability").GetString());
                 Assert.AreEqual(i + 1, evidenceSource.GetProperty("trial").GetInt32());
-                Assert.IsNotEmpty(evidenceSource.GetProperty("assemblies").EnumerateArray().ToArray());
-                Assert.AreEqual(harness, value.GetProperty("harnessSha256").GetString());
-                Assert.AreEqual(environment, value.GetProperty("environment").GetProperty("fingerprintSha256").GetString());
+                var trialAssemblies = JsonSerializer.Deserialize<PrivateAssembly[]>(
+                    evidenceSource.GetProperty("assemblies").GetRawText(), JsonOptions)!;
+                CollectionAssert.AreEqual(EvidenceAssemblyNames.Order(StringComparer.Ordinal).ToArray(),
+                    trialAssemblies.Select(assembly => assembly.Name).Order(StringComparer.Ordinal).ToArray(),
+                    "Authenticated trial assembly set is incomplete or duplicated.");
+                Assert.IsTrue(trialAssemblies.All(assembly => assembly.Configuration == "Release"
+                    && assembly.InformationalVersion.Contains(trialSourceHead, StringComparison.OrdinalIgnoreCase)
+                    && Regex.IsMatch(assembly.Sha256, "^[0-9a-f]{64}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+                    && Regex.IsMatch(assembly.SourceSha256, "^[0-9a-f]{64}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+                    && assembly.AssemblyWrittenUtc >= assembly.LatestSourceWriteUtc),
+                    "Authenticated trial assembly provenance is invalid.");
+                trialHarness ??= value.GetProperty("harnessSha256").GetString();
+                Assert.AreEqual(trialHarness, value.GetProperty("harnessSha256").GetString());
+                var trialEnvironment = ComparableEnvironmentFingerprint(value.GetProperty("environment"));
+                comparableEnvironment ??= trialEnvironment;
+                Assert.AreEqual(comparableEnvironment, trialEnvironment,
+                    "Influential environment facts differ across trials.");
                 workload ??= value.GetProperty("workload").GetProperty("workloadSha256").GetString();
                 Assert.AreEqual(workload, value.GetProperty("workload").GetProperty("workloadSha256").GetString());
                 Assert.AreEqual(protocolSha256, value.GetProperty("workload").GetProperty("protocolSha256").GetString());
@@ -1554,27 +1588,34 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 RequireCrossTrialEquality(trials, value => value.GetProperty("contention").GetProperty(field).GetRawText(), $"contention {field}");
             Assert.IsTrue(trials.All(item => item.RootElement.GetProperty("contention").GetProperty("captureCount").GetInt32() == 10_000));
             Assert.IsNotNull(workload);
-            var authenticatedTrialAssemblies = JsonSerializer.Deserialize<PrivateAssembly[]>(
-                trials[0].RootElement.GetProperty("source").GetProperty("assemblies").GetRawText(), JsonOptions)!;
-            CollectionAssert.AreEqual(authenticatedTrialAssemblies, ProjectSource(source).Assemblies.ToArray(),
-                "Current assembly identity differs from the assembly identity authenticated by all trials.");
+            Assert.IsNotNull(trialHarness);
+            Assert.IsNotNull(comparableEnvironment);
+            if (string.Equals(trialSourceHead, source.Head, StringComparison.OrdinalIgnoreCase))
+            {
+                Assert.AreEqual(harness, trialHarness);
+                var authenticatedTrialAssemblies = JsonSerializer.Deserialize<PrivateAssembly[]>(
+                    trials[0].RootElement.GetProperty("source").GetProperty("assemblies").GetRawText(), JsonOptions)!;
+                CollectionAssert.AreEqual(authenticatedTrialAssemblies, ProjectSource(source).Assemblies.ToArray(),
+                    "Current assembly identity differs from the assembly identity authenticated by all trials.");
+            }
             if (targetExists)
             {
                 var existingBytes = await ReadBoundedAsync(Path.Combine(target, aggregateFile)).ConfigureAwait(false);
                 using var existingDocument = ParseJson(existingBytes);
                 var recordedAt = existingDocument.RootElement.GetProperty("recordedAtUtc").GetDateTimeOffset();
-                var expectedProjection = BuildAggregateProjection(source.Head, harness, environment, workload,
-                    protocolSha256, phase, trials, recordedAt);
+                var expectedProjection = BuildAggregateProjection(trialSourceHead, source.Head, harness, environment,
+                    trialHarness, comparableEnvironment, workload, protocolSha256, phase, trials, recordedAt);
                 var expectedBytes = JsonSerializer.SerializeToUtf8Bytes(expectedProjection, JsonOptions);
                 var expectedFiles = retained.Append(new FileRecord(
                     aggregateFile, expectedBytes.LongLength, HashBytes(expectedBytes))).ToArray();
                 await AuthenticateExistingAggregateAsync(root, parent, target, aggregateFile, source, phase,
-                    protocolSha256, environment, expectedFiles, expectedBytes)
+                    protocolSha256, trialSourceHead, source.Head, trialHarness, comparableEnvironment,
+                    expectedFiles, expectedBytes)
                     .ConfigureAwait(false);
                 return;
             }
-            var aggregate = BuildAggregateProjection(source.Head, harness, environment, workload,
-                protocolSha256, phase, trials, DateTimeOffset.UtcNow);
+            var aggregate = BuildAggregateProjection(trialSourceHead, source.Head, harness, environment,
+                trialHarness, comparableEnvironment, workload, protocolSha256, phase, trials, DateTimeOffset.UtcNow);
             var staging = Path.Combine(parent, $".aggregate-{Guid.NewGuid():N}"); Directory.CreateDirectory(staging);
             try
             {
@@ -1583,10 +1624,11 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 retained.Add(new(aggregateFile, bytes.LongLength, HashBytes(bytes)));
                 var manifest = JsonSerializer.SerializeToUtf8Bytes(new
                 {
-                    Schema = "hvo-issue-248-aggregate-manifest-v2",
+                    Schema = "hvo-issue-248-aggregate-manifest-v3",
                     Phase = phase,
                     ProtocolSha256 = protocolSha256,
-                    SourceHead = source.Head,
+                    SourceHead = trialSourceHead,
+                    AggregatorSourceHead = source.Head,
                     Files = retained,
                     SelfHash = "N/A: a manifest cannot recursively hash its own finalized bytes"
                 }, JsonOptions);
@@ -1606,21 +1648,21 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 Assert.AreEqual(manifest.LongLength, stagedManifest.LongLength);
                 Assert.AreEqual(HashBytes(manifest), HashBytes(stagedManifest));
                 using (var document = ParseJson(await ReadBoundedAsync(Path.Combine(staging, aggregateFile)).ConfigureAwait(false)))
-                    Assert.AreEqual("hvo-issue-248-aggregate-v2", document.RootElement.GetProperty("schema").GetString());
+                    Assert.AreEqual("hvo-issue-248-aggregate-v3", document.RootElement.GetProperty("schema").GetString());
                 using (var document = ParseJson(stagedManifest))
-                    Assert.AreEqual("hvo-issue-248-aggregate-manifest-v2", document.RootElement.GetProperty("schema").GetString());
+                    Assert.AreEqual("hvo-issue-248-aggregate-manifest-v3", document.RootElement.GetProperty("schema").GetString());
                 var currentSource = await CaptureSourceAsync(root).ConfigureAwait(false);
                 await ValidateSourceAsync(root, currentSource, requireTrial: source.Trial is not null).ConfigureAwait(false);
                 Assert.AreEqual(source.Head, currentSource.Head, "Harness HEAD changed before aggregate publication.");
                 Assert.AreEqual(harness, HarnessHash(root), "Current harness identity changed before aggregate publication.");
+                var currentEnvironment = await CaptureEnvironmentAsync(root).ConfigureAwait(false);
+                Assert.AreEqual(environment, ComparableEnvironmentFingerprint(
+                    JsonSerializer.SerializeToElement(currentEnvironment, JsonOptions)),
+                    "Influential aggregator environment changed before publication.");
                 Assert.AreEqual(
                     JsonSerializer.Serialize(ProjectSource(source), JsonOptions),
                     JsonSerializer.Serialize(ProjectSource(currentSource), JsonOptions),
                     "Clean source/assembly identity changed before aggregate publication.");
-                var authenticatedAssemblies = JsonSerializer.Deserialize<PrivateAssembly[]>(
-                    trials[0].RootElement.GetProperty("source").GetProperty("assemblies").GetRawText(), JsonOptions)!;
-                CollectionAssert.AreEqual(authenticatedAssemblies, ProjectSource(currentSource).Assemblies.ToArray(),
-                    "Current assembly identity differs from the assembly identity authenticated by all trials.");
                 if (measuredWorkStarted is { } started) EnsureCleanupPublicationReserve(started);
                 Directory.Move(staging, target);
             }
@@ -1637,7 +1679,10 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         EvidenceSourceSnapshot source,
         string phase,
         string protocolSha256,
-        string environment,
+        string trialSourceHead,
+        string aggregatorSourceHead,
+        string trialHarness,
+        string comparableEnvironment,
         IReadOnlyList<FileRecord> expectedFiles,
         byte[] expectedAggregateBytes)
     {
@@ -1648,10 +1693,11 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         Scan(manifestBytes, root, []);
         using var manifest = ParseJson(manifestBytes);
         var manifestRoot = manifest.RootElement;
-        Assert.AreEqual("hvo-issue-248-aggregate-manifest-v2", manifestRoot.GetProperty("schema").GetString());
+        Assert.AreEqual("hvo-issue-248-aggregate-manifest-v3", manifestRoot.GetProperty("schema").GetString());
         Assert.AreEqual(phase, manifestRoot.GetProperty("phase").GetString());
         Assert.AreEqual(protocolSha256, manifestRoot.GetProperty("protocolSha256").GetString());
-        Assert.AreEqual(source.Head, manifestRoot.GetProperty("sourceHead").GetString());
+        Assert.AreEqual(trialSourceHead, manifestRoot.GetProperty("sourceHead").GetString());
+        Assert.AreEqual(aggregatorSourceHead, manifestRoot.GetProperty("aggregatorSourceHead").GetString());
         AuthenticateManifestFileSet(manifestRoot.GetProperty("files"), expectedFiles);
         var files = manifestRoot.GetProperty("files").EnumerateArray().ToArray();
         foreach (var file in files)
@@ -1666,18 +1712,22 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         Scan(aggregateBytes, root, []);
         AuthenticateAggregateProjection(aggregateBytes, expectedAggregateBytes);
         using var aggregate = ParseJson(aggregateBytes);
-        Assert.AreEqual("hvo-issue-248-aggregate-v2", aggregate.RootElement.GetProperty("schema").GetString());
+        Assert.AreEqual("hvo-issue-248-aggregate-v3", aggregate.RootElement.GetProperty("schema").GetString());
         Assert.AreEqual(phase, aggregate.RootElement.GetProperty("phase").GetString());
         Assert.AreEqual(protocolSha256, aggregate.RootElement.GetProperty("protocolSha256").GetString());
         ValidateProtocolIdentity(protocolSha256,
             JsonSerializer.Deserialize<EvidenceProtocol>(aggregate.RootElement.GetProperty("protocol").GetRawText(), JsonOptions)!);
         Assert.AreEqual(ProductionRevision, aggregate.RootElement.GetProperty("productionRevision").GetString());
-        Assert.AreEqual(source.Head, aggregate.RootElement.GetProperty("sourceHead").GetString());
-        Assert.AreEqual(HarnessHash(root), aggregate.RootElement.GetProperty("harnessSha256").GetString());
-        Assert.AreEqual(environment, aggregate.RootElement.GetProperty("environmentFingerprintSha256").GetString());
+        Assert.AreEqual(trialSourceHead, aggregate.RootElement.GetProperty("sourceHead").GetString());
+        Assert.AreEqual(aggregatorSourceHead, aggregate.RootElement.GetProperty("aggregatorSourceHead").GetString());
+        Assert.AreEqual(trialHarness, aggregate.RootElement.GetProperty("harnessSha256").GetString());
+        Assert.AreEqual(comparableEnvironment, aggregate.RootElement.GetProperty("environmentFingerprintSha256").GetString());
         Assert.AreEqual(5, aggregate.RootElement.GetProperty("trialCount").GetInt32());
         var currentSource = await CaptureSourceAsync(root).ConfigureAwait(false);
         await ValidateSourceAsync(root, currentSource, requireTrial: false).ConfigureAwait(false);
+        var currentEnvironment = await CaptureEnvironmentAsync(root).ConfigureAwait(false);
+        Assert.AreEqual(aggregate.RootElement.GetProperty("aggregatorEnvironmentFingerprintSha256").GetString(),
+            ComparableEnvironmentFingerprint(JsonSerializer.SerializeToElement(currentEnvironment, JsonOptions)));
         Assert.AreEqual(JsonSerializer.Serialize(ProjectSource(source), JsonOptions),
             JsonSerializer.Serialize(ProjectSource(currentSource), JsonOptions));
     }
@@ -1865,6 +1915,9 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
 
     private static AggregateProjection BuildAggregateProjection(
         string sourceHead,
+        string aggregatorSourceHead,
+        string aggregatorHarness,
+        string aggregatorEnvironment,
         string harness,
         string environment,
         string workload,
@@ -1873,10 +1926,13 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         List<JsonDocument> trials,
         DateTimeOffset recordedAtUtc)
         => new(
-            "hvo-issue-248-aggregate-v2",
+            "hvo-issue-248-aggregate-v3",
             248,
             phase,
             sourceHead,
+            aggregatorSourceHead,
+            aggregatorHarness,
+            aggregatorEnvironment,
             ProductionRevision,
             harness,
             environment,
@@ -1890,6 +1946,50 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             AggregateContention(trials.Select(document => document.RootElement.GetProperty("contention")).ToArray()),
             trials[0].RootElement.GetProperty("failureRestart").Clone(),
             recordedAtUtc);
+
+    private static string ComparableEnvironmentFingerprint(JsonElement environment)
+    {
+        if (environment.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Environment evidence is invalid.");
+        var fingerprintProperties = 0;
+        var dotnetProperties = 0;
+        var telemetryEntries = 0;
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            foreach (var property in environment.EnumerateObject())
+            {
+                if (property.NameEquals("fingerprintSha256"))
+                {
+                    fingerprintProperties++;
+                    continue;
+                }
+                if (!property.NameEquals("dotnetEnvironment"))
+                {
+                    property.WriteTo(writer);
+                    continue;
+                }
+                dotnetProperties++;
+                writer.WritePropertyName(property.Name);
+                writer.WriteStartArray();
+                foreach (var item in property.Value.EnumerateArray())
+                {
+                    if (item.GetProperty("name").GetString() == "DOTNET_CLI_TELEMETRY_SESSIONID")
+                    {
+                        telemetryEntries++;
+                        continue;
+                    }
+                    item.WriteTo(writer);
+                }
+                writer.WriteEndArray();
+            }
+            writer.WriteEndObject();
+        }
+        if (fingerprintProperties != 1 || dotnetProperties != 1 || telemetryEntries != 1)
+            throw new InvalidDataException("Environment normalization requires exactly one fingerprint, DOTNET environment list, and telemetry session entry.");
+        return HashBytes(stream.ToArray());
+    }
 
     private static object AggregateScale(int scale, JsonElement[] runs)
     {
@@ -2303,9 +2403,23 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private static async Task WriteAsync(string path, byte[] bytes) { await using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 16384, FileOptions.Asynchronous | FileOptions.WriteThrough); await stream.WriteAsync(bytes).ConfigureAwait(false); await stream.FlushAsync().ConfigureAwait(false); }
     private static async Task<byte[]> ReadBoundedAsync(string path)
     {
-        var length = new FileInfo(path).Length;
+        var file = new FileInfo(path);
+        if (file.LinkTarget is not null) throw new InvalidDataException("Evidence input cannot be a symbolic link.");
+        var length = file.Length;
         if (length is < 1 or > 10 * 1024 * 1024) throw new InvalidDataException("Evidence input size is outside the bounded range.");
         return await File.ReadAllBytesAsync(path).ConfigureAwait(false);
+    }
+    private static void EnsureDirectoryChainHasNoLinks(string root, string path)
+    {
+        var rootPath = Path.GetFullPath(root);
+        var current = new DirectoryInfo(Path.GetFullPath(path));
+        while (current.FullName.StartsWith(rootPath, StringComparison.Ordinal))
+        {
+            if (current.LinkTarget is not null) throw new InvalidDataException("Evidence directory cannot be a symbolic link.");
+            if (current.FullName == rootPath) return;
+            current = current.Parent ?? throw new InvalidDataException("Evidence directory has no trusted parent.");
+        }
+        throw new InvalidDataException("Evidence directory escapes the trusted root.");
     }
     private static JsonDocument ParseJson(byte[] bytes) => JsonDocument.Parse(bytes, new JsonDocumentOptions
     {
