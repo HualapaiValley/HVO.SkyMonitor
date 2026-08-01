@@ -169,7 +169,7 @@ one candidate and five ordered sources, and the sentinel state is durable. Its
 evidence schema is `hvo-issue-243-sqlite-critical-section-v2`; it supplements
 rather than overwrites the historical v1 observation.
 
-Issue [#247](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/247#issuecomment-5150805047)
+Issue [#247](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/247#issuecomment-5150865933)
 has a reviewed baseline/after comparison for the scaled W2/W3M/W3P,
 four-writer and separate FIFO-barrier workload. The replacement baseline is
 rooted at frozen harness source `d437b221fcf173c6e31885742713e2a6ceaaeb56`.
@@ -181,14 +181,14 @@ and manifest SHA-256 is
 `C2ED62001DB2EFFBCF65D6EE6B9F740E4431F4C5AE7F80CDCB00FB66E0F308B3`.
 
 The review-corrected production candidate is
-`0540245f1859b9c71f5e9fa75daa9c30d7d72fdd`. Its after summary, manifest and
+`8ced56c3ab543d70022f607a21ca7acac5115100`. Its after summary, manifest and
 comparison SHA-256 values are respectively
-`A846E92EECD03B642FDE8F244238D808837EE30B36F2FB8E72717B48EBFEAFAD`,
-`74FF00B65E19733F9897EB81FA9B77CDE674B2BB3FF0BA3807C58B4C3662D323`
-and `CFEDA3D91F4882E7555F01CD26A31E57AF99763435059001352ACEFFCD9AC7AD`.
-The barrier-writer maximum median fell from 2,136.9784 ms to 3.1433 ms;
-the worst after trial was 3.6525 ms, below the absolute 250 ms gate. Normal
-writer p95 fell from 36.9662 ms to 3.4877 ms. No comparison metric had a
+`A9998FEB5656FDAD2B53E5AD5DB8BFC5FF96E0D50A7B125C4A1D1362A3FD5F6C`,
+`C5654A581016F6BE176434E02260908BFFA269E6FA0C2E34BA4C2EB0AB2F68F9`
+and `273D4B5AAFA0571DA531B09FD58CC42E0A72E5B18643525252A71F61248BBBE5`.
+The barrier-writer maximum median fell from 2,136.9784 ms to 3.5308 ms;
+the worst after trial was 4.5503 ms, below the absolute 250 ms gate. Normal
+writer p95 fell from 36.9662 ms to 3.7821 ms. No comparison metric had a
 material regression.
 
 The frozen comparison calls `ReserveAsync` service-time throughput
@@ -197,10 +197,12 @@ The frozen comparison calls `ReserveAsync` service-time throughput
 Process I/O and checkpoint values are retained but not part of the automatic
 materiality array. Manual five-trial review found zero read bytes, 3,375,104
 write bytes and 1,340 write operations in every baseline and after trial. Read
-operations rose from 35,268-35,353 to 35,852-35,854 (about 1.6%), and every
+operations rose from 35,268-35,353 to 35,850-35,858 (about 1.6%), and every
 checkpoint remained zero busy with 902 log and 902 checkpointed frames. This is
 not material. Corrected-query plan coverage remains non-exhaustive; no plan or
-index claim is made.
+index claim is made. Measured writer timings apply to new-candidate
+reservations; maximum-sized mature-candidate retry BLOB materialization and hash
+cost remain unmeasured and are not claimed.
 
 ### Deployment-location reconciliation
 
