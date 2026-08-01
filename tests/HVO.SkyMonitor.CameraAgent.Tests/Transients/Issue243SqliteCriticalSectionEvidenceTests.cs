@@ -18,7 +18,7 @@ public sealed class Issue243SqliteCriticalSectionEvidenceTests
     private static readonly JsonSerializerOptions EvidenceJsonOptions = new() { WriteIndented = true };
 
     [TestMethod]
-    public async Task CandidateReservation_BlocksUnrelatedWriterWhilePhysicalEvidenceReadIsPaused()
+    public async Task CandidateReservation_AllowsUnrelatedWriterWhilePhysicalEvidenceReadIsPaused()
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -79,13 +79,11 @@ public sealed class Issue243SqliteCriticalSectionEvidenceTests
                 return (rows, Stopwatch.GetElapsedTime(started));
             });
             await competingEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
-            Assert.IsFalse(
-                competingWriter.IsCompleted,
-                "The unrelated writer should wait while reservation validates the FIFO sidecar under BEGIN IMMEDIATE.");
-            await Task.Delay(HoldDuration - TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+            await competingWriter.WaitAsync(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+            Assert.IsFalse(reservationTask.IsCompleted,
+                "The FIFO must still hold physical validation after the unrelated writer commits.");
+            await Task.Delay(HoldDuration).ConfigureAwait(false);
             releaseWriter.TrySetResult();
-            await competingWriter.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
         }
         finally
         {
@@ -108,7 +106,7 @@ public sealed class Issue243SqliteCriticalSectionEvidenceTests
         var competingResult = await competingWriter.ConfigureAwait(false);
         var competingWait = competingResult.Elapsed;
         Assert.AreEqual(1, competingResult.Rows);
-        Assert.IsGreaterThanOrEqualTo(HoldDuration.TotalMilliseconds * 0.90, competingWait.TotalMilliseconds);
+        Assert.IsLessThanOrEqualTo(250, competingWait.TotalMilliseconds);
         Assert.AreEqual("issue-243-sentinel", await fixture.ScalarStringAsync(
             "SELECT failure_reason FROM raw_captures WHERE agent_id = 'agent' AND capture_sequence = 1;")
             .ConfigureAwait(false));
@@ -127,7 +125,7 @@ public sealed class Issue243SqliteCriticalSectionEvidenceTests
         Directory.CreateDirectory(output);
         var evidence = new
         {
-            Schema = "hvo-issue-243-sqlite-critical-section-v1",
+            Schema = "hvo-issue-243-sqlite-critical-section-v2",
             Source = source,
             Workload = new
             {
@@ -141,13 +139,14 @@ public sealed class Issue243SqliteCriticalSectionEvidenceTests
             Observation = new
             {
                 CompetingWriterWaitMilliseconds = competingWait.TotalMilliseconds,
-                WriterBlockedAt250Milliseconds = true,
+                WriterBlockedAt250Milliseconds = false,
+                WriterCompletedBeforePhysicalRelease = true,
                 CompetingWriterRows = competingResult.Rows,
                 CompetingWriterSentinel = "issue-243-sentinel",
                 CandidateRows = 1,
                 SourceRows = SourceCount
             },
-            Correctness = "The production reservation completed once, retained all source identities, and the unrelated sentinel mutation completed only after physical evidence validation was released.",
+            Correctness = "Corrected production completed the unrelated sentinel mutation while physical evidence remained blocked, then completed one reservation with all source identities retained.",
             RecordedAtUtc = DateTimeOffset.UtcNow
         };
         await EvidenceSourceIdentity.WriteJsonAsync(
