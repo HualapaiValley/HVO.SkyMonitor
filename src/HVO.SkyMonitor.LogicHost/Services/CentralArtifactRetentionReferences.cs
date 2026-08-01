@@ -26,25 +26,7 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
 {
     public async Task<bool> IsHeldAsync(Guid centralArtifactId, CancellationToken cancellationToken)
     {
-        if (await HasCurrentPublicReleaseAsync(centralArtifactId, cancellationToken).ConfigureAwait(false))
-        {
-            return true;
-        }
-        if (await dbContext.CentralClearReferenceDesignations.AnyAsync(designation =>
-                designation.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false))
-        {
-            return true;
-        }
-        if (await dbContext.CentralTransientObservations.AnyAsync(observation =>
-                observation.Source!.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false)
-            || await dbContext.CentralTransientObservationBackgrounds.AnyAsync(reference =>
-                reference.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false)
-            || await dbContext.CentralTransientExtractionSources.AnyAsync(reference =>
-                reference.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false)
-            || await dbContext.CentralTransientDerivativeSources.AnyAsync(reference =>
-                reference.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false)
-            || await dbContext.CentralTransientDerivativeBackgrounds.AnyAsync(reference =>
-                reference.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false))
+        if (await DirectReferences(centralArtifactId).AnyAsync(cancellationToken).ConfigureAwait(false))
         {
             return true;
         }
@@ -73,35 +55,8 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
         Guid centralTransientEventId,
         CancellationToken cancellationToken)
     {
-        if (await HasCurrentPublicReleaseAsync(centralArtifactId, cancellationToken).ConfigureAwait(false))
-        {
-            return true;
-        }
-        if (await dbContext.CentralClearReferenceDesignations.AnyAsync(designation =>
-                designation.CentralArtifactId == centralArtifactId, cancellationToken).ConfigureAwait(false))
-        {
-            return true;
-        }
-        if (await dbContext.CentralTransientObservations.AnyAsync(observation =>
-                observation.Source!.CentralArtifactId == centralArtifactId &&
-                observation.CentralTransientEventId != centralTransientEventId, cancellationToken).ConfigureAwait(false)
-            || await dbContext.CentralTransientObservationBackgrounds.AnyAsync(reference =>
-                reference.CentralArtifactId == centralArtifactId &&
-                reference.Observation!.CentralTransientEventId != centralTransientEventId, cancellationToken)
-                .ConfigureAwait(false)
-            || await dbContext.CentralTransientExtractionSources.AnyAsync(reference =>
-                reference.CentralArtifactId == centralArtifactId &&
-                 dbContext.CentralTransientValidationIdentitySlots.Any(slot =>
-                     slot.CentralDerivativeJobId == reference.CentralDerivativeJobId &&
-                     slot.State != CentralTransientValidationIdentitySlotState.Unused &&
-                     (slot.CentralTransientEventId == null ||
-                         slot.CentralTransientEventId != centralTransientEventId)), cancellationToken).ConfigureAwait(false)
-            || await dbContext.CentralTransientDerivativeSources.AnyAsync(reference =>
-                reference.CentralArtifactId == centralArtifactId &&
-                reference.CentralTransientEventId != centralTransientEventId, cancellationToken).ConfigureAwait(false)
-            || await dbContext.CentralTransientDerivativeBackgrounds.AnyAsync(reference =>
-                reference.CentralArtifactId == centralArtifactId &&
-                reference.CentralTransientEventId != centralTransientEventId, cancellationToken).ConfigureAwait(false))
+        if (await DirectReferencesOutsideTransientEvent(centralArtifactId, centralTransientEventId)
+                .AnyAsync(cancellationToken).ConfigureAwait(false))
         {
             return true;
         }
@@ -146,14 +101,54 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
                 || job.Status == CentralDerivativeJobStatus.CancelRequested), cancellationToken).ConfigureAwait(false);
     }
 
-    private Task<bool> HasCurrentPublicReleaseAsync(
+    private IQueryable<int> DirectReferences(Guid centralArtifactId)
+        => CurrentPublicReleases(centralArtifactId)
+            .Concat(dbContext.CentralClearReferenceDesignations
+                .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1))
+            .Concat(dbContext.CentralTransientObservations
+                .Where(item => item.Source!.CentralArtifactId == centralArtifactId).Select(_ => 1))
+            .Concat(dbContext.CentralTransientObservationBackgrounds
+                .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1))
+            .Concat(dbContext.CentralTransientExtractionSources
+                .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1))
+            .Concat(dbContext.CentralTransientDerivativeSources
+                .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1))
+            .Concat(dbContext.CentralTransientDerivativeBackgrounds
+                .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1));
+
+    private IQueryable<int> DirectReferencesOutsideTransientEvent(
         Guid centralArtifactId,
-        CancellationToken cancellationToken)
-        => dbContext.PublicRecordPublicationDecisions.AnyAsync(decision =>
-            decision.CentralArtifactId == centralArtifactId
-            && decision.State == PublicationDecisionState.Released
-            && !dbContext.PublicRecordPublicationDecisions.Any(successor =>
-                successor.SupersedesDecisionId == decision.Id), cancellationToken);
+        Guid centralTransientEventId)
+        => CurrentPublicReleases(centralArtifactId)
+            .Concat(dbContext.CentralClearReferenceDesignations
+                .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1))
+            .Concat(dbContext.CentralTransientObservations.Where(item =>
+                item.Source!.CentralArtifactId == centralArtifactId
+                && item.CentralTransientEventId != centralTransientEventId).Select(_ => 1))
+            .Concat(dbContext.CentralTransientObservationBackgrounds.Where(item =>
+                item.CentralArtifactId == centralArtifactId
+                && item.Observation!.CentralTransientEventId != centralTransientEventId).Select(_ => 1))
+            .Concat(dbContext.CentralTransientExtractionSources.Where(item =>
+                item.CentralArtifactId == centralArtifactId
+                && dbContext.CentralTransientValidationIdentitySlots.Any(slot =>
+                    slot.CentralDerivativeJobId == item.CentralDerivativeJobId
+                    && slot.State != CentralTransientValidationIdentitySlotState.Unused
+                    && (slot.CentralTransientEventId == null
+                        || slot.CentralTransientEventId != centralTransientEventId))).Select(_ => 1))
+            .Concat(dbContext.CentralTransientDerivativeSources.Where(item =>
+                item.CentralArtifactId == centralArtifactId
+                && item.CentralTransientEventId != centralTransientEventId).Select(_ => 1))
+            .Concat(dbContext.CentralTransientDerivativeBackgrounds.Where(item =>
+                item.CentralArtifactId == centralArtifactId
+                && item.CentralTransientEventId != centralTransientEventId).Select(_ => 1));
+
+    private IQueryable<int> CurrentPublicReleases(Guid centralArtifactId)
+        => dbContext.PublicRecordPublicationDecisions.Where(decision =>
+                decision.CentralArtifactId == centralArtifactId
+                && decision.State == PublicationDecisionState.Released
+                && !dbContext.PublicRecordPublicationDecisions.Any(successor =>
+                    successor.SupersedesDecisionId == decision.Id))
+            .Select(_ => 1);
 }
 
 internal sealed partial class CentralArtifactRetentionService(
@@ -164,11 +159,13 @@ internal sealed partial class CentralArtifactRetentionService(
     CentralArtifactRetentionTelemetry telemetry,
     ILogger<CentralArtifactRetentionService> logger) : ICentralArtifactRetentionService
 {
-    internal const int MaximumReservationDeadlockRetries = 3;
+    internal const int MaximumReservationConflictRetries = 3;
 
     internal Func<int, Guid, Exception?>? ReservationFaultInjector { get; set; }
 
     internal Func<Exception, bool>? ReservationDeadlockClassifier { get; set; }
+
+    internal Func<Exception, bool>? ReservationUniqueConstraintClassifier { get; set; }
 
     public async Task<CentralArtifactRetentionResult> ReleaseAsync(
         Guid centralArtifactId,
@@ -210,7 +207,7 @@ internal sealed partial class CentralArtifactRetentionService(
                 ReservationResult reservation;
                 try
                 {
-                    reservation = await ReserveWithDeadlockRetryAsync(
+                    reservation = await ReserveWithConflictRetryAsync(
                         centralArtifactId, storageReference, operationToken, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (IsReservationOutcomeAmbiguous(exception))
@@ -248,8 +245,11 @@ internal sealed partial class CentralArtifactRetentionService(
 
                 try
                 {
-                    var processResult = await processor.ProcessUnderLockAsync(
-                        reservation.DispositionId!.Value, "request", cancellationToken).ConfigureAwait(false);
+                    var processResult = reservation.Reserved
+                        ? await processor.ProcessPreparedUnderLockAsync(
+                            reservation.DispositionId!.Value, "request", cancellationToken).ConfigureAwait(false)
+                        : await processor.ProcessUnderLockAsync(
+                            reservation.DispositionId!.Value, "request", cancellationToken).ConfigureAwait(false);
                     return processResult == CentralArtifactRetentionProcessResult.Released
                         ? CentralArtifactRetentionResult.Released
                         : CentralArtifactRetentionResult.Pending;
@@ -266,7 +266,7 @@ internal sealed partial class CentralArtifactRetentionService(
         }
     }
 
-    private async Task<ReservationResult> ReserveWithDeadlockRetryAsync(
+    private async Task<ReservationResult> ReserveWithConflictRetryAsync(
         Guid centralArtifactId,
         string storageReference,
         Guid operationToken,
@@ -274,6 +274,7 @@ internal sealed partial class CentralArtifactRetentionService(
     {
         for (var attempt = 0; ; attempt++)
         {
+            var attemptStarted = timeProvider.GetTimestamp();
             try
             {
                 return await ReserveAsync(
@@ -283,15 +284,17 @@ internal sealed partial class CentralArtifactRetentionService(
                     attempt,
                     cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception exception) when (IsRetryableReservationDeadlock(exception))
+            catch (Exception exception) when (IsRetryableReservationConflict(exception))
             {
                 dbContext.ChangeTracker.Clear();
-                if (attempt >= MaximumReservationDeadlockRetries)
+                if (attempt >= MaximumReservationConflictRetries)
                 {
                     throw new InvalidOperationException(
-                        "Central artifact retention reservation exhausted SQL deadlock retries.",
+                        "Central artifact retention reservation exhausted SQL conflict retries.",
                         exception);
                 }
+                telemetry.RecordStage(
+                    "reserve", "retry", "request", timeProvider.GetElapsedTime(attemptStarted));
                 var delay = TimeSpan.FromMilliseconds(10 * (1 << attempt));
                 await Task.Delay(delay, timeProvider, cancellationToken).ConfigureAwait(false);
             }
@@ -327,7 +330,9 @@ internal sealed partial class CentralArtifactRetentionService(
         }
 
         var identityMatches = await dbContext.CentralObjectRecoveryDispositions.FromSqlInterpolated($"""
-                SELECT * FROM [CentralObjectRecoveryDispositions] WITH (UPDLOCK, HOLDLOCK)
+                SELECT *
+                FROM [CentralObjectRecoveryDispositions]
+                    WITH (READCOMMITTEDLOCK, INDEX([IX_CentralObjectRecoveryDispositions_SourceObjectIdentitySha256]))
                 WHERE [SourceObjectIdentitySha256] = {identity}
                 """)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
@@ -337,6 +342,23 @@ internal sealed partial class CentralArtifactRetentionService(
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             return new(CentralArtifactRetentionResult.Pending, null, artifact.ByteLength);
+        }
+        if (disposition is not null)
+        {
+            var dispositionId = disposition.Id;
+            _ = await CentralArtifactRetentionLock.AcquireDispositionAsync(
+                dbContext, dispositionId, cancellationToken).ConfigureAwait(false);
+            dbContext.Entry(disposition).State = EntityState.Detached;
+            disposition = await dbContext.CentralObjectRecoveryDispositions.SingleOrDefaultAsync(
+                item => item.Id == dispositionId, cancellationToken).ConfigureAwait(false);
+            if (disposition is null
+                || disposition.SourceObjectIdentitySha256 != identity
+                || !string.Equals(disposition.SourceObjectKey, objectKey, StringComparison.Ordinal))
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                dbContext.ChangeTracker.Clear();
+                return new(CentralArtifactRetentionResult.Pending, null, artifact.ByteLength);
+            }
         }
 
         if (artifact.RetentionDeletionToken is { } existingToken)
@@ -399,9 +421,11 @@ internal sealed partial class CentralArtifactRetentionService(
                 CentralArtifactId = artifact.Id,
                 OperationToken = operationToken,
                 ByteLength = artifact.ByteLength,
+                AttemptCount = 1,
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now,
-                NextAttemptAtUtc = now
+                LastAttemptAtUtc = now,
+                NextAttemptAtUtc = null
             };
             dbContext.CentralObjectRecoveryDispositions.Add(disposition);
         }
@@ -412,9 +436,9 @@ internal sealed partial class CentralArtifactRetentionService(
             disposition.CentralArtifactId = artifact.Id;
             disposition.OperationToken = operationToken;
             disposition.ByteLength = artifact.ByteLength;
-            disposition.AttemptCount = 0;
-            disposition.LastAttemptAtUtc = null;
-            disposition.NextAttemptAtUtc = now;
+            disposition.AttemptCount = 1;
+            disposition.LastAttemptAtUtc = now;
+            disposition.NextAttemptAtUtc = null;
             disposition.CompletedAtUtc = null;
             disposition.ReasonCode = null;
             disposition.UpdatedAtUtc = now;
@@ -465,11 +489,20 @@ internal sealed partial class CentralArtifactRetentionService(
     private static bool IsReservationOutcomeAmbiguous(Exception exception)
         => exception is OperationCanceledException or DbException or InvalidOperationException;
 
-    private bool IsRetryableReservationDeadlock(Exception exception)
-        => IsSqlServerDeadlock(exception)
-            || ReservationDeadlockClassifier?.Invoke(exception) == true;
+    private bool IsRetryableReservationConflict(Exception exception)
+        => exception is DbUpdateConcurrencyException
+            || IsSqlServerDeadlock(exception)
+            || ReservationDeadlockClassifier?.Invoke(exception) == true
+            || IsSqlServerUniqueConstraintViolation(exception)
+            || ReservationUniqueConstraintClassifier?.Invoke(exception) == true;
+
+    internal static bool IsSqlServerUniqueConstraintViolation(Exception exception)
+        => ContainsSqlError(exception, 2601, 2627);
 
     internal static bool IsSqlServerDeadlock(Exception exception)
+        => ContainsSqlError(exception, 1205);
+
+    private static bool ContainsSqlError(Exception exception, params int[] errorNumbers)
     {
         var pending = new Stack<Exception>();
         var visited = new HashSet<Exception>(ReferenceEqualityComparer.Instance);
@@ -481,8 +514,8 @@ internal sealed partial class CentralArtifactRetentionService(
                 continue;
             }
             if (current is SqlException sqlException
-                && (sqlException.Number == 1205
-                    || sqlException.Errors.Cast<SqlError>().Any(error => error.Number == 1205)))
+                && (errorNumbers.Contains(sqlException.Number)
+                    || sqlException.Errors.Cast<SqlError>().Any(error => errorNumbers.Contains(error.Number))))
             {
                 return true;
             }

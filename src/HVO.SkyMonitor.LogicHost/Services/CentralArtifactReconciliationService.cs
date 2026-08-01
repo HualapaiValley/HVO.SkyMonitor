@@ -667,7 +667,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         var target = kind == CentralObjectRecoveryKinds.OrphanQuarantine
             ? CreateQuarantineObjectKey(sourceObjectKey)
             : null;
-        var identityMatches = await db.CentralObjectRecoveryDispositions
+        var identityMatches = await db.CentralObjectRecoveryDispositions.AsNoTracking()
             .Where(item => item.SourceObjectIdentitySha256 == identity)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var existing = identityMatches.SingleOrDefault(item =>
@@ -678,12 +678,31 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
         if (existing is not null)
         {
+            var existingId = existing.Id;
+            await using var transaction = await db.Database.BeginTransactionAsync(
+                System.Data.IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+            _ = await CentralArtifactRetentionLock.AcquireDispositionAsync(db, existingId, cancellationToken)
+                .ConfigureAwait(false);
+            existing = await db.CentralObjectRecoveryDispositions.SingleOrDefaultAsync(item =>
+                item.Id == existingId, cancellationToken).ConfigureAwait(false);
+            if (existing is null
+                || existing.SourceObjectIdentitySha256 != identity
+                || !string.Equals(existing.SourceObjectKey, sourceObjectKey, StringComparison.Ordinal))
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                db.ChangeTracker.Clear();
+                return false;
+            }
             if (existing.OperationToken is not null)
             {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                db.ChangeTracker.Clear();
                 return false;
             }
             if (existing.State is not (CentralObjectRecoveryStates.Completed or CentralObjectRecoveryStates.Cancelled))
             {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                db.ChangeTracker.Clear();
                 return false;
             }
             existing.Kind = kind;
@@ -697,6 +716,8 @@ internal sealed partial class CentralArtifactReconciliationService(
             existing.UpdatedAtUtc = now;
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await IncrementFindingAsync(db, token, byteLength, now, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            db.ChangeTracker.Clear();
             return true;
         }
         db.CentralObjectRecoveryDispositions.Add(new CentralObjectRecoveryDisposition

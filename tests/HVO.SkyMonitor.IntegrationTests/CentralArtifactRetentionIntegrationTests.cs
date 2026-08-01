@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Data.Common;
@@ -7,6 +8,7 @@ using System.Globalization;
 using System.Text.Json;
 using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.IntegrationTests.Infrastructure;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
 using HVO.SkyMonitor.LogicHost.Services;
@@ -68,7 +70,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             database.Context,
             CentralObjectOwnershipFence.BucketPrefix + seeded.ObjectKey.ToUpperInvariant(),
             CancellationToken.None).ConfigureAwait(false)).Should().BeFalse();
-        signals.Instruments.Should().Contain([
+        signals.Instruments.Should().BeEquivalentTo([
             "skymonitor.central.retention.operations",
             "skymonitor.central.retention.duration",
             "skymonitor.central.retention.stage.duration",
@@ -108,15 +110,95 @@ public sealed class CentralArtifactRetentionIntegrationTests
     }
 
     [TestMethod]
+    public async Task Release_HappyPathUsesSeventeenEfCommandsNineteenTotalAndTwoTransactions()
+    {
+        await using var database = await CreateDatabaseAsync("ProtocolBudget").ConfigureAwait(false);
+        var seeded = await SeedAsync(database.Context, "protocol-budget", [61, 62, 63]).ConfigureAwait(false);
+        await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
+        using var evidence = new Issue246RetentionEvidenceCollector();
+        await using var measured = CreateContext(
+            database.ConnectionString, evidence.Commands, evidence.Transactions);
+        using var minio = CreateMinio(evidence.Http);
+        using var telemetry = new CentralArtifactRetentionTelemetry();
+
+        evidence.Reset();
+        (await CreateService(measured, minio, telemetry)
+            .ReleaseAsync(seeded.ArtifactId, CancellationToken.None).ConfigureAwait(false))
+            .Should().Be(CentralArtifactRetentionResult.Released);
+
+        var snapshot = evidence.Snapshot();
+        snapshot.EfCommands.Should().Be(17);
+        const int directApplicationLockCommands = 2;
+        (snapshot.EfCommands + directApplicationLockCommands).Should().Be(19,
+            "the EF interceptor excludes the direct sp_getapplock and sp_releaseapplock commands");
+        snapshot.SqlTransactions.StartAttempts.Should().Be(2);
+        snapshot.SqlTransactions.SuccessfullyStarted.Should().Be(2);
+        snapshot.SqlTransactions.Committed.Should().Be(2);
+        snapshot.SqlTransactions.RolledBack.Should().Be(0);
+        snapshot.SqlTransactions.Failed.Should().Be(0);
+        snapshot.ObjectStore.Deletes.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task RetentionReferenceAndOwnerQueries_UseUnionShapeAndSupportingIndexes()
+    {
+        await using var database = await CreateDatabaseAsync("QueryShape").ConfigureAwait(false);
+        var target = await SeedAsync(database.Context, "query-shape-target", [66]).ConfigureAwait(false);
+        var unrelated = await SeedAsync(database.Context, "query-shape-unrelated", [67]).ConfigureAwait(false);
+        var now = DateTimeOffset.UtcNow;
+        _ = AddDerivativeJob(database.Context, unrelated.ArtifactId, now);
+        await database.Context.SaveChangesAsync().ConfigureAwait(false);
+        database.Context.ChangeTracker.Clear();
+
+        var commands = new CommandShapeInterceptor();
+        await using var measured = CreateContext(database.ConnectionString, commands);
+        var started = Stopwatch.StartNew();
+        (await new CentralArtifactRetentionReferences(measured)
+            .IsHeldAsync(target.ArtifactId, CancellationToken.None).ConfigureAwait(false)).Should().BeFalse();
+        (await CentralObjectOwnershipFence.HasActiveOwnerAsync(
+            measured, target.StorageReference, target.ArtifactId, CancellationToken.None).ConfigureAwait(false))
+            .Should().BeFalse();
+        started.Stop();
+
+        var directReferenceSql = commands.Commands.Single(command =>
+            command.Contains("[CentralClearReferenceDesignations]", StringComparison.Ordinal)
+            && command.Contains("[CentralTransientDerivativeBackgrounds]", StringComparison.Ordinal));
+        directReferenceSql.Should().Contain("UNION ALL");
+        var ownerSql = commands.Commands.Single(command =>
+            command.Contains("[ActiveOwners]", StringComparison.Ordinal));
+        ownerSql.Should().Contain("UNION ALL")
+            .And.Contain("[IX_CentralArtifacts_StorageReference]")
+            .And.Contain("[StorageReferenceSha256]");
+        started.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10));
+
+        var artifactType = measured.Model.FindEntityType(typeof(CentralArtifact));
+        artifactType.Should().NotBeNull();
+        artifactType!.GetIndexes().Should().Contain(index =>
+            index.Properties.Count == 1
+            && index.Properties[0].Name == nameof(CentralArtifact.StorageReference));
+        var intentType = measured.Model.FindEntityType(typeof(CentralTransientDerivativeOutputIntent));
+        intentType.Should().NotBeNull();
+        intentType!.GetIndexes().Should().Contain(index =>
+            index.Properties.Count == 1 && index.Properties[0].Name == "StorageReferenceSha256");
+        var designationType = measured.Model.FindEntityType(typeof(CentralClearReferenceDesignation));
+        designationType.Should().NotBeNull();
+        designationType!.GetIndexes().Should().Contain(index =>
+            index.Properties.Count == 1
+            && index.Properties[0].Name == nameof(CentralClearReferenceDesignation.CentralArtifactId));
+    }
+
+    [TestMethod]
     public async Task ReservationDeadlockRetry_ReusesTokenAndCreatesOneTerminalDisposition()
     {
         await using var database = await CreateDatabaseAsync("ReservationDeadlockRetry").ConfigureAwait(false);
         var seeded = await SeedAsync(database.Context, "reservation-deadlock-retry", [53, 54, 55]).ConfigureAwait(false);
         await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
         using var telemetry = new CentralArtifactRetentionTelemetry();
+        using var signals = new RetentionSignalCollector();
         var injected = new InvalidOperationException("Injected reservation deadlock.");
         var observedTokens = new List<Guid>();
-        var service = CreateService(database.Context, GetFixtureMinio(), telemetry);
+        var service = CreateService(
+            database.Context, GetFixtureMinio(), telemetry, signals.ProcessorLogger, signals.ServiceLogger);
         service.ReservationDeadlockClassifier = exception => ReferenceEquals(exception, injected);
         service.ReservationFaultInjector = (attempt, token) =>
         {
@@ -128,11 +210,14 @@ public sealed class CentralArtifactRetentionIntegrationTests
             .Should().Be(CentralArtifactRetentionResult.Released);
         observedTokens.Should().HaveCount(2);
         observedTokens.Distinct().Should().ContainSingle();
+        signals.RetryMeasurements.Should().ContainSingle(item =>
+            item.Stage == "reserve" && item.Outcome == "retry" && item.Origin == "request");
         database.Context.ChangeTracker.Clear();
         var disposition = await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
             .SingleAsync(item => item.CentralArtifactId == seeded.ArtifactId).ConfigureAwait(false);
         disposition.OperationToken.Should().Be(observedTokens[0]);
         disposition.State.Should().Be(CentralObjectRecoveryStates.Completed);
+        disposition.AttemptCount.Should().Be(1);
         var completedAt = disposition.CompletedAtUtc;
 
         (await service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None).ConfigureAwait(false))
@@ -151,9 +236,11 @@ public sealed class CentralArtifactRetentionIntegrationTests
         await using var database = await CreateDatabaseAsync("ReservationDeadlockExhaustion").ConfigureAwait(false);
         var seeded = await SeedAsync(database.Context, "reservation-deadlock-exhaustion", [56, 57]).ConfigureAwait(false);
         using var telemetry = new CentralArtifactRetentionTelemetry();
+        using var signals = new RetentionSignalCollector();
         var injected = new InvalidOperationException("Injected reservation deadlock.");
         var observedTokens = new List<Guid>();
-        var service = CreateService(database.Context, GetFixtureMinio(), telemetry);
+        var service = CreateService(
+            database.Context, GetFixtureMinio(), telemetry, signals.ProcessorLogger, signals.ServiceLogger);
         service.ReservationDeadlockClassifier = exception => ReferenceEquals(exception, injected);
         service.ReservationFaultInjector = (_, token) =>
         {
@@ -165,10 +252,13 @@ public sealed class CentralArtifactRetentionIntegrationTests
             new InvalidOperationException("unrelated", new DbUpdateException("unrelated"))).Should().BeFalse();
         var release = () => service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None);
         await release.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("Central artifact retention reservation exhausted SQL deadlock retries.")
+            .WithMessage("Central artifact retention reservation exhausted SQL conflict retries.")
             .ConfigureAwait(false);
-        observedTokens.Should().HaveCount(CentralArtifactRetentionService.MaximumReservationDeadlockRetries + 1);
+        observedTokens.Should().HaveCount(CentralArtifactRetentionService.MaximumReservationConflictRetries + 1);
         observedTokens.Distinct().Should().ContainSingle();
+        signals.RetryMeasurements.Should().HaveCount(CentralArtifactRetentionService.MaximumReservationConflictRetries)
+            .And.OnlyContain(item =>
+                item.Stage == "reserve" && item.Outcome == "retry" && item.Origin == "request");
 
         database.Context.ChangeTracker.Clear();
         var artifact = await database.Context.CentralArtifacts.AsNoTracking()
@@ -179,6 +269,200 @@ public sealed class CentralArtifactRetentionIntegrationTests
         artifact.RetentionDeletionCompletedAtUtc.Should().BeNull();
         (await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
             .CountAsync(item => item.CentralArtifactId == seeded.ArtifactId).ConfigureAwait(false)).Should().Be(0);
+    }
+
+    [TestMethod]
+    public async Task ReservationUniqueConflictRetry_ReusesTokenAndCompletesOnce()
+    {
+        await using var database = await CreateDatabaseAsync("ReservationUniqueConflict").ConfigureAwait(false);
+        var seeded = await SeedAsync(database.Context, "reservation-unique-conflict", [64, 65]).ConfigureAwait(false);
+        await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
+        using var telemetry = new CentralArtifactRetentionTelemetry();
+        using var signals = new RetentionSignalCollector();
+        var injected = new InvalidOperationException("Injected reservation uniqueness conflict.");
+        var observedTokens = new List<Guid>();
+        var service = CreateService(
+            database.Context, GetFixtureMinio(), telemetry, signals.ProcessorLogger, signals.ServiceLogger);
+        service.ReservationUniqueConstraintClassifier = exception => ReferenceEquals(exception, injected);
+        service.ReservationFaultInjector = (attempt, token) =>
+        {
+            observedTokens.Add(token);
+            return attempt == 0 ? injected : null;
+        };
+
+        (await service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None).ConfigureAwait(false))
+            .Should().Be(CentralArtifactRetentionResult.Released);
+        observedTokens.Should().HaveCount(2);
+        observedTokens.Distinct().Should().ContainSingle();
+        signals.RetryMeasurements.Should().ContainSingle(item =>
+            item.Stage == "reserve" && item.Outcome == "retry" && item.Origin == "request");
+
+        database.Context.ChangeTracker.Clear();
+        var dispositions = await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
+            .Where(item => item.CentralArtifactId == seeded.ArtifactId).ToArrayAsync().ConfigureAwait(false);
+        dispositions.Should().ContainSingle();
+        dispositions[0].State.Should().Be(CentralObjectRecoveryStates.Completed);
+        dispositions[0].AttemptCount.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task LegacyDisposition_ConcurrentReconciliationAndRequestAdoptionConvergeOnce()
+    {
+        await using var database = await CreateDatabaseAsync("LegacyAdoptionRace").ConfigureAwait(false);
+        var seeded = await SeedAsync(database.Context, "legacy-adoption-race", [68, 69]).ConfigureAwait(false);
+        await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
+        var now = DateTimeOffset.UtcNow;
+        var legacyId = Guid.NewGuid();
+        database.Context.CentralObjectRecoveryDispositions.Add(new CentralObjectRecoveryDisposition
+        {
+            Id = legacyId,
+            SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(seeded.ObjectKey),
+            SourceObjectKey = seeded.ObjectKey,
+            Kind = CentralObjectRecoveryKinds.ExpiredDelete,
+            State = CentralObjectRecoveryStates.PendingDelete,
+            ByteLength = seeded.Payload.LongLength,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        });
+        await database.Context.SaveChangesAsync().ConfigureAwait(false);
+        database.Context.ChangeTracker.Clear();
+
+        using var telemetry = new CentralArtifactRetentionTelemetry();
+        var reservationEntered = new TaskCompletionSource<Guid>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var reservationGate = new ManualResetEventSlim();
+        var service = CreateService(database.Context, GetFixtureMinio(), telemetry);
+        service.ReservationFaultInjector = (_, operationToken) =>
+        {
+            reservationEntered.TrySetResult(operationToken);
+            if (!reservationGate.Wait(TimeSpan.FromSeconds(15)))
+            {
+                throw new TimeoutException("The reconciliation barrier did not release reservation adoption.");
+            }
+            return null;
+        };
+
+        var release = service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None);
+        var operationToken = await reservationEntered.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        var candidateObserver = new ReconciliationCandidateObserver();
+        await using var reconciliationServices = CreateReconciliationServices(
+            database.ConnectionString, candidateObserver);
+        var reconciler = new CentralArtifactReconciliationService(
+            reconciliationServices.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System,
+            AssemblyHooks.Fixture.Factory.Services.GetRequiredService<CentralIngestTelemetry>(),
+            NullLogger<CentralArtifactReconciliationService>.Instance);
+        var reconciliation = reconciler.ReconcileAsync(CancellationToken.None);
+        await candidateObserver.LegacyCandidateRead.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        reservationGate.Set();
+
+        (await release.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false))
+            .Should().Be(CentralArtifactRetentionResult.Released);
+        _ = await reconciliation.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+
+        database.Context.ChangeTracker.Clear();
+        var disposition = await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
+            .SingleAsync(item => item.Id == legacyId).ConfigureAwait(false);
+        disposition.OperationToken.Should().Be(operationToken);
+        disposition.CentralArtifactId.Should().Be(seeded.ArtifactId);
+        disposition.State.Should().Be(CentralObjectRecoveryStates.Completed);
+        disposition.AttemptCount.Should().Be(1);
+        (await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
+            .CountAsync(item => item.SourceObjectIdentitySha256 == disposition.SourceObjectIdentitySha256)
+            .ConfigureAwait(false)).Should().Be(1);
+        await AssertMissingAsync(seeded.ObjectKey).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task ConcurrentDistinctReleases_RepeatedC8CompletesWithoutRetriesOrDuplicates()
+    {
+        await using var database = await CreateDatabaseAsync("RepeatedC8").ConfigureAwait(false);
+        var seeded = new List<SeededArtifact>();
+        for (var index = 0; index < 64; index++)
+        {
+            var artifact = await SeedAsync(
+                database.Context, $"repeated-c8-{index}", [(byte)index]).ConfigureAwait(false);
+            seeded.Add(artifact);
+            await PutAsync(artifact.ObjectKey, artifact.Payload).ConfigureAwait(false);
+        }
+        database.Context.ChangeTracker.Clear();
+        using var telemetry = new CentralArtifactRetentionTelemetry();
+        using var retries = new RetentionRetryCollector();
+        var results = new CentralArtifactRetentionResult[seeded.Count];
+
+        var lanes = Enumerable.Range(0, 8).Select(async lane =>
+        {
+            await using var context = CreateContext(database.ConnectionString);
+            var service = CreateService(context, GetFixtureMinio(), telemetry);
+            for (var index = lane; index < seeded.Count; index += 8)
+            {
+                results[index] = await service.ReleaseAsync(
+                    seeded[index].ArtifactId, CancellationToken.None).ConfigureAwait(false);
+            }
+        });
+        await Task.WhenAll(lanes).WaitAsync(TimeSpan.FromMinutes(2)).ConfigureAwait(false);
+
+        results.Should().OnlyContain(result => result == CentralArtifactRetentionResult.Released);
+        retries.Measurements.Should().BeEmpty();
+        database.Context.ChangeTracker.Clear();
+        var dispositions = await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
+            .Where(item => seeded.Select(value => value.ArtifactId).Contains(item.CentralArtifactId!.Value))
+            .ToArrayAsync().ConfigureAwait(false);
+        dispositions.Should().HaveCount(seeded.Count);
+        dispositions.Should().OnlyContain(item =>
+            item.State == CentralObjectRecoveryStates.Completed && item.AttemptCount == 1);
+    }
+
+    [TestMethod]
+    public async Task WorkerPrepareDeadlockExhaustion_RecordsOnlyRetriesActuallyAttempted()
+    {
+        await using var database = await CreateDatabaseAsync("PrepareDeadlockExhaustion").ConfigureAwait(false);
+        var seeded = await SeedAsync(database.Context, "prepare-deadlock-exhaustion", [70]).ConfigureAwait(false);
+        var operationToken = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var artifact = await database.Context.CentralArtifacts.SingleAsync(item => item.Id == seeded.ArtifactId)
+            .ConfigureAwait(false);
+        artifact.ObjectState = CentralArtifactObjectState.Expired;
+        artifact.RetentionDeletionToken = operationToken;
+        artifact.RetentionDeletionRequestedAtUtc = now;
+        var dispositionId = Guid.NewGuid();
+        database.Context.CentralObjectRecoveryDispositions.Add(new CentralObjectRecoveryDisposition
+        {
+            Id = dispositionId,
+            SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(seeded.ObjectKey),
+            SourceObjectKey = seeded.ObjectKey,
+            Kind = CentralObjectRecoveryKinds.ExpiredDelete,
+            State = CentralObjectRecoveryStates.PendingDelete,
+            CentralArtifactId = seeded.ArtifactId,
+            OperationToken = operationToken,
+            ByteLength = seeded.Payload.LongLength,
+            AttemptCount = 1,
+            LastAttemptAtUtc = now,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        });
+        await database.Context.SaveChangesAsync().ConfigureAwait(false);
+        var injected = new InvalidOperationException("Injected worker prepare deadlock.");
+        var interceptor = new ThrowMatchingReaderInterceptor(
+            "[CentralArtifacts] WITH (UPDLOCK, HOLDLOCK)", injected);
+        await using var faultContext = CreateContext(database.ConnectionString, interceptor);
+        using var telemetry = new CentralArtifactRetentionTelemetry();
+        using var signals = new RetentionSignalCollector();
+        var processor = CreateProcessor(
+            faultContext, GetFixtureMinio(), telemetry, logger: signals.ProcessorLogger);
+        processor.SqlDeadlockClassifier = exception => ReferenceEquals(exception, injected);
+
+        var process = () => processor.ProcessAsync(dispositionId, "worker", CancellationToken.None);
+        await process.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("Central artifact retention reconcile exhausted SQL deadlock retries.")
+            .ConfigureAwait(false);
+        interceptor.ThrowCount.Should().Be(4);
+        signals.RetryMeasurements.Should().HaveCount(3).And.OnlyContain(item =>
+            item.Stage == "reconcile" && item.Outcome == "retry" && item.Origin == "worker");
+
+        database.Context.ChangeTracker.Clear();
+        (await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
+            .SingleAsync(item => item.Id == dispositionId).ConfigureAwait(false))
+            .AttemptCount.Should().Be(1);
     }
 
     [TestMethod]
@@ -228,6 +512,10 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var processor = CreateProcessor(recoveryContext, GetFixtureMinio(), recoveryTelemetry);
         (await processor.ProcessAsync(dispositionId, "worker", CancellationToken.None).ConfigureAwait(false))
             .Should().Be(CentralArtifactRetentionProcessResult.Released);
+        recoveryContext.ChangeTracker.Clear();
+        (await recoveryContext.CentralObjectRecoveryDispositions.AsNoTracking()
+            .SingleAsync(item => item.Id == dispositionId).ConfigureAwait(false))
+            .AttemptCount.Should().Be(2, "worker replay must retain the prepare attempt");
     }
 
     [TestMethod]
@@ -377,7 +665,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         await using var database = await CreateDatabaseAsync("CommitAmbiguity").ConfigureAwait(false);
         var seeded = await SeedAsync(database.Context, "commit-ambiguity", [41, 42, 43]).ConfigureAwait(false);
         await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
-        var interceptor = new ThrowAfterCommittedInterceptor(commitNumber: 3);
+        var interceptor = new ThrowAfterCommittedInterceptor(commitNumber: 2);
         await using var faultContext = CreateContext(database.ConnectionString, interceptor);
         using var telemetry = new CentralArtifactRetentionTelemetry();
 
@@ -404,13 +692,14 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var seeded = await SeedAsync(database.Context, "finalize-commit-deadlock", [58, 59, 60]).ConfigureAwait(false);
         await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
         var injected = new InvalidOperationException("Injected finalization commit deadlock.");
-        var interceptor = new ThrowSpecificBeforeCommitInterceptor(commitNumber: 3, injected);
+        var interceptor = new ThrowSpecificBeforeCommitInterceptor(commitNumber: 2, injected);
         await using var faultContext = CreateContext(database.ConnectionString, interceptor);
         using var handler = new BlockingDeleteHandler { InnerHandler = new SocketsHttpHandler() };
         using var minio = CreateMinio(handler);
         using var telemetry = new CentralArtifactRetentionTelemetry();
+        using var signals = new RetentionSignalCollector();
         var references = new CentralArtifactRetentionReferences(faultContext);
-        var processor = CreateProcessor(faultContext, minio, telemetry, references);
+        var processor = CreateProcessor(faultContext, minio, telemetry, references, signals.ProcessorLogger);
         processor.SqlDeadlockClassifier = exception => ReferenceEquals(exception, injected);
         var service = new CentralArtifactRetentionService(
             faultContext,
@@ -418,7 +707,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             processor,
             TimeProvider.System,
             telemetry,
-            NullLogger<CentralArtifactRetentionService>.Instance);
+            signals.ServiceLogger);
 
         var release = service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None);
         await handler.Entered.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
@@ -427,6 +716,8 @@ public sealed class CentralArtifactRetentionIntegrationTests
             .Should().Be(CentralArtifactRetentionResult.Released);
         interceptor.Triggered.Should().BeTrue();
         handler.DeleteCount.Should().Be(1);
+        signals.RetryMeasurements.Should().ContainSingle(item =>
+            item.Stage == "finalize" && item.Outcome == "retry" && item.Origin == "request");
 
         await using var verifier = CreateContext(database.ConnectionString);
         var dispositions = await verifier.CentralObjectRecoveryDispositions.AsNoTracking()
@@ -440,12 +731,58 @@ public sealed class CentralArtifactRetentionIntegrationTests
     }
 
     [TestMethod]
+    public async Task FinalizationDeadlockExhaustion_RecordsOnlyRetriesActuallyAttemptedAndDeletesOnce()
+    {
+        await using var database = await CreateDatabaseAsync("FinalizeDeadlockExhaustion").ConfigureAwait(false);
+        var seeded = await SeedAsync(database.Context, "finalize-deadlock-exhaustion", [71, 72]).ConfigureAwait(false);
+        await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
+        var injected = new InvalidOperationException("Injected finalization deadlock exhaustion.");
+        var interceptor = new ThrowBeforeCommitFromInterceptor(firstCommitNumber: 2, injected);
+        await using var faultContext = CreateContext(database.ConnectionString, interceptor);
+        using var handler = new BlockingDeleteHandler { InnerHandler = new SocketsHttpHandler() };
+        using var minio = CreateMinio(handler);
+        using var telemetry = new CentralArtifactRetentionTelemetry();
+        using var signals = new RetentionSignalCollector();
+        var references = new CentralArtifactRetentionReferences(faultContext);
+        var processor = CreateProcessor(faultContext, minio, telemetry, references, signals.ProcessorLogger);
+        processor.SqlDeadlockClassifier = exception => ReferenceEquals(exception, injected);
+        var service = new CentralArtifactRetentionService(
+            faultContext,
+            references,
+            processor,
+            TimeProvider.System,
+            telemetry,
+            signals.ServiceLogger);
+
+        var release = service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None);
+        await handler.Entered.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        handler.Release();
+        var awaitRelease = async () => await release.ConfigureAwait(false);
+        await awaitRelease.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("Central artifact retention finalize exhausted SQL deadlock retries.")
+            .ConfigureAwait(false);
+        interceptor.ThrowCount.Should().Be(4);
+        handler.DeleteCount.Should().Be(1);
+        signals.RetryMeasurements.Should().HaveCount(3).And.OnlyContain(item =>
+            item.Stage == "finalize" && item.Outcome == "retry" && item.Origin == "request");
+
+        await using var verifier = CreateContext(database.ConnectionString);
+        var disposition = await verifier.CentralObjectRecoveryDispositions.AsNoTracking()
+            .SingleAsync(item => item.CentralArtifactId == seeded.ArtifactId).ConfigureAwait(false);
+        disposition.State.Should().Be(CentralObjectRecoveryStates.PendingDelete);
+        disposition.AttemptCount.Should().Be(1);
+        (await verifier.CentralArtifacts.AsNoTracking()
+            .SingleAsync(item => item.Id == seeded.ArtifactId).ConfigureAwait(false))
+            .RetentionDeletionCompletedAtUtc.Should().BeNull();
+    }
+
+    [TestMethod]
     public async Task FinalizationPreCommitRollback_FreshProcessorRecoversMissingObject()
     {
         await using var database = await CreateDatabaseAsync("FinalizePreCommit").ConfigureAwait(false);
         var seeded = await SeedAsync(database.Context, "finalize-pre-commit", [44, 45, 46]).ConfigureAwait(false);
         await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
-        var interceptor = new ThrowBeforeCommitInterceptor(commitNumber: 3);
+        var interceptor = new ThrowBeforeCommitInterceptor(commitNumber: 2);
         using var telemetry = new CentralArtifactRetentionTelemetry();
 
         await using (var faultContext = CreateContext(database.ConnectionString, interceptor))
@@ -1210,6 +1547,18 @@ public sealed class CentralArtifactRetentionIntegrationTests
         return services.BuildServiceProvider();
     }
 
+    private static ServiceProvider CreateReconciliationServices(
+        string connectionString,
+        IInterceptor interceptor)
+    {
+        var services = new ServiceCollection();
+        services.AddDbContext<ApplicationDbContext>(options => options
+            .UseSqlServer(connectionString)
+            .AddInterceptors(interceptor));
+        services.AddSingleton<IMinioClient>(GetFixtureMinio());
+        return services.BuildServiceProvider();
+    }
+
     private static CentralArtifactRetentionWorker CreateWorker(
         ServiceProvider services,
         CentralArtifactRetentionTelemetry telemetry,
@@ -1413,6 +1762,90 @@ public sealed class CentralArtifactRetentionIntegrationTests
         }
     }
 
+    private sealed class ThrowBeforeCommitFromInterceptor(int firstCommitNumber, Exception exception)
+        : DbTransactionInterceptor
+    {
+        private int commits;
+        private int throwCount;
+
+        public int ThrowCount => Volatile.Read(ref throwCount);
+
+        public override ValueTask<InterceptionResult> TransactionCommittingAsync(
+            DbTransaction transaction,
+            TransactionEventData eventData,
+            InterceptionResult result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref commits) >= firstCommitNumber)
+            {
+                Interlocked.Increment(ref throwCount);
+                throw exception;
+            }
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private sealed class ThrowMatchingReaderInterceptor(string marker, Exception exception) : DbCommandInterceptor
+    {
+        private int throwCount;
+
+        public int ThrowCount => Volatile.Read(ref throwCount);
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains(marker, StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref throwCount);
+                throw exception;
+            }
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private sealed class CommandShapeInterceptor : DbCommandInterceptor
+    {
+        private readonly ConcurrentQueue<string> commands = new();
+
+        public IReadOnlyCollection<string> Commands => commands.ToArray();
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            commands.Enqueue(command.CommandText);
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private sealed class ReconciliationCandidateObserver : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource legacyCandidateRead =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task LegacyCandidateRead => legacyCandidateRead.Task;
+
+        public override ValueTask<DbDataReader> ReaderExecutedAsync(
+            DbCommand command,
+            CommandExecutedEventData eventData,
+            DbDataReader result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("OperationToken] IS NULL", StringComparison.Ordinal)
+                && command.CommandText.Contains("[UpdatedAtUtc]", StringComparison.Ordinal)
+                && command.CommandText.Contains("ORDER BY", StringComparison.Ordinal))
+            {
+                legacyCandidateRead.TrySetResult();
+            }
+            return ValueTask.FromResult(result);
+        }
+    }
+
 
     private sealed class StatusDeleteHandler(HttpStatusCode statusCode) : HttpMessageHandler
     {
@@ -1460,19 +1893,19 @@ public sealed class CentralArtifactRetentionIntegrationTests
                 RecordMetricTags(tags);
                 if (instrument.Name == "skymonitor.central.retention.recovery")
                 {
-                    string? outcome = null;
-                    foreach (var tag in tags)
-                    {
-                        if (tag.Key == "outcome")
-                        {
-                            outcome = tag.Value?.ToString();
-                            break;
-                        }
-                    }
-                    RecoveryMeasurements.Add(new(value, outcome));
+                    RecoveryMeasurements.Add(new(value, GetTag(tags, "outcome")));
                 }
             });
-            meter.SetMeasurementEventCallback<double>((_, _, tags, _) => RecordMetricTags(tags));
+            meter.SetMeasurementEventCallback<double>((instrument, _, tags, _) =>
+            {
+                RecordMetricTags(tags);
+                if (instrument.Name == "skymonitor.central.retention.stage.duration"
+                    && GetTag(tags, "outcome") == "retry")
+                {
+                    RetryMeasurements.Add(new(
+                        GetTag(tags, "stage"), GetTag(tags, "outcome"), GetTag(tags, "origin")));
+                }
+            });
             meter.Start();
             activities = new ActivityListener
             {
@@ -1494,6 +1927,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         public HashSet<string> MetricTagKeys { get; } = new(StringComparer.Ordinal);
         public HashSet<string> ActivityTagKeys { get; } = new(StringComparer.Ordinal);
         public List<RecoveryMeasurement> RecoveryMeasurements { get; } = [];
+        public List<RetryMeasurement> RetryMeasurements { get; } = [];
         public List<string> Activities { get; } = [];
         public List<RetentionLog> Logs { get; } = [];
         public ILogger<CentralArtifactRetentionProcessor> ProcessorLogger => new CollectingLogger(Logs);
@@ -1512,6 +1946,18 @@ public sealed class CentralArtifactRetentionIntegrationTests
             {
                 MetricTagKeys.Add(tag.Key);
             }
+        }
+
+        private static string? GetTag(ReadOnlySpan<KeyValuePair<string, object?>> tags, string key)
+        {
+            foreach (var tag in tags)
+            {
+                if (tag.Key == key)
+                {
+                    return tag.Value?.ToString();
+                }
+            }
+            return null;
         }
 
         private sealed class CollectingLogger(List<RetentionLog> logs) :
@@ -1537,6 +1983,46 @@ public sealed class CentralArtifactRetentionIntegrationTests
         }
     }
 
+    private sealed class RetentionRetryCollector : IDisposable
+    {
+        private readonly MeterListener meter = new();
+        private readonly ConcurrentQueue<RetryMeasurement> measurements = new();
+
+        public RetentionRetryCollector()
+        {
+            meter.InstrumentPublished = (instrument, listener) =>
+            {
+                if (instrument.Meter.Name == CentralArtifactRetentionTelemetry.MeterName
+                    && instrument.Name == "skymonitor.central.retention.stage.duration")
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            meter.SetMeasurementEventCallback<double>((_, _, tags, _) =>
+            {
+                string? stage = null;
+                string? outcome = null;
+                string? origin = null;
+                foreach (var tag in tags)
+                {
+                    if (tag.Key == "stage") stage = tag.Value?.ToString();
+                    if (tag.Key == "outcome") outcome = tag.Value?.ToString();
+                    if (tag.Key == "origin") origin = tag.Value?.ToString();
+                }
+                if (outcome == "retry")
+                {
+                    measurements.Enqueue(new(stage, outcome, origin));
+                }
+            });
+            meter.Start();
+        }
+
+        public IReadOnlyCollection<RetryMeasurement> Measurements => measurements.ToArray();
+
+        public void Dispose() => meter.Dispose();
+    }
+
     private sealed record RetentionLog(int EventId, string Message, IReadOnlyList<string> FieldNames);
     private sealed record RecoveryMeasurement(long Value, string? Outcome);
+    private sealed record RetryMeasurement(string? Stage, string? Outcome, string? Origin);
 }

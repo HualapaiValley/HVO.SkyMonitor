@@ -59,25 +59,25 @@ internal static class CentralObjectOwnershipFence
         Guid centralArtifactId,
         CancellationToken cancellationToken)
     {
-        var activeArtifactOwner = await db.Database.SqlQuery<int>($"""
-                SELECT TOP(1) CAST(1 AS int) AS [Value]
-                FROM [CentralArtifacts] WITH (INDEX([IX_CentralArtifacts_StorageReference]))
-                WHERE [StorageReference] = {storageReference}
-                  AND [Id] != {centralArtifactId}
-                  AND [ObjectState] != N'Expired'
+        var storageReferenceSha256 = SHA256.HashData(Encoding.Unicode.GetBytes(storageReference));
+        var activeOwner = await db.Database.SqlQuery<int>($"""
+                SELECT TOP(1) [Value]
+                FROM (
+                    SELECT TOP(1) CAST(1 AS int) AS [Value]
+                    FROM [CentralArtifacts] WITH (INDEX([IX_CentralArtifacts_StorageReference]))
+                    WHERE [StorageReference] = {storageReference}
+                      AND [Id] != {centralArtifactId}
+                      AND [ObjectState] != N'Expired'
+                    UNION ALL
+                    SELECT TOP(1) CAST(1 AS int) AS [Value]
+                    FROM [CentralTransientDerivativeOutputIntents]
+                    WHERE [StorageReferenceSha256] = {storageReferenceSha256}
+                      AND [StorageReference] COLLATE Latin1_General_100_BIN2 = {storageReference}
+                      AND [ObjectState] != N'Expired'
+                ) AS [ActiveOwners]
                 """)
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-        if (activeArtifactOwner != 0)
-        {
-            return true;
-        }
-
-        var storageReferenceSha256 = SHA256.HashData(Encoding.Unicode.GetBytes(storageReference));
-        return await db.CentralTransientDerivativeOutputIntents.AsNoTracking().AnyAsync(intent =>
-            EF.Property<byte[]>(intent, "StorageReferenceSha256") == storageReferenceSha256
-            && EF.Functions.Collate(intent.StorageReference, BinaryCollation) == storageReference
-            && intent.ObjectState != CentralArtifactObjectState.Expired,
-            cancellationToken).ConfigureAwait(false);
+        return activeOwner != 0;
     }
 
     public static string CreateObjectKeyIdentity(string objectKey)

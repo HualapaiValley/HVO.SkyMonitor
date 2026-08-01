@@ -94,13 +94,49 @@ internal sealed partial class CentralArtifactRetentionProcessor(
 
         snapshot = await ExecuteSqlDeadlockRetryAsync(
             () => PrepareDeleteAsync(snapshot, cancellationToken),
-            "prepare",
+            "reconcile",
+            origin,
             cancellationToken).ConfigureAwait(false);
         if (snapshot is null)
         {
             telemetry.RecordFinalizationConflict(origin);
             return CentralArtifactRetentionProcessResult.Pending;
         }
+
+        return await DeleteAndFinalizeAsync(snapshot, origin, started, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task<CentralArtifactRetentionProcessResult> ProcessPreparedUnderLockAsync(
+        Guid dispositionId,
+        string origin,
+        CancellationToken cancellationToken)
+    {
+        var started = timeProvider.GetTimestamp();
+        var snapshot = await LoadSnapshotAsync(dispositionId, cancellationToken).ConfigureAwait(false);
+        if (snapshot is null
+            || snapshot.State != CentralObjectRecoveryStates.PendingDelete
+            || snapshot.ArtifactState != CentralArtifactObjectState.Expired
+            || !snapshot.ArtifactRequestedAtUtc.HasValue
+            || snapshot.ArtifactCompletedAtUtc.HasValue
+            || snapshot.DispositionCompletedAtUtc.HasValue
+            || snapshot.AttemptCount != 1
+            || !snapshot.LastAttemptAtUtc.HasValue
+            || snapshot.NextAttemptAtUtc.HasValue)
+        {
+            telemetry.RecordFinalizationConflict(origin);
+            return CentralArtifactRetentionProcessResult.Pending;
+        }
+
+        return await DeleteAndFinalizeAsync(snapshot, origin, started, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<CentralArtifactRetentionProcessResult> DeleteAndFinalizeAsync(
+        RetentionSnapshot snapshot,
+        string origin,
+        long started,
+        CancellationToken cancellationToken)
+    {
+        var activity = Activity.Current;
 
         var deleteStarted = timeProvider.GetTimestamp();
         var deleteOutcome = "deleted";
@@ -151,6 +187,7 @@ internal sealed partial class CentralArtifactRetentionProcessor(
         var finalized = await ExecuteSqlDeadlockRetryAsync(
             () => TryFinalizeAsync(snapshot, origin, cancellationToken),
             "finalize",
+            origin,
             cancellationToken).ConfigureAwait(false);
         var elapsed = timeProvider.GetElapsedTime(started);
         telemetry.RecordOperation(finalized ? deleteOutcome : "conflict", origin, snapshot.ByteLength, elapsed);
@@ -161,10 +198,12 @@ internal sealed partial class CentralArtifactRetentionProcessor(
     private async Task<T> ExecuteSqlDeadlockRetryAsync<T>(
         Func<Task<T>> operation,
         string stage,
+        string origin,
         CancellationToken cancellationToken)
     {
         for (var attempt = 0; ; attempt++)
         {
+            var attemptStarted = timeProvider.GetTimestamp();
             try
             {
                 return await operation().ConfigureAwait(false);
@@ -178,6 +217,7 @@ internal sealed partial class CentralArtifactRetentionProcessor(
                         $"Central artifact retention {stage} exhausted SQL deadlock retries.",
                         exception);
                 }
+                telemetry.RecordStage(stage, "retry", origin, timeProvider.GetElapsedTime(attemptStarted));
                 var delay = TimeSpan.FromMilliseconds(10 * (1 << attempt));
                 await Task.Delay(delay, timeProvider, cancellationToken).ConfigureAwait(false);
             }
@@ -286,32 +326,13 @@ internal sealed partial class CentralArtifactRetentionProcessor(
             _ = await CentralArtifactRetentionLock.AcquireDispositionAsync(
                 dbContext, snapshot.DispositionId, cancellationToken).ConfigureAwait(false);
 
-            var artifact = await dbContext.CentralArtifacts.AsNoTracking().SingleOrDefaultAsync(item =>
-                item.Id == snapshot.CentralArtifactId
-                && item.RetentionDeletionToken == snapshot.OperationToken
-                && item.ObjectState == CentralArtifactObjectState.Expired
-                && item.RetentionDeletionRequestedAtUtc == snapshot.ArtifactRequestedAtUtc
-                && item.RetentionDeletionCompletedAtUtc == null
-                && item.RowVersion == snapshot.ArtifactRowVersion
-                && EF.Functions.Collate(item.StorageReference, CentralObjectOwnershipFence.BinaryCollation)
-                    == CentralObjectOwnershipFence.BucketPrefix + snapshot.ObjectKey,
-                cancellationToken).ConfigureAwait(false);
-            var dispositionExists = await dbContext.CentralObjectRecoveryDispositions.AsNoTracking().AnyAsync(item =>
-                item.Id == snapshot.DispositionId
-                && item.CentralArtifactId == snapshot.CentralArtifactId
-                && item.OperationToken == snapshot.OperationToken
-                && item.State == CentralObjectRecoveryStates.PendingDelete
-                && item.CompletedAtUtc == null
-                && item.AttemptCount == snapshot.AttemptCount
-                && item.LastAttemptAtUtc == snapshot.LastAttemptAtUtc
-                && item.RowVersion == snapshot.DispositionRowVersion
-                && EF.Functions.Collate(item.SourceObjectKey, CentralObjectOwnershipFence.BinaryCollation)
-                    == snapshot.ObjectKey,
-                cancellationToken).ConfigureAwait(false);
-            if (artifact is null || !dispositionExists
+            var valid = await LoadFinalizationSnapshotQuery(snapshot)
+                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            var storageReference = CentralObjectOwnershipFence.BucketPrefix + snapshot.ObjectKey;
+            if (valid is null
                 || await references.IsHeldAsync(snapshot.CentralArtifactId, cancellationToken).ConfigureAwait(false)
                 || await CentralObjectOwnershipFence.HasActiveOwnerAsync(
-                    dbContext, artifact.StorageReference, artifact.Id, cancellationToken).ConfigureAwait(false))
+                    dbContext, storageReference, snapshot.CentralArtifactId, cancellationToken).ConfigureAwait(false))
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 await ScheduleConflictRetryAsync(snapshot).ConfigureAwait(false);
@@ -332,7 +353,7 @@ internal sealed partial class CentralArtifactRetentionProcessor(
                     && item.RetentionDeletionCompletedAtUtc == null
                     && item.RowVersion == snapshot.ArtifactRowVersion
                     && EF.Functions.Collate(item.StorageReference, CentralObjectOwnershipFence.BinaryCollation)
-                        == artifact.StorageReference)
+                        == storageReference)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(item => item.RetentionDeletionCompletedAtUtc, now), cancellationToken)
                 .ConfigureAwait(false);
@@ -480,6 +501,45 @@ internal sealed partial class CentralArtifactRetentionProcessor(
                 disposition.NextAttemptAtUtc,
                 disposition.LastAttemptAtUtc,
                 artifact.RetentionDeletionRequestedAtUtc,
+               artifact.RetentionDeletionCompletedAtUtc,
+               disposition.CompletedAtUtc,
+               disposition.RowVersion,
+               artifact.RowVersion);
+
+    private IQueryable<RetentionSnapshot> LoadFinalizationSnapshotQuery(RetentionSnapshot expected)
+        => from disposition in dbContext.CentralObjectRecoveryDispositions.AsNoTracking()
+           join artifact in dbContext.CentralArtifacts.AsNoTracking()
+               on disposition.CentralArtifactId equals (Guid?)artifact.Id
+           where disposition.Id == expected.DispositionId
+               && disposition.Kind == CentralObjectRecoveryKinds.ExpiredDelete
+               && disposition.CentralArtifactId == expected.CentralArtifactId
+               && disposition.OperationToken == expected.OperationToken
+               && disposition.State == CentralObjectRecoveryStates.PendingDelete
+               && disposition.CompletedAtUtc == null
+               && disposition.AttemptCount == expected.AttemptCount
+               && disposition.LastAttemptAtUtc == expected.LastAttemptAtUtc
+               && disposition.RowVersion == expected.DispositionRowVersion
+               && EF.Functions.Collate(disposition.SourceObjectKey, CentralObjectOwnershipFence.BinaryCollation)
+                   == expected.ObjectKey
+               && artifact.RetentionDeletionToken == expected.OperationToken
+               && artifact.ObjectState == CentralArtifactObjectState.Expired
+               && artifact.RetentionDeletionRequestedAtUtc == expected.ArtifactRequestedAtUtc
+               && artifact.RetentionDeletionCompletedAtUtc == null
+               && artifact.RowVersion == expected.ArtifactRowVersion
+               && EF.Functions.Collate(artifact.StorageReference, CentralObjectOwnershipFence.BinaryCollation)
+                   == CentralObjectOwnershipFence.BucketPrefix + expected.ObjectKey
+           select new RetentionSnapshot(
+               disposition.Id,
+               disposition.CentralArtifactId!.Value,
+               disposition.OperationToken!.Value,
+               disposition.SourceObjectKey,
+               disposition.State,
+               artifact.ObjectState,
+               disposition.ByteLength,
+               disposition.AttemptCount,
+               disposition.NextAttemptAtUtc,
+               disposition.LastAttemptAtUtc,
+               artifact.RetentionDeletionRequestedAtUtc,
                artifact.RetentionDeletionCompletedAtUtc,
                disposition.CompletedAtUtc,
                disposition.RowVersion,
