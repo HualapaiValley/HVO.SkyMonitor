@@ -13,7 +13,9 @@ internal enum TransientCandidateFaultPoint
     BeforeSubmissionCommit,
     AfterSubmissionCommit,
     BeforeAcknowledgementCommit,
-    AfterAcknowledgementCommit
+    AfterAcknowledgementCommit,
+    BeforeReservationValidation,
+    AfterReservationValidation
 }
 
 internal interface ITransientCandidateFaultInjector

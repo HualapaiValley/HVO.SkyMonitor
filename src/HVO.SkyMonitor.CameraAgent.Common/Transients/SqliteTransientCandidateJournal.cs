@@ -1,5 +1,9 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
+using System.Text;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -304,150 +308,75 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         CancellationToken cancellationToken)
     {
         ValidateReservationOwner(reservation);
-        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginImmediate(connection);
         try
         {
             ValidateReservationSources(reservation);
         }
         catch (ArgumentException exception)
         {
-            await QuarantineConflictAsync(
-                connection,
-                transaction,
-                reservation.CandidateId,
-                reservation.EventId,
-                "source-identity-conflict",
-                cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await QuarantineInvalidReservationAsync(reservation, cancellationToken).ConfigureAwait(false);
             throw new TransientCandidateIdentityConflictException(
                 "Transient source identity is invalid and was durably quarantined.",
                 exception);
         }
         var reservationIdentity = ComputeReservationIdentitySha256(reservation);
-        using (var quarantined = connection.CreateCommand())
-        {
-            quarantined.Transaction = transaction;
-            quarantined.CommandText = "SELECT EXISTS(SELECT 1 FROM transient_candidate_conflicts WHERE candidate_id = $candidate);";
-            quarantined.Parameters.AddWithValue("$candidate", reservation.CandidateId.ToString("N"));
-            if (Convert.ToInt64(
-                    await quarantined.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                    System.Globalization.CultureInfo.InvariantCulture) == 1)
-            {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                throw new TransientCandidateIdentityConflictException(
-                    "Transient candidate identity is durably quarantined.");
-            }
-        }
-        var existing = await ReadAsync(
-            connection, transaction, reservation.CandidateId, cancellationToken).ConfigureAwait(false);
-        if (existing is not null)
-        {
-            if (!Matches(existing, reservation) ||
-                !string.Equals(existing.ReservationIdentitySha256, reservationIdentity, StringComparison.Ordinal))
-            {
-                await QuarantineConflictAsync(
-                    connection,
-                    transaction,
-                    reservation.CandidateId,
-                    reservation.EventId,
-                    "candidate-identity-conflict",
-                    cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                throw new TransientCandidateIdentityConflictException(
-                    "Transient candidate identity is already reserved for different immutable facts.");
-            }
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return new TransientCandidateReservationResult(
-                TransientCandidateReservationDisposition.Existing,
-                existing);
-        }
 
-        await ReserveEventAsync(connection, transaction, reservation, cancellationToken).ConfigureAwait(false);
-        IReadOnlyList<SourceRow> sourceRows;
-        try
+        while (true)
         {
-            sourceRows = await ResolveSourcesAsync(
-                connection, transaction, reservation, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (
-            exception is IOException or InvalidDataException or UnauthorizedAccessException or
-                TransientCandidateIdentityConflictException)
-        {
-            await QuarantineConflictAsync(
-                connection,
-                transaction,
-                reservation.CandidateId,
-                reservation.EventId,
-                "source-evidence-invalid",
+            ReservationSnapshot snapshot;
+            try
+            {
+                snapshot = await ReadReservationSnapshotAsync(reservation, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (IsSnapshotDecodeException(exception))
+            {
+                var invalid = await HandleUnreadableSnapshotAsync(
+                    reservation,
+                    reservationIdentity,
+                    exception,
+                    cancellationToken).ConfigureAwait(false);
+                if (invalid.Retry)
+                {
+                    continue;
+                }
+                return invalid.Result!;
+            }
+            _faultInjector.Inject(TransientCandidateFaultPoint.BeforeReservationValidation);
+            IReadOnlyList<SourceRow> sourceRows = [];
+            try
+            {
+                if (snapshot.CandidateFacts.Rows.Count == 0 && snapshot.ConflictFacts.Rows.Count == 0)
+                {
+                    sourceRows = await ValidateReservationSnapshotAsync(
+                        reservation, snapshot.Sources, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (Exception exception) when (IsSourceEvidenceException(exception))
+            {
+                var invalid = await HandleInvalidSourceEvidenceAsync(
+                    reservation,
+                    reservationIdentity,
+                    snapshot,
+                    exception,
+                    cancellationToken).ConfigureAwait(false);
+                if (invalid.Retry)
+                {
+                    continue;
+                }
+                return invalid.Result!;
+            }
+            _faultInjector.Inject(TransientCandidateFaultPoint.AfterReservationValidation);
+            var result = await ReserveValidatedAsync(
+                reservation,
+                reservationIdentity,
+                snapshot,
+                sourceRows,
                 cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            throw;
+            if (!result.Retry)
+            {
+                return result.Result!;
+            }
         }
-        await EnsureCapacityAsync(connection, transaction, sourceRows, cancellationToken).ConfigureAwait(false);
-        var now = _timeProvider.GetUtcNow();
-        using (var candidate = connection.CreateCommand())
-        {
-            candidate.Transaction = transaction;
-            candidate.CommandText = """
-                INSERT INTO transient_candidates(
-                    candidate_id, event_id, agent_id, mode, required, reservation_identity_sha256,
-                    state, phase, source_hold_released, timeout_unix_ms, created_unix_ms, updated_unix_ms)
-                VALUES ($candidate, $event, $agent, $mode, $required, $identity,
-                    'pending', 'reserved', 0, $timeout, $now, $now);
-                """;
-            candidate.Parameters.AddWithValue("$candidate", reservation.CandidateId.ToString("N"));
-            candidate.Parameters.AddWithValue("$event", reservation.EventId.ToString("N"));
-            candidate.Parameters.AddWithValue("$agent", reservation.AgentId);
-            candidate.Parameters.AddWithValue("$mode", WriteMode(_mode));
-            candidate.Parameters.AddWithValue("$required", _required ? 1 : 0);
-            candidate.Parameters.AddWithValue("$identity", reservationIdentity);
-            candidate.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
-            candidate.Parameters.AddWithValue("$timeout", now.AddMinutes(_candidateTimeoutMinutes).ToUnixTimeMilliseconds());
-            await candidate.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        for (var index = 0; index < reservation.Sources.Count; index++)
-        {
-            await InsertSourceAsync(
-                connection,
-                transaction,
-                reservation.CandidateId,
-                index,
-                reservation.Sources[index],
-                sourceRows[index].RawCaptureRowId,
-                cancellationToken).ConfigureAwait(false);
-            await SetRawHoldAsync(
-                connection, transaction, sourceRows[index].RawCaptureRowId, cancellationToken).ConfigureAwait(false);
-        }
-        await CompleteStagedSourcesAsync(connection, transaction, sourceRows, cancellationToken).ConfigureAwait(false);
-        await UpdatePressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-        _faultInjector.Inject(TransientCandidateFaultPoint.BeforeReservationCommit);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        _faultInjector.Inject(TransientCandidateFaultPoint.AfterReservationCommit);
-        var entry = new TransientCandidateJournalEntry(
-            reservation.CandidateId,
-            reservation.EventId,
-            reservation.AgentId,
-            TransientEventState.Pending,
-            now,
-            now,
-            now.AddMinutes(_candidateTimeoutMinutes),
-            [.. reservation.Sources],
-            _mode,
-            _required,
-            TransientCandidateWorkflowPhase.IdentityAllocated,
-            reservationIdentity,
-            null,
-            null,
-            null,
-            null,
-            SourceHoldReleased: false,
-            QuarantineReason: null,
-            Candidate: null,
-            FinalizationReceipt: null,
-            Submission: null,
-            Acknowledgement: null);
-        return new TransientCandidateReservationResult(TransientCandidateReservationDisposition.Created, entry);
     }
 
     public async ValueTask<TransientCandidateJournalEntry?> ReadAsync(
@@ -1033,45 +962,710 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<IReadOnlyList<SourceRow>> ResolveSourcesAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
+    private async Task QuarantineInvalidReservationAsync(
         TransientCandidateReservation reservation,
         CancellationToken cancellationToken)
     {
-        var rows = new List<SourceRow>(reservation.Sources.Count);
-        foreach (var source in reservation.Sources)
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var activity = TransientWorkerTelemetry.ActivitySource.StartActivity(
+            "transient-candidate.reserve.immediate");
+        using var transaction = BeginImmediate(connection);
+        await QuarantineConflictAsync(
+            connection,
+            transaction,
+            reservation.CandidateId,
+            reservation.EventId,
+            "source-identity-conflict",
+            cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.DisposeAsync().ConfigureAwait(false);
+        activity?.Dispose();
+    }
+
+    private async Task<ReservationSnapshot> ReadReservationSnapshotAsync(
+        TransientCandidateReservation reservation,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var activity = TransientWorkerTelemetry.ActivitySource.StartActivity(
+            "transient-candidate.reserve.snapshot");
+        using var transaction = BeginDeferred(connection);
+        var snapshot = await ReadReservationSnapshotAsync(
+            connection, transaction, reservation, includeSources: true, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.DisposeAsync().ConfigureAwait(false);
+        activity?.Dispose();
+        return snapshot;
+    }
+
+    private static async Task<ReservationSnapshot> ReadReservationSnapshotAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        TransientCandidateReservation reservation,
+        bool includeSources,
+        CancellationToken cancellationToken)
+    {
+        var candidate = reservation.CandidateId.ToString("N");
+        var eventId = reservation.EventId.ToString("N");
+        var candidateFacts = await ReadDurableFactsAsync(
+            connection,
+            transaction,
+            """
+            SELECT candidate_id, event_id, agent_id, mode, required, reservation_identity_sha256,
+                   state, phase, candidate_payload, candidate_payload_sha256, finalization_payload,
+                   finalization_receipt_identity_sha256, submission_payload, submission_identity_sha256,
+                   acknowledgement_payload, acknowledgement_payload_sha256, source_hold_released,
+                   quarantine_reason, timeout_unix_ms, created_unix_ms, updated_unix_ms, candidate_state
+            FROM transient_candidates WHERE candidate_id = $identity;
+            """,
+            candidate,
+            cancellationToken).ConfigureAwait(false);
+        var candidateSourceFacts = await ReadDurableFactsAsync(
+            connection,
+            transaction,
+            """
+            SELECT candidate_id, source_ordinal, evidence_id, raw_capture_row_id, source_schema,
+                   locator_schema, locator_kind, artifact_id, artifact_role, artifact_variant,
+                   recipe_identity_sha256, checksum_sha256, observation_started_utc_ticks,
+                   observation_ended_utc_ticks, timing_quality, timing_source, timing_version
+            FROM transient_candidate_sources WHERE candidate_id = $identity
+            ORDER BY source_ordinal;
+            """,
+            candidate,
+            cancellationToken).ConfigureAwait(false);
+        var eventFacts = await ReadDurableFactsAsync(
+            connection,
+            transaction,
+            "SELECT event_id, agent_id, created_unix_ms FROM transient_event_identities WHERE event_id = $identity;",
+            eventId,
+            cancellationToken).ConfigureAwait(false);
+        var conflictFacts = await ReadDurableFactsAsync(
+            connection,
+            transaction,
+            """
+            SELECT conflict_id, candidate_id, event_id, reason, observed_unix_ms
+            FROM transient_candidate_conflicts WHERE candidate_id = $identity ORDER BY conflict_id;
+            """,
+            candidate,
+            cancellationToken).ConfigureAwait(false);
+        var sources = new List<SourceArtifactSnapshot?>(includeSources ? reservation.Sources.Count : 0);
+        if (includeSources)
         {
-            var row = await ValidateCommittedArtifactAsync(
-                connection,
-                transaction,
-                source.Locator.Artifact.ArtifactId,
-                source.Locator.Artifact.ChecksumSha256,
-                expectedManifestSha256: null,
-                cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(row.AgentId, reservation.AgentId, StringComparison.Ordinal))
+            foreach (var source in reservation.Sources)
+            {
+                sources.Add(await ReadSourceArtifactSnapshotAsync(
+                    connection,
+                    transaction,
+                    source.Locator.Artifact.ArtifactId,
+                    cancellationToken).ConfigureAwait(false));
+            }
+        }
+        return new ReservationSnapshot(
+            candidateFacts,
+            candidateSourceFacts,
+            eventFacts,
+            conflictFacts,
+            sources);
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Reservation snapshot queries are private constants and all identities remain parameterized.")]
+    private static async Task<DurableFacts> ReadDurableFactsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string commandText,
+        string identity,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = commandText;
+        command.Parameters.AddWithValue("$identity", identity);
+        var rows = new List<IReadOnlyList<string>>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var row = new string[reader.FieldCount];
+            for (var index = 0; index < row.Length; index++)
+            {
+                row[index] = ReadDurableValue(reader.GetValue(index));
+            }
+            rows.Add(row);
+        }
+        return new DurableFacts(rows);
+    }
+
+    private static string ReadDurableValue(object value) => value switch
+    {
+        DBNull => "null",
+        long integer => $"integer:{integer.ToString(CultureInfo.InvariantCulture)}",
+        double real => $"real:{real.ToString("R", CultureInfo.InvariantCulture)}",
+        string text => $"text:{Convert.ToBase64String(Encoding.UTF8.GetBytes(text))}",
+        byte[] bytes => $"blob:{Convert.ToHexString(bytes)}",
+        _ => throw new InvalidDataException("Transient reservation snapshot contains an unsupported SQLite value.")
+    };
+
+    private static async Task<SourceArtifactSnapshot?> ReadSourceArtifactSnapshotAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT raw_capture_row_id, capture_id, raw_artifact_id, agent_id, capture_sequence,
+                   state, descriptor_sha256, payload_relative_path, sidecar_relative_path,
+                   payload_length, payload_sha256, manifest_sha256, manifest_json
+            FROM raw_captures WHERE raw_artifact_id = $artifact;
+            """;
+        command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        return new SourceArtifactSnapshot(
+            reader.GetInt64(0),
+            ReadSourceText(reader, 1),
+            ReadSourceText(reader, 2),
+            reader.GetString(3),
+            reader.GetInt64(4),
+            reader.GetString(5),
+            reader.GetString(6),
+            reader.GetString(7),
+            reader.GetString(8),
+            reader.GetInt64(9),
+            reader.GetString(10),
+            reader.GetString(11),
+            ((byte[])reader[12]).ToArray());
+    }
+
+    private static string ReadSourceText(SqliteDataReader reader, int ordinal)
+    {
+        if (reader.GetValue(ordinal) is not string value)
+        {
+            throw new InvalidDataException("Transient source snapshot contains a non-text durable identity.");
+        }
+        return value;
+    }
+
+    private async Task<IReadOnlyList<SourceRow>> ValidateReservationSnapshotAsync(
+        TransientCandidateReservation reservation,
+        IReadOnlyList<SourceArtifactSnapshot?> snapshots,
+        CancellationToken cancellationToken)
+    {
+        var rows = new List<SourceRow>(reservation.Sources.Count);
+        for (var index = 0; index < reservation.Sources.Count; index++)
+        {
+            var source = reservation.Sources[index];
+            var snapshot = snapshots[index] ?? throw new InvalidDataException(
+                "Transient source-hold reference does not identify committed raw evidence.");
+            if (!Guid.TryParseExact(snapshot.CaptureId, "N", out var captureId) ||
+                !Guid.TryParseExact(snapshot.RawArtifactId, "N", out var rawArtifactId) ||
+                !string.Equals(snapshot.State, "committed", StringComparison.Ordinal) ||
+                rawArtifactId != source.Locator.Artifact.ArtifactId ||
+                !string.Equals(
+                    snapshot.PayloadSha256,
+                    source.Locator.Artifact.ChecksumSha256,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("Transient source-hold reference conflicts with committed raw evidence.");
+            }
+            var parsed = CaptureContractJson.ParseManifest(snapshot.ManifestJson);
+            var manifest = parsed.Document?.Manifest;
+            if (!parsed.IsValid || manifest is null ||
+                manifest.Descriptor.Capture.CaptureId != captureId ||
+                manifest.Descriptor.Capture.CaptureSequence != snapshot.CaptureSequence ||
+                manifest.Descriptor.Artifact.ArtifactId != rawArtifactId ||
+                manifest.Descriptor.Artifact.Role != FrameArtifactRole.Raw ||
+                !string.Equals(manifest.Descriptor.Capture.AgentId, snapshot.AgentId, StringComparison.Ordinal) ||
+                !string.Equals(
+                    CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor),
+                    snapshot.DescriptorSha256,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    manifest.Descriptor.Artifact.ChecksumSha256,
+                    snapshot.PayloadSha256,
+                    StringComparison.Ordinal) ||
+                !string.Equals(manifest.RelativeArtifactPath, snapshot.PayloadRelativePath, StringComparison.Ordinal) ||
+                !string.Equals(
+                    CaptureContractJson.ComputeManifestSha256(snapshot.ManifestJson),
+                    snapshot.ManifestSha256,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Transient source manifest is invalid or altered.");
+            }
+            var payloadPath = Resolve(snapshot.PayloadRelativePath);
+            var sidecarPath = Resolve(snapshot.SidecarRelativePath);
+            RawIngressFileStore.EnsureNoSymbolicLinks(_root, payloadPath);
+            RawIngressFileStore.EnsureNoSymbolicLinks(_root, sidecarPath);
+            if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
+            {
+                throw new FileNotFoundException("Transient source evidence is no longer physically retained.");
+            }
+            if (new FileInfo(payloadPath).Length != snapshot.PayloadLength)
+            {
+                throw new InvalidDataException("Transient source payload length differs from committed evidence.");
+            }
+            using (var stream = new FileStream(
+                       payloadPath,
+                       FileMode.Open,
+                       FileAccess.Read,
+                       FileShare.Read,
+                       64 * 1024,
+                       FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                var payloadSha256 = Convert.ToHexString(
+                    await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
+                if (!string.Equals(payloadSha256, snapshot.PayloadSha256, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("Transient source payload checksum differs from committed evidence.");
+                }
+            }
+            var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+            if (!sidecar.AsSpan().SequenceEqual(snapshot.ManifestJson) ||
+                !string.Equals(
+                    CaptureContractJson.ComputeManifestSha256(sidecar),
+                    snapshot.ManifestSha256,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Transient source sidecar differs from committed manifest evidence.");
+            }
+            if (!string.Equals(snapshot.AgentId, reservation.AgentId, StringComparison.Ordinal))
             {
                 throw new TransientCandidateIdentityConflictException(
                     "Transient source-hold reference belongs to a different agent.");
             }
-            var descriptor = row.Manifest.Descriptor;
-            var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256;
-            if (descriptor.Artifact.Role != FrameArtifactRole.Raw ||
-                source.Locator.Artifact.Role != FrameArtifactRole.Raw ||
-                !string.Equals(descriptor.Artifact.Variant, source.Locator.Artifact.Variant, StringComparison.Ordinal) ||
+            var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(manifest.Descriptor.Artifact.Recipe).IdentitySha256;
+            if (source.Locator.Artifact.Role != FrameArtifactRole.Raw ||
+                !string.Equals(
+                    manifest.Descriptor.Artifact.Variant,
+                    source.Locator.Artifact.Variant,
+                    StringComparison.Ordinal) ||
                 !string.Equals(
                     recipeIdentity,
                     source.Locator.Artifact.RecipeIdentitySha256,
                     StringComparison.Ordinal) ||
-                source.ObservationStartedUtc != descriptor.Timing.ExposureStartedUtc ||
-                source.ObservationEndedUtc != descriptor.Timing.ExposureEndedUtc)
+                source.ObservationStartedUtc != manifest.Descriptor.Timing.ExposureStartedUtc ||
+                source.ObservationEndedUtc != manifest.Descriptor.Timing.ExposureEndedUtc)
             {
                 throw new TransientCandidateIdentityConflictException(
                     "Transient source-hold reference does not match the retained raw artifact.");
             }
-            rows.Add(row);
+            rows.Add(new SourceRow(snapshot.RawCaptureRowId, snapshot.PayloadLength, snapshot.AgentId, manifest));
         }
         return rows;
+    }
+
+    private async Task<ReservationAttempt> HandleInvalidSourceEvidenceAsync(
+        TransientCandidateReservation reservation,
+        string reservationIdentity,
+        ReservationSnapshot snapshot,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var activity = TransientWorkerTelemetry.ActivitySource.StartActivity(
+            "transient-candidate.reserve.immediate");
+        using var transaction = BeginImmediate(connection);
+        ReservationSnapshot current;
+        try
+        {
+            current = await ReadReservationSnapshotAsync(
+                connection, transaction, reservation, includeSources: true, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception currentException) when (IsSnapshotDecodeException(currentException))
+        {
+            var unreadable = await ClassifyUnreadableCurrentSnapshotAsync(
+                connection,
+                transaction,
+                reservation,
+                reservationIdentity,
+                currentException,
+                cancellationToken).ConfigureAwait(false);
+            return new ReservationAttempt(Retry: false, unreadable);
+        }
+        if (IdentityFactsChangedWithoutAppearance(snapshot, current))
+        {
+            return new ReservationAttempt(Retry: true, Result: null);
+        }
+        var existing = await TryCompleteExistingReservationAsync(
+            connection,
+            transaction,
+            reservation,
+            reservationIdentity,
+            cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return new ReservationAttempt(Retry: false, existing);
+        }
+        if (!ReservationFactsEqual(snapshot, current))
+        {
+            return new ReservationAttempt(Retry: true, Result: null);
+        }
+        await ReserveEventAsync(connection, transaction, reservation, cancellationToken).ConfigureAwait(false);
+        await QuarantineConflictAsync(
+            connection,
+            transaction,
+            reservation.CandidateId,
+            reservation.EventId,
+            "source-evidence-invalid",
+            cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.DisposeAsync().ConfigureAwait(false);
+        activity?.Dispose();
+        ExceptionDispatchInfo.Capture(exception).Throw();
+        throw new UnreachableException();
+    }
+
+    private async Task<ReservationAttempt> HandleUnreadableSnapshotAsync(
+        TransientCandidateReservation reservation,
+        string reservationIdentity,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var activity = TransientWorkerTelemetry.ActivitySource.StartActivity(
+            "transient-candidate.reserve.immediate");
+        using var transaction = BeginImmediate(connection);
+        var existing = await TryCompleteExistingReservationAsync(
+            connection,
+            transaction,
+            reservation,
+            reservationIdentity,
+            cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return new ReservationAttempt(Retry: false, existing);
+        }
+        try
+        {
+            foreach (var source in reservation.Sources)
+            {
+                _ = await ReadSourceArtifactSnapshotAsync(
+                    connection,
+                    transaction,
+                    source.Locator.Artifact.ArtifactId,
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception current) when (IsSnapshotDecodeException(current))
+        {
+            await ReserveEventAsync(connection, transaction, reservation, cancellationToken).ConfigureAwait(false);
+            await QuarantineConflictAsync(
+                connection,
+                transaction,
+                reservation.CandidateId,
+                reservation.EventId,
+                "source-evidence-invalid",
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.DisposeAsync().ConfigureAwait(false);
+            activity?.Dispose();
+            throw new InvalidDataException(
+                "Transient source durable evidence has an unsupported storage format.",
+                exception);
+        }
+        return new ReservationAttempt(Retry: true, Result: null);
+    }
+
+    private async Task<ReservationAttempt> ReserveValidatedAsync(
+        TransientCandidateReservation reservation,
+        string reservationIdentity,
+        ReservationSnapshot snapshot,
+        IReadOnlyList<SourceRow> sourceRows,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var activity = TransientWorkerTelemetry.ActivitySource.StartActivity(
+            "transient-candidate.reserve.immediate");
+        using var transaction = BeginImmediate(connection);
+        ReservationSnapshot current;
+        try
+        {
+            current = await ReadReservationSnapshotAsync(
+                connection, transaction, reservation, includeSources: true, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsSnapshotDecodeException(exception))
+        {
+            var unreadable = await ClassifyUnreadableCurrentSnapshotAsync(
+                connection,
+                transaction,
+                reservation,
+                reservationIdentity,
+                exception,
+                cancellationToken).ConfigureAwait(false);
+            return new ReservationAttempt(Retry: false, unreadable);
+        }
+        if (IdentityFactsChangedWithoutAppearance(snapshot, current))
+        {
+            return new ReservationAttempt(Retry: true, Result: null);
+        }
+        var existing = await TryCompleteExistingReservationAsync(
+            connection,
+            transaction,
+            reservation,
+            reservationIdentity,
+            cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return new ReservationAttempt(Retry: false, existing);
+        }
+        if (!ReservationFactsEqual(snapshot, current))
+        {
+            return new ReservationAttempt(Retry: true, Result: null);
+        }
+
+        await ReserveEventAsync(connection, transaction, reservation, cancellationToken).ConfigureAwait(false);
+        await EnsureCapacityAsync(connection, transaction, sourceRows, cancellationToken).ConfigureAwait(false);
+        var now = _timeProvider.GetUtcNow();
+        using (var candidate = connection.CreateCommand())
+        {
+            candidate.Transaction = transaction;
+            candidate.CommandText = """
+                INSERT INTO transient_candidates(
+                    candidate_id, event_id, agent_id, mode, required, reservation_identity_sha256,
+                    state, phase, source_hold_released, timeout_unix_ms, created_unix_ms, updated_unix_ms)
+                VALUES ($candidate, $event, $agent, $mode, $required, $identity,
+                    'pending', 'reserved', 0, $timeout, $now, $now);
+                """;
+            candidate.Parameters.AddWithValue("$candidate", reservation.CandidateId.ToString("N"));
+            candidate.Parameters.AddWithValue("$event", reservation.EventId.ToString("N"));
+            candidate.Parameters.AddWithValue("$agent", reservation.AgentId);
+            candidate.Parameters.AddWithValue("$mode", WriteMode(_mode));
+            candidate.Parameters.AddWithValue("$required", _required ? 1 : 0);
+            candidate.Parameters.AddWithValue("$identity", reservationIdentity);
+            candidate.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
+            candidate.Parameters.AddWithValue("$timeout", now.AddMinutes(_candidateTimeoutMinutes).ToUnixTimeMilliseconds());
+            await candidate.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        for (var index = 0; index < reservation.Sources.Count; index++)
+        {
+            await InsertSourceAsync(
+                connection,
+                transaction,
+                reservation.CandidateId,
+                index,
+                reservation.Sources[index],
+                sourceRows[index].RawCaptureRowId,
+                cancellationToken).ConfigureAwait(false);
+            await SetRawHoldAsync(
+                connection, transaction, sourceRows[index].RawCaptureRowId, cancellationToken).ConfigureAwait(false);
+        }
+        await CompleteStagedSourcesAsync(connection, transaction, sourceRows, cancellationToken).ConfigureAwait(false);
+        await UpdatePressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        _faultInjector.Inject(TransientCandidateFaultPoint.BeforeReservationCommit);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.DisposeAsync().ConfigureAwait(false);
+        activity?.Dispose();
+        _faultInjector.Inject(TransientCandidateFaultPoint.AfterReservationCommit);
+        var entry = new TransientCandidateJournalEntry(
+            reservation.CandidateId,
+            reservation.EventId,
+            reservation.AgentId,
+            TransientEventState.Pending,
+            now,
+            now,
+            now.AddMinutes(_candidateTimeoutMinutes),
+            [.. reservation.Sources],
+            _mode,
+            _required,
+            TransientCandidateWorkflowPhase.IdentityAllocated,
+            reservationIdentity,
+            null,
+            null,
+            null,
+            null,
+            SourceHoldReleased: false,
+            QuarantineReason: null,
+            Candidate: null,
+            FinalizationReceipt: null,
+            Submission: null,
+            Acknowledgement: null);
+        return new ReservationAttempt(
+            Retry: false,
+            new TransientCandidateReservationResult(TransientCandidateReservationDisposition.Created, entry));
+    }
+
+    private async Task<TransientCandidateReservationResult> ClassifyUnreadableCurrentSnapshotAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        TransientCandidateReservation reservation,
+        string reservationIdentity,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        var existing = await TryCompleteExistingReservationAsync(
+            connection,
+            transaction,
+            reservation,
+            reservationIdentity,
+            cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return existing;
+        }
+        await ReserveEventAsync(connection, transaction, reservation, cancellationToken).ConfigureAwait(false);
+        await QuarantineConflictAsync(
+            connection,
+            transaction,
+            reservation.CandidateId,
+            reservation.EventId,
+            "source-evidence-invalid",
+            cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        throw new InvalidDataException(
+            "Transient source durable evidence has an unsupported storage format.",
+            exception);
+    }
+
+    private async Task<TransientCandidateReservationResult?> TryCompleteExistingReservationAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        TransientCandidateReservation reservation,
+        string reservationIdentity,
+        CancellationToken cancellationToken)
+    {
+        using (var quarantined = connection.CreateCommand())
+        {
+            quarantined.Transaction = transaction;
+            quarantined.CommandText = "SELECT EXISTS(SELECT 1 FROM transient_candidate_conflicts WHERE candidate_id = $candidate);";
+            quarantined.Parameters.AddWithValue("$candidate", reservation.CandidateId.ToString("N"));
+            if (Convert.ToInt64(
+                    await quarantined.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                    CultureInfo.InvariantCulture) == 1)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                throw new TransientCandidateIdentityConflictException(
+                    "Transient candidate identity is durably quarantined.");
+            }
+        }
+        var existing = await ReadAsync(
+            connection, transaction, reservation.CandidateId, cancellationToken).ConfigureAwait(false);
+        if (existing is null)
+        {
+            return null;
+        }
+        if (!Matches(existing, reservation) ||
+            !string.Equals(existing.ReservationIdentitySha256, reservationIdentity, StringComparison.Ordinal) ||
+            !await CandidateSourceBindingsMatchAsync(
+                connection, transaction, reservation.CandidateId, cancellationToken).ConfigureAwait(false))
+        {
+            await QuarantineConflictAsync(
+                connection,
+                transaction,
+                reservation.CandidateId,
+                reservation.EventId,
+                "candidate-identity-conflict",
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            throw new TransientCandidateIdentityConflictException(
+                "Transient candidate identity is already reserved for different immutable facts.");
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new TransientCandidateReservationResult(
+            TransientCandidateReservationDisposition.Existing,
+            existing);
+    }
+
+    private static async Task<bool> CandidateSourceBindingsMatchAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid candidateId,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT NOT EXISTS(
+                SELECT 1
+                FROM transient_candidate_sources s
+                JOIN transient_candidates c ON c.candidate_id = s.candidate_id
+                LEFT JOIN raw_captures r ON r.raw_capture_row_id = s.raw_capture_row_id
+                WHERE s.candidate_id = $candidate
+                  AND (r.raw_capture_row_id IS NULL OR r.raw_artifact_id != s.artifact_id
+                       OR r.payload_sha256 != s.checksum_sha256 OR r.agent_id != c.agent_id
+                       OR r.state != 'committed'));
+            """;
+        command.Parameters.AddWithValue("$candidate", candidateId.ToString("N"));
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            CultureInfo.InvariantCulture) == 1;
+    }
+
+    private static bool IsSourceEvidenceException(Exception exception)
+        => exception is IOException or InvalidDataException or UnauthorizedAccessException or
+            TransientCandidateIdentityConflictException;
+
+    private static bool IsSnapshotDecodeException(Exception exception)
+        => exception is InvalidDataException or InvalidCastException or FormatException or OverflowException;
+
+    private static bool ReservationFactsEqual(ReservationSnapshot left, ReservationSnapshot right)
+        => DurableFactsEqual(left.CandidateFacts, right.CandidateFacts) &&
+           DurableFactsEqual(left.CandidateSourceFacts, right.CandidateSourceFacts) &&
+           DurableFactsEqual(left.EventFacts, right.EventFacts) &&
+           DurableFactsEqual(left.ConflictFacts, right.ConflictFacts) &&
+           SourceSnapshotsEqual(left.Sources, right.Sources);
+
+    private static bool IdentityFactsChangedWithoutAppearance(
+        ReservationSnapshot snapshot,
+        ReservationSnapshot current)
+    {
+        var changed = !DurableFactsEqual(snapshot.CandidateFacts, current.CandidateFacts) ||
+                      !DurableFactsEqual(snapshot.CandidateSourceFacts, current.CandidateSourceFacts) ||
+                      !DurableFactsEqual(snapshot.EventFacts, current.EventFacts) ||
+                      !DurableFactsEqual(snapshot.ConflictFacts, current.ConflictFacts);
+        if (!changed)
+        {
+            return false;
+        }
+        var candidateAppeared = snapshot.CandidateFacts.Rows.Count == 0 && current.CandidateFacts.Rows.Count > 0;
+        var conflictAppeared = snapshot.ConflictFacts.Rows.Count == 0 && current.ConflictFacts.Rows.Count > 0;
+        return !candidateAppeared && !conflictAppeared;
+    }
+
+    private static bool DurableFactsEqual(DurableFacts left, DurableFacts right)
+        => left.Rows.Count == right.Rows.Count && left.Rows.Zip(right.Rows).All(
+            static rows => rows.First.SequenceEqual(rows.Second, StringComparer.Ordinal));
+
+    private static bool SourceSnapshotsEqual(
+        IReadOnlyList<SourceArtifactSnapshot?> left,
+        IReadOnlyList<SourceArtifactSnapshot?> right)
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+        for (var index = 0; index < left.Count; index++)
+        {
+            var first = left[index];
+            var second = right[index];
+            if (first is null || second is null)
+            {
+                if (first is not null || second is not null)
+                {
+                    return false;
+                }
+                continue;
+            }
+            if (first.RawCaptureRowId != second.RawCaptureRowId ||
+                first.CaptureSequence != second.CaptureSequence ||
+                first.PayloadLength != second.PayloadLength ||
+                !string.Equals(first.CaptureId, second.CaptureId, StringComparison.Ordinal) ||
+                !string.Equals(first.RawArtifactId, second.RawArtifactId, StringComparison.Ordinal) ||
+                !string.Equals(first.AgentId, second.AgentId, StringComparison.Ordinal) ||
+                !string.Equals(first.State, second.State, StringComparison.Ordinal) ||
+                !string.Equals(first.DescriptorSha256, second.DescriptorSha256, StringComparison.Ordinal) ||
+                !string.Equals(first.PayloadRelativePath, second.PayloadRelativePath, StringComparison.Ordinal) ||
+                !string.Equals(first.SidecarRelativePath, second.SidecarRelativePath, StringComparison.Ordinal) ||
+                !string.Equals(first.PayloadSha256, second.PayloadSha256, StringComparison.Ordinal) ||
+                !string.Equals(first.ManifestSha256, second.ManifestSha256, StringComparison.Ordinal) ||
+                !first.ManifestJson.AsSpan().SequenceEqual(second.ManifestJson))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private async Task<SourceRow> ValidateCommittedArtifactAsync(
@@ -1938,6 +2532,41 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         return connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
     }
+
+    private static SqliteTransaction BeginDeferred(SqliteConnection connection)
+    {
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes deferred transactions only through the synchronous overload.
+        return connection.BeginTransaction(deferred: true);
+#pragma warning restore CA1849
+    }
+
+    private sealed record ReservationAttempt(
+        bool Retry,
+        TransientCandidateReservationResult? Result);
+
+    private sealed record ReservationSnapshot(
+        DurableFacts CandidateFacts,
+        DurableFacts CandidateSourceFacts,
+        DurableFacts EventFacts,
+        DurableFacts ConflictFacts,
+        IReadOnlyList<SourceArtifactSnapshot?> Sources);
+
+    private sealed record DurableFacts(IReadOnlyList<IReadOnlyList<string>> Rows);
+
+    private sealed record SourceArtifactSnapshot(
+        long RawCaptureRowId,
+        string CaptureId,
+        string RawArtifactId,
+        string AgentId,
+        long CaptureSequence,
+        string State,
+        string DescriptorSha256,
+        string PayloadRelativePath,
+        string SidecarRelativePath,
+        long PayloadLength,
+        string PayloadSha256,
+        string ManifestSha256,
+        byte[] ManifestJson);
 
     private sealed record SourceRow(
         long RawCaptureRowId,

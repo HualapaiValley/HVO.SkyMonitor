@@ -1,6 +1,6 @@
 # Database Critical Sections And Access Plans: Issue 243
 
-This document is the current-head inventory and disposition record for issue
+This document is the historical-baseline and current-head inventory and disposition record for issue
 [#243](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/243). It records
 facts before tuning. Accepted production changes remain in focused child issues
 with equivalent baseline/after evidence.
@@ -42,7 +42,7 @@ dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnas
 HVO_EVIDENCE_REVISION="$(git rev-parse HEAD)" \
 dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
   --no-build --configuration Release \
-  --filter "FullyQualifiedName~Issue243SqliteCriticalSectionEvidenceTests.CandidateReservation_BlocksUnrelatedWriterWhilePhysicalEvidenceReadIsPaused"
+  --filter "FullyQualifiedName~Issue243SqliteCriticalSectionEvidenceTests.CandidateReservation_AllowsUnrelatedWriterWhilePhysicalEvidenceReadIsPaused"
 
 HVO_EVIDENCE_REVISION="$(git rev-parse HEAD)" \
 dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj \
@@ -97,7 +97,7 @@ Confirmed cross-store transaction boundaries:
 | `CentralArtifactRetentionService.ReleaseAsync` | Object session lock, serializable SQL transaction and incompatible artifact lock while MinIO DELETE runs | Confirmed structural coupling; candidate blocker pending #246 baseline |
 | `CentralTransientPayloadReleaseService.ReleaseItemAsync` | Object session lock and serializable transaction while MinIO DELETE runs | Evidence required; separate transient release child if accepted |
 | `CentralTransientSubmissionService.SubmitAsync` | Serializable transaction/application/artifact locks while MinIO generation HEAD checks run | Evidence required; no correction accepted yet |
-| `SqliteTransientCandidateJournal.ReserveAsync` | Raw lifecycle lock and immediate writer reservation while manifests, paths, lengths, payload SHA-256 and sidecars are validated | Confirmed structural coupling; candidate blocker pending #247 scaled baseline |
+| `SqliteTransientCandidateJournal.ReserveAsync` | Raw lifecycle lock across a deferred durable snapshot, transaction-free physical validation and a short exactly revalidated immediate transaction | Corrected by #247; historical blocking and corrected writer-freedom observations are distinguished below |
 | `SqliteCaptureLaneStore.ClaimAsync` | Raw lifecycle lock and immediate writer reservation while manifest/context parsing and filesystem existence checks run | Measure separately; no hashing occurs, so it is not combined with candidate reservation by default |
 
 ## 4. Current-Head Critical-Section Evidence
@@ -140,7 +140,9 @@ and restart reconciliation. It is not combined with deletion protocol #246.
 
 ### SQLite transient reservation
 
-The production candidate reservation validated five immutable sources. Its last
+#### Historical issue #243 baseline
+
+The original production candidate reservation validated five immutable sources. Its last
 sidecar was replaced by a Linux FIFO carrying the exact committed bytes, which
 paused physical validation for two seconds after the immediate transaction had
 started. An unrelated `raw_captures` writer:
@@ -150,14 +152,35 @@ started. An unrelated `raw_captures` writer:
 - applied an observable sentinel row mutation after release;
 - followed one successful candidate reservation with five ordered source rows.
 
-This deterministic mechanism probe proves physical evidence latency occupies the
+This preserved v1 deterministic mechanism probe proves that historical physical evidence latency occupied the
 only WAL writer. It is not the declared W2/W3P, four-writer or multi-trial
 performance workload, so its timings are descriptive and no percentile or
-capacity claim is made. #247 must collect that scaled baseline before changing
-production code. The correction must keep the lifecycle fence, read an immutable
-snapshot without a writer reservation, validate/hash outside the transaction,
-then re-read and compare every identity, state, path, length, checksum and
-version inside a short immediate transaction before applying holds and state.
+capacity claim is made. It remains evidence about the pre-#247 implementation;
+it is not relabeled as a current-head result.
+
+#### Corrected current-head v2 probe and #247 baseline
+
+The renamed v2 probe
+`CandidateReservation_AllowsUnrelatedWriterWhilePhysicalEvidenceReadIsPaused`
+uses the same five-source FIFO boundary but asserts corrected current behavior:
+the unrelated production-shaped writer updates exactly one row within 250 ms
+while physical validation remains blocked, the reservation then commits exactly
+one candidate and five ordered sources, and the sentinel state is durable. Its
+evidence schema is `hvo-issue-243-sqlite-critical-section-v2`; it supplements
+rather than overwrites the historical v1 observation.
+
+Issue [#247](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/247#issuecomment-5150429093)
+has a reviewed replacement baseline for the scaled W2/W3M/W3P, four-writer and
+separate FIFO-barrier workload. The replacement checkpoint is rooted at harness
+source `68b61f838eb180ad2b4d911425329ec5c7231248`.
+The reviewed baseline directory is
+`TestResults/issue-247/68b61f838eb180ad2b4d911425329ec5c7231248/aggregate-baseline/`;
+its summary SHA-256 is
+`73407FEB40C8C1DFCA8A1A3EFA9F06992779D56A026373DEB547B7243643973D`
+and manifest SHA-256 is
+`114559BC45B308D536ADBC22E1E11A128F0C77DA0615C9A6A6C1776CD2E36EB0`.
+The baseline is complete; only corrected-head after comparison remains evidence
+work for #247.
 
 ### Deployment-location reconciliation
 
@@ -357,9 +380,10 @@ busy/locked duration, cadence blocking and context size; do not combine it with
 1. Candidate rollout blocker: [#246](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/246)
    must baseline a durable-state/crash-reconciliation design that shortens the
    artifact-retention SQL/MinIO DELETE critical section.
-2. Candidate rollout blocker: [#247](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/247)
-   must run the declared W2/W3P writer workload before accepting a shorter
-   transient-candidate SQLite/file validation writer reservation.
+2. Candidate rollout blocker correction: [#247](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/247)
+   has the reviewed declared W2/W3M/W3P baseline and implements the shorter
+   transient-candidate reservation; corrected-head after comparison remains the
+   outstanding performance proof.
 3. Rollout-blocking investigation: [#248](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/248)
    must collect the real-scheduler multi-trial baseline and actual plan before it
    may commit authority separately from bounded, durable, restart-safe capture
