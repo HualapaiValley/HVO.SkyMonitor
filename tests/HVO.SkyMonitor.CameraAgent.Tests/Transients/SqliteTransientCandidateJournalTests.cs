@@ -329,6 +329,22 @@ public sealed class SqliteTransientCandidateJournalTests
     }
 
     [TestMethod]
+    public async Task ReserveAsync_ChecksumCasingDifferenceRemainsIdempotent()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
+        var reservation = Fixture.CreateReservation(source);
+
+        var created = await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
+        await fixture.ExecuteAsync("UPDATE raw_captures SET payload_sha256 = lower(payload_sha256);").ConfigureAwait(false);
+        var duplicate = await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(TransientCandidateReservationDisposition.Created, created.Disposition);
+        Assert.AreEqual(TransientCandidateReservationDisposition.Existing, duplicate.Disposition);
+        Assert.AreEqual(0L, await fixture.ScalarLongAsync("SELECT COUNT(*) FROM transient_candidate_conflicts;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
     [DataRow(TransientOperatingMode.Off)]
     [DataRow(TransientOperatingMode.Central)]
     public async Task DisabledEdgeModes_RejectReservationAndRegisterNoLane(TransientOperatingMode mode)

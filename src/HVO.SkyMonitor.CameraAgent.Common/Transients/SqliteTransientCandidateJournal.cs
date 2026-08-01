@@ -1584,7 +1584,8 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
                 LEFT JOIN raw_captures r ON r.raw_capture_row_id = s.raw_capture_row_id
                 WHERE s.candidate_id = $candidate
                   AND (r.raw_capture_row_id IS NULL OR r.raw_artifact_id != s.artifact_id
-                       OR r.payload_sha256 != s.checksum_sha256 OR r.agent_id != c.agent_id
+                       OR r.payload_sha256 COLLATE NOCASE != s.checksum_sha256 COLLATE NOCASE
+                       OR r.agent_id != c.agent_id
                        OR r.state != 'committed'));
             """;
         command.Parameters.AddWithValue("$candidate", candidateId.ToString("N"));
