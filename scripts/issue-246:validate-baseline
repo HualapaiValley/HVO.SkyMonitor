@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+  echo "Usage: ./scripts/issue-246:validate-baseline <baseline-five-trial-summary.json> <baseline-five-trial-manifest.json>" >&2
+  exit 2
+fi
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec dotnet run \
+  --project "$script_dir/issue-246-baseline/HVO.SkyMonitor.Issue246BaselineValidator.csproj" \
+  --configuration Release \
+  -- "$@"

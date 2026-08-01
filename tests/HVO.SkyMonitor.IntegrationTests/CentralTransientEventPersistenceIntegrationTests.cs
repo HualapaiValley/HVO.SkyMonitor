@@ -1712,7 +1712,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             await using var appendContext = CreateContext(setup.ConnectionString);
             await using var releaseContext = CreateContext(setup.ConnectionString);
             var appendService = new CentralTransientEventPersistence(appendContext);
-            using var telemetry = new CentralArtifactRetrievalTelemetry();
+            using var telemetry = new CentralArtifactRetentionTelemetry();
             var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
             if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-artifacts"))
                     .ConfigureAwait(false))
@@ -1720,12 +1720,21 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-artifacts"))
                     .ConfigureAwait(false);
             }
-            var releaseService = new CentralArtifactRetentionService(
+            var retentionReferences = new CentralArtifactRetentionReferences(releaseContext);
+            var retentionProcessor = new CentralArtifactRetentionProcessor(
                 releaseContext,
-                new CentralArtifactRetentionReferences(releaseContext),
+                retentionReferences,
                 minio,
                 TimeProvider.System,
-                telemetry);
+                telemetry,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<CentralArtifactRetentionProcessor>.Instance);
+            var releaseService = new CentralArtifactRetentionService(
+                releaseContext,
+                retentionReferences,
+                retentionProcessor,
+                TimeProvider.System,
+                telemetry,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<CentralArtifactRetentionService>.Instance);
             var target = seeded.Artifacts.Single(item =>
                 item.ArtifactId == fixture.Extraction.OrderedSources[0].Source.Locator.Artifact.ArtifactId);
             (await setup.Context.CentralDerivativeJobs.AsNoTracking()

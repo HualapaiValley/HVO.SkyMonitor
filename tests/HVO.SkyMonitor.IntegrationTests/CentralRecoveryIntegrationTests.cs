@@ -8,6 +8,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -60,8 +61,50 @@ public sealed class CentralRecoveryIntegrationTests
                 }
             }
             await db.CentralObjectRecoveryDispositions.ExecuteDeleteAsync().ConfigureAwait(false);
-            await db.CentralDerivativeJobs.Where(item => item.SourceArtifact!.Frame!.AgentId == agentMarker)
-                .ExecuteDeleteAsync().ConfigureAwait(false);
+            var derivativeJobIds = db.CentralDerivativeJobs
+                .Where(item => item.SourceArtifact!.Frame!.AgentId == agentMarker)
+                .Select(item => item.Id);
+            var eventIds = db.CentralTransientEvents.Where(item => item.AgentId == agentMarker).Select(item => item.Id);
+            await using (var transaction = await db.Database.BeginTransactionAsync().ConfigureAwait(false))
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "DISABLE TRIGGER [TR_CentralTransientDerivativeOutputIntents_TerminalImmutable] ON [CentralTransientDerivativeOutputIntents]")
+                    .ConfigureAwait(false);
+                await db.Database.ExecuteSqlRawAsync(
+                    "DISABLE TRIGGER [TR_CentralTransientDerivativeJobs_CommittedImmutable] ON [CentralTransientDerivativeJobs]")
+                    .ConfigureAwait(false);
+                await db.Database.ExecuteSqlRawAsync(
+                    "DISABLE TRIGGER [TR_CentralTransientEventVersions_Immutable] ON [CentralTransientEventVersions]")
+                    .ConfigureAwait(false);
+                await db.Database.ExecuteSqlRawAsync(
+                    "DISABLE TRIGGER [TR_CentralTransientEvents_Immutable] ON [CentralTransientEvents]")
+                    .ConfigureAwait(false);
+                await db.CentralTransientDerivativeOutputIntents
+                    .Where(item => derivativeJobIds.Contains(item.CentralDerivativeJobId))
+                    .ExecuteDeleteAsync().ConfigureAwait(false);
+                await db.CentralTransientDerivativeJobs
+                    .Where(item => derivativeJobIds.Contains(item.CentralDerivativeJobId))
+                    .ExecuteDeleteAsync().ConfigureAwait(false);
+                await db.CentralDerivativeJobs.Where(item => derivativeJobIds.Contains(item.Id))
+                    .ExecuteDeleteAsync().ConfigureAwait(false);
+                await db.CentralTransientEventVersions.Where(item => eventIds.Contains(item.CentralTransientEventId))
+                    .ExecuteDeleteAsync().ConfigureAwait(false);
+                await db.CentralTransientEvents.Where(item => eventIds.Contains(item.Id)).ExecuteDeleteAsync()
+                    .ConfigureAwait(false);
+                await db.Database.ExecuteSqlRawAsync(
+                    "ENABLE TRIGGER [TR_CentralTransientEvents_Immutable] ON [CentralTransientEvents]")
+                    .ConfigureAwait(false);
+                await db.Database.ExecuteSqlRawAsync(
+                    "ENABLE TRIGGER [TR_CentralTransientEventVersions_Immutable] ON [CentralTransientEventVersions]")
+                    .ConfigureAwait(false);
+                await db.Database.ExecuteSqlRawAsync(
+                    "ENABLE TRIGGER [TR_CentralTransientDerivativeJobs_CommittedImmutable] ON [CentralTransientDerivativeJobs]")
+                    .ConfigureAwait(false);
+                await db.Database.ExecuteSqlRawAsync(
+                    "ENABLE TRIGGER [TR_CentralTransientDerivativeOutputIntents_TerminalImmutable] ON [CentralTransientDerivativeOutputIntents]")
+                    .ConfigureAwait(false);
+                await transaction.CommitAsync().ConfigureAwait(false);
+            }
             await db.CentralFrames.Where(frame => frame.AgentId == agentMarker).ExecuteDeleteAsync().ConfigureAwait(false);
             var registrationIds = await db.DeviceRegistrations.Where(item => item.DeviceId == agentMarker)
                 .Select(item => item.Id).ToListAsync().ConfigureAwait(false);
@@ -396,8 +439,191 @@ public sealed class CentralRecoveryIntegrationTests
         (await ReadDispositionAsync(key).ConfigureAwait(false)).Kind.Should().Be(CentralObjectRecoveryKinds.ExpiredDelete);
         await RunFreshCycleAsync().ConfigureAwait(false);
 
+        var adopted = await ReadDispositionAsync(key).ConfigureAwait(false);
+        adopted.OperationToken.Should().NotBeNull();
+        adopted.CentralArtifactId.Should().NotBeNull();
+        adopted.State.Should().Be(CentralObjectRecoveryStates.PendingDelete);
+        (await ObjectExistsAsync(key).ConfigureAwait(false)).Should().BeTrue(
+            "legacy recovery adopts durable retention state before performing object I/O");
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            (await scope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionProcessor>()
+                .ProcessAsync(adopted.Id, "worker", CancellationToken.None).ConfigureAwait(false))
+                .Should().Be(CentralArtifactRetentionProcessResult.Released);
+        }
+
         (await ObjectExistsAsync(key).ConfigureAwait(false)).Should().BeFalse();
         (await ReadDispositionAsync(key).ConfigureAwait(false)).State.Should().Be(CentralObjectRecoveryStates.Completed);
+    }
+
+    [TestMethod]
+    public async Task CompletedTokenizedTombstone_ReappearedBytesReopenAndDeleteWithSameToken()
+    {
+        var key = $"artifacts/51/{Guid.NewGuid():N}.bin";
+        byte[] payload = [5, 1, 5, 1];
+        var artifactId = await AddArtifactAsync(
+            key, payload, CentralArtifactObjectState.Available, CentralReconstructionState.Complete)
+            .ConfigureAwait(false);
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            (await scope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionService>()
+                .ReleaseAsync(artifactId, CancellationToken.None).ConfigureAwait(false))
+                .Should().Be(CentralArtifactRetentionResult.Released);
+        }
+        var completed = await ReadDispositionAsync(key).ConfigureAwait(false);
+        completed.OperationToken.Should().NotBeNull();
+        completed.State.Should().Be(CentralObjectRecoveryStates.Completed);
+        await PutObjectAsync(key, payload).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: 0x51).ConfigureAwait(false);
+
+        await RunFreshCycleAsync().ConfigureAwait(false);
+
+        var reopened = await ReadDispositionAsync(key).ConfigureAwait(false);
+        reopened.Id.Should().Be(completed.Id);
+        reopened.OperationToken.Should().Be(completed.OperationToken);
+        reopened.State.Should().Be(CentralObjectRecoveryStates.PendingDelete);
+        reopened.CompletedAtUtc.Should().BeNull();
+        var reopenedArtifact = await ReadArtifactAsync(artifactId).ConfigureAwait(false);
+        reopenedArtifact.RetentionDeletionToken.Should().Be(completed.OperationToken);
+        reopenedArtifact.RetentionDeletionCompletedAtUtc.Should().BeNull();
+        (await ObjectExistsAsync(key).ConfigureAwait(false)).Should().BeTrue();
+
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            (await scope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionProcessor>()
+                .ProcessAsync(reopened.Id, "worker", CancellationToken.None).ConfigureAwait(false))
+                .Should().Be(CentralArtifactRetentionProcessResult.Released);
+        }
+        (await ObjectExistsAsync(key).ConfigureAwait(false)).Should().BeFalse();
+        var finalized = await ReadDispositionAsync(key).ConfigureAwait(false);
+        finalized.Id.Should().Be(completed.Id);
+        finalized.OperationToken.Should().Be(completed.OperationToken);
+        finalized.State.Should().Be(CentralObjectRecoveryStates.Completed);
+        finalized.AttemptCount.Should().BeGreaterThan(completed.AttemptCount);
+    }
+
+    [TestMethod]
+    public async Task ExpiredTransientIntentOnlyOwner_DeletesLegacyObjectWithoutReopenLoop()
+    {
+        var sourceId = await AddArtifactAsync(
+            $"artifacts/52/{Guid.NewGuid():N}-source.bin",
+            [5, 2],
+            CentralArtifactObjectState.Available,
+            CentralReconstructionState.Complete).ConfigureAwait(false);
+        var objectKey = $"derivatives/52/{Guid.NewGuid():N}.bin";
+        byte[] payload = [5, 2, 5, 2];
+        await PutObjectAsync(objectKey, payload).ConfigureAwait(false);
+        Guid dispositionId;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            var eventRecord = new CentralTransientEventRecord
+            {
+                AgentId = agentMarker,
+                EventId = Guid.NewGuid(),
+                EventCreatedUtc = now
+            };
+            var eventVersion = new CentralTransientEventVersionRecord
+            {
+                EventVersionId = Guid.NewGuid(),
+                CentralTransientEventId = eventRecord.Id,
+                Version = 1,
+                State = TransientEventState.Validated,
+                VersionCreatedUtc = now,
+                FirstObservedUtc = now.AddSeconds(-1),
+                LastObservedUtc = now,
+                SchemaVersion = TransientEventV1.CurrentSchemaVersion,
+                CanonicalEventJson = "{}",
+                CanonicalEventSha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                CanonicalEventByteLength = 2
+            };
+            eventRecord.Versions.Add(eventVersion);
+            var job = new CentralDerivativeJob
+            {
+                SourceCentralArtifactId = sourceId,
+                TargetRole = FrameArtifactRole.Metadata,
+                TargetRecipeVersion = "expired-transient-v1",
+                TargetVariant = "expired-transient",
+                RecipeName = "expired-transient",
+                RecipeOptionsJson = "{}",
+                InputSelectorJson = "{}",
+                RequestedRecipeIdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                RequestIdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                Status = CentralDerivativeJobStatus.Completed,
+                AttemptCount = 1,
+                MaxAttempts = 3,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                CompletedAtUtc = now
+            };
+            var derivativeJob = new CentralTransientDerivativeJob
+            {
+                Job = job,
+                CentralDerivativeJobId = job.Id,
+                Event = eventRecord,
+                CentralTransientEventId = eventRecord.Id,
+                SourceEventVersion = eventVersion,
+                SourceEventVersionId = eventVersion.EventVersionId,
+                RequestIdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                ProducerSchemaVersion = "expired-transient-v1",
+                ProducerName = "integration",
+                ProducerVersion = "v1",
+                RecipeIdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                OptionsIdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                CanonicalRequestJson = "{}",
+                CanonicalRequestSha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                CanonicalRequestByteLength = 2,
+                ExpectedOutputCount = 5,
+                CreatedAtUtc = now
+            };
+            derivativeJob.OutputIntents.Add(new CentralTransientDerivativeOutputIntent
+            {
+                CentralDerivativeJobId = job.Id,
+                CentralTransientEventId = eventRecord.Id,
+                Kind = TransientDerivativeKind.Preview,
+                DerivativeId = Guid.NewGuid(),
+                ArtifactId = Guid.NewGuid(),
+                ArtifactRole = FrameArtifactRole.Preview,
+                ArtifactVariant = "partial-preview",
+                MediaType = "image/png",
+                ByteLength = payload.LongLength,
+                ChecksumSha256 = Convert.ToHexString(SHA256.HashData(payload)),
+                OutputIdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                StorageReference = StoragePrefix + objectKey,
+                ObjectState = CentralArtifactObjectState.Expired,
+                StateReasonCode = "retention.publication-rejected",
+                CreatedAtUtc = now
+            });
+            var disposition = new CentralObjectRecoveryDisposition
+            {
+                SourceObjectIdentitySha256 = CentralArtifactReconciliationService.CreateObjectKeyIdentity(objectKey),
+                SourceObjectKey = objectKey,
+                Kind = CentralObjectRecoveryKinds.ExpiredDelete,
+                State = CentralObjectRecoveryStates.PendingDelete,
+                ByteLength = payload.LongLength,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            };
+            db.AddRange(eventRecord, job, derivativeJob, disposition);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            dispositionId = disposition.Id;
+        }
+        await SetCheckpointAsync(CentralRecoveryPhases.Idle, nextInventoryAtUtc: DateTimeOffset.UtcNow.AddDays(1))
+            .ConfigureAwait(false);
+
+        await RunFreshCycleAsync().ConfigureAwait(false);
+
+        (await ObjectExistsAsync(objectKey).ConfigureAwait(false)).Should().BeFalse();
+        var completed = await ReadDispositionAsync(objectKey).ConfigureAwait(false);
+        completed.Id.Should().Be(dispositionId);
+        completed.State.Should().Be(CentralObjectRecoveryStates.Completed);
+        completed.OperationToken.Should().BeNull();
+        var completedAt = completed.UpdatedAtUtc;
+        await RunFreshCycleAsync().ConfigureAwait(false);
+        var replay = await ReadDispositionAsync(objectKey).ConfigureAwait(false);
+        replay.State.Should().Be(CentralObjectRecoveryStates.Completed);
+        replay.UpdatedAtUtc.Should().Be(completedAt);
     }
 
     [TestMethod]
@@ -939,7 +1165,7 @@ public sealed class CentralRecoveryIntegrationTests
         }
 
         (await ReadDispositionAsync(key).ConfigureAwait(false)).Should().Match<CentralObjectRecoveryDisposition>(item =>
-            item.State == CentralObjectRecoveryStates.Cancelled && item.ReasonCode == "ownership.active");
+            item.State == CentralObjectRecoveryStates.Cancelled && item.ReasonCode == "ownership.ambiguous");
         _ = await GetMinio().StatObjectAsync(new StatObjectArgs().WithBucket(Bucket).WithObject(key)).ConfigureAwait(false);
     }
 

@@ -25,7 +25,7 @@ public sealed class Issue243SqlCriticalSectionEvidenceTests
     private static readonly JsonSerializerOptions EvidenceJsonOptions = new() { WriteIndented = true };
 
     [TestMethod]
-    public async Task RetentionDelete_HoldsSerializableTransactionAndSessionLockAcrossMinioIo()
+    public async Task RetentionDelete_HoldsSessionLockWithoutSqlTransactionAcrossMinioIo()
     {
         var fixture = AssemblyHooks.Fixture;
         var seeded = await ArtifactRetrievalTests.SeedArtifactAsync(
@@ -69,14 +69,14 @@ public sealed class Issue243SqlCriticalSectionEvidenceTests
                 fixture.SqlServerConnectionString,
                 applicationName).ConfigureAwait(false);
             criticalSection.Sessions.Should().BeGreaterThanOrEqualTo(2);
-            criticalSection.OpenTransactionSessions.Should().BeGreaterThanOrEqualTo(1);
+            criticalSection.OpenTransactionSessions.Should().Be(0);
             criticalSection.SessionApplicationLocks.Should().BeGreaterThanOrEqualTo(1);
 
             blockedUpdate = await ObserveBlockedUpdateAsync(
                 fixture.SqlServerConnectionString,
                 centralArtifactId).ConfigureAwait(false);
-            blockedUpdate.TimedOut.Should().BeTrue();
-            blockedUpdate.ElapsedMilliseconds.Should().BeGreaterThanOrEqualTo(900);
+            blockedUpdate.TimedOut.Should().BeFalse();
+            blockedUpdate.ElapsedMilliseconds.Should().BeLessThan(900);
         }
         finally
         {
@@ -85,7 +85,21 @@ public sealed class Issue243SqlCriticalSectionEvidenceTests
                 releaseTask, operationCancellation, TimeSpan.FromSeconds(15)).ConfigureAwait(false);
         }
 
-        releaseResult.Should().Be(CentralArtifactRetentionResult.Released);
+        releaseResult.Should().Be(CentralArtifactRetentionResult.Pending,
+            "the unblocked writer advances rowversion and prevents stale finalization");
+        await using (var recoveryScope = factory.Services.CreateAsyncScope())
+        {
+            var db = recoveryScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var dispositionId = await db.CentralObjectRecoveryDispositions.AsNoTracking()
+                .Where(item => item.CentralArtifactId == centralArtifactId)
+                .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
+            await db.CentralObjectRecoveryDispositions.Where(item => item.Id == dispositionId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    item => item.NextAttemptAtUtc, DateTimeOffset.UtcNow)).ConfigureAwait(false);
+            (await recoveryScope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionProcessor>()
+                .ProcessAsync(dispositionId, "worker", CancellationToken.None).ConfigureAwait(false))
+                .Should().Be(CentralArtifactRetentionProcessResult.Released);
+        }
         var elapsed = Stopwatch.GetElapsedTime(started);
         await using (var verificationScope = factory.Services.CreateAsyncScope())
         {
@@ -111,13 +125,13 @@ public sealed class Issue243SqlCriticalSectionEvidenceTests
         Directory.CreateDirectory(output);
         var evidence = new
         {
-            Schema = "hvo-issue-243-sql-critical-section-v1",
+            Schema = "hvo-issue-243-sql-critical-section-v2",
             Source = source,
             Workload = new
             {
                 Operation = "CentralArtifactRetentionService.ReleaseAsync",
                 PayloadBytes = 4096,
-                MinioBoundary = "DELETE paused after serializable SQL mutation",
+                MinioBoundary = "DELETE paused after durable reservation commit",
                 CompetingWriters = 1,
                 CompetingWriterCommandTimeoutSeconds = 1
             },
@@ -130,7 +144,7 @@ public sealed class Issue243SqlCriticalSectionEvidenceTests
                 CompetingWriterTimedOut = blockedUpdate!.TimedOut,
                 CompetingWriterMilliseconds = blockedUpdate.ElapsedMilliseconds
             },
-            Correctness = "The object was removed only after the barrier released, SQL converged to Expired/retention.expired, and the conflicting update made no mutation.",
+            Correctness = "The writer completed during delayed DELETE, stale finalization returned Pending, and replay converged SQL and object state.",
             RecordedAtUtc = DateTimeOffset.UtcNow
         };
         await EvidenceSourceIdentity.WriteJsonAsync(

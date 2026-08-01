@@ -22,6 +22,8 @@ public sealed class HealthCheckTests
 {
     private static readonly string[] WorkerHealthDataKeys =
         ["Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds"];
+    private static readonly string[] RetentionHealthDataKeys =
+        ["Condition", "PendingCount", "PendingBytes", "PendingOldestAgeSeconds"];
     private HttpClient? _client;
 
     [TestInitialize]
@@ -89,6 +91,96 @@ public sealed class HealthCheckTests
         // Assert
         response.EnsureSuccessStatusCode();
         Assert.AreEqual(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task HealthEndpointExposesOnlyBoundedArtifactRetentionDataAsync()
+    {
+        var artifactId = Guid.NewGuid();
+        var token = Guid.NewGuid();
+        var objectKey = $"health/retention/{Guid.NewGuid():N}.bin";
+        Guid frameId;
+        Guid dispositionId;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            var frame = new CentralFrame
+            {
+                RegistrationId = Guid.NewGuid(),
+                DevicePublicId = Guid.NewGuid(),
+                ObservatoryId = Guid.NewGuid(),
+                AgentId = $"health-retention-{Guid.NewGuid():N}",
+                FrameId = Guid.NewGuid(),
+                CapturedAtUtc = now,
+                FirstReceivedAtUtc = now
+            };
+            var artifact = new CentralArtifact
+            {
+                Frame = frame,
+                CentralFrameId = frame.Id,
+                DevicePublicId = frame.DevicePublicId,
+                ArtifactId = artifactId,
+                Role = FrameArtifactRole.Raw,
+                RecipeVersion = "health-retention-v1",
+                ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+                MediaType = "application/octet-stream",
+                ByteLength = 73,
+                ChecksumSha256 = new string('D', 64),
+                StorageReference = $"minio://skymonitor-artifacts/{objectKey}",
+                ReceivedAtUtc = now,
+                IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                ObjectState = CentralArtifactObjectState.Expired,
+                ReconstructionState = CentralReconstructionState.Complete,
+                RetentionDeletionToken = token,
+                RetentionDeletionRequestedAtUtc = now
+            };
+            var disposition = new CentralObjectRecoveryDisposition
+            {
+                SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
+                SourceObjectKey = objectKey,
+                Kind = CentralObjectRecoveryKinds.ExpiredDelete,
+                State = CentralObjectRecoveryStates.PendingDelete,
+                CentralArtifactId = artifact.Id,
+                OperationToken = token,
+                ByteLength = artifact.ByteLength,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                NextAttemptAtUtc = now
+            };
+            db.AddRange(frame, artifact, disposition);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            frameId = frame.Id;
+            dispositionId = disposition.Id;
+        }
+        try
+        {
+            using var response = await _client!.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
+            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            using var payload = JsonDocument.Parse(json);
+            var retention = payload.RootElement.GetProperty("checks").EnumerateArray()
+                .Single(check => check.GetProperty("name").GetString() == "artifact-retention");
+            var data = retention.GetProperty("data");
+            CollectionAssert.AreEquivalent(
+                RetentionHealthDataKeys,
+                data.EnumerateObject().Select(property => property.Name).ToArray());
+            Assert.AreEqual("pending", data.GetProperty("Condition").GetString());
+            Assert.IsTrue(data.GetProperty("PendingCount").GetInt64() >= 1);
+            Assert.IsTrue(data.GetProperty("PendingBytes").GetInt64() >= 73);
+            Assert.IsFalse(json.Contains(artifactId.ToString("D"), StringComparison.OrdinalIgnoreCase));
+            Assert.IsFalse(json.Contains(token.ToString("D"), StringComparison.OrdinalIgnoreCase));
+            Assert.IsFalse(json.Contains(objectKey, StringComparison.Ordinal));
+        }
+        finally
+        {
+            await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await db.CentralObjectRecoveryDispositions.Where(item => item.Id == dispositionId)
+                .ExecuteDeleteAsync().ConfigureAwait(false);
+            await db.CentralArtifacts.Where(item => item.ArtifactId == artifactId)
+                .ExecuteDeleteAsync().ConfigureAwait(false);
+            await db.CentralFrames.Where(item => item.Id == frameId).ExecuteDeleteAsync().ConfigureAwait(false);
+        }
     }
 
     [TestMethod]
