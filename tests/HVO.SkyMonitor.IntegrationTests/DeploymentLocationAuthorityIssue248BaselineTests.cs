@@ -39,6 +39,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private const string EvidenceFile = "deployment-location-authority-baseline.json";
     private const string ManifestFile = "manifest.json";
     private const string ResolutionReason = "issue-248-baseline";
+    private const string ExactRollbackProof = "exact-durable-state-and-zero-active-transaction";
     private static readonly int[] Scales = [10, 100, 1_000, 10_000];
     private static readonly EvidenceProtocol Protocol = new(
         "hvo-issue-248-right-censored-protocol-v2",
@@ -201,7 +202,8 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 SqlPhysicalBytes = "N/A: SqlClient does not expose attributable wire or physical storage bytes.",
                 PayloadIo = "N/A: W3M is metadata-only and this path does not read MinIO payloads.",
                 FileSystemIo = "N/A: SQL container filesystem bytes are not attributable to one operation.",
-                ActiveLogPeak = "10 ms sampling can understate a shorter transaction-log peak."
+                ActiveLogPeak = "10 ms sampling can understate a shorter transaction-log peak.",
+                RollbackCallbacks = "EF interceptor rollback callbacks are retained as raw provider observations; rollback proof is exact durable state plus zero attributed requests/open transactions after disposal."
             },
             WorkerSuppression = "AssemblyHooks recognizes the neutral issue #248 baseline/completed-smoke/censored-smoke/aggregate-only switches before fixture startup; all child-factory IHostedService registrations are also removed.",
             SmokeCommand = "DOTNET_gcServer=1 HVO_ISSUE_248_SMOKE=1 dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeploymentLocationAuthorityIssue248BaselineTests.RealScheduler_OneDeploymentScaling_RecordsBaselineEvidence",
@@ -340,31 +342,25 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                     var sql = await sqlTask.ConfigureAwait(false);
                     var peakRss = await rssSampler.Completion.ConfigureAwait(false);
                     DrainResult? drain = null;
-                    try
+                    if (completedAtBoundary)
                     {
-                        if (completedAtBoundary)
+                        result = await operation.Original.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        progressStage.Emit("censor");
+                        drain = await CancelAndDrainAsync(operation, operationCancellation,
+                            TimeSpan.FromSeconds(Protocol.DrainDeadlineSeconds),
+                            TimeSpan.FromSeconds(Protocol.DrainDeadlineSeconds), progressStage).ConfigureAwait(false);
+                        if (!drain.Terminated)
                         {
-                            result = await operation.Original.ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            progressStage.Emit("censor");
-                            drain = await CancelAndDrainAsync(operation, operationCancellation,
-                                TimeSpan.FromSeconds(Protocol.DrainDeadlineSeconds),
-                                TimeSpan.FromSeconds(Protocol.DrainDeadlineSeconds), progressStage).ConfigureAwait(false);
-                            if (!drain.Terminated)
-                            {
-                                progressStage.Terminate("finished");
-                                EnsureTerminationOrPreserve(teardown, drain,
-                                    factory, operationScope, operation.Original, operationCancellation, connection);
-                            }
+                            progressStage.Terminate("finished");
+                            EnsureTerminationOrPreserve(teardown, drain,
+                                factory, operationScope, operation.Original, operationCancellation, connection);
                         }
                     }
-                    finally
-                    {
-                        probe.Stop();
-                    }
-                    await operationScope.DisposeAsync().ConfigureAwait(false);
+                    try { await operationScope.DisposeAsync().ConfigureAwait(false); }
+                    finally { probe.Stop(); }
                     operationScopeDisposed = true;
                     operationCancellation.Dispose();
                     operationCancellation = null;
@@ -372,7 +368,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                     Assert.IsNotEmpty(sql);
                     Assert.IsTrue(sql.Any(item => item.OpenTransactions > 0 && item.MaximumIsolationLevel == 4),
                         "SQL sampling must observe the attributed serializable authority transaction.");
-                    observedTransactions = probe.Transactions.Snapshot(countActiveAsRollback: !completedAtBoundary);
+                    observedTransactions = probe.Transactions.Snapshot();
                     var dbAfter = await DatabaseSizeAsync(connection).ConfigureAwait(false);
                     if (measuredWorkExpired)
                         throw new TimeoutException("Issue #248 claimable measured-work deadline expired; natural result is not publishable.");
@@ -380,7 +376,8 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                     {
                         measurement = new Measurement(
                             completedElapsed.TotalMilliseconds, observedTransactions.Durations.Single(),
-                            observedTransactions.Starts, observedTransactions.Commits, observedTransactions.Rollbacks, observedTransactions.Failures,
+                            observedTransactions.Starts, observedTransactions.Commits,
+                            observedTransactions.ExplicitRollbackCallbacks, observedTransactions.Failures,
                             probe.Commands.Count, calls.Count, scale / completedElapsed.TotalSeconds,
                             calls.Count / completedElapsed.TotalSeconds, 0,
                             cpuElapsed.TotalMilliseconds,
@@ -427,11 +424,13 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 Assert.AreEqual(new RollbackState("Pending", false, "DeploymentPending", scale, 0, 0, 0, 0, 0, 0), rollback);
                 Assert.AreEqual(1, observedTransactions!.Starts);
                 Assert.AreEqual(0, observedTransactions.Commits);
-                Assert.AreEqual(1, observedTransactions.Rollbacks);
+                if (mode.ForceCensor)
+                    Assert.AreEqual(0, observedTransactions.ExplicitRollbackCallbacks,
+                        "SqlClient disposal after cooperative cancellation does not emit an EF rollback interceptor callback.");
                 progressStage.Emit("rollback");
                 progressStage.Terminate("censored");
                 var censoredPublic = new PublicScaleRun(scale, "right-censored", mode.NaturalDeadline(scale).TotalSeconds,
-                    initial, null, censoring, cancellation, rollback, censoredDiagnostics,
+                    initial, null, censoring, cancellation, rollback, ExactRollbackProof, remaining, censoredDiagnostics,
                     null, null, null, schedulerPlans, null, null);
                 return new ScaleRun(censoredPublic, null, computedExpectations,
                     seeded.GeneratedValues.Append(database).Append(application).ToArray());
@@ -473,7 +472,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 convergedState.Inputs - preRetryState.Inputs,
                 "Allowed: standalone scheduling owns a transaction and invokes ResolveAffectedAsync; rolling-window inputs/status may converge without creating jobs.");
             var publicRun = new PublicScaleRun(scale, "completed", measured ? mode.NaturalDeadline(scale).TotalSeconds : 0,
-                initial, measurement, null, null, null, null, preRetryState,
+                initial, measurement, null, null, null, null, null, null, preRetryState,
                 new PostRetryConvergence(convergedState, retry), plan, schedulerPlans, writeProxy, commands);
             progressStage.Terminate("completed");
             return new ScaleRun(publicRun, convergedState, computedExpectations,
@@ -584,6 +583,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             CensoringEvidence? censoring = null;
             CancellationEvidence? cancellation = null;
             RollbackState? rollback = null;
+            AttributedActivity? postCancellationActivity = null;
             DeploymentLocationResolutionResult? result = null;
             if (completedAtBoundary)
             {
@@ -639,14 +639,17 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             {
                 rollback = await ReadRollbackStateAsync(factory, seed).ConfigureAwait(false);
                 Assert.AreEqual(new RollbackState("Pending", false, "DeploymentPending", count, 0, 0, 0, 0, 0, 0), rollback);
-                Assert.AreEqual(new AttributedActivity(0, 0), await ReadAttributedActivityAsync(connection, application).ConfigureAwait(false));
+                postCancellationActivity = await ReadAttributedActivityAsync(connection, application).ConfigureAwait(false);
+                Assert.AreEqual(new AttributedActivity(0, 0), postCancellationActivity);
                 progressStage.Emit("rollback");
                 progressStage.Terminate("censored");
             }
-            var transactions = probe.Transactions.Snapshot(countActiveAsRollback: outcome == "right-censored");
+            var transactions = probe.Transactions.Snapshot();
             Assert.AreEqual(1, transactions.Starts);
             Assert.AreEqual(outcome == "completed" ? 1 : 0, transactions.Commits);
-            Assert.AreEqual(outcome == "right-censored" ? 1 : 0, transactions.Rollbacks);
+            if (mode.ForceCensor)
+                Assert.AreEqual(0, transactions.ExplicitRollbackCallbacks,
+                    "SqlClient disposal after cooperative cancellation does not emit an EF rollback interceptor callback.");
             if (outcome == "completed") progressStage.Terminate("completed");
             return new ContentionRun(new(
                 outcome, count, deadline.TotalSeconds, "one-row DeviceRegistrations LastSeenUtc UPDATE", true,
@@ -656,7 +659,10 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 observation.ResourceType, observation.RequestMode, observation.RequestStatus,
                 observation.RequestOwnerType, observation.OfferToObservationMilliseconds,
                 writerCompleted, authorityDuration,
-                censoring, cancellation, rollback, transactions, 1, 1,
+                censoring, cancellation, rollback,
+                outcome == "right-censored" ? ExactRollbackProof : null,
+                postCancellationActivity,
+                transactions, 1, 1,
                 "Barrier is the common DeviceRegistrations UPDLOCK/HOLDLOCK boundary; deadline starts at release."),
                 seed.GeneratedValues.Append(database).Append(application).Append(writerApplication).ToArray());
         }
@@ -751,10 +757,17 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         Probe probe,
         CancellationToken cancellationToken)
     {
-        await using var scope = factory.Services.CreateAsyncScope();
-        probe.Start(scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().ContextId);
-        try { return await ResolveAsync(scope, seed, cancellationToken).ConfigureAwait(false); }
-        finally { probe.Stop(); }
+        var scope = factory.Services.CreateAsyncScope();
+        try
+        {
+            probe.Start(scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().ContextId);
+            return await ResolveAsync(scope, seed, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            try { await scope.DisposeAsync().ConfigureAwait(false); }
+            finally { probe.Stop(); }
+        }
     }
 
     private static WriterRun RunConflictingWriterAsync(string connection, string application, Guid registrationId)
@@ -953,8 +966,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         internal void Reset() { starts.Clear(); durations.Clear(); started = committed = rolledBack = failed = 0; }
         internal void Start(DbContextId id) { context = id; Volatile.Write(ref enabled, 1); }
         internal void Stop() => Volatile.Write(ref enabled, 0);
-        internal Transactions Snapshot(bool countActiveAsRollback = false) => new(started, committed,
-            rolledBack + (countActiveAsRollback ? starts.Count : 0), failed, durations.ToArray());
+        internal Transactions Snapshot() => new(started, committed, rolledBack, failed, durations.ToArray());
         public override ValueTask<DbTransaction> TransactionStartedAsync(DbConnection connection, TransactionEndEventData data, DbTransaction result, CancellationToken token = default) { if (Target(data.Context)) { starts[result] = Stopwatch.GetTimestamp(); Interlocked.Increment(ref started); } return ValueTask.FromResult(result); }
         public override Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData data, CancellationToken token = default) { if (Target(data.Context)) { if (starts.TryRemove(transaction, out var value)) durations.Enqueue(Stopwatch.GetElapsedTime(value).TotalMilliseconds); Interlocked.Increment(ref committed); } return Task.CompletedTask; }
         public override Task TransactionRolledBackAsync(DbTransaction transaction, TransactionEndEventData data, CancellationToken token = default) { if (Target(data.Context)) { starts.TryRemove(transaction, out _); Interlocked.Increment(ref rolledBack); } return Task.CompletedTask; }
@@ -1034,7 +1046,8 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private sealed record ScaleRun(PublicScaleRun Public, State? State, IReadOnlyList<RecipeExpectation> Expectations, IReadOnlyList<string> GeneratedValues);
     private sealed record PublicScaleRun(int Scale, string Outcome, double DeadlineSeconds, Backlog InitialBacklog,
         Measurement? Measurement, CensoringEvidence? Censoring, CancellationEvidence? Cancellation,
-        RollbackState? Rollback, CensoredDiagnostics? CensoredDiagnostics,
+        RollbackState? Rollback, string? RollbackProof, AttributedActivity? PostCancellationActivity,
+        CensoredDiagnostics? CensoredDiagnostics,
         State? PreRetryState, PostRetryConvergence? PostRetryConvergence,
         PlanEvidence? ReconciliationSelectAndPlan, IReadOnlyList<PlanEvidence>? SchedulerSelectPlans,
         IndexWriteEvidence? WriteProxy, CommandEvidence? Commands);
@@ -1056,7 +1069,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     private sealed record State(int Deployments, FrameShape FrameShape, string AuthorityStatus, string? AuthorityReason, bool TokenChanged, string RegistrationState, int ExactResolvedBindings, int Audits, bool AuditExact, int EligibleArtifacts, int Jobs, int Requirements, int Inputs, int CanonicalInputs, int DuplicateRequestIdentities, string OrderedIdentitySetSha256, IReadOnlyList<JobGroup> JobsByRecipe, Backlog FinalBacklog);
     private sealed record DatabaseSize(long DataAllocated, long DataUsed, long LogAllocated, long LogUsed, string LogReuseWaitDescription);
     private sealed record SqlSample(double ElapsedMilliseconds, int OpenTransactions, int MaximumIsolationLevel, long ActiveLogBytes);
-    private sealed record Measurement(double ElapsedMilliseconds, double TransactionMilliseconds, long TransactionStarts, long TransactionCommits, long TransactionRollbacks, long TransactionFailures, long SqlCommands, long SchedulerCalls, double CapturesPerSecond, double SchedulerCallsPerSecond, double JobsPerSecond, double CpuMilliseconds, long ExactAllocatedBytes, long SampledAllocatedBytes, int AllocationSamples, int AllocationIntervalMilliseconds, long RssStartBytes, long RssEndBytes, long PeakRssBytes, double ResourceStartBoundarySkewMicroseconds, DatabaseSize DatabaseBefore, DatabaseSize DatabaseAfter, long DataAllocatedDelta, long DataUsedDelta, long LogAllocatedDelta, long LogUsedDelta, int SqlSamples, double EffectiveSqlSamplingIntervalMilliseconds, int PeakOpenTransactions, long PeakActiveLogBytes);
+    private sealed record Measurement(double ElapsedMilliseconds, double TransactionMilliseconds, long TransactionStarts, long TransactionCommits, long ExplicitTransactionRollbackCallbacks, long TransactionFailures, long SqlCommands, long SchedulerCalls, double CapturesPerSecond, double SchedulerCallsPerSecond, double JobsPerSecond, double CpuMilliseconds, long ExactAllocatedBytes, long SampledAllocatedBytes, int AllocationSamples, int AllocationIntervalMilliseconds, long RssStartBytes, long RssEndBytes, long PeakRssBytes, double ResourceStartBoundarySkewMicroseconds, DatabaseSize DatabaseBefore, DatabaseSize DatabaseAfter, long DataAllocatedDelta, long DataUsedDelta, long LogAllocatedDelta, long LogUsedDelta, int SqlSamples, double EffectiveSqlSamplingIntervalMilliseconds, int PeakOpenTransactions, long PeakActiveLogBytes);
     private sealed record ParameterMetadata(string Name, string Type, int Size, byte Precision, byte Scale, string Direction, bool Nullable);
     private sealed record PlanParameterEvidence(ParameterMetadata Metadata, string ValueSha256);
     private sealed record PlanEvidence(string SelectSha256, string ExactParameterizedSelect,
@@ -1083,7 +1096,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
     }
     private sealed record CommandShape(string Hash, long Count, string ExactParameterizedText, IReadOnlyList<ParameterMetadata> Parameters);
     private sealed record CommandEvidence(long Count, int UniqueShapes, string ShapeSetSha256, IReadOnlyList<CommandShape> Shapes);
-    private sealed record Transactions(long Starts, long Commits, long Rollbacks, long Failures, IReadOnlyList<double> Durations);
+    private sealed record Transactions(long Starts, long Commits, long ExplicitRollbackCallbacks, long Failures, IReadOnlyList<double> Durations);
     private sealed record AttributedActivity(int Requests, int OpenTransactions);
     private sealed record EnvironmentVariableEvidence(string Name, string ValueSha256);
     private sealed record SqlEnvironmentEvidence(string ProductVersion, string Edition, byte CompatibilityLevel,
@@ -1124,6 +1137,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         string RequestMode, string RequestStatus, string RequestOwnerType, double WriterOfferToObservationMilliseconds,
         double? WriterOfferToCompletionMilliseconds, double? AuthorityDurationMilliseconds,
         CensoringEvidence? Censoring, CancellationEvidence? Cancellation, RollbackState? Rollback,
+        string? RollbackProof, AttributedActivity? PostCancellationActivity,
         Transactions Transactions, int BlockedObservationCount, int RowsCommitted, string Isolation);
     private sealed record ContentionRun(ContentionEvidence Public, IReadOnlyList<string> GeneratedValues);
     private sealed record RollbackState(string AuthorityStatus, bool TokenChanged, string RegistrationState,
@@ -1747,14 +1761,24 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 || run.GetProperty("censoring").ValueKind != JsonValueKind.Null
                 || run.GetProperty("cancellation").ValueKind != JsonValueKind.Null
                 || run.GetProperty("rollback").ValueKind != JsonValueKind.Null
+                || run.GetProperty("rollbackProof").ValueKind != JsonValueKind.Null
+                || run.GetProperty("postCancellationActivity").ValueKind != JsonValueKind.Null
                 || run.GetProperty("censoredDiagnostics").ValueKind != JsonValueKind.Null)
                 throw new InvalidDataException("Completed natural record violates the V2 discriminated union.");
+            var measurement = run.GetProperty("measurement");
+            if (measurement.GetProperty("transactionStarts").GetInt64() != 1
+                || measurement.GetProperty("transactionCommits").GetInt64() != 1
+                || measurement.GetProperty("explicitTransactionRollbackCallbacks").GetInt64() != 0
+                || measurement.GetProperty("transactionFailures").GetInt64() != 0)
+                throw new InvalidDataException("Completed natural transaction observations are invalid.");
             return;
         }
         if (NaturalCompletionFields.Any(name => run.GetProperty(name).ValueKind != JsonValueKind.Null)
             || run.GetProperty("censoring").ValueKind == JsonValueKind.Null
             || run.GetProperty("cancellation").ValueKind == JsonValueKind.Null
             || run.GetProperty("rollback").ValueKind == JsonValueKind.Null
+            || run.GetProperty("rollbackProof").ValueKind == JsonValueKind.Null
+            || run.GetProperty("postCancellationActivity").ValueKind == JsonValueKind.Null
             || run.GetProperty("censoredDiagnostics").ValueKind == JsonValueKind.Null
             || run.GetProperty("censoredDiagnostics").TryGetProperty("committedAfterCensorState", out _))
             throw new InvalidDataException("Right-censored natural record violates the V2 discriminated union.");
@@ -1764,13 +1788,14 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             || censoring.TryGetProperty("completedAfterCensor", out _))
             throw new InvalidDataException("Right-censored natural lower bound is invalid.");
         ValidateCancellation(run.GetProperty("cancellation"));
-        if (!ExactRollback(run.GetProperty("rollback"), scale))
+        if (!HasExactRollbackProof(run, scale))
             throw new InvalidDataException("Right-censored natural record does not contain exact rollback state.");
         var transactions = run.GetProperty("censoredDiagnostics").GetProperty("transactions");
         if (transactions.GetProperty("starts").GetInt64() != 1
             || transactions.GetProperty("commits").GetInt64() != 0
-            || transactions.GetProperty("rollbacks").GetInt64() != 1)
-            throw new InvalidDataException("Right-censored natural transaction rollback evidence is invalid.");
+            || transactions.GetProperty("explicitRollbackCallbacks").GetInt64() is < 0 or > 1
+            || transactions.GetProperty("failures").GetInt64() is < 0 or > 1)
+            throw new InvalidDataException("Right-censored natural transaction observations are invalid.");
     }
 
     private static void ValidateContentionUnion(JsonElement run, int expectedCaptureCount)
@@ -1789,12 +1814,15 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             if (authorityLatency == JsonValueKind.Null || writerLatency == JsonValueKind.Null
                 || run.GetProperty("censoring").ValueKind != JsonValueKind.Null
                 || run.GetProperty("cancellation").ValueKind != JsonValueKind.Null
-                || run.GetProperty("rollback").ValueKind != JsonValueKind.Null)
+                || run.GetProperty("rollback").ValueKind != JsonValueKind.Null
+                || run.GetProperty("rollbackProof").ValueKind != JsonValueKind.Null
+                || run.GetProperty("postCancellationActivity").ValueKind != JsonValueKind.Null)
                 throw new InvalidDataException("Completed contention record violates the V2 discriminated union.");
             var completedTransactions = run.GetProperty("transactions");
             if (completedTransactions.GetProperty("starts").GetInt64() != 1
                 || completedTransactions.GetProperty("commits").GetInt64() != 1
-                || completedTransactions.GetProperty("rollbacks").GetInt64() != 0)
+                || completedTransactions.GetProperty("explicitRollbackCallbacks").GetInt64() != 0
+                || completedTransactions.GetProperty("failures").GetInt64() != 0)
                 throw new InvalidDataException("Completed contention transaction evidence is invalid.");
             return;
         }
@@ -1802,6 +1830,8 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             || run.GetProperty("censoring").ValueKind == JsonValueKind.Null
             || run.GetProperty("cancellation").ValueKind == JsonValueKind.Null
             || run.GetProperty("rollback").ValueKind == JsonValueKind.Null
+            || run.GetProperty("rollbackProof").ValueKind == JsonValueKind.Null
+            || run.GetProperty("postCancellationActivity").ValueKind == JsonValueKind.Null
             || run.TryGetProperty("completedAfterCensor", out _))
             throw new InvalidDataException("Right-censored contention record violates the V2 discriminated union.");
         var contentionCensoring = run.GetProperty("censoring");
@@ -1812,14 +1842,15 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             || contentionCensoring.TryGetProperty("completedAfterCensor", out _))
             throw new InvalidDataException("Right-censored contention lower bound is invalid.");
         ValidateCancellation(run.GetProperty("cancellation"));
-        if (!ExactRollback(run.GetProperty("rollback"), expectedCaptureCount)
+        if (!HasExactRollbackProof(run, expectedCaptureCount)
             || run.GetProperty("rowsCommitted").GetInt32() != 1)
             throw new InvalidDataException("Right-censored contention record lacks exact rollback/writer commit state.");
         var censoredTransactions = run.GetProperty("transactions");
         if (censoredTransactions.GetProperty("starts").GetInt64() != 1
             || censoredTransactions.GetProperty("commits").GetInt64() != 0
-            || censoredTransactions.GetProperty("rollbacks").GetInt64() != 1)
-            throw new InvalidDataException("Right-censored contention transaction rollback evidence is invalid.");
+            || censoredTransactions.GetProperty("explicitRollbackCallbacks").GetInt64() is < 0 or > 1
+            || censoredTransactions.GetProperty("failures").GetInt64() is < 0 or > 1)
+            throw new InvalidDataException("Right-censored contention transaction observations are invalid.");
     }
 
     private static void ValidateCancellation(JsonElement cancellation)
@@ -1917,20 +1948,23 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             RightCensoredCount = censored.Length,
             FixedLowerBoundMilliseconds = deadline * 1000d,
             CompletionMetrics = completionMetrics,
-            AllCancellationRollbacks = censored.Length > 0 && censored.All(run =>
+            AllCancellationRollbackProof = censored.Length > 0 && censored.All(run =>
                 run.GetProperty("cancellation").GetProperty("attributed").GetBoolean()
                 && run.GetProperty("cancellation").GetProperty("drainCompleted").GetBoolean()
-                && ExactRollback(run.GetProperty("rollback"), scale)),
+                && HasExactRollbackProof(run, scale)),
             CensoredDiagnostics = censored.Select(run => new
             {
                 Censoring = run.GetProperty("censoring").Clone(),
                 Cancellation = run.GetProperty("cancellation").Clone(),
+                RollbackProof = run.GetProperty("rollbackProof").GetString(),
+                PostCancellationActivity = run.GetProperty("postCancellationActivity").Clone(),
                 Resources = run.GetProperty("censoredDiagnostics").GetProperty("resources").Clone(),
                 PartialSqlCommands = run.GetProperty("censoredDiagnostics").GetProperty("partialSqlCommands").GetInt64(),
                 PartialSchedulerCalls = run.GetProperty("censoredDiagnostics").GetProperty("partialSchedulerCalls").GetInt64(),
                 SqlSamples = run.GetProperty("censoredDiagnostics").GetProperty("sqlSamples").GetInt32(),
                 PeakOpenTransactions = run.GetProperty("censoredDiagnostics").GetProperty("peakOpenTransactions").GetInt32(),
-                PeakActiveLogBytes = run.GetProperty("censoredDiagnostics").GetProperty("peakActiveLogBytes").GetInt64()
+                PeakActiveLogBytes = run.GetProperty("censoredDiagnostics").GetProperty("peakActiveLogBytes").GetInt64(),
+                Transactions = run.GetProperty("censoredDiagnostics").GetProperty("transactions").Clone()
             }).ToArray(),
             SchedulerPlanIdentitySha256 = runs[0].GetProperty("schedulerSelectPlans").EnumerateArray()
                 .Select(plan => plan.GetProperty("boundedPlanIdentitySha256").GetString()).ToArray(),
@@ -1965,14 +1999,16 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             AllBlocked = runs.All(run => run.GetProperty("blockedAtObservation").GetBoolean()),
             AllAttributed = runs.All(run => run.GetProperty("blockerAttributed").GetBoolean()
                 && run.GetProperty("blockingSessionId").GetInt32() > 0),
-            AllCancellationRollbacks = censored.Length > 0 && censored.All(run =>
+            AllCancellationRollbackProof = censored.Length > 0 && censored.All(run =>
                 run.GetProperty("cancellation").GetProperty("attributed").GetBoolean()
-                && ExactRollback(run.GetProperty("rollback"), 10_000)),
+                && HasExactRollbackProof(run, 10_000)),
             CensoredDiagnostics = censored.Select(run => new
             {
                 Censoring = run.GetProperty("censoring").Clone(),
                 Cancellation = run.GetProperty("cancellation").Clone(),
                 Rollback = run.GetProperty("rollback").Clone(),
+                RollbackProof = run.GetProperty("rollbackProof").GetString(),
+                PostCancellationActivity = run.GetProperty("postCancellationActivity").Clone(),
                 Transactions = run.GetProperty("transactions").Clone(),
                 RowsCommitted = run.GetProperty("rowsCommitted").GetInt32()
             }).ToArray()
@@ -1986,6 +2022,15 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             && rollback.GetProperty("registrationState").GetString() == "DeploymentPending"
             && rollback.GetProperty("unresolvedFrames").GetInt32() == scale
             && ZeroRollbackCountProperties.All(name => rollback.GetProperty(name).GetInt32() == 0);
+
+    private static bool HasExactRollbackProof(JsonElement run, int scale)
+    {
+        var activity = run.GetProperty("postCancellationActivity");
+        return run.GetProperty("rollbackProof").GetString() == ExactRollbackProof
+            && activity.GetProperty("requests").GetInt32() == 0
+            && activity.GetProperty("openTransactions").GetInt32() == 0
+            && ExactRollback(run.GetProperty("rollback"), scale);
+    }
 
     private static AggregateStatistic AggregateMetric(IEnumerable<double> values)
     {
@@ -3042,7 +3087,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
         var censoredAggregate = JsonSerializer.SerializeToElement(AggregateScale(10, Enumerable.Repeat(censored, 5).ToArray()), JsonOptions);
         Assert.AreEqual(5, censoredAggregate.GetProperty("rightCensoredCount").GetInt32());
         Assert.AreEqual(JsonValueKind.Null, censoredAggregate.GetProperty("completionMetrics").ValueKind);
-        Assert.IsTrue(censoredAggregate.GetProperty("allCancellationRollbacks").GetBoolean());
+        Assert.IsTrue(censoredAggregate.GetProperty("allCancellationRollbackProof").GetBoolean());
         var mixed = new[] { completed, completed, completed, completed, censored };
         var mixedAggregate = JsonSerializer.SerializeToElement(AggregateScale(10, mixed), JsonOptions);
         Assert.AreEqual(JsonValueKind.Null, mixedAggregate.GetProperty("completionMetrics").ValueKind);
@@ -3117,6 +3162,10 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             {
                 ElapsedMilliseconds = 100d,
                 TransactionMilliseconds = 90d,
+                TransactionStarts = 1L,
+                TransactionCommits = 1L,
+                ExplicitTransactionRollbackCallbacks = 0L,
+                TransactionFailures = 0L,
                 SqlCommands = 10d,
                 SchedulerCalls = 10d,
                 CapturesPerSecond = 100d,
@@ -3134,6 +3183,8 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             Censoring = completed ? null : new CensoringEvidence(30, 30_000, "synthetic"),
             Cancellation = completed ? null : new CancellationEvidence(true, true, true, 30),
             Rollback = completed ? null : rollback,
+            RollbackProof = completed ? null : ExactRollbackProof,
+            PostCancellationActivity = completed ? null : new AttributedActivity(0, 0),
             CensoredDiagnostics = completed ? null : new
             {
                 Resources = new ResourceDiagnostics(30_000, 50, 1_000, 1_000, 1, 100, 1_000, 1_000, 1_000, 10),
@@ -3142,7 +3193,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 SqlSamples = 1,
                 PeakOpenTransactions = 1,
                 PeakActiveLogBytes = 100L,
-                Transactions = new Transactions(1, 0, 1, 0, Array.Empty<double>())
+                Transactions = new Transactions(1, 0, 0, 0, Array.Empty<double>())
             },
             PreRetryState = completed ? state : null,
             PostRetryConvergence = completed ? new { State = state } : null,
@@ -3165,7 +3216,9 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
             Censoring = completed ? null : new CensoringEvidence(120, 120_000, "synthetic"),
             Cancellation = completed ? null : new CancellationEvidence(true, true, true, 30),
             Rollback = completed ? null : new RollbackState("Pending", false, "DeploymentPending", 10_000, 0, 0, 0, 0, 0, 0),
-            Transactions = new Transactions(1, completed ? 1 : 0, completed ? 0 : 1, 0, Array.Empty<double>()),
+            RollbackProof = completed ? null : ExactRollbackProof,
+            PostCancellationActivity = completed ? null : new AttributedActivity(0, 0),
+            Transactions = new Transactions(1, completed ? 1 : 0, 0, 0, Array.Empty<double>()),
             RowsCommitted = 1
         }, JsonOptions);
 
