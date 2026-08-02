@@ -158,7 +158,7 @@ public sealed class CentralTransientAcceptanceManifestTests
         root.GetProperty("schema").GetString().Should().Be("hvo-runtime-signal-manifest-v1");
         root.GetProperty("issue").GetInt32().Should().Be(118);
         root.GetProperty("logs").EnumerateArray()
-            .Select(log => log.GetProperty("eventId").GetInt32()).Should().Equal([2162, 2163, 2164, 2165, 2166]);
+            .Select(log => log.GetProperty("eventId").GetInt32()).Should().Equal([2162, 2163, 2164, 2165, 2166, 2167]);
         var metrics = root.GetProperty("metrics").EnumerateArray().ToArray();
         metrics.Select(metric => metric.GetProperty("name").GetString()).Should().OnlyHaveUniqueItems();
         metrics.Should().OnlyContain(metric => metric.GetProperty("labels").EnumerateObject()

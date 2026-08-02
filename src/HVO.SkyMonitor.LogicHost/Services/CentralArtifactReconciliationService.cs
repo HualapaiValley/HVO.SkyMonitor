@@ -19,7 +19,6 @@ internal sealed partial class CentralArtifactReconciliationService(
     CentralIngestTelemetry telemetry,
     ILogger<CentralArtifactReconciliationService> logger) : BackgroundService
 {
-    private const string SchedulingConcurrencyMarker = "HVO.SkyMonitor.ReconciliationSchedulingConcurrency";
     private const string VerificationRetryFenceMarker = "HVO.SkyMonitor.VerificationRetryFence";
     private const string Bucket = "skymonitor-artifacts";
     private const string BucketPrefix = "minio://skymonitor-artifacts/";
@@ -1405,6 +1404,7 @@ internal sealed partial class CentralArtifactReconciliationService(
             return new RecoveryArtifactResult("unsupported", artifact.ByteLength);
         }
 
+        var scheduleDerivatives = false;
         await using var objectLock = await AcquireCurrentObjectLockAsync(
             db, artifact, cancellationToken).ConfigureAwait(false);
         canonical = artifact.StorageReference.StartsWith(BucketPrefix + "artifacts/", StringComparison.Ordinal)
@@ -1540,18 +1540,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                 || artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw)
             {
                 await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    await scheduler.EnsureRequiredJobsAsync(artifact, reconciledAtUtc, cancellationToken).ConfigureAwait(false);
-                    // The scheduler commits idempotent jobs independently; fence the recovery lease before
-                    // the reconciler performs any final save after that durable scheduling boundary.
-                    await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
-                }
-                catch (DbUpdateConcurrencyException exception) when (IsSchedulingArtifactConflict(exception, artifact.Id))
-                {
-                    exception.Data[SchedulingConcurrencyMarker] = true;
-                    throw;
-                }
+                scheduleDerivatives = true;
             }
             telemetry.RecordReconciled("completed");
         }
@@ -1569,7 +1558,67 @@ internal sealed partial class CentralArtifactReconciliationService(
         artifact.ObjectVerificationRetryCount = 0;
         artifact.ObjectVerificationRetryAtUtc = null;
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return result.Outcome == "none" ? new RecoveryArtifactResult("matched", artifact.ByteLength) : result;
+        var completed = result.Outcome == "none" ? new RecoveryArtifactResult("matched", artifact.ByteLength) : result;
+        await objectLock.DisposeAsync().ConfigureAwait(false);
+        if (scheduleDerivatives)
+        {
+            try
+            {
+                await scheduler.EnsureRequiredJobsAsync(artifact, reconciledAtUtc, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                await RestoreImmediatelyDueSchedulingMarkerAsync(artifact.Id).ConfigureAwait(false);
+                throw;
+            }
+            await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
+        }
+        return completed;
+    }
+
+    private async Task RestoreImmediatelyDueSchedulingMarkerAsync(Guid artifactId)
+    {
+        while (true)
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var storageReference = await db.CentralArtifacts.AsNoTracking()
+                .Where(artifact => artifact.Id == artifactId)
+                .Select(artifact => artifact.StorageReference)
+                .SingleAsync(CancellationToken.None).ConfigureAwait(false);
+            await using (var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+                db, storageReference, CancellationToken.None).ConfigureAwait(false))
+            {
+                await using (var transaction = await db.Database.BeginTransactionAsync(
+                    System.Data.IsolationLevel.Serializable, CancellationToken.None).ConfigureAwait(false))
+                {
+                    var artifact = await db.CentralArtifacts.FromSqlInterpolated($"""
+                            SELECT * FROM [CentralArtifacts] WITH (UPDLOCK, HOLDLOCK)
+                            WHERE [Id] = {artifactId}
+                            """)
+                        .SingleAsync(CancellationToken.None).ConfigureAwait(false);
+                    if (!string.Equals(artifact.StorageReference, storageReference, StringComparison.Ordinal))
+                    {
+                        await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (artifact.ObjectState == CentralArtifactObjectState.Available
+                        && artifact.ReconstructionState == CentralReconstructionState.Complete)
+                    {
+                        artifact.ObjectState = CentralArtifactObjectState.Pending;
+                        artifact.StateReasonCode = "object.derivative-scheduling-interrupted";
+                        artifact.ObjectVerificationToken = Guid.NewGuid();
+                        artifact.ObjectVerificationRequestedAtUtc = timeProvider.GetUtcNow();
+                        artifact.ObjectVerificationRetryCount = 0;
+                        artifact.ObjectVerificationRetryAtUtc = null;
+                        await db.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
+                    }
+                    await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+                    return;
+                }
+            }
+        }
     }
 
     internal static async Task<CentralObjectApplicationLock> AcquireCurrentObjectLockAsync(
@@ -2082,7 +2131,7 @@ internal sealed partial class CentralArtifactReconciliationService(
             && exception.Entries.All(entry => entry.Entity is CentralArtifact artifact && artifact.Id == artifactId);
 
     private static bool IsSchedulingConcurrency(DbUpdateConcurrencyException exception)
-        => exception.Data[SchedulingConcurrencyMarker] is true;
+        => exception.Data[CentralDerivativeJobScheduler.SchedulingConcurrencyMarker] is true;
 
     private static async Task ResolveReferencesAsync(
         ApplicationDbContext db,

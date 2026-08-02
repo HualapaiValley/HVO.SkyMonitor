@@ -213,6 +213,7 @@ internal sealed class TransientEventsController(
         return result.Status switch
         {
             CentralTransientPayloadReleaseStatus.Released => Ok(result.Response),
+            CentralTransientPayloadReleaseStatus.Accepted => Accepted(result.Response),
             CentralTransientPayloadReleaseStatus.NotFound => NotFound(),
             CentralTransientPayloadReleaseStatus.Invalid =>
                 BadRequest(new ProblemDetails { Title = "The payload release request is invalid." }),

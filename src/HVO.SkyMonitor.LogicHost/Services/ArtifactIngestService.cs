@@ -325,54 +325,18 @@ internal sealed partial class ArtifactIngestService(
 
         var storageReference = CreateCanonicalStorageReference(devicePublicId, manifest);
         var objectKey = storageReference[$"minio://{Bucket}/".Length..];
-        await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
-            dbContext, storageReference, cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await EnsureStorageReferenceNotRetiredAsync(storageReference, cancellationToken).ConfigureAwait(false);
-        }
-        catch (ArtifactIngestConflictException)
-        {
-            await ExpireRejectedIntentAsync(manifest, storageReference).ConfigureAwait(false);
-            throw;
-        }
-        if (manifest.IsReconstructable)
-        {
-            await EnsureV2IntentAsync(registration, manifest, storageReference, timeProvider.GetUtcNow(), cancellationToken)
-                .ConfigureAwait(false);
-            dbContext.ChangeTracker.Clear();
-        }
-        try
-        {
-            await EnsureStorageReferenceNotRetiredAsync(storageReference, cancellationToken).ConfigureAwait(false);
-        }
-        catch (ArtifactIngestConflictException)
-        {
-            await ExpireRejectedIntentAsync(manifest, storageReference).ConfigureAwait(false);
-            throw;
-        }
-        var source = new CopySourceObjectArgs().WithBucket(Bucket).WithObject(stagingKey);
-        var copyStarted = timeProvider.GetTimestamp();
-        try
-        {
-            await minio.CopyObjectAsync(new CopyObjectArgs().WithBucket(Bucket).WithObject(objectKey).WithCopyObjectSource(source), cancellationToken).ConfigureAwait(false);
-            telemetry.RecordObjectWrite("canonical-copy", "completed", timeProvider.GetElapsedTime(copyStarted));
-        }
-        catch
-        {
-            telemetry.RecordObjectWrite("canonical-copy", "failed", timeProvider.GetElapsedTime(copyStarted));
-            throw;
-        }
-
         var now = timeProvider.GetUtcNow();
+        var persisted = false;
         try
         {
-            var result = await PersistAsync(
-                registration, manifest, storageReference, objectLock, now, cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(result.Upload.StorageReference, storageReference, StringComparison.Ordinal))
-            {
-                await RemoveUncommittedObjectAsync(storageReference, objectKey).ConfigureAwait(false);
-            }
+            var result = await PublishAndPersistUnderObjectLockAsync().ConfigureAwait(false);
+            persisted = true;
+            await ScheduleDerivativesAfterObjectLockAsync(
+                registration.DevicePublicId ?? throw new InvalidOperationException(
+                    "An active device registration has no public identity."),
+                manifest.ArtifactId,
+                now,
+                cancellationToken).ConfigureAwait(false);
             telemetry.RecordRequest(
                 manifest.SchemaVersion,
                 result.ReadyForAcknowledgement ? "accepted" : "pending-reference",
@@ -382,7 +346,6 @@ internal sealed partial class ArtifactIngestService(
         }
         catch (ExistingArtifactRequiresCurrentObjectLockException exception)
         {
-            await objectLock.DisposeAsync().ConfigureAwait(false);
             if (exception.RemovePublishedObject)
             {
                 await RemoveUncommittedObjectAsync(storageReference, objectKey).ConfigureAwait(false);
@@ -406,6 +369,10 @@ internal sealed partial class ArtifactIngestService(
         }
         catch
         {
+            if (persisted)
+            {
+                throw;
+            }
             if (await CentralObjectOwnershipFence.IsRetiredAsync(
                     dbContext, storageReference, CancellationToken.None).ConfigureAwait(false))
             {
@@ -413,6 +380,57 @@ internal sealed partial class ArtifactIngestService(
             }
             await RemoveUncommittedObjectAsync(storageReference, objectKey).ConfigureAwait(false);
             throw;
+        }
+
+        async Task<ArtifactIngestResult> PublishAndPersistUnderObjectLockAsync()
+        {
+            await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+                dbContext, storageReference, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await EnsureStorageReferenceNotRetiredAsync(storageReference, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ArtifactIngestConflictException)
+            {
+                await ExpireRejectedIntentAsync(manifest, storageReference).ConfigureAwait(false);
+                throw;
+            }
+            if (manifest.IsReconstructable)
+            {
+                await EnsureV2IntentAsync(
+                    registration, manifest, storageReference, timeProvider.GetUtcNow(), cancellationToken)
+                    .ConfigureAwait(false);
+                dbContext.ChangeTracker.Clear();
+            }
+            try
+            {
+                await EnsureStorageReferenceNotRetiredAsync(storageReference, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ArtifactIngestConflictException)
+            {
+                await ExpireRejectedIntentAsync(manifest, storageReference).ConfigureAwait(false);
+                throw;
+            }
+            var source = new CopySourceObjectArgs().WithBucket(Bucket).WithObject(stagingKey);
+            var copyStarted = timeProvider.GetTimestamp();
+            try
+            {
+                await minio.CopyObjectAsync(new CopyObjectArgs().WithBucket(Bucket).WithObject(objectKey)
+                    .WithCopyObjectSource(source), cancellationToken).ConfigureAwait(false);
+                telemetry.RecordObjectWrite("canonical-copy", "completed", timeProvider.GetElapsedTime(copyStarted));
+            }
+            catch
+            {
+                telemetry.RecordObjectWrite("canonical-copy", "failed", timeProvider.GetElapsedTime(copyStarted));
+                throw;
+            }
+            var result = await PersistAsync(
+                registration, manifest, storageReference, objectLock, now, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(result.Upload.StorageReference, storageReference, StringComparison.Ordinal))
+            {
+                await RemoveUncommittedObjectAsync(storageReference, objectKey).ConfigureAwait(false);
+            }
+            return result;
         }
     }
 
@@ -638,26 +656,32 @@ internal sealed partial class ArtifactIngestService(
                             || artifact.IngestIdentities.Any(identity => identity.IdempotencyKey == manifest.IdempotencyKey))
                         .Select(artifact => new ExistingArtifactTarget(artifact.Id, artifact.StorageReference))
                         .SingleAsync(cancellationToken).ConfigureAwait(false);
-                await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
-                    dbContext, target.StorageReference, cancellationToken).ConfigureAwait(false);
-                dbContext.ChangeTracker.Clear();
-                var currentReference = await dbContext.CentralArtifacts.AsNoTracking()
-                    .Where(artifact => artifact.Id == target.ArtifactId)
-                    .Select(artifact => artifact.StorageReference)
-                    .SingleAsync(cancellationToken).ConfigureAwait(false);
-                if (!string.Equals(currentReference, target.StorageReference, StringComparison.Ordinal))
+                ArtifactIngestResult result;
+                await using (var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+                    dbContext, target.StorageReference, cancellationToken).ConfigureAwait(false))
                 {
-                    continue;
+                    dbContext.ChangeTracker.Clear();
+                    var currentReference = await dbContext.CentralArtifacts.AsNoTracking()
+                        .Where(artifact => artifact.Id == target.ArtifactId)
+                        .Select(artifact => artifact.StorageReference)
+                        .SingleAsync(cancellationToken).ConfigureAwait(false);
+                    if (!string.Equals(currentReference, target.StorageReference, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    result = await ReconcileExistingUnderObjectLockAsync(
+                        target.ArtifactId,
+                        target.StorageReference,
+                        objectLock,
+                        manifest,
+                        receivedAtUtc,
+                        mode,
+                        compatibilityRegistration,
+                        cancellationToken).ConfigureAwait(false);
                 }
-                return await ReconcileExistingUnderObjectLockAsync(
-                    target.ArtifactId,
-                    target.StorageReference,
-                    objectLock,
-                    manifest,
-                    receivedAtUtc,
-                    mode,
-                    compatibilityRegistration,
-                    cancellationToken).ConfigureAwait(false);
+                await ScheduleDerivativesAfterObjectLockAsync(
+                    target.ArtifactId, receivedAtUtc, cancellationToken).ConfigureAwait(false);
+                return result;
             }
             catch (ExistingArtifactVerificationStaleException)
             {
@@ -968,11 +992,6 @@ internal sealed partial class ArtifactIngestService(
                 existing.ObjectState = CentralArtifactObjectState.Available;
                 await ResolveWaitingSourcesAsync(
                     existing, existing.Frame!.DevicePublicId, cancellationToken).ConfigureAwait(false);
-                if (ShouldScheduleDerivatives(existing))
-                {
-                    await derivativeJobScheduler.EnsureRequiredJobsAsync(
-                        existing, receivedAtUtc, cancellationToken).ConfigureAwait(false);
-                }
             }
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
@@ -1235,10 +1254,6 @@ internal sealed partial class ArtifactIngestService(
                 await ApplyReconstructionAsync(frame, artifact, manifest, devicePublicId, receivedAtUtc, cancellationToken)
                     .ConfigureAwait(false);
                 await ResolveWaitingSourcesAsync(artifact, devicePublicId, cancellationToken).ConfigureAwait(false);
-                if (ShouldScheduleDerivatives(artifact))
-                {
-                    await derivativeJobScheduler.EnsureRequiredJobsAsync(artifact, receivedAtUtc, cancellationToken).ConfigureAwait(false);
-                }
                 await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                 await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
                 var ready = artifact.ReconstructionState is CentralReconstructionState.Complete or CentralReconstructionState.LegacyIncomplete;
@@ -1350,6 +1365,47 @@ internal sealed partial class ArtifactIngestService(
         => artifact.ReconstructionState == CentralReconstructionState.Complete &&
             (artifact.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion ||
                 artifact.Role == FrameArtifactRole.Raw);
+
+    private async Task ScheduleDerivativesAfterObjectLockAsync(
+        Guid devicePublicId,
+        Guid artifactId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var shouldSchedule = await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(artifact =>
+            artifact.DevicePublicId == devicePublicId && artifact.ArtifactId == artifactId &&
+            artifact.ReconstructionState == CentralReconstructionState.Complete &&
+            (artifact.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion ||
+                artifact.Role == FrameArtifactRole.Raw), cancellationToken).ConfigureAwait(false);
+        if (shouldSchedule)
+        {
+            await derivativeJobScheduler.EnsureRequiredJobsAsync(
+                devicePublicId, artifactId, now, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ScheduleDerivativesAfterObjectLockAsync(
+        Guid centralArtifactId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var identity = await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.Id == centralArtifactId &&
+                artifact.ReconstructionState == CentralReconstructionState.Complete &&
+                (artifact.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion ||
+                    artifact.Role == FrameArtifactRole.Raw))
+            .Select(artifact => new
+            {
+                DevicePublicId = artifact.DevicePublicId ?? artifact.Frame!.DevicePublicId,
+                artifact.ArtifactId
+            })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (identity is not null)
+        {
+            await derivativeJobScheduler.EnsureRequiredJobsAsync(
+                identity.DevicePublicId, identity.ArtifactId, now, cancellationToken).ConfigureAwait(false);
+        }
+    }
 
     private async Task ApplyReconstructionAsync(
         CentralFrame frame,

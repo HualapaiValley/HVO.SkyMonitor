@@ -72,23 +72,31 @@ internal sealed class CentralClearReferenceService(
             throw new ArgumentException("Designation actor is required and must not exceed 256 characters.", nameof(actor));
         }
 
+        var centralArtifactId = await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.ArtifactId == artifactId && artifact.DevicePublicId == devicePublicId)
+            .Select(artifact => (Guid?)artifact.Id)
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+            ?? throw new CentralClearReferenceException("clear-reference.artifact-not-found");
+        var target = await CentralTransientPayloadHoldFence.ReadArtifactAsync(
+                dbContext, centralArtifactId, cancellationToken).ConfigureAwait(false)
+            ?? throw new CentralClearReferenceException("clear-reference.artifact-not-found");
+        await using var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, [target], cancellationToken).ConfigureAwait(false);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable,
-            cancellationToken).ConfigureAwait(false);
+            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         var registrationId = await dbContext.DeviceRegistrations
             .Where(registration => registration.DevicePublicId == devicePublicId)
             .Select(registration => (Guid?)registration.Id)
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
             ?? throw new CentralClearReferenceException("clear-reference.registration-not-found");
-        var centralArtifactId = await dbContext.CentralArtifacts
-            .Where(artifact => artifact.ArtifactId == artifactId && artifact.DevicePublicId == devicePublicId)
-            .Select(artifact => (Guid?)artifact.Id)
-            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
-            ?? throw new CentralClearReferenceException("clear-reference.artifact-not-found");
-        if (await CentralArtifactRetentionLock.AcquireAsync(
-                dbContext, centralArtifactId, cancellationToken).ConfigureAwait(false) != 1)
+        try
         {
-            throw new CentralClearReferenceException("clear-reference.artifact-not-found");
+            await CentralTransientPayloadHoldFence.ValidateAsync(
+                dbContext, holdScope.Targets, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CentralTransientPayloadHoldRejectedException exception)
+        {
+            throw new CentralClearReferenceException("clear-reference.artifact-ineligible", exception);
         }
         var artifact = await QueryArtifacts().SingleAsync(
             candidate => candidate.Id == centralArtifactId,

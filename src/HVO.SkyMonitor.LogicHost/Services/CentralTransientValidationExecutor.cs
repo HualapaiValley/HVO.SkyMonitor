@@ -23,6 +23,7 @@ internal sealed partial class CentralTransientValidationExecutor(
     ApplicationDbContext dbContext,
     ICentralDerivativeJobInputReader inputReader,
     ICentralTransientEventPersistence persistence,
+    ICentralTransientDerivativeScheduler derivativeScheduler,
     ICentralDerivativeJobService jobService,
     ICentralTransientMaskFactory maskFactory,
     CentralDerivativeWorkerTelemetry telemetry,
@@ -57,6 +58,16 @@ internal sealed partial class CentralTransientValidationExecutor(
             var adoptedReason = validation.CommittedAtUtc.HasValue
                 ? CentralTransientRuntimeReasonCodes.OutputAdopted
                 : validation.OutcomeReasonCode;
+            if (validation.CommittedAtUtc.HasValue)
+            {
+                var eventVersionIds = validation.IdentitySlots
+                    .Where(slot => slot.PersistedEventVersionId.HasValue)
+                    .Select(slot => slot.PersistedEventVersionId!.Value)
+                    .Distinct()
+                    .ToArray();
+                await derivativeScheduler.EnsureScheduledAsync(eventVersionIds, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             await jobService.CompleteWithoutArtifactAsync(
                 lease.JobId, lease.LeaseToken, adoptedReason, cancellationToken)
                 .ConfigureAwait(false);
@@ -198,100 +209,119 @@ internal sealed partial class CentralTransientValidationExecutor(
 
         var convergenceStarted = timeProvider.GetTimestamp();
         using var convergenceActivity = telemetry.StartStage("converge", CentralTransientRuntime.RecipeName);
-        await using var associationTransaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
-        await CentralTransientValidationOutcome.AcquireEventSerializationLockAsync(
-            dbContext, validation.AgentId, cancellationToken).ConfigureAwait(false);
-        var associated = await AssociateAsync(
-            lease, validation, extraction, executionOptions, target,
-            detectorSources.Single(item => item.Position == TransientTemporalPosition.N).Descriptor,
-            background.Product, orderedSources, slots,
-            createdUtc, cancellationToken).ConfigureAwait(false);
-        extraction = associated.Extraction;
-        var extractionDescriptor = extraction.Descriptor
-            ?? throw new CentralDerivativeJobStateException("Transient extraction did not retain its descriptor.");
-        var events = new List<TransientEventV1>(extraction.Candidates.Count);
-        var assessmentReceipts = new List<TransientAssessmentExecutionDescriptorV1>(extraction.Candidates.Count);
-        for (var ordinal = 0; ordinal < extraction.Candidates.Count; ordinal++)
+        var persistenceArtifactIds = lease.Inputs.Select(input => input.CentralArtifactId).Distinct().ToArray();
+        var persistenceHoldTargets = await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
+            dbContext, persistenceArtifactIds, cancellationToken).ConfigureAwait(false);
+        if (persistenceHoldTargets.Count != persistenceArtifactIds.Length)
         {
-            var candidate = extraction.Candidates[ordinal];
-            var slot = slots.Single(item => item.CandidateId == candidate.CandidateId);
-            var prior = associated.PriorEvents.GetValueOrDefault(candidate.CandidateId);
-            var currentObservation = TransientObservationFactory.CreateAssessmentObservation(
-                new TransientObservationPromotionRequest(
-                    candidate.CandidateId, slot.ObservationId, prior?.Event.Observations.Count ?? 0, extractionDescriptor));
-            var assessmentObservations = prior is null
-                ? [currentObservation]
-                : prior.Event.Observations.Select(observation => new TransientAssessmentObservationV1(
-                        prior.Event.EventId,
-                        prior.ExtractionIdentityByObservationId[observation.ObservationId],
-                        observation))
-                    .Append(currentObservation).ToArray();
-            var versionCreatedUtc = prior is null
-                ? createdUtc.AddTicks(1)
-                : Max(createdUtc.AddTicks(1), prior.Event.VersionCreatedUtc.AddTicks(1));
-            var priorAssessment = prior?.Event.Assessments.LastOrDefault(assessment =>
-                assessment.Producer.Kind == TransientAssessmentProducerKind.DeterministicAlgorithm &&
-                string.Equals(assessment.Producer.Name, TransientAssessmentFactory.ProducerName, StringComparison.Ordinal) &&
-                string.Equals(assessment.Producer.Version, TransientAssessmentFactory.ProducerVersion, StringComparison.Ordinal));
-            var assessment = TransientAssessmentFactory.Create(new TransientAssessmentExecutionRequest(
-                candidate.EventId,
-                slot.AssessmentId,
-                versionCreatedUtc,
-                TransientAssessmentAuthority.Authoritative,
-                assessmentObservations,
-                executionOptions.Assessment,
-                prior?.Event.Assessments ?? [],
-                priorAssessment?.AssessmentId), cancellationToken);
-            if (assessment.Status != TransientAssessmentExecutionStatus.Produced || assessment.Descriptor is null)
+            throw new CentralDerivativeInputRejectedException(
+                CentralTransientPersistenceReasonCodes.InvalidArtifactLineage);
+        }
+        CentralTransientPersistenceCommit persistenceCommit;
+        List<TransientAssessmentExecutionDescriptorV1> assessmentReceipts;
+        var persistStarted = 0L;
+        await using (var persistenceHoldScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, persistenceHoldTargets, cancellationToken).ConfigureAwait(false))
+        {
+            await using var associationTransaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+            await CentralTransientValidationOutcome.AcquireEventSerializationLockAsync(
+                dbContext, validation.AgentId, cancellationToken).ConfigureAwait(false);
+            var associated = await AssociateAsync(
+                lease, validation, extraction, executionOptions, target,
+                detectorSources.Single(item => item.Position == TransientTemporalPosition.N).Descriptor,
+                background.Product, orderedSources, slots,
+                createdUtc, cancellationToken).ConfigureAwait(false);
+            extraction = associated.Extraction;
+            var extractionDescriptor = extraction.Descriptor
+                ?? throw new CentralDerivativeJobStateException("Transient extraction did not retain its descriptor.");
+            var events = new List<TransientEventV1>(extraction.Candidates.Count);
+            assessmentReceipts = new List<TransientAssessmentExecutionDescriptorV1>(extraction.Candidates.Count);
+            for (var ordinal = 0; ordinal < extraction.Candidates.Count; ordinal++)
             {
-                throw new CentralDerivativeInputRejectedException(
-                    assessment.ReasonCode ?? CentralTransientRuntimeReasonCodes.InvalidAssessment);
+                var candidate = extraction.Candidates[ordinal];
+                var slot = slots.Single(item => item.CandidateId == candidate.CandidateId);
+                var prior = associated.PriorEvents.GetValueOrDefault(candidate.CandidateId);
+                var currentObservation = TransientObservationFactory.CreateAssessmentObservation(
+                    new TransientObservationPromotionRequest(
+                        candidate.CandidateId, slot.ObservationId, prior?.Event.Observations.Count ?? 0, extractionDescriptor));
+                var assessmentObservations = prior is null
+                    ? [currentObservation]
+                    : prior.Event.Observations.Select(observation => new TransientAssessmentObservationV1(
+                            prior.Event.EventId,
+                            prior.ExtractionIdentityByObservationId[observation.ObservationId],
+                            observation))
+                        .Append(currentObservation).ToArray();
+                var versionCreatedUtc = prior is null
+                    ? createdUtc.AddTicks(1)
+                    : Max(createdUtc.AddTicks(1), prior.Event.VersionCreatedUtc.AddTicks(1));
+                var priorAssessment = prior?.Event.Assessments.LastOrDefault(assessment =>
+                    assessment.Producer.Kind == TransientAssessmentProducerKind.DeterministicAlgorithm &&
+                    string.Equals(assessment.Producer.Name, TransientAssessmentFactory.ProducerName, StringComparison.Ordinal) &&
+                    string.Equals(assessment.Producer.Version, TransientAssessmentFactory.ProducerVersion, StringComparison.Ordinal));
+                var assessment = TransientAssessmentFactory.Create(new TransientAssessmentExecutionRequest(
+                    candidate.EventId,
+                    slot.AssessmentId,
+                    versionCreatedUtc,
+                    TransientAssessmentAuthority.Authoritative,
+                    assessmentObservations,
+                    executionOptions.Assessment,
+                    prior?.Event.Assessments ?? [],
+                    priorAssessment?.AssessmentId), cancellationToken);
+                if (assessment.Status != TransientAssessmentExecutionStatus.Produced || assessment.Descriptor is null)
+                {
+                    throw new CentralDerivativeInputRejectedException(
+                        assessment.ReasonCode ?? CentralTransientRuntimeReasonCodes.InvalidAssessment);
+                }
+                assessmentReceipts.Add(assessment.Descriptor);
+                var observations = prior is null
+                    ? [currentObservation.Observation]
+                    : prior.Event.Observations.Append(currentObservation.Observation).ToArray();
+                var assessments = prior is null
+                    ? [assessment.Descriptor.Assessment]
+                    : prior.Event.Assessments.Append(assessment.Descriptor.Assessment).ToArray();
+                events.Add(new TransientEventV1(
+                    TransientEventV1.CurrentSchemaVersion,
+                    candidate.EventId,
+                    Guid.NewGuid(),
+                    (prior?.Event.Version ?? 0) + 1,
+                    prior?.Event.EventVersionId,
+                    prior?.Event.VersionCreatedUtc,
+                    validation.AgentId,
+                    StateFor(
+                        candidate.State,
+                        assessment.Descriptor.Assessment,
+                        associated.AmbiguousCandidateIds.Contains(candidate.CandidateId)),
+                    prior?.Event.EventCreatedUtc ?? candidate.CreatedUtc,
+                    versionCreatedUtc,
+                    observations.Min(observation => observation.Source.ObservationStartedUtc),
+                    observations.Max(observation => observation.Source.ObservationEndedUtc),
+                    observations,
+                    assessments,
+                    prior?.Event.Reviews ?? [],
+                    prior?.Event.Notifications ?? [],
+                    prior?.Event.Derivatives ?? []));
             }
-            assessmentReceipts.Add(assessment.Descriptor);
-            var observations = prior is null
-                ? [currentObservation.Observation]
-                : prior.Event.Observations.Append(currentObservation.Observation).ToArray();
-            var assessments = prior is null
-                ? [assessment.Descriptor.Assessment]
-                : prior.Event.Assessments.Append(assessment.Descriptor.Assessment).ToArray();
-            events.Add(new TransientEventV1(
-                TransientEventV1.CurrentSchemaVersion,
-                candidate.EventId,
-                Guid.NewGuid(),
-                (prior?.Event.Version ?? 0) + 1,
-                prior?.Event.EventVersionId,
-                prior?.Event.VersionCreatedUtc,
-                validation.AgentId,
-                StateFor(
-                    candidate.State,
-                    assessment.Descriptor.Assessment,
-                    associated.AmbiguousCandidateIds.Contains(candidate.CandidateId)),
-                prior?.Event.EventCreatedUtc ?? candidate.CreatedUtc,
-                versionCreatedUtc,
-                observations.Min(observation => observation.Source.ObservationStartedUtc),
-                observations.Max(observation => observation.Source.ObservationEndedUtc),
-                observations,
-                assessments,
-                prior?.Event.Reviews ?? [],
-                prior?.Event.Notifications ?? [],
-                prior?.Event.Derivatives ?? []));
-        }
-        telemetry.RecordStage("converge", CentralTransientRuntime.RecipeName, "completed",
-            timeProvider.GetElapsedTime(convergenceStarted));
+            telemetry.RecordStage("converge", CentralTransientRuntime.RecipeName, "completed",
+                timeProvider.GetElapsedTime(convergenceStarted));
 
-        var extractionPayload = Canonical(TransientCandidateExtractionJson.Serialize(extractionDescriptor));
-        var eventPayloads = events.Select(value => Canonical(TransientContractJson.Serialize(value))).ToArray();
-        var assessmentPayloads = assessmentReceipts.Select(value => Canonical(TransientAssessmentJson.Serialize(value)))
-            .ToArray();
-        var persistStarted = timeProvider.GetTimestamp();
-        using (telemetry.StartStage("persist", CentralTransientRuntime.RecipeName))
-        {
-            _ = await persistence.AppendAsync(new CentralTransientPersistenceRequest(
-                lease.JobId, extractionPayload, eventPayloads, assessmentPayloads), cancellationToken)
-                .ConfigureAwait(false);
+            var extractionPayload = Canonical(TransientCandidateExtractionJson.Serialize(extractionDescriptor));
+            var eventPayloads = events.Select(value => Canonical(TransientContractJson.Serialize(value))).ToArray();
+            var assessmentPayloads = assessmentReceipts.Select(value => Canonical(TransientAssessmentJson.Serialize(value)))
+                .ToArray();
+            persistStarted = timeProvider.GetTimestamp();
+            using (telemetry.StartStage("persist", CentralTransientRuntime.RecipeName))
+            {
+                persistenceCommit = await persistence.AppendUnderPayloadLocksAsync(new CentralTransientPersistenceRequest(
+                    lease.JobId, extractionPayload, eventPayloads, assessmentPayloads),
+                    persistenceHoldScope.Targets,
+                    cancellationToken)
+                    .ConfigureAwait(false);
+                await associationTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
-        await associationTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await derivativeScheduler.EnsureScheduledAsync(
+            persistenceCommit.EventVersionIds, cancellationToken).ConfigureAwait(false);
         dbContext.ChangeTracker.Clear();
         var completionReason = extraction.Candidates.Count == 0
             ? TransientCandidateExtractionReasonCodes.NoCandidate

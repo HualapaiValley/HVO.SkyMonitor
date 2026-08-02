@@ -1719,6 +1719,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
             db,
             inputReader,
             services.GetRequiredService<ICentralTransientEventPersistence>(),
+            services.GetRequiredService<ICentralTransientDerivativeScheduler>(),
             jobService,
             services.GetRequiredService<ICentralTransientMaskFactory>(),
             telemetry,

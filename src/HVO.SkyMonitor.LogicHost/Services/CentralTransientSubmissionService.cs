@@ -210,6 +210,16 @@ internal sealed class CentralTransientSubmissionService(
         await ValidateWindowAsync(registration, envelope, verified, payloadSha256, cancellationToken)
             .ConfigureAwait(false);
 
+        var holdTargets = await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
+            dbContext, verified.Select(item => item.Artifact.Id), cancellationToken).ConfigureAwait(false);
+        if (holdTargets.Count != verified.Count)
+        {
+            throw new CentralTransientSubmissionRejectedException(
+                CentralTransientSubmissionReasonCodes.EvidenceUnavailable,
+                CentralTransientSubmissionRejectionKind.Unavailable);
+        }
+        await using var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         await AcquireSubmissionLocksAsync(envelope, registration.DeviceId, cancellationToken).ConfigureAwait(false);
@@ -239,10 +249,22 @@ internal sealed class CentralTransientSubmissionService(
                 CentralTransientSubmissionRejectionKind.Conflict);
         }
 
-        foreach (var source in verified.OrderBy(item => item.Artifact.Id))
+        try
         {
-            await CentralArtifactRetentionLock.AcquireAsync(dbContext, source.Artifact.Id, cancellationToken)
-                .ConfigureAwait(false);
+            await CentralTransientPayloadHoldFence.ValidateAsync(
+                dbContext, holdScope.Targets, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CentralTransientPayloadHoldRejectedException)
+        {
+            await AddAuditAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceUnavailable,
+                envelope.CandidateId, envelope.EventId, envelope.SubmissionIdentitySha256,
+                existingJobId: null, cancellationToken).ConfigureAwait(false);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            telemetry.RecordOperation("transient-submit", "rejected");
+            throw new CentralTransientSubmissionRejectedException(
+                CentralTransientSubmissionReasonCodes.EvidenceUnavailable,
+                CentralTransientSubmissionRejectionKind.Unavailable);
         }
         var sourceIds = verified.Select(item => item.Artifact.Id).ToArray();
         var usable = await dbContext.CentralArtifacts.AsNoTracking().CountAsync(artifact =>
