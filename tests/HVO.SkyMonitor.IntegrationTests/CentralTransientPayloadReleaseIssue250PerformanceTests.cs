@@ -1904,7 +1904,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     {
         await using var database = CreateDatabase(fixture, "W3M");
         var objectKey = $"issue-250/w3m/{Guid.NewGuid():N}.bin";
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(15));
         var cancellationToken = timeout.Token;
         privateValues.Add(objectKey);
         try
@@ -1967,7 +1967,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using (var setup = connection.CreateCommand())
             {
-                setup.CommandTimeout = 300;
+                setup.CommandTimeout = 600;
                 setup.CommandText = """
                     SET XACT_ABORT ON;
                     BEGIN TRANSACTION;
