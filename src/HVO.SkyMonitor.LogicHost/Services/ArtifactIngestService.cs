@@ -558,6 +558,18 @@ internal sealed partial class ArtifactIngestService(
         return false;
     }
 
+    private static bool IsSqlDeadlock(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is Microsoft.Data.SqlClient.SqlException { Number: 1205 })
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static int? GetSqlErrorNumber(Exception exception)
     {
         for (var current = exception; current is not null; current = current.InnerException)
@@ -608,29 +620,29 @@ internal sealed partial class ArtifactIngestService(
         const int maximumAttempts = 10;
         for (var attempt = 0; attempt < maximumAttempts; attempt++)
         {
-            var target = knownArtifactId.HasValue
-                ? await dbContext.CentralArtifacts.AsNoTracking()
-                    .Where(artifact => artifact.Id == knownArtifactId.Value)
-                    .Select(artifact => new ExistingArtifactTarget(artifact.Id, artifact.StorageReference))
-                    .SingleAsync(cancellationToken).ConfigureAwait(false)
-                : await dbContext.CentralArtifacts.AsNoTracking()
-                    .Where(artifact => artifact.IdempotencyKey == manifest.IdempotencyKey
-                        || artifact.IngestIdentities.Any(identity => identity.IdempotencyKey == manifest.IdempotencyKey))
-                    .Select(artifact => new ExistingArtifactTarget(artifact.Id, artifact.StorageReference))
-                    .SingleAsync(cancellationToken).ConfigureAwait(false);
-            await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
-                dbContext, target.StorageReference, cancellationToken).ConfigureAwait(false);
-            dbContext.ChangeTracker.Clear();
-            var currentReference = await dbContext.CentralArtifacts.AsNoTracking()
-                .Where(artifact => artifact.Id == target.ArtifactId)
-                .Select(artifact => artifact.StorageReference)
-                .SingleAsync(cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(currentReference, target.StorageReference, StringComparison.Ordinal))
-            {
-                continue;
-            }
             try
             {
+                var target = knownArtifactId.HasValue
+                    ? await dbContext.CentralArtifacts.AsNoTracking()
+                        .Where(artifact => artifact.Id == knownArtifactId.Value)
+                        .Select(artifact => new ExistingArtifactTarget(artifact.Id, artifact.StorageReference))
+                        .SingleAsync(cancellationToken).ConfigureAwait(false)
+                    : await dbContext.CentralArtifacts.AsNoTracking()
+                        .Where(artifact => artifact.IdempotencyKey == manifest.IdempotencyKey
+                            || artifact.IngestIdentities.Any(identity => identity.IdempotencyKey == manifest.IdempotencyKey))
+                        .Select(artifact => new ExistingArtifactTarget(artifact.Id, artifact.StorageReference))
+                        .SingleAsync(cancellationToken).ConfigureAwait(false);
+                await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+                    dbContext, target.StorageReference, cancellationToken).ConfigureAwait(false);
+                dbContext.ChangeTracker.Clear();
+                var currentReference = await dbContext.CentralArtifacts.AsNoTracking()
+                    .Where(artifact => artifact.Id == target.ArtifactId)
+                    .Select(artifact => artifact.StorageReference)
+                    .SingleAsync(cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(currentReference, target.StorageReference, StringComparison.Ordinal))
+                {
+                    continue;
+                }
                 return await ReconcileExistingUnderObjectLockAsync(
                     target.ArtifactId,
                     target.StorageReference,
@@ -641,9 +653,25 @@ internal sealed partial class ArtifactIngestService(
                     compatibilityRegistration,
                     cancellationToken).ConfigureAwait(false);
             }
-            catch (ExistingArtifactVerificationStaleException) when (attempt < maximumAttempts - 1)
+            catch (ExistingArtifactVerificationStaleException)
             {
                 dbContext.ChangeTracker.Clear();
+                if (attempt < maximumAttempts - 1)
+                {
+                    await DelayPersistenceRetryAsync(manifest.ArtifactId, attempt, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (Exception exception) when (IsPersistenceRace(exception))
+            {
+                dbContext.ChangeTracker.Clear();
+                if (attempt >= maximumAttempts - 1)
+                {
+                    throw;
+                }
+                if (IsSqlDeadlock(exception))
+                {
+                    telemetry.RecordReconciliationConcurrency("sql-deadlock-retry");
+                }
                 await DelayPersistenceRetryAsync(manifest.ArtifactId, attempt, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -732,7 +760,7 @@ internal sealed partial class ArtifactIngestService(
         CancellationToken cancellationToken)
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+            IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
         try
         {
             var existing = await LoadExistingArtifactAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
@@ -826,6 +854,11 @@ internal sealed partial class ArtifactIngestService(
             var reservation = ExistingArtifactVerificationReservation.Create(existing);
             await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
             return new ExistingVerificationPreparation(reservation, null);
+        }
+        catch (Exception exception) when (IsSqlDeadlock(exception))
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            throw;
         }
         catch (Exception exception) when (IsPersistenceRace(exception))
         {
@@ -929,6 +962,11 @@ internal sealed partial class ArtifactIngestService(
         }
         catch (ArtifactIntegrityException)
         {
+            throw;
+        }
+        catch (Exception exception) when (IsSqlDeadlock(exception))
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
             throw;
         }
         catch (Exception exception) when (exception is ExistingArtifactVerificationStaleException

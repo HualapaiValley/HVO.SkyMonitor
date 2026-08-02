@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Net;
 using System.Runtime;
 using System.Runtime.InteropServices;
@@ -7,6 +8,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -40,6 +42,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             Assert.IsTrue(GCSettings.IsServerGC, "claimable evidence requires DOTNET_gcServer=1");
         }
         var fixture = AssemblyHooks.Fixture;
+        using var retryCollector = new Issue249RetryCollector();
         var w1 = CreateWorkload("W1", 1936, 1216, CameraPixelFormat.Mono16);
         var w2 = CreateWorkload("W2", 3096, 2080, CameraPixelFormat.BayerRggb16);
         await SeedWorkloadAsync(fixture, w1).ConfigureAwait(false);
@@ -107,6 +110,11 @@ public sealed partial class LogicHostIngestPerformanceTests
             phase).ConfigureAwait(false);
 
         await AssertIssue249FinalStateAsync(fixture, allUploads, initialState).ConfigureAwait(false);
+        if (phase == "after")
+        {
+            Assert.AreEqual(0L, retryCollector.SqlDeadlockRetries,
+                "candidate duplicate verification must not conceal SQL deadlocks behind internal retries");
+        }
         var repositoryRoot = GetRepositoryRoot();
         var source = await EvidenceSourceIdentity.CaptureAsync(
             repositoryRoot,
@@ -191,6 +199,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 FinalReconstructionState = CentralReconstructionState.Complete.ToString(),
                 ExactDerivativeJobIdsUnchanged = true,
                 ExactStorageReferenceAndRecoveryGenerationUnchanged = true,
+                SqlDeadlockRetries = retryCollector.SqlDeadlockRetries,
                 BaselineVerificationToken = "N/A: no durable verification reservation fields exist at the pinned baseline revision.",
                 W1Sha256 = w1.ChecksumSha256,
                 W2Sha256 = w2.ChecksumSha256
@@ -887,6 +896,40 @@ public sealed partial class LogicHostIngestPerformanceTests
             }
             return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private sealed class Issue249RetryCollector : IDisposable
+    {
+        private readonly MeterListener listener = new();
+        private long sqlDeadlockRetries;
+
+        public Issue249RetryCollector()
+        {
+            listener.InstrumentPublished = (instrument, current) =>
+            {
+                if (instrument.Meter.Name == CentralIngestTelemetry.MeterName
+                    && instrument.Name == "skymonitor.central.ingest.reconciliation_concurrency")
+                {
+                    current.EnableMeasurementEvents(instrument);
+                }
+            };
+            listener.SetMeasurementEventCallback<long>((_, measurement, tags, _) =>
+            {
+                foreach (var tag in tags)
+                {
+                    if (tag.Key == "outcome"
+                        && string.Equals(tag.Value as string, "sql-deadlock-retry", StringComparison.Ordinal))
+                    {
+                        Interlocked.Add(ref sqlDeadlockRetries, measurement);
+                    }
+                }
+            });
+            listener.Start();
+        }
+
+        public long SqlDeadlockRetries => Interlocked.Read(ref sqlDeadlockRetries);
+
+        public void Dispose() => listener.Dispose();
     }
 
     private sealed record Issue249DuplicateScenario(
