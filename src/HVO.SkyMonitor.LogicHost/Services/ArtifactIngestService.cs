@@ -81,6 +81,7 @@ internal sealed record ArtifactIngestManifest(
 internal sealed partial class ArtifactIngestService(
     ApplicationDbContext dbContext,
     IMinioClient minio,
+    ICentralArtifactObjectReader objectReader,
     TimeProvider timeProvider,
     ICentralDerivativeJobScheduler derivativeJobScheduler,
     CentralIngestTelemetry telemetry,
@@ -302,12 +303,14 @@ internal sealed partial class ArtifactIngestService(
                 EnsureCompatibleArtifactMatches(compatibilityArtifact, manifest);
                 if (compatibilityArtifact.ObjectState == CentralArtifactObjectState.Available)
                 {
-                    await using var compatibilityLock = await CentralObjectApplicationLock.AcquireAsync(
-                        dbContext, compatibilityArtifact.StorageReference, cancellationToken).ConfigureAwait(false);
-                    await EnsureStorageReferenceNotRetiredAsync(
-                        compatibilityArtifact.StorageReference, cancellationToken).ConfigureAwait(false);
-                    var enriched = await EnrichCompatibilityArtifactAsync(
-                        registration, manifest, timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+                    dbContext.ChangeTracker.Clear();
+                    var enriched = await ReconcileExistingAsync(
+                        manifest,
+                        timeProvider.GetUtcNow(),
+                        ExistingArtifactReconciliationMode.CrossSchemaCompatibility,
+                        cancellationToken,
+                        compatibilityArtifact.Id,
+                        registration).ConfigureAwait(false);
                     telemetry.RecordDuplicate(manifest.SchemaVersion);
                     telemetry.RecordRequest(manifest.SchemaVersion, "cross-schema-duplicate", manifest.ByteLength, timeProvider.GetElapsedTime(started));
                     return enriched;
@@ -364,7 +367,8 @@ internal sealed partial class ArtifactIngestService(
         var now = timeProvider.GetUtcNow();
         try
         {
-            var result = await PersistAsync(registration, manifest, storageReference, now, cancellationToken).ConfigureAwait(false);
+            var result = await PersistAsync(
+                registration, manifest, storageReference, objectLock, now, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(result.Upload.StorageReference, storageReference, StringComparison.Ordinal))
             {
                 await RemoveUncommittedObjectAsync(storageReference, objectKey).ConfigureAwait(false);
@@ -372,6 +376,30 @@ internal sealed partial class ArtifactIngestService(
             telemetry.RecordRequest(
                 manifest.SchemaVersion,
                 result.ReadyForAcknowledgement ? "accepted" : "pending-reference",
+                manifest.ByteLength,
+                timeProvider.GetElapsedTime(started));
+            return result;
+        }
+        catch (ExistingArtifactRequiresCurrentObjectLockException exception)
+        {
+            await objectLock.DisposeAsync().ConfigureAwait(false);
+            if (exception.RemovePublishedObject)
+            {
+                await RemoveUncommittedObjectAsync(storageReference, objectKey).ConfigureAwait(false);
+            }
+            var result = await ReconcileExistingAsync(
+                manifest,
+                now,
+                exception.Mode,
+                cancellationToken,
+                exception.CentralArtifactId,
+                exception.Mode == ExistingArtifactReconciliationMode.CrossSchemaCompatibility
+                    ? registration
+                    : null).ConfigureAwait(false);
+            telemetry.RecordDuplicate(manifest.SchemaVersion);
+            telemetry.RecordRequest(
+                manifest.SchemaVersion,
+                result.ReadyForAcknowledgement ? "duplicate" : "pending-reference",
                 manifest.ByteLength,
                 timeProvider.GetElapsedTime(started));
             return result;
@@ -410,88 +438,6 @@ internal sealed partial class ArtifactIngestService(
     {
         var mediaTypeKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(manifest.MediaType)));
         return $"minio://{Bucket}/artifacts/{devicePublicId:N}/{manifest.CapturedAtUtc:yyyy/MM/dd}/{manifest.IdempotencyKey}-{manifest.ChecksumSha256.ToUpperInvariant()}-{mediaTypeKey}.bin";
-    }
-
-    private async Task<ArtifactIngestResult> EnrichCompatibilityArtifactAsync(
-        DeviceRegistration registration,
-        ArtifactIngestManifest manifest,
-        DateTimeOffset receivedAtUtc,
-        CancellationToken cancellationToken)
-    {
-        var artifact = await dbContext.CentralArtifacts
-            .Include(item => item.IngestIdentities)
-            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
-            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Timing)
-            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Control)
-            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
-            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
-            .Include(item => item.Sources)
-            .AsSplitQuery()
-            .SingleAsync(item => item.ArtifactId == manifest.ArtifactId
-                && item.Frame!.DevicePublicId == registration.DevicePublicId
-                && item.Frame.FrameId == manifest.FrameId, cancellationToken).ConfigureAwait(false);
-        await EnsureStorageReferenceNotRetiredAsync(artifact.StorageReference, cancellationToken).ConfigureAwait(false);
-        EnsureCompatibleArtifactMatches(artifact, manifest);
-        if (artifact.DevicePublicId is null
-            && await dbContext.CentralArtifacts.AnyAsync(candidate =>
-                candidate.Id != artifact.Id
-                && candidate.DevicePublicId == registration.DevicePublicId
-                && candidate.ArtifactId == manifest.ArtifactId,
-                cancellationToken).ConfigureAwait(false))
-        {
-            throw new ArtifactIngestConflictException(
-                "The artifact identity already has a canonical row for this device.");
-        }
-        artifact.DevicePublicId ??= registration.DevicePublicId!.Value;
-        EnsureSceneProvenanceMatches(artifact.Frame!, manifest);
-        EnrichSceneProvenance(artifact.Frame!, manifest);
-        if (!artifact.IngestIdentities.Any(identity => identity.IdempotencyKey == manifest.IdempotencyKey))
-        {
-            var identity = new CentralArtifactIngestIdentity
-            {
-                CentralArtifactId = artifact.Id,
-                Artifact = artifact,
-                ManifestSchemaVersion = manifest.SchemaVersion,
-                IdempotencyKey = manifest.IdempotencyKey.ToUpperInvariant()
-            };
-            dbContext.CentralArtifactIngestIdentities.Add(identity);
-        }
-        if (manifest.IsReconstructable)
-        {
-            await ApplyReconstructionAsync(
-                artifact.Frame!, artifact, manifest, registration.DevicePublicId!.Value, receivedAtUtc, cancellationToken).ConfigureAwait(false);
-        }
-        var integrityReason = await VerifyStoredObjectAsync(artifact, cancellationToken).ConfigureAwait(false);
-        if (integrityReason is not null)
-        {
-            QuarantineObject(artifact, integrityReason);
-            await InvalidateDependentsAsync(dbContext, artifact, cancellationToken).ConfigureAwait(false);
-            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            throw new ArtifactIntegrityException("Stored artifact object is missing or inconsistent with SQL metadata.");
-        }
-        artifact.ObjectState = CentralArtifactObjectState.Available;
-        artifact.ReconciledAtUtc = receivedAtUtc;
-        await ResolveWaitingSourcesAsync(artifact, registration.DevicePublicId!.Value, cancellationToken).ConfigureAwait(false);
-        if (ShouldScheduleDerivatives(artifact))
-        {
-            await derivativeJobScheduler.EnsureRequiredJobsAsync(artifact, receivedAtUtc, cancellationToken).ConfigureAwait(false);
-        }
-        try
-        {
-            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (IsCaptureSequenceConflict(exception))
-        {
-            throw CreateCaptureSequenceConflict(exception);
-        }
-        catch (Exception exception) when (IsPersistenceRace(exception))
-        {
-            dbContext.ChangeTracker.Clear();
-            return await ReconcileExistingUnderObjectLockAsync(
-                manifest, receivedAtUtc, ExistingArtifactReconciliationMode.MultipartDuplicate, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        return CreateResult(artifact, manifest);
     }
 
     private async Task EnsureV2IntentAsync(
@@ -612,6 +558,18 @@ internal sealed partial class ArtifactIngestService(
         return false;
     }
 
+    private static int? GetSqlErrorNumber(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is Microsoft.Data.SqlClient.SqlException sqlException)
+            {
+                return sqlException.Number;
+            }
+        }
+        return null;
+    }
+
     private Task<Guid?> ResolveCaptureInstallationAsync(
         Guid registrationId,
         DateTimeOffset capturedAtUtc,
@@ -643,107 +601,400 @@ internal sealed partial class ArtifactIngestService(
         ArtifactIngestManifest manifest,
         DateTimeOffset receivedAtUtc,
         ExistingArtifactReconciliationMode mode,
-        CancellationToken cancellationToken)
-    {
-        var storageReference = await dbContext.CentralArtifacts.AsNoTracking()
-            .Where(artifact => artifact.IdempotencyKey == manifest.IdempotencyKey
-                || artifact.IngestIdentities.Any(identity => identity.IdempotencyKey == manifest.IdempotencyKey))
-            .Select(artifact => artifact.StorageReference)
-            .SingleAsync(cancellationToken).ConfigureAwait(false);
-        await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
-            dbContext, storageReference, cancellationToken).ConfigureAwait(false);
-        await EnsureStorageReferenceNotRetiredAsync(storageReference, cancellationToken).ConfigureAwait(false);
-        dbContext.ChangeTracker.Clear();
-        return await ReconcileExistingUnderObjectLockAsync(manifest, receivedAtUtc, mode, cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    private async Task<ArtifactIngestResult> ReconcileExistingUnderObjectLockAsync(
-        ArtifactIngestManifest manifest,
-        DateTimeOffset receivedAtUtc,
-        ExistingArtifactReconciliationMode mode,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? knownArtifactId = null,
+        DeviceRegistration? compatibilityRegistration = null)
     {
         const int maximumAttempts = 10;
         for (var attempt = 0; attempt < maximumAttempts; attempt++)
         {
-            await using var transaction = await dbContext.Database.BeginTransactionAsync(
-                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+            var target = knownArtifactId.HasValue
+                ? await dbContext.CentralArtifacts.AsNoTracking()
+                    .Where(artifact => artifact.Id == knownArtifactId.Value)
+                    .Select(artifact => new ExistingArtifactTarget(artifact.Id, artifact.StorageReference))
+                    .SingleAsync(cancellationToken).ConfigureAwait(false)
+                : await dbContext.CentralArtifacts.AsNoTracking()
+                    .Where(artifact => artifact.IdempotencyKey == manifest.IdempotencyKey
+                        || artifact.IngestIdentities.Any(identity => identity.IdempotencyKey == manifest.IdempotencyKey))
+                    .Select(artifact => new ExistingArtifactTarget(artifact.Id, artifact.StorageReference))
+                    .SingleAsync(cancellationToken).ConfigureAwait(false);
+            await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+                dbContext, target.StorageReference, cancellationToken).ConfigureAwait(false);
+            dbContext.ChangeTracker.Clear();
+            var currentReference = await dbContext.CentralArtifacts.AsNoTracking()
+                .Where(artifact => artifact.Id == target.ArtifactId)
+                .Select(artifact => artifact.StorageReference)
+                .SingleAsync(cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(currentReference, target.StorageReference, StringComparison.Ordinal))
+            {
+                continue;
+            }
             try
             {
-                var existing = await dbContext.CentralArtifacts
-                    .Include(artifact => artifact.IngestIdentities)
-                    .Include(artifact => artifact.Layout)
-                    .Include(artifact => artifact.Sources)
-                    .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
-                    .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
-                    .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
-                    .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Location)
-                    .AsSplitQuery()
-                    .SingleAsync(
-                        artifact => artifact.IdempotencyKey == manifest.IdempotencyKey
-                            || artifact.IngestIdentities.Any(identity => identity.IdempotencyKey == manifest.IdempotencyKey),
+                return await ReconcileExistingUnderObjectLockAsync(
+                    target.ArtifactId,
+                    target.StorageReference,
+                    objectLock,
+                    manifest,
+                    receivedAtUtc,
+                    mode,
+                    compatibilityRegistration,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (ExistingArtifactVerificationStaleException) when (attempt < maximumAttempts - 1)
+            {
+                dbContext.ChangeTracker.Clear();
+                await DelayPersistenceRetryAsync(manifest.ArtifactId, attempt, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        throw new ArtifactIngestConflictException(
+            "The artifact object generation changed repeatedly during verification.");
+    }
+
+    private async Task<ArtifactIngestResult> ReconcileExistingUnderObjectLockAsync(
+        Guid centralArtifactId,
+        string lockedStorageReference,
+        CentralObjectApplicationLock objectLock,
+        ArtifactIngestManifest manifest,
+        DateTimeOffset receivedAtUtc,
+        ExistingArtifactReconciliationMode mode,
+        DeviceRegistration? compatibilityRegistration,
+        CancellationToken cancellationToken)
+    {
+        var preparation = await ReserveExistingVerificationAsync(
+            centralArtifactId,
+            lockedStorageReference,
+            manifest,
+            receivedAtUtc,
+            mode,
+            compatibilityRegistration,
+            cancellationToken).ConfigureAwait(false);
+        if (preparation.Result is not null)
+        {
+            return preparation.Result;
+        }
+        var reservation = preparation.Reservation
+            ?? throw new InvalidOperationException("Artifact verification preparation omitted its reservation.");
+        await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+        var verificationStarted = timeProvider.GetTimestamp();
+        ExistingObjectVerification verification;
+        var probe = reservation.CreateProbe();
+        try
+        {
+            var objectSnapshot = await objectReader.VerifyAsync(probe, cancellationToken).ConfigureAwait(false);
+            verification = new ExistingObjectVerification(null, objectSnapshot.StorageETag);
+            telemetry.RecordChecksum("stored-object", "matched");
+            telemetry.RecordVerificationDuration(
+                "stream", "matched", timeProvider.GetElapsedTime(verificationStarted));
+        }
+        catch (CentralArtifactMissingException)
+        {
+            verification = new ExistingObjectVerification("object.missing", null);
+            telemetry.RecordChecksum("stored-object", "missing");
+            telemetry.RecordVerificationDuration(
+                "stream", "missing", timeProvider.GetElapsedTime(verificationStarted));
+        }
+        catch (CentralArtifactIntegrityException exception)
+        {
+            if (exception.StorageETag is { Length: > 0 }
+                && !await objectReader.IsCurrentGenerationAsync(
+                    probe, exception.StorageETag, cancellationToken).ConfigureAwait(false))
+            {
+                throw new ExistingArtifactVerificationStaleException();
+            }
+            verification = new ExistingObjectVerification(exception.ReasonCode, exception.StorageETag);
+            telemetry.RecordChecksum("stored-object", exception.ReasonCode switch
+            {
+                "object.length-mismatch" => "length-mismatch",
+                "object.checksum-mismatch" => "checksum-mismatch",
+                _ => "integrity-failed"
+            });
+            telemetry.RecordVerificationDuration(
+                "stream", "invalid", timeProvider.GetElapsedTime(verificationStarted));
+        }
+        await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+        return await FinalizeExistingVerificationAsync(
+            reservation,
+            verification,
+            manifest,
+            receivedAtUtc,
+            objectLock,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ExistingVerificationPreparation> ReserveExistingVerificationAsync(
+        Guid centralArtifactId,
+        string lockedStorageReference,
+        ArtifactIngestManifest manifest,
+        DateTimeOffset receivedAtUtc,
+        ExistingArtifactReconciliationMode mode,
+        DeviceRegistration? compatibilityRegistration,
+        CancellationToken cancellationToken)
+    {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var existing = await LoadExistingArtifactAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(existing.StorageReference, lockedStorageReference, StringComparison.Ordinal))
+            {
+                throw new ExistingArtifactVerificationStaleException();
+            }
+            await EnsureStorageReferenceNotRetiredAsync(lockedStorageReference, cancellationToken).ConfigureAwait(false);
+            if (existing.ObjectState == CentralArtifactObjectState.Expired)
+            {
+                throw new ArtifactIngestConflictException("The immutable artifact object key has been permanently retired.");
+            }
+            if (existing.ObjectState == CentralArtifactObjectState.Quarantined
+                && mode == ExistingArtifactReconciliationMode.StatusAcknowledgement)
+            {
+                throw new ArtifactIntegrityException("Stored artifact object is quarantined.");
+            }
+
+            if (mode == ExistingArtifactReconciliationMode.CrossSchemaCompatibility)
+            {
+                var registration = compatibilityRegistration
+                    ?? throw new InvalidOperationException("Cross-schema verification requires the device registration.");
+                EnsureCompatibleArtifactMatches(existing, manifest);
+                if (existing.DevicePublicId is null
+                    && await dbContext.CentralArtifacts.AnyAsync(candidate =>
+                        candidate.Id != existing.Id
+                        && candidate.DevicePublicId == registration.DevicePublicId
+                        && candidate.ArtifactId == manifest.ArtifactId,
+                        cancellationToken).ConfigureAwait(false))
+                {
+                    throw new ArtifactIngestConflictException(
+                        "The artifact identity already has a canonical row for this device.");
+                }
+                existing.DevicePublicId ??= registration.DevicePublicId!.Value;
+                EnsureSceneProvenanceMatches(existing.Frame!, manifest);
+                EnrichSceneProvenance(existing.Frame!, manifest);
+                if (!existing.IngestIdentities.Any(identity => string.Equals(
+                    identity.IdempotencyKey, manifest.IdempotencyKey, StringComparison.OrdinalIgnoreCase)))
+                {
+                    dbContext.CentralArtifactIngestIdentities.Add(new CentralArtifactIngestIdentity
+                    {
+                        CentralArtifactId = existing.Id,
+                        Artifact = existing,
+                        ManifestSchemaVersion = manifest.SchemaVersion,
+                        IdempotencyKey = manifest.IdempotencyKey.ToUpperInvariant()
+                    });
+                }
+                if (manifest.IsReconstructable)
+                {
+                    var devicePublicId = registration.DevicePublicId
+                        ?? throw new DeviceRegistrationException("Agent is not fully activated.");
+                    await ApplyReconstructionAsync(
+                        existing.Frame!,
+                        existing,
+                        manifest,
+                        devicePublicId,
+                        receivedAtUtc,
                         cancellationToken).ConfigureAwait(false);
-                await EnsureStorageReferenceNotRetiredAsync(
-                    existing.StorageReference, cancellationToken).ConfigureAwait(false);
+                }
+                await TryResolvePendingReferenceAsync(
+                    existing, manifest, receivedAtUtc, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
                 EnsureManifestMatches(existing, manifest);
                 EnrichSceneProvenance(existing.Frame!, manifest);
-                await TryResolvePendingReferenceAsync(existing, manifest, receivedAtUtc, cancellationToken).ConfigureAwait(false);
-                var requiresVerification = existing.ReconstructionState != CentralReconstructionState.PendingReference
-                    && mode switch
-                    {
-                        ExistingArtifactReconciliationMode.StatusAcknowledgement => true,
-                        ExistingArtifactReconciliationMode.MultipartDuplicate => true,
-                        _ => throw new ArgumentOutOfRangeException(nameof(mode))
-                    };
-                if (requiresVerification)
-                {
-                    var integrityReason = await VerifyStoredObjectAsync(existing, cancellationToken).ConfigureAwait(false);
-                    if (integrityReason is not null)
-                    {
-                        QuarantineObject(existing, integrityReason);
-                        await InvalidateDependentsAsync(dbContext, existing, cancellationToken).ConfigureAwait(false);
-                        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                        await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
-                        throw new ArtifactIntegrityException("Stored artifact object is missing or inconsistent with SQL metadata.");
-                    }
-                }
-                if (existing.ReconstructionState != CentralReconstructionState.PendingReference)
+                await TryResolvePendingReferenceAsync(
+                    existing, manifest, receivedAtUtc, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (existing.ReconstructionState == CentralReconstructionState.PendingReference
+                && existing.ObjectVerificationToken is null)
+            {
+                if (mode != ExistingArtifactReconciliationMode.StatusAcknowledgement)
                 {
                     existing.ObjectState = CentralArtifactObjectState.Available;
                 }
                 existing.ReconciledAtUtc = receivedAtUtc;
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                var result = CreateResult(existing, manifest);
+                await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
+                return new ExistingVerificationPreparation(null, result);
+            }
+
+            existing.ObjectVerificationToken = Guid.NewGuid();
+            existing.ObjectVerificationRequestedAtUtc = timeProvider.GetUtcNow();
+            existing.ObjectVerificationRetryCount = 0;
+            existing.ObjectVerificationRetryAtUtc = null;
+            existing.ObjectState = CentralArtifactObjectState.Pending;
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            var reservation = ExistingArtifactVerificationReservation.Create(existing);
+            await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
+            return new ExistingVerificationPreparation(reservation, null);
+        }
+        catch (Exception exception) when (IsPersistenceRace(exception))
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            var reason = exception is DbUpdateConcurrencyException concurrency
+                ? "concurrency:" + string.Join(',', concurrency.Entries.Select(static entry => entry.Metadata.ClrType.Name))
+                : exception.Message;
+            throw new ExistingArtifactVerificationStaleException(reason, exception);
+        }
+        catch (DbUpdateException exception)
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"Artifact verification reservation database update failed ({GetSqlErrorNumber(exception)}).",
+                exception);
+        }
+        catch
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async Task<ArtifactIngestResult> FinalizeExistingVerificationAsync(
+        ExistingArtifactVerificationReservation reservation,
+        ExistingObjectVerification verification,
+        ArtifactIngestManifest manifest,
+        DateTimeOffset receivedAtUtc,
+        CentralObjectApplicationLock objectLock,
+        CancellationToken cancellationToken)
+    {
+        var probe = reservation.CreateProbe();
+        if (verification.StorageETag is { Length: > 0 }
+            && !await objectReader.IsCurrentGenerationAsync(
+                probe, verification.StorageETag, cancellationToken).ConfigureAwait(false))
+        {
+            throw new ExistingArtifactVerificationStaleException("object-generation");
+        }
+        if (verification.ReasonCode == "object.missing"
+            && !await IsStoredObjectMissingAsync(probe, cancellationToken).ConfigureAwait(false))
+        {
+            throw new ExistingArtifactVerificationStaleException("object-appeared");
+        }
+        await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+        var finalizeStarted = timeProvider.GetTimestamp();
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        var integrityFailure = verification.ReasonCode is not null;
+        try
+        {
+            dbContext.ChangeTracker.Clear();
+            var existing = await LoadExistingArtifactAsync(reservation.CentralArtifactId, cancellationToken)
+                .ConfigureAwait(false);
+            var mismatch = reservation.GetMismatch(existing);
+            if (mismatch is not null)
+            {
+                throw new ExistingArtifactVerificationStaleException(mismatch);
+            }
+            if (existing.ObjectState == CentralArtifactObjectState.Expired
+                || await CentralObjectOwnershipFence.IsRetiredAsync(
+                    dbContext, reservation.StorageReference, cancellationToken).ConfigureAwait(false))
+            {
+                throw new ExistingArtifactVerificationStaleException("retired");
+            }
+            EnsureManifestMatches(existing, manifest);
+            existing.ObjectVerifiedAtUtc = timeProvider.GetUtcNow();
+            existing.ReconciledAtUtc = receivedAtUtc;
+            existing.ObjectVerificationToken = null;
+            existing.ObjectVerificationRequestedAtUtc = null;
+            existing.ObjectVerificationRetryCount = 0;
+            existing.ObjectVerificationRetryAtUtc = null;
+            if (integrityFailure)
+            {
+                QuarantineObject(existing, verification.ReasonCode!);
+                await InvalidateDependentsAsync(dbContext, existing, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                existing.ObjectState = CentralArtifactObjectState.Available;
+                await ResolveWaitingSourcesAsync(
+                    existing, existing.Frame!.DevicePublicId, cancellationToken).ConfigureAwait(false);
                 if (ShouldScheduleDerivatives(existing))
                 {
-                    await derivativeJobScheduler.EnsureRequiredJobsAsync(existing, receivedAtUtc, cancellationToken).ConfigureAwait(false);
+                    await derivativeJobScheduler.EnsureRequiredJobsAsync(
+                        existing, receivedAtUtc, cancellationToken).ConfigureAwait(false);
                 }
-                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
-                return CreateResult(existing, manifest);
             }
-            catch (Exception exception) when (IsCaptureSequenceConflict(exception))
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+            await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
+            telemetry.RecordVerificationDuration(
+                "finalize",
+                integrityFailure ? "quarantined" : "available",
+                timeProvider.GetElapsedTime(finalizeStarted));
+            if (integrityFailure)
             {
-                await TryRollbackAsync(transaction).ConfigureAwait(false);
-                throw CreateCaptureSequenceConflict(exception);
+                throw new ArtifactIntegrityException(
+                    "Stored artifact object is missing or inconsistent with SQL metadata.");
             }
-            catch (Exception exception) when (IsPersistenceRace(exception))
-            {
-                await TryRollbackAsync(transaction).ConfigureAwait(false);
-                dbContext.ChangeTracker.Clear();
-                if (attempt == maximumAttempts - 1)
-                {
-                    throw;
-                }
-                await DelayPersistenceRetryAsync(manifest.ArtifactId, attempt, cancellationToken).ConfigureAwait(false);
-            }
+            return CreateResult(existing, manifest);
         }
-        throw new ArtifactIngestConflictException("The artifact could not be reconciled because of sustained concurrency.");
+        catch (ArtifactIntegrityException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is ExistingArtifactVerificationStaleException
+            || IsPersistenceRace(exception))
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            var reason = exception is DbUpdateConcurrencyException concurrency
+                ? "concurrency:" + string.Join(',', concurrency.Entries.Select(static entry => entry.Metadata.ClrType.Name))
+                : exception.Message;
+            throw new ExistingArtifactVerificationStaleException(reason, exception);
+        }
+        catch (DbUpdateException exception)
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"Artifact verification finalization database update failed ({GetSqlErrorNumber(exception)}).",
+                exception);
+        }
+        catch
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private Task<CentralArtifact> LoadExistingArtifactAsync(Guid centralArtifactId, CancellationToken cancellationToken)
+        => dbContext.CentralArtifacts
+            .Include(artifact => artifact.IngestIdentities)
+            .Include(artifact => artifact.Layout)
+            .Include(artifact => artifact.Recipe)
+            .Include(artifact => artifact.Sources)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Location)
+            .AsSplitQuery()
+            .SingleAsync(artifact => artifact.Id == centralArtifactId, cancellationToken);
+
+    private async Task<bool> IsStoredObjectMissingAsync(
+        CentralArtifact artifact,
+        CancellationToken cancellationToken)
+    {
+        var prefix = $"minio://{Bucket}/";
+        if (!artifact.StorageReference.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        try
+        {
+            _ = await minio.StatObjectAsync(new StatObjectArgs()
+                .WithBucket(Bucket)
+                .WithObject(artifact.StorageReference[prefix.Length..]), cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        {
+            return true;
+        }
     }
 
     private async Task<ArtifactIngestResult> PersistAsync(
         DeviceRegistration registration,
         ArtifactIngestManifest manifest,
         string storageReference,
+        CentralObjectApplicationLock objectLock,
         DateTimeOffset receivedAtUtc,
         CancellationToken cancellationToken)
     {
@@ -769,32 +1020,59 @@ internal sealed partial class ArtifactIngestService(
                     .ConfigureAwait(false);
                 if (existing is not null)
                 {
-                    EnsureManifestMatches(existing, manifest);
-                    EnrichSceneProvenance(existing.Frame!, manifest);
-                    if (existing.ObjectState != CentralArtifactObjectState.Available)
+                    if (existing.ManifestSchemaVersion == manifest.SchemaVersion)
                     {
-                        existing.StorageReference = storageReference;
+                        EnsureManifestMatches(existing, manifest);
                     }
-                    var integrityReason = await VerifyStoredObjectAsync(existing, cancellationToken).ConfigureAwait(false);
-                    if (integrityReason is not null)
+                    else
                     {
-                        QuarantineObject(existing, integrityReason);
-                        await InvalidateDependentsAsync(dbContext, existing, cancellationToken).ConfigureAwait(false);
+                        EnsureCompatibleArtifactMatches(existing, manifest);
+                        EnsureSceneProvenanceMatches(existing.Frame!, manifest);
+                    }
+                    if (!string.Equals(existing.StorageReference, storageReference, StringComparison.Ordinal))
+                    {
+                        if (existing.ObjectState == CentralArtifactObjectState.Available)
+                        {
+                            await TryRollbackAsync(transaction).ConfigureAwait(false);
+                            dbContext.ChangeTracker.Clear();
+                            throw new ExistingArtifactRequiresCurrentObjectLockException(
+                                existing.Id,
+                                existing.ManifestSchemaVersion == manifest.SchemaVersion
+                                    ? ExistingArtifactReconciliationMode.MultipartDuplicate
+                                    : ExistingArtifactReconciliationMode.CrossSchemaCompatibility,
+                                removePublishedObject: true);
+                        }
+                        existing.StorageReference = storageReference;
                         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                         await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
-                        throw new ArtifactIntegrityException("Stored artifact object is missing or inconsistent with SQL metadata.");
                     }
-                    existing.ObjectState = CentralArtifactObjectState.Available;
-                    existing.ReconciledAtUtc = receivedAtUtc;
-                    await TryResolvePendingReferenceAsync(existing, manifest, receivedAtUtc, cancellationToken).ConfigureAwait(false);
-                    await ResolveWaitingSourcesAsync(existing, existing.Frame!.DevicePublicId, cancellationToken).ConfigureAwait(false);
-                    if (ShouldScheduleDerivatives(existing))
+                    else
                     {
-                        await derivativeJobScheduler.EnsureRequiredJobsAsync(existing, receivedAtUtc, cancellationToken).ConfigureAwait(false);
+                        await TryRollbackAsync(transaction).ConfigureAwait(false);
                     }
-                    await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                    await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
-                    return CreateResult(existing, manifest);
+                    dbContext.ChangeTracker.Clear();
+                    var reconciliationMode = existing.ManifestSchemaVersion == manifest.SchemaVersion
+                        ? ExistingArtifactReconciliationMode.MultipartDuplicate
+                        : ExistingArtifactReconciliationMode.CrossSchemaCompatibility;
+                    try
+                    {
+                        return await ReconcileExistingUnderObjectLockAsync(
+                            existing.Id,
+                            storageReference,
+                            objectLock,
+                            manifest,
+                            receivedAtUtc,
+                            reconciliationMode,
+                            reconciliationMode == ExistingArtifactReconciliationMode.CrossSchemaCompatibility
+                                ? registration
+                                : null,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (ExistingArtifactVerificationStaleException)
+                    {
+                        throw new ExistingArtifactRequiresCurrentObjectLockException(
+                            existing.Id, reconciliationMode, removePublishedObject: false);
+                    }
                 }
 
                 var devicePublicId = registration.DevicePublicId!.Value;
@@ -835,50 +1113,46 @@ internal sealed partial class ArtifactIngestService(
                     {
                         EnsureCompatibleArtifactMatches(crossSchemaArtifact, manifest);
                         EnsureSceneProvenanceMatches(frame, manifest);
-                        EnrichSceneProvenance(frame, manifest);
-                        if (!crossSchemaArtifact.IngestIdentities.Any(identity =>
-                            identity.IdempotencyKey == manifest.IdempotencyKey))
+                        if (!string.Equals(
+                            crossSchemaArtifact.StorageReference, storageReference, StringComparison.Ordinal))
                         {
-                            var alias = new CentralArtifactIngestIdentity
+                            if (crossSchemaArtifact.ObjectState == CentralArtifactObjectState.Available)
                             {
-                                CentralArtifactId = crossSchemaArtifact.Id,
-                                Artifact = crossSchemaArtifact,
-                                ManifestSchemaVersion = manifest.SchemaVersion,
-                                IdempotencyKey = manifest.IdempotencyKey.ToUpperInvariant()
-                            };
-                            dbContext.CentralArtifactIngestIdentities.Add(alias);
-                        }
-                        if (manifest.IsReconstructable)
-                        {
-                            await ApplyReconstructionAsync(
-                                frame, crossSchemaArtifact, manifest, devicePublicId, receivedAtUtc, cancellationToken).ConfigureAwait(false);
-                        }
-                        if (crossSchemaArtifact.ObjectState != CentralArtifactObjectState.Available)
-                        {
+                                await TryRollbackAsync(transaction).ConfigureAwait(false);
+                                dbContext.ChangeTracker.Clear();
+                                throw new ExistingArtifactRequiresCurrentObjectLockException(
+                                    crossSchemaArtifact.Id,
+                                    ExistingArtifactReconciliationMode.CrossSchemaCompatibility,
+                                    removePublishedObject: true);
+                            }
                             crossSchemaArtifact.StorageReference = storageReference;
-                        }
-                        var integrityReason = await VerifyStoredObjectAsync(crossSchemaArtifact, cancellationToken).ConfigureAwait(false);
-                        if (integrityReason is not null)
-                        {
-                            QuarantineObject(crossSchemaArtifact, integrityReason);
-                            await InvalidateDependentsAsync(dbContext, crossSchemaArtifact, cancellationToken).ConfigureAwait(false);
                             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                             await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
-                            throw new ArtifactIntegrityException("Stored artifact object is missing or inconsistent with SQL metadata.");
                         }
-                        crossSchemaArtifact.ObjectState = CentralArtifactObjectState.Available;
-                        await TryResolvePendingReferenceAsync(
-                            crossSchemaArtifact, manifest, receivedAtUtc, cancellationToken).ConfigureAwait(false);
-                        await ResolveWaitingSourcesAsync(crossSchemaArtifact, devicePublicId, cancellationToken).ConfigureAwait(false);
-                        crossSchemaArtifact.ReconciledAtUtc = receivedAtUtc;
-                        if (ShouldScheduleDerivatives(crossSchemaArtifact))
+                        else
                         {
-                            await derivativeJobScheduler.EnsureRequiredJobsAsync(
-                                crossSchemaArtifact, receivedAtUtc, cancellationToken).ConfigureAwait(false);
+                            await TryRollbackAsync(transaction).ConfigureAwait(false);
                         }
-                        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                        await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
-                        return CreateResult(crossSchemaArtifact, manifest);
+                        dbContext.ChangeTracker.Clear();
+                        try
+                        {
+                            return await ReconcileExistingUnderObjectLockAsync(
+                                crossSchemaArtifact.Id,
+                                storageReference,
+                                objectLock,
+                                manifest,
+                                receivedAtUtc,
+                                ExistingArtifactReconciliationMode.CrossSchemaCompatibility,
+                                registration,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (ExistingArtifactVerificationStaleException)
+                        {
+                            throw new ExistingArtifactRequiresCurrentObjectLockException(
+                                crossSchemaArtifact.Id,
+                                ExistingArtifactReconciliationMode.CrossSchemaCompatibility,
+                                removePublishedObject: false);
+                        }
                     }
                     EnsureNoLogicalArtifactConflict(frame, manifest);
                 }
@@ -916,7 +1190,12 @@ internal sealed partial class ArtifactIngestService(
                     if (concurrent is not null)
                     {
                         EnsureManifestMatches(concurrent, manifest);
-                        return CreateResult(concurrent, manifest);
+                        throw new ExistingArtifactRequiresCurrentObjectLockException(
+                            concurrent.Id,
+                            concurrent.ManifestSchemaVersion == manifest.SchemaVersion
+                                ? ExistingArtifactReconciliationMode.MultipartDuplicate
+                                : ExistingArtifactReconciliationMode.CrossSchemaCompatibility,
+                            removePublishedObject: true);
                     }
                     throw;
                 }
@@ -957,7 +1236,11 @@ internal sealed partial class ArtifactIngestService(
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(artifact => artifact.ObjectState, CentralArtifactObjectState.Expired)
                 .SetProperty(artifact => artifact.StateReasonCode, "retention.publication-rejected")
-                .SetProperty(artifact => artifact.ReconciledAtUtc, now), CancellationToken.None)
+                .SetProperty(artifact => artifact.ReconciledAtUtc, now)
+                .SetProperty(artifact => artifact.ObjectVerificationToken, (Guid?)null)
+                .SetProperty(artifact => artifact.ObjectVerificationRequestedAtUtc, (DateTimeOffset?)null)
+                .SetProperty(artifact => artifact.ObjectVerificationRetryCount, 0)
+                .SetProperty(artifact => artifact.ObjectVerificationRetryAtUtc, (DateTimeOffset?)null), CancellationToken.None)
             .ConfigureAwait(false);
         dbContext.ChangeTracker.Clear();
     }
@@ -1075,7 +1358,7 @@ internal sealed partial class ArtifactIngestService(
         artifact.SourceId = descriptor.Artifact.SourceId;
         artifact.Variant = descriptor.Artifact.Variant;
         artifact.CreatedUtc = descriptor.Artifact.CreatedUtc;
-        artifact.Layout = new CentralArtifactLayout
+        artifact.Layout ??= new CentralArtifactLayout
         {
             Width = descriptor.Layout.Width,
             Height = descriptor.Layout.Height,
@@ -1103,7 +1386,7 @@ internal sealed partial class ArtifactIngestService(
             CfaOriginY = descriptor.Layout.Readout?.CfaOriginY,
             ByteLength = descriptor.Layout.ByteLength
         };
-        artifact.Recipe = new CentralArtifactRecipe
+        artifact.Recipe ??= new CentralArtifactRecipe
         {
             Name = descriptor.Artifact.Recipe.Name,
             SemanticVersion = descriptor.Artifact.Recipe.SemanticVersion,
@@ -1111,7 +1394,7 @@ internal sealed partial class ArtifactIngestService(
             OptionsJson = JsonSerializer.Serialize(CaptureContractJson.Canonicalize(descriptor.Artifact.Recipe.Options)),
             OptionsSha256 = descriptor.Artifact.Recipe.OptionsSha256.ToUpperInvariant()
         };
-        for (var ordinal = 0; ordinal < descriptor.Artifact.SourceArtifactIds.Count; ordinal++)
+        for (var ordinal = artifact.Sources.Count; ordinal < descriptor.Artifact.SourceArtifactIds.Count; ordinal++)
         {
             var sourceArtifactId = descriptor.Artifact.SourceArtifactIds[ordinal];
             var resolved = frame.Artifacts.FirstOrDefault(candidate => candidate.ArtifactId == sourceArtifactId
@@ -1447,45 +1730,6 @@ internal sealed partial class ArtifactIngestService(
             unavailableSource: unavailableSource,
             manifestCompleteness: manifest.Completeness);
         artifact.ReconciledAtUtc = reconciledAtUtc;
-    }
-
-    private async Task<string?> VerifyStoredObjectAsync(CentralArtifact artifact, CancellationToken cancellationToken)
-    {
-        var prefix = $"minio://{Bucket}/";
-        if (!artifact.StorageReference.StartsWith(prefix, StringComparison.Ordinal))
-        {
-            telemetry.RecordChecksum("stored-object", "reference-invalid");
-            return "object.reference-invalid";
-        }
-        var objectKey = artifact.StorageReference[prefix.Length..];
-        long bytesRead = 0;
-        string? checksum = null;
-        try
-        {
-            await minio.GetObjectAsync(new GetObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(objectKey)
-                .WithCallbackStream(stream =>
-                {
-                    using var verifying = new HashingReadStream(stream);
-                    verifying.CopyTo(Stream.Null);
-                    bytesRead = verifying.BytesRead;
-                    checksum = verifying.GetChecksumSha256();
-                }), cancellationToken).ConfigureAwait(false);
-        }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
-        {
-            telemetry.RecordChecksum("stored-object", "missing");
-            return "object.missing";
-        }
-        if (bytesRead != artifact.ByteLength)
-        {
-            telemetry.RecordChecksum("stored-object", "length-mismatch");
-            return "object.length-mismatch";
-        }
-        var matches = string.Equals(checksum, artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase);
-        telemetry.RecordChecksum("stored-object", matches ? "matched" : "checksum-mismatch");
-        return matches ? null : "object.checksum-mismatch";
     }
 
     private void QuarantineObject(CentralArtifact artifact, string reasonCode)
@@ -1901,7 +2145,7 @@ internal sealed partial class ArtifactIngestService(
             && artifact.ReconstructionState is CentralReconstructionState.Complete or CentralReconstructionState.LegacyIncomplete;
         return new ArtifactIngestResult(
             new DeviceUploadResult(frame.RegistrationId, frame.ObservatoryId, artifact.StorageReference, artifact.ReceivedAtUtc),
-            ready || !manifest.IsReconstructable);
+            ready);
     }
 
     private sealed class HashingReadStream(Stream inner) : Stream
@@ -1998,10 +2242,124 @@ internal sealed partial class ArtifactIngestService(
         }
     }
 
+    private sealed record ExistingArtifactTarget(Guid ArtifactId, string StorageReference);
+
+    private sealed record ExistingVerificationPreparation(
+        ExistingArtifactVerificationReservation? Reservation,
+        ArtifactIngestResult? Result);
+
+    private sealed record ExistingObjectVerification(string? ReasonCode, string? StorageETag);
+
+    private sealed record ExistingArtifactVerificationReservation(
+        Guid CentralArtifactId,
+        Guid CentralFrameId,
+        Guid ArtifactId,
+        Guid? DevicePublicId,
+        string StorageReference,
+        long ByteLength,
+        string ChecksumSha256,
+        Guid Token,
+        byte[] RowVersion)
+    {
+        internal static ExistingArtifactVerificationReservation Create(CentralArtifact artifact)
+            => new(
+                artifact.Id,
+                artifact.CentralFrameId,
+                artifact.ArtifactId,
+                artifact.DevicePublicId,
+                artifact.StorageReference,
+                artifact.ByteLength,
+                artifact.ChecksumSha256,
+                artifact.ObjectVerificationToken
+                    ?? throw new InvalidOperationException("Artifact verification token was not assigned."),
+                [.. artifact.RowVersion]);
+
+        internal CentralArtifact CreateProbe()
+            => new()
+            {
+                Id = CentralArtifactId,
+                CentralFrameId = CentralFrameId,
+                ArtifactId = ArtifactId,
+                DevicePublicId = DevicePublicId,
+                StorageReference = StorageReference,
+                ByteLength = ByteLength,
+                ChecksumSha256 = ChecksumSha256
+            };
+
+        internal string? GetMismatch(CentralArtifact artifact)
+        {
+            if (artifact.Id != CentralArtifactId) return "central-artifact-id";
+            if (artifact.CentralFrameId != CentralFrameId) return "central-frame-id";
+            if (artifact.ArtifactId != ArtifactId) return "artifact-id";
+            if (artifact.DevicePublicId != DevicePublicId) return "device-public-id";
+            if (!string.Equals(artifact.StorageReference, StorageReference, StringComparison.Ordinal)) return "storage-reference";
+            if (artifact.ByteLength != ByteLength) return "byte-length";
+            if (!string.Equals(artifact.ChecksumSha256, ChecksumSha256, StringComparison.OrdinalIgnoreCase)) return "checksum";
+            if (artifact.ObjectVerificationToken != Token) return "verification-token";
+            return artifact.RowVersion.AsSpan().SequenceEqual(RowVersion) ? null : "row-version";
+        }
+    }
+
+    private sealed class ExistingArtifactVerificationStaleException : Exception
+    {
+        public ExistingArtifactVerificationStaleException()
+        {
+        }
+
+        public ExistingArtifactVerificationStaleException(string message)
+            : base(message)
+        {
+        }
+
+        public ExistingArtifactVerificationStaleException(string message, Exception innerException)
+            : base(message, innerException)
+        {
+        }
+
+        internal ExistingArtifactVerificationStaleException(Exception innerException)
+            : base("The artifact verification reservation is stale.", innerException)
+        {
+        }
+    }
+
+    private sealed class ExistingArtifactRequiresCurrentObjectLockException : Exception
+    {
+        public ExistingArtifactRequiresCurrentObjectLockException()
+        {
+        }
+
+        public ExistingArtifactRequiresCurrentObjectLockException(string message)
+            : base(message)
+        {
+        }
+
+        public ExistingArtifactRequiresCurrentObjectLockException(string message, Exception innerException)
+            : base(message, innerException)
+        {
+        }
+
+        internal ExistingArtifactRequiresCurrentObjectLockException(
+            Guid centralArtifactId,
+            ExistingArtifactReconciliationMode mode,
+            bool removePublishedObject)
+        {
+            CentralArtifactId = centralArtifactId;
+            Mode = mode;
+            RemovePublishedObject = removePublishedObject;
+        }
+
+        internal Guid CentralArtifactId { get; }
+
+        internal ExistingArtifactReconciliationMode Mode { get; }
+
+        internal bool RemovePublishedObject { get; }
+    }
+
     private enum ExistingArtifactReconciliationMode
     {
         MultipartDuplicate,
-        StatusAcknowledgement
+        StatusAcknowledgement,
+        CrossSchemaCompatibility
     }
 }
 

@@ -105,6 +105,10 @@ public sealed class CentralRecoveryMigrationTests
             artifact.StorageReference.Should().Be("minio://legacy/noncanonical.bin");
             artifact.RecoveryGeneration.Should().Be(0);
             artifact.ObjectVerifiedAtUtc.Should().BeNull();
+            artifact.ObjectVerificationToken.Should().BeNull();
+            artifact.ObjectVerificationRequestedAtUtc.Should().BeNull();
+            artifact.ObjectVerificationRetryCount.Should().Be(0);
+            artifact.ObjectVerificationRetryAtUtc.Should().BeNull();
             artifact.ReferenceRetryCount.Should().Be(0);
             artifact.ReferenceRetryAtUtc.Should().BeNull();
             await AssertRecoverySchemaAsync(database.Context).ConfigureAwait(false);
@@ -150,6 +154,8 @@ public sealed class CentralRecoveryMigrationTests
             """).ToListAsync().ConfigureAwait(false);
         indexes.Should().Contain("IX_CentralArtifacts_ObjectState_RecoveryGeneration_Id");
         indexes.Should().Contain("IX_CentralArtifacts_ObjectState_ObjectVerifiedAtUtc_ReceivedAtUtc_Id");
+        indexes.Should().Contain(
+            "IX_CentralArtifacts_ObjectVerificationRetryAtUtc_ObjectVerificationRequestedAtUtc_Id");
         indexes.Should().Contain(
             "IX_CentralArtifacts_ReconstructionState_ReferenceRetryAtUtc_ReceivedAtUtc_Id");
         indexes.Should().Contain("IX_CentralArtifacts_StorageReference");

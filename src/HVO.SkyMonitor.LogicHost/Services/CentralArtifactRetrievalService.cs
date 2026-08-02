@@ -145,7 +145,11 @@ internal sealed partial class CentralArtifactRetrievalService(
                         .SetProperty(candidate => candidate.ObjectState, CentralArtifactObjectState.Quarantined)
                         .SetProperty(candidate => candidate.ReconstructionState, CentralReconstructionState.Quarantined)
                         .SetProperty(candidate => candidate.StateReasonCode, reasonCode)
-                        .SetProperty(candidate => candidate.ReconciledAtUtc, (DateTimeOffset?)null), cancellationToken)
+                        .SetProperty(candidate => candidate.ReconciledAtUtc, (DateTimeOffset?)null)
+                        .SetProperty(candidate => candidate.ObjectVerificationToken, (Guid?)null)
+                        .SetProperty(candidate => candidate.ObjectVerificationRequestedAtUtc, (DateTimeOffset?)null)
+                        .SetProperty(candidate => candidate.ObjectVerificationRetryCount, 0)
+                        .SetProperty(candidate => candidate.ObjectVerificationRetryAtUtc, (DateTimeOffset?)null), cancellationToken)
                     .ConfigureAwait(false);
             }
             else

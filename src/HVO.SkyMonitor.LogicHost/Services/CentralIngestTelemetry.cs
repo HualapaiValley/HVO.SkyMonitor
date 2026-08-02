@@ -26,6 +26,7 @@ internal sealed class CentralIngestTelemetry : IDisposable
     private readonly Histogram<double> _objectWriteDuration;
     private readonly Histogram<double> _sqlCommitDuration;
     private readonly Histogram<double> _reconciliationDuration;
+    private readonly Histogram<double> _verificationDuration;
     private readonly Histogram<double> _recoveryCycleDuration;
     private long _pendingObjects;
     private long _pendingObjectBytes;
@@ -36,6 +37,9 @@ internal sealed class CentralIngestTelemetry : IDisposable
     private long _quarantined;
     private long _quarantinedBytes;
     private long _quarantinedOldestAgeSeconds;
+    private long _pendingVerifications;
+    private long _pendingVerificationBytes;
+    private long _pendingVerificationOldestAgeSeconds;
 
     public CentralIngestTelemetry()
     {
@@ -57,6 +61,7 @@ internal sealed class CentralIngestTelemetry : IDisposable
         _objectWriteDuration = _meter.CreateHistogram<double>("skymonitor.central.ingest.object_write.duration", "ms");
         _sqlCommitDuration = _meter.CreateHistogram<double>("skymonitor.central.ingest.sql_commit.duration", "ms");
         _reconciliationDuration = _meter.CreateHistogram<double>("skymonitor.central.ingest.reconciliation.duration", "ms");
+        _verificationDuration = _meter.CreateHistogram<double>("skymonitor.central.ingest.verification.duration", "ms");
         _recoveryCycleDuration = _meter.CreateHistogram<double>("skymonitor.central.recovery.cycle.duration", "ms");
         _meter.CreateObservableGauge("skymonitor.central.ingest.pending_objects", () => Interlocked.Read(ref _pendingObjects), "{artifact}");
         _meter.CreateObservableGauge("skymonitor.central.ingest.pending_object_bytes", () => Interlocked.Read(ref _pendingObjectBytes), "By");
@@ -67,6 +72,9 @@ internal sealed class CentralIngestTelemetry : IDisposable
         _meter.CreateObservableGauge("skymonitor.central.ingest.quarantined", () => Interlocked.Read(ref _quarantined), "{artifact}");
         _meter.CreateObservableGauge("skymonitor.central.ingest.quarantined_bytes", () => Interlocked.Read(ref _quarantinedBytes), "By");
         _meter.CreateObservableGauge("skymonitor.central.ingest.quarantined_oldest_age", () => Interlocked.Read(ref _quarantinedOldestAgeSeconds), "s");
+        _meter.CreateObservableGauge("skymonitor.central.ingest.pending_verifications", () => Interlocked.Read(ref _pendingVerifications), "{artifact}");
+        _meter.CreateObservableGauge("skymonitor.central.ingest.pending_verification_bytes", () => Interlocked.Read(ref _pendingVerificationBytes), "By");
+        _meter.CreateObservableGauge("skymonitor.central.ingest.pending_verification_oldest_age", () => Interlocked.Read(ref _pendingVerificationOldestAgeSeconds), "s");
     }
 
     public static Activity? StartActivity(string name) => ActivitySource.StartActivity(name);
@@ -108,6 +116,11 @@ internal sealed class CentralIngestTelemetry : IDisposable
     public void RecordReconciliationDuration(string outcome, TimeSpan elapsed)
         => _reconciliationDuration.Record(elapsed.TotalMilliseconds, new TagList { { "outcome", outcome } });
 
+    public void RecordVerificationDuration(string phase, string outcome, TimeSpan elapsed)
+        => _verificationDuration.Record(
+            elapsed.TotalMilliseconds,
+            new TagList { { "phase", phase }, { "outcome", outcome } });
+
     public void RecordStagingCleanup(string outcome, long objects, long bytes = 0)
     {
         var tags = new TagList { { "outcome", outcome } };
@@ -144,7 +157,10 @@ internal sealed class CentralIngestTelemetry : IDisposable
         long pendingReferenceOldestAgeSeconds,
         long quarantined,
         long quarantinedBytes,
-        long quarantinedOldestAgeSeconds)
+        long quarantinedOldestAgeSeconds,
+        long pendingVerifications,
+        long pendingVerificationBytes,
+        long pendingVerificationOldestAgeSeconds)
     {
         Interlocked.Exchange(ref _pendingObjects, pendingObjects);
         Interlocked.Exchange(ref _pendingObjectBytes, pendingObjectBytes);
@@ -155,6 +171,9 @@ internal sealed class CentralIngestTelemetry : IDisposable
         Interlocked.Exchange(ref _quarantined, quarantined);
         Interlocked.Exchange(ref _quarantinedBytes, quarantinedBytes);
         Interlocked.Exchange(ref _quarantinedOldestAgeSeconds, quarantinedOldestAgeSeconds);
+        Interlocked.Exchange(ref _pendingVerifications, pendingVerifications);
+        Interlocked.Exchange(ref _pendingVerificationBytes, pendingVerificationBytes);
+        Interlocked.Exchange(ref _pendingVerificationOldestAgeSeconds, pendingVerificationOldestAgeSeconds);
     }
 
     public void Dispose() => _meter.Dispose();

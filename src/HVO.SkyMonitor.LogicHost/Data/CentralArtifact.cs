@@ -49,6 +49,14 @@ internal sealed class CentralArtifact
 
     public DateTimeOffset? ObjectVerifiedAtUtc { get; set; }
 
+    public Guid? ObjectVerificationToken { get; set; }
+
+    public DateTimeOffset? ObjectVerificationRequestedAtUtc { get; set; }
+
+    public int ObjectVerificationRetryCount { get; set; }
+
+    public DateTimeOffset? ObjectVerificationRetryAtUtc { get; set; }
+
     public Guid? RetentionDeletionToken { get; set; }
 
     public DateTimeOffset? RetentionDeletionRequestedAtUtc { get; set; }

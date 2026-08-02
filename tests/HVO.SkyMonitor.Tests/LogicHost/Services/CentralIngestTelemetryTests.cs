@@ -37,10 +37,11 @@ public sealed class CentralIngestTelemetryTests
         telemetry.RecordObjectWrite("staging", "completed", TimeSpan.FromMilliseconds(1));
         telemetry.RecordSqlCommit("completed", TimeSpan.FromMilliseconds(2));
         telemetry.RecordReconciliationDuration("completed", TimeSpan.FromMilliseconds(3));
+        telemetry.RecordVerificationDuration("stream", "matched", TimeSpan.FromMilliseconds(4));
         telemetry.RecordReconciliationConcurrency("retry");
         telemetry.RecordReconciliationConcurrency("converged");
         telemetry.RecordReconciliationConcurrency("exhausted");
-        telemetry.RecordBacklog(1, 10, 100, 2, 20, 200, 3, 30, 300);
+        telemetry.RecordBacklog(1, 10, 100, 2, 20, 200, 3, 30, 300, 4, 40, 400);
         listener.RecordObservableInstruments();
 
         var expected = new HashSet<string>(StringComparer.Ordinal)
@@ -52,6 +53,7 @@ public sealed class CentralIngestTelemetryTests
             "skymonitor.central.ingest.object_write.duration",
             "skymonitor.central.ingest.sql_commit.duration",
             "skymonitor.central.ingest.reconciliation.duration",
+            "skymonitor.central.ingest.verification.duration",
             "skymonitor.central.ingest.reconciliation_concurrency",
             "skymonitor.central.ingest.pending_objects",
             "skymonitor.central.ingest.pending_object_bytes",
@@ -61,10 +63,13 @@ public sealed class CentralIngestTelemetryTests
             "skymonitor.central.ingest.pending_reference_oldest_age",
             "skymonitor.central.ingest.quarantined",
             "skymonitor.central.ingest.quarantined_bytes",
-            "skymonitor.central.ingest.quarantined_oldest_age"
+            "skymonitor.central.ingest.quarantined_oldest_age",
+            "skymonitor.central.ingest.pending_verifications",
+            "skymonitor.central.ingest.pending_verification_bytes",
+            "skymonitor.central.ingest.pending_verification_oldest_age"
         };
         expected.Should().BeSubsetOf(measurements.Select(static measurement => measurement.Name).ToHashSet(StringComparer.Ordinal));
-        var allowedTags = new HashSet<string>(["schema", "outcome", "operation", "reason"], StringComparer.Ordinal);
+        var allowedTags = new HashSet<string>(["schema", "outcome", "operation", "reason", "phase"], StringComparer.Ordinal);
         measurements.SelectMany(static measurement => measurement.Tags.Select(tag => tag.Key))
             .Should().OnlyContain(tag => allowedTags.Contains(tag));
         var concurrency = measurements.Where(measurement =>
@@ -78,5 +83,6 @@ public sealed class CentralIngestTelemetryTests
         measurements.Single(measurement => measurement.Name == "skymonitor.central.ingest.pending_object_bytes").Value.Should().Be(10);
         measurements.Single(measurement => measurement.Name == "skymonitor.central.ingest.pending_reference_oldest_age").Value.Should().Be(200);
         measurements.Single(measurement => measurement.Name == "skymonitor.central.ingest.quarantined").Value.Should().Be(3);
+        measurements.Single(measurement => measurement.Name == "skymonitor.central.ingest.pending_verifications").Value.Should().Be(4);
     }
 }

@@ -885,6 +885,7 @@ public sealed class CentralRecoveryIntegrationTests
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
         services.AddSingleton<IMinioClient>(minio);
+        AddObjectReader(services);
         services.AddScoped<ICentralDerivativeJobScheduler>(_ => new RecordingScheduler());
         await using var provider = services.BuildServiceProvider();
         await SetCheckpointAsync(CentralRecoveryPhases.Idle, nextInventoryAtUtc: DateTimeOffset.UtcNow.AddDays(1))
@@ -905,7 +906,7 @@ public sealed class CentralRecoveryIntegrationTests
     }
 
     [TestMethod]
-    public async Task LeaseLostDuringScheduler_LeavesCommittedAvailableStateAndIdempotentRetry()
+    public async Task LeaseLostDuringScheduler_RequeuesCommittedVerification()
     {
         var key = $"artifacts/b1/{Guid.NewGuid():N}.bin";
         var artifactId = await AddArtifactAsync(key, [1, 2, 4], CentralArtifactObjectState.Pending,
@@ -914,6 +915,7 @@ public sealed class CentralRecoveryIntegrationTests
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
         services.AddSingleton(GetMinio());
+        AddObjectReader(services);
         services.AddScoped<ICentralDerivativeJobScheduler>(provider => new CommittingLeaseStealingScheduler(
             provider.GetRequiredService<ApplicationDbContext>(), provider.GetRequiredService<IServiceScopeFactory>(), state));
         await using var provider = services.BuildServiceProvider();
@@ -930,19 +932,15 @@ public sealed class CentralRecoveryIntegrationTests
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var artifact = await db.CentralArtifacts.SingleAsync(item => item.Id == artifactId).ConfigureAwait(false);
-            artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available,
-                "a scheduler may commit the shared context before the post-scheduler lease fence");
+            artifact.ObjectState.Should().Be(CentralArtifactObjectState.Pending);
             artifact.ObjectVerifiedAtUtc.Should().NotBeNull();
+            artifact.ObjectVerificationToken.Should().NotBeNull();
+            artifact.ObjectVerificationRetryCount.Should().Be(1);
+            artifact.ObjectVerificationRetryAtUtc.Should().BeAfter(DateTimeOffset.UtcNow);
             (await db.CentralDerivativeJobs.CountAsync(job => job.SourceCentralArtifactId == artifactId)
                 .ConfigureAwait(false)).Should().Be(0);
-            await db.CentralRecoveryCheckpoints.ExecuteUpdateAsync(setters => setters
-                .SetProperty(item => item.Phase, CentralRecoveryPhases.Idle)
-                .SetProperty(item => item.NextInventoryAtUtc, DateTimeOffset.UtcNow.AddDays(1))
-                .SetProperty(item => item.LeaseToken, (Guid?)null)
-                .SetProperty(item => item.LeaseExpiresAtUtc, (DateTimeOffset?)null)).ConfigureAwait(false);
         }
-        _ = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-        state.Invocations.Should().Be(1, "retry observes the durable Available state and does not duplicate scheduling");
+        state.Invocations.Should().Be(1);
     }
 
     [TestMethod]
@@ -1447,6 +1445,79 @@ public sealed class CentralRecoveryIntegrationTests
                 || value.Contains(StoragePrefix, StringComparison.Ordinal));
     }
 
+    [TestMethod]
+    public async Task RecoveryVerification_StorageFailureUsesDurableBoundedRetry()
+    {
+        var now = DateTimeOffset.UnixEpoch.AddDays(40);
+        var clock = new MutableTimeProvider(now);
+        var artifactId = await AddArtifactAsync(
+            $"artifacts/92/{Guid.NewGuid():N}.bin",
+            [9, 2],
+            CentralArtifactObjectState.Available,
+            CentralReconstructionState.PendingReference).ConfigureAwait(false);
+        await using (var setupScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var artifact = await db.CentralArtifacts.SingleAsync(item => item.Id == artifactId).ConfigureAwait(false);
+            artifact.ObjectState = CentralArtifactObjectState.Pending;
+            await db.SaveChangesAsync().ConfigureAwait(false);
+        }
+        await SetCheckpointAsync(CentralRecoveryPhases.Idle, nextInventoryAtUtc: now.AddDays(1)).ConfigureAwait(false);
+        var objectReader = new ThrowingObjectReader();
+        using var services = CreateServices(new RecordingScheduler(), objectReader);
+        var reconciler = CreateReconciler(services, clock);
+
+        var runImmediately = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+        var firstRetry = await ReadArtifactAsync(artifactId).ConfigureAwait(false);
+        runImmediately.Should().BeFalse("a deferred verification must not spin through recovery cycles");
+        firstRetry.ObjectVerificationToken.Should().NotBeNull();
+        firstRetry.ObjectVerificationRequestedAtUtc.Should().Be(now);
+        firstRetry.ObjectVerificationRetryCount.Should().Be(1);
+        firstRetry.ObjectVerificationRetryAtUtc.Should().Be(now
+            + CentralArtifactReconciliationService.InitialVerificationRetryDelay);
+
+        _ = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+        objectReader.Attempts.Should().Be(1, "the verification is not due again before its durable retry time");
+
+        clock.UtcNow = firstRetry.ObjectVerificationRetryAtUtc!.Value + TimeSpan.FromTicks(1);
+        _ = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+        var secondRetry = await ReadArtifactAsync(artifactId).ConfigureAwait(false);
+        objectReader.Attempts.Should().Be(2);
+        secondRetry.ObjectVerificationRetryCount.Should().Be(2);
+        secondRetry.ObjectVerificationRetryAtUtc.Should().Be(clock.UtcNow
+            + CentralArtifactReconciliationService.CalculateVerificationRetryDelay(2));
+    }
+
+    [TestMethod]
+    public async Task StrandedVerification_NoncanonicalReferenceConvergesToQuarantine()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var artifactId = await AddArtifactAsync(
+            $"legacy/{Guid.NewGuid():N}.bin",
+            [9, 3],
+            CentralArtifactObjectState.Pending,
+            CentralReconstructionState.Complete,
+            putObject: false,
+            storageReference: $"minio://legacy/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
+        await using (var setupScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var artifact = await db.CentralArtifacts.SingleAsync(item => item.Id == artifactId).ConfigureAwait(false);
+            artifact.ObjectVerificationToken = Guid.NewGuid();
+            artifact.ObjectVerificationRequestedAtUtc = now.AddMinutes(-1);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+        }
+        await SetCheckpointAsync(CentralRecoveryPhases.Idle, nextInventoryAtUtc: now.AddDays(1)).ConfigureAwait(false);
+
+        _ = await RunFreshCycleAsync().ConfigureAwait(false);
+
+        var reconciled = await ReadArtifactAsync(artifactId).ConfigureAwait(false);
+        reconciled.ObjectState.Should().Be(CentralArtifactObjectState.Quarantined);
+        reconciled.StateReasonCode.Should().Be("object.reference-invalid");
+        reconciled.ObjectVerificationToken.Should().BeNull();
+        reconciled.ObjectVerificationRequestedAtUtc.Should().BeNull();
+    }
+
     private async Task<Guid> AddArtifactAsync(
         string objectKey,
         byte[] expectedPayload,
@@ -1583,11 +1654,21 @@ public sealed class CentralRecoveryIntegrationTests
         => new(services.GetRequiredService<IServiceScopeFactory>(), timeProvider, new CentralIngestTelemetry(),
             NullLogger<CentralArtifactReconciliationService>.Instance);
 
-    private static ServiceProvider CreateServices(ICentralDerivativeJobScheduler scheduler)
+    private static ServiceProvider CreateServices(
+        ICentralDerivativeJobScheduler scheduler,
+        ICentralArtifactObjectReader? objectReader = null)
     {
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
         services.AddSingleton(GetMinio());
+        if (objectReader is null)
+        {
+            AddObjectReader(services);
+        }
+        else
+        {
+            services.AddSingleton(objectReader);
+        }
         services.AddScoped(_ => scheduler);
         return services.BuildServiceProvider();
     }
@@ -1597,9 +1678,20 @@ public sealed class CentralRecoveryIntegrationTests
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
         services.AddSingleton(GetMinio());
+        AddObjectReader(services);
         services.AddScoped<ICentralDerivativeJobScheduler>(provider => new DurableRecordingScheduler(
             provider.GetRequiredService<ApplicationDbContext>(), state));
         return services.BuildServiceProvider();
+    }
+
+    private static void AddObjectReader(IServiceCollection services)
+    {
+        services.AddSingleton<CentralArtifactRetrievalTelemetry>();
+        services.AddScoped<ICentralArtifactObjectReader>(provider => new CentralArtifactObjectReader(
+            provider.GetRequiredService<IMinioClient>(),
+            provider.GetRequiredService<CentralArtifactRetrievalTelemetry>(),
+            TimeProvider.System,
+            NullLogger<CentralArtifactObjectReader>.Instance));
     }
 
     private static async Task<int> CountRecoveryJobsAsync(Guid artifactId)
@@ -1988,6 +2080,7 @@ public sealed class CentralRecoveryIntegrationTests
             services.AddDbContext<ApplicationDbContext>(builder => builder.UseSqlServer(connection)
                 .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning)));
             services.AddSingleton(GetMinio());
+            AddObjectReader(services);
             services.AddScoped<ICentralDerivativeJobScheduler>(_ => new RecordingScheduler());
             return new IsolatedRecoveryDatabase(context, services.BuildServiceProvider());
         }
@@ -2008,6 +2101,32 @@ public sealed class CentralRecoveryIntegrationTests
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
             => Entries.Add(new LogEntry(logLevel, eventId, formatter(state, exception), exception));
+    }
+
+    private sealed class ThrowingObjectReader : ICentralArtifactObjectReader
+    {
+        public int Attempts { get; private set; }
+
+        public Task<CentralArtifactObjectSnapshot> VerifyAsync(
+            CentralArtifact artifact,
+            CancellationToken cancellationToken)
+        {
+            Attempts++;
+            throw new CentralArtifactStorageException("Injected object-store failure.");
+        }
+
+        public Task<bool> IsCurrentGenerationAsync(
+            CentralArtifact artifact,
+            string storageETag,
+            CancellationToken cancellationToken)
+            => throw new InvalidOperationException("Generation checks are not reached after a failed verification.");
+
+        public Task CopyToAsync(
+            CentralArtifactObjectSnapshot snapshot,
+            Stream destination,
+            CentralArtifactByteRange? range,
+            CancellationToken cancellationToken)
+            => throw new InvalidOperationException("Copies are not used by reconciliation verification.");
     }
 
     private sealed record MetricObservation(

@@ -8,9 +8,15 @@ internal sealed class CentralArtifactConfiguration : IEntityTypeConfiguration<Ce
     public void Configure(EntityTypeBuilder<CentralArtifact> builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        builder.ToTable("CentralArtifacts", table => table.HasCheckConstraint(
-            "CK_CentralArtifacts_RetentionDeletion",
-            "[RetentionDeletionToken] IS NULL AND [RetentionDeletionRequestedAtUtc] IS NULL AND [RetentionDeletionCompletedAtUtc] IS NULL OR [RetentionDeletionToken] IS NOT NULL AND [RetentionDeletionRequestedAtUtc] IS NOT NULL AND [ObjectState] = 'Expired' AND ([RetentionDeletionCompletedAtUtc] IS NULL OR [RetentionDeletionCompletedAtUtc] >= [RetentionDeletionRequestedAtUtc])"));
+        builder.ToTable("CentralArtifacts", table =>
+        {
+            table.HasCheckConstraint(
+                "CK_CentralArtifacts_RetentionDeletion",
+                "[RetentionDeletionToken] IS NULL AND [RetentionDeletionRequestedAtUtc] IS NULL AND [RetentionDeletionCompletedAtUtc] IS NULL OR [RetentionDeletionToken] IS NOT NULL AND [RetentionDeletionRequestedAtUtc] IS NOT NULL AND [ObjectState] = 'Expired' AND ([RetentionDeletionCompletedAtUtc] IS NULL OR [RetentionDeletionCompletedAtUtc] >= [RetentionDeletionRequestedAtUtc])");
+            table.HasCheckConstraint(
+                "CK_CentralArtifacts_ObjectVerification",
+                "([ObjectVerificationToken] IS NULL AND [ObjectVerificationRequestedAtUtc] IS NULL AND [ObjectVerificationRetryCount] = 0 AND [ObjectVerificationRetryAtUtc] IS NULL) OR ([ObjectVerificationToken] IS NOT NULL AND [ObjectVerificationRequestedAtUtc] IS NOT NULL AND [ObjectState] = N'Pending')");
+        });
         builder.HasKey(artifact => artifact.Id);
         builder.Property(artifact => artifact.Role).HasConversion<string>().HasMaxLength(32).IsRequired();
         builder.Property(artifact => artifact.RecipeVersion).HasMaxLength(128).IsRequired();
@@ -55,6 +61,13 @@ internal sealed class CentralArtifactConfiguration : IEntityTypeConfiguration<Ce
             artifact.Id
         });
         builder.HasIndex(artifact => artifact.StorageReference);
+        builder.HasIndex(artifact => new
+        {
+            artifact.ObjectVerificationRetryAtUtc,
+            artifact.ObjectVerificationRequestedAtUtc,
+            artifact.Id
+        })
+            .HasFilter("[ObjectVerificationToken] IS NOT NULL");
         builder.HasIndex(artifact => new
         {
             artifact.ObjectState,

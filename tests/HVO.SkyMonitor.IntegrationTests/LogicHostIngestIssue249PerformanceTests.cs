@@ -708,6 +708,10 @@ public sealed partial class LogicHostIngestPerformanceTests
             Assert.AreEqual(1, artifact.IngestIdentities.Count);
             Assert.AreEqual(initialState[artifact.ArtifactId].StorageReference, artifact.StorageReference);
             Assert.AreEqual(initialState[artifact.ArtifactId].RecoveryGeneration, artifact.RecoveryGeneration);
+            Assert.IsNull(artifact.ObjectVerificationToken);
+            Assert.IsNull(artifact.ObjectVerificationRequestedAtUtc);
+            Assert.AreEqual(0, artifact.ObjectVerificationRetryCount);
+            Assert.IsNull(artifact.ObjectVerificationRetryAtUtc);
             var objectKey = artifact.StorageReference[$"minio://{ArtifactBucket}/".Length..];
             var stat = await minio.StatObjectAsync(new StatObjectArgs()
                 .WithBucket(ArtifactBucket)
