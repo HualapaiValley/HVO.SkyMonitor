@@ -184,7 +184,7 @@ public sealed class HealthCheckTests
     }
 
     [TestMethod]
-    public async Task HealthCheckReportsStaleArtifactConsistencyStateAsDegradedAsync()
+    public async Task HealthCheckUsesVerificationRequestAgeForReservedArtifactAsync()
     {
         var connection = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
         {
@@ -227,7 +227,9 @@ public sealed class HealthCheckTests
                 IdempotencyKey = idempotencyKey,
                 ObjectState = CentralArtifactObjectState.Pending,
                 ReconstructionState = CentralReconstructionState.LegacyIncomplete,
-                StateReasonCode = "object.pending-test"
+                StateReasonCode = "object.pending-test",
+                ObjectVerificationToken = Guid.NewGuid(),
+                ObjectVerificationRequestedAtUtc = DateTimeOffset.UtcNow
             });
             db.CentralFrames.Add(frame);
             await db.SaveChangesAsync().ConfigureAwait(false);
@@ -236,8 +238,17 @@ public sealed class HealthCheckTests
                 .SetProperty(item => item.NextInventoryAtUtc, DateTimeOffset.UtcNow.AddDays(1)))
                 .ConfigureAwait(false);
 
-            var consistency = await new CentralArtifactConsistencyHealthCheck(
-                db, TimeProvider.System, new CentralRecoveryStartupState(TimeProvider.System))
+            var healthCheck = new CentralArtifactConsistencyHealthCheck(
+                db, TimeProvider.System, new CentralRecoveryStartupState(TimeProvider.System));
+            var fresh = await healthCheck.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+            Assert.AreEqual(HealthStatus.Healthy, fresh.Status);
+
+            await db.CentralArtifacts.Where(item => item.ArtifactId == artifactId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    item => item.ObjectVerificationRequestedAtUtc,
+                    DateTimeOffset.UtcNow - CentralArtifactConsistencyHealthCheck.StaleAfter - TimeSpan.FromMinutes(1)))
+                .ConfigureAwait(false);
+            var consistency = await healthCheck
                 .CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
 
             Assert.AreEqual(HealthStatus.Degraded, consistency.Status);

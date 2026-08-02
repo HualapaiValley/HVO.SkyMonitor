@@ -1023,6 +1023,128 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
+    public async Task MultipartIngestV2_ConcurrentEnrichmentOfOneFrameSerializesCaptureFacts()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("frame-enrichment-concurrency-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var captureId = Guid.NewGuid();
+        var source = CreateManifestV2(deviceId, rig, payload, 174);
+        var first = CreateManifestV2(deviceId, rig, payload, 175, captureId: captureId);
+        var conflict = CreateManifestV2(
+            deviceId,
+            rig,
+            payload,
+            176,
+            role: FrameArtifactRole.Preview,
+            sourceArtifactIds: [source.Descriptor.Artifact.ArtifactId],
+            captureId: captureId);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var sourceResponse = await PostAsync(client, source, payload).ConfigureAwait(false);
+        sourceResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        using var firstCompatibility = await PostAsync(
+            client, CreateCompatibilityManifest(first), payloadBytes: payload)
+            .ConfigureAwait(false);
+        using var conflictCompatibility = await PostAsync(
+            client, CreateCompatibilityManifest(conflict), payloadBytes: payload)
+            .ConfigureAwait(false);
+        firstCompatibility.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        conflictCompatibility.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        await using var lockScope = fixture.Factory.Services.CreateAsyncScope();
+        var lockDb = lockScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var devicePublicId = await lockDb.DeviceRegistrations.Where(item => item.Id == registrationId)
+            .Select(item => item.DevicePublicId!.Value)
+            .SingleAsync().ConfigureAwait(false);
+        await using var transaction = await lockDb.Database.BeginTransactionAsync().ConfigureAwait(false);
+        var holderSessionId = await lockDb.Database.SqlQueryRaw<int>("SELECT CAST(@@SPID AS int) AS [Value]")
+            .SingleAsync().ConfigureAwait(false);
+        var resource = ArtifactIngestService.CreateFrameIdentityLockResource(devicePublicId, captureId);
+        await lockDb.Database.ExecuteSqlInterpolatedAsync($"""
+            DECLARE @result int;
+            EXEC @result = sys.sp_getapplock
+                @Resource = {resource},
+                @LockMode = 'Exclusive',
+                @LockOwner = 'Transaction',
+                @LockTimeout = 10000;
+            IF @result < 0 THROW 51009, 'Could not acquire the test frame identity lock.', 1;
+            """).ConfigureAwait(false);
+
+        var requests = new[]
+        {
+            PostAsync(client, first, payload),
+            PostAsync(client, conflict, payload)
+        };
+        await using var observerScope = fixture.Factory.Services.CreateAsyncScope();
+        var observerDb = observerScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var blockedRequests = 0;
+        var lockReleased = false;
+        try
+        {
+            for (var attempt = 0; attempt < 50 && blockedRequests < requests.Length; attempt++)
+            {
+                var blockedRequestCounts = await observerDb.Database.SqlQuery<int>($"""
+                    WITH [Blocked] AS
+                    (
+                        SELECT [session_id]
+                        FROM sys.dm_exec_requests
+                        WHERE [blocking_session_id] = {holderSessionId}
+                        UNION ALL
+                        SELECT request.[session_id]
+                        FROM sys.dm_exec_requests AS request
+                        INNER JOIN [Blocked] AS blocked
+                            ON request.[blocking_session_id] = blocked.[session_id]
+                    )
+                    SELECT COUNT(*) AS [Value]
+                    FROM [Blocked]
+                    OPTION (MAXRECURSION 100)
+                    """).ToListAsync().ConfigureAwait(false);
+                blockedRequests = blockedRequestCounts.Single();
+                if (blockedRequests < requests.Length)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+                }
+            }
+            if (blockedRequests != requests.Length || requests.Any(request => request.IsCompleted))
+            {
+                Assert.Fail($"Expected both frame enrichments to wait in the held identity-lock chain; observed {blockedRequests} waiters.");
+            }
+            await transaction.CommitAsync().ConfigureAwait(false);
+            lockReleased = true;
+        }
+        finally
+        {
+            if (!lockReleased)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                var abandoned = await Task.WhenAll(requests).ConfigureAwait(false);
+                foreach (var response in abandoned)
+                {
+                    response.Dispose();
+                }
+            }
+        }
+        var responses = await Task.WhenAll(requests).ConfigureAwait(false);
+        using var firstResponse = responses[0];
+        using var conflictResponse = responses[1];
+
+        responses.Select(response => response.StatusCode).Should().BeEquivalentTo(
+            [HttpStatusCode.Accepted, HttpStatusCode.Conflict]);
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var frame = await assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+            .CentralFrames.Include(item => item.Artifacts)
+            .SingleAsync(item => item.FrameId == captureId).ConfigureAwait(false);
+        frame.CaptureSequence.Should().Be(
+            firstResponse.StatusCode == HttpStatusCode.Accepted ? 175 : 176,
+            "the accepted request must own the immutable capture facts");
+        frame.Artifacts.Should().HaveCount(2);
+    }
+
+    [TestMethod]
     public async Task MultipartIngestV2_AfterReassignmentFreezesDeploymentObservatoryForLateFrameArtifacts()
     {
         var fixture = AssemblyHooks.Fixture;
@@ -1580,15 +1702,22 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task IngestStatus_BackgroundResolvedReferenceDoesNotAcknowledgeMissingOrCorruptObject(bool corruptSameLength)
+    [DataRow("missing")]
+    [DataRow("checksum")]
+    [DataRow("truncated")]
+    public async Task IngestStatus_BackgroundResolvedReferenceDoesNotAcknowledgeMissingOrCorruptObject(string failure)
     {
         var fixture = AssemblyHooks.Fixture;
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
-        var rig = CreateRig(corruptSameLength ? "status-corrupt-rig" : "status-missing-rig");
+        var rig = CreateRig($"status-{failure}-rig");
         var payload = new byte[] { 1, 2, 3, 4 };
-        var manifest = CreateManifestV2(deviceId, rig, payload, corruptSameLength ? 42 : 41);
+        var manifest = CreateManifestV2(deviceId, rig, payload, failure switch
+        {
+            "missing" => 41,
+            "checksum" => 42,
+            "truncated" => 44,
+            _ => throw new ArgumentOutOfRangeException(nameof(failure))
+        });
         using var client = fixture.Factory.CreateClient();
         var token = await GetSystemTokenAsync(client).ConfigureAwait(false);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -1613,9 +1742,11 @@ public sealed class ArtifactIngestTests
             artifact.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
             var objectKey = artifact.StorageReference["minio://skymonitor-artifacts/".Length..];
             var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
-            if (corruptSameLength)
+            if (failure != "missing")
             {
-                var corruptPayload = new byte[] { 4, 3, 2, 1 };
+                var corruptPayload = failure == "checksum"
+                    ? new byte[] { 4, 3, 2, 1 }
+                    : new byte[] { 1, 2, 3 };
                 await minio.PutObjectAsync(new PutObjectArgs()
                     .WithBucket("skymonitor-artifacts")
                     .WithObject(objectKey)
@@ -1645,8 +1776,8 @@ public sealed class ArtifactIngestTests
         using var status = await PostStatusAsync(statusClient, manifest).ConfigureAwait(false);
 
         status.StatusCode.Should().Be(HttpStatusCode.NotFound);
-        minioCounter.GetRequests.Should().Be(corruptSameLength ? 1 : 0,
-            "a missing key is rejected by MinIO's prerequisite stat, while a present object is streamed once");
+        minioCounter.GetRequests.Should().Be(failure == "checksum" ? 1 : 0,
+            "missing and truncated objects fail prerequisite stat checks, while same-length corruption is streamed once");
         await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
         var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var quarantined = await assertionDb.CentralArtifacts.SingleAsync(item =>
@@ -1654,9 +1785,227 @@ public sealed class ArtifactIngestTests
             && item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
         quarantined.ObjectState.Should().Be(CentralArtifactObjectState.Quarantined);
         quarantined.ReconstructionState.Should().Be(CentralReconstructionState.Quarantined);
-        quarantined.StateReasonCode.Should().Be(corruptSameLength
-            ? "object.checksum-mismatch"
-            : "object.missing");
+        quarantined.StateReasonCode.Should().Be(failure switch
+        {
+            "missing" => "object.missing",
+            "checksum" => "object.checksum-mismatch",
+            "truncated" => "object.length-mismatch",
+            _ => throw new ArgumentOutOfRangeException(nameof(failure))
+        });
+    }
+
+    [TestMethod]
+    public async Task Reconciliation_AdoptsStrandedObjectVerificationAndPreservesExactJobs()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("stranded-verification-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, 43);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var accepted = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        accepted.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        Guid centralArtifactId;
+        Guid[] initialJobIds;
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var artifact = await db.CentralArtifacts.SingleAsync(item =>
+                item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
+            centralArtifactId = artifact.Id;
+            artifact.ObjectState = CentralArtifactObjectState.Pending;
+            artifact.ObjectVerificationToken = Guid.NewGuid();
+            artifact.ObjectVerificationRequestedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            initialJobIds = await db.CentralDerivativeJobs.AsNoTracking()
+                .Where(job => job.SourceCentralArtifactId == centralArtifactId)
+                .OrderBy(job => job.Id)
+                .Select(job => job.Id)
+                .ToArrayAsync().ConfigureAwait(false);
+            initialJobIds.Should().NotBeEmpty();
+        }
+
+        using (var telemetry = new CentralIngestTelemetry())
+        {
+            var reconciler = new CentralArtifactReconciliationService(
+                fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
+                TimeProvider.System,
+                telemetry,
+                NullLogger<CentralArtifactReconciliationService>.Instance);
+            _ = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var reconciled = await assertionDb.CentralArtifacts.AsNoTracking()
+            .SingleAsync(item => item.Id == centralArtifactId).ConfigureAwait(false);
+        reconciled.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        reconciled.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+        reconciled.ObjectVerificationToken.Should().BeNull();
+        reconciled.ObjectVerificationRequestedAtUtc.Should().BeNull();
+        reconciled.ObjectVerifiedAtUtc.Should().NotBeNull();
+        var finalJobIds = await assertionDb.CentralDerivativeJobs.AsNoTracking()
+            .Where(job => job.SourceCentralArtifactId == centralArtifactId)
+            .OrderBy(job => job.Id)
+            .Select(job => job.Id)
+            .ToArrayAsync().ConfigureAwait(false);
+        finalJobIds.Should().Equal(initialJobIds);
+    }
+
+    [TestMethod]
+    public async Task IngestStatus_StreamFailureLeavesDurableVerificationForTruthfulRetry()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("verification-stream-failure-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, 45);
+        using var client = fixture.Factory.CreateClient();
+        var token = await GetSystemTokenAsync(client).ConfigureAwait(false);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var accepted = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        accepted.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        var failureHandler = new ExistingObjectGetFailureHandler { InnerHandler = new SocketsHttpHandler() };
+        using var failureFactory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<IMinioClient>();
+            services.AddSingleton<IMinioClient>(_ => new MinioClient()
+                .WithEndpoint(fixture.MinioEndpoint)
+                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                .WithHttpClient(new HttpClient(failureHandler, disposeHandler: false), disposeHttpClient: true)
+                .Build());
+        }));
+        using var failureClient = failureFactory.CreateClient();
+        failureClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var failedStatus = await PostStatusAsync(failureClient, manifest).ConfigureAwait(false);
+        failedStatus.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        failureHandler.Failures.Should().Be(1);
+
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var artifact = await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .CentralArtifacts.AsNoTracking()
+                .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+                .ConfigureAwait(false);
+            artifact.ObjectState.Should().Be(CentralArtifactObjectState.Pending);
+            artifact.ObjectVerificationToken.Should().NotBeNull();
+            artifact.ObjectVerificationRequestedAtUtc.Should().NotBeNull();
+        }
+
+        using var retry = await PostStatusAsync(client, manifest).ConfigureAwait(false);
+        retry.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var reconciled = await assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+            .CentralArtifacts.AsNoTracking()
+            .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+            .ConfigureAwait(false);
+        reconciled.ObjectVerificationToken.Should().BeNull();
+        reconciled.ObjectVerificationRequestedAtUtc.Should().BeNull();
+        reconciled.ObjectVerifiedAtUtc.Should().NotBeNull();
+    }
+
+    [TestMethod]
+    public async Task MultipartCrossSchema_StreamFailureRetriesReconstructionWithoutDuplicateLineage()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("cross-schema-stream-retry-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var source = CreateManifestV2(deviceId, rig, payload, 46);
+        var current = CreateManifestV2(
+            deviceId,
+            rig,
+            payload,
+            47,
+            role: FrameArtifactRole.Preview,
+            sourceArtifactIds: [source.Descriptor.Artifact.ArtifactId]);
+        var descriptor = current.Descriptor;
+        var compatibility = new ArtifactUploadManifest(
+            "v1", deviceId, descriptor.Artifact.ArtifactId, descriptor.Capture.CaptureId,
+            descriptor.Artifact.Role, descriptor.Artifact.MediaType, descriptor.Layout.ByteLength,
+            descriptor.Artifact.ChecksumSha256, descriptor.Timing.ExposureStartedUtc,
+            $"v1-{current.IdempotencyKey}", current.RelativeArtifactPath);
+        using var client = fixture.Factory.CreateClient();
+        var token = await GetSystemTokenAsync(client).ConfigureAwait(false);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var sourceResponse = await PostAsync(client, source, payload).ConfigureAwait(false);
+        using var compatibilityResponse = await PostAsync(client, compatibility).ConfigureAwait(false);
+        sourceResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        compatibilityResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        var failureHandler = new ExistingObjectGetFailureHandler { InnerHandler = new SocketsHttpHandler() };
+        using var failureFactory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<IMinioClient>();
+            services.AddSingleton<IMinioClient>(_ => new MinioClient()
+                .WithEndpoint(fixture.MinioEndpoint)
+                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                .WithHttpClient(new HttpClient(failureHandler, disposeHandler: false), disposeHttpClient: true)
+                .Build());
+        }));
+        using var failureClient = failureFactory.CreateClient();
+        failureClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var failed = await PostAsync(failureClient, current, payload).ConfigureAwait(false);
+        failed.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+
+        using var retry = await PostAsync(client, current, payload).ConfigureAwait(false);
+        retry.StatusCode.Should().Be(HttpStatusCode.Accepted, await retry.Content.ReadAsStringAsync().ConfigureAwait(false));
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var artifact = await assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+            .CentralArtifacts.Include(item => item.Sources)
+            .SingleAsync(item => item.ArtifactId == descriptor.Artifact.ArtifactId
+                && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
+        artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        artifact.ObjectVerificationToken.Should().BeNull();
+        artifact.Sources.Should().ContainSingle(sourceItem =>
+            sourceItem.SourceArtifactId == source.Descriptor.Artifact.ArtifactId
+            && sourceItem.ResolvedCentralArtifactId != null);
+    }
+
+    [TestMethod]
+    public async Task IngestStatus_StaleObjectGenerationRetriesWithoutFalseAcknowledgement()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("stale-object-generation-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, 48);
+        using var client = fixture.Factory.CreateClient();
+        var token = await GetSystemTokenAsync(client).ConfigureAwait(false);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var accepted = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        accepted.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var generation = new OneStaleGenerationState();
+        using var statusFactory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<ICentralArtifactObjectReader>();
+            services.AddScoped<CentralArtifactObjectReader>();
+            services.AddScoped<ICentralArtifactObjectReader>(provider => new OneStaleGenerationObjectReader(
+                provider.GetRequiredService<CentralArtifactObjectReader>(), generation));
+        }));
+        using var statusClient = statusFactory.CreateClient();
+        statusClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        using var status = await PostStatusAsync(statusClient, manifest).ConfigureAwait(false);
+
+        status.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        generation.Rejections.Should().Be(1);
+        generation.Checks.Should().BeGreaterThanOrEqualTo(2);
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var artifact = await assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+            .CentralArtifacts.AsNoTracking()
+            .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId
+                && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
+        artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        artifact.ObjectVerificationToken.Should().BeNull();
     }
 
     [TestMethod]
@@ -2769,7 +3118,37 @@ public sealed class ArtifactIngestTests
         thrown.Which.CancellationToken.Should().Be(cancellation.Token);
         metrics.Outcomes.Should().BeEmpty();
         logger.Entries.Should().NotContain(entry => entry.Level >= LogLevel.Error);
-        await QuarantineTestArtifactAsync(registrationId, manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
+        await using (var interruptedScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var interrupted = await interruptedScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .CentralArtifacts.AsNoTracking()
+                .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId
+                    && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
+            interrupted.ObjectState.Should().Be(CentralArtifactObjectState.Pending);
+            interrupted.ObjectVerificationToken.Should().NotBeNull();
+            interrupted.ObjectVerificationRequestedAtUtc.Should().NotBeNull();
+            interrupted.ObjectVerifiedAtUtc.Should().NotBeNull();
+        }
+
+        using (var restartTelemetry = new CentralIngestTelemetry())
+        {
+            var restarted = new CentralArtifactReconciliationService(
+                fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
+                TimeProvider.System,
+                restartTelemetry,
+                NullLogger<CentralArtifactReconciliationService>.Instance);
+            _ = await restarted.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        await using var recoveredScope = fixture.Factory.Services.CreateAsyncScope();
+        var recoveredDb = recoveredScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var recovered = await recoveredDb.CentralArtifacts.AsNoTracking()
+            .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId
+                && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
+        recovered.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        recovered.ObjectVerificationToken.Should().BeNull();
+        recovered.ObjectVerificationRequestedAtUtc.Should().BeNull();
+        (await recoveredDb.CentralDerivativeJobs.AnyAsync(job => job.SourceCentralArtifactId == recovered.Id)
+            .ConfigureAwait(false)).Should().BeTrue();
     }
 
     [TestMethod]
@@ -3908,6 +4287,70 @@ public sealed class ArtifactIngestTests
             }
             return base.SendAsync(request, cancellationToken);
         }
+    }
+
+    private sealed class ExistingObjectGetFailureHandler : DelegatingHandler
+    {
+        private int failures;
+
+        internal int Failures => Volatile.Read(ref failures);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Method == HttpMethod.Get && Interlocked.CompareExchange(ref failures, 1, 0) == 0)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("injected existing-object stream failure", Encoding.UTF8, "text/plain")
+                });
+            }
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    private sealed class OneStaleGenerationState
+    {
+        private int checks;
+        private int rejections;
+
+        public int Checks => Volatile.Read(ref checks);
+        public int Rejections => Volatile.Read(ref rejections);
+
+        public bool IsCurrent()
+        {
+            Interlocked.Increment(ref checks);
+            if (Interlocked.CompareExchange(ref rejections, 1, 0) == 0)
+            {
+                return false;
+            }
+            return true;
+        }
+    }
+
+    private sealed class OneStaleGenerationObjectReader(
+        ICentralArtifactObjectReader inner,
+        OneStaleGenerationState state) : ICentralArtifactObjectReader
+    {
+        public Task<CentralArtifactObjectSnapshot> VerifyAsync(
+            CentralArtifact artifact,
+            CancellationToken cancellationToken)
+            => inner.VerifyAsync(artifact, cancellationToken);
+
+        public Task<bool> IsCurrentGenerationAsync(
+            CentralArtifact artifact,
+            string storageETag,
+            CancellationToken cancellationToken)
+            => Task.FromResult(state.IsCurrent());
+
+        public Task CopyToAsync(
+            CentralArtifactObjectSnapshot snapshot,
+            Stream destination,
+            CentralArtifactByteRange? range,
+            CancellationToken cancellationToken)
+            => inner.CopyToAsync(snapshot, destination, range, cancellationToken);
     }
 
     private sealed class SchedulerConcurrencyInjection(Guid targetArtifactId, int remainingInjections)

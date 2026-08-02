@@ -365,6 +365,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         artifact.ObjectState = CentralArtifactObjectState.Available;
         artifact.StateReasonCode = null;
         artifact.ReconciledAtUtc = now;
+        ClearObjectVerification(artifact);
         var predecessorId = await dbContext.CentralDerivativeJobs.AsNoTracking()
             .Where(job => job.Id == lease.JobId)
             .Select(job => job.PredecessorJobId)
@@ -450,7 +451,11 @@ internal sealed partial class CentralDerivativeOutputWriter(
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(artifact => artifact.ObjectState, CentralArtifactObjectState.Expired)
                 .SetProperty(artifact => artifact.StateReasonCode, "retention.publication-rejected")
-                .SetProperty(artifact => artifact.ReconciledAtUtc, now), CancellationToken.None)
+                .SetProperty(artifact => artifact.ReconciledAtUtc, now)
+                .SetProperty(artifact => artifact.ObjectVerificationToken, (Guid?)null)
+                .SetProperty(artifact => artifact.ObjectVerificationRequestedAtUtc, (DateTimeOffset?)null)
+                .SetProperty(artifact => artifact.ObjectVerificationRetryCount, 0)
+                .SetProperty(artifact => artifact.ObjectVerificationRetryAtUtc, (DateTimeOffset?)null), CancellationToken.None)
             .ConfigureAwait(false);
         dbContext.ChangeTracker.Clear();
     }
@@ -504,6 +509,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         artifact.ReconstructionState = CentralReconstructionState.Quarantined;
         artifact.StateReasonCode = reasonCode;
         artifact.ReconciledAtUtc = now;
+        ClearObjectVerification(artifact);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         if (pinStartedAtUtc != default)
@@ -511,6 +517,14 @@ internal sealed partial class CentralDerivativeOutputWriter(
             telemetry.RecordWindowPinDuration(lease.RecipeName, now - pinStartedAtUtc, "quarantined");
         }
         dbContext.ChangeTracker.Clear();
+    }
+
+    private static void ClearObjectVerification(CentralArtifact artifact)
+    {
+        artifact.ObjectVerificationToken = null;
+        artifact.ObjectVerificationRequestedAtUtc = null;
+        artifact.ObjectVerificationRetryCount = 0;
+        artifact.ObjectVerificationRetryAtUtc = null;
     }
 
     private static CentralArtifactLayout CreateLayout(FrameLayoutDescriptor layout) => new()

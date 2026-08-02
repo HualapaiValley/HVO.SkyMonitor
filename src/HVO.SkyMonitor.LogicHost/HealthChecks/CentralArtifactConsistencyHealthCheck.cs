@@ -76,11 +76,15 @@ internal sealed class CentralArtifactConsistencyHealthCheck(
         }
 
         var hasStaleConsistencyBacklog = await dbContext.CentralArtifacts.AsNoTracking()
-            .AnyAsync(artifact => artifact.ReceivedAtUtc <= cutoffUtc
-                && (artifact.ObjectState == CentralArtifactObjectState.Pending
-                    || artifact.ObjectState == CentralArtifactObjectState.Quarantined
-                    || artifact.ReconstructionState == CentralReconstructionState.PendingReference
-                    || artifact.ReconstructionState == CentralReconstructionState.Quarantined), cancellationToken)
+            .AnyAsync(artifact =>
+                (artifact.ObjectVerificationToken != null
+                    && artifact.ObjectVerificationRequestedAtUtc <= cutoffUtc)
+                || (artifact.ReceivedAtUtc <= cutoffUtc
+                    && artifact.ObjectVerificationToken == null
+                    && (artifact.ObjectState == CentralArtifactObjectState.Pending
+                        || artifact.ObjectState == CentralArtifactObjectState.Quarantined
+                        || artifact.ReconstructionState == CentralReconstructionState.PendingReference
+                        || artifact.ReconstructionState == CentralReconstructionState.Quarantined)), cancellationToken)
             .ConfigureAwait(false);
         return hasStaleConsistencyBacklog
             ? HealthCheckResult.Degraded(

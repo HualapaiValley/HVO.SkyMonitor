@@ -21,7 +21,7 @@ public sealed partial class LogicHostIngestPerformanceTests
     private static readonly JsonSerializerOptions Issue243JsonOptions = new() { WriteIndented = true };
 
     [TestMethod]
-    public async Task DuplicateW2Verification_HoldsSerializableTransactionAcrossMinioRead()
+    public async Task DuplicateW2Verification_HoldsObjectFenceWithoutSqlTransactionOrBlockedWriter()
     {
         var fixture = AssemblyHooks.Fixture;
         var workload = CreateWorkload("W2", 3096, 2080, CameraPixelFormat.BayerRggb16);
@@ -50,7 +50,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 .SingleAsync().ConfigureAwait(false);
         }
 
-        var applicationName = $"HVO.SkyMonitor.Issue243.Duplicate.{Guid.NewGuid():N}";
+        var applicationName = $"HVO.SkyMonitor.Issue249.Duplicate.{Guid.NewGuid():N}";
         var subjectConnection = new SqlConnectionStringBuilder(fixture.SqlServerConnectionString)
         {
             ApplicationName = applicationName
@@ -71,11 +71,11 @@ public sealed partial class LogicHostIngestPerformanceTests
             snapshot = await ReadIssue243IngestSnapshotAsync(
                 fixture.SqlServerConnectionString, applicationName).ConfigureAwait(false);
             snapshot.Sessions.Should().BeGreaterThanOrEqualTo(2);
-            snapshot.OpenTransactionSessions.Should().BeGreaterThanOrEqualTo(1);
+            snapshot.OpenTransactionSessions.Should().Be(0);
             snapshot.SessionApplicationLocks.Should().BeGreaterThanOrEqualTo(1);
             blocker = await ObserveIssue243IngestBlockedUpdateAsync(
                 fixture.SqlServerConnectionString, centralArtifactId).ConfigureAwait(false);
-            blocker.TimedOut.Should().BeTrue();
+            blocker.TimedOut.Should().BeFalse();
         }
         finally
         {
@@ -104,11 +104,11 @@ public sealed partial class LogicHostIngestPerformanceTests
             typeof(LogicHostIngestPerformanceTests),
             typeof(ApplicationDbContext)).ConfigureAwait(false);
         var output = Path.Combine(
-            repositoryRoot, "TestResults", "issue-243", source.OutputDirectoryName, source.RunId);
+            repositoryRoot, "TestResults", "issue-249", source.OutputDirectoryName, source.RunId);
         Directory.CreateDirectory(output);
         var evidence = new
         {
-            Schema = "hvo-issue-243-sql-ingest-critical-section-v1",
+            Schema = "hvo-issue-249-sql-ingest-critical-section-v1",
             Source = source,
             Workload = new
             {
@@ -139,7 +139,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             RecordedAtUtc = DateTimeOffset.UtcNow
         };
         await EvidenceSourceIdentity.WriteJsonAsync(
-            Path.Combine(output, "sql-duplicate-ingest-critical-section.json"),
+            Path.Combine(output, "sql-duplicate-ingest-candidate-critical-section.json"),
             evidence,
             Issue243JsonOptions).ConfigureAwait(false);
     }

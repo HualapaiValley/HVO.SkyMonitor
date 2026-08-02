@@ -414,6 +414,10 @@ internal sealed partial class CentralArtifactRetentionService(
         artifact.ObjectState = CentralArtifactObjectState.Expired;
         artifact.StateReasonCode = "retention.expired";
         artifact.ReconciledAtUtc = now;
+        artifact.ObjectVerificationToken = null;
+        artifact.ObjectVerificationRequestedAtUtc = null;
+        artifact.ObjectVerificationRetryCount = 0;
+        artifact.ObjectVerificationRetryAtUtc = null;
         artifact.RetentionDeletionToken = operationToken;
         artifact.RetentionDeletionRequestedAtUtc = now;
         artifact.RetentionDeletionCompletedAtUtc = null;

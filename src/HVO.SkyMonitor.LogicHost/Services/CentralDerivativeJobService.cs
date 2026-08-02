@@ -811,7 +811,11 @@ internal sealed class CentralDerivativeJobService(
                 .SetProperty(artifact => artifact.ObjectState, CentralArtifactObjectState.Quarantined)
                 .SetProperty(artifact => artifact.ReconstructionState, CentralReconstructionState.Quarantined)
                 .SetProperty(artifact => artifact.StateReasonCode, "derivative.output-abandoned")
-                .SetProperty(artifact => artifact.ReconciledAtUtc, now), cancellationToken);
+                .SetProperty(artifact => artifact.ReconciledAtUtc, now)
+                .SetProperty(artifact => artifact.ObjectVerificationToken, (Guid?)null)
+                .SetProperty(artifact => artifact.ObjectVerificationRequestedAtUtc, (DateTimeOffset?)null)
+                .SetProperty(artifact => artifact.ObjectVerificationRetryCount, 0)
+                .SetProperty(artifact => artifact.ObjectVerificationRetryAtUtc, (DateTimeOffset?)null), cancellationToken);
 
     private Task<int> FinalizeTransientSlotsAsync(Guid jobId, CancellationToken cancellationToken)
         => dbContext.CentralTransientValidationIdentitySlots.Where(slot =>

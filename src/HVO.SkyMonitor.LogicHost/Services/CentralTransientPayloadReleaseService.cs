@@ -394,7 +394,11 @@ internal sealed class CentralTransientPayloadReleaseService(
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(value => value.ObjectState, CentralArtifactObjectState.Expired)
                     .SetProperty(value => value.StateReasonCode, "transient-retention.evidence-released")
-                    .SetProperty(value => value.ReconciledAtUtc, timeProvider.GetUtcNow()), cancellationToken)
+                    .SetProperty(value => value.ReconciledAtUtc, timeProvider.GetUtcNow())
+                    .SetProperty(value => value.ObjectVerificationToken, (Guid?)null)
+                    .SetProperty(value => value.ObjectVerificationRequestedAtUtc, (DateTimeOffset?)null)
+                    .SetProperty(value => value.ObjectVerificationRetryCount, 0)
+                    .SetProperty(value => value.ObjectVerificationRetryAtUtc, (DateTimeOffset?)null), cancellationToken)
                 .ConfigureAwait(false);
         }
         else

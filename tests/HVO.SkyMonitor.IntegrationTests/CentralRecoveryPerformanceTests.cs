@@ -367,6 +367,12 @@ public sealed class CentralRecoveryPerformanceTests
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
         services.AddSingleton(AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>());
+        services.AddSingleton<CentralArtifactRetrievalTelemetry>();
+        services.AddScoped<ICentralArtifactObjectReader>(provider => new CentralArtifactObjectReader(
+            provider.GetRequiredService<IMinioClient>(),
+            provider.GetRequiredService<CentralArtifactRetrievalTelemetry>(),
+            TimeProvider.System,
+            NullLogger<CentralArtifactObjectReader>.Instance));
         services.AddScoped<ICentralDerivativeJobScheduler, NoOpScheduler>();
         return services.BuildServiceProvider();
     }

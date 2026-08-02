@@ -20,6 +20,7 @@ internal sealed partial class CentralArtifactReconciliationService(
     ILogger<CentralArtifactReconciliationService> logger) : BackgroundService
 {
     private const string SchedulingConcurrencyMarker = "HVO.SkyMonitor.ReconciliationSchedulingConcurrency";
+    private const string VerificationRetryFenceMarker = "HVO.SkyMonitor.VerificationRetryFence";
     private const string Bucket = "skymonitor-artifacts";
     private const string BucketPrefix = "minio://skymonitor-artifacts/";
     private const string BinaryCollation = "Latin1_General_100_BIN2";
@@ -32,6 +33,8 @@ internal sealed partial class CentralArtifactReconciliationService(
     internal static readonly TimeSpan VerificationInterval = TimeSpan.FromHours(24);
     internal static readonly TimeSpan InitialReferenceRetryDelay = TimeSpan.FromSeconds(30);
     internal static readonly TimeSpan MaximumReferenceRetryDelay = TimeSpan.FromMinutes(30);
+    internal static readonly TimeSpan InitialVerificationRetryDelay = TimeSpan.FromSeconds(30);
+    internal static readonly TimeSpan MaximumVerificationRetryDelay = TimeSpan.FromMinutes(30);
     internal static readonly TimeSpan InventoryInterval = TimeSpan.FromHours(24);
     internal static readonly TimeSpan RecoveryLeaseDuration = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan CatchAllLeaseRenewalPeriod = TimeSpan.FromMinutes(1);
@@ -256,8 +259,17 @@ internal sealed partial class CentralArtifactReconciliationService(
                 && item.Phase != CentralRecoveryPhases.Idle)
             .Select(item => (long?)item.Generation)
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        var verificationIds = await db.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.ObjectVerificationToken != null
+                && (artifact.ObjectVerificationRetryAtUtc == null || artifact.ObjectVerificationRetryAtUtc <= now))
+            .OrderBy(artifact => artifact.ObjectVerificationRetryAtUtc ?? artifact.ObjectVerificationRequestedAtUtc)
+            .ThenBy(artifact => artifact.Id)
+            .Take(MaximumPendingArtifactsPerCycle)
+            .Select(artifact => artifact.Id)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
         var pendingObjectIds = await db.CentralArtifacts.AsNoTracking()
             .Where(artifact => artifact.ObjectState == CentralArtifactObjectState.Pending
+                && artifact.ObjectVerificationToken == null
                 && (artifact.StateReasonCode != "object.missing"
                     || artifact.ObjectVerifiedAtUtc == null
                     || artifact.ObjectVerifiedAtUtc <= verificationCutoff)
@@ -268,19 +280,21 @@ internal sealed partial class CentralArtifactReconciliationService(
             .Take(MaximumPendingArtifactsPerCycle)
             .Select(artifact => artifact.Id)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
-        var remaining = MaximumPendingArtifactsPerCycle - pendingObjectIds.Count;
-        var pendingReferenceIds = remaining == 0
-            ? []
-            : await db.CentralArtifacts.AsNoTracking()
+        var pendingReferenceIds = await db.CentralArtifacts.AsNoTracking()
                 .Where(artifact => artifact.ReconstructionState == CentralReconstructionState.PendingReference
+                    && artifact.ObjectVerificationToken == null
                     && (artifact.ReferenceRetryAtUtc == null || artifact.ReferenceRetryAtUtc <= now)
                     && !pendingObjectIds.Contains(artifact.Id))
                 .OrderBy(artifact => artifact.ReferenceRetryAtUtc ?? artifact.ReceivedAtUtc)
                 .ThenBy(artifact => artifact.Id)
-                .Take(remaining)
+                .Take(MaximumPendingArtifactsPerCycle)
                 .Select(artifact => artifact.Id)
                 .ToListAsync(cancellationToken).ConfigureAwait(false);
-        var artifactIds = pendingObjectIds.Concat(pendingReferenceIds).ToList();
+        var queues = new[] { verificationIds, pendingObjectIds, pendingReferenceIds };
+        var artifactIds = Enumerable.Range(0, queues.Max(queue => queue.Count))
+            .SelectMany(index => queues.Where(queue => index < queue.Count).Select(queue => queue[index]))
+            .Take(MaximumPendingArtifactsPerCycle)
+            .ToList();
         foreach (var artifactId in artifactIds)
         {
             await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
@@ -297,6 +311,11 @@ internal sealed partial class CentralArtifactReconciliationService(
             }
             catch (Exception exception) when (IsRecoverable(exception))
             {
+                await ScheduleVerificationRetryAsync(
+                    db,
+                    artifactId,
+                    exception.Data[VerificationRetryFenceMarker] as VerificationRetryFence,
+                    cancellationToken).ConfigureAwait(false);
                 if (MayContainObjectLocation(exception))
                 {
                     LogObjectStoreRecordFailed(GetFailureCategory(exception));
@@ -317,6 +336,14 @@ internal sealed partial class CentralArtifactReconciliationService(
             .SingleAsync(item => item.Id == CentralRecoveryCheckpoint.SingletonId, cancellationToken)
             .ConfigureAwait(false);
         var verificationCutoff = now - VerificationInterval;
+        if (await db.CentralArtifacts.AsNoTracking()
+            .AnyAsync(artifact => artifact.ObjectVerificationToken != null
+                && (artifact.ObjectVerificationRetryAtUtc == null || artifact.ObjectVerificationRetryAtUtc <= now),
+                cancellationToken)
+            .ConfigureAwait(false))
+        {
+            return true;
+        }
         if (await db.CentralObjectRecoveryDispositions.AsNoTracking()
             .AnyAsync(item => item.OperationToken == null
                 && (item.State == CentralObjectRecoveryStates.PendingCopy
@@ -326,6 +353,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
         if (await db.CentralArtifacts.AsNoTracking()
             .AnyAsync(artifact => artifact.ObjectState == CentralArtifactObjectState.Pending
+                && artifact.ObjectVerificationToken == null
                 && (artifact.StateReasonCode != "object.missing"
                     || artifact.ObjectVerifiedAtUtc == null
                     || artifact.ObjectVerifiedAtUtc <= verificationCutoff)
@@ -337,6 +365,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
         if (await db.CentralArtifacts.AsNoTracking()
             .AnyAsync(artifact => artifact.ReconstructionState == CentralReconstructionState.PendingReference
+                    && artifact.ObjectVerificationToken == null
                     && (artifact.ReferenceRetryAtUtc == null || artifact.ReferenceRetryAtUtc <= now),
                 cancellationToken).ConfigureAwait(false))
         {
@@ -1284,9 +1313,11 @@ internal sealed partial class CentralArtifactReconciliationService(
         Guid token,
         CancellationToken cancellationToken)
     {
+        var retryFence = new VerificationRetryFence();
         try
         {
-            return await ReconcileOneAsync(artifactId, recoveryGeneration, token, cancellationToken).ConfigureAwait(false);
+            return await ReconcileOneAsync(
+                artifactId, recoveryGeneration, token, retryFence, cancellationToken).ConfigureAwait(false);
         }
         catch (DbUpdateConcurrencyException firstException) when (IsSchedulingConcurrency(firstException))
         {
@@ -1294,7 +1325,8 @@ internal sealed partial class CentralArtifactReconciliationService(
             LogConcurrencyRetry();
             try
             {
-                var result = await ReconcileOneAsync(artifactId, recoveryGeneration, token, cancellationToken).ConfigureAwait(false);
+                var result = await ReconcileOneAsync(
+                    artifactId, recoveryGeneration, token, retryFence, cancellationToken).ConfigureAwait(false);
                 telemetry.RecordReconciliationConcurrency("converged");
                 LogConcurrencyConverged();
                 return result;
@@ -1311,11 +1343,32 @@ internal sealed partial class CentralArtifactReconciliationService(
         Guid artifactId,
         long? recoveryGeneration,
         Guid token,
+        VerificationRetryFence retryFence,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ReconcileOneCoreAsync(
+                artifactId, recoveryGeneration, token, retryFence, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            exception.Data[VerificationRetryFenceMarker] = retryFence;
+            throw;
+        }
+    }
+
+    private async Task<RecoveryArtifactResult> ReconcileOneCoreAsync(
+        Guid artifactId,
+        long? recoveryGeneration,
+        Guid token,
+        VerificationRetryFence retryFence,
         CancellationToken cancellationToken)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
+        var objectReader = scope.ServiceProvider.GetRequiredService<ICentralArtifactObjectReader>();
         var scheduler = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>();
         var artifact = await db.CentralArtifacts
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Timing)
@@ -1328,11 +1381,16 @@ internal sealed partial class CentralArtifactReconciliationService(
         {
             return RecoveryArtifactResult.None;
         }
+        retryFence.ObjectVerificationToken = artifact.ObjectVerificationToken;
         var reconciledAtUtc = timeProvider.GetUtcNow();
         var canonical = artifact.StorageReference.StartsWith(BucketPrefix + "artifacts/", StringComparison.Ordinal)
             || artifact.StorageReference.StartsWith(BucketPrefix + "derivatives/", StringComparison.Ordinal);
-        if (!canonical)
+        if (!canonical && artifact.ObjectVerificationToken is null)
         {
+            artifact.ObjectVerificationToken = null;
+            artifact.ObjectVerificationRequestedAtUtc = null;
+            artifact.ObjectVerificationRetryCount = 0;
+            artifact.ObjectVerificationRetryAtUtc = null;
             if (recoveryGeneration.HasValue)
             {
                 artifact.RecoveryGeneration = recoveryGeneration.Value;
@@ -1351,8 +1409,12 @@ internal sealed partial class CentralArtifactReconciliationService(
             db, artifact, cancellationToken).ConfigureAwait(false);
         canonical = artifact.StorageReference.StartsWith(BucketPrefix + "artifacts/", StringComparison.Ordinal)
             || artifact.StorageReference.StartsWith(BucketPrefix + "derivatives/", StringComparison.Ordinal);
-        if (!canonical)
+        if (!canonical && artifact.ObjectVerificationToken is null)
         {
+            artifact.ObjectVerificationToken = null;
+            artifact.ObjectVerificationRequestedAtUtc = null;
+            artifact.ObjectVerificationRetryCount = 0;
+            artifact.ObjectVerificationRetryAtUtc = null;
             if (recoveryGeneration.HasValue)
             {
                 artifact.RecoveryGeneration = recoveryGeneration.Value;
@@ -1368,6 +1430,11 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
         if (artifact.ObjectState == CentralArtifactObjectState.Expired)
         {
+            artifact.ObjectVerificationToken = null;
+            artifact.ObjectVerificationRequestedAtUtc = null;
+            artifact.ObjectVerificationRetryCount = 0;
+            artifact.ObjectVerificationRetryAtUtc = null;
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             return RecoveryArtifactResult.None;
         }
         if (await CentralObjectOwnershipFence.IsRetiredAsync(
@@ -1376,6 +1443,10 @@ internal sealed partial class CentralArtifactReconciliationService(
             artifact.ObjectState = CentralArtifactObjectState.Expired;
             artifact.StateReasonCode = "retention.key-retired";
             artifact.ReconciledAtUtc = reconciledAtUtc;
+            artifact.ObjectVerificationToken = null;
+            artifact.ObjectVerificationRequestedAtUtc = null;
+            artifact.ObjectVerificationRetryCount = 0;
+            artifact.ObjectVerificationRetryAtUtc = null;
             await ArtifactIngestService.InvalidateDependentsAsync(db, artifact, cancellationToken)
                 .ConfigureAwait(false);
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -1386,17 +1457,27 @@ internal sealed partial class CentralArtifactReconciliationService(
         RecoveryArtifactResult result = RecoveryArtifactResult.None;
         var verificationDue = !artifact.ObjectVerifiedAtUtc.HasValue
             || artifact.ObjectVerifiedAtUtc <= reconciledAtUtc - VerificationInterval;
-        if (recoveryGeneration.HasValue
+        if (artifact.ObjectVerificationToken.HasValue
+            || recoveryGeneration.HasValue
             || artifact.ObjectState == CentralArtifactObjectState.Pending && verificationDue
             || artifact.ReconstructionState == CentralReconstructionState.PendingReference && verificationDue)
         {
-            result = await VerifyAndApplyAsync(db, minio, artifact, reconciledAtUtc, recoveryGeneration, cancellationToken)
+            await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureVerificationReservationAsync(
+                db, objectLock, artifact, token, reconciledAtUtc, cancellationToken).ConfigureAwait(false);
+            retryFence.ObjectVerificationToken = artifact.ObjectVerificationToken;
+            result = await VerifyAndApplyAsync(
+                db, minio, objectReader, objectLock, artifact, reconciledAtUtc, recoveryGeneration, token, cancellationToken)
                 .ConfigureAwait(false);
+            retryFence.CommittedVerifiedAtUtc = result.Outcome == "matched" ? artifact.ObjectVerifiedAtUtc : null;
+            if (result.Outcome == "matched")
+            {
+                CompleteMatchedVerificationReservation(artifact);
+            }
             await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
             verifiedThisAttempt = true;
             if (result.Outcome is "missing" or "corrupt")
             {
-                await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                 return result;
             }
         }
@@ -1435,12 +1516,21 @@ internal sealed partial class CentralArtifactReconciliationService(
         {
             if (!verifiedThisAttempt && verificationDue)
             {
-                result = await VerifyAndApplyAsync(db, minio, artifact, reconciledAtUtc, recoveryGeneration, cancellationToken)
+                await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+                await EnsureVerificationReservationAsync(
+                    db, objectLock, artifact, token, reconciledAtUtc, cancellationToken).ConfigureAwait(false);
+                retryFence.ObjectVerificationToken = artifact.ObjectVerificationToken;
+                result = await VerifyAndApplyAsync(
+                    db, minio, objectReader, objectLock, artifact, reconciledAtUtc, recoveryGeneration, token, cancellationToken)
                     .ConfigureAwait(false);
+                retryFence.CommittedVerifiedAtUtc = result.Outcome == "matched" ? artifact.ObjectVerifiedAtUtc : null;
+                if (result.Outcome == "matched")
+                {
+                    CompleteMatchedVerificationReservation(artifact);
+                }
                 await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
                 if (result.Outcome is "missing" or "corrupt")
                 {
-                    await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                     return result;
                 }
             }
@@ -1474,6 +1564,10 @@ internal sealed partial class CentralArtifactReconciliationService(
             await ArtifactIngestService.InvalidateDependentsAsync(db, artifact, cancellationToken)
                 .ConfigureAwait(false);
         }
+        artifact.ObjectVerificationToken = null;
+        artifact.ObjectVerificationRequestedAtUtc = null;
+        artifact.ObjectVerificationRetryCount = 0;
+        artifact.ObjectVerificationRetryAtUtc = null;
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return result.Outcome == "none" ? new RecoveryArtifactResult("matched", artifact.ByteLength) : result;
     }
@@ -1511,12 +1605,48 @@ internal sealed partial class CentralArtifactReconciliationService(
     private async Task<RecoveryArtifactResult> VerifyAndApplyAsync(
         ApplicationDbContext db,
         IMinioClient minio,
+        ICentralArtifactObjectReader objectReader,
+        CentralObjectApplicationLock objectLock,
         CentralArtifact artifact,
         DateTimeOffset verifiedAtUtc,
         long? recoveryGeneration,
+        Guid recoveryLeaseToken,
         CancellationToken cancellationToken)
     {
-        var verification = await VerifyAsync(minio, artifact, cancellationToken).ConfigureAwait(false);
+        string? verification;
+        string? storageETag = null;
+        try
+        {
+            var snapshot = await objectReader.VerifyAsync(artifact, cancellationToken).ConfigureAwait(false);
+            storageETag = snapshot.StorageETag;
+            verification = null;
+        }
+        catch (CentralArtifactMissingException)
+        {
+            verification = "missing";
+        }
+        catch (CentralArtifactIntegrityException exception)
+        {
+            storageETag = exception.StorageETag;
+            verification = exception.ReasonCode;
+        }
+        if (storageETag is { Length: > 0 }
+            && !await objectReader.IsCurrentGenerationAsync(
+                artifact, storageETag, cancellationToken).ConfigureAwait(false))
+        {
+            throw new CentralArtifactStorageException(
+                "The artifact object generation changed during recovery verification.");
+        }
+        if (verification == "missing"
+            && !await IsObjectMissingAsync(minio, artifact, cancellationToken).ConfigureAwait(false))
+        {
+            throw new CentralArtifactStorageException(
+                "The missing artifact object appeared during recovery verification.");
+        }
+        await using var transaction = await db.Database.BeginTransactionAsync(
+            System.Data.IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+        await RenewLeaseAsync(db, recoveryLeaseToken, cancellationToken).ConfigureAwait(false);
         artifact.ObjectVerifiedAtUtc = verifiedAtUtc;
         if (recoveryGeneration.HasValue)
         {
@@ -1531,6 +1661,10 @@ internal sealed partial class CentralArtifactReconciliationService(
         });
         if (verification == "missing")
         {
+            artifact.ObjectVerificationToken = null;
+            artifact.ObjectVerificationRequestedAtUtc = null;
+            artifact.ObjectVerificationRetryCount = 0;
+            artifact.ObjectVerificationRetryAtUtc = null;
             var transitioned = artifact.ObjectState != CentralArtifactObjectState.Pending
                 || artifact.StateReasonCode != "object.missing";
             artifact.ObjectState = CentralArtifactObjectState.Pending;
@@ -1542,10 +1676,15 @@ internal sealed partial class CentralArtifactReconciliationService(
                 telemetry.RecordReconciled("missing");
             }
             telemetry.RecordRecoveryInventory("missing", 1, artifact.ByteLength);
+            await CommitVerificationAsync(db, objectLock, transaction, cancellationToken).ConfigureAwait(false);
             return new RecoveryArtifactResult("missing", artifact.ByteLength, transitioned);
         }
         if (verification is not null)
         {
+            artifact.ObjectVerificationToken = null;
+            artifact.ObjectVerificationRequestedAtUtc = null;
+            artifact.ObjectVerificationRetryCount = 0;
+            artifact.ObjectVerificationRetryAtUtc = null;
             var transitioned = artifact.ObjectState != CentralArtifactObjectState.Quarantined
                 || artifact.ReconstructionState != CentralReconstructionState.Quarantined;
             artifact.ObjectState = CentralArtifactObjectState.Quarantined;
@@ -1559,31 +1698,85 @@ internal sealed partial class CentralArtifactReconciliationService(
                 telemetry.RecordReconciled("quarantined");
             }
             telemetry.RecordRecoveryInventory("corrupt", 1, artifact.ByteLength);
+            await CommitVerificationAsync(db, objectLock, transaction, cancellationToken).ConfigureAwait(false);
             return new RecoveryArtifactResult("corrupt", artifact.ByteLength, transitioned);
-        }
-        if (artifact.ObjectState == CentralArtifactObjectState.Pending)
-        {
-            artifact.ObjectState = CentralArtifactObjectState.Available;
         }
         if (artifact.StateReasonCode?.StartsWith("object.", StringComparison.Ordinal) == true)
         {
             artifact.StateReasonCode = null;
         }
         telemetry.RecordRecoveryInventory("matched", 1, artifact.ByteLength);
+        await CommitVerificationAsync(db, objectLock, transaction, cancellationToken).ConfigureAwait(false);
         return new RecoveryArtifactResult("matched", artifact.ByteLength);
+    }
+
+    private static void CompleteMatchedVerificationReservation(CentralArtifact artifact)
+    {
+        artifact.ObjectState = CentralArtifactObjectState.Available;
+        artifact.ObjectVerificationToken = null;
+        artifact.ObjectVerificationRequestedAtUtc = null;
+        artifact.ObjectVerificationRetryCount = 0;
+        artifact.ObjectVerificationRetryAtUtc = null;
+    }
+
+    private async Task EnsureVerificationReservationAsync(
+        ApplicationDbContext db,
+        CentralObjectApplicationLock objectLock,
+        CentralArtifact artifact,
+        Guid recoveryLeaseToken,
+        DateTimeOffset requestedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        if (artifact.ObjectVerificationToken.HasValue)
+        {
+            return;
+        }
+        await using var transaction = await db.Database.BeginTransactionAsync(
+            System.Data.IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+        await RenewLeaseAsync(db, recoveryLeaseToken, cancellationToken).ConfigureAwait(false);
+        artifact.ObjectState = CentralArtifactObjectState.Pending;
+        artifact.ObjectVerificationToken = Guid.NewGuid();
+        artifact.ObjectVerificationRequestedAtUtc = requestedAtUtc;
+        artifact.ObjectVerificationRetryCount = 0;
+        artifact.ObjectVerificationRetryAtUtc = null;
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task CommitVerificationAsync(
+        ApplicationDbContext db,
+        CentralObjectApplicationLock objectLock,
+        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task RecordBacklogAsync(ApplicationDbContext db, CancellationToken cancellationToken)
     {
-        var pendingObjects = await GetBacklogAsync(db, artifact => artifact.ObjectState == CentralArtifactObjectState.Pending,
+        var pendingObjects = await GetBacklogAsync(db, artifact => artifact.ObjectState == CentralArtifactObjectState.Pending
+                && artifact.ObjectVerificationToken == null,
             cancellationToken).ConfigureAwait(false);
         var pendingReferences = await GetBacklogAsync(db,
-            artifact => artifact.ReconstructionState == CentralReconstructionState.PendingReference,
+            artifact => artifact.ReconstructionState == CentralReconstructionState.PendingReference
+                && artifact.ObjectVerificationToken == null,
             cancellationToken).ConfigureAwait(false);
         var quarantined = await GetBacklogAsync(db,
             artifact => artifact.ObjectState == CentralArtifactObjectState.Quarantined
                 || artifact.ReconstructionState == CentralReconstructionState.Quarantined,
             cancellationToken).ConfigureAwait(false);
+        var pendingVerifications = await db.CentralArtifacts
+            .Where(artifact => artifact.ObjectVerificationToken != null)
+            .GroupBy(static _ => 1)
+            .Select(group => new BacklogSnapshot(
+                group.LongCount(),
+                group.Sum(artifact => artifact.ByteLength),
+                group.Min(artifact => artifact.ObjectVerificationRequestedAtUtc) ?? DateTimeOffset.UnixEpoch))
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         telemetry.RecordBacklog(
             pendingObjects?.Count ?? 0,
             pendingObjects?.Bytes ?? 0,
@@ -1593,7 +1786,28 @@ internal sealed partial class CentralArtifactReconciliationService(
             GetAgeSeconds(pendingReferences?.OldestAtUtc),
             quarantined?.Count ?? 0,
             quarantined?.Bytes ?? 0,
-            GetAgeSeconds(quarantined?.OldestAtUtc));
+            GetAgeSeconds(quarantined?.OldestAtUtc),
+            pendingVerifications?.Count ?? 0,
+            pendingVerifications?.Bytes ?? 0,
+            GetAgeSeconds(pendingVerifications?.OldestAtUtc));
+    }
+
+    private static async Task<bool> IsObjectMissingAsync(
+        IMinioClient minio,
+        CentralArtifact artifact,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            _ = await minio.StatObjectAsync(new StatObjectArgs()
+                .WithBucket(Bucket)
+                .WithObject(artifact.StorageReference[BucketPrefix.Length..]), cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        {
+            return true;
+        }
     }
 
     private static Task<BacklogSnapshot?> GetBacklogAsync(
@@ -1629,6 +1843,80 @@ internal sealed partial class CentralArtifactReconciliationService(
             artifact.ReferenceRetryCount++;
         }
         artifact.ReferenceRetryAtUtc = now + CalculateReferenceRetryDelay(artifact.ReferenceRetryCount);
+    }
+
+    internal static TimeSpan CalculateVerificationRetryDelay(int attempt)
+    {
+        if (attempt <= 1)
+        {
+            return InitialVerificationRetryDelay;
+        }
+        var cappedExponent = Math.Min(attempt - 1, 6);
+        var delayTicks = InitialVerificationRetryDelay.Ticks * (1L << cappedExponent);
+        return TimeSpan.FromTicks(Math.Min(MaximumVerificationRetryDelay.Ticks, delayTicks));
+    }
+
+    private async Task ScheduleVerificationRetryAsync(
+        ApplicationDbContext db,
+        Guid artifactId,
+        VerificationRetryFence? retryFence,
+        CancellationToken cancellationToken)
+    {
+        var retry = await db.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.Id == artifactId)
+            .Select(artifact => new
+            {
+                artifact.ObjectState,
+                artifact.ObjectVerificationToken,
+                artifact.ObjectVerificationRetryCount
+            })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (retry is null)
+        {
+            return;
+        }
+        var now = timeProvider.GetUtcNow();
+        if (retry.ObjectVerificationToken is null)
+        {
+            if (retry.ObjectState != CentralArtifactObjectState.Available
+                || retryFence?.CommittedVerifiedAtUtc is not { } committedVerifiedAtUtc)
+            {
+                return;
+            }
+            _ = await db.CentralArtifacts
+                .Where(artifact => artifact.Id == artifactId
+                    && artifact.ObjectState == CentralArtifactObjectState.Available
+                    && artifact.ObjectVerificationToken == null
+                    && artifact.ObjectVerifiedAtUtc == committedVerifiedAtUtc)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(artifact => artifact.ObjectState, CentralArtifactObjectState.Pending)
+                    .SetProperty(artifact => artifact.ObjectVerificationToken, Guid.NewGuid())
+                    .SetProperty(artifact => artifact.ObjectVerificationRequestedAtUtc, now)
+                    .SetProperty(artifact => artifact.ObjectVerificationRetryCount, 1)
+                    .SetProperty(
+                        artifact => artifact.ObjectVerificationRetryAtUtc,
+                        now + CalculateVerificationRetryDelay(1)), cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+        if (retryFence is null
+            || retryFence.ObjectVerificationToken != retry.ObjectVerificationToken)
+        {
+            return;
+        }
+        var expectedToken = retryFence.ObjectVerificationToken;
+        var nextRetryCount = retry.ObjectVerificationRetryCount == int.MaxValue
+            ? int.MaxValue
+            : retry.ObjectVerificationRetryCount + 1;
+        var retryAtUtc = timeProvider.GetUtcNow() + CalculateVerificationRetryDelay(nextRetryCount);
+        _ = await db.CentralArtifacts
+            .Where(artifact => artifact.Id == artifactId
+                && artifact.ObjectVerificationToken == expectedToken
+                && artifact.ObjectVerificationRetryCount == retry.ObjectVerificationRetryCount)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(artifact => artifact.ObjectVerificationRetryCount, nextRetryCount)
+                .SetProperty(artifact => artifact.ObjectVerificationRetryAtUtc, retryAtUtc), cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task MarkProgressAsync(ApplicationDbContext db, Guid token, CancellationToken cancellationToken)
@@ -1698,14 +1986,15 @@ internal sealed partial class CentralArtifactReconciliationService(
 
     private static bool IsRecoverable(Exception exception)
         => exception is DbException or DbUpdateConcurrencyException or MinioException
-            or HttpRequestException or IOException or InvalidOperationException;
+            or CentralArtifactStorageException or HttpRequestException or IOException or InvalidOperationException;
 
     private static bool MayContainObjectLocation(Exception exception)
-        => exception is MinioException or HttpRequestException or IOException;
+        => exception is MinioException or CentralArtifactStorageException or HttpRequestException or IOException;
 
     private static string GetFailureCategory(Exception exception)
         => exception switch
         {
+            CentralArtifactStorageException => "object-store",
             MinioException => "object-store",
             HttpRequestException => "network",
             IOException => "io",
@@ -1730,6 +2019,13 @@ internal sealed partial class CentralArtifactReconciliationService(
     }
 
     private sealed record BacklogSnapshot(long Count, long Bytes, DateTimeOffset OldestAtUtc);
+
+    private sealed class VerificationRetryFence
+    {
+        public Guid? ObjectVerificationToken { get; set; }
+
+        public DateTimeOffset? CommittedVerifiedAtUtc { get; set; }
+    }
 
     private sealed record ObjectFingerprint(long ByteLength, string ChecksumSha256);
 
@@ -1861,44 +2157,6 @@ internal sealed partial class CentralArtifactReconciliationService(
         artifact.StateReasonCode = null;
         artifact.ReferenceRetryCount = 0;
         artifact.ReferenceRetryAtUtc = null;
-    }
-
-    private static async Task<string?> VerifyAsync(
-        IMinioClient minio,
-        CentralArtifact artifact,
-        CancellationToken cancellationToken)
-    {
-        long length = 0;
-        byte[]? checksum = null;
-        try
-        {
-            await minio.GetObjectAsync(new GetObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(artifact.StorageReference[BucketPrefix.Length..])
-                .WithCallbackStream(stream =>
-                {
-                    using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-                    var buffer = new byte[81920];
-                    int read;
-                    while ((read = stream.Read(buffer)) > 0)
-                    {
-                        hash.AppendData(buffer, 0, read);
-                        length += read;
-                    }
-                    checksum = hash.GetHashAndReset();
-                }), cancellationToken).ConfigureAwait(false);
-        }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
-        {
-            return "missing";
-        }
-        if (length != artifact.ByteLength)
-        {
-            return "object.length-mismatch";
-        }
-        return string.Equals(Convert.ToHexString(checksum!), artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase)
-            ? null
-            : "object.checksum-mismatch";
     }
 
     [LoggerMessage(2120, LogLevel.Information,

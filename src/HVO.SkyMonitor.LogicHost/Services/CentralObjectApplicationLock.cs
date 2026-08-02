@@ -67,6 +67,22 @@ internal sealed class CentralObjectApplicationLock : IAsyncDisposable
     internal static string CreateResource(string canonicalStorageReference)
         => ResourcePrefix + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalStorageReference)));
 
+    internal async Task EnsureHeldAsync(CancellationToken cancellationToken)
+    {
+        if (released || connection.State != ConnectionState.Open)
+        {
+            throw new InvalidOperationException("The central object application lock is no longer held.");
+        }
+        await using var command = new SqlCommand(
+            "SELECT APPLOCK_MODE(N'public', @resource, N'Session');", connection);
+        _ = command.Parameters.AddWithValue("@resource", resource);
+        var mode = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+        if (!string.Equals(mode, "Exclusive", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The central object application lock is no longer held.");
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (released)
