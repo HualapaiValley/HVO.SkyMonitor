@@ -23,7 +23,7 @@ internal sealed class DeploymentLocationTelemetry : IDisposable
         duration = meter.CreateHistogram<double>("skymonitor.deployment_location.duration", "ms");
         backfills = meter.CreateCounter<long>("skymonitor.deployment_location.backfill", "{entity}");
         reconciliationItems = meter.CreateCounter<long>(
-            "skymonitor.deployment_location.reconciliation.items", "{capture}");
+            "skymonitor.deployment_location.reconciliation.items", "{item}");
         reconciliationDuration = meter.CreateHistogram<double>(
             "skymonitor.deployment_location.reconciliation.duration", "ms");
         meter.CreateObservableGauge(

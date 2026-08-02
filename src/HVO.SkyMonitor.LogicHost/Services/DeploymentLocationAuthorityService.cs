@@ -492,7 +492,14 @@ internal sealed partial class DeploymentLocationAuthorityService(
             {
                 ResetReconciliationWork(work, deployment.ConcurrencyToken, now);
             }
+            var reason = deployment.Status == DeploymentLocationResolutionStatus.Pending
+                ? ExistingReason(deployment)
+                : ResolutionReason(deployment.Status);
             activity?.SetTag("deployment.outcome", "staged");
+            activity?.SetTag("deployment.reason", reason);
+            activity?.SetTag("deployment.status", deployment.Status.ToString());
+            telemetry?.RecordOperation(
+                "reconcile", "staged", reason, "work", timeProvider.GetElapsedTime(started));
         }
         catch (Exception exception) when (exception is not OperationCanceledException
             || !cancellationToken.IsCancellationRequested)
