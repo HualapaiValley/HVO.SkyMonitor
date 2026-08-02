@@ -68,7 +68,9 @@ public static class SkyMonitorObservabilityExtensions
     };
     private static readonly HashSet<string> DeploymentLocationHealthDataKeys = new(StringComparer.Ordinal)
     {
-        "PendingCount", "OldestAgeSeconds"
+        "PendingCount", "OldestAgeSeconds", "PendingWorkCount", "PendingCaptureCount",
+        "OldestWorkAgeSeconds", "OldestWorkProgressAgeSeconds", "UndiscoveredWorkCount", "RetryCount",
+        "ExpiredLeaseCount"
     };
     private static readonly HashSet<string> EnvironmentalDeliveryHealthDataKeys = new(StringComparer.Ordinal)
     {

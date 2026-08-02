@@ -238,7 +238,6 @@ internal sealed partial class ObservatoryService(
                     deployment.ReasonCode = "observatory-version-superseded";
                     deployment.ResolvedAtUtc = now;
                     deployment.ResolvedByUserId = request.OwnerUserId;
-                    deployment.ConcurrencyToken = Guid.NewGuid();
                     dbContext.DeploymentLocationResolutionAudits.Add(new DeploymentLocationResolutionAudit
                     {
                         DeploymentLocation = deployment,
@@ -251,6 +250,8 @@ internal sealed partial class ObservatoryService(
                         OccurredAtUtc = now
                     });
                 }
+                deployment.ConcurrencyToken = Guid.NewGuid();
+                await deploymentLocationAuthority.ReconcileAsync(deployment, cancellationToken).ConfigureAwait(false);
             }
             foreach (var deployment in currentDeployments)
             {

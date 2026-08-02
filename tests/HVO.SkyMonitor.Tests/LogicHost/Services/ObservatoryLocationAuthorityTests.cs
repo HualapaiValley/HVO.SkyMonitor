@@ -121,6 +121,11 @@ public sealed class ObservatoryLocationAuthorityTests
         };
         context.CentralFrames.Add(frame);
         await context.SaveChangesAsync();
+        var activeWork = await context.DeploymentLocationReconciliationWork.SingleAsync();
+        activeWork.DiscoveryCutoffUtc = clock.GetUtcNow();
+        activeWork.DiscoveredCaptureCount = 1;
+        activeWork.CaptureCount = 1;
+        await context.SaveChangesAsync();
         registration.LocationEvidenceState.Should().Be(RegistrationLocationEvidenceState.DeploymentAcknowledged);
         var pendingCandidate = DeploymentLocationSnapshot.Create(
             "move-camera", 2, "manual-candidate", 2, clock.GetUtcNow(), null,
@@ -157,6 +162,10 @@ public sealed class ObservatoryLocationAuthorityTests
         frame.Location!.DeviceDeploymentLocationVersionId.Should().Be(activeEvaluation.Id);
         registration.LocationEvidenceState.Should().Be(RegistrationLocationEvidenceState.DeploymentPending);
         frame.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.ReportedResolved);
+        activeWork.AuthorityConcurrencyToken.Should().Be(activeEvaluation.ConcurrencyToken);
+        activeWork.CaptureCount.Should().BeNull();
+        activeWork.DiscoveryCutoffUtc.Should().BeNull();
+        activeWork.DiscoveredCaptureCount.Should().Be(0);
         (await context.DeploymentLocationResolutionAudits.CountAsync()).Should().Be(4);
 
         clock.Advance(TimeSpan.FromMinutes(1));

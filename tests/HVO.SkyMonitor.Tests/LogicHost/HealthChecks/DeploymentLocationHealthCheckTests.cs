@@ -5,6 +5,7 @@ using HVO.SkyMonitor.LogicHost.HealthChecks;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.HealthChecks;
 
@@ -89,6 +90,10 @@ public sealed class DeploymentLocationHealthCheckTests
         var effectiveFromUtc = UtcNow;
         var deployment = new DeviceDeploymentLocationVersion
         {
+            ObservatoryLocationVersion = new ObservatoryLocationVersion
+            {
+                EffectiveFromUtc = effectiveFromUtc.AddDays(-1)
+            },
             LocationId = "health-location",
             Version = 1,
             Source = "health-test",
@@ -148,6 +153,88 @@ public sealed class DeploymentLocationHealthCheckTests
             context, new FixedTimeProvider(UtcNow), telemetry).CheckHealthAsync(new HealthCheckContext());
 
         result.Status.Should().Be(HealthStatus.Healthy);
+    }
+
+    [TestMethod]
+    public async Task CheckHealthAsync_FreshDiscoveryWorkExposesProgressWithoutDegrading()
+    {
+        await using var context = CreateContext();
+        var deployment = new DeviceDeploymentLocationVersion
+        {
+            Status = DeploymentLocationResolutionStatus.Acknowledged,
+            ProposedAtUtc = UtcNow.AddMinutes(-2)
+        };
+        context.DeploymentLocationReconciliationWork.Add(new DeploymentLocationReconciliationWork
+        {
+            DeploymentLocation = deployment,
+            DeviceDeploymentLocationVersionId = deployment.Id,
+            AuthorityConcurrencyToken = deployment.ConcurrencyToken,
+            CreatedAtUtc = UtcNow.AddMinutes(-1),
+            UpdatedAtUtc = UtcNow.AddMinutes(-1),
+            NextAttemptAtUtc = UtcNow,
+            DiscoveryCutoffUtc = UtcNow,
+            DiscoveredCaptureCount = 5
+        });
+        await context.SaveChangesAsync();
+        using var telemetry = new DeploymentLocationTelemetry();
+
+        var result = await new DeploymentLocationHealthCheck(
+            context,
+            new FixedTimeProvider(UtcNow),
+            telemetry,
+            Options.Create(new DeploymentLocationReconciliationOptions
+            {
+                BacklogDegradedAfter = TimeSpan.FromMinutes(10)
+            })).CheckHealthAsync(new HealthCheckContext());
+
+        result.Status.Should().Be(HealthStatus.Healthy);
+        result.Data["PendingWorkCount"].Should().Be(1L);
+        result.Data["PendingCaptureCount"].Should().Be(5L);
+        result.Data["UndiscoveredWorkCount"].Should().Be(1L);
+        result.Data["OldestWorkAgeSeconds"].Should().Be(60d);
+        result.Data["OldestWorkProgressAgeSeconds"].Should().Be(60d);
+    }
+
+    [TestMethod]
+    public async Task CheckHealthAsync_CaseOnlyResolvedBindingMismatchIsUnhealthy()
+    {
+        await using var context = CreateContext();
+        var deployment = new DeviceDeploymentLocationVersion
+        {
+            ObservatoryLocationVersion = new ObservatoryLocationVersion
+            {
+                EffectiveFromUtc = UtcNow.AddDays(-1)
+            },
+            LocationId = "health-location",
+            Version = 1,
+            Source = "operator-survey",
+            EffectiveFromUtc = UtcNow.AddMinutes(-1),
+            Status = DeploymentLocationResolutionStatus.Acknowledged
+        };
+        var frame = new CentralFrame
+        {
+            CapturedAtUtc = UtcNow,
+            LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved,
+            Location = new CentralCaptureLocation
+            {
+                DeploymentLocation = deployment,
+                DeviceDeploymentLocationVersionId = deployment.Id,
+                LocationId = "HEALTH-LOCATION",
+                Version = deployment.Version,
+                Source = deployment.Source,
+                EffectiveFromUtc = deployment.EffectiveFromUtc
+            }
+        };
+        frame.Location.CentralFrame = frame;
+        frame.Location.CentralFrameId = frame.Id;
+        context.CentralFrames.Add(frame);
+        await context.SaveChangesAsync();
+        using var telemetry = new DeploymentLocationTelemetry();
+
+        var result = await new DeploymentLocationHealthCheck(
+            context, new FixedTimeProvider(UtcNow), telemetry).CheckHealthAsync(new HealthCheckContext());
+
+        result.Status.Should().Be(HealthStatus.Unhealthy);
     }
 
     [TestMethod]

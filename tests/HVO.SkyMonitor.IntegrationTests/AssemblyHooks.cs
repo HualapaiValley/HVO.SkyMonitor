@@ -9,6 +9,14 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestClass]
 public sealed class AssemblyHooks
 {
+    private static readonly string[] RecurringWorkerSuppressionEvidenceVariables =
+    [
+        "HVO_ISSUE_246_RETENTION_EVIDENCE",
+        "HVO_ISSUE_248_BASELINE_EVIDENCE",
+        "HVO_ISSUE_248_SMOKE",
+        "HVO_ISSUE_248_CENSORED_SMOKE",
+        "HVO_ISSUE_248_AGGREGATE_ONLY"
+    ];
     internal static IntegrationTestFixture Fixture { get; private set; } = null!;
 
     [AssemblyInitialize]
@@ -18,11 +26,9 @@ public sealed class AssemblyHooks
         {
             Issue170PerformanceEvidence.AcquireExclusiveProcessLock();
         }
-        Fixture = new IntegrationTestFixture(
-            suppressRecurringWorkers: string.Equals(
-                Environment.GetEnvironmentVariable("HVO_ISSUE_246_RETENTION_EVIDENCE"),
-                "1",
-                StringComparison.Ordinal));
+        var suppressRecurringWorkers = RecurringWorkerSuppressionEvidenceVariables
+            .Any(name => string.Equals(Environment.GetEnvironmentVariable(name), "1", StringComparison.Ordinal));
+        Fixture = new IntegrationTestFixture(suppressRecurringWorkers: suppressRecurringWorkers);
         await Fixture.InitializeAsync().ConfigureAwait(false);
     }
 

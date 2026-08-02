@@ -398,6 +398,23 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralProcessingPolicyService, CentralProcessingPolicyService>();
         builder.Services.AddSingleton<OperatorUiTelemetry>();
         builder.Services.AddScoped<IDeploymentLocationAuthorityService, DeploymentLocationAuthorityService>();
+        builder.Services.AddOptions<DeploymentLocationReconciliationOptions>()
+            .Bind(builder.Configuration.GetSection(DeploymentLocationReconciliationOptions.SectionName))
+            .ValidateDataAnnotations()
+            .Validate(options => options.PollInterval > TimeSpan.Zero
+                && options.LeaseDuration > TimeSpan.Zero
+                && options.InitialRetryDelay > TimeSpan.Zero
+                && options.MaximumRetryDelay >= options.InitialRetryDelay
+                && options.BacklogDegradedAfter > TimeSpan.Zero,
+                "Deployment location reconciliation durations must be positive and ordered.")
+            .ValidateOnStart();
+        builder.Services.AddScoped<DeploymentLocationReconciliationService>();
+        builder.Services.AddScoped<IDeploymentLocationReconciliationProcessor>(provider =>
+            provider.GetRequiredService<DeploymentLocationReconciliationService>());
+        if (!builder.Environment.IsEnvironment("Testing"))
+        {
+            builder.Services.AddHostedService<DeploymentLocationReconciliationWorker>();
+        }
 
         // This host owns only the SkyMonitor database; do not point this context at shared identity databases.
         // Database - require an explicit SQL Server connection string.

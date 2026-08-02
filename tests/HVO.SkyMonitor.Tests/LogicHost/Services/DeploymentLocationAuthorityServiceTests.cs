@@ -30,6 +30,9 @@ public sealed class DeploymentLocationAuthorityServiceTests
         registration.LocationEvidenceState.Should().Be(RegistrationLocationEvidenceState.DeploymentPending);
         (await context.DeviceDeploymentLocationVersions.CountAsync()).Should().Be(1);
         (await context.DeploymentLocationResolutionAudits.CountAsync()).Should().Be(1);
+        var work = await context.DeploymentLocationReconciliationWork.SingleAsync();
+        work.AuthorityConcurrencyToken.Should().Be(context.DeviceDeploymentLocationVersions.Single().ConcurrencyToken);
+        work.Status.Should().Be(DeploymentLocationReconciliationStatuses.Pending);
     }
 
     [TestMethod]
@@ -189,6 +192,54 @@ public sealed class DeploymentLocationAuthorityServiceTests
     }
 
     [TestMethod]
+    public async Task ResolveAsync_ResetsOneDurableWorkGenerationAndReplayPreservesProgress()
+    {
+        await using var context = CreateContext();
+        var registration = await SeedRegistrationAsync(context, allowedRadiusMeters: null);
+        var service = new DeploymentLocationAuthorityService(context, new FixedTimeProvider(ProposalUtc));
+        _ = await service.ProposeAsync(
+            registration, CreateDeployment(), DeploymentLocationSourceKind.Manual, "bootstrap:test");
+        await context.SaveChangesAsync();
+        var proposal = await context.DeviceDeploymentLocationVersions.SingleAsync();
+        var work = await context.DeploymentLocationReconciliationWork.SingleAsync();
+        var workId = work.Id;
+        work.AttemptCount = 3;
+        work.CaptureCount = 10;
+        work.DiscoveryCutoffUtc = ProposalUtc;
+        work.DiscoveredCaptureCount = 10;
+        work.CompletedCaptureCount = 5;
+        work.LastCompletedFirstReceivedAtUtc = ProposalUtc.AddMinutes(-1);
+        work.LastCompletedCentralFrameId = Guid.NewGuid();
+        await context.SaveChangesAsync();
+
+        var applied = await service.ResolveAsync(
+            proposal.Id, "owner", DeploymentLocationResolutionStatus.Acknowledged,
+            "owner-approved", proposal.ConcurrencyToken);
+
+        work.Id.Should().Be(workId);
+        work.AuthorityConcurrencyToken.Should().Be(applied.Proposal!.ConcurrencyToken);
+        work.Status.Should().Be(DeploymentLocationReconciliationStatuses.Pending);
+        work.AttemptCount.Should().Be(0);
+        work.CaptureCount.Should().BeNull();
+        work.DiscoveryCutoffUtc.Should().BeNull();
+        work.DiscoveredCaptureCount.Should().Be(0);
+        work.CompletedCaptureCount.Should().Be(0);
+        work.LastCompletedFirstReceivedAtUtc.Should().BeNull();
+        work.LastCompletedCentralFrameId.Should().BeNull();
+        work.AttemptCount = 4;
+        await context.SaveChangesAsync();
+
+        var replay = await service.ResolveAsync(
+            proposal.Id, "owner", DeploymentLocationResolutionStatus.Acknowledged,
+            "owner-approved", applied.Proposal.ConcurrencyToken);
+
+        replay.Status.Should().Be(DeploymentLocationMutationStatus.Applied);
+        (await context.DeploymentLocationReconciliationWork.CountAsync()).Should().Be(1);
+        work.Id.Should().Be(workId);
+        work.AttemptCount.Should().Be(4);
+    }
+
+    [TestMethod]
     public async Task ListAndGetAsync_FilterAtOwnerQueryBoundary()
     {
         await using var context = CreateContext();
@@ -320,6 +371,11 @@ public sealed class DeploymentLocationAuthorityServiceTests
         rows[0].ReasonCode.Should().Be("deployment-version-superseded");
         rows[1].Status.Should().Be(DeploymentLocationResolutionStatus.Pending);
         registration.LocationEvidenceState.Should().Be(RegistrationLocationEvidenceState.DeploymentPending);
+        var work = await context.DeploymentLocationReconciliationWork.OrderBy(item => item.CreatedAtUtc).ToArrayAsync();
+        work.Should().HaveCount(2);
+        work.Should().OnlyContain(item => item.Status == DeploymentLocationReconciliationStatuses.Pending);
+        work.Should().OnlyContain(item => item.AuthorityConcurrencyToken
+            == rows.Single(row => row.Id == item.DeviceDeploymentLocationVersionId).ConcurrencyToken);
     }
 
     private static readonly DateTimeOffset ProposalUtc = new(2026, 7, 24, 2, 0, 0, TimeSpan.Zero);

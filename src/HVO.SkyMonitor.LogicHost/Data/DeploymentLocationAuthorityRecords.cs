@@ -50,6 +50,63 @@ internal sealed class DeviceDeploymentLocationVersion
     public string? ResolvedByUserId { get; set; }
     public Guid ConcurrencyToken { get; set; } = Guid.NewGuid();
     public ICollection<DeploymentLocationResolutionAudit> ResolutionAudits { get; } = [];
+    public DeploymentLocationReconciliationWork? ReconciliationWork { get; set; }
+}
+
+internal static class DeploymentLocationReconciliationStatuses
+{
+    internal const string Pending = "Pending";
+    internal const string Processing = "Processing";
+    internal const string Retry = "Retry";
+    internal const string Completed = "Completed";
+}
+
+internal sealed class DeploymentLocationReconciliationWork
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid DeviceDeploymentLocationVersionId { get; set; }
+    public DeviceDeploymentLocationVersion? DeploymentLocation { get; set; }
+    public Guid AuthorityConcurrencyToken { get; set; }
+    public string Status { get; set; } = DeploymentLocationReconciliationStatuses.Pending;
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset UpdatedAtUtc { get; set; }
+    public DateTimeOffset? StartedAtUtc { get; set; }
+    public DateTimeOffset? CompletedAtUtc { get; set; }
+    public int AttemptCount { get; set; }
+    public DateTimeOffset? LastAttemptAtUtc { get; set; }
+    public DateTimeOffset? NextAttemptAtUtc { get; set; }
+    public string? LastErrorCode { get; set; }
+    public Guid? LeaseToken { get; set; }
+    public string? LeaseOwner { get; set; }
+    public DateTimeOffset? LeaseExpiresAtUtc { get; set; }
+    public long? CaptureCount { get; set; }
+    public DateTimeOffset? DiscoveryCutoffUtc { get; set; }
+    public long DiscoveredCaptureCount { get; set; }
+    public DateTimeOffset? DiscoveryCursorFirstReceivedAtUtc { get; set; }
+    public Guid? DiscoveryCursorCentralFrameId { get; set; }
+    public long CompletedCaptureCount { get; set; }
+    public long ScheduledArtifactCount { get; set; }
+    public DateTimeOffset? LastCompletedFirstReceivedAtUtc { get; set; }
+    public Guid? LastCompletedCentralFrameId { get; set; }
+    public DateTimeOffset? ActiveBatchUpperFirstReceivedAtUtc { get; set; }
+    public Guid? ActiveBatchUpperCentralFrameId { get; set; }
+    public int ActiveBatchCaptureCount { get; set; }
+    public Guid? SchedulingCentralFrameId { get; set; }
+    public Guid? SchedulingCentralArtifactId { get; set; }
+    public string? TraceParent { get; set; }
+    public string? TraceState { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+    public ICollection<DeploymentLocationReconciliationCapture> Captures { get; } = [];
+}
+
+internal sealed class DeploymentLocationReconciliationCapture
+{
+    public Guid DeploymentLocationReconciliationWorkId { get; set; }
+    public DeploymentLocationReconciliationWork? Work { get; set; }
+    public Guid AuthorityConcurrencyToken { get; set; }
+    public Guid CentralFrameId { get; set; }
+    public CentralFrame? CentralFrame { get; set; }
+    public DateTimeOffset FirstReceivedAtUtc { get; set; }
 }
 
 internal sealed class DeploymentLocationResolutionAudit

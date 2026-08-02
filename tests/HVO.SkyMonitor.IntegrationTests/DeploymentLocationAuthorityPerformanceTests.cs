@@ -64,6 +64,7 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
             (agent, cancellationToken) => ProposeAsync(factory, agent, agent.Initial, cancellationToken),
             warmups: 0)
             .ConfigureAwait(false);
+        await DrainReconciliationAsync(factory).ConfigureAwait(false);
         await AssertStateAsync(factory, scale.OwnerUserId, 0, 0, FrameCount).ConfigureAwait(false);
         var populationElapsed = Stopwatch.GetElapsedTime(populationStarted);
         var populationAfter = await ReadDatabaseSizeAsync(factory).ConfigureAwait(false);
@@ -109,6 +110,7 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
                 counter,
                 (agent, cancellationToken) => ProposeAsync(factory, agent, agent.Changed, cancellationToken))
                 .ConfigureAwait(false));
+            await DrainReconciliationAsync(factory).ConfigureAwait(false);
             var backlog = await ReadBacklogAsync(factory, scale.OwnerUserId).ConfigureAwait(false);
             Assert.AreEqual(AgentCount, backlog.PendingDeployments);
             Assert.AreEqual(FrameCount, backlog.MismatchFrames);
@@ -133,6 +135,7 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
                 counter,
                 (proposal, cancellationToken) => ResolveAsync(factory, scale.OwnerUserId, proposal, cancellationToken))
                 .ConfigureAwait(false));
+            await DrainReconciliationAsync(factory).ConfigureAwait(false);
             await AssertStateAsync(factory, scale.OwnerUserId, 0, 0, FrameCount).ConfigureAwait(false);
             await ResetChangedAsync(factory, scale.OwnerUserId).ConfigureAwait(false);
         }
@@ -331,6 +334,7 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
         await ExecuteAsync(proposals, concurrency,
             (proposal, cancellationToken) => ResolveAsync(factory, scale.OwnerUserId, proposal, cancellationToken), null)
             .ConfigureAwait(false);
+        await DrainReconciliationAsync(factory).ConfigureAwait(false);
         await ResetChangedAsync(factory, scale.OwnerUserId).ConfigureAwait(false);
     }
 
@@ -464,6 +468,21 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
         }
     }
 
+    private static async Task DrainReconciliationAsync(
+        WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory)
+    {
+        for (var step = 0; step < 20_000; step++)
+        {
+            await using var scope = factory.Services.CreateAsyncScope();
+            var processor = scope.ServiceProvider.GetRequiredService<IDeploymentLocationReconciliationProcessor>();
+            if (!await processor.ProcessNextAsync().ConfigureAwait(false))
+            {
+                return;
+            }
+        }
+        Assert.Fail("Deployment-location reconciliation did not drain within 20,000 bounded steps.");
+    }
+
     private static bool IsDeadlock(Exception exception)
     {
         for (Exception? current = exception; current is not null; current = current.InnerException)
@@ -531,6 +550,14 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
             FROM [CentralFrames] AS frame
             INNER JOIN [DeviceRegistrations] AS registration ON registration.[Id] = frame.[RegistrationId]
             WHERE registration.[OwnerUserId] = {ownerUserId};
+
+            DELETE work
+            FROM [DeploymentLocationReconciliationWork] AS work
+            INNER JOIN [DeviceDeploymentLocationVersions] AS deployment
+                ON deployment.[Id] = work.[DeviceDeploymentLocationVersionId]
+            INNER JOIN [DeviceRegistrations] AS registration
+                ON registration.[Id] = deployment.[RegistrationId]
+            WHERE registration.[OwnerUserId] = {ownerUserId} AND deployment.[Version] = 2;
 
             DELETE audit
             FROM [DeploymentLocationResolutionAudits] AS audit
