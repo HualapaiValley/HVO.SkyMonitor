@@ -1405,6 +1405,7 @@ internal sealed partial class CentralArtifactReconciliationService(
             return new RecoveryArtifactResult("unsupported", artifact.ByteLength);
         }
 
+        var scheduleDerivatives = false;
         await using var objectLock = await AcquireCurrentObjectLockAsync(
             db, artifact, cancellationToken).ConfigureAwait(false);
         canonical = artifact.StorageReference.StartsWith(BucketPrefix + "artifacts/", StringComparison.Ordinal)
@@ -1540,18 +1541,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                 || artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw)
             {
                 await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    await scheduler.EnsureRequiredJobsAsync(artifact, reconciledAtUtc, cancellationToken).ConfigureAwait(false);
-                    // The scheduler commits idempotent jobs independently; fence the recovery lease before
-                    // the reconciler performs any final save after that durable scheduling boundary.
-                    await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
-                }
-                catch (DbUpdateConcurrencyException exception) when (IsSchedulingArtifactConflict(exception, artifact.Id))
-                {
-                    exception.Data[SchedulingConcurrencyMarker] = true;
-                    throw;
-                }
+                scheduleDerivatives = true;
             }
             telemetry.RecordReconciled("completed");
         }
@@ -1569,7 +1559,14 @@ internal sealed partial class CentralArtifactReconciliationService(
         artifact.ObjectVerificationRetryCount = 0;
         artifact.ObjectVerificationRetryAtUtc = null;
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return result.Outcome == "none" ? new RecoveryArtifactResult("matched", artifact.ByteLength) : result;
+        var completed = result.Outcome == "none" ? new RecoveryArtifactResult("matched", artifact.ByteLength) : result;
+        await objectLock.DisposeAsync().ConfigureAwait(false);
+        if (scheduleDerivatives)
+        {
+            await scheduler.EnsureRequiredJobsAsync(artifact, reconciledAtUtc, cancellationToken).ConfigureAwait(false);
+            await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
+        }
+        return completed;
     }
 
     internal static async Task<CentralObjectApplicationLock> AcquireCurrentObjectLockAsync(

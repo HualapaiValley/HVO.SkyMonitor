@@ -109,8 +109,12 @@ public sealed partial class Program
             .ValidateOnStart();
         builder.Services.AddOptions<CentralTransientPayloadReleaseOptions>()
             .Bind(builder.Configuration.GetSection(CentralTransientPayloadReleaseOptions.SectionName))
-            .Validate(options => options.PollInterval > TimeSpan.Zero,
-                "TransientPayloadRelease:PollInterval must be positive.")
+            .Validate(options => options.PollInterval > TimeSpan.Zero &&
+                    options.ReservationLeaseTimeout >= TimeSpan.FromSeconds(1) &&
+                    options.InitialRetryDelay > TimeSpan.Zero &&
+                    options.MaximumRetryDelay >= options.InitialRetryDelay &&
+                    options.MaximumRetryCount > 0,
+                "TransientPayloadRelease timing values are invalid.")
             .ValidateOnStart();
         builder.Services.AddOptions<CentralTransientNotificationOptions>()
             .Bind(builder.Configuration.GetSection(CentralTransientNotificationOptions.SectionName))

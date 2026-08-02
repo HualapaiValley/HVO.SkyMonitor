@@ -1052,6 +1052,12 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 .ConfigureAwait(false);
             var principal = CreateOwnerPrincipal("release-admin", admin: true);
             var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+            if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-artifacts"))
+                    .ConfigureAwait(false))
+            {
+                await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-artifacts"))
+                    .ConfigureAwait(false);
+            }
             var disabled = new CentralTransientPayloadReleaseService(
                 database.Context,
                 new CentralArtifactRetentionReferences(database.Context),
@@ -1146,7 +1152,13 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 database.Context,
                 new CentralArtifactRetentionReferences(database.Context),
                 minio,
-                Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions { Enabled = true }),
+                Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions
+                {
+                    Enabled = true,
+                    InitialRetryDelay = TimeSpan.FromMilliseconds(1),
+                    MaximumRetryDelay = TimeSpan.FromMilliseconds(10),
+                    MaximumRetryCount = 5
+                }),
                 TimeProvider.System);
             (await enabled.ProcessNextAsync(CancellationToken.None).ConfigureAwait(false)).Should().BeTrue();
             var preservedLateHold = await database.Context.CentralTransientPayloadReleaseItems.AsNoTracking()
@@ -1160,10 +1172,63 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 reviewedCurrent.RowVersion,
                 key,
                 CancellationToken.None).ConfigureAwait(false);
-            released.Status.Should().Be(CentralTransientPayloadReleaseStatus.Released);
+            for (var attempt = 0;
+                 attempt < 10 && released.Status == CentralTransientPayloadReleaseStatus.Accepted;
+                 attempt++)
+            {
+                await Task.Delay(20).ConfigureAwait(false);
+                _ = await enabled.ProcessNextAsync(CancellationToken.None).ConfigureAwait(false);
+                released = await enabled.ReleaseAsync(
+                    principal,
+                    current.CentralTransientEventId,
+                    reviewedCurrent.RowVersion,
+                    key,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            var failureReasons = released.Status == CentralTransientPayloadReleaseStatus.Failed
+                ? await database.Context.CentralTransientPayloadReleaseItems.AsNoTracking()
+                    .Where(item => item.ReleaseId == released.Response!.ReleaseId && item.FailureReasonCode != null)
+                    .Select(item => item.FailureReasonCode!).ToArrayAsync().ConfigureAwait(false)
+                : [];
+            released.Status.Should().Be(
+                CentralTransientPayloadReleaseStatus.Released,
+                string.Join(',', failureReasons));
             released.Response!.State.Should().Be(CentralTransientPayloadReleaseState.Completed);
             released.Response.ETag.Should().NotBe(reviewed.Response!.ETag);
             released.Response.ReleasedPayloadCount.Should().Be(seeded.Artifacts.Count - 1);
+            var durableItems = await database.Context.CentralTransientPayloadReleaseItems.AsNoTracking()
+                .Where(item => item.ReleaseId == released.Response.ReleaseId)
+                .OrderBy(item => item.Ordinal).ToArrayAsync().ConfigureAwait(false);
+            durableItems.Should().HaveCount(seeded.Artifacts.Count);
+            durableItems.Select(item => item.RecordId).Should()
+                .Equal(seeded.Artifacts.Select(item => item.Id).Order());
+            durableItems.Should().OnlyContain(item =>
+                item.Outcome != CentralTransientPayloadReleaseItemOutcome.Pending &&
+                item.ReleasedUtc.HasValue &&
+                item.ReservationToken == null &&
+                item.RetryAtUtc == null &&
+                item.StorageReference != null &&
+                item.TargetRowVersion != null && item.TargetRowVersion.Length == 8 &&
+                item.TargetGeneration.HasValue && item.RowVersion.Length == 8);
+            durableItems.Count(item => item.Outcome == CentralTransientPayloadReleaseItemOutcome.Released)
+                .Should().Be(seeded.Artifacts.Count - 1);
+            durableItems.Count(item => item.Outcome == CentralTransientPayloadReleaseItemOutcome.PreservedHeld)
+                .Should().Be(1);
+            var terminalAudit = durableItems.Select(item => new
+            {
+                item.ReleaseId,
+                item.Ordinal,
+                item.Kind,
+                item.RecordId,
+                item.Outcome,
+                item.ReleasedUtc,
+                item.RequestedAtUtc,
+                item.StorageReference,
+                TargetRowVersion = Convert.ToHexString(item.TargetRowVersion!),
+                item.TargetGeneration,
+                item.RetryCount,
+                RowVersion = Convert.ToHexString(item.RowVersion)
+            }).ToArray();
             (await database.Context.CentralArtifacts.CountAsync(item =>
                 item.ObjectState == CentralArtifactObjectState.Expired).ConfigureAwait(false))
                 .Should().Be(seeded.Artifacts.Count - 1);
@@ -1181,6 +1246,26 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             replay.Status.Should().Be(CentralTransientPayloadReleaseStatus.Released);
             replay.Response!.Replayed.Should().BeTrue();
             replay.Response.ReleaseId.Should().Be(released.Response.ReleaseId);
+            database.Context.ChangeTracker.Clear();
+            var replayItems = await database.Context.CentralTransientPayloadReleaseItems.AsNoTracking()
+                .Where(item => item.ReleaseId == released.Response.ReleaseId)
+                .OrderBy(item => item.Ordinal).ToArrayAsync().ConfigureAwait(false);
+            var replayAudit = replayItems.Select(item => new
+            {
+                item.ReleaseId,
+                item.Ordinal,
+                item.Kind,
+                item.RecordId,
+                item.Outcome,
+                item.ReleasedUtc,
+                item.RequestedAtUtc,
+                item.StorageReference,
+                TargetRowVersion = Convert.ToHexString(item.TargetRowVersion!),
+                item.TargetGeneration,
+                item.RetryCount,
+                RowVersion = Convert.ToHexString(item.RowVersion)
+            }).ToArray();
+            replayAudit.Should().BeEquivalentTo(terminalAudit, options => options.WithStrictOrdering());
             CentralTransientEventEtag.TryParse(released.Response.ETag, out var releasedRowVersion).Should().BeTrue();
             var secondRelease = await enabled.ReleaseAsync(
                 principal,
@@ -1248,11 +1333,18 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             database.Context.CentralTransientPayloadReleases.Add(release);
             await database.Context.SaveChangesAsync().ConfigureAwait(false);
             database.Context.ChangeTracker.Clear();
+            var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+            if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-artifacts"))
+                    .ConfigureAwait(false))
+            {
+                await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-artifacts"))
+                    .ConfigureAwait(false);
+            }
 
             var processor = new CentralTransientPayloadReleaseService(
                 database.Context,
                 new CentralArtifactRetentionReferences(database.Context),
-                AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>(),
+                minio,
                 Microsoft.Extensions.Options.Options.Create(
                     new CentralTransientPayloadReleaseOptions { Enabled = true }),
                 TimeProvider.System);
@@ -1262,8 +1354,13 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var completed = await database.Context.CentralTransientPayloadReleases.AsNoTracking()
                 .Include(item => item.Items).SingleAsync(item => item.ReleaseId == release.ReleaseId)
                 .ConfigureAwait(false);
-            completed.State.Should().Be(CentralTransientPayloadReleaseState.Completed);
-            completed.Items.Should().ContainSingle(item => item.ReleasedUtc.HasValue);
+            completed.State.Should().Be(
+                CentralTransientPayloadReleaseState.Completed,
+                "normalized items were {0}",
+                string.Join(", ", completed.Items.OrderBy(item => item.Ordinal).Select(item =>
+                    $"{item.Ordinal}:{item.Kind}:{item.Outcome}:retry={item.RetryCount}:failure={item.FailureReasonCode}")));
+            completed.Items.Should().HaveCount(5);
+            completed.Items.Should().OnlyContain(item => item.ReleasedUtc.HasValue);
             (await database.Context.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == source.Id)
                 .ConfigureAwait(false)).ObjectState.Should().Be(CentralArtifactObjectState.Expired);
         }

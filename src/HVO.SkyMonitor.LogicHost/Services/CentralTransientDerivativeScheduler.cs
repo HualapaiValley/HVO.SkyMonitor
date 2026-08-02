@@ -74,6 +74,38 @@ internal sealed class CentralTransientDerivativeScheduler(ApplicationDbContext d
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(eventVersionIds);
+        if (dbContext.Database.CurrentTransaction is not null)
+        {
+            throw new InvalidOperationException(
+                "Transient derivative scheduling requires payload object locks before its transaction.");
+        }
+        var eventIds = await dbContext.CentralTransientEventVersions.AsNoTracking()
+            .Where(version => eventVersionIds.Contains(version.EventVersionId))
+            .Select(version => version.CentralTransientEventId)
+            .Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var artifactIds = await dbContext.CentralTransientObservationSources.AsNoTracking()
+            .Where(source => eventIds.Contains(source.Observation!.CentralTransientEventId))
+            .Select(source => source.CentralArtifactId)
+            .Concat(dbContext.CentralTransientObservationBackgrounds.AsNoTracking()
+                .Where(background => eventIds.Contains(background.Observation!.CentralTransientEventId))
+                .Select(background => background.CentralArtifactId))
+            .Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var holdTargets = await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
+            dbContext, artifactIds, cancellationToken).ConfigureAwait(false);
+        if (holdTargets.Count != artifactIds.Length)
+        {
+            throw new CentralTransientPayloadHoldRejectedException("transient-retention.hold-target-missing");
+        }
+        await using var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
+        await EnsureScheduledCoreAsync(eventVersionIds, holdScope.Targets, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task EnsureScheduledCoreAsync(
+        IReadOnlyList<Guid> eventVersionIds,
+        IReadOnlyList<CentralTransientPayloadHoldTarget> holdTargets,
+        CancellationToken cancellationToken)
+    {
         await using var ownedTransaction = dbContext.Database.CurrentTransaction is null
             ? await dbContext.Database.BeginTransactionAsync(
                 IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false)
@@ -153,6 +185,14 @@ internal sealed class CentralTransientDerivativeScheduler(ApplicationDbContext d
             {
                 continue;
             }
+            var artifactIds = artifacts.Select(item => item.Id).ToHashSet();
+            var selectedHoldTargets = holdTargets.Where(target => artifactIds.Contains(target.RecordId)).ToArray();
+            if (selectedHoldTargets.Length != artifactIds.Count)
+            {
+                throw new CentralTransientPayloadHoldRejectedException("transient-retention.hold-target-changed");
+            }
+            await CentralTransientPayloadHoldFence.ValidateAsync(
+                dbContext, selectedHoldTargets, cancellationToken).ConfigureAwait(false);
 
             var requestJson = CreateRequestJson(version, transientEvent, orderedRecords);
             var requestBytes = Encoding.UTF8.GetBytes(requestJson);

@@ -14,6 +14,11 @@ internal interface ICentralTransientEventPersistence
     Task<CentralTransientPersistenceCommit> AppendAsync(
         CentralTransientPersistenceRequest request,
         CancellationToken cancellationToken);
+
+    Task<CentralTransientPersistenceCommit> AppendUnderPayloadLocksAsync(
+        CentralTransientPersistenceRequest request,
+        IReadOnlyList<CentralTransientPayloadHoldTarget> holdTargets,
+        CancellationToken cancellationToken);
 }
 
 internal sealed record CentralTransientCanonicalPayload(
@@ -83,8 +88,23 @@ internal sealed class CentralTransientEventPersistence(
     {
     }
 
-    public async Task<CentralTransientPersistenceCommit> AppendAsync(
+    public Task<CentralTransientPersistenceCommit> AppendAsync(
         CentralTransientPersistenceRequest request,
+        CancellationToken cancellationToken)
+        => AppendCoreAsync(request, callerHoldTargets: null, cancellationToken);
+
+    public Task<CentralTransientPersistenceCommit> AppendUnderPayloadLocksAsync(
+        CentralTransientPersistenceRequest request,
+        IReadOnlyList<CentralTransientPayloadHoldTarget> holdTargets,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(holdTargets);
+        return AppendCoreAsync(request, holdTargets, cancellationToken);
+    }
+
+    private async Task<CentralTransientPersistenceCommit> AppendCoreAsync(
+        CentralTransientPersistenceRequest request,
+        IReadOnlyList<CentralTransientPayloadHoldTarget>? callerHoldTargets,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -104,6 +124,50 @@ internal sealed class CentralTransientEventPersistence(
                 "Notification history belongs to the later delivery boundary.");
         }
 
+        var inputArtifactIds = await dbContext.CentralDerivativeJobInputs.AsNoTracking()
+            .Where(item => item.CentralDerivativeJobId == request.CentralDerivativeJobId)
+            .Select(item => item.CentralArtifactId)
+            .Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        CentralTransientPayloadHoldScope? ownedHoldScope = null;
+        IReadOnlyList<CentralTransientPayloadHoldTarget> holdTargets;
+        if (callerHoldTargets is null)
+        {
+            if (dbContext.Database.CurrentTransaction is not null)
+            {
+                throw new InvalidOperationException(
+                    "Transient persistence must acquire payload locks before its SQL transaction.");
+            }
+            holdTargets = await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
+                dbContext, inputArtifactIds, cancellationToken).ConfigureAwait(false);
+            if (holdTargets.Count != inputArtifactIds.Length)
+            {
+                throw Failure(CentralTransientPersistenceReasonCodes.InvalidArtifactLineage,
+                    "A referenced artifact disappeared before its retention hold was fenced.");
+            }
+            ownedHoldScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+                dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
+            holdTargets = ownedHoldScope.Targets;
+        }
+        else
+        {
+            if (dbContext.Database.CurrentTransaction is null)
+            {
+                throw new InvalidOperationException(
+                    "Caller-owned payload locks require an active SQL transaction.");
+            }
+            var expectedIds = inputArtifactIds.ToHashSet();
+            var suppliedIds = callerHoldTargets
+                .Where(item => item.Kind == CentralTransientPayloadReleaseItemKind.SourceArtifact)
+                .Select(item => item.RecordId)
+                .ToHashSet();
+            if (!expectedIds.SetEquals(suppliedIds) || callerHoldTargets.Count != suppliedIds.Count)
+            {
+                throw Failure(CentralTransientPersistenceReasonCodes.InvalidArtifactLineage,
+                    "Caller-owned payload locks do not exactly match the validation input set.");
+            }
+            holdTargets = callerHoldTargets;
+        }
+        await using var ownedScope = ownedHoldScope;
         await using var ownedTransaction = dbContext.Database.CurrentTransaction is null
             ? await dbContext.Database.BeginTransactionAsync(
                 IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false)
@@ -134,6 +198,16 @@ internal sealed class CentralTransientEventPersistence(
             if (ownedTransaction is not null)
             {
                 await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await ownedTransaction.DisposeAsync().ConfigureAwait(false);
+                if (ownedHoldScope is not null)
+                {
+                    await ownedHoldScope.DisposeAsync().ConfigureAwait(false);
+                }
+                if (derivativeScheduler is not null)
+                {
+                    await derivativeScheduler.EnsureScheduledAsync(
+                        existing.EventVersionIds, cancellationToken).ConfigureAwait(false);
+                }
             }
             return existing;
         }
@@ -145,6 +219,15 @@ internal sealed class CentralTransientEventPersistence(
         var artifacts = await ResolveAndLockArtifactsAsync(
             validationJob.AgentId, job.Inputs, extraction.Value, events.Select(item => item.Value), cancellationToken)
             .ConfigureAwait(false);
+        try
+        {
+            await CentralTransientPayloadHoldFence.ValidateAsync(
+                dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CentralTransientPayloadHoldRejectedException exception)
+        {
+            throw Failure(CentralTransientPersistenceReasonCodes.InvalidArtifactLineage, exception.Message);
+        }
 
         var eventRecords = new Dictionary<Guid, CentralTransientEventRecord>();
         var versionRecords = new List<CentralTransientEventVersionRecord>(events.Length);
@@ -319,11 +402,6 @@ internal sealed class CentralTransientEventPersistence(
             Encoding.UTF8.GetBytes(outcomeEvidence));
         validationJob.OutcomeRecordedAtUtc = validationJob.CommittedAtUtc;
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        if (derivativeScheduler is not null)
-        {
-            await derivativeScheduler.EnsureScheduledAsync(
-                versionRecords.Select(item => item.EventVersionId).ToArray(), cancellationToken).ConfigureAwait(false);
-        }
         _ = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO [CentralTransientValidationOutcomeVersions]
                 ([Id], [CentralDerivativeJobId], [Version], [State], [ReasonCode], [EvidenceJson],
@@ -335,11 +413,12 @@ internal sealed class CentralTransientEventPersistence(
         if (ownedTransaction is not null)
         {
             await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await ownedTransaction.DisposeAsync().ConfigureAwait(false);
         }
 
         var committedSlots = persistedCandidates
             .Select(candidate => slots.Single(slot => slot.CandidateId == candidate.CandidateId)).ToArray();
-        return new CentralTransientPersistenceCommit(
+        var commit = new CentralTransientPersistenceCommit(
             validationJob.CentralDerivativeJobId,
             candidateCount == 0
                 ? versionRecords.Select(item => item.EventVersionId).ToArray()
@@ -349,6 +428,19 @@ internal sealed class CentralTransientEventPersistence(
                     return versionRecords.Single(item => item.CentralTransientEventId == eventRecordId).EventVersionId;
                 }).ToArray(),
             committedSlots.Select(item => item.AssessmentId).ToArray());
+        if (ownedTransaction is not null)
+        {
+            if (ownedHoldScope is not null)
+            {
+                await ownedHoldScope.DisposeAsync().ConfigureAwait(false);
+            }
+            if (derivativeScheduler is not null)
+            {
+                await derivativeScheduler.EnsureScheduledAsync(
+                    commit.EventVersionIds, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        return commit;
     }
 
     private async Task AppendCenteredNoCandidateRejectionsAsync(

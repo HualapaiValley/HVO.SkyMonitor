@@ -62,30 +62,32 @@ internal sealed class PublicRecordPublicationService(
             return new(PublicRecordPublicationOutcome.Invalid);
         }
         var isRelational = dbContext.Database.IsRelational();
-        var artifactStorageReference = isRelational && subject.Kind == PublicRecordSubjectKind.Artifact
-            ? await dbContext.CentralArtifacts.AsNoTracking()
-                .Where(item => item.Id == subject.SubjectId)
-                .Select(item => item.StorageReference)
-                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+        var holdTarget = isRelational && state == PublicationDecisionState.Released
+            ? subject.Kind switch
+            {
+                PublicRecordSubjectKind.Artifact => await CentralTransientPayloadHoldFence.ReadArtifactAsync(
+                    dbContext, subject.SubjectId, cancellationToken).ConfigureAwait(false),
+                PublicRecordSubjectKind.TransientDerivative => await CentralTransientPayloadHoldFence.ReadDerivativeAsync(
+                    dbContext, subject.SubjectId, cancellationToken).ConfigureAwait(false),
+                _ => null
+            }
             : null;
-        await using var artifactObjectLock = artifactStorageReference is null
+        await using var holdScope = holdTarget is null
             ? null
-            : await CentralObjectApplicationLock.AcquireAsync(
-                dbContext, artifactStorageReference, cancellationToken).ConfigureAwait(false);
+            : await CentralTransientPayloadHoldFence.AcquireAsync(
+                dbContext, [holdTarget], cancellationToken).ConfigureAwait(false);
         await using var transaction = isRelational
             ? await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
                 .ConfigureAwait(false)
             : null;
-        if (isRelational && subject.Kind == PublicRecordSubjectKind.Artifact)
+        if (isRelational && state == PublicationDecisionState.Released && holdScope is not null)
         {
-            _ = await CentralArtifactRetentionLock.AcquireAsync(
-                dbContext, subject.SubjectId, cancellationToken).ConfigureAwait(false);
-            var currentStorageReference = await dbContext.CentralArtifacts.AsNoTracking()
-                .Where(item => item.Id == subject.SubjectId)
-                .Select(item => item.StorageReference)
-                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-            if (artifactStorageReference is null
-                || !string.Equals(currentStorageReference, artifactStorageReference, StringComparison.Ordinal))
+            try
+            {
+                await CentralTransientPayloadHoldFence.ValidateAsync(
+                    dbContext, holdScope.Targets, cancellationToken).ConfigureAwait(false);
+            }
+            catch (CentralTransientPayloadHoldRejectedException)
             {
                 return new(PublicRecordPublicationOutcome.NotFoundOrDenied);
             }

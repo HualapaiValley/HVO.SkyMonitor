@@ -165,6 +165,22 @@ internal sealed class CentralDerivativeJobScheduler(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        var sourceArtifactId = await dbContext.CentralDerivativeJobs.AsNoTracking()
+            .Where(job => job.Id == provisionalJobId)
+            .Select(job => (Guid?)job.SourceCentralArtifactId)
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (!sourceArtifactId.HasValue)
+        {
+            return null;
+        }
+        var holdTarget = await CentralTransientPayloadHoldFence.ReadArtifactAsync(
+            dbContext, sourceArtifactId.Value, cancellationToken).ConfigureAwait(false);
+        if (holdTarget is null)
+        {
+            return null;
+        }
+        await using var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, [holdTarget], cancellationToken).ConfigureAwait(false);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         _ = await CentralDerivativeJobLock.AcquireAsync(dbContext, provisionalJobId, cancellationToken)
@@ -221,6 +237,16 @@ internal sealed class CentralDerivativeJobScheduler(
             string.Equals(item.RecipeName, CentralTransientRuntime.RecipeName, StringComparison.Ordinal) &&
             string.Equals(item.RequestedRecipeIdentitySha256, provisional.Job.RequestedRecipeIdentitySha256,
                 StringComparison.Ordinal));
+        try
+        {
+            await CentralTransientPayloadHoldFence.ValidateAsync(
+                dbContext, holdScope.Targets, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CentralTransientPayloadHoldRejectedException)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return null;
+        }
         var successor = CreateJob(source, recipe, result: null, now)
             ?? throw new CentralDerivativeJobStateException("The transient convergence job could not be created.");
         successor.RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateReprocessRequestIdentity(
@@ -236,69 +262,140 @@ internal sealed class CentralDerivativeJobScheduler(
         dbContext.CentralDerivativeJobs.Add(successor);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.DisposeAsync().ConfigureAwait(false);
+        await holdScope.DisposeAsync().ConfigureAwait(false);
         dbContext.ChangeTracker.Clear();
         await windowResolver.ResolveAsync(successor.Id, now, cancellationToken).ConfigureAwait(false);
         return successor.Id;
     }
 
-    public async Task EnsureRequiredJobsAsync(
+    public Task EnsureRequiredJobsAsync(
+        CentralArtifact artifact,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+        => EnsureRequiredJobsWithObjectLocksAsync(artifact, now, cancellationToken);
+
+    private async Task EnsureRequiredJobsWithObjectLocksAsync(
         CentralArtifact artifact,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(artifact);
         IDbContextTransaction? ownedTransaction = null;
-        try
+        var potentialArtifactIds = new List<Guid> { artifact.Id };
+        if (artifact.Frame is { RigId: not null } frame)
         {
-            if (dbContext.Database.CurrentTransaction is null)
+            potentialArtifactIds.AddRange(frame.Artifacts.Where(candidate =>
+                    candidate.Role == FrameArtifactRole.Preview &&
+                    candidate.RecipeVersion == CentralDerivativeRecipeCatalog.PreviewRecipeVersion &&
+                    candidate.Variant == CentralDerivativeRecipeCatalog.PreviewVariant ||
+                    candidate.Role == FrameArtifactRole.Metadata &&
+                    candidate.RecipeVersion == CentralDerivativeRecipeCatalog.CloudAssessmentRecipeVersion &&
+                    candidate.Variant == CentralDerivativeRecipeCatalog.CloudAssessmentVariant)
+                .Select(candidate => candidate.Id));
+            potentialArtifactIds.AddRange(await dbContext.CentralClearReferenceDesignations.AsNoTracking()
+                .Where(designation => designation.RegistrationId == frame.RegistrationId
+                    && designation.RigId == frame.RigId)
+                .Select(designation => designation.CentralArtifactId)
+                .ToListAsync(cancellationToken).ConfigureAwait(false));
+        }
+        var holdTargets = await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
+            dbContext, potentialArtifactIds, cancellationToken).ConfigureAwait(false);
+        if (!holdTargets.Any(target => target.RecordId == artifact.Id))
+        {
+            throw new CentralDerivativeJobStateException("The derivative source hold target is missing.");
+        }
+        var resolveAffectedWindow = false;
+        await using (var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, holdTargets, cancellationToken).ConfigureAwait(false))
+        {
+            try
             {
-                ownedTransaction = await dbContext.Database.BeginTransactionAsync(
-                    IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
-            }
-            if (ownedTransaction is not null)
-            {
-                await CentralArtifactRetentionLock.AcquireAsync(dbContext, artifact.Id, cancellationToken)
-                    .ConfigureAwait(false);
+                if (dbContext.Database.CurrentTransaction is null)
+                {
+                    ownedTransaction = await dbContext.Database.BeginTransactionAsync(
+                        IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+                }
+                if (ownedTransaction is not null)
+                {
+                    await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    if (!await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(candidate =>
+                        candidate.Id == artifact.Id
+                        && candidate.ObjectState == CentralArtifactObjectState.Available
+                        && candidate.ReconstructionState == CentralReconstructionState.Complete, cancellationToken)
+                        .ConfigureAwait(false))
+                    {
+                        await ownedTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                        return;
+                    }
+                }
+                await EnsureRequiredJobsCoreAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+                var changedActiveJobs = dbContext.ChangeTracker.Entries<CentralDerivativeJob>()
+                    .Where(entry => entry.State is EntityState.Added or EntityState.Modified
+                        && IsRetentionActive(entry.Entity.Status))
+                    .Select(entry => entry.Entity).ToArray();
+                var holdArtifactIds = changedActiveJobs.Select(job => job.SourceCentralArtifactId)
+                    .Concat(changedActiveJobs.SelectMany(job => job.Inputs.Select(input => input.CentralArtifactId)))
+                    .Concat(changedActiveJobs.SelectMany(job => job.InputRequirements
+                        .Where(requirement => requirement.ExpectedCentralArtifactId.HasValue)
+                        .Select(requirement => requirement.ExpectedCentralArtifactId!.Value)))
+                    .Concat(changedActiveJobs.Where(job => job.RetainedResultCentralArtifactId.HasValue)
+                        .Select(job => job.RetainedResultCentralArtifactId!.Value))
+                    .ToHashSet();
+                var changedJobIds = changedActiveJobs.Where(job => dbContext.Entry(job).State == EntityState.Modified)
+                    .Select(job => job.Id).ToArray();
+                if (changedJobIds.Length > 0)
+                {
+                    holdArtifactIds.UnionWith(await dbContext.CentralDerivativeJobInputs.AsNoTracking()
+                        .Where(input => changedJobIds.Contains(input.CentralDerivativeJobId))
+                        .Select(input => input.CentralArtifactId).ToArrayAsync(cancellationToken).ConfigureAwait(false));
+                }
+                var selectedHoldTargets = holdScope.Targets.Where(target => holdArtifactIds.Contains(target.RecordId))
+                    .ToArray();
+                if (selectedHoldTargets.Length != holdArtifactIds.Count)
+                {
+                    throw new CentralTransientPayloadHoldRejectedException("transient-retention.hold-target-changed");
+                }
+                await CentralTransientPayloadHoldFence.ValidateAsync(
+                    dbContext, selectedHoldTargets, cancellationToken).ConfigureAwait(false);
                 await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                if (!await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(candidate =>
-                    candidate.Id == artifact.Id
-                    && candidate.ObjectState == CentralArtifactObjectState.Available
-                    && candidate.ReconstructionState == CentralReconstructionState.Complete, cancellationToken)
-                    .ConfigureAwait(false))
+                if (ownedTransaction is not null)
                 {
-                    await ownedTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-                    return;
+                    await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    await ownedTransaction.DisposeAsync().ConfigureAwait(false);
+                    ownedTransaction = null;
+                    resolveAffectedWindow = artifact.Role == FrameArtifactRole.Raw
+                        && artifact.Frame?.CaptureSequence is not null;
                 }
             }
-            await EnsureRequiredJobsCoreAsync(artifact, now, cancellationToken).ConfigureAwait(false);
-            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            if (ownedTransaction is not null)
+            catch
             {
-                await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                await ownedTransaction.DisposeAsync().ConfigureAwait(false);
-                ownedTransaction = null;
-                if (artifact.Role == FrameArtifactRole.Raw && artifact.Frame?.CaptureSequence is not null)
+                if (ownedTransaction is not null)
                 {
-                    await windowResolver.ResolveAffectedAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+                    await ownedTransaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                throw;
+            }
+            finally
+            {
+                if (ownedTransaction is not null)
+                {
+                    await ownedTransaction.DisposeAsync().ConfigureAwait(false);
                 }
             }
         }
-        catch
+        if (resolveAffectedWindow)
         {
-            if (ownedTransaction is not null)
-            {
-                await ownedTransaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            throw;
-        }
-        finally
-        {
-            if (ownedTransaction is not null)
-            {
-                await ownedTransaction.DisposeAsync().ConfigureAwait(false);
-            }
+            await windowResolver.ResolveAffectedAsync(artifact, now, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    private static bool IsRetentionActive(CentralDerivativeJobStatus status)
+        => status is CentralDerivativeJobStatus.Waiting
+            or CentralDerivativeJobStatus.Pending
+            or CentralDerivativeJobStatus.Leased
+            or CentralDerivativeJobStatus.RetryableFailure
+            or CentralDerivativeJobStatus.CancelRequested;
 
     private async Task EnsureRequiredJobsCoreAsync(
         CentralArtifact artifact,

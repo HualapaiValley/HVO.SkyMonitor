@@ -23,6 +23,7 @@ internal sealed partial class CentralTransientValidationExecutor(
     ApplicationDbContext dbContext,
     ICentralDerivativeJobInputReader inputReader,
     ICentralTransientEventPersistence persistence,
+    ICentralTransientDerivativeScheduler derivativeScheduler,
     ICentralDerivativeJobService jobService,
     ICentralTransientMaskFactory maskFactory,
     CentralDerivativeWorkerTelemetry telemetry,
@@ -57,6 +58,16 @@ internal sealed partial class CentralTransientValidationExecutor(
             var adoptedReason = validation.CommittedAtUtc.HasValue
                 ? CentralTransientRuntimeReasonCodes.OutputAdopted
                 : validation.OutcomeReasonCode;
+            if (validation.CommittedAtUtc.HasValue)
+            {
+                var eventVersionIds = validation.IdentitySlots
+                    .Where(slot => slot.PersistedEventVersionId.HasValue)
+                    .Select(slot => slot.PersistedEventVersionId!.Value)
+                    .Distinct()
+                    .ToArray();
+                await derivativeScheduler.EnsureScheduledAsync(eventVersionIds, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             await jobService.CompleteWithoutArtifactAsync(
                 lease.JobId, lease.LeaseToken, adoptedReason, cancellationToken)
                 .ConfigureAwait(false);
@@ -198,6 +209,16 @@ internal sealed partial class CentralTransientValidationExecutor(
 
         var convergenceStarted = timeProvider.GetTimestamp();
         using var convergenceActivity = telemetry.StartStage("converge", CentralTransientRuntime.RecipeName);
+        var persistenceArtifactIds = lease.Inputs.Select(input => input.CentralArtifactId).Distinct().ToArray();
+        var persistenceHoldTargets = await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
+            dbContext, persistenceArtifactIds, cancellationToken).ConfigureAwait(false);
+        if (persistenceHoldTargets.Count != persistenceArtifactIds.Length)
+        {
+            throw new CentralDerivativeInputRejectedException(
+                CentralTransientPersistenceReasonCodes.InvalidArtifactLineage);
+        }
+        await using var persistenceHoldScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, persistenceHoldTargets, cancellationToken).ConfigureAwait(false);
         await using var associationTransaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         await CentralTransientValidationOutcome.AcquireEventSerializationLockAsync(
@@ -287,11 +308,17 @@ internal sealed partial class CentralTransientValidationExecutor(
         var persistStarted = timeProvider.GetTimestamp();
         using (telemetry.StartStage("persist", CentralTransientRuntime.RecipeName))
         {
-            _ = await persistence.AppendAsync(new CentralTransientPersistenceRequest(
-                lease.JobId, extractionPayload, eventPayloads, assessmentPayloads), cancellationToken)
+            var persistenceCommit = await persistence.AppendUnderPayloadLocksAsync(new CentralTransientPersistenceRequest(
+                lease.JobId, extractionPayload, eventPayloads, assessmentPayloads),
+                persistenceHoldScope.Targets,
+                cancellationToken)
                 .ConfigureAwait(false);
+            await associationTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await associationTransaction.DisposeAsync().ConfigureAwait(false);
+            await persistenceHoldScope.DisposeAsync().ConfigureAwait(false);
+            await derivativeScheduler.EnsureScheduledAsync(
+                persistenceCommit.EventVersionIds, cancellationToken).ConfigureAwait(false);
         }
-        await associationTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         dbContext.ChangeTracker.Clear();
         var completionReason = extraction.Candidates.Count == 0
             ? TransientCandidateExtractionReasonCodes.NoCandidate

@@ -17,7 +17,8 @@ internal enum CentralTransientPayloadReleaseItemOutcome
 {
     Pending,
     Released,
-    PreservedHeld
+    PreservedHeld,
+    Failed
 }
 
 internal sealed class CentralTransientPayloadRelease
@@ -45,4 +46,13 @@ internal sealed class CentralTransientPayloadReleaseItem
     public Guid RecordId { get; set; }
     public CentralTransientPayloadReleaseItemOutcome Outcome { get; set; }
     public DateTimeOffset? ReleasedUtc { get; set; }
+    public Guid? ReservationToken { get; set; }
+    public DateTimeOffset? RequestedAtUtc { get; set; }
+    public string? StorageReference { get; set; }
+    public byte[]? TargetRowVersion { get; set; }
+    public long? TargetGeneration { get; set; }
+    public int RetryCount { get; set; }
+    public DateTimeOffset? RetryAtUtc { get; set; }
+    public string? FailureReasonCode { get; set; }
+    public byte[] RowVersion { get; set; } = [];
 }

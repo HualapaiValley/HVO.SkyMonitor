@@ -14,6 +14,7 @@ internal sealed partial class CentralTransientLifecycleTelemetry : IDisposable
     private readonly Histogram<double> duration;
     private readonly Counter<long> derivativeOutputs;
     private readonly Histogram<long> derivativeBytes;
+    private readonly Counter<long> retentionItems;
     private readonly ILogger<CentralTransientLifecycleTelemetry> logger;
     private readonly string runtimeId = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
 
@@ -28,6 +29,8 @@ internal sealed partial class CentralTransientLifecycleTelemetry : IDisposable
             "skymonitor.central.transient.derivative.outputs", "{artifact}");
         derivativeBytes = meter.CreateHistogram<long>(
             "skymonitor.central.transient.derivative.output.bytes", "By");
+        retentionItems = meter.CreateCounter<long>(
+            "skymonitor.central.transient.retention.items", "{item}");
     }
 
     public Activity? Start(string operation, ActivityKind kind = ActivityKind.Internal)
@@ -74,6 +77,16 @@ internal sealed partial class CentralTransientLifecycleTelemetry : IDisposable
         Log.Retention(logger, runtimeId, NormalizeOutcome(outcome), Math.Max(0, itemCount));
     }
 
+    public void RecordRetentionItem(string kind, string outcome, int retryCount)
+    {
+        var normalizedKind = NormalizeRetentionKind(kind);
+        var normalizedOutcome = NormalizeOutcome(outcome);
+        retentionItems.Add(1,
+            new KeyValuePair<string, object?>("kind", normalizedKind),
+            new KeyValuePair<string, object?>("outcome", normalizedOutcome));
+        Log.RetentionItem(logger, normalizedKind, normalizedOutcome, Math.Max(0, retryCount));
+    }
+
     private void Record(string operation, string outcome, TimeSpan elapsed)
     {
         var normalizedOperation = NormalizeOperation(operation);
@@ -110,6 +123,10 @@ internal sealed partial class CentralTransientLifecycleTelemetry : IDisposable
         "completed" => "completed",
         "conflict" => "conflict",
         "invalid" => "invalid",
+        "reserved" => "reserved",
+        "released" => "released",
+        "preserved" => "preserved",
+        "retry" => "retry",
         _ => "other"
     };
 
@@ -120,6 +137,13 @@ internal sealed partial class CentralTransientLifecycleTelemetry : IDisposable
         "Mask" => "mask",
         "Overlay" => "overlay",
         "Reconstruction" => "reconstruction",
+        _ => "other"
+    };
+
+    private static string NormalizeRetentionKind(string value) => value switch
+    {
+        "SourceArtifact" => "source",
+        "Derivative" => "derivative",
         _ => "other"
     };
 
@@ -150,5 +174,9 @@ internal sealed partial class CentralTransientLifecycleTelemetry : IDisposable
         [LoggerMessage(2166, LogLevel.Information,
             "Central transient payload release completed: RuntimeId={RuntimeId} Outcome={Outcome} ItemCount={ItemCount}")]
         public static partial void Retention(ILogger logger, string runtimeId, string outcome, int itemCount);
+
+        [LoggerMessage(2167, LogLevel.Information,
+            "Central transient payload release item transitioned: Kind={Kind} Outcome={Outcome} RetryCount={RetryCount}")]
+        public static partial void RetentionItem(ILogger logger, string kind, string outcome, int retryCount);
     }
 }

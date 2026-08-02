@@ -58,6 +58,15 @@ internal static class CentralObjectOwnershipFence
         string storageReference,
         Guid centralArtifactId,
         CancellationToken cancellationToken)
+        => await HasActiveOwnerAsync(
+            db, storageReference, centralArtifactId, Guid.Empty, cancellationToken).ConfigureAwait(false);
+
+    public static async Task<bool> HasActiveOwnerAsync(
+        ApplicationDbContext db,
+        string storageReference,
+        Guid excludedCentralArtifactId,
+        Guid excludedDerivativeIntentId,
+        CancellationToken cancellationToken)
     {
         var storageReferenceSha256 = SHA256.HashData(Encoding.Unicode.GetBytes(storageReference));
         var activeOwner = await db.Database.SqlQuery<int>($"""
@@ -66,13 +75,14 @@ internal static class CentralObjectOwnershipFence
                     SELECT TOP(1) CAST(1 AS int) AS [Value]
                     FROM [CentralArtifacts] WITH (INDEX([IX_CentralArtifacts_StorageReference]))
                     WHERE [StorageReference] = {storageReference}
-                      AND [Id] != {centralArtifactId}
+                      AND [Id] != {excludedCentralArtifactId}
                       AND [ObjectState] != N'Expired'
                     UNION ALL
                     SELECT TOP(1) CAST(1 AS int) AS [Value]
                     FROM [CentralTransientDerivativeOutputIntents]
                     WHERE [StorageReferenceSha256] = {storageReferenceSha256}
                       AND [StorageReference] COLLATE Latin1_General_100_BIN2 = {storageReference}
+                      AND [Id] != {excludedDerivativeIntentId}
                       AND [ObjectState] != N'Expired'
                 ) AS [ActiveOwners]
                 """)

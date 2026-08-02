@@ -46,6 +46,12 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 {
     private const string ProductionRevision = "89c3e5176417a70fcfc5c67d2b0adb233ee7a9e4";
+    private const string AcceptedBaselineSourceRevision = "00db3348cb0a0a66bcc006af0c56cdc1a9359fb7";
+    private const string AcceptedBaselineManifestPath = "/var/lib/hvo-agent-state/issues/250/baseline-00db3348cb0a0a66bcc006af0c56cdc1a9359fb7/trial-1/manifest.json";
+    private const string AcceptedBaselineManifestSha256 = "2C49C4AFA8CD83FE469D0FFEC78AE17CE278006374DAC75B1A46CB1B438BCC3A";
+    private const string AcceptedBaselineHarnessSha256 = "82685C4CF10260991E11A079B9090B5CA48BD2EAE72D607281A903969F4F0990";
+    private const string AcceptedBaselineProtocolSha256 = "E773CE1FBD51377ECDE5948562B1A31112674B0476721C177F6DD0F12FE6DE3B";
+    private const string AcceptedBaselineCompatibilityProtocolSha256 = "5C88E596C0802D624F7A5017416EFB5E7EE10DB4E03B2CB7651CB9EEA639811C";
     private const string Bucket = "skymonitor-artifacts";
     private const string BucketPrefix = "minio://skymonitor-artifacts/";
     private const int FullWidth = 3_096;
@@ -86,7 +92,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         new("TR_CentralTransientPayloadReleaseItems_Closed", "CentralTransientPayloadReleaseItems",
             ["AFTER INSERT", "inserted", "CentralTransientPayloadReleases", "State", "Outcome", "Pending", "THROW 51000"]),
         new("TR_CentralTransientPayloadReleaseItems_Transition", "CentralTransientPayloadReleaseItems",
-            ["AFTER UPDATE", "DELETE", "inserted", "deleted", "Pending", "Released", "PreservedHeld", "ReleasedUtc", "Kind", "RecordId"])
+            ["AFTER UPDATE", "DELETE", "inserted", "deleted", "Pending", "Released", "PreservedHeld", "Failed", "ReleasedUtc", "FailureReasonCode", "Kind", "RecordId", "ReservationToken", "RetryAtUtc", "RetryCount"])
     ];
     private static readonly Issue250RequiredSchemaRelation[] RequiredW3MForeignKeys =
     [
@@ -110,7 +116,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         new("CK_CentralTransientPayloadReleaseItems_Ordinal", "CentralTransientPayloadReleaseItems",
             ["Ordinal", ">="]),
         new("CK_CentralTransientPayloadReleaseItems_Outcome", "CentralTransientPayloadReleaseItems",
-            ["Outcome", "Pending", "Released", "PreservedHeld", "ReleasedUtc"])
+            ["Outcome", "Pending", "Released", "PreservedHeld", "Failed", "ReleasedUtc", "FailureReasonCode"]),
+        new("CK_CentralTransientPayloadReleaseItems_Reservation", "CentralTransientPayloadReleaseItems",
+            ["RequestedAtUtc", "StorageReference", "TargetRowVersion", "DATALENGTH", "TargetGeneration", "ReservationToken", "RetryAtUtc", "Outcome", "Pending"]),
+        new("CK_CentralTransientPayloadReleaseItems_RetryCount", "CentralTransientPayloadReleaseItems",
+            ["RetryCount", ">="])
     ];
     private static readonly Issue250RequiredUniqueIndex[] RequiredW3MUniqueIndexes =
     [
@@ -143,9 +153,17 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         new("PK_CentralTransientPayloadReleaseItems", "CentralTransientPayloadReleaseItems", "PrimaryKey",
             [new("ReleaseId", Descending: false), new("Ordinal", Descending: false)], [], null,
             Unique: true, Enabled: true),
+        new("IX_CentralTransientPayloadReleaseItems_ReleaseId_Kind_RecordId", "CentralTransientPayloadReleaseItems",
+            "UniqueIndex", [new("ReleaseId", Descending: false), new("Kind", Descending: false),
+                new("RecordId", Descending: false)], [], null, Unique: true, Enabled: true),
         new("IX_CentralTransientPayloadReleaseItems_Kind_RecordId", "CentralTransientPayloadReleaseItems",
-            "UniqueIndex", [new("Kind", Descending: false), new("RecordId", Descending: false)], [], null,
-            Unique: true, Enabled: true)
+            "NonUniqueIndex", [new("Kind", Descending: false), new("RecordId", Descending: false)], [], null,
+            Unique: false, Enabled: true),
+        new("IX_CentralTransientPayloadReleaseItems_RetryAtUtc_RequestedAtUtc_ReleaseId_Ordinal",
+            "CentralTransientPayloadReleaseItems", "NonUniqueIndex",
+            [new("RetryAtUtc", Descending: false), new("RequestedAtUtc", Descending: false),
+                new("ReleaseId", Descending: false), new("Ordinal", Descending: false)],
+            ["ReservationToken"], "[Outcome]=N'Pending'", Unique: false, Enabled: true)
     ];
     private static readonly string[] CanonicalFaultManifest =
     [
@@ -179,13 +197,21 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         var phase = ReadPhase();
         var smoke = string.Equals(
             Environment.GetEnvironmentVariable("HVO_ISSUE_250_SMOKE"), "1", StringComparison.Ordinal);
+        var afterSmoke = smoke && phase == "after" && string.Equals(
+            Environment.GetEnvironmentVariable("HVO_ISSUE_250_AFTER_SMOKE"), "1", StringComparison.Ordinal);
         if (!string.Equals(Environment.GetEnvironmentVariable("HVO_ISSUE_250_EVIDENCE"), "1", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Issue #250 evidence requires HVO_ISSUE_250_EVIDENCE=1 before test-host startup.");
         }
-        if (smoke && phase != "development")
+        if (phase == "after" && !smoke)
         {
-            throw new InvalidOperationException("HVO_ISSUE_250_SMOKE=1 is development-only and cannot produce baseline/after evidence.");
+            throw new InvalidOperationException(
+                "Claimable issue #250 after performance evidence is deferred to the dedicated consolidation issue; only development mechanics smoke is available here.");
+        }
+        if (smoke && phase != "development" && !afterSmoke)
+        {
+            throw new InvalidOperationException(
+                "HVO_ISSUE_250_SMOKE=1 is development-only unless HVO_ISSUE_250_AFTER_SMOKE=1 explicitly selects unclaimable after-capability mechanics.");
         }
         if (phase != "development" && !GCSettings.IsServerGC)
         {
@@ -260,7 +286,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         AssertSourceUnchanged(source, sourceAfter);
         var trial = source.Trial ?? 1;
         var output = smoke
-            ? Path.Combine(repositoryRoot, "TestResults", "issue-250", "development-smoke",
+            ? Path.Combine(repositoryRoot, "TestResults", "issue-250",
+                afterSmoke ? "after-capability-smoke" : "development-smoke",
                 source.OutputDirectoryName, source.RunId)
             : Path.Combine(repositoryRoot, "TestResults", "issue-250", source.OutputDirectoryName, $"trial-{trial}");
         if (Directory.Exists(output))
@@ -349,7 +376,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 Preflight = preflight,
                 EnvironmentSha256 = environmentSha256
             },
-            Command = "HVO_ISSUE_250_EVIDENCE=1 DOTNET_gcServer=1 HVO_EVIDENCE_PHASE=<baseline|after> HVO_EVIDENCE_REVISION=<HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=<PRODUCTION_HEAD> HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_BASELINE_MANIFEST=<REQUIRED_FOR_AFTER_ONLY> dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~CentralTransientPayloadReleaseIssue250PerformanceTests.Release_W2W3MAndContention_RecordsEvidence",
+            Command = "HVO_ISSUE_250_EVIDENCE=1 DOTNET_gcServer=1 HVO_EVIDENCE_PHASE=<baseline|after> HVO_EVIDENCE_REVISION=<HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=<PRODUCTION_HEAD> HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_BASELINE_MANIFEST=<ACCEPTED_BASELINE_MANIFEST> [HVO_ISSUE_250_SMOKE=1 HVO_ISSUE_250_AFTER_SMOKE=1] dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~CentralTransientPayloadReleaseIssue250PerformanceTests.Release_W2W3MAndContention_RecordsEvidence",
             Workload = new
             {
                 Id = smoke ? "issue-250-smoke-unclaimable" : "W2/W3M/issue-250-baseline-v1",
@@ -622,7 +649,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 sequence += waveCount;
                 _ = await ExecuteReleaseWaveAsync(
                     database.ConnectionString, applicationName, serviceMinio, collector, cases, measure: false,
-                    cancellationToken)
+                    externalCancellation: cancellationToken)
                     .ConfigureAwait(false);
                 foreach (var item in cases)
                 {
@@ -656,7 +683,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             await CleanupHeldObjectsAsync(rawMinio, measuredCases, cancellationToken).ConfigureAwait(false);
 
             var protocol = collector.Snapshot();
-            AssertApplicationLockCommands(protocol.ApplicationLocks, measurements);
+            AssertApplicationLockCommands(protocol.ApplicationLocks, measurements, phase);
             Assert.AreEqual((long)measurements * 5, protocol.ObjectStore.Deletes);
             var finalBacklog = await ReadBacklogAsync(database.ConnectionString, cancellationToken).ConfigureAwait(false);
             Assert.AreEqual(0L, finalBacklog.PendingParents);
@@ -704,7 +731,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 scenarioCancellation).ConfigureAwait(false);
             collector.Reset();
             var origin = Stopwatch.GetTimestamp();
-            collector.Http.Configure(TimeSpan.FromMilliseconds(delayMilliseconds), origin);
+            collector.Http.Configure(
+                TimeSpan.FromMilliseconds(delayMilliseconds), origin, CreateDeleteCaseMap(cases));
             using var sampleCancellation = CancellationTokenSource.CreateLinkedTokenSource(scenarioCancellation);
             var sampleTask = SampleSqlAsync(
                 database.ConnectionString, applicationName, origin, cases, null, sampleCancellation.Token);
@@ -727,7 +755,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             }
             Assert.IsNotNull(measured);
             var naturalProtocol = collector.Snapshot();
-            AssertApplicationLockCommands(naturalProtocol.ApplicationLocks, 4);
+            AssertApplicationLockCommands(naturalProtocol.ApplicationLocks, 4, phase);
             var naturalSql = CreateSqlEvidence(
                 naturalSamples, collector.Http.Windows, delayMilliseconds, phase, contentionProbe: false);
             var correctness = new List<Issue250CaseCorrectness>();
@@ -747,7 +775,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             var contentionApplicationName = applicationName + ".Contention";
             collector.SqlLocks.Configure(database.ConnectionString, contentionApplicationName);
             var contentionOrigin = Stopwatch.GetTimestamp();
-            collector.Http.Configure(TimeSpan.FromMilliseconds(delayMilliseconds), contentionOrigin);
+            collector.Http.Configure(
+                TimeSpan.FromMilliseconds(delayMilliseconds), contentionOrigin,
+                CreateDeleteCaseMap([contentionCase]));
             using var contentionCancellation = CancellationTokenSource.CreateLinkedTokenSource(scenarioCancellation);
             contentionCancellation.CancelAfter(TimeSpan.FromMinutes(3));
             using var contentionSampleCancellation = CancellationTokenSource.CreateLinkedTokenSource(
@@ -765,7 +795,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     collector,
                     [contentionCase],
                     measure: true,
-                    contentionCancellation.Token);
+                    externalCancellation: contentionCancellation.Token,
+                    recoverPending: phase == "after");
                 await collector.Http.FirstEntered.WaitAsync(
                     TimeSpan.FromSeconds(30), contentionCancellation.Token).ConfigureAwait(false);
                 var firstKey = collector.Http.FirstObjectKey
@@ -802,7 +833,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Assert.IsNotNull(writerTask);
             var writer = await writerTask.ConfigureAwait(false);
             var contentionProtocol = collector.Snapshot();
-            AssertApplicationLockCommands(contentionProtocol.ApplicationLocks, 1);
+            AssertApplicationLockCommands(
+                contentionProtocol.ApplicationLocks,
+                1,
+                phase,
+                candidateLocksPerRelease: delayMilliseconds >= 250 ? 10 : 8);
             var contentionSql = CreateSqlEvidence(
                 contentionSamples, collector.Http.Windows, delayMilliseconds, phase, contentionProbe: true);
             var contentionCorrectness = await VerifyReleaseCaseAsync(
@@ -1446,7 +1481,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         IReadOnlyList<Issue250ReleaseCase> cases,
         CancellationToken cancellationToken)
         => await MeasureReleaseOperationAsync(async () => await ExecuteReleaseWaveAsync(
-            connectionString, applicationName, minio, collector, cases, measure: true, cancellationToken)
+            connectionString, applicationName, minio, collector, cases, measure: true,
+            externalCancellation: cancellationToken)
             .ConfigureAwait(false), cancellationToken)
             .ConfigureAwait(false);
 
@@ -1466,7 +1502,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 var wave = cases.Skip(offset).Take(concurrency).ToArray();
                 latencies.AddRange(await ExecuteReleaseWaveAsync(
                     connectionString, applicationName, minio, collector, wave, measure: true,
-                    cancellationToken)
+                    externalCancellation: cancellationToken)
                     .ConfigureAwait(false));
             }
             return latencies.ToArray();
@@ -1628,17 +1664,19 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         Issue250EvidenceCollector collector,
         IReadOnlyList<Issue250ReleaseCase> cases,
         bool measure,
+        bool recoverPending = false,
         CancellationToken externalCancellation = default)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             timeout.Token, externalCancellation);
-        var tasks = cases.Select(async item =>
+        var tasks = cases.Select(async (item, caseIndex) =>
         {
             var started = Stopwatch.GetTimestamp();
             for (var attempt = 0; ; attempt++)
             {
-                await using var db = CreateContext(connectionString, applicationName, collector);
+                await using var db = CreateContext(
+                    connectionString, CreateCaseApplicationName(applicationName, caseIndex), collector);
                 using var telemetry = new CentralTransientLifecycleTelemetry(Issue250DiscardLogger.Instance);
                 try
                 {
@@ -1648,10 +1686,62 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                         item.RowVersion,
                         item.IdempotencyKey,
                         cancellation.Token).ConfigureAwait(false);
-                    var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-                    Assert.AreEqual(CentralTransientPayloadReleaseStatus.Released, result.Status);
+                    Assert.IsTrue(result.Status is CentralTransientPayloadReleaseStatus.Released
+                        or CentralTransientPayloadReleaseStatus.Accepted);
                     Assert.IsNotNull(result.Response);
-                    Assert.AreEqual(5, result.Response.ReleasedPayloadCount);
+                    CentralTransientPayloadRelease? recovered = null;
+                    if (result.Status == CentralTransientPayloadReleaseStatus.Accepted)
+                    {
+                        Assert.AreEqual(CentralTransientPayloadReleaseState.Pending, result.Response.State);
+                        for (var processorAttempt = 0; processorAttempt < 100; processorAttempt++)
+                        {
+                            await using var recoveryDb = CreateContext(
+                                connectionString, CreateCaseApplicationName(applicationName, caseIndex), collector);
+                            using var recoveryTelemetry = new CentralTransientLifecycleTelemetry(Issue250DiscardLogger.Instance);
+                            _ = await CreateService(recoveryDb, minio, recoveryTelemetry)
+                                .ProcessNextAsync(cancellation.Token).ConfigureAwait(false);
+                            recoveryDb.ChangeTracker.Clear();
+                            recovered = await recoveryDb.CentralTransientPayloadReleases.AsNoTracking()
+                                .Include(value => value.Items)
+                                .SingleAsync(value => value.ReleaseId == result.Response.ReleaseId, cancellation.Token)
+                                .ConfigureAwait(false);
+                            if (recovered.State != CentralTransientPayloadReleaseState.Pending)
+                            {
+                                break;
+                            }
+                            var retryAtUtc = recovered.Items.Where(value => value.RetryAtUtc.HasValue)
+                                .Select(value => value.RetryAtUtc!.Value).DefaultIfEmpty().Min();
+                            var reservationReadyUtc = recovered.Items.Where(value => value.ReservationToken.HasValue)
+                                .Select(value => value.RequestedAtUtc!.Value.AddMinutes(1)).DefaultIfEmpty().Min();
+                            var readyUtc = new[] { retryAtUtc, reservationReadyUtc }
+                                .Where(value => value > DateTimeOffset.UtcNow).DefaultIfEmpty().Min();
+                            var delay = readyUtc > DateTimeOffset.UtcNow
+                                ? readyUtc - DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(50)
+                                : TimeSpan.FromMilliseconds(recoverPending ? 100 : 10);
+                            await Task.Delay(delay, cancellation.Token).ConfigureAwait(false);
+                        }
+                    }
+                    else
+                    {
+                        Assert.AreEqual(CentralTransientPayloadReleaseState.Completed, result.Response.State);
+                        Assert.AreEqual(5, result.Response.ReleasedPayloadCount);
+                        db.ChangeTracker.Clear();
+                        recovered = await db.CentralTransientPayloadReleases.AsNoTracking()
+                            .Include(value => value.Items)
+                            .SingleAsync(value => value.ReleaseId == result.Response.ReleaseId, cancellation.Token)
+                            .ConfigureAwait(false);
+                    }
+                    Assert.IsNotNull(recovered);
+                    Assert.AreEqual(
+                        CentralTransientPayloadReleaseState.Completed,
+                        recovered.State,
+                        string.Join(",", recovered.Items.OrderBy(value => value.Ordinal).Select(value =>
+                            $"{value.Ordinal}:{value.Outcome}:retry={value.RetryCount}:reserved={value.ReservationToken.HasValue}")));
+                    Assert.AreEqual(5, recovered.Items.Count(value =>
+                        value.Outcome == CentralTransientPayloadReleaseItemOutcome.Released));
+                    Assert.AreEqual(2, recovered.Items.Count(value =>
+                        value.Outcome == CentralTransientPayloadReleaseItemOutcome.PreservedHeld));
+                    var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
                     return measure ? elapsed : 0d;
                 }
                 catch (Exception exception) when (attempt < 9 && IsSqlDeadlock(exception))
@@ -1737,12 +1827,14 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         var actualIds = items.Select(item => item.RecordId).ToHashSet();
         var w0 = releaseCase.Workload.StartsWith("W0-", StringComparison.Ordinal);
         var expectedBaselineItems = w0 ? releaseCase.Objects.Count : 5;
-        var expectedAfterItems = w0 ? releaseCase.Objects.Count : 7;
+        const int expectedAfterItems = 7;
         var baselineRepresentation = items.Length == expectedBaselineItems && actualIds.SetEquals(baselineIds)
             && items.All(item => item.Outcome == CentralTransientPayloadReleaseItemOutcome.Released);
-        var candidateRepresentation = items.Length == expectedAfterItems && actualIds.SetEquals(workloadIds)
+        var candidateRepresentation = items.Length == expectedAfterItems
+            && (w0 ? actualIds.IsSupersetOf(workloadIds) : actualIds.SetEquals(workloadIds))
             && items.Count(item => item.Outcome == CentralTransientPayloadReleaseItemOutcome.Released) == expectedAbsent
-            && items.Count(item => item.Outcome == CentralTransientPayloadReleaseItemOutcome.PreservedHeld) == expectedPreserved;
+            && items.Count(item => item.Outcome == CentralTransientPayloadReleaseItemOutcome.PreservedHeld)
+                == (w0 ? expectedAfterItems - expectedAbsent : expectedPreserved);
         if (phase == "after")
         {
             Assert.IsTrue(candidateRepresentation,
@@ -1786,10 +1878,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         Assert.AreEqual(releaseCase.HoldsBefore.Hash, holdsAfter.Hash);
         CollectionAssert.AreEqual(releaseCase.HoldsBefore.Semantics.ToArray(), holdsAfter.Semantics.ToArray());
         var itemByRecord = items.ToDictionary(item => item.RecordId);
-        var expectedOrder = (baselineRepresentation
-                ? releaseCase.Objects.Where(item => !item.Held)
-                : releaseCase.Objects)
-            .OrderBy(item => item.Kind == "Source" ? 0 : 1)
+        var expectedOrder = items
+            .OrderBy(item => item.Kind)
             .ThenBy(item => item.RecordId)
             .Select((item, ordinal) => new { item.RecordId, Ordinal = ordinal })
             .ToDictionary(item => item.RecordId, item => item.Ordinal);
@@ -1873,7 +1963,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             ReleaseAuditSha256: releaseAuditSha256,
             SemanticOutcomeVector: semanticVector,
             Representation: w0
-                ? $"baseline-{releaseCase.Objects.Count}-item-w0"
+                ? baselineRepresentation
+                    ? $"baseline-{releaseCase.Objects.Count}-item-w0"
+                    : $"candidate-seven-item-w0-{releaseCase.Objects.Count}-released"
                 : baselineRepresentation ? "baseline-five-items" : "candidate-seven-terminal-items");
     }
 
@@ -1945,11 +2037,22 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             using (var failureHttp = new HttpClient(failureHandler, disposeHandler: false))
             await using (var failureDb = CreateContext(database.ConnectionString, "HVO.SkyMonitor.Issue250.W0.BeforeDelete"))
             {
-                await Assert.ThrowsAsync<MinioException>(async () => await CreateService(
-                    failureDb, CreateMinio(fixture, failureHttp), failureTelemetry).ReleaseAsync(
-                    CreatePrincipal(beforeDeleteCase.Actor), beforeDeleteCase.EventId, beforeDeleteCase.RowVersion,
-                    beforeDeleteCase.IdempotencyKey, cancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
-                beforeDeleteFailureRuntime = failureSignals.SnapshotAndAssertFailedCallGap();
+                var operation = CreateService(failureDb, CreateMinio(fixture, failureHttp), failureTelemetry)
+                    .ReleaseAsync(
+                        CreatePrincipal(beforeDeleteCase.Actor), beforeDeleteCase.EventId, beforeDeleteCase.RowVersion,
+                        beforeDeleteCase.IdempotencyKey, cancellationToken);
+                if (phase == "after")
+                {
+                    var result = await operation.ConfigureAwait(false);
+                    Assert.AreEqual(CentralTransientPayloadReleaseStatus.Accepted, result.Status);
+                    Assert.AreEqual(CentralTransientPayloadReleaseState.Pending, result.Response!.State);
+                }
+                else
+                {
+                    await Assert.ThrowsAsync<MinioException>(async () => await operation.ConfigureAwait(false))
+                        .ConfigureAwait(false);
+                }
+                beforeDeleteFailureRuntime = failureSignals.SnapshotAndAssertFailedCallGap(phase);
             }
             DateTimeOffset beforeDeleteCreatedUtc;
             await using (var inspectDb = CreateContext(database.ConnectionString))
@@ -1960,20 +2063,47 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     .ConfigureAwait(false);
                 Assert.AreEqual(CentralTransientPayloadReleaseState.Pending, pendingRelease.State);
                 Assert.AreEqual(0, pendingRelease.Items.Count(item => item.Outcome == CentralTransientPayloadReleaseItemOutcome.Released));
-                Assert.AreEqual(1, pendingRelease.Items.Count(item => item.Outcome == CentralTransientPayloadReleaseItemOutcome.Pending));
+                if (phase == "after")
+                {
+                    Assert.HasCount(7, pendingRelease.Items);
+                    Assert.IsGreaterThanOrEqualTo(1, pendingRelease.Items.Count(item =>
+                        item.Outcome == CentralTransientPayloadReleaseItemOutcome.Pending));
+                    Assert.AreEqual(1, pendingRelease.Items.Count(item =>
+                        item.Outcome == CentralTransientPayloadReleaseItemOutcome.Pending
+                        && item.RetryCount == 1 && item.RetryAtUtc.HasValue
+                        && item.ReservationToken == null));
+                }
+                else
+                {
+                    Assert.AreEqual(1, pendingRelease.Items.Count(item =>
+                        item.Outcome == CentralTransientPayloadReleaseItemOutcome.Pending));
+                }
                 beforeDeleteCreatedUtc = pendingRelease.CreatedUtc;
             }
             var healthyFresh = await ReadHealthAsync(
-                database.ConnectionString, beforeDeleteCreatedUtc.AddSeconds(1), cancellationToken).ConfigureAwait(false);
+                database.ConnectionString, beforeDeleteCreatedUtc.AddSeconds(1), phase, cancellationToken).ConfigureAwait(false);
             var degradedStale = await ReadHealthAsync(
-                database.ConnectionString, beforeDeleteCreatedUtc.AddSeconds(31), cancellationToken).ConfigureAwait(false);
+                database.ConnectionString, beforeDeleteCreatedUtc.AddSeconds(31), phase, cancellationToken).ConfigureAwait(false);
             Assert.AreEqual(HealthStatus.Healthy.ToString(), healthyFresh.Status);
             Assert.AreEqual(1, healthyFresh.PendingParentCount);
             Assert.AreEqual(1d, healthyFresh.OldestPendingParentAgeSeconds);
             Assert.AreEqual(HealthStatus.Degraded.ToString(), degradedStale.Status);
             Assert.AreEqual(31d, degradedStale.OldestPendingParentAgeSeconds);
+            if (phase == "after")
+            {
+                Assert.IsGreaterThanOrEqualTo(1, healthyFresh.PendingItemCount);
+                Assert.AreEqual(0, healthyFresh.RetryDueItemCount);
+                Assert.AreEqual(0, healthyFresh.StaleReservedItemCount);
+                Assert.IsGreaterThan(0L, healthyFresh.PendingLogicalBytes);
+                Assert.AreEqual(1, degradedStale.RetryDueItemCount);
+                Assert.IsGreaterThanOrEqualTo(31d, degradedStale.OldestPendingItemAgeSeconds);
+            }
 
             Issue250RuntimeEvidence beforeDeleteRecoveryRuntime;
+            if (phase == "after")
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(5_100), cancellationToken).ConfigureAwait(false);
+            }
             using (var recoverySignals = new Issue250RuntimeCollector())
             using (var recoveryTelemetry = new CentralTransientLifecycleTelemetry(recoverySignals.Logger))
             await using (var recoveryDb = CreateContext(database.ConnectionString, "HVO.SkyMonitor.Issue250.W0.BeforeDeleteRecovery"))
@@ -1991,9 +2121,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 cancellationToken).ConfigureAwait(false);
             _ = beforeDeleteCorrectness;
             var healthyDrained = await ReadHealthAsync(
-                database.ConnectionString, beforeDeleteCreatedUtc.AddSeconds(31), cancellationToken).ConfigureAwait(false);
+                database.ConnectionString, beforeDeleteCreatedUtc.AddSeconds(31), phase, cancellationToken).ConfigureAwait(false);
             Assert.AreEqual(HealthStatus.Healthy.ToString(), healthyDrained.Status);
             Assert.AreEqual(0, healthyDrained.PendingParentCount);
+            Assert.AreEqual(0, healthyDrained.PendingItemCount);
 
             var restartCase = await SeedReleaseCaseAsync(
                 database.ConnectionString, rawMinio, w0Payloads, 90_002, keys, privateValues,
@@ -2008,11 +2139,22 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             using (var ordinalHttp = new HttpClient(ordinalHandler, disposeHandler: false))
             await using (var ordinalDb = CreateContext(database.ConnectionString, "HVO.SkyMonitor.Issue250.W0.OrdinalFailure"))
             {
-                await Assert.ThrowsAsync<MinioException>(async () => await CreateService(
-                    ordinalDb, CreateMinio(fixture, ordinalHttp), ordinalTelemetry).ReleaseAsync(
-                    CreatePrincipal(restartCase.Actor), restartCase.EventId, restartCase.RowVersion,
-                    restartCase.IdempotencyKey, cancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
-                ordinalFailureRuntime = ordinalSignals.SnapshotAndAssertFailedCallGap();
+                var operation = CreateService(ordinalDb, CreateMinio(fixture, ordinalHttp), ordinalTelemetry)
+                    .ReleaseAsync(
+                        CreatePrincipal(restartCase.Actor), restartCase.EventId, restartCase.RowVersion,
+                        restartCase.IdempotencyKey, cancellationToken);
+                if (phase == "after")
+                {
+                    var result = await operation.ConfigureAwait(false);
+                    Assert.AreEqual(CentralTransientPayloadReleaseStatus.Accepted, result.Status);
+                    Assert.AreEqual(CentralTransientPayloadReleaseState.Pending, result.Response!.State);
+                }
+                else
+                {
+                    await Assert.ThrowsAsync<MinioException>(async () => await operation.ConfigureAwait(false))
+                        .ConfigureAwait(false);
+                }
+                ordinalFailureRuntime = ordinalSignals.SnapshotAndAssertFailedCallGap(phase);
             }
             int releasedBeforeRestart;
             int pendingBeforeRestart;
@@ -2025,9 +2167,25 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 releasedBeforeRestart = release.Items.Count(item => item.Outcome == CentralTransientPayloadReleaseItemOutcome.Released);
                 pendingBeforeRestart = release.Items.Count(item => item.Outcome == CentralTransientPayloadReleaseItemOutcome.Pending);
                 Assert.AreEqual(1, releasedBeforeRestart);
-                Assert.AreEqual(1, pendingBeforeRestart);
+                if (phase == "after")
+                {
+                    Assert.HasCount(7, release.Items);
+                    Assert.IsGreaterThanOrEqualTo(1, pendingBeforeRestart);
+                    Assert.AreEqual(1, release.Items.Count(item =>
+                        item.Outcome == CentralTransientPayloadReleaseItemOutcome.Pending
+                        && item.RetryCount == 1 && item.RetryAtUtc.HasValue
+                        && item.ReservationToken == null));
+                }
+                else
+                {
+                    Assert.AreEqual(1, pendingBeforeRestart);
+                }
             }
             Issue250RuntimeEvidence restartRuntime;
+            if (phase == "after")
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(5_100), cancellationToken).ConfigureAwait(false);
+            }
             using (var restartSignals = new Issue250RuntimeCollector())
             using (var restartTelemetry = new CentralTransientLifecycleTelemetry(restartSignals.Logger))
             await using (var restartDb = CreateContext(database.ConnectionString, "HVO.SkyMonitor.Issue250.W0.FreshProcessor"))
@@ -2257,11 +2415,23 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     await CreateService(captureDb, minio, captureTelemetry).ProcessNextAsync(cancellationToken)
                         .ConfigureAwait(false)).ConfigureAwait(false);
             }
-            var capturedQuery = capture.Single();
+            var capturedQuery = capture.SingleParent();
             var plan = await CapturePlanAsync(
-                connection, capturedQuery, pendingReleaseId, cancellationToken).ConfigureAwait(false);
+                connection,
+                capturedQuery,
+                pendingReleaseId,
+                "IX_CentralTransientPayloadReleases_State_CreatedUtc_ReleaseId",
+                cancellationToken).ConfigureAwait(false);
+            var dueItemPlan = await CapturePlanAsync(
+                connection,
+                capture.SingleDueItem(),
+                pendingReleaseId,
+                "PK_CentralTransientPayloadReleaseItems",
+                cancellationToken).ConfigureAwait(false);
             Assert.AreEqual(1, plan.SelectedRows);
             Assert.IsTrue(plan.IndexUsed);
+            Assert.AreEqual(1, dueItemPlan.SelectedRows);
+            Assert.IsTrue(dueItemPlan.IndexUsed);
             await using (var processorDb = CreateContext(database.ConnectionString, "HVO.SkyMonitor.Issue250.W3M.Processor"))
             using (var telemetry = new CentralTransientLifecycleTelemetry(Issue250DiscardLogger.Instance))
             {
@@ -2307,7 +2477,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 plan.NormalizedQuerySha256,
                 plan.CanonicalPlanXml,
                 plan.CanonicalPlanSha256,
-                "ShowPlan XML serialized without formatting after Database, Server, and DatabaseContextSettingsId attribute values are replaced with [scrubbed].",
+                "ShowPlan XML serialized without formatting after Database, Server, DatabaseContextSettingsId, and compact GUID-like plan attribute values are replaced with [scrubbed].",
                 plan.LogicalReads,
                 plan.SelectedRows,
                 plan.IndexUsed,
@@ -2323,7 +2493,27 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 ActualProcessorCompletedOldest: true,
                 FinalPendingParents: afterCounts.PendingParents,
                 FinalPendingItems: afterCounts.PendingItems,
-                CandidateItemDueWorkPlan: "N/A: baseline has no item due-work claim query; candidate after evidence will add its exact normalized plan if production introduces one.",
+                CandidateItemDueWorkPlan: JsonSerializer.Serialize(new
+                {
+                    dueItemPlan.NormalizedParameterizedQuery,
+                    dueItemPlan.NormalizedQuerySha256,
+                    dueItemPlan.CanonicalPlanXml,
+                    dueItemPlan.CanonicalPlanSha256,
+                    dueItemPlan.LogicalReads,
+                    dueItemPlan.SelectedRows,
+                    dueItemPlan.IndexUsed,
+                    dueItemPlan.CanonicalPlanFactsJson,
+                    dueItemPlan.NormalizedPlanFactsSha256,
+                    dueItemPlan.Operators,
+                    dueItemPlan.Indexes,
+                    ExpectedLoadNextIndex = "PK_CentralTransientPayloadReleaseItems",
+                    ClaimPlanIndexes = plan.Indexes,
+                    ConfiguredDueIndex =
+                        "IX_CentralTransientPayloadReleaseItems_RetryAtUtc_RequestedAtUtc_ReleaseId_Ordinal",
+                    ConfiguredDueIndexUsed = plan.Indexes.Contains(
+                        "IX_CentralTransientPayloadReleaseItems_RetryAtUtc_RequestedAtUtc_ReleaseId_Ordinal",
+                        StringComparer.Ordinal)
+                }),
                 IsolatedDatabaseDeletedAfterCapture: true);
         }
         finally
@@ -2866,7 +3056,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 && observed.Disabled)
             .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
         var nonUniqueRequiredIndexes = RequiredW3MUniqueIndexes.Where(required => observedIndexByName.TryGetValue(required.Name, out var observed)
-                && !observed.Unique)
+                && required.Unique && !observed.Unique)
             .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
         var uniqueIndexStateMismatches = RequiredW3MUniqueIndexes.Where(required => observedIndexByName.TryGetValue(required.Name, out var observed)
                 && (!string.Equals(required.Table, observed.Table, StringComparison.Ordinal)
@@ -3111,6 +3301,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private static async Task<Issue250HealthEvidence> ReadHealthAsync(
         string connectionString,
         DateTimeOffset now,
+        string phase,
         CancellationToken cancellationToken)
     {
         await using var db = CreateContext(connectionString);
@@ -3124,12 +3315,38 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 PollInterval = TimeSpan.FromSeconds(5)
             }));
         var result = await check.CheckHealthAsync(new HealthCheckContext(), cancellationToken).ConfigureAwait(false);
-        Assert.AreEqual(6, result.Data.Count);
+        Assert.AreEqual(phase == "after" ? 14 : 6, result.Data.Count);
         return new(
             result.Status.ToString(),
             Convert.ToInt32(result.Data["PendingPayloadReleaseCount"], CultureInfo.InvariantCulture),
             Convert.ToDouble(result.Data["OldestPendingPayloadReleaseAgeSeconds"], CultureInfo.InvariantCulture),
-            "N/A at baseline: health exposes exact parent count/age only; after capability requires durable item retry count/age fields before evidence can run.");
+            phase == "after"
+                ? Convert.ToInt32(result.Data["PendingPayloadReleaseItemCount"], CultureInfo.InvariantCulture)
+                : 0,
+            phase == "after"
+                ? Convert.ToInt32(result.Data["RetryDuePayloadReleaseItemCount"], CultureInfo.InvariantCulture)
+                : 0,
+            phase == "after"
+                ? Convert.ToInt32(result.Data["ReservedPayloadReleaseItemCount"], CultureInfo.InvariantCulture)
+                : 0,
+            phase == "after"
+                ? Convert.ToInt32(result.Data["StaleReservedPayloadReleaseItemCount"], CultureInfo.InvariantCulture)
+                : 0,
+            phase == "after"
+                ? Convert.ToInt64(result.Data["ReservedPayloadReleaseLogicalBytes"], CultureInfo.InvariantCulture)
+                : 0,
+            phase == "after"
+                ? Convert.ToDouble(result.Data["OldestReservedPayloadReleaseItemAgeSeconds"], CultureInfo.InvariantCulture)
+                : 0,
+            phase == "after"
+                ? Convert.ToInt64(result.Data["PendingPayloadReleaseLogicalBytes"], CultureInfo.InvariantCulture)
+                : 0,
+            phase == "after"
+                ? Convert.ToDouble(result.Data["OldestPendingPayloadReleaseItemAgeSeconds"], CultureInfo.InvariantCulture)
+                : 0,
+            phase == "after"
+                ? "Exact durable pending, retry, and reservation item counts, bytes, and ages are recorded."
+                : "N/A at baseline: health exposes exact parent count/age only; after capability requires durable item retry count/age fields before evidence can run.");
     }
 
     private static async Task<Issue250W3MCounts> ReadW3MCountsAsync(
@@ -3217,6 +3434,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         SqlConnection connection,
         Issue250CapturedCommand captured,
         Guid expectedReleaseId,
+        string expectedIndex,
         CancellationToken cancellationToken)
     {
         var messages = new StringBuilder();
@@ -3266,6 +3484,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         {
             attribute.Value = "[scrubbed]";
         }
+        foreach (var attribute in planDocument.Descendants().Attributes()
+                     .Where(attribute => Issue250Regex.GuidN().IsMatch(attribute.Value)))
+        {
+            attribute.Value = Issue250Regex.GuidN().Replace(attribute.Value, "[scrubbed]");
+        }
         var canonicalPlanXml = planDocument.ToString(SaveOptions.DisableFormatting);
         var normalizedFacts = JsonSerializer.Serialize(new { operators, indexes, SelectedRows = selectedRows });
         return new Issue250PlanEvidence(
@@ -3275,7 +3498,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalPlanXml))),
             logicalReads,
             selectedRows,
-            plan.Contains("IX_CentralTransientPayloadReleases_State_CreatedUtc_ReleaseId", StringComparison.Ordinal),
+            plan.Contains(expectedIndex, StringComparison.Ordinal),
             normalizedFacts,
             Sha(normalizedFacts),
             operators,
@@ -3313,7 +3536,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     applicationName,
                     cases,
                     writerTargetRecordId,
-                    Stopwatch.GetElapsedTime(origin).TotalMilliseconds,
+                    origin,
                     cancellationToken).ConfigureAwait(false));
                 next += TimeSpan.FromMilliseconds(10);
                 var remaining = next - Stopwatch.GetElapsedTime(origin);
@@ -3339,12 +3562,14 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         string applicationName,
         IReadOnlyList<Issue250ReleaseCase> cases,
         Guid? writerTargetRecordId,
-        double elapsedMilliseconds,
+        long origin,
         CancellationToken cancellationToken)
     {
+        var observationStartedMilliseconds = Stopwatch.GetElapsedTime(origin).TotalMilliseconds;
         int sessions;
         int requests;
         int transactions;
+        int[] transactionsByCase;
         int applicationLocks;
         int objectLocks;
         int parentLocks;
@@ -3358,7 +3583,14 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         long? blockerTransactionId;
         Issue250RowBlockEvidence? rowBlock = null;
         long logBytes;
+        double observedMilliseconds;
         var eventIds = cases.Select(item => item.EventId).ToArray();
+        var caseApplicationNames = cases.Select((_, index) => CreateCaseApplicationName(applicationName, index)).ToArray();
+        var caseApplicationParameters = caseApplicationNames.Select((_, index) => $"@case_application_{index}").ToArray();
+        var writerCaseIndex = writerTargetRecordId.HasValue
+            ? cases.Select((item, index) => new { item, index }).Single(value =>
+                value.item.Objects.Any(target => target.RecordId == writerTargetRecordId.Value)).index
+            : -1;
         var releaseIds = new List<Guid>();
         await using (var releases = connection.CreateCommand())
         {
@@ -3375,7 +3607,6 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             }
         }
         var objectResources = cases.SelectMany(item => item.Objects)
-            .Where(item => !item.Held)
             .Select(item => CreateExpectedObjectLockResource(BucketPrefix + item.Key))
             .Distinct(StringComparer.Ordinal).ToArray();
         var parentResources = releaseIds.Select(id => CreateExpectedObjectLockResource(
@@ -3398,10 +3629,17 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             var parentPredicate = eventNames.Length == 0
                 ? "1 = 0"
                 : $"EXISTS (SELECT 1 FROM [CentralTransientPayloadReleases] AS expected_parent WHERE expected_parent.[CentralTransientEventId] IN ({string.Join(',', eventNames)}) AND CHARINDEX(LEFT('hvo-central-object:' + CONVERT(varchar(64), HASHBYTES('SHA2_256', CONVERT(varchar(max), 'central-transient-payload-release:' + LOWER(REPLACE(CONVERT(char(36), expected_parent.[ReleaseId]), '-', '')))), 2), 32), [resource_description]) > 0)";
+            var caseTransactionColumns = string.Concat(caseApplicationParameters.Select(name => $@",
+                    (SELECT COUNT(DISTINCT session_transaction.[session_id])
+                     FROM [sys].[dm_tran_session_transactions] AS session_transaction
+                     INNER JOIN [sys].[dm_exec_sessions] AS session
+                         ON session.[session_id] = session_transaction.[session_id]
+                     WHERE session.[program_name] = {name})"));
             dmv.CommandText = $$"""
                 DECLARE @attributed TABLE ([session_id] smallint PRIMARY KEY);
                 INSERT INTO @attributed ([session_id])
-                SELECT [session_id] FROM [sys].[dm_exec_sessions] WHERE [program_name] = @application_name;
+                SELECT [session_id] FROM [sys].[dm_exec_sessions]
+                WHERE [program_name] IN ({{string.Join(',', caseApplicationParameters)}});
                 DECLARE @application_locks TABLE
                 (
                     [request_session_id] smallint NOT NULL,
@@ -3466,7 +3704,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 INNER JOIN [sys].[tables] AS table_definition
                     ON table_definition.[object_id] = partition_definition.[object_id]
                 WHERE writer.[program_name] = @writer_application_name
-                  AND blocker.[program_name] = @application_name
+                  AND blocker.[program_name] = @blocker_application_name
                   AND waiting.[resource_database_id] = DB_ID()
                   AND table_definition.[name] = N'CentralArtifacts'
                   AND index_definition.[name] = N'PK_CentralArtifacts'
@@ -3487,7 +3725,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                         INNER JOIN [sys].[dm_exec_sessions] AS writer ON writer.[session_id] = request.[session_id]
                         INNER JOIN [sys].[dm_exec_sessions] AS blocker ON blocker.[session_id] = request.[blocking_session_id]
                         WHERE writer.[program_name] = @writer_application_name
-                          AND blocker.[program_name] = @application_name),
+                          AND blocker.[program_name] = @blocker_application_name),
                     (SELECT COUNT(*) FROM @application_locks
                         WHERE NOT ({{objectPredicate}}) AND NOT ({{parentPredicate}})),
                     (SELECT MIN(CONVERT(int, [request_session_id])) FROM @application_locks WHERE {{objectPredicate}}),
@@ -3499,20 +3737,21 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                         INNER JOIN [sys].[dm_exec_sessions] AS writer ON writer.[session_id] = request.[session_id]
                         INNER JOIN [sys].[dm_exec_sessions] AS blocker ON blocker.[session_id] = request.[blocking_session_id]
                         WHERE writer.[program_name] = @writer_application_name
-                          AND blocker.[program_name] = @application_name),
+                          AND blocker.[program_name] = @blocker_application_name),
                     (SELECT MIN(session_transaction.[transaction_id]) FROM [sys].[dm_exec_requests] AS request
                         INNER JOIN [sys].[dm_exec_sessions] AS writer ON writer.[session_id] = request.[session_id]
                         INNER JOIN [sys].[dm_exec_sessions] AS blocker ON blocker.[session_id] = request.[blocking_session_id]
                         INNER JOIN [sys].[dm_tran_session_transactions] AS session_transaction
                             ON session_transaction.[session_id] = blocker.[session_id]
                         WHERE writer.[program_name] = @writer_application_name
-                          AND blocker.[program_name] = @application_name),
+                          AND blocker.[program_name] = @blocker_application_name),
                     (SELECT COALESCE(SUM(database_transaction.[database_transaction_log_bytes_used]), 0)
                         FROM [sys].[dm_tran_database_transactions] AS database_transaction
                         INNER JOIN [sys].[dm_tran_session_transactions] AS session_transaction
                             ON session_transaction.[transaction_id] = database_transaction.[transaction_id]
                         WHERE session_transaction.[session_id] IN (SELECT [session_id] FROM @attributed)
-                          AND database_transaction.[database_id] = DB_ID());
+                          AND database_transaction.[database_id] = DB_ID())
+                    {{caseTransactionColumns}};
                 SELECT [writer_session_id], [blocker_session_id], [blocker_transaction_id], [database_id],
                     [writer_isolation_level], [blocker_isolation_level], [wait_type], [resource_type],
                     [resource_description], [resource_associated_entity_id], [table_name], [index_name],
@@ -3522,7 +3761,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                         WHERE application_lock.[request_session_id] = row_block.[blocker_session_id])
                 FROM @row_block AS row_block;
                 """;
-            dmv.Parameters.AddWithValue("@application_name", applicationName);
+            for (var index = 0; index < caseApplicationNames.Length; index++)
+            {
+                dmv.Parameters.AddWithValue(caseApplicationParameters[index], caseApplicationNames[index]);
+            }
+            dmv.Parameters.AddWithValue(
+                "@blocker_application_name",
+                writerCaseIndex >= 0 ? caseApplicationNames[writerCaseIndex] : applicationName + ".Case.none");
             dmv.Parameters.AddWithValue(
                 "@writer_application_name",
                 writerTargetRecordId.HasValue
@@ -3553,6 +3798,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             blockerSessionId = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt32(12);
             blockerTransactionId = await reader.IsDBNullAsync(13, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(13);
             logBytes = reader.GetInt64(14);
+            transactionsByCase = Enumerable.Range(0, caseApplicationNames.Length)
+                .Select(index => reader.GetInt32(15 + index)).ToArray();
+            observedMilliseconds = Stopwatch.GetElapsedTime(origin).TotalMilliseconds;
             Assert.IsTrue(await reader.NextResultAsync(cancellationToken).ConfigureAwait(false));
             if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
@@ -3616,10 +3864,12 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             unavailable = true;
         }
         return new Issue250SqlSample(
-            elapsedMilliseconds,
+            observedMilliseconds,
+            observationStartedMilliseconds,
             sessions,
             requests,
             transactions,
+            transactionsByCase,
             applicationLocks,
             objectLocks,
             parentLocks,
@@ -3680,6 +3930,14 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private static string CreateWriterApplicationName(string applicationName, Guid recordId)
         => $"{applicationName}.Writer.{Sha(recordId.ToString("N"))[..16]}";
 
+    private static string CreateCaseApplicationName(string applicationName, int caseIndex)
+        => $"{applicationName}.Case{caseIndex.ToString(CultureInfo.InvariantCulture)}";
+
+    private static Dictionary<string, int> CreateDeleteCaseMap(
+        IReadOnlyList<Issue250ReleaseCase> cases)
+        => cases.SelectMany((release, caseIndex) => release.Objects.Select(item => new { item.Key, caseIndex }))
+            .ToDictionary(item => item.Key, item => item.caseIndex, StringComparer.Ordinal);
+
     private static Issue250ReleaseScenarioEvidence CreateReleaseScenarioEvidence(
         int concurrency,
         int warmups,
@@ -3730,10 +3988,23 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
     private static void AssertApplicationLockCommands(
         Issue250ApplicationLockDiagnosticEvidence diagnostics,
-        int releases)
+        int releases,
+        string phase,
+        int candidateLocksPerRelease = 8)
     {
-        Assert.AreEqual((long)releases * 6, diagnostics.GetApplicationLockStarts);
-        Assert.AreEqual((long)releases * 6, diagnostics.ReleaseApplicationLockStarts);
+        var locksPerRelease = phase == "baseline" ? 6 : candidateLocksPerRelease;
+        var minimumLocks = (long)releases * locksPerRelease;
+        if (phase == "baseline")
+        {
+            Assert.AreEqual(minimumLocks, diagnostics.GetApplicationLockStarts);
+        }
+        else
+        {
+            Assert.IsGreaterThanOrEqualTo(minimumLocks, diagnostics.GetApplicationLockStarts);
+        }
+        Assert.IsGreaterThanOrEqualTo(minimumLocks, diagnostics.ReleaseApplicationLockStarts);
+        Assert.IsLessThanOrEqualTo(
+            diagnostics.GetApplicationLockStarts, diagnostics.ReleaseApplicationLockStarts);
         Assert.AreEqual(diagnostics.TotalStarts,
             diagnostics.TotalCompletions + diagnostics.TotalErrors);
         Assert.AreEqual(0L, diagnostics.TotalErrors);
@@ -3848,13 +4119,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         var interval = intervals.Length == 0 ? 0 : Percentile(intervals, 0.50);
         var maximumInterval = intervals.Length == 0 ? 0 : intervals[^1];
         var inDeleteWindow = samples.Where(sample => deleteWindows.Any(window =>
-            sample.ElapsedMilliseconds >= window.EnteredMilliseconds
-            && sample.ElapsedMilliseconds <= window.ExitedMilliseconds)).ToArray();
+            IsObservationInsideWindow(sample, window))).ToArray();
         var samplesPerWindow = deleteWindows.Select(window => samples.Count(sample =>
-            sample.ElapsedMilliseconds >= window.EnteredMilliseconds
-            && sample.ElapsedMilliseconds <= window.ExitedMilliseconds)).ToArray();
+            IsObservationInsideWindow(sample, window))).ToArray();
         var windowsWithSamples = samplesPerWindow.Count(count => count > 0);
         var deleteWindowCoverage = deleteWindows.Count == 0 ? 0 : windowsWithSamples / (double)deleteWindows.Count;
+        Assert.IsTrue(samples.Count == 0 || deleteWindows.All(window => window.CaseIndex >= 0
+            && window.CaseIndex < samples[0].OpenTransactionSessionsByCase.Count));
         var lockDurationClaimable = configuredDelayMilliseconds > 0
             && deleteWindows.Count > 0
             && windowsWithSamples == deleteWindows.Count
@@ -3871,13 +4142,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 lockDurationClaimability);
         }
         var transactionWindow = deleteWindows.Select(window => ObservedWindow(
-            samples.Where(sample => sample.ElapsedMilliseconds >= window.EnteredMilliseconds
-                && sample.ElapsedMilliseconds <= window.ExitedMilliseconds).ToArray(),
-            item => item.OpenTransactionSessions > 0,
+            samples.Where(sample => IsObservationInsideWindow(sample, window)).ToArray(),
+            item => item.OpenTransactionSessionsByCase[window.CaseIndex] > 0,
             interval)).DefaultIfEmpty().Max();
         var objectLockWindow = deleteWindows.Select(window => ObservedWindow(
-            samples.Where(sample => sample.ElapsedMilliseconds >= window.EnteredMilliseconds
-                && sample.ElapsedMilliseconds <= window.ExitedMilliseconds).ToArray(),
+            samples.Where(sample => IsObservationInsideWindow(sample, window)).ToArray(),
             item => item.ObjectApplicationLocks > 0,
             interval)).DefaultIfEmpty().Max();
         var validBacklogSamples = samples.Count(item => !item.BacklogUnavailable);
@@ -3947,7 +4216,18 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         }
         if (configuredDelayMilliseconds >= 250 && phase == "after")
         {
-            Assert.AreEqual(0d, transactionWindow);
+            var transactionSamples = string.Join(';', inDeleteWindow
+                .Where(item => deleteWindows.Any(window => IsObservationInsideWindow(item, window)
+                    && item.OpenTransactionSessionsByCase[window.CaseIndex] > 0))
+                .Select(item =>
+                {
+                    var window = deleteWindows.First(value =>
+                        IsObservationInsideWindow(item, value)
+                        && item.OpenTransactionSessionsByCase[value.CaseIndex] > 0);
+                    return FormattableString.Invariant(
+                        $"t={item.ElapsedMilliseconds:F3},from-enter={item.ElapsedMilliseconds - window.EnteredMilliseconds:F3},to-exit={window.ExitedMilliseconds - item.ElapsedMilliseconds:F3},case={window.CaseIndex},tx={item.OpenTransactionSessionsByCase[window.CaseIndex]},aggregate-tx={item.OpenTransactionSessions},requests={item.ActiveRequests},locks={item.SessionApplicationLocks},objects={item.ObjectApplicationLocks},parents={item.ParentReleaseApplicationLocks}");
+                }));
+            Assert.AreEqual(0d, transactionWindow, transactionSamples);
             Assert.IsGreaterThanOrEqualTo(configuredDelayMilliseconds - 100d, objectLockWindow);
             Assert.IsTrue(inDeleteWindow.Any(item => item.ObjectLockOwnerSessionId.HasValue));
             Assert.IsFalse(inDeleteWindow.Any(item => item.ExactRowBlock is not null));
@@ -4014,6 +4294,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         }
         return longest;
     }
+
+    private static bool IsObservationInsideWindow(Issue250SqlSample sample, Issue250DeleteWindow window)
+        => sample.ObservationStartedMilliseconds >= window.EnteredMilliseconds
+           && sample.ElapsedMilliseconds <= window.ExitedMilliseconds;
 
     private static async Task<Issue250Backlog> ReadBacklogAsync(
         string connectionString,
@@ -4635,9 +4919,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 new Issue250SchemaColumn("ReleasedUtc", "datetimeoffset", 10, true),
                 new Issue250SchemaColumn("Outcome", "nvarchar", 64, false)
             };
-            if (phase != "after")
+            if (actual.SequenceEqual(baseline))
             {
-                CollectionAssert.AreEqual(baseline, actual.ToArray());
+                if (phase == "after")
+                {
+                    throw new InvalidOperationException(
+                        "After evidence requires the issue #250 release-item reservation schema.");
+                }
                 return new(
                     phase,
                     actual,
@@ -4647,12 +4935,31 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     RequiredAfterColumns: CandidateSchemaColumns,
                     RequiredAfterFaultHooks: CandidateFaultHooks);
             }
-
-            var missing = CandidateSchemaColumns.Where(required => !actual.Contains(required)).ToArray();
-            throw new InvalidOperationException(
-                "Issue #250 candidate harness/schema/fault hooks not implemented; after evidence is blocked before measurements. " +
-                $"Missing or incompatible columns: {string.Join(", ", missing.Select(item => item.Name))}. " +
-                $"Required authenticated fault hooks: {string.Join(", ", CandidateFaultHooks)}.");
+            CollectionAssert.AreEqual(CandidateSchemaColumns, actual.ToArray());
+            if (phase == "baseline")
+            {
+                throw new InvalidOperationException(
+                    "Baseline evidence cannot run against the issue #250 candidate schema; use the preserved accepted baseline.");
+            }
+            CollectionAssert.AreEquivalent(
+                new[]
+                {
+                    nameof(CentralTransientPayloadReleaseFaultStage.ReservationCommittedBeforeDelete),
+                    nameof(CentralTransientPayloadReleaseFaultStage.BeforeDelete),
+                    nameof(CentralTransientPayloadReleaseFaultStage.DeleteCompletedBeforeFinalize),
+                    nameof(CentralTransientPayloadReleaseFaultStage.FinalItemBeforeParentCompletion)
+                },
+                Enum.GetNames<CentralTransientPayloadReleaseFaultStage>()
+                    .Where(name => name != nameof(CentralTransientPayloadReleaseFaultStage.BeforeReservationCommit))
+                    .ToArray());
+            return new(
+                phase,
+                actual,
+                "The exact fifteen-column candidate release-item schema is present.",
+                "Candidate reservation, target-fence, retry, and rowversion fields are active; legacy terminal null/default rows remain valid.",
+                CandidateHarnessImplemented: true,
+                RequiredAfterColumns: CandidateSchemaColumns,
+                RequiredAfterFaultHooks: CandidateFaultHooks);
         }
         finally
         {
@@ -4670,14 +4977,15 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         new("RecordId", "uniqueidentifier", 16, false),
         new("ReleasedUtc", "datetimeoffset", 10, true),
         new("Outcome", "nvarchar", 64, false),
-        new("ReservationToken", "uniqueidentifier", 16, true),
+        new("FailureReasonCode", "nvarchar", 256, true),
         new("RequestedAtUtc", "datetimeoffset", 10, true),
-        new("StorageReference", "nvarchar", 2048, true),
-        new("TargetRowVersion", "varbinary", 8, true),
-        new("TargetGeneration", "bigint", 8, true),
-        new("RetryCount", "int", 4, false),
+        new("ReservationToken", "uniqueidentifier", 16, true),
         new("RetryAtUtc", "datetimeoffset", 10, true),
-        new("RowVersion", "timestamp", 8, false)
+        new("RetryCount", "int", 4, false),
+        new("RowVersion", "timestamp", 8, false),
+        new("StorageReference", "nvarchar", 2048, true),
+        new("TargetGeneration", "bigint", 8, true),
+        new("TargetRowVersion", "varbinary", 8, true)
     ];
 
     private static readonly string[] CandidateFaultHooks =
@@ -5037,21 +5345,22 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             throw new InvalidOperationException("After evidence requires HVO_EVIDENCE_BASELINE_MANIFEST.");
         }
         var fullPath = Path.GetFullPath(path, repositoryRoot);
-        var evidenceRoot = Path.GetFullPath(Path.Combine(repositoryRoot, "TestResults", "issue-250"))
-            + Path.DirectorySeparatorChar;
-        if (!fullPath.StartsWith(evidenceRoot, StringComparison.Ordinal)
-            || !string.Equals(Path.GetFileName(fullPath), "manifest.json", StringComparison.Ordinal))
+        var acceptedPath = Path.GetFullPath(AcceptedBaselineManifestPath);
+        if (!string.Equals(fullPath, acceptedPath, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                "After baseline manifest must be the contained TestResults/issue-250/.../manifest.json file.");
+                "After evidence requires the exact preserved accepted issue #250 baseline manifest.");
         }
         var manifestBytes = await File.ReadAllBytesAsync(fullPath).ConfigureAwait(false);
+        Assert.AreEqual(AcceptedBaselineManifestSha256,
+            Convert.ToHexString(SHA256.HashData(manifestBytes)));
         using var manifest = JsonDocument.Parse(manifestBytes);
         var root = manifest.RootElement;
         Assert.AreEqual("hvo-evidence-manifest-v1", root.GetProperty("Schema").GetString());
         Assert.AreEqual(250, root.GetProperty("Issue").GetInt32());
         Assert.AreEqual("baseline", root.GetProperty("Phase").GetString());
         Assert.AreEqual(ProductionRevision, root.GetProperty("ProductionRevision").GetString());
+        Assert.AreEqual(AcceptedBaselineSourceRevision, root.GetProperty("SourceHead").GetString());
         Assert.AreEqual(1, root.GetProperty("Trial").GetInt32());
         Assert.AreEqual(TrialPolicy, root.GetProperty("TrialPolicy").GetString());
         Assert.AreEqual(compatibilityWorkloadSha256, root.GetProperty("WorkloadSha256").GetString());
@@ -5063,6 +5372,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             ?? throw new InvalidOperationException("Baseline manifest harness identity is absent.");
         var manifestProtocol = root.GetProperty("ProtocolSha256").GetString()
             ?? throw new InvalidOperationException("Baseline manifest protocol identity is absent.");
+        Assert.AreEqual(AcceptedBaselineHarnessSha256, manifestHarness);
+        Assert.AreEqual(AcceptedBaselineProtocolSha256, manifestProtocol);
+        Assert.AreEqual(AcceptedBaselineCompatibilityProtocolSha256,
+            root.GetProperty("CompatibilityProtocolSha256").GetString());
         var directory = Path.GetDirectoryName(fullPath)!;
         var expectedFiles = new[]
         {
@@ -5267,8 +5580,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         {
             Assert.IsTrue(permittedGuids.Contains(match.Value), "Evidence privacy scan found an unregistered entity-like identifier.");
         }
-        Assert.IsEmpty(Issue250Regex.GuidN().Matches(json),
-            "Evidence privacy scan found a compact GUID-like identifier.");
+        var compactGuidMatches = Issue250Regex.GuidN().Matches(json);
+        Assert.IsEmpty(compactGuidMatches,
+            $"Evidence privacy scan found a compact GUID-like identifier at: {string.Join(", ", FindCompactGuidPaths(json))}.");
         Assert.IsFalse(Issue250Regex.HexSha().Matches(json).Cast<Match>().Any(match => privateValues.Contains(match.Value)),
             "Evidence privacy scan found a registered private token/hash.");
         Assert.IsFalse(Issue250Regex.PrivateIssueToken().Matches(json).Cast<Match>().Any(match => privateValues.Contains(match.Value)),
@@ -5277,6 +5591,40 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             "Evidence privacy scan found a MinIO object URI/key.");
         Assert.IsFalse(Issue250Regex.CredentialAssignment().IsMatch(json),
             "Evidence privacy scan found a credential/connection assignment.");
+    }
+
+    private static List<string> FindCompactGuidPaths(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var paths = new List<string>();
+        Visit(document.RootElement, "$", paths);
+        return paths;
+
+        static void Visit(JsonElement element, string path, List<string> paths)
+        {
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in element.EnumerateObject())
+                {
+                    Visit(property.Value, $"{path}.{property.Name}", paths);
+                }
+                return;
+            }
+            if (element.ValueKind == JsonValueKind.Array)
+            {
+                var index = 0;
+                foreach (var item in element.EnumerateArray())
+                {
+                    Visit(item, $"{path}[{index++}]", paths);
+                }
+                return;
+            }
+            if (element.ValueKind == JsonValueKind.String
+                && Issue250Regex.GuidN().IsMatch(element.GetString() ?? string.Empty))
+            {
+                paths.Add(path);
+            }
+        }
     }
 
     private static string ReadPinnedSdk(string repositoryRoot)
@@ -5592,7 +5940,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             }
             var builder = new SqlConnectionStringBuilder(command.Connection.ConnectionString);
             return string.Equals(builder.InitialCatalog, database, StringComparison.Ordinal)
-                && string.Equals(builder.ApplicationName, applicationName, StringComparison.Ordinal);
+                && builder.ApplicationName.StartsWith(applicationName + ".Case", StringComparison.Ordinal);
         }
 
         private static object? GetProperty(object value, string name)
@@ -5621,7 +5969,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
     private sealed class Issue250ProcessNextQueryCaptureInterceptor : DbCommandInterceptor
     {
-        private Issue250CapturedCommand? captured;
+        private Issue250CapturedCommand? parent;
+        private Issue250CapturedCommand? dueItem;
 
         public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
             DbCommand command,
@@ -5629,12 +5978,21 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             InterceptionResult<DbDataReader> result,
             CancellationToken cancellationToken = default)
         {
-            if (captured is null
+            if (parent is null
                 && command.CommandText.Contains("CentralTransientPayloadReleases", StringComparison.Ordinal)
+                && command.CommandText.Contains("ORDER BY", StringComparison.Ordinal)
+                && command.CommandText.Contains("TOP(16)", StringComparison.Ordinal))
+            {
+                parent = new(
+                    command.CommandText,
+                    command.Parameters.Cast<SqlParameter>().Select(CopySqlParameter).ToArray());
+            }
+            if (dueItem is null
+                && command.CommandText.Contains("CentralTransientPayloadReleaseItems", StringComparison.Ordinal)
                 && command.CommandText.Contains("ORDER BY", StringComparison.Ordinal)
                 && command.CommandText.Contains("TOP(1)", StringComparison.Ordinal))
             {
-                captured = new(
+                dueItem = new(
                     command.CommandText,
                     command.Parameters.Cast<SqlParameter>().Select(CopySqlParameter).ToArray());
                 throw new Issue250QueryCapturedException();
@@ -5642,9 +6000,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             return ValueTask.FromResult(result);
         }
 
-        internal Issue250CapturedCommand Single()
-            => captured ?? throw new InvalidOperationException(
+        internal Issue250CapturedCommand SingleParent()
+            => parent ?? throw new InvalidOperationException(
                 "Production ProcessNextAsync did not emit its pending-release selection query.");
+
+        internal Issue250CapturedCommand SingleDueItem()
+            => dueItem ?? throw new InvalidOperationException(
+                "Production ProcessNextAsync did not emit its due-item selection query.");
     }
 
     private sealed class Issue250QueryCapturedException : Exception
@@ -5714,7 +6076,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 metrics.ToArray(), activities.ToArray(), logs.ToArray(),
                 "operation/outcome", "central-transient.retention/Internal/Unset", 2166,
                 exceptionBehavior);
-            Assert.IsTrue(result.Metrics.All(item => item.TagKeys.All(key => key is "operation" or "outcome")));
+            Assert.IsTrue(result.Metrics.All(item => item.Instrument == "skymonitor.central.transient.retention.items"
+                ? item.TagKeys.SequenceEqual(["kind", "outcome"])
+                : item.TagKeys.All(key => key is "operation" or "outcome")));
             Assert.IsTrue(result.Activities.All(item => item.Tags.Count == 0));
             return result;
         }
@@ -5722,7 +6086,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         internal Issue250RuntimeEvidence SnapshotAndAssertSingleSuccess(int expectedItemCount)
         {
             var result = Snapshot("No exception escaped; the operation reached durable completion.");
-            Assert.HasCount(2, result.Metrics);
+            Assert.IsGreaterThanOrEqualTo(2, result.Metrics.Count);
             var operation = result.Metrics.Single(item =>
                 item.Instrument == "skymonitor.central.transient.lifecycle.operations");
             Assert.AreEqual(1d, operation.Value);
@@ -5733,12 +6097,20 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Assert.IsGreaterThanOrEqualTo(0d, duration.Value);
             Assert.AreEqual("retention", duration.Operation);
             Assert.AreEqual("completed", duration.Outcome);
-            var log = result.Logs.Single();
+            var log = result.Logs.Single(item => item.EventId == 2166);
             Assert.AreEqual(2166, log.EventId);
             Assert.AreEqual(LogLevel.Information.ToString(), log.Level);
             Assert.AreEqual("completed", log.Outcome);
             Assert.AreEqual(expectedItemCount, log.ItemCount);
             Assert.IsFalse(log.ExceptionPresent);
+            var itemMetrics = result.Metrics.Where(item =>
+                item.Instrument == "skymonitor.central.transient.retention.items").ToArray();
+            var itemLogs = result.Logs.Where(item => item.EventId == 2167).ToArray();
+            Assert.AreEqual(itemMetrics.Length, itemLogs.Length);
+            Assert.IsGreaterThanOrEqualTo(2, itemLogs.Length);
+            Assert.IsTrue(itemLogs.All(item => item.Kind is "source" or "derivative"
+                && item.Outcome is "reserved" or "released" or "preserved" or "retry"
+                && item.RetryCount >= 0));
             var activityValue = result.Activities.Single();
             Assert.AreEqual("central-transient.retention", activityValue.Name);
             Assert.AreEqual(ActivityKind.Internal.ToString(), activityValue.Kind);
@@ -5746,12 +6118,25 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             return result;
         }
 
-        internal Issue250RuntimeEvidence SnapshotAndAssertFailedCallGap()
+        internal Issue250RuntimeEvidence SnapshotAndAssertFailedCallGap(string phase)
         {
             var result = Snapshot(
-                "Injected MinIO failure escapes as MinioException. Baseline emits no event 2166 or operation/duration metric for this failed call; only the Unset activity closes.");
-            Assert.IsEmpty(result.Metrics);
-            Assert.IsEmpty(result.Logs);
+                phase == "after"
+                    ? "Injected retryable MinIO failure is durably scheduled without parent completion; bounded item signals and the Unset activity close."
+                    : "Injected MinIO failure escapes as MinioException. Baseline emits no event 2166 or operation/duration metric for this failed call; only the Unset activity closes.");
+            if (phase == "after")
+            {
+                Assert.IsNotEmpty(result.Metrics);
+                Assert.IsTrue(result.Metrics.All(item =>
+                    item.Instrument == "skymonitor.central.transient.retention.items"));
+                Assert.IsNotEmpty(result.Logs);
+                Assert.IsTrue(result.Logs.All(item => item.EventId == 2167));
+            }
+            else
+            {
+                Assert.IsEmpty(result.Metrics);
+                Assert.IsEmpty(result.Logs);
+            }
             var activityValue = result.Activities.Single();
             Assert.AreEqual("central-transient.retention", activityValue.Name);
             Assert.AreEqual(ActivityKind.Internal.ToString(), activityValue.Kind);
@@ -5798,20 +6183,35 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             {
                 string? outcome = null;
                 int? itemCount = null;
+                string? kind = null;
+                int? retryCount = null;
                 if (state is IEnumerable<KeyValuePair<string, object?>> fields)
                 {
                     var bounded = fields.Where(item => item.Key != "{OriginalFormat}").ToArray();
-                    Assert.IsTrue(bounded.All(item => item.Key is "RuntimeId" or "Outcome" or "ItemCount"));
-                    Assert.IsTrue(bounded.Where(item => item.Key == "Outcome")
-                        .All(item => item.Value?.ToString() is "completed" or "failed"));
-                    Assert.IsTrue(bounded.Any(item => item.Key == "RuntimeId"
-                        && !string.IsNullOrWhiteSpace(item.Value?.ToString())));
-                    outcome = bounded.Single(item => item.Key == "Outcome").Value?.ToString();
-                    itemCount = Convert.ToInt32(
-                        bounded.Single(item => item.Key == "ItemCount").Value,
-                        CultureInfo.InvariantCulture);
+                    if (eventId.Id == 2167)
+                    {
+                        Assert.IsTrue(bounded.All(item => item.Key is "Kind" or "Outcome" or "RetryCount"));
+                        kind = bounded.Single(item => item.Key == "Kind").Value?.ToString();
+                        outcome = bounded.Single(item => item.Key == "Outcome").Value?.ToString();
+                        retryCount = Convert.ToInt32(
+                            bounded.Single(item => item.Key == "RetryCount").Value,
+                            CultureInfo.InvariantCulture);
+                    }
+                    else
+                    {
+                        Assert.IsTrue(bounded.All(item => item.Key is "RuntimeId" or "Outcome" or "ItemCount"));
+                        Assert.IsTrue(bounded.Where(item => item.Key == "Outcome")
+                            .All(item => item.Value?.ToString() is "completed" or "failed"));
+                        Assert.IsTrue(bounded.Any(item => item.Key == "RuntimeId"
+                            && !string.IsNullOrWhiteSpace(item.Value?.ToString())));
+                        outcome = bounded.Single(item => item.Key == "Outcome").Value?.ToString();
+                        itemCount = Convert.ToInt32(
+                            bounded.Single(item => item.Key == "ItemCount").Value,
+                            CultureInfo.InvariantCulture);
+                    }
                 }
-                logs.Enqueue(new(eventId.Id, logLevel.ToString(), outcome, itemCount, exception is not null));
+                logs.Enqueue(new(eventId.Id, logLevel.ToString(), outcome, itemCount, kind, retryCount,
+                    exception is not null));
             }
         }
     }
@@ -5849,15 +6249,20 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         private long unknownRequestLengths;
         private long unknownResponseLengths;
         private string? firstObjectKey;
+        private IReadOnlyDictionary<string, int> caseByObjectKey = new Dictionary<string, int>();
 
         internal Task FirstEntered => firstEntered.Task;
         internal string? FirstObjectKey => Volatile.Read(ref firstObjectKey);
         internal IReadOnlyList<Issue250DeleteWindow> Windows => windows.OrderBy(item => item.EnteredMilliseconds).ToArray();
 
-        internal void Configure(TimeSpan configuredDelay, long measurementOrigin = 0)
+        internal void Configure(
+            TimeSpan configuredDelay,
+            long measurementOrigin = 0,
+            IReadOnlyDictionary<string, int>? configuredCaseByObjectKey = null)
         {
             delay = configuredDelay;
             origin = measurementOrigin;
+            caseByObjectKey = configuredCaseByObjectKey ?? new Dictionary<string, int>();
         }
 
         internal void Reset()
@@ -5913,7 +6318,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             {
                 var exited = ElapsedMilliseconds(Stopwatch.GetTimestamp());
                 durations.Enqueue(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-                windows.Enqueue(new Issue250DeleteWindow(entered, exited));
+                var key = GetObjectKey(request);
+                windows.Enqueue(new Issue250DeleteWindow(
+                    entered,
+                    exited,
+                    caseByObjectKey.GetValueOrDefault(key, -1)));
             }
             return response;
         }
@@ -5976,7 +6385,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         string CompletionCoverage,
         string Limitation);
 
-    private sealed record Issue250DeleteWindow(double EnteredMilliseconds, double ExitedMilliseconds);
+    private sealed record Issue250DeleteWindow(
+        double EnteredMilliseconds,
+        double ExitedMilliseconds,
+        int CaseIndex);
 
     private sealed class Issue250Database(ApplicationDbContext context, string connectionString) : IAsyncDisposable
     {
@@ -6218,9 +6630,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
     private sealed record Issue250SqlSample(
         double ElapsedMilliseconds,
+        double ObservationStartedMilliseconds,
         int Sessions,
         int ActiveRequests,
         int OpenTransactionSessions,
+        IReadOnlyList<int> OpenTransactionSessionsByCase,
         int SessionApplicationLocks,
         int ObjectApplicationLocks,
         int ParentReleaseApplicationLocks,
@@ -6768,12 +7182,22 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         string Level,
         string? Outcome,
         int? ItemCount,
+        string? Kind,
+        int? RetryCount,
         bool ExceptionPresent);
 
     private sealed record Issue250HealthEvidence(
         string Status,
         int PendingParentCount,
         double OldestPendingParentAgeSeconds,
+        int PendingItemCount,
+        int RetryDueItemCount,
+        int ReservedItemCount,
+        int StaleReservedItemCount,
+        long ReservedLogicalBytes,
+        double OldestReservedItemAgeSeconds,
+        long PendingLogicalBytes,
+        double OldestPendingItemAgeSeconds,
         string ItemBacklogSignals);
 
     private sealed record Issue250HealthTransitionEvidence(

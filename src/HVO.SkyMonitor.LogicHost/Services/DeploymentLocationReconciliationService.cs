@@ -362,10 +362,10 @@ internal sealed partial class DeploymentLocationReconciliationService(
             fencedWork.LeaseExpiresAtUtc = now + settings.LeaseDuration;
             fencedWork.UpdatedAtUtc = now;
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            await derivativeJobScheduler.EnsureRequiredJobsAsync(
-                devicePublicId, artifactId, now, cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
+        await derivativeJobScheduler.EnsureRequiredJobsAsync(
+            devicePublicId, artifactId, now, cancellationToken).ConfigureAwait(false);
         await derivativeJobScheduler.ResolveAffectedWindowsAsync(
             devicePublicId, artifactId, now, cancellationToken).ConfigureAwait(false);
     }

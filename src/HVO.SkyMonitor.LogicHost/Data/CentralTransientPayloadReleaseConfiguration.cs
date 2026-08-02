@@ -43,13 +43,34 @@ internal static class CentralTransientPayloadReleaseConfiguration
             table.HasTrigger("TR_CentralTransientPayloadReleaseItems_Closed");
             table.HasCheckConstraint("CK_CentralTransientPayloadReleaseItems_Ordinal", "[Ordinal] >= 0");
             table.HasCheckConstraint("CK_CentralTransientPayloadReleaseItems_Outcome",
-                "([Outcome] = 'Pending' AND [ReleasedUtc] IS NULL) OR " +
-                "([Outcome] IN ('Released', 'PreservedHeld') AND [ReleasedUtc] IS NOT NULL)");
+                "([Outcome] = 'Pending' AND [ReleasedUtc] IS NULL AND [FailureReasonCode] IS NULL) OR " +
+                "([Outcome] IN ('Released', 'PreservedHeld') AND [ReleasedUtc] IS NOT NULL AND [FailureReasonCode] IS NULL) OR " +
+                "([Outcome] = 'Failed' AND [ReleasedUtc] IS NOT NULL AND [FailureReasonCode] IS NOT NULL)");
+            table.HasCheckConstraint("CK_CentralTransientPayloadReleaseItems_RetryCount", "[RetryCount] >= 0");
+            table.HasCheckConstraint("CK_CentralTransientPayloadReleaseItems_Reservation",
+                "(([RequestedAtUtc] IS NULL AND [StorageReference] IS NULL AND [TargetRowVersion] IS NULL AND [TargetGeneration] IS NULL) OR " +
+                "([RequestedAtUtc] IS NOT NULL AND [StorageReference] IS NOT NULL AND [TargetRowVersion] IS NOT NULL AND DATALENGTH([TargetRowVersion]) = 8 AND [TargetGeneration] IS NOT NULL)) AND " +
+                "([ReservationToken] IS NULL OR ([Outcome] = 'Pending' AND [RequestedAtUtc] IS NOT NULL AND [RetryAtUtc] IS NULL)) AND " +
+                "([RetryAtUtc] IS NULL OR ([Outcome] = 'Pending' AND [ReservationToken] IS NULL AND [RequestedAtUtc] IS NOT NULL)) AND " +
+                "([Outcome] = 'Pending' OR ([ReservationToken] IS NULL AND [RetryAtUtc] IS NULL))");
         });
         item.HasKey(value => new { value.ReleaseId, value.Ordinal });
         item.Property(value => value.Kind).HasConversion<string>().HasMaxLength(32).IsRequired();
         item.Property(value => value.Outcome).HasConversion<string>().HasMaxLength(32).IsRequired();
-        item.HasIndex(value => new { value.Kind, value.RecordId }).IsUnique();
+        item.Property(value => value.StorageReference).HasMaxLength(1024).UseCollation(BinaryCollation);
+        item.Property(value => value.TargetRowVersion).HasMaxLength(8);
+        item.Property(value => value.RetryCount).HasDefaultValue(0);
+        item.Property(value => value.FailureReasonCode).HasMaxLength(128).UseCollation(BinaryCollation);
+        item.Property(value => value.RowVersion).IsRowVersion();
+        item.HasIndex(value => new { value.ReleaseId, value.Kind, value.RecordId }).IsUnique();
+        item.HasIndex(value => new { value.Kind, value.RecordId });
+        item.HasIndex(value => new
+        {
+            value.RetryAtUtc,
+            value.RequestedAtUtc,
+            value.ReleaseId,
+            value.Ordinal
+        }).HasFilter("[Outcome] = N'Pending'").IncludeProperties(value => value.ReservationToken);
         item.HasOne(value => value.Release).WithMany(value => value.Items)
             .HasForeignKey(value => value.ReleaseId).OnDelete(DeleteBehavior.Restrict).IsRequired();
     }

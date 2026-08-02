@@ -365,14 +365,23 @@ internal sealed partial class ArtifactIngestService(
         }
 
         var now = timeProvider.GetUtcNow();
+        var persisted = false;
         try
         {
             var result = await PersistAsync(
                 registration, manifest, storageReference, objectLock, now, cancellationToken).ConfigureAwait(false);
+            persisted = true;
             if (!string.Equals(result.Upload.StorageReference, storageReference, StringComparison.Ordinal))
             {
                 await RemoveUncommittedObjectAsync(storageReference, objectKey).ConfigureAwait(false);
             }
+            await objectLock.DisposeAsync().ConfigureAwait(false);
+            await ScheduleDerivativesAfterObjectLockAsync(
+                registration.DevicePublicId ?? throw new InvalidOperationException(
+                    "An active device registration has no public identity."),
+                manifest.ArtifactId,
+                now,
+                cancellationToken).ConfigureAwait(false);
             telemetry.RecordRequest(
                 manifest.SchemaVersion,
                 result.ReadyForAcknowledgement ? "accepted" : "pending-reference",
@@ -406,6 +415,10 @@ internal sealed partial class ArtifactIngestService(
         }
         catch
         {
+            if (persisted)
+            {
+                throw;
+            }
             if (await CentralObjectOwnershipFence.IsRetiredAsync(
                     dbContext, storageReference, CancellationToken.None).ConfigureAwait(false))
             {
@@ -649,7 +662,7 @@ internal sealed partial class ArtifactIngestService(
                 {
                     continue;
                 }
-                return await ReconcileExistingUnderObjectLockAsync(
+                var result = await ReconcileExistingUnderObjectLockAsync(
                     target.ArtifactId,
                     target.StorageReference,
                     objectLock,
@@ -658,6 +671,10 @@ internal sealed partial class ArtifactIngestService(
                     mode,
                     compatibilityRegistration,
                     cancellationToken).ConfigureAwait(false);
+                await objectLock.DisposeAsync().ConfigureAwait(false);
+                await ScheduleDerivativesAfterObjectLockAsync(
+                    target.ArtifactId, receivedAtUtc, cancellationToken).ConfigureAwait(false);
+                return result;
             }
             catch (ExistingArtifactVerificationStaleException)
             {
@@ -968,11 +985,6 @@ internal sealed partial class ArtifactIngestService(
                 existing.ObjectState = CentralArtifactObjectState.Available;
                 await ResolveWaitingSourcesAsync(
                     existing, existing.Frame!.DevicePublicId, cancellationToken).ConfigureAwait(false);
-                if (ShouldScheduleDerivatives(existing))
-                {
-                    await derivativeJobScheduler.EnsureRequiredJobsAsync(
-                        existing, receivedAtUtc, cancellationToken).ConfigureAwait(false);
-                }
             }
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
@@ -1235,10 +1247,6 @@ internal sealed partial class ArtifactIngestService(
                 await ApplyReconstructionAsync(frame, artifact, manifest, devicePublicId, receivedAtUtc, cancellationToken)
                     .ConfigureAwait(false);
                 await ResolveWaitingSourcesAsync(artifact, devicePublicId, cancellationToken).ConfigureAwait(false);
-                if (ShouldScheduleDerivatives(artifact))
-                {
-                    await derivativeJobScheduler.EnsureRequiredJobsAsync(artifact, receivedAtUtc, cancellationToken).ConfigureAwait(false);
-                }
                 await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                 await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
                 var ready = artifact.ReconstructionState is CentralReconstructionState.Complete or CentralReconstructionState.LegacyIncomplete;
@@ -1350,6 +1358,47 @@ internal sealed partial class ArtifactIngestService(
         => artifact.ReconstructionState == CentralReconstructionState.Complete &&
             (artifact.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion ||
                 artifact.Role == FrameArtifactRole.Raw);
+
+    private async Task ScheduleDerivativesAfterObjectLockAsync(
+        Guid devicePublicId,
+        Guid artifactId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var shouldSchedule = await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(artifact =>
+            artifact.DevicePublicId == devicePublicId && artifact.ArtifactId == artifactId &&
+            artifact.ReconstructionState == CentralReconstructionState.Complete &&
+            (artifact.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion ||
+                artifact.Role == FrameArtifactRole.Raw), cancellationToken).ConfigureAwait(false);
+        if (shouldSchedule)
+        {
+            await derivativeJobScheduler.EnsureRequiredJobsAsync(
+                devicePublicId, artifactId, now, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ScheduleDerivativesAfterObjectLockAsync(
+        Guid centralArtifactId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var identity = await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.Id == centralArtifactId &&
+                artifact.ReconstructionState == CentralReconstructionState.Complete &&
+                (artifact.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion ||
+                    artifact.Role == FrameArtifactRole.Raw))
+            .Select(artifact => new
+            {
+                DevicePublicId = artifact.DevicePublicId ?? artifact.Frame!.DevicePublicId,
+                artifact.ArtifactId
+            })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (identity is not null)
+        {
+            await derivativeJobScheduler.EnsureRequiredJobsAsync(
+                identity.DevicePublicId, identity.ArtifactId, now, cancellationToken).ConfigureAwait(false);
+        }
+    }
 
     private async Task ApplyReconstructionAsync(
         CentralFrame frame,

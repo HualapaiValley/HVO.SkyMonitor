@@ -127,6 +127,35 @@ internal sealed partial class CentralDerivativeJobOperationsService(
     {
         ValidateActor(actor);
         var now = timeProvider.GetUtcNow();
+        var preflightJobArtifacts = await dbContext.CentralDerivativeJobs.AsNoTracking()
+            .Where(candidate => candidate.Id == jobId)
+            .Select(candidate => new
+            {
+                candidate.SourceCentralArtifactId,
+                candidate.ResultCentralArtifactId,
+                candidate.RetainedResultCentralArtifactId
+            })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        var preflightArtifactIds = await dbContext.CentralDerivativeJobInputs.AsNoTracking()
+            .Where(input => input.CentralDerivativeJobId == jobId)
+            .Select(input => input.CentralArtifactId)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        if (preflightJobArtifacts is not null)
+        {
+            preflightArtifactIds.Add(preflightJobArtifacts.SourceCentralArtifactId);
+            if (preflightJobArtifacts.ResultCentralArtifactId.HasValue)
+            {
+                preflightArtifactIds.Add(preflightJobArtifacts.ResultCentralArtifactId.Value);
+            }
+            if (preflightJobArtifacts.RetainedResultCentralArtifactId.HasValue)
+            {
+                preflightArtifactIds.Add(preflightJobArtifacts.RetainedResultCentralArtifactId.Value);
+            }
+        }
+        var holdTargets = await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
+            dbContext, preflightArtifactIds, cancellationToken).ConfigureAwait(false);
+        await using var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         _ = await CentralDerivativeJobLock.AcquireAsync(dbContext, jobId, cancellationToken).ConfigureAwait(false);
         if (transactionPrecondition is not null
@@ -261,6 +290,23 @@ internal sealed partial class CentralDerivativeJobOperationsService(
             throw new CentralDerivativeJobStateException(
                 "Published derivative inputs cannot be changed by requeue; create replacement work instead.");
         }
+        var reactivatedHoldIds = job.Inputs.Select(input => input.CentralArtifactId)
+            .Append(job.SourceCentralArtifactId)
+            .Concat(job.RetainedResultCentralArtifactId.HasValue
+                ? [job.RetainedResultCentralArtifactId.Value]
+                : [])
+            .Concat(hasPublishedOutput && job.ResultCentralArtifactId.HasValue
+                ? [job.ResultCentralArtifactId.Value]
+                : [])
+            .ToHashSet();
+        var reactivatedHoldTargets = holdScope.Targets.Where(target => reactivatedHoldIds.Contains(target.RecordId))
+            .ToArray();
+        if (reactivatedHoldTargets.Length != reactivatedHoldIds.Count)
+        {
+            throw new CentralTransientPayloadHoldRejectedException("transient-retention.hold-target-changed");
+        }
+        await CentralTransientPayloadHoldFence.ValidateAsync(
+            dbContext, reactivatedHoldTargets, cancellationToken).ConfigureAwait(false);
         job.Status = needsResolution ? CentralDerivativeJobStatus.Waiting : CentralDerivativeJobStatus.Pending;
         job.MaxAttempts = checked(job.AttemptCount + CentralDerivativeRecipeCatalog.DefaultMaxAttempts);
         job.AvailableAtUtc = needsResolution ? null : now;
@@ -319,6 +365,26 @@ internal sealed partial class CentralDerivativeJobOperationsService(
         var requestedIdentity = BuiltInProcessingRecipes.CreateRequestedIdentity(
             request.RecipeName, normalizedOptions, selector).IdentitySha256;
         var now = timeProvider.GetUtcNow();
+        var preflightJobArtifacts = await dbContext.CentralDerivativeJobs.AsNoTracking()
+            .Where(candidate => candidate.Id == jobId)
+            .Select(candidate => new { candidate.SourceCentralArtifactId, candidate.ResultCentralArtifactId })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        var preflightArtifactIds = await dbContext.CentralDerivativeJobInputs.AsNoTracking()
+            .Where(input => input.CentralDerivativeJobId == jobId)
+            .Select(input => input.CentralArtifactId)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        if (preflightJobArtifacts is not null)
+        {
+            preflightArtifactIds.Add(preflightJobArtifacts.SourceCentralArtifactId);
+            if (preflightJobArtifacts.ResultCentralArtifactId.HasValue)
+            {
+                preflightArtifactIds.Add(preflightJobArtifacts.ResultCentralArtifactId.Value);
+            }
+        }
+        var holdTargets = await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
+            dbContext, preflightArtifactIds, cancellationToken).ConfigureAwait(false);
+        await using var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         _ = await CentralDerivativeJobLock.AcquireAsync(dbContext, jobId, cancellationToken).ConfigureAwait(false);
@@ -468,6 +534,15 @@ internal sealed partial class CentralDerivativeJobOperationsService(
                 throw new CentralDerivativeJobStateException(
                     "The derivative job already has a different designated replacement.");
             }
+            if (existing.Status is CentralDerivativeJobStatus.Waiting
+                or CentralDerivativeJobStatus.Pending
+                or CentralDerivativeJobStatus.Leased
+                or CentralDerivativeJobStatus.RetryableFailure
+                or CentralDerivativeJobStatus.CancelRequested)
+            {
+                await CentralTransientPayloadHoldFence.ValidateAsync(
+                    dbContext, holdScope.Targets, cancellationToken).ConfigureAwait(false);
+            }
             existing.PredecessorJobId = previous.Id;
             existing.RetainedResultCentralArtifactId ??= previous.ResultCentralArtifactId;
             existing.UpdatedAtUtc = now;
@@ -525,6 +600,20 @@ internal sealed partial class CentralDerivativeJobOperationsService(
         {
             throw new CentralDerivativeJobStateException("The derivative source set is unavailable for reprocessing.");
         }
+        var newHoldArtifactIds = selectedInputs.Select(input => input.CentralArtifactId)
+            .Append(previous.SourceCentralArtifactId)
+            .Concat(previous.ResultCentralArtifactId.HasValue
+                ? [previous.ResultCentralArtifactId.Value]
+                : [])
+            .ToHashSet();
+        var selectedHoldTargets = holdScope.Targets.Where(target => newHoldArtifactIds.Contains(target.RecordId))
+            .ToArray();
+        if (selectedHoldTargets.Length != newHoldArtifactIds.Count)
+        {
+            throw new CentralTransientPayloadHoldRejectedException("transient-retention.hold-target-changed");
+        }
+        await CentralTransientPayloadHoldFence.ValidateAsync(
+            dbContext, selectedHoldTargets, cancellationToken).ConfigureAwait(false);
         foreach (var sourceInput in selectedInputs)
         {
             var requirement = new CentralDerivativeJobInputRequirement

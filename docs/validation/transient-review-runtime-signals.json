@@ -9,7 +9,8 @@
     { "eventId": 2163, "level": "Information", "operation": "reprocessing", "fields": ["RuntimeId", "Outcome"] },
     { "eventId": 2164, "level": "Information", "operation": "derivative", "fields": ["RuntimeId", "Outcome", "OutputCount"] },
     { "eventId": 2165, "level": "Information", "operation": "notification", "fields": ["RuntimeId", "Outcome"] },
-    { "eventId": 2166, "level": "Information", "operation": "retention", "fields": ["RuntimeId", "Outcome", "ItemCount"] }
+    { "eventId": 2166, "level": "Information", "operation": "retention", "fields": ["RuntimeId", "Outcome", "ItemCount"] },
+    { "eventId": 2167, "level": "Information", "operation": "retention-item", "fields": ["Kind", "Outcome", "RetryCount"] }
   ],
   "metrics": [
     {
@@ -42,6 +43,14 @@
       "labels": {
         "kind": ["crop", "preview", "mask", "overlay", "reconstruction", "other"]
       }
+    },
+    {
+      "name": "skymonitor.central.transient.retention.items",
+      "unit": "{item}",
+      "labels": {
+        "kind": ["source", "derivative", "other"],
+        "outcome": ["reserved", "released", "preserved", "retry", "failed", "other"]
+      }
     }
   ],
   "spans": [
@@ -56,7 +65,7 @@
     "healthy": ["queues-within-bounds"],
     "degraded": ["notification-backlog", "expired-notification-fence", "payload-release-backlog"],
     "unhealthy": [],
-    "fields": ["PendingNotificationCount", "OldestPendingNotificationAgeSeconds", "FencedNotificationCount", "OldestFencedNotificationAgeSeconds", "PendingPayloadReleaseCount", "OldestPendingPayloadReleaseAgeSeconds"]
+    "fields": ["PendingNotificationCount", "OldestPendingNotificationAgeSeconds", "FencedNotificationCount", "OldestFencedNotificationAgeSeconds", "PendingPayloadReleaseCount", "OldestPendingPayloadReleaseAgeSeconds", "PendingPayloadReleaseItemCount", "RetryDuePayloadReleaseItemCount", "ReservedPayloadReleaseItemCount", "StaleReservedPayloadReleaseItemCount", "ReservedPayloadReleaseLogicalBytes", "OldestReservedPayloadReleaseItemAgeSeconds", "PendingPayloadReleaseLogicalBytes", "OldestPendingPayloadReleaseItemAgeSeconds"]
   },
   "privacy": {
     "forbidden": ["actor identity", "recipient", "payload bytes", "storage path", "object credentials", "idempotency key", "checksum", "lease token"],

@@ -324,6 +324,25 @@ internal sealed class CentralTransientDerivativeOutputWriter(
         CancellationToken cancellationToken)
     {
         dbContext.ChangeTracker.Clear();
+        var eventId = await dbContext.CentralTransientDerivativeJobs.AsNoTracking()
+            .Where(item => item.CentralDerivativeJobId == lease.JobId)
+            .Select(item => item.CentralTransientEventId)
+            .SingleAsync(cancellationToken).ConfigureAwait(false);
+        var sourceIds = await dbContext.CentralTransientObservationSources.AsNoTracking()
+            .Where(item => item.Observation!.CentralTransientEventId == eventId)
+            .Select(item => item.CentralArtifactId)
+            .Concat(dbContext.CentralTransientObservationBackgrounds.AsNoTracking()
+                .Where(item => item.Observation!.CentralTransientEventId == eventId)
+                .Select(item => item.CentralArtifactId))
+            .Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var holdTargets = await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
+            dbContext, sourceIds, cancellationToken).ConfigureAwait(false);
+        if (holdTargets.Count != sourceIds.Length)
+        {
+            throw new CentralDerivativeJobStateException("Transient derivative source hold targets are missing.");
+        }
+        await using var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         _ = await CentralDerivativeJobLock.AcquireAsync(dbContext, lease.JobId, cancellationToken).ConfigureAwait(false);
@@ -336,6 +355,15 @@ internal sealed class CentralTransientDerivativeOutputWriter(
         var derivativeJob = await dbContext.CentralTransientDerivativeJobs
             .Include(item => item.OutputIntents)
             .SingleAsync(item => item.CentralDerivativeJobId == lease.JobId, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await CentralTransientPayloadHoldFence.ValidateAsync(
+                dbContext, holdScope.Targets, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CentralTransientPayloadHoldRejectedException exception)
+        {
+            throw new CentralDerivativeJobStateException(exception.Message);
+        }
         if (derivativeJob.CommittedAtUtc.HasValue)
         {
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

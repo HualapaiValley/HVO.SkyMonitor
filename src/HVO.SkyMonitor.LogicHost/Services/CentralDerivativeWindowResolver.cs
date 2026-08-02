@@ -86,14 +86,24 @@ internal sealed partial class CentralDerivativeWindowResolver(
     {
         for (var retry = 0; retry < 5; retry++)
         {
+            var retryRequired = false;
             try
             {
-                await ResolveJobCoreAsync(jobId, now, cancellationToken).ConfigureAwait(false);
+                var holdTargets = await LoadResolutionHoldTargetsAsync(jobId, cancellationToken)
+                    .ConfigureAwait(false);
+                await using var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+                    dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
+                await ResolveJobCoreAsync(jobId, now, holdScope.Targets, cancellationToken).ConfigureAwait(false);
                 return;
             }
-            catch (Exception exception) when (exception.GetBaseException() is SqlException { Number: 1205 })
+            catch (Exception exception) when (exception is ResolutionObjectLockChangedException
+                || exception.GetBaseException() is SqlException { Number: 1205 })
             {
                 dbContext.ChangeTracker.Clear();
+                retryRequired = true;
+            }
+            if (retryRequired)
+            {
                 await Task.Delay(TimeSpan.FromMilliseconds(10 * (retry + 1)), cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -102,7 +112,11 @@ internal sealed partial class CentralDerivativeWindowResolver(
             "Window resolution could not acquire its durable locks after bounded deadlock retry.");
     }
 
-    private async Task ResolveJobCoreAsync(Guid jobId, DateTimeOffset now, CancellationToken cancellationToken)
+    private async Task ResolveJobCoreAsync(
+        Guid jobId,
+        DateTimeOffset now,
+        IReadOnlyList<CentralTransientPayloadHoldTarget> holdTargets,
+        CancellationToken cancellationToken)
     {
         var started = timeProvider.GetTimestamp();
         IDbContextTransaction? ownedTransaction = null;
@@ -219,7 +233,8 @@ internal sealed partial class CentralDerivativeWindowResolver(
             var unresolvedOptional = job.InputRequirements.Any(item => !item.IsRequired
                 && item.ResolutionState == CentralDerivativeInputResolutionState.Waiting);
             var deadlineExpired = job.ResolutionDeadlineUtc <= now;
-            var inputsPersisted = await PersistResolvedInputsAsync(job, candidates, now, cancellationToken)
+            var inputsPersisted = await PersistResolvedInputsAsync(
+                job, candidates, holdTargets, now, cancellationToken)
                 .ConfigureAwait(false);
             if (!inputsPersisted)
             {
@@ -247,7 +262,8 @@ internal sealed partial class CentralDerivativeWindowResolver(
                     }
                     if (job.MissingInputOutcome == CentralDerivativeWindowOutcome.Run && candidates.Count > 0)
                     {
-                        await FreezeInputsAsync(job, candidates, now, cancellationToken).ConfigureAwait(false);
+                        await FreezeInputsAsync(
+                            job, candidates, holdTargets, now, cancellationToken).ConfigureAwait(false);
                         job.StateReasonCode = missingRequired
                             ? CentralDerivativeWindowReasonCodes.RequiredInputTimeout
                             : CentralDerivativeWindowReasonCodes.OptionalInputTimeout;
@@ -287,7 +303,8 @@ internal sealed partial class CentralDerivativeWindowResolver(
             }
             else
             {
-                await FreezeInputsAsync(job, candidates, now, cancellationToken).ConfigureAwait(false);
+                await FreezeInputsAsync(
+                    job, candidates, holdTargets, now, cancellationToken).ConfigureAwait(false);
             }
 
             try
@@ -441,10 +458,12 @@ internal sealed partial class CentralDerivativeWindowResolver(
     private async Task FreezeInputsAsync(
         CentralDerivativeJob job,
         IReadOnlyDictionary<Guid, ResolvedCandidate> candidates,
+        IReadOnlyList<CentralTransientPayloadHoldTarget> holdTargets,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        if (!await PersistResolvedInputsAsync(job, candidates, now, cancellationToken).ConfigureAwait(false))
+        if (!await PersistResolvedInputsAsync(
+                job, candidates, holdTargets, now, cancellationToken).ConfigureAwait(false))
         {
             job.StateReasonCode = CentralDerivativeWindowReasonCodes.ResolutionConflict;
             return;
@@ -461,6 +480,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
     private async Task<bool> PersistResolvedInputsAsync(
         CentralDerivativeJob job,
         IReadOnlyDictionary<Guid, ResolvedCandidate> candidates,
+        IReadOnlyList<CentralTransientPayloadHoldTarget> holdTargets,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -486,13 +506,29 @@ internal sealed partial class CentralDerivativeWindowResolver(
             .OrderBy(item => item.Ordinal)
             .Select(item => (Requirement: item, Candidate: candidates[item.Id]))
             .ToArray();
+        var selectedIds = selected.Select(item => item.Candidate.Artifact.Id).ToHashSet();
+        var selectedTargets = holdTargets.Where(target => selectedIds.Contains(target.RecordId)).ToArray();
+        if (selectedTargets.Length != selectedIds.Count)
+        {
+            throw new ResolutionObjectLockChangedException(
+                "The resolved derivative input set changed while its object locks were acquired.");
+        }
+        try
+        {
+            await CentralTransientPayloadHoldFence.ValidateAsync(
+                dbContext, selectedTargets, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CentralTransientPayloadHoldRejectedException)
+        {
+            return false;
+        }
         foreach (var centralArtifactId in selected.Select(item => item.Candidate.Artifact.Id).Order())
         {
             _ = await CentralArtifactRetentionLock.AcquireAsync(dbContext, centralArtifactId, cancellationToken)
                 .ConfigureAwait(false);
         }
-        var selectedIds = selected.Select(item => item.Candidate.Artifact.Id).ToArray();
-        var usableCount = await dbContext.CentralArtifacts.CountAsync(artifact => selectedIds.Contains(artifact.Id)
+        var selectedArtifactIds = selectedIds.ToArray();
+        var usableCount = await dbContext.CentralArtifacts.CountAsync(artifact => selectedArtifactIds.Contains(artifact.Id)
             && artifact.ObjectState == CentralArtifactObjectState.Available
             && artifact.ReconstructionState == CentralReconstructionState.Complete, cancellationToken).ConfigureAwait(false);
         if (usableCount != selected.Length)
@@ -524,6 +560,65 @@ internal sealed partial class CentralDerivativeWindowResolver(
             dbContext.Entry(input).State = EntityState.Added;
         }
         return true;
+    }
+
+    private async Task<IReadOnlyList<CentralTransientPayloadHoldTarget>> LoadResolutionHoldTargetsAsync(
+        Guid jobId,
+        CancellationToken cancellationToken)
+    {
+        var artifactIds = (await dbContext.CentralDerivativeJobInputs.AsNoTracking()
+                .Where(input => input.CentralDerivativeJobId == jobId)
+                .Select(input => input.CentralArtifactId)
+                .ToListAsync(cancellationToken).ConfigureAwait(false))
+            .ToHashSet();
+        var requirements = await dbContext.CentralDerivativeJobInputRequirements.AsNoTracking()
+            .Where(requirement => requirement.CentralDerivativeJobId == jobId
+                && requirement.Job!.Status == CentralDerivativeJobStatus.Waiting
+                && requirement.SourceKind == CentralDerivativeInputSourceKind.Artifact
+                && requirement.ExpectedCaptureSequence != null)
+            .Select(requirement => new
+            {
+                requirement.ExpectedAgentId,
+                requirement.ExpectedCaptureSequence,
+                requirement.ExpectedRigId,
+                requirement.SelectorJson
+            })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var requirement in requirements)
+        {
+            var selector = JsonSerializer.Deserialize<ProcessingInputSelector>(
+                requirement.SelectorJson, SerializerOptions)
+                ?? throw new CentralDerivativeJobStateException("A derivative input requirement selector is invalid.");
+            var candidates = await dbContext.CentralArtifacts.AsNoTracking()
+                .Where(artifact => artifact.Frame!.AgentId == requirement.ExpectedAgentId
+                    && artifact.Frame.CaptureSequence == requirement.ExpectedCaptureSequence
+                    && artifact.Frame.RigId == requirement.ExpectedRigId
+                    && artifact.Role == selector.Role
+                    && (selector.Variant == null || artifact.Variant == selector.Variant)
+                    && artifact.ObjectState == CentralArtifactObjectState.Available
+                    && artifact.ReconstructionState == CentralReconstructionState.Complete)
+                .Select(artifact => artifact.Id)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+            artifactIds.UnionWith(candidates);
+        }
+        return await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
+            dbContext, artifactIds, cancellationToken).ConfigureAwait(false);
+    }
+
+    private sealed class ResolutionObjectLockChangedException : Exception
+    {
+        public ResolutionObjectLockChangedException()
+        {
+        }
+
+        public ResolutionObjectLockChangedException(string message) : base(message)
+        {
+        }
+
+        public ResolutionObjectLockChangedException(string message, Exception innerException)
+            : base(message, innerException)
+        {
+        }
     }
 
     private static void ApplyDeadlineOutcome(CentralDerivativeJob job, DateTimeOffset now, bool missingRequired)

@@ -20,7 +20,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
     private static readonly JsonSerializerOptions Issue243PayloadJsonOptions = new() { WriteIndented = true };
 
     [TestMethod]
-    public async Task PayloadReleaseDelete_HoldsSerializableTransactionAcrossMinioIo()
+    public async Task PayloadReleaseDelete_HasNoTransactionAndAllowsWriterDuringMinioIo()
     {
         await using var database = CreateDatabase("Issue243PayloadRelease");
         var publishedKeys = new List<string>();
@@ -104,7 +104,12 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 subjectDb,
                 new CentralArtifactRetentionReferences(subjectDb),
                 minio,
-                Options.Create(new CentralTransientPayloadReleaseOptions { Enabled = true }),
+                Options.Create(new CentralTransientPayloadReleaseOptions
+                {
+                    Enabled = true,
+                    InitialRetryDelay = TimeSpan.FromMilliseconds(1),
+                    MaximumRetryDelay = TimeSpan.FromMilliseconds(10)
+                }),
                 TimeProvider.System);
             using var operationCancellation = new CancellationTokenSource();
             var started = Stopwatch.GetTimestamp();
@@ -123,12 +128,12 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 snapshot = await ReadIssue243PayloadSnapshotAsync(
                     database.ConnectionString, applicationName).ConfigureAwait(false);
                 Assert.IsGreaterThanOrEqualTo(2, snapshot.Sessions);
-                Assert.IsGreaterThanOrEqualTo(1, snapshot.OpenTransactionSessions);
-                Assert.IsGreaterThanOrEqualTo(1, snapshot.SessionApplicationLocks);
+                Assert.AreEqual(0, snapshot.OpenTransactionSessions);
+                Assert.IsGreaterThanOrEqualTo(2, snapshot.SessionApplicationLocks);
                 blocker = await ObserveIssue243PayloadBlockedUpdateAsync(
                     database.ConnectionString, seeded.Artifacts.Select(static artifact => artifact.Id).ToArray())
                     .ConfigureAwait(false);
-                Assert.IsTrue(blocker.TimedOut);
+                Assert.IsFalse(blocker.TimedOut);
             }
             finally
             {
@@ -138,8 +143,25 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             }
             var elapsed = Stopwatch.GetElapsedTime(started);
             Assert.IsNotNull(released);
-            Assert.AreEqual(CentralTransientPayloadReleaseStatus.Released, released.Status);
-            Assert.AreEqual(seeded.Artifacts.Count, released.Response!.ReleasedPayloadCount);
+            Assert.AreEqual(CentralTransientPayloadReleaseStatus.Accepted, released.Status);
+            Assert.AreEqual(CentralTransientPayloadReleaseState.Pending, released.Response!.State);
+            await Task.Delay(20).ConfigureAwait(false);
+            await using (var recoveryDb = CreateContext(database.ConnectionString))
+            {
+                var recovery = new CentralTransientPayloadReleaseService(
+                    recoveryDb,
+                    new CentralArtifactRetentionReferences(recoveryDb),
+                    fixtureMinio,
+                    Options.Create(new CentralTransientPayloadReleaseOptions
+                    {
+                        Enabled = true,
+                        InitialRetryDelay = TimeSpan.FromMilliseconds(1),
+                        MaximumRetryDelay = TimeSpan.FromMilliseconds(10),
+                        MaximumRetryCount = 5
+                    }),
+                    TimeProvider.System);
+                Assert.IsTrue(await recovery.ProcessNextAsync(CancellationToken.None).ConfigureAwait(false));
+            }
             subjectDb.ChangeTracker.Clear();
             var expectedArtifactIds = seeded.Artifacts.Select(static item => item.Id).Order().ToArray();
             var expiredArtifactIds = await subjectDb.CentralArtifacts
@@ -174,7 +196,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                     Artifacts = expectedArtifactIds.Length,
                     PublishedObjects = publishedKeys.Count,
                     CompetingWriterTimeoutSeconds = 1,
-                    MinioBoundary = "First DELETE paused after SQL transaction and object lock acquisition"
+                    MinioBoundary = "First DELETE paused after reservation commit while parent/object application locks remain held"
                 },
                 Observation = new
                 {
@@ -182,12 +204,12 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                     snapshot!.Sessions,
                     snapshot.OpenTransactionSessions,
                     snapshot.SessionApplicationLocks,
-                    CompetingWriterTimedOut = blocker!.TimedOut,
+                    CompetingWriterCompleted = !blocker!.TimedOut,
                     CompetingWriterMilliseconds = blocker.ElapsedMilliseconds,
                     ExpiredArtifacts = expiredArtifactIds.Length,
                     RemovedObjects = publishedKeys.Count
                 },
-                Correctness = "Every seeded payload existed before release, every expected SQL artifact expired, and every object was absent afterward.",
+                Correctness = "No attributed SQL transaction remained open during DELETE, the competing writer completed, stale finalization scheduled a retry, and a fresh processor converged every target and object.",
                 RecordedAtUtc = DateTimeOffset.UtcNow
             };
             await EvidenceSourceIdentity.WriteJsonAsync(

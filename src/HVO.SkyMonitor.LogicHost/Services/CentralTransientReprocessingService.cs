@@ -96,6 +96,17 @@ internal sealed class CentralTransientReprocessingService(
         var canonicalBytes = Encoding.UTF8.GetBytes(canonicalRequest);
         var canonicalSha = ProcessingIdentity.ComputePayloadSha256(canonicalBytes);
 
+        var preflightArtifactIds = await dbContext.CentralTransientObservationSources.AsNoTracking()
+            .Where(item => item.Observation!.CentralTransientEventId == centralTransientEventId)
+            .Select(item => item.CentralArtifactId)
+            .Concat(dbContext.CentralTransientObservationBackgrounds.AsNoTracking()
+                .Where(item => item.Observation!.CentralTransientEventId == centralTransientEventId)
+                .Select(item => item.CentralArtifactId))
+            .Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var holdTargets = await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
+            dbContext, preflightArtifactIds, cancellationToken).ConfigureAwait(false);
+        await using var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         var acquired = await dbContext.Database.SqlQuery<int>(
@@ -171,6 +182,22 @@ internal sealed class CentralTransientReprocessingService(
                 item.ReconstructionState != CentralReconstructionState.Complete))
         {
             return new(CentralTransientReprocessingStatus.Invalid);
+        }
+        var selectedArtifactIds = artifacts.Select(item => item.Id).ToHashSet();
+        var selectedHoldTargets = holdScope.Targets.Where(target => selectedArtifactIds.Contains(target.RecordId))
+            .ToArray();
+        if (selectedHoldTargets.Length != selectedArtifactIds.Count)
+        {
+            return new(CentralTransientReprocessingStatus.Invalid);
+        }
+        try
+        {
+            await CentralTransientPayloadHoldFence.ValidateAsync(
+                dbContext, selectedHoldTargets, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CentralTransientPayloadHoldRejectedException)
+        {
+            return new(CentralTransientReprocessingStatus.Ineligible);
         }
         canonicalRequest = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(new
         {
@@ -523,6 +550,7 @@ internal sealed class CentralTransientReprocessingExecutor(
         mutable.ResultEventVersionId = appended.Event.EventVersionId;
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.DisposeAsync().ConfigureAwait(false);
         await derivativeScheduler.EnsureScheduledAsync([appended.Event.EventVersionId], cancellationToken)
             .ConfigureAwait(false);
         return await CompleteAsync(lease, "transient-reprocessing.persisted", cancellationToken).ConfigureAwait(false);

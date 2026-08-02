@@ -25,6 +25,21 @@ internal sealed class CentralObjectApplicationLock : IAsyncDisposable
         ApplicationDbContext dbContext,
         string canonicalStorageReference,
         CancellationToken cancellationToken)
+        => await AcquireCoreAsync(
+            dbContext, canonicalStorageReference, AcquisitionTimeout, cancellationToken).ConfigureAwait(false)
+           ?? throw new InvalidOperationException("The central object application lock was not acquired.");
+
+    public static Task<CentralObjectApplicationLock?> TryAcquireAsync(
+        ApplicationDbContext dbContext,
+        string canonicalStorageReference,
+        CancellationToken cancellationToken)
+        => AcquireCoreAsync(dbContext, canonicalStorageReference, TimeSpan.Zero, cancellationToken);
+
+    private static async Task<CentralObjectApplicationLock?> AcquireCoreAsync(
+        ApplicationDbContext dbContext,
+        string canonicalStorageReference,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(dbContext);
         ArgumentException.ThrowIfNullOrWhiteSpace(canonicalStorageReference);
@@ -39,20 +54,24 @@ internal sealed class CentralObjectApplicationLock : IAsyncDisposable
             await using var command = new SqlCommand("sys.sp_getapplock", connection)
             {
                 CommandType = CommandType.StoredProcedure,
-                CommandTimeout = checked((int)Math.Ceiling(AcquisitionTimeout.TotalSeconds) + 5)
+                CommandTimeout = checked((int)Math.Ceiling(timeout.TotalSeconds) + 5)
             };
             _ = command.Parameters.AddWithValue("@Resource", resource);
             _ = command.Parameters.AddWithValue("@LockMode", "Exclusive");
             _ = command.Parameters.AddWithValue("@LockOwner", "Session");
-            _ = command.Parameters.AddWithValue("@LockTimeout", (int)AcquisitionTimeout.TotalMilliseconds);
+            _ = command.Parameters.AddWithValue("@LockTimeout", (int)timeout.TotalMilliseconds);
             var result = command.Parameters.Add("@RETURN_VALUE", SqlDbType.Int);
             result.Direction = ParameterDirection.ReturnValue;
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             var lockResult = result.Value is int status ? status : int.MinValue;
             if (lockResult < 0)
             {
+                if (timeout == TimeSpan.Zero && lockResult == -1)
+                {
+                    return null;
+                }
                 throw new InvalidOperationException(
-                    $"The central object application lock failed with status {lockResult} within the {AcquisitionTimeout.TotalMilliseconds:0} ms timeout.");
+                    $"The central object application lock failed with status {lockResult} within the {timeout.TotalMilliseconds:0} ms timeout.");
             }
             var resultLock = new CentralObjectApplicationLock(connection, resource);
             connection = null;
