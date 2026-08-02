@@ -59,6 +59,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private const int W3MSentinelByteLength = 16;
     private const string W3MSentinelGenerator = "byte((17 * index + 3) modulo 256), index=0..15";
     private const string W3MSentinelSha256 = "A23D99F2CC2B11F42045500D5073B1128068FFF05D23D61A8E90152099E1E647";
+    private const int W3MSetupBatchParents = 250;
+    private const int W3MCommandTimeoutSeconds = 120;
+    private const int W3MPhaseTimeoutMinutes = 15;
     private const string TwoOutputFixtureName = "issue-250-two-output-release-fixture-v1";
     private const string CompatibilityProtocolSchema = "issue-250-release-compatibility-v1";
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
@@ -69,6 +72,80 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private static readonly string[] MinioBackedDerivativeKinds = ["Preview", "Overlay"];
     private static readonly string[] FixtureHolds = ["source ordinal 0", "Overlay ordinal 6"];
     private static readonly string[] ProcessResourceCounters = ["Process.TotalProcessorTime", "GC.GetTotalAllocatedBytes(true)", "Process.WorkingSet64"];
+    private static readonly Issue250RequiredTrigger[] RequiredW3MTriggers =
+    [
+        new("TR_CentralFrames_InstallationImmutable", "CentralFrames",
+            ["AFTER UPDATE", "LogicalCameraInstallationId", "THROW 51000", "immutable"]),
+        new("TR_CentralTransientEvents_Immutable", "CentralTransientEvents",
+            ["AFTER UPDATE", "DELETE", "THROW 51000", "immutable"]),
+        new("TR_CentralTransientPayloadReleases_Insert", "CentralTransientPayloadReleases",
+            ["AFTER INSERT", "inserted", "State", "Pending", "THROW 51000"]),
+        new("TR_CentralTransientPayloadReleases_Transition", "CentralTransientPayloadReleases",
+            ["AFTER UPDATE", "DELETE", "inserted", "deleted", "Pending", "Completed", "Failed", "CompletedUtc", "CentralTransientPayloadReleaseItems", "Outcome"]),
+        new("TR_CentralTransientPayloadReleaseItems_Closed", "CentralTransientPayloadReleaseItems",
+            ["AFTER INSERT", "inserted", "CentralTransientPayloadReleases", "State", "Outcome", "Pending", "THROW 51000"]),
+        new("TR_CentralTransientPayloadReleaseItems_Transition", "CentralTransientPayloadReleaseItems",
+            ["AFTER UPDATE", "DELETE", "inserted", "deleted", "Pending", "Released", "PreservedHeld", "ReleasedUtc", "Kind", "RecordId"])
+    ];
+    private static readonly Issue250RequiredSchemaRelation[] RequiredW3MForeignKeys =
+    [
+        new("FK_CentralArtifacts_CentralFrames_CentralFrameId", "CentralArtifacts", ["CentralFrameId"],
+            "CentralFrames", ["Id"], "CASCADE", "NO_ACTION", Enabled: true, Trusted: true),
+        new("FK_CentralTransientPayloadReleases_CentralTransientEvents_CentralTransientEventId",
+            "CentralTransientPayloadReleases", ["CentralTransientEventId"], "CentralTransientEvents", ["Id"],
+            "NO_ACTION", "NO_ACTION", Enabled: true, Trusted: true),
+        new("FK_CentralTransientPayloadReleaseItems_CentralTransientPayloadReleases_ReleaseId",
+            "CentralTransientPayloadReleaseItems", ["ReleaseId"], "CentralTransientPayloadReleases", ["ReleaseId"],
+            "NO_ACTION", "NO_ACTION", Enabled: true, Trusted: true)
+    ];
+    private static readonly Issue250RequiredCheckConstraint[] RequiredW3MCheckConstraints =
+    [
+        new("CK_CentralArtifacts_ObjectVerification", "CentralArtifacts",
+            ["ObjectVerificationToken", "ObjectVerificationRequestedAtUtc", "ObjectVerificationRetryCount", "ObjectVerificationRetryAtUtc", "ObjectState", "Pending"]),
+        new("CK_CentralArtifacts_RetentionDeletion", "CentralArtifacts",
+            ["RetentionDeletionToken", "RetentionDeletionRequestedAtUtc", "RetentionDeletionCompletedAtUtc", "ObjectState", "Expired"]),
+        new("CK_CentralTransientPayloadReleases_Completion", "CentralTransientPayloadReleases",
+            ["State", "Pending", "Completed", "Failed", "CompletedUtc"]),
+        new("CK_CentralTransientPayloadReleaseItems_Ordinal", "CentralTransientPayloadReleaseItems",
+            ["Ordinal", ">="]),
+        new("CK_CentralTransientPayloadReleaseItems_Outcome", "CentralTransientPayloadReleaseItems",
+            ["Outcome", "Pending", "Released", "PreservedHeld", "ReleasedUtc"])
+    ];
+    private static readonly Issue250RequiredUniqueIndex[] RequiredW3MUniqueIndexes =
+    [
+        new("PK_CentralFrames", "CentralFrames", "PrimaryKey", [new("Id", Descending: false)], [], null,
+            Unique: true, Enabled: true),
+        new("IX_CentralFrames_DevicePublicId_FrameId", "CentralFrames", "UniqueIndex",
+            [new("DevicePublicId", Descending: false), new("FrameId", Descending: false)], [], null,
+            Unique: true, Enabled: true),
+        new("PK_CentralArtifacts", "CentralArtifacts", "PrimaryKey", [new("Id", Descending: false)], [], null,
+            Unique: true, Enabled: true),
+        new("IX_CentralArtifacts_IdempotencyKey", "CentralArtifacts", "UniqueIndex",
+            [new("IdempotencyKey", Descending: false)], [], null, Unique: true, Enabled: true),
+        new("IX_CentralArtifacts_DevicePublicId_ArtifactId", "CentralArtifacts", "UniqueIndex",
+            [new("DevicePublicId", Descending: false), new("ArtifactId", Descending: false)], [],
+            "[DevicePublicId] IS NOT NULL", Unique: true, Enabled: true),
+        new("IX_CentralArtifacts_CentralFrameId_ArtifactId", "CentralArtifacts", "UniqueIndex",
+            [new("CentralFrameId", Descending: false), new("ArtifactId", Descending: false)], [], null,
+            Unique: true, Enabled: true),
+        new("PK_CentralTransientEvents", "CentralTransientEvents", "PrimaryKey", [new("Id", Descending: false)],
+            [], null, Unique: true, Enabled: true),
+        new("AK_CentralTransientEvents_AgentId_EventId", "CentralTransientEvents", "UniqueConstraint",
+            [new("AgentId", Descending: false), new("EventId", Descending: false)], [], null,
+            Unique: true, Enabled: true),
+        new("PK_CentralTransientPayloadReleases", "CentralTransientPayloadReleases", "PrimaryKey",
+            [new("ReleaseId", Descending: false)], [], null, Unique: true, Enabled: true),
+        new("IX_CentralTransientPayloadReleases_CentralTransientEventId_ActorIdentity_IdempotencyKey",
+            "CentralTransientPayloadReleases", "UniqueIndex",
+            [new("CentralTransientEventId", Descending: false), new("ActorIdentity", Descending: false),
+                new("IdempotencyKey", Descending: false)], [], null, Unique: true, Enabled: true),
+        new("PK_CentralTransientPayloadReleaseItems", "CentralTransientPayloadReleaseItems", "PrimaryKey",
+            [new("ReleaseId", Descending: false), new("Ordinal", Descending: false)], [], null,
+            Unique: true, Enabled: true),
+        new("IX_CentralTransientPayloadReleaseItems_Kind_RecordId", "CentralTransientPayloadReleaseItems",
+            "UniqueIndex", [new("Kind", Descending: false), new("RecordId", Descending: false)], [], null,
+            Unique: true, Enabled: true)
+    ];
     private static readonly string[] CanonicalFaultManifest =
     [
         "before-reservation-commit",
@@ -320,6 +397,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 W3MCompletedParents = w3m.CompletedParents,
                 W3MItemsPerCompletedParent = 7,
                 W3MOldestPendingParents = 1,
+                W3MHistoryArtifacts = w3m.Topology.HistoryArtifacts,
+                W3MDistinctHistoryTargetRecordIds = w3m.Topology.DistinctTerminalItemTargetRecordIds,
+                W3MSharedHistoryFrames = w3m.Topology.HistoryFrames,
+                W3MTotalFramesIncludingSentinel = w3m.Topology.TotalFrames,
                 W3MSentinel = new
                 {
                     w3m.SentinelGenerator,
@@ -380,7 +461,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 Resources = "One continuous 10 ms process time series per scenario records cumulative Process.TotalProcessorTime, GC.GetTotalAllocatedBytes(true), and WorkingSet64. Exact start/end deltas, rate, RSS peak, and first/last sample uncertainty are reported; short scenarios always include explicit boundary samples.",
                 Sql = "Measured service DbContexts use EF command/transaction interceptors. Dedicated sp_getapplock/sp_releaseapplock commands bypass EF and are not inferred; exact transformed resource ownership is measured from attributed SQL sessions/transactions in 10 ms DMV samples without NOLOCK. DMV and W3M setup/plan commands are separately reported direct SQL.",
                 ObjectStore = "The service MinIO client is isolated behind a request/DELETE duration and entity-byte collector; seed and correctness GET/STAT traffic uses a separate client.",
-                W3M = "Set-based trigger/constraint-preserving setup, full 70,000 terminal items for claimable runs, UPDATE STATISTICS FULLSCAN, and actual STATISTICS XML/IO over the normalized production pending-parent query."
+                W3M = "Trigger/constraint-preserving setup uses one shared history frame and deterministic batches of at most 250 parents, reports setup timing separately, runs UPDATE STATISTICS FULLSCAN, drops session temp tables, and captures actual STATISTICS XML/IO over the normalized production pending-parent query."
             },
             SteadyState = steadyState,
             DelayedDelete = delayed,
@@ -415,7 +496,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                         && item.ContentionCorrectness.FinalPendingParents == 0
                         && item.ContentionCorrectness.FinalPendingItems == 0),
                 BaselineHeldNormalization = "The seven-object universe includes both held objects. At baseline they remain available and verified but intentionally have no release-item row; five candidate rows are Released.",
-                W3MProcessor = "One raw-client length/SHA256-verified oldest pending sentinel is selected, deleted, and completed by actual production ProcessNextAsync; 10,000 completed parents each retain seven terminal metadata items."
+                W3MProcessor = "One raw-client length/SHA256-verified oldest pending sentinel is selected, deleted, and completed by actual production ProcessNextAsync; 10,000 completed parents each retain seven terminal metadata items targeting 70,000 distinct expired artifacts on one valid shared history frame."
             },
             Interpretation = "Correctness and source identity are pass/fail. Timing, process resources, SQL reads/plans, and contention are container-environment observations for equivalent baseline/after comparison, not physical deployment claims.",
             RecordedAtUtc = DateTimeOffset.UtcNow
@@ -447,7 +528,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         await EvidenceSourceIdentity.WriteJsonAsync(w0Path, w0Envelope, JsonOptions).ConfigureAwait(false);
         var planEnvelope = new
         {
-            Schema = "hvo-issue-250-w3m-normalized-plan-evidence-v2",
+            Schema = "hvo-issue-250-w3m-normalized-plan-evidence-v4",
             Issue = 250,
             Phase = phase,
             SourceHead = source.Head,
@@ -1904,7 +1985,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     {
         await using var database = CreateDatabase(fixture, "W3M");
         var objectKey = $"issue-250/w3m/{Guid.NewGuid():N}.bin";
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(W3MPhaseTimeoutMinutes));
         var cancellationToken = timeout.Token;
         privateValues.Add(objectKey);
         try
@@ -1949,7 +2030,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             };
             frame.Artifacts.Add(artifact);
             database.Context.CentralFrames.Add(frame);
-            await database.Context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            var sentinelDurableStarted = Stopwatch.GetTimestamp();
+            var sentinelDurableRows = await database.Context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            var sentinelDurableDurationMilliseconds = Stopwatch.GetElapsedTime(sentinelDurableStarted).TotalMilliseconds;
+            Assert.AreEqual(2, sentinelDurableRows);
             // Cleanup ownership is registered before the first object-store write.
             await using (var stream = new MemoryStream(payload, writable: false))
             {
@@ -1965,130 +2049,90 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 cancellationToken).ConfigureAwait(false);
             await using var connection = new SqlConnection(database.ConnectionString);
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using (var setup = connection.CreateCommand())
+            var sqlSetupStarted = Stopwatch.GetTimestamp();
+            var historyFrameId = Guid.NewGuid();
+            var historyDevicePublicId = Guid.NewGuid();
+            var tempTables = await CreateW3MTempTablesAsync(
+                connection, completedParents, cancellationToken).ConfigureAwait(false);
+            var foundation = await InsertW3MFoundationAsync(
+                connection,
+                pendingEventId,
+                pendingReleaseId,
+                artifact.Id,
+                historyFrameId,
+                historyDevicePublicId,
+                cancellationToken).ConfigureAwait(false);
+            var batches = new List<Issue250W3MSetupBatchEvidence>();
+            for (var firstSequence = 1; firstSequence <= completedParents; firstSequence += W3MSetupBatchParents)
             {
-                setup.CommandTimeout = 600;
-                setup.CommandText = """
-                    SET XACT_ABORT ON;
-                    BEGIN TRANSACTION;
-                    INSERT INTO [CentralTransientEvents] ([Id], [AgentId], [EventId], [EventCreatedUtc])
-                    VALUES (@pending_event_id, N'issue-250-w3m-pending', NEWID(), '2025-01-01T00:00:00+00:00');
-                    INSERT INTO [CentralTransientPayloadReleases]
-                        ([ReleaseId], [CentralTransientEventId], [ActorIdentity], [IdempotencyKey],
-                         [CanonicalRequestSha256], [State], [CreatedUtc], [CompletedUtc], [ReasonCode])
-                    VALUES
-                        (@pending_release_id, @pending_event_id, N'issue-250-w3m-pending', N'pending',
-                         CONVERT(varchar(64), HASHBYTES('SHA2_256', CONVERT(varchar(max),
-                            'central-transient-payload-release-v1' + CHAR(10) +
-                            LOWER(REPLACE(CONVERT(char(36), @pending_event_id), '-', '')))), 2),
-                         N'Pending', '2025-01-01T00:00:00+00:00', NULL, NULL);
-
-                    INSERT INTO [CentralTransientPayloadReleaseItems]
-                        ([ReleaseId], [Ordinal], [Kind], [RecordId], [Outcome], [ReleasedUtc])
-                    VALUES (@pending_release_id, 0, N'SourceArtifact', @artifact_id, N'Pending', NULL);
-
-                    CREATE TABLE #parents
-                    (
-                        [ReleaseId] uniqueidentifier NOT NULL PRIMARY KEY,
-                        [CentralTransientEventId] uniqueidentifier NOT NULL UNIQUE,
-                        [EventId] uniqueidentifier NOT NULL UNIQUE,
-                        [Sequence] int NOT NULL
-                    );
-                    ;WITH numbers AS
-                    (
-                        SELECT TOP (@completed_parents)
-                            ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS [Sequence]
-                        FROM [sys].[all_objects] AS a
-                        CROSS JOIN [sys].[all_objects] AS b
-                    )
-                    INSERT INTO #parents ([ReleaseId], [CentralTransientEventId], [EventId], [Sequence])
-                    SELECT NEWID(), NEWID(), NEWID(), [Sequence] FROM numbers;
-
-                    INSERT INTO [CentralTransientEvents] ([Id], [AgentId], [EventId], [EventCreatedUtc])
-                    SELECT [CentralTransientEventId], CONCAT(N'issue-250-w3m-', [Sequence]), [EventId],
-                           DATEADD(millisecond, [Sequence], CAST('2025-01-02T00:00:00+00:00' AS datetimeoffset))
-                    FROM #parents;
-
-                    INSERT INTO [CentralTransientPayloadReleases]
-                        ([ReleaseId], [CentralTransientEventId], [ActorIdentity], [IdempotencyKey],
-                         [CanonicalRequestSha256], [State], [CreatedUtc], [CompletedUtc], [ReasonCode])
-                    SELECT [ReleaseId], [CentralTransientEventId], CONCAT(N'issue-250-w3m-', [Sequence]),
-                           CONCAT(N'completed-', [Sequence]),
-                           CONVERT(varchar(64), HASHBYTES('SHA2_256', CONVERT(varchar(max),
-                               'central-transient-payload-release-v1' + CHAR(10) +
-                               LOWER(REPLACE(CONVERT(char(36), [CentralTransientEventId]), '-', '')))), 2),
-                           N'Pending',
-                           DATEADD(millisecond, [Sequence], CAST('2025-01-02T00:00:00+00:00' AS datetimeoffset)),
-                           NULL, NULL
-                    FROM #parents;
-
-                    CREATE TABLE #targets
-                    (
-                        [ReleaseId] uniqueidentifier NOT NULL,
-                        [Ordinal] int NOT NULL,
-                        [TargetSequence] bigint NOT NULL,
-                        [FrameRecordId] uniqueidentifier NOT NULL,
-                        [RecordId] uniqueidentifier NOT NULL,
-                        [ArtifactId] uniqueidentifier NOT NULL,
-                        [DevicePublicId] uniqueidentifier NOT NULL,
-                        PRIMARY KEY ([ReleaseId], [Ordinal]),
-                        UNIQUE ([RecordId])
-                    );
-                    INSERT INTO #targets
-                        ([ReleaseId], [Ordinal], [TargetSequence], [FrameRecordId], [RecordId], [ArtifactId], [DevicePublicId])
-                    SELECT parent.[ReleaseId], ordinal.[value],
-                           ROW_NUMBER() OVER (ORDER BY parent.[Sequence], ordinal.[value]),
-                           NEWID(), NEWID(), NEWID(), NEWID()
-                    FROM #parents AS parent
-                    CROSS JOIN (VALUES (0), (1), (2), (3), (4), (5), (6)) AS ordinal([value]);
-
-                    INSERT INTO [CentralFrames]
-                        ([Id], [RegistrationId], [DevicePublicId], [ObservatoryId], [AgentId], [FrameId],
-                         [CapturedAtUtc], [FirstReceivedAtUtc], [LocationEvidenceState])
-                    SELECT [FrameRecordId], NEWID(), [DevicePublicId], NEWID(), N'issue-250-w3m-history', NEWID(),
-                           '2025-01-02T00:00:00+00:00', '2025-01-02T00:00:00+00:00', N'LegacyIncomplete'
-                    FROM #targets;
-
-                    INSERT INTO [CentralArtifacts]
-                        ([Id], [CentralFrameId], [ArtifactId], [DevicePublicId], [Role], [RecipeVersion],
-                         [ManifestSchemaVersion], [MediaType], [ByteLength], [ChecksumSha256], [StorageReference],
-                         [ReceivedAtUtc], [IdempotencyKey], [Variant], [CreatedUtc], [ObjectState],
-                         [ReconstructionState], [StateReasonCode], [ReconciledAtUtc], [ObjectVerifiedAtUtc],
-                         [ObjectVerificationRetryCount], [RecoveryGeneration], [ReferenceRetryCount])
-                    SELECT [RecordId], [FrameRecordId], [ArtifactId], [DevicePublicId], N'Raw', N'issue-250-w3m-history-v1',
-                           N'evidence-v1', N'application/octet-stream', 1, REPLICATE('C', 64),
-                           CONCAT(N'minio://skymonitor-artifacts/issue-250/w3m-metadata/', [TargetSequence]),
-                           '2025-01-02T00:00:00+00:00',
-                           RIGHT(REPLICATE('0', 64) + CONVERT(varchar(20), [TargetSequence]), 64),
-                           CONCAT(N'ordinal-', [Ordinal]), '2025-01-02T00:00:00+00:00', N'Expired',
-                           N'Complete', N'transient-retention.evidence-released',
-                           '2025-01-03T00:00:00+00:00', '2025-01-02T00:00:00+00:00', 0, 0, 0
-                    FROM #targets;
-
-                    INSERT INTO [CentralTransientPayloadReleaseItems]
-                        ([ReleaseId], [Ordinal], [Kind], [RecordId], [Outcome], [ReleasedUtc])
-                    SELECT [ReleaseId], [Ordinal], N'SourceArtifact', [RecordId], N'Pending', NULL
-                    FROM #targets;
-
-                    UPDATE item
-                    SET [Outcome] = N'Released', [ReleasedUtc] = '2025-01-03T00:00:00+00:00'
-                    FROM [CentralTransientPayloadReleaseItems] AS item
-                    INNER JOIN #parents AS parent ON parent.[ReleaseId] = item.[ReleaseId];
-
-                    UPDATE release
-                    SET [State] = N'Completed', [CompletedUtc] = '2025-01-03T00:00:00+00:00'
-                    FROM [CentralTransientPayloadReleases] AS release
-                    INNER JOIN #parents AS parent ON parent.[ReleaseId] = release.[ReleaseId];
-                    COMMIT TRANSACTION;
-                    UPDATE STATISTICS [CentralTransientPayloadReleases]
-                        [IX_CentralTransientPayloadReleases_State_CreatedUtc_ReleaseId] WITH FULLSCAN;
-                    """;
-                setup.Parameters.AddWithValue("@pending_event_id", pendingEventId);
-                setup.Parameters.AddWithValue("@pending_release_id", pendingReleaseId);
-                setup.Parameters.AddWithValue("@artifact_id", artifact.Id);
-                setup.Parameters.AddWithValue("@completed_parents", completedParents);
-                await setup.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                var lastSequence = Math.Min(firstSequence + W3MSetupBatchParents - 1, completedParents);
+                batches.Add(await ExecuteW3MSetupBatchAsync(
+                    connection,
+                    historyFrameId,
+                    historyDevicePublicId,
+                    firstSequence,
+                    lastSequence,
+                    cancellationToken).ConfigureAwait(false));
             }
+            var statisticsDurationMilliseconds = await UpdateW3MStatisticsAsync(
+                connection, cancellationToken).ConfigureAwait(false);
+            var schemaIntegrity = await ReadW3MSchemaIntegrityAsync(
+                connection, cancellationToken).ConfigureAwait(false);
+            var tempTableDropDurationMilliseconds = await DropW3MTempTablesAsync(
+                connection, cancellationToken).ConfigureAwait(false);
+            var sqlSetupDurationMilliseconds = Stopwatch.GetElapsedTime(sqlSetupStarted).TotalMilliseconds;
+
+            var expectedTargets = checked((long)completedParents * 7);
+            Assert.AreEqual(completedParents, tempTables.ParentRows);
+            Assert.AreEqual(expectedTargets, tempTables.TargetRows);
+            Assert.AreEqual(1, foundation.HistoryFrames);
+            Assert.AreEqual(1, foundation.SentinelEvents);
+            Assert.AreEqual(1, foundation.SentinelReleases);
+            Assert.AreEqual(1, foundation.SentinelItems);
+            var expectedSetupRows = new Issue250W3MSetupRowCounts(
+                Events: completedParents + 1L,
+                Releases: completedParents + 1L,
+                Artifacts: expectedTargets + 1,
+                Items: expectedTargets + 1,
+                ItemTransitions: expectedTargets,
+                ReleaseTransitions: completedParents);
+            var actualSetupRows = new Issue250W3MSetupRowCounts(
+                Events: batches.Sum(item => (long)item.EventRows) + foundation.SentinelEvents,
+                Releases: batches.Sum(item => (long)item.ReleaseRows) + foundation.SentinelReleases,
+                Artifacts: batches.Sum(item => item.ArtifactRows) + 1,
+                Items: batches.Sum(item => item.ItemRows) + foundation.SentinelItems,
+                ItemTransitions: batches.Sum(item => item.ItemTransitionRows),
+                ReleaseTransitions: batches.Sum(item => (long)item.ReleaseTransitionRows));
+            Assert.AreEqual(expectedSetupRows, actualSetupRows);
+            var setupEvidence = new Issue250W3MSetupEvidence(
+                W3MSetupBatchParents,
+                batches.Count,
+                tempTables.ParentRows,
+                tempTables.TargetRows,
+                tempTables.DurationMilliseconds,
+                foundation.DurationMilliseconds,
+                expectedSetupRows,
+                actualSetupRows,
+                sentinelDurableRows,
+                sentinelDurableDurationMilliseconds,
+                sqlSetupDurationMilliseconds,
+                sentinelDurableDurationMilliseconds + sqlSetupDurationMilliseconds,
+                batches.Sum(item => item.TotalDurationMilliseconds),
+                batches.Max(item => item.TotalDurationMilliseconds),
+                batches.Max(item => Math.Max(item.PhaseADurationMilliseconds,
+                    Math.Max(item.PhaseBDurationMilliseconds, item.PhaseCDurationMilliseconds))),
+                Math.Max(
+                    Math.Max(tempTables.DurationMilliseconds, foundation.DurationMilliseconds),
+                    Math.Max(statisticsDurationMilliseconds, tempTableDropDurationMilliseconds)),
+                statisticsDurationMilliseconds,
+                tempTableDropDurationMilliseconds,
+                W3MCommandTimeoutSeconds,
+                W3MPhaseTimeoutMinutes * 60,
+                SharedHistoryFrameCount: 1,
+                TotalW3MFrameCount: 2,
+                SetupExcludedFromMeasuredClaims: true,
+                schemaIntegrity,
+                batches);
 
             var counts = await ReadW3MCountsAsync(connection, cancellationToken).ConfigureAwait(false);
             Assert.AreEqual(completedParents, counts.CompletedParents);
@@ -2100,9 +2144,25 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 Sha(string.Join('\n', "central-transient-payload-release-v1", pendingEventId.ToString("N"))),
                 await ReadW3MCanonicalRequestShaAsync(connection, pendingReleaseId, cancellationToken)
                     .ConfigureAwait(false));
-            Assert.AreEqual((long)completedParents * 7,
+            Assert.AreEqual(expectedTargets,
                 await ReadW3MValidTerminalTargetsAsync(connection, cancellationToken).ConfigureAwait(false));
             Assert.AreEqual(0L, await ReadW3MInvalidCanonicalRequestHashesAsync(connection, cancellationToken).ConfigureAwait(false));
+            var topology = await ReadW3MTopologyAsync(
+                connection,
+                frame.Id,
+                historyFrameId,
+                historyDevicePublicId,
+                cancellationToken).ConfigureAwait(false);
+            Assert.AreEqual(2L, topology.TotalFrames);
+            Assert.AreEqual(1L, topology.HistoryFrames);
+            Assert.AreEqual(1L, topology.SentinelFrames);
+            Assert.AreEqual(expectedTargets, topology.HistoryArtifacts);
+            Assert.AreEqual(expectedTargets, topology.DistinctHistoryArtifactRecordIds);
+            Assert.AreEqual(expectedTargets, topology.DistinctHistoryArtifactIds);
+            Assert.AreEqual(expectedTargets, topology.DistinctHistoryIdempotencyKeys);
+            Assert.AreEqual(expectedTargets, topology.DistinctHistoryStorageReferences);
+            Assert.AreEqual(expectedTargets, topology.HistoryArtifactsWithMatchingDevicePublicId);
+            Assert.AreEqual(expectedTargets, topology.DistinctTerminalItemTargetRecordIds);
             var capture = new Issue250ProcessNextQueryCaptureInterceptor();
             await using (var captureDb = CreateContext(
                              database.ConnectionString,
@@ -2143,6 +2203,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 counts.PendingItems,
                 counts.DistinctEvents,
                 (long)completedParents * 7,
+                setupEvidence,
+                topology,
                 W3MSentinelGenerator,
                 W3MSentinelByteLength,
                 W3MSentinelSha256,
@@ -2181,6 +2243,782 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         {
             await CleanupScenarioAsync(minio, [objectKey], database.Context).ConfigureAwait(false);
         }
+    }
+
+    private static async Task<Issue250W3MTempTableEvidence> CreateW3MTempTablesAsync(
+        SqlConnection connection,
+        int completedParents,
+        CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+        await using (var create = connection.CreateCommand())
+        {
+            create.CommandTimeout = W3MCommandTimeoutSeconds;
+            create.CommandText = """
+            CREATE TABLE #parents
+            (
+                [Sequence] int NOT NULL PRIMARY KEY CLUSTERED,
+                [ReleaseId] uniqueidentifier NOT NULL UNIQUE,
+                [CentralTransientEventId] uniqueidentifier NOT NULL UNIQUE,
+                [EventId] uniqueidentifier NOT NULL UNIQUE
+            );
+            CREATE TABLE #targets
+            (
+                [TargetSequence] bigint NOT NULL PRIMARY KEY CLUSTERED,
+                [ReleaseId] uniqueidentifier NOT NULL,
+                [Ordinal] int NOT NULL,
+                [RecordId] uniqueidentifier NOT NULL UNIQUE,
+                [ArtifactId] uniqueidentifier NOT NULL UNIQUE,
+                UNIQUE ([ReleaseId], [Ordinal])
+            );
+            """;
+            await create.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await using var populate = connection.CreateCommand();
+        populate.CommandTimeout = W3MCommandTimeoutSeconds;
+        populate.CommandText = """
+            SET NOCOUNT ON;
+            ;WITH sequences AS
+            (
+                SELECT 1 AS [Sequence]
+                UNION ALL
+                SELECT [Sequence] + 1 FROM sequences WHERE [Sequence] < @completed_parents
+            )
+            INSERT INTO #parents ([Sequence], [ReleaseId], [CentralTransientEventId], [EventId])
+            SELECT [Sequence], NEWID(), NEWID(), NEWID() FROM sequences
+            OPTION (MAXRECURSION 0);
+            DECLARE @parent_rows int = @@ROWCOUNT;
+
+            INSERT INTO #targets ([TargetSequence], [ReleaseId], [Ordinal], [RecordId], [ArtifactId])
+            SELECT (CAST(parent.[Sequence] - 1 AS bigint) * 7) + ordinal.[value] + 1,
+                   parent.[ReleaseId], ordinal.[value], NEWID(), NEWID()
+            FROM #parents AS parent
+            CROSS JOIN (VALUES (0), (1), (2), (3), (4), (5), (6)) AS ordinal([value]);
+            DECLARE @target_rows int = @@ROWCOUNT;
+            SELECT @parent_rows, @target_rows;
+            """;
+        populate.Parameters.AddWithValue("@completed_parents", completedParents);
+        await using var reader = await populate.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        return new(
+            reader.GetInt32(0),
+            reader.GetInt32(1),
+            Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+    }
+
+    private static async Task<Issue250W3MFoundationEvidence> InsertW3MFoundationAsync(
+        SqlConnection connection,
+        Guid pendingEventId,
+        Guid pendingReleaseId,
+        Guid sentinelArtifactId,
+        Guid historyFrameId,
+        Guid historyDevicePublicId,
+        CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = W3MCommandTimeoutSeconds;
+        command.CommandText = """
+            SET NOCOUNT ON;
+            INSERT INTO [CentralFrames]
+                ([Id], [RegistrationId], [DevicePublicId], [ObservatoryId], [AgentId], [FrameId],
+                 [CapturedAtUtc], [FirstReceivedAtUtc], [LocationEvidenceState])
+            VALUES
+                (@history_frame_id, NEWID(), @history_device_public_id, NEWID(), N'issue-250-w3m-history', NEWID(),
+                 '2025-01-02T00:00:00+00:00', '2025-01-02T00:00:00+00:00', N'LegacyIncomplete');
+            DECLARE @history_frames int = @@ROWCOUNT;
+
+            INSERT INTO [CentralTransientEvents] ([Id], [AgentId], [EventId], [EventCreatedUtc])
+            VALUES (@pending_event_id, N'issue-250-w3m-pending', NEWID(), '2025-01-01T00:00:00+00:00');
+            DECLARE @sentinel_events int = @@ROWCOUNT;
+
+            INSERT INTO [CentralTransientPayloadReleases]
+                ([ReleaseId], [CentralTransientEventId], [ActorIdentity], [IdempotencyKey],
+                 [CanonicalRequestSha256], [State], [CreatedUtc], [CompletedUtc], [ReasonCode])
+            VALUES
+                (@pending_release_id, @pending_event_id, N'issue-250-w3m-pending', N'pending',
+                 CONVERT(varchar(64), HASHBYTES('SHA2_256', CONVERT(varchar(max),
+                    'central-transient-payload-release-v1' + CHAR(10) +
+                    LOWER(REPLACE(CONVERT(char(36), @pending_event_id), '-', '')))), 2),
+                 N'Pending', '2025-01-01T00:00:00+00:00', NULL, NULL);
+            DECLARE @sentinel_releases int = @@ROWCOUNT;
+
+            INSERT INTO [CentralTransientPayloadReleaseItems]
+                ([ReleaseId], [Ordinal], [Kind], [RecordId], [Outcome], [ReleasedUtc])
+            VALUES (@pending_release_id, 0, N'SourceArtifact', @sentinel_artifact_id, N'Pending', NULL);
+            DECLARE @sentinel_items int = @@ROWCOUNT;
+            SELECT @history_frames, @sentinel_events, @sentinel_releases, @sentinel_items;
+            """;
+        command.Parameters.AddWithValue("@history_frame_id", historyFrameId);
+        command.Parameters.AddWithValue("@history_device_public_id", historyDevicePublicId);
+        command.Parameters.AddWithValue("@pending_event_id", pendingEventId);
+        command.Parameters.AddWithValue("@pending_release_id", pendingReleaseId);
+        command.Parameters.AddWithValue("@sentinel_artifact_id", sentinelArtifactId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        return new(
+            reader.GetInt32(0),
+            reader.GetInt32(1),
+            reader.GetInt32(2),
+            reader.GetInt32(3),
+            Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+    }
+
+    private static async Task<Issue250W3MSetupBatchEvidence> ExecuteW3MSetupBatchAsync(
+        SqlConnection connection,
+        Guid historyFrameId,
+        Guid historyDevicePublicId,
+        int firstSequence,
+        int lastSequence,
+        CancellationToken cancellationToken)
+    {
+        var batchStarted = Stopwatch.GetTimestamp();
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            var phaseA = await ExecuteW3MSetupPhaseAsync(
+                connection,
+                transaction,
+                """
+                SET NOCOUNT ON;
+                INSERT INTO [CentralTransientEvents] ([Id], [AgentId], [EventId], [EventCreatedUtc])
+                SELECT [CentralTransientEventId], CONCAT(N'issue-250-w3m-', [Sequence]), [EventId],
+                       DATEADD(millisecond, [Sequence], CAST('2025-01-02T00:00:00+00:00' AS datetimeoffset))
+                FROM #parents WHERE [Sequence] BETWEEN @first_sequence AND @last_sequence;
+                DECLARE @event_rows int = @@ROWCOUNT;
+
+                INSERT INTO [CentralTransientPayloadReleases]
+                    ([ReleaseId], [CentralTransientEventId], [ActorIdentity], [IdempotencyKey],
+                     [CanonicalRequestSha256], [State], [CreatedUtc], [CompletedUtc], [ReasonCode])
+                SELECT [ReleaseId], [CentralTransientEventId], CONCAT(N'issue-250-w3m-', [Sequence]),
+                       CONCAT(N'completed-', [Sequence]),
+                       CONVERT(varchar(64), HASHBYTES('SHA2_256', CONVERT(varchar(max),
+                           'central-transient-payload-release-v1' + CHAR(10) +
+                           LOWER(REPLACE(CONVERT(char(36), [CentralTransientEventId]), '-', '')))), 2),
+                       N'Pending',
+                       DATEADD(millisecond, [Sequence], CAST('2025-01-02T00:00:00+00:00' AS datetimeoffset)),
+                       NULL, NULL
+                FROM #parents WHERE [Sequence] BETWEEN @first_sequence AND @last_sequence;
+                DECLARE @release_rows int = @@ROWCOUNT;
+                SELECT @event_rows, @release_rows;
+                """,
+                firstSequence,
+                lastSequence,
+                historyFrameId: null,
+                historyDevicePublicId: null,
+                cancellationToken).ConfigureAwait(false);
+            var phaseB = await ExecuteW3MSetupPhaseAsync(
+                connection,
+                transaction,
+                """
+                SET NOCOUNT ON;
+                INSERT INTO [CentralArtifacts]
+                    ([Id], [CentralFrameId], [ArtifactId], [DevicePublicId], [Role], [RecipeVersion],
+                     [ManifestSchemaVersion], [MediaType], [ByteLength], [ChecksumSha256], [StorageReference],
+                     [ReceivedAtUtc], [IdempotencyKey], [Variant], [CreatedUtc], [ObjectState],
+                     [ReconstructionState], [StateReasonCode], [ReconciledAtUtc], [ObjectVerifiedAtUtc],
+                     [ObjectVerificationRetryCount], [RecoveryGeneration], [ReferenceRetryCount])
+                SELECT [RecordId], @history_frame_id, [ArtifactId], @history_device_public_id,
+                       N'Raw', N'issue-250-w3m-history-v1', N'evidence-v1', N'application/octet-stream',
+                       1, REPLICATE('C', 64),
+                       CONCAT(N'minio://skymonitor-artifacts/issue-250/w3m-metadata/', [TargetSequence]),
+                       '2025-01-02T00:00:00+00:00',
+                       RIGHT(REPLICATE('0', 64) + CONVERT(varchar(20), [TargetSequence]), 64),
+                       CONCAT(N'ordinal-', [Ordinal]), '2025-01-02T00:00:00+00:00', N'Expired',
+                       N'Complete', N'transient-retention.evidence-released',
+                       '2025-01-03T00:00:00+00:00', '2025-01-02T00:00:00+00:00', 0, 0, 0
+                FROM #targets
+                WHERE [TargetSequence] BETWEEN ((CAST(@first_sequence AS bigint) - 1) * 7) + 1
+                    AND CAST(@last_sequence AS bigint) * 7;
+                DECLARE @artifact_rows int = @@ROWCOUNT;
+
+                INSERT INTO [CentralTransientPayloadReleaseItems]
+                    ([ReleaseId], [Ordinal], [Kind], [RecordId], [Outcome], [ReleasedUtc])
+                SELECT [ReleaseId], [Ordinal], N'SourceArtifact', [RecordId], N'Pending', NULL
+                FROM #targets
+                WHERE [TargetSequence] BETWEEN ((CAST(@first_sequence AS bigint) - 1) * 7) + 1
+                    AND CAST(@last_sequence AS bigint) * 7;
+                DECLARE @item_rows int = @@ROWCOUNT;
+                SELECT @artifact_rows, @item_rows;
+                """,
+                firstSequence,
+                lastSequence,
+                historyFrameId,
+                historyDevicePublicId,
+                cancellationToken).ConfigureAwait(false);
+            var phaseC = await ExecuteW3MSetupPhaseAsync(
+                connection,
+                transaction,
+                """
+                SET NOCOUNT ON;
+                UPDATE item
+                SET [Outcome] = N'Released', [ReleasedUtc] = '2025-01-03T00:00:00+00:00'
+                FROM [CentralTransientPayloadReleaseItems] AS item
+                INNER JOIN #targets AS target
+                    ON target.[ReleaseId] = item.[ReleaseId] AND target.[Ordinal] = item.[Ordinal]
+                WHERE target.[TargetSequence] BETWEEN ((CAST(@first_sequence AS bigint) - 1) * 7) + 1
+                    AND CAST(@last_sequence AS bigint) * 7;
+                DECLARE @item_transition_rows int = @@ROWCOUNT;
+
+                UPDATE release
+                SET [State] = N'Completed', [CompletedUtc] = '2025-01-03T00:00:00+00:00'
+                FROM [CentralTransientPayloadReleases] AS release
+                INNER JOIN #parents AS parent ON parent.[ReleaseId] = release.[ReleaseId]
+                WHERE parent.[Sequence] BETWEEN @first_sequence AND @last_sequence;
+                DECLARE @release_transition_rows int = @@ROWCOUNT;
+                SELECT @item_transition_rows, @release_transition_rows;
+                """,
+                firstSequence,
+                lastSequence,
+                historyFrameId: null,
+                historyDevicePublicId: null,
+                cancellationToken).ConfigureAwait(false);
+            var expectedParents = lastSequence - firstSequence + 1;
+            var expectedItems = checked(expectedParents * 7);
+            Assert.AreEqual(expectedParents, phaseA.FirstRows);
+            Assert.AreEqual(expectedParents, phaseA.SecondRows);
+            Assert.AreEqual(expectedItems, phaseB.FirstRows);
+            Assert.AreEqual(expectedItems, phaseB.SecondRows);
+            Assert.AreEqual(expectedItems, phaseC.FirstRows);
+            Assert.AreEqual(expectedParents, phaseC.SecondRows);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new(
+                Batch: ((firstSequence - 1) / W3MSetupBatchParents) + 1,
+                FirstSequence: firstSequence,
+                LastSequence: lastSequence,
+                ParentRows: phaseA.FirstRows,
+                EventRows: phaseA.FirstRows,
+                ReleaseRows: phaseA.SecondRows,
+                ArtifactRows: phaseB.FirstRows,
+                ItemRows: phaseB.SecondRows,
+                ItemTransitionRows: phaseC.FirstRows,
+                ReleaseTransitionRows: phaseC.SecondRows,
+                PhaseADurationMilliseconds: phaseA.DurationMilliseconds,
+                PhaseBDurationMilliseconds: phaseB.DurationMilliseconds,
+                PhaseCDurationMilliseconds: phaseC.DurationMilliseconds,
+                TotalDurationMilliseconds: Stopwatch.GetElapsedTime(batchStarted).TotalMilliseconds);
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                using var rollbackTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await transaction.RollbackAsync(rollbackTimeout.Token).ConfigureAwait(false);
+            }
+            catch (Exception rollbackException)
+            {
+                throw new AggregateException("W3M setup phase failed and its transaction rollback also failed.",
+                    exception, rollbackException);
+            }
+            throw;
+        }
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "Only fixed internal W3M setup command literals are supplied by this evidence harness.")]
+    private static async Task<Issue250W3MSetupPhaseResult> ExecuteW3MSetupPhaseAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        string commandText,
+        int firstSequence,
+        int lastSequence,
+        Guid? historyFrameId,
+        Guid? historyDevicePublicId,
+        CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandTimeout = W3MCommandTimeoutSeconds;
+        command.CommandText = commandText;
+        command.Parameters.AddWithValue("@first_sequence", firstSequence);
+        command.Parameters.AddWithValue("@last_sequence", lastSequence);
+        if (historyFrameId.HasValue)
+        {
+            command.Parameters.AddWithValue("@history_frame_id", historyFrameId.Value);
+            command.Parameters.AddWithValue("@history_device_public_id", historyDevicePublicId!.Value);
+        }
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        return new(
+            reader.GetInt32(0),
+            reader.GetInt32(1),
+            Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+    }
+
+    private static async Task<double> UpdateW3MStatisticsAsync(
+        SqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = W3MCommandTimeoutSeconds;
+        command.CommandText = """
+            UPDATE STATISTICS [CentralTransientPayloadReleases]
+                [IX_CentralTransientPayloadReleases_State_CreatedUtc_ReleaseId] WITH FULLSCAN;
+            """;
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        return Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+    }
+
+    private static async Task<double> DropW3MTempTablesAsync(
+        SqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = W3MCommandTimeoutSeconds;
+        command.CommandText = "DROP TABLE #targets; DROP TABLE #parents;";
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        return Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+    }
+
+    private static async Task<Issue250W3MSchemaIntegrityEvidence> ReadW3MSchemaIntegrityAsync(
+        SqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = W3MCommandTimeoutSeconds;
+        command.CommandText = """
+            DECLARE @tables TABLE ([object_id] int NOT NULL PRIMARY KEY);
+            INSERT INTO @tables ([object_id]) VALUES
+                (OBJECT_ID(N'CentralFrames')),
+                (OBJECT_ID(N'CentralArtifacts')),
+                (OBJECT_ID(N'CentralTransientEvents')),
+                (OBJECT_ID(N'CentralTransientPayloadReleases')),
+                (OBJECT_ID(N'CentralTransientPayloadReleaseItems'));
+            SELECT trigger_value.[name], OBJECT_NAME(trigger_value.[parent_id]), trigger_value.[is_disabled],
+                   OBJECT_DEFINITION(trigger_value.[object_id])
+            FROM [sys].[triggers] AS trigger_value
+            WHERE trigger_value.[parent_id] IN (SELECT [object_id] FROM @tables)
+            ORDER BY trigger_value.[name];
+            SELECT foreign_key.[name], OBJECT_NAME(foreign_key.[parent_object_id]),
+                   OBJECT_NAME(foreign_key.[referenced_object_id]), foreign_key.[is_disabled],
+                   foreign_key.[is_not_trusted], foreign_key.[delete_referential_action_desc],
+                   foreign_key.[update_referential_action_desc]
+            FROM [sys].[foreign_keys] AS foreign_key
+            WHERE foreign_key.[parent_object_id] IN (SELECT [object_id] FROM @tables)
+            ORDER BY foreign_key.[name];
+            SELECT foreign_key.[name], foreign_key_column.[constraint_column_id],
+                   parent_column.[name], referenced_column.[name]
+            FROM [sys].[foreign_keys] AS foreign_key
+            INNER JOIN [sys].[foreign_key_columns] AS foreign_key_column
+                ON foreign_key_column.[constraint_object_id] = foreign_key.[object_id]
+            INNER JOIN [sys].[columns] AS parent_column
+                ON parent_column.[object_id] = foreign_key.[parent_object_id]
+               AND parent_column.[column_id] = foreign_key_column.[parent_column_id]
+            INNER JOIN [sys].[columns] AS referenced_column
+                ON referenced_column.[object_id] = foreign_key.[referenced_object_id]
+               AND referenced_column.[column_id] = foreign_key_column.[referenced_column_id]
+            WHERE foreign_key.[parent_object_id] IN (SELECT [object_id] FROM @tables)
+            ORDER BY foreign_key.[name], foreign_key_column.[constraint_column_id];
+            SELECT check_value.[name], OBJECT_NAME(check_value.[parent_object_id]),
+                   check_value.[is_disabled], check_value.[is_not_trusted], check_value.[definition]
+            FROM [sys].[check_constraints] AS check_value
+            WHERE check_value.[parent_object_id] IN (SELECT [object_id] FROM @tables)
+            ORDER BY check_value.[name];
+            SELECT index_value.[name], OBJECT_NAME(index_value.[object_id]), index_value.[is_unique],
+                   index_value.[is_disabled], index_value.[is_primary_key], index_value.[is_unique_constraint],
+                   index_value.[has_filter], index_value.[filter_definition]
+            FROM [sys].[indexes] AS index_value
+            WHERE index_value.[object_id] IN (SELECT [object_id] FROM @tables)
+              AND index_value.[name] IS NOT NULL
+            ORDER BY index_value.[name];
+            SELECT index_value.[name], index_column.[key_ordinal], index_column.[index_column_id],
+                   index_column.[is_descending_key], index_column.[is_included_column], column_value.[name]
+            FROM [sys].[indexes] AS index_value
+            INNER JOIN [sys].[index_columns] AS index_column
+                ON index_column.[object_id] = index_value.[object_id]
+               AND index_column.[index_id] = index_value.[index_id]
+            INNER JOIN [sys].[columns] AS column_value
+                ON column_value.[object_id] = index_column.[object_id]
+               AND column_value.[column_id] = index_column.[column_id]
+            WHERE index_value.[object_id] IN (SELECT [object_id] FROM @tables)
+              AND index_value.[name] IS NOT NULL
+            ORDER BY index_value.[name], index_column.[is_included_column],
+                     index_column.[key_ordinal], index_column.[index_column_id];
+            """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var triggerRows = new List<Issue250ObservedTrigger>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            triggerRows.Add(new(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetBoolean(2),
+                await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(3)));
+        }
+        Assert.IsTrue(await reader.NextResultAsync(cancellationToken).ConfigureAwait(false));
+        var foreignKeyRows = new List<Issue250ObservedForeignKey>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            foreignKeyRows.Add(new(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetBoolean(3),
+                reader.GetBoolean(4),
+                reader.GetString(5),
+                reader.GetString(6)));
+        }
+        Assert.IsTrue(await reader.NextResultAsync(cancellationToken).ConfigureAwait(false));
+        var foreignKeyColumnRows = new List<Issue250ObservedForeignKeyColumn>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            foreignKeyColumnRows.Add(new(
+                reader.GetString(0),
+                reader.GetInt32(1),
+                reader.GetString(2),
+                reader.GetString(3)));
+        }
+        Assert.IsTrue(await reader.NextResultAsync(cancellationToken).ConfigureAwait(false));
+        var checkRows = new List<Issue250ObservedCheckConstraint>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            checkRows.Add(new(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetBoolean(2),
+                reader.GetBoolean(3),
+                reader.GetString(4)));
+        }
+        Assert.IsTrue(await reader.NextResultAsync(cancellationToken).ConfigureAwait(false));
+        var indexRows = new List<Issue250ObservedUniqueIndex>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            indexRows.Add(new(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetBoolean(2),
+                reader.GetBoolean(3),
+                reader.GetBoolean(4),
+                reader.GetBoolean(5),
+                reader.GetBoolean(6),
+                await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(7)));
+        }
+        Assert.IsTrue(await reader.NextResultAsync(cancellationToken).ConfigureAwait(false));
+        var indexColumnRows = new List<Issue250ObservedIndexColumn>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            indexColumnRows.Add(new(
+                reader.GetString(0),
+                reader.GetByte(1),
+                reader.GetInt32(2),
+                reader.GetBoolean(3),
+                reader.GetBoolean(4),
+                reader.GetString(5)));
+        }
+
+        var requiredTriggerByName = RequiredW3MTriggers.ToDictionary(item => item.Name, StringComparer.Ordinal);
+        var requiredForeignKeyByName = RequiredW3MForeignKeys.ToDictionary(item => item.Name, StringComparer.Ordinal);
+        var requiredCheckByName = RequiredW3MCheckConstraints.ToDictionary(item => item.Name, StringComparer.Ordinal);
+        var requiredIndexByName = RequiredW3MUniqueIndexes.ToDictionary(item => item.Name, StringComparer.Ordinal);
+        var observedTriggerByName = triggerRows.ToDictionary(item => item.Name, StringComparer.Ordinal);
+        var observedForeignKeyByName = foreignKeyRows.ToDictionary(item => item.Name, StringComparer.Ordinal);
+        var observedCheckByName = checkRows.ToDictionary(item => item.Name, StringComparer.Ordinal);
+        var observedIndexByName = indexRows.ToDictionary(item => item.Name, StringComparer.Ordinal);
+        var foreignKeyColumnsByName = foreignKeyColumnRows.GroupBy(item => item.ForeignKey, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.OrderBy(item => item.Ordinal).ToArray(), StringComparer.Ordinal);
+        var indexColumnsByName = indexColumnRows.GroupBy(item => item.Index, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
+
+        var missingTriggers = MissingRequiredNames(requiredTriggerByName.Keys, observedTriggerByName.Keys);
+        var disabledTriggers = RequiredW3MTriggers.Where(required => observedTriggerByName.TryGetValue(required.Name, out var observed)
+                && observed.Disabled)
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var triggerTableMismatches = RequiredW3MTriggers.Where(required => observedTriggerByName.TryGetValue(required.Name, out var observed)
+                && !string.Equals(required.Table, observed.Table, StringComparison.Ordinal))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var unavailableTriggerDefinitions = RequiredW3MTriggers.Where(required => observedTriggerByName.TryGetValue(required.Name, out var observed)
+                && string.IsNullOrWhiteSpace(observed.Definition))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var triggerSemanticFailures = RequiredW3MTriggers.Where(required => observedTriggerByName.TryGetValue(required.Name, out var observed)
+                && observed.Definition is not null
+                && !ContainsAllSchemaConcepts(NormalizeSchemaDefinition(observed.Definition), required.ExpectedConcepts))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+
+        var missingForeignKeys = MissingRequiredNames(requiredForeignKeyByName.Keys, observedForeignKeyByName.Keys);
+        var disabledForeignKeys = RequiredW3MForeignKeys.Where(required => observedForeignKeyByName.TryGetValue(required.Name, out var observed)
+                && observed.Disabled)
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var untrustedForeignKeys = RequiredW3MForeignKeys.Where(required => observedForeignKeyByName.TryGetValue(required.Name, out var observed)
+                && observed.Untrusted)
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var foreignKeyRelationMismatches = RequiredW3MForeignKeys.Where(required => observedForeignKeyByName.TryGetValue(required.Name, out var observed)
+                && (!string.Equals(required.ParentTable, observed.ParentTable, StringComparison.Ordinal)
+                    || !string.Equals(required.ReferencedTable, observed.ReferencedTable, StringComparison.Ordinal)))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var foreignKeyColumnMappingMismatches = RequiredW3MForeignKeys.Where(required => observedForeignKeyByName.ContainsKey(required.Name)
+                && (!required.ParentColumns.SequenceEqual(
+                        ForeignKeyParentColumns(foreignKeyColumnsByName, required.Name), StringComparer.Ordinal)
+                    || !required.ReferencedColumns.SequenceEqual(
+                        ForeignKeyReferencedColumns(foreignKeyColumnsByName, required.Name), StringComparer.Ordinal)))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var foreignKeyActionMismatches = RequiredW3MForeignKeys.Where(required => observedForeignKeyByName.TryGetValue(required.Name, out var observed)
+                && (!string.Equals(required.DeleteAction, observed.DeleteAction, StringComparison.Ordinal)
+                    || !string.Equals(required.UpdateAction, observed.UpdateAction, StringComparison.Ordinal)))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+
+        var missingChecks = MissingRequiredNames(requiredCheckByName.Keys, observedCheckByName.Keys);
+        var disabledChecks = RequiredW3MCheckConstraints.Where(required => observedCheckByName.TryGetValue(required.Name, out var observed)
+                && observed.Disabled)
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var untrustedChecks = RequiredW3MCheckConstraints.Where(required => observedCheckByName.TryGetValue(required.Name, out var observed)
+                && observed.Untrusted)
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var checkTableMismatches = RequiredW3MCheckConstraints.Where(required => observedCheckByName.TryGetValue(required.Name, out var observed)
+                && !string.Equals(required.Table, observed.Table, StringComparison.Ordinal))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var checkSemanticFailures = RequiredW3MCheckConstraints.Where(required => observedCheckByName.TryGetValue(required.Name, out var observed)
+                && !ContainsAllSchemaConcepts(NormalizeSchemaDefinition(observed.Definition), required.ExpectedConcepts))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+
+        var missingUniqueIndexes = MissingRequiredNames(requiredIndexByName.Keys, observedIndexByName.Keys);
+        var disabledUniqueIndexes = RequiredW3MUniqueIndexes.Where(required => observedIndexByName.TryGetValue(required.Name, out var observed)
+                && observed.Disabled)
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var nonUniqueRequiredIndexes = RequiredW3MUniqueIndexes.Where(required => observedIndexByName.TryGetValue(required.Name, out var observed)
+                && !observed.Unique)
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var uniqueIndexStateMismatches = RequiredW3MUniqueIndexes.Where(required => observedIndexByName.TryGetValue(required.Name, out var observed)
+                && (!string.Equals(required.Table, observed.Table, StringComparison.Ordinal)
+                    || !string.Equals(required.Kind, UniqueIndexKind(observed), StringComparison.Ordinal)
+                    || required.Unique != observed.Unique
+                    || required.Enabled == observed.Disabled))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var uniqueIndexKeyColumnMismatches = RequiredW3MUniqueIndexes.Where(required => observedIndexByName.ContainsKey(required.Name)
+                && !required.KeyColumns.SequenceEqual(IndexKeyColumns(indexColumnsByName, required.Name)))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var uniqueIndexIncludedColumnMismatches = RequiredW3MUniqueIndexes.Where(required => observedIndexByName.ContainsKey(required.Name)
+                && !required.IncludedColumns.SequenceEqual(
+                    IndexIncludedColumns(indexColumnsByName, required.Name), StringComparer.Ordinal))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+        var uniqueIndexFilterMismatches = RequiredW3MUniqueIndexes.Where(required => observedIndexByName.TryGetValue(required.Name, out var observed)
+                && ((NormalizeIndexFilter(required.FilterDefinition) is not null) != observed.Filtered
+                    || !string.Equals(NormalizeIndexFilter(required.FilterDefinition),
+                        NormalizeIndexFilter(observed.FilterDefinition), StringComparison.Ordinal)))
+            .Select(item => item.Name).Order(StringComparer.Ordinal).ToArray();
+
+        var failures = new Issue250W3MSchemaIntegrityFailures(
+            missingTriggers,
+            disabledTriggers,
+            triggerTableMismatches,
+            unavailableTriggerDefinitions,
+            triggerSemanticFailures,
+            missingForeignKeys,
+            disabledForeignKeys,
+            untrustedForeignKeys,
+            foreignKeyRelationMismatches,
+            foreignKeyColumnMappingMismatches,
+            foreignKeyActionMismatches,
+            missingChecks,
+            disabledChecks,
+            untrustedChecks,
+            checkTableMismatches,
+            checkSemanticFailures,
+            missingUniqueIndexes,
+            disabledUniqueIndexes,
+            nonUniqueRequiredIndexes,
+            uniqueIndexStateMismatches,
+            uniqueIndexKeyColumnMismatches,
+            uniqueIndexIncludedColumnMismatches,
+            uniqueIndexFilterMismatches);
+        var allFailures = failures.All().ToArray();
+        Assert.IsEmpty(allFailures,
+            $"Required W3M schema integrity failed: {string.Join(", ", allFailures)}");
+
+        var observedTriggers = triggerRows.Select(item =>
+        {
+            var required = requiredTriggerByName.GetValueOrDefault(item.Name);
+            var normalized = item.Definition is null ? null : NormalizeSchemaDefinition(item.Definition);
+            return new Issue250W3MTriggerEvidence(
+                item.Name,
+                item.Table,
+                Enabled: !item.Disabled,
+                Required: required is not null,
+                DefinitionSha256: normalized is null ? null : Sha(normalized),
+                SemanticGuardsSatisfied: required is null || normalized is null
+                    ? null
+                    : ContainsAllSchemaConcepts(normalized, required.ExpectedConcepts));
+        }).OrderBy(item => item.Name, StringComparer.Ordinal).ToArray();
+        var observedForeignKeys = foreignKeyRows.Select(item => new Issue250W3MForeignKeyEvidence(
+                item.Name,
+                item.ParentTable,
+                ForeignKeyParentColumns(foreignKeyColumnsByName, item.Name),
+                item.ReferencedTable,
+                ForeignKeyReferencedColumns(foreignKeyColumnsByName, item.Name),
+                item.DeleteAction,
+                item.UpdateAction,
+                Enabled: !item.Disabled,
+                Trusted: !item.Untrusted,
+                Required: requiredForeignKeyByName.ContainsKey(item.Name)))
+            .OrderBy(item => item.Name, StringComparer.Ordinal).ToArray();
+        var observedChecks = checkRows.Select(item =>
+        {
+            var required = requiredCheckByName.GetValueOrDefault(item.Name);
+            var normalized = NormalizeSchemaDefinition(item.Definition);
+            return new Issue250W3MCheckConstraintEvidence(
+                item.Name,
+                item.Table,
+                Enabled: !item.Disabled,
+                Trusted: !item.Untrusted,
+                Required: required is not null,
+                DefinitionSha256: Sha(normalized),
+                SemanticGuardsSatisfied: required is null
+                    ? null
+                    : ContainsAllSchemaConcepts(normalized, required.ExpectedConcepts));
+        }).OrderBy(item => item.Name, StringComparer.Ordinal).ToArray();
+        var observedUniqueIndexes = indexRows
+            .Where(item => item.Unique || requiredIndexByName.ContainsKey(item.Name))
+            .Select(item => new Issue250W3MUniqueIndexEvidence(
+                item.Name,
+                item.Table,
+                Unique: item.Unique,
+                Enabled: !item.Disabled,
+                Kind: UniqueIndexKind(item),
+                KeyColumns: IndexKeyColumns(indexColumnsByName, item.Name),
+                IncludedColumns: IndexIncludedColumns(indexColumnsByName, item.Name),
+                FilterDefinition: NormalizeIndexFilter(item.FilterDefinition),
+                Required: requiredIndexByName.ContainsKey(item.Name)))
+            .OrderBy(item => item.Name, StringComparer.Ordinal).ToArray();
+        return new(
+            new(RequiredW3MTriggers, RequiredW3MForeignKeys, RequiredW3MCheckConstraints, RequiredW3MUniqueIndexes),
+            new(observedTriggers, observedForeignKeys, observedChecks, observedUniqueIndexes),
+            failures,
+            "Trigger/check definitions are whitespace-normalized and SHA256-authenticated per run. Baseline and after may record different hashes, but every required semantic concept remains fail-closed; additive objects cannot replace required names.",
+            "Every required W3M trigger, foreign key, check constraint, and unique index is present with exact table/relation/ordered-column/action/key/include/filter/kind and enabled/trusted/unique state.");
+    }
+
+    private static string[] MissingRequiredNames(IEnumerable<string> required, IEnumerable<string> observed)
+        => required.Except(observed, StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+
+    private static string NormalizeSchemaDefinition(string definition)
+        => Issue250Regex.Whitespace().Replace(definition, " ").Trim();
+
+    private static string? NormalizeIndexFilter(string? definition)
+    {
+        if (string.IsNullOrWhiteSpace(definition))
+        {
+            return null;
+        }
+        var normalized = NormalizeSchemaDefinition(definition);
+        while (HasRedundantOuterParentheses(normalized))
+        {
+            normalized = normalized[1..^1].Trim();
+        }
+        return normalized;
+    }
+
+    private static bool HasRedundantOuterParentheses(string value)
+    {
+        if (value.Length < 2 || value[0] != '(' || value[^1] != ')')
+        {
+            return false;
+        }
+        var depth = 0;
+        for (var index = 0; index < value.Length; index++)
+        {
+            depth += value[index] switch
+            {
+                '(' => 1,
+                ')' => -1,
+                _ => 0
+            };
+            if (depth == 0 && index < value.Length - 1)
+            {
+                return false;
+            }
+            if (depth < 0)
+            {
+                return false;
+            }
+        }
+        return depth == 0;
+    }
+
+    private static bool ContainsAllSchemaConcepts(string definition, IEnumerable<string> concepts)
+        => concepts.All(concept => definition.Contains(concept, StringComparison.OrdinalIgnoreCase));
+
+    private static string UniqueIndexKind(Issue250ObservedUniqueIndex index)
+        => index.PrimaryKey ? "PrimaryKey" : index.UniqueConstraint ? "UniqueConstraint" :
+            index.Unique ? "UniqueIndex" : "NonUniqueIndex";
+
+    private static string[] ForeignKeyParentColumns(
+        IReadOnlyDictionary<string, Issue250ObservedForeignKeyColumn[]> columnsByName,
+        string name)
+        => columnsByName.GetValueOrDefault(name)?.Select(item => item.ParentColumn).ToArray() ?? [];
+
+    private static string[] ForeignKeyReferencedColumns(
+        IReadOnlyDictionary<string, Issue250ObservedForeignKeyColumn[]> columnsByName,
+        string name)
+        => columnsByName.GetValueOrDefault(name)?.Select(item => item.ReferencedColumn).ToArray() ?? [];
+
+    private static Issue250IndexKeyColumn[] IndexKeyColumns(
+        IReadOnlyDictionary<string, Issue250ObservedIndexColumn[]> columnsByName,
+        string name)
+        => columnsByName.GetValueOrDefault(name)?.Where(item => !item.Included && item.KeyOrdinal > 0)
+            .OrderBy(item => item.KeyOrdinal)
+            .Select(item => new Issue250IndexKeyColumn(item.Column, item.Descending)).ToArray() ?? [];
+
+    private static string[] IndexIncludedColumns(
+        IReadOnlyDictionary<string, Issue250ObservedIndexColumn[]> columnsByName,
+        string name)
+        => columnsByName.GetValueOrDefault(name)?.Where(item => item.Included)
+            .OrderBy(item => item.IndexColumnId).Select(item => item.Column).ToArray() ?? [];
+
+    private static async Task<Issue250W3MTopologyEvidence> ReadW3MTopologyAsync(
+        SqlConnection connection,
+        Guid sentinelFrameId,
+        Guid historyFrameId,
+        Guid historyDevicePublicId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = W3MCommandTimeoutSeconds;
+        command.CommandText = """
+            SELECT COUNT_BIG(*),
+                   SUM(CASE WHEN [Id] = @history_frame_id THEN CAST(1 AS bigint) ELSE 0 END),
+                   SUM(CASE WHEN [Id] = @sentinel_frame_id THEN CAST(1 AS bigint) ELSE 0 END)
+            FROM [CentralFrames];
+            SELECT COUNT_BIG(*), COUNT_BIG(DISTINCT [Id]), COUNT_BIG(DISTINCT [ArtifactId]),
+                   COUNT_BIG(DISTINCT [IdempotencyKey]), COUNT_BIG(DISTINCT [StorageReference]),
+                   SUM(CASE WHEN [DevicePublicId] = @history_device_public_id THEN CAST(1 AS bigint) ELSE 0 END)
+            FROM [CentralArtifacts] WHERE [CentralFrameId] = @history_frame_id;
+            SELECT COUNT_BIG(DISTINCT item.[RecordId])
+            FROM [CentralTransientPayloadReleaseItems] AS item
+            INNER JOIN [CentralTransientPayloadReleases] AS release ON release.[ReleaseId] = item.[ReleaseId]
+            WHERE release.[State] = N'Completed' AND item.[Outcome] = N'Released';
+            """;
+        command.Parameters.AddWithValue("@sentinel_frame_id", sentinelFrameId);
+        command.Parameters.AddWithValue("@history_frame_id", historyFrameId);
+        command.Parameters.AddWithValue("@history_device_public_id", historyDevicePublicId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        var totalFrames = reader.GetInt64(0);
+        var historyFrames = reader.GetInt64(1);
+        var sentinelFrames = reader.GetInt64(2);
+        Assert.IsTrue(await reader.NextResultAsync(cancellationToken).ConfigureAwait(false));
+        Assert.IsTrue(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        var historyArtifacts = reader.GetInt64(0);
+        var distinctHistoryArtifactRecordIds = reader.GetInt64(1);
+        var distinctHistoryArtifactIds = reader.GetInt64(2);
+        var distinctHistoryIdempotencyKeys = reader.GetInt64(3);
+        var distinctHistoryStorageReferences = reader.GetInt64(4);
+        var matchingDevicePublicIds = reader.GetInt64(5);
+        Assert.IsTrue(await reader.NextResultAsync(cancellationToken).ConfigureAwait(false));
+        Assert.IsTrue(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        return new(
+            totalFrames,
+            historyFrames,
+            sentinelFrames,
+            historyArtifacts,
+            distinctHistoryArtifactRecordIds,
+            distinctHistoryArtifactIds,
+            distinctHistoryIdempotencyKeys,
+            distinctHistoryStorageReferences,
+            matchingDevicePublicIds,
+            reader.GetInt64(0));
     }
 
     private static async Task<Issue250HealthEvidence> ReadHealthAsync(
@@ -3350,8 +4188,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         {
             try
             {
-                await minio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket(Bucket).WithObject(key))
-                    .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+                using var objectCleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await minio.RemoveObjectAsync(
+                        new RemoveObjectArgs().WithBucket(Bucket).WithObject(key), objectCleanupTimeout.Token)
+                    .WaitAsync(objectCleanupTimeout.Token).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -3360,7 +4200,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         }
         try
         {
-            await db.Database.EnsureDeletedAsync().WaitAsync(TimeSpan.FromMinutes(1)).ConfigureAwait(false);
+            using var databaseCleanupTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+            await db.Database.EnsureDeletedAsync(databaseCleanupTimeout.Token)
+                .WaitAsync(databaseCleanupTimeout.Token).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -3966,7 +4808,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             {
                 Assert.AreEqual(name == expectedFiles[1]
                         ? "hvo-issue-250-w0-fault-runtime-evidence-v1"
-                        : "hvo-issue-250-w3m-normalized-plan-evidence-v2",
+                        : "hvo-issue-250-w3m-normalized-plan-evidence-v4",
                     payloadRoot.GetProperty("Schema").GetString());
             }
         }
@@ -5110,6 +5952,286 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         string ObservedSha256,
         bool ExactLengthAndSha256);
 
+    private sealed record Issue250W3MTempTableEvidence(
+        int ParentRows,
+        long TargetRows,
+        double DurationMilliseconds);
+
+    private sealed record Issue250W3MFoundationEvidence(
+        int HistoryFrames,
+        int SentinelEvents,
+        int SentinelReleases,
+        int SentinelItems,
+        double DurationMilliseconds);
+
+    private sealed record Issue250W3MSetupPhaseResult(
+        int FirstRows,
+        int SecondRows,
+        double DurationMilliseconds);
+
+    private sealed record Issue250W3MSetupBatchEvidence(
+        int Batch,
+        int FirstSequence,
+        int LastSequence,
+        int ParentRows,
+        int EventRows,
+        int ReleaseRows,
+        int ArtifactRows,
+        int ItemRows,
+        int ItemTransitionRows,
+        int ReleaseTransitionRows,
+        double PhaseADurationMilliseconds,
+        double PhaseBDurationMilliseconds,
+        double PhaseCDurationMilliseconds,
+        double TotalDurationMilliseconds);
+
+    private sealed record Issue250W3MSetupRowCounts(
+        long Events,
+        long Releases,
+        long Artifacts,
+        long Items,
+        long ItemTransitions,
+        long ReleaseTransitions);
+
+    private sealed record Issue250RequiredTrigger(
+        string Name,
+        string Table,
+        IReadOnlyList<string> ExpectedConcepts);
+
+    private sealed record Issue250RequiredSchemaRelation(
+        string Name,
+        string ParentTable,
+        IReadOnlyList<string> ParentColumns,
+        string ReferencedTable,
+        IReadOnlyList<string> ReferencedColumns,
+        string DeleteAction,
+        string UpdateAction,
+        bool Enabled,
+        bool Trusted);
+
+    private sealed record Issue250RequiredCheckConstraint(
+        string Name,
+        string Table,
+        IReadOnlyList<string> ExpectedConcepts);
+
+    private sealed record Issue250IndexKeyColumn(string Name, bool Descending);
+
+    private sealed record Issue250RequiredUniqueIndex(
+        string Name,
+        string Table,
+        string Kind,
+        IReadOnlyList<Issue250IndexKeyColumn> KeyColumns,
+        IReadOnlyList<string> IncludedColumns,
+        string? FilterDefinition,
+        bool Unique,
+        bool Enabled);
+
+    private sealed record Issue250ObservedTrigger(
+        string Name,
+        string Table,
+        bool Disabled,
+        string? Definition);
+
+    private sealed record Issue250ObservedForeignKey(
+        string Name,
+        string ParentTable,
+        string ReferencedTable,
+        bool Disabled,
+        bool Untrusted,
+        string DeleteAction,
+        string UpdateAction);
+
+    private sealed record Issue250ObservedForeignKeyColumn(
+        string ForeignKey,
+        int Ordinal,
+        string ParentColumn,
+        string ReferencedColumn);
+
+    private sealed record Issue250ObservedCheckConstraint(
+        string Name,
+        string Table,
+        bool Disabled,
+        bool Untrusted,
+        string Definition);
+
+    private sealed record Issue250ObservedUniqueIndex(
+        string Name,
+        string Table,
+        bool Unique,
+        bool Disabled,
+        bool PrimaryKey,
+        bool UniqueConstraint,
+        bool Filtered,
+        string? FilterDefinition);
+
+    private sealed record Issue250ObservedIndexColumn(
+        string Index,
+        int KeyOrdinal,
+        int IndexColumnId,
+        bool Descending,
+        bool Included,
+        string Column);
+
+    private sealed record Issue250W3MTriggerEvidence(
+        string Name,
+        string Table,
+        bool Enabled,
+        bool Required,
+        string? DefinitionSha256,
+        bool? SemanticGuardsSatisfied);
+
+    private sealed record Issue250W3MForeignKeyEvidence(
+        string Name,
+        string ParentTable,
+        IReadOnlyList<string> ParentColumns,
+        string ReferencedTable,
+        IReadOnlyList<string> ReferencedColumns,
+        string DeleteAction,
+        string UpdateAction,
+        bool Enabled,
+        bool Trusted,
+        bool Required);
+
+    private sealed record Issue250W3MCheckConstraintEvidence(
+        string Name,
+        string Table,
+        bool Enabled,
+        bool Trusted,
+        bool Required,
+        string DefinitionSha256,
+        bool? SemanticGuardsSatisfied);
+
+    private sealed record Issue250W3MUniqueIndexEvidence(
+        string Name,
+        string Table,
+        bool Unique,
+        bool Enabled,
+        string Kind,
+        IReadOnlyList<Issue250IndexKeyColumn> KeyColumns,
+        IReadOnlyList<string> IncludedColumns,
+        string? FilterDefinition,
+        bool Required);
+
+    private sealed record Issue250W3MSchemaRequiredEvidence(
+        IReadOnlyList<Issue250RequiredTrigger> Triggers,
+        IReadOnlyList<Issue250RequiredSchemaRelation> ForeignKeys,
+        IReadOnlyList<Issue250RequiredCheckConstraint> CheckConstraints,
+        IReadOnlyList<Issue250RequiredUniqueIndex> UniqueIndexes);
+
+    private sealed record Issue250W3MSchemaObservedEvidence(
+        IReadOnlyList<Issue250W3MTriggerEvidence> Triggers,
+        IReadOnlyList<Issue250W3MForeignKeyEvidence> ForeignKeys,
+        IReadOnlyList<Issue250W3MCheckConstraintEvidence> CheckConstraints,
+        IReadOnlyList<Issue250W3MUniqueIndexEvidence> UniqueIndexes);
+
+    private sealed record Issue250W3MSchemaIntegrityFailures(
+        IReadOnlyList<string> MissingTriggers,
+        IReadOnlyList<string> DisabledTriggers,
+        IReadOnlyList<string> TriggerTableMismatches,
+        IReadOnlyList<string> UnavailableTriggerDefinitions,
+        IReadOnlyList<string> TriggerSemanticGuardFailures,
+        IReadOnlyList<string> MissingForeignKeys,
+        IReadOnlyList<string> DisabledForeignKeys,
+        IReadOnlyList<string> UntrustedForeignKeys,
+        IReadOnlyList<string> ForeignKeyRelationMismatches,
+        IReadOnlyList<string> ForeignKeyColumnMappingMismatches,
+        IReadOnlyList<string> ForeignKeyActionMismatches,
+        IReadOnlyList<string> MissingCheckConstraints,
+        IReadOnlyList<string> DisabledCheckConstraints,
+        IReadOnlyList<string> UntrustedCheckConstraints,
+        IReadOnlyList<string> CheckConstraintTableMismatches,
+        IReadOnlyList<string> CheckConstraintSemanticGuardFailures,
+        IReadOnlyList<string> MissingUniqueIndexes,
+        IReadOnlyList<string> DisabledUniqueIndexes,
+        IReadOnlyList<string> NonUniqueRequiredIndexes,
+        IReadOnlyList<string> UniqueIndexStateMismatches,
+        IReadOnlyList<string> UniqueIndexKeyColumnMismatches,
+        IReadOnlyList<string> UniqueIndexIncludedColumnMismatches,
+        IReadOnlyList<string> UniqueIndexFilterMismatches)
+    {
+        internal IEnumerable<string> All()
+        {
+            foreach (var (category, values) in new (string, IReadOnlyList<string>)[]
+            {
+                (nameof(MissingTriggers), MissingTriggers),
+                (nameof(DisabledTriggers), DisabledTriggers),
+                (nameof(TriggerTableMismatches), TriggerTableMismatches),
+                (nameof(UnavailableTriggerDefinitions), UnavailableTriggerDefinitions),
+                (nameof(TriggerSemanticGuardFailures), TriggerSemanticGuardFailures),
+                (nameof(MissingForeignKeys), MissingForeignKeys),
+                (nameof(DisabledForeignKeys), DisabledForeignKeys),
+                (nameof(UntrustedForeignKeys), UntrustedForeignKeys),
+                (nameof(ForeignKeyRelationMismatches), ForeignKeyRelationMismatches),
+                (nameof(ForeignKeyColumnMappingMismatches), ForeignKeyColumnMappingMismatches),
+                (nameof(ForeignKeyActionMismatches), ForeignKeyActionMismatches),
+                (nameof(MissingCheckConstraints), MissingCheckConstraints),
+                (nameof(DisabledCheckConstraints), DisabledCheckConstraints),
+                (nameof(UntrustedCheckConstraints), UntrustedCheckConstraints),
+                (nameof(CheckConstraintTableMismatches), CheckConstraintTableMismatches),
+                (nameof(CheckConstraintSemanticGuardFailures), CheckConstraintSemanticGuardFailures),
+                (nameof(MissingUniqueIndexes), MissingUniqueIndexes),
+                (nameof(DisabledUniqueIndexes), DisabledUniqueIndexes),
+                (nameof(NonUniqueRequiredIndexes), NonUniqueRequiredIndexes),
+                (nameof(UniqueIndexStateMismatches), UniqueIndexStateMismatches),
+                (nameof(UniqueIndexKeyColumnMismatches), UniqueIndexKeyColumnMismatches),
+                (nameof(UniqueIndexIncludedColumnMismatches), UniqueIndexIncludedColumnMismatches),
+                (nameof(UniqueIndexFilterMismatches), UniqueIndexFilterMismatches)
+            })
+            {
+                foreach (var value in values)
+                {
+                    yield return $"{category}:{value}";
+                }
+            }
+        }
+    }
+
+    private sealed record Issue250W3MSchemaIntegrityEvidence(
+        Issue250W3MSchemaRequiredEvidence Required,
+        Issue250W3MSchemaObservedEvidence Observed,
+        Issue250W3MSchemaIntegrityFailures Failures,
+        string DefinitionAuthenticationPolicy,
+        string Result);
+
+    private sealed record Issue250W3MSetupEvidence(
+        int ParentBatchSize,
+        int BatchCount,
+        int TempParentRows,
+        long TempTargetRows,
+        double TempTablePopulationDurationMilliseconds,
+        double FoundationDurationMilliseconds,
+        Issue250W3MSetupRowCounts ExpectedRows,
+        Issue250W3MSetupRowCounts ActualRows,
+        int SentinelFrameAndArtifactRows,
+        double SentinelFrameAndArtifactDurationMilliseconds,
+        double SqlSetupDurationMilliseconds,
+        double TotalDurableSetupDurationMilliseconds,
+        double TotalBatchDurationMilliseconds,
+        double MaximumBatchDurationMilliseconds,
+        double MaximumBatchPhaseDurationMilliseconds,
+        double MaximumNonBatchCommandDurationMilliseconds,
+        double StatisticsDurationMilliseconds,
+        double TempTableDropDurationMilliseconds,
+        int CommandTimeoutSeconds,
+        int PhaseTimeoutSeconds,
+        int SharedHistoryFrameCount,
+        int TotalW3MFrameCount,
+        bool SetupExcludedFromMeasuredClaims,
+        Issue250W3MSchemaIntegrityEvidence SchemaIntegrity,
+        IReadOnlyList<Issue250W3MSetupBatchEvidence> Batches);
+
+    private sealed record Issue250W3MTopologyEvidence(
+        long TotalFrames,
+        long HistoryFrames,
+        long SentinelFrames,
+        long HistoryArtifacts,
+        long DistinctHistoryArtifactRecordIds,
+        long DistinctHistoryArtifactIds,
+        long DistinctHistoryIdempotencyKeys,
+        long DistinctHistoryStorageReferences,
+        long HistoryArtifactsWithMatchingDevicePublicId,
+        long DistinctTerminalItemTargetRecordIds);
+
     private sealed record Issue250W3MEvidence(
         int CompletedParents,
         long TerminalItems,
@@ -5117,6 +6239,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         long PendingItems,
         int DistinctEvents,
         long ValidTerminalTargetRows,
+        Issue250W3MSetupEvidence Setup,
+        Issue250W3MTopologyEvidence Topology,
         string SentinelGenerator,
         long SentinelExpectedByteLength,
         string SentinelExpectedSha256,
