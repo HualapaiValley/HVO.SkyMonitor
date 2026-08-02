@@ -344,28 +344,39 @@ internal sealed partial class DeploymentLocationReconciliationService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        await using (var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false))
+        var centralArtifactId = await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.DevicePublicId == devicePublicId && artifact.ArtifactId == artifactId)
+            .Select(artifact => artifact.Id)
+            .SingleAsync(cancellationToken).ConfigureAwait(false);
+        var holdTargets = await CentralDerivativeJobScheduler.ReadRequiredPayloadHoldTargetsAsync(
+            dbContext, centralArtifactId, cancellationToken).ConfigureAwait(false);
+        await using (var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
+            dbContext, holdTargets, cancellationToken).ConfigureAwait(false))
         {
-            var fencedWork = await dbContext.DeploymentLocationReconciliationWork.FromSqlInterpolated($"""
-                SELECT *
-                FROM [DeploymentLocationReconciliationWork] WITH (UPDLOCK, HOLDLOCK, ROWLOCK)
-                WHERE [Id] = {workId}
-                  AND [Status] = {DeploymentLocationReconciliationStatuses.Processing}
-                  AND [LeaseToken] = {leaseToken}
-                  AND [AuthorityConcurrencyToken] = {authorityConcurrencyToken}
-                """).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-            if (fencedWork is null)
+            await using (var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false))
             {
-                throw new DbUpdateConcurrencyException("Deployment reconciliation lease or authority generation changed.");
+                var fencedWork = await dbContext.DeploymentLocationReconciliationWork.FromSqlInterpolated($"""
+                    SELECT *
+                    FROM [DeploymentLocationReconciliationWork] WITH (UPDLOCK, HOLDLOCK, ROWLOCK)
+                    WHERE [Id] = {workId}
+                      AND [Status] = {DeploymentLocationReconciliationStatuses.Processing}
+                      AND [LeaseToken] = {leaseToken}
+                      AND [AuthorityConcurrencyToken] = {authorityConcurrencyToken}
+                    """).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                if (fencedWork is null)
+                {
+                    throw new DbUpdateConcurrencyException(
+                        "Deployment reconciliation lease or authority generation changed.");
+                }
+                fencedWork.LeaseExpiresAtUtc = now + settings.LeaseDuration;
+                fencedWork.UpdatedAtUtc = now;
+                await derivativeJobScheduler.EnsureRequiredJobsUnderPayloadLocksAsync(
+                    devicePublicId, artifactId, now, holdScope.Targets, cancellationToken).ConfigureAwait(false);
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
-            fencedWork.LeaseExpiresAtUtc = now + settings.LeaseDuration;
-            fencedWork.UpdatedAtUtc = now;
-            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-        await derivativeJobScheduler.EnsureRequiredJobsAsync(
-            devicePublicId, artifactId, now, cancellationToken).ConfigureAwait(false);
         await derivativeJobScheduler.ResolveAffectedWindowsAsync(
             devicePublicId, artifactId, now, cancellationToken).ConfigureAwait(false);
     }

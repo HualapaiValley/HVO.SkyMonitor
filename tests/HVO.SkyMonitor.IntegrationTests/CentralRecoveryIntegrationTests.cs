@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Globalization;
@@ -1209,11 +1210,11 @@ public sealed class CentralRecoveryIntegrationTests
         completed.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
         completed.ReferenceRetryCount.Should().Be(0);
         completed.ReferenceRetryAtUtc.Should().BeNull();
-        scheduler.Invocations.Should().Be(1);
+        scheduler.InvocationsFor(artifactId).Should().Be(1);
         (await CountRecoveryJobsAsync(artifactId).ConfigureAwait(false)).Should().Be(1);
 
         _ = await CreateReconciler(services, clock).ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-        scheduler.Invocations.Should().Be(1, "completed retry must not schedule duplicate work");
+        scheduler.InvocationsFor(artifactId).Should().Be(1, "completed retry must not schedule duplicate work");
         (await CountRecoveryJobsAsync(artifactId).ConfigureAwait(false)).Should().Be(1);
     }
 
@@ -1271,10 +1272,10 @@ public sealed class CentralRecoveryIntegrationTests
         var completed = await ReadArtifactAsync(artifactId).ConfigureAwait(false);
         completed.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
         completed.ReferenceRetryCount.Should().Be(0);
-        scheduler.Invocations.Should().Be(1);
+        scheduler.InvocationsFor(artifactId).Should().Be(1);
         (await CountRecoveryJobsAsync(artifactId).ConfigureAwait(false)).Should().Be(1);
         _ = await CreateReconciler(services, clock).ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-        scheduler.Invocations.Should().Be(1);
+        scheduler.InvocationsFor(artifactId).Should().Be(1);
         (await CountRecoveryJobsAsync(artifactId).ConfigureAwait(false)).Should().Be(1);
     }
 
@@ -1870,7 +1871,11 @@ public sealed class CentralRecoveryIntegrationTests
 
     private sealed class DurableSchedulerState
     {
-        public int Invocations { get; set; }
+        private readonly ConcurrentDictionary<Guid, int> invocations = new();
+
+        public void Record(Guid artifactId) => invocations.AddOrUpdate(artifactId, 1, static (_, count) => count + 1);
+
+        public int InvocationsFor(Guid artifactId) => invocations.GetValueOrDefault(artifactId);
     }
 
     private sealed class DurableRecordingScheduler(ApplicationDbContext db, DurableSchedulerState state)
@@ -1881,7 +1886,7 @@ public sealed class CentralRecoveryIntegrationTests
             DateTimeOffset now,
             CancellationToken cancellationToken)
         {
-            state.Invocations++;
+            state.Record(artifact.Id);
             var identity = Convert.ToHexString(SHA256.HashData(artifact.Id.ToByteArray()));
             if (await db.CentralDerivativeJobs.AnyAsync(item => item.RequestIdentitySha256 == identity, cancellationToken)
                     .ConfigureAwait(false))
@@ -1906,6 +1911,7 @@ public sealed class CentralRecoveryIntegrationTests
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now
             });
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 

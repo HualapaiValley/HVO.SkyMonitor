@@ -3063,7 +3063,10 @@ public sealed class ArtifactIngestTests
         var artifact = await assertionDb.CentralArtifacts.SingleAsync(item =>
             item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId
             && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
-        artifact.ReconstructionState.Should().Be(CentralReconstructionState.PendingReference);
+        artifact.ObjectState.Should().Be(CentralArtifactObjectState.Pending);
+        artifact.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+        artifact.ObjectVerificationToken.Should().NotBeNull();
+        artifact.ObjectVerificationRetryAtUtc.Should().NotBeNull();
         (await assertionDb.CentralDerivativeJobs.AnyAsync(job => job.SourceCentralArtifactId == artifact.Id)
             .ConfigureAwait(false)).Should().BeFalse();
         artifact.ReconstructionState = CentralReconstructionState.Quarantined;
@@ -4423,6 +4426,7 @@ public sealed class ArtifactIngestTests
         {
             if (injection.TryInject(artifact.ArtifactId, currentDbContext.ContextId.InstanceId))
             {
+                currentDbContext.Entry(artifact).Property(candidate => candidate.ReconciledAtUtc).IsModified = true;
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 var concurrentArtifact = await db.CentralArtifacts.SingleAsync(

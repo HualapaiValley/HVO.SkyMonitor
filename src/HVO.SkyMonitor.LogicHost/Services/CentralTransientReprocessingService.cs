@@ -476,81 +476,83 @@ internal sealed class CentralTransientReprocessingExecutor(
         var descriptor = assessment.Descriptor;
         var receipt = TransientAssessmentJson.Serialize(descriptor);
         dbContext.ChangeTracker.Clear();
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
-        var leasedJob = await dbContext.CentralDerivativeJobs.SingleOrDefaultAsync(job =>
-            job.Id == lease.JobId &&
-            job.Status == CentralDerivativeJobStatus.Leased &&
-            job.LeaseToken == lease.LeaseToken &&
-            job.LeaseOwner == lease.WorkerId &&
-            job.LeaseExpiresAtUtc > timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
-        if (leasedJob is null)
+        CentralTransientEventAppendResult appended;
+        await using (var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false))
         {
-            throw new CentralDerivativeJobStateException("The reprocessing lease is no longer active.");
-        }
-        var mutable = await dbContext.CentralTransientReprocessingJobs.SingleAsync(item =>
-            item.CentralDerivativeJobId == lease.JobId && item.CommittedUtc == null, cancellationToken)
-            .ConfigureAwait(false);
-        var predecessor = await dbContext.CentralTransientAssessments.AsNoTracking().SingleAsync(item =>
-            item.CentralTransientEventId == record.CentralTransientEventId &&
-            item.AssessmentId == descriptor.Assessment.SupersedesAssessmentId, cancellationToken).ConfigureAwait(false);
-        var assessmentRecord = new CentralTransientAssessmentRecord
-        {
-            AssessmentId = descriptor.Assessment.AssessmentId,
-            CentralTransientEventId = record.CentralTransientEventId,
-            CreatedUtc = descriptor.Assessment.CreatedUtc,
-            Authority = descriptor.Assessment.Authority,
-            Classification = descriptor.Assessment.Classification,
-            MeteorSeverity = descriptor.Assessment.MeteorSeverity,
-            ConfidenceMillionths = descriptor.Assessment.ConfidenceMillionths,
-            SupersedesAssessmentId = descriptor.Assessment.SupersedesAssessmentId,
-            SupersedesAssessmentCreatedUtc = predecessor.CreatedUtc,
-            ProducerSchemaVersion = descriptor.Assessment.Producer.SchemaVersion,
-            ProducerKind = descriptor.Assessment.Producer.Kind,
-            ProducerName = descriptor.Assessment.Producer.Name,
-            ProducerVersion = descriptor.Assessment.Producer.Version,
-            RecipeIdentitySha256 = descriptor.Assessment.RecipeIdentitySha256,
-            ReceiptSchemaVersion = descriptor.SchemaVersion,
-            ExecutionIdentitySha256 = descriptor.ExecutionIdentitySha256,
-            OptionsIdentitySha256 = descriptor.OptionsIdentitySha256,
-            CanonicalReceiptJson = Encoding.UTF8.GetString(receipt),
-            CanonicalReceiptSha256 = ProcessingIdentity.ComputePayloadSha256(receipt),
-            CanonicalReceiptByteLength = receipt.Length
-        };
-        for (var ordinal = 0; ordinal < observations.Length; ordinal++)
-        {
-            assessmentRecord.EvidenceObservations.Add(new CentralTransientAssessmentObservation
+            var leasedJob = await dbContext.CentralDerivativeJobs.SingleOrDefaultAsync(job =>
+                job.Id == lease.JobId &&
+                job.Status == CentralDerivativeJobStatus.Leased &&
+                job.LeaseToken == lease.LeaseToken &&
+                job.LeaseOwner == lease.WorkerId &&
+                job.LeaseExpiresAtUtc > timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+            if (leasedJob is null)
             {
+                throw new CentralDerivativeJobStateException("The reprocessing lease is no longer active.");
+            }
+            var mutable = await dbContext.CentralTransientReprocessingJobs.SingleAsync(item =>
+                item.CentralDerivativeJobId == lease.JobId && item.CommittedUtc == null, cancellationToken)
+                .ConfigureAwait(false);
+            var predecessor = await dbContext.CentralTransientAssessments.AsNoTracking().SingleAsync(item =>
+                item.CentralTransientEventId == record.CentralTransientEventId &&
+                item.AssessmentId == descriptor.Assessment.SupersedesAssessmentId, cancellationToken).ConfigureAwait(false);
+            var assessmentRecord = new CentralTransientAssessmentRecord
+            {
+                AssessmentId = descriptor.Assessment.AssessmentId,
                 CentralTransientEventId = record.CentralTransientEventId,
-                AssessmentId = assessmentId,
-                Ordinal = ordinal,
-                ObservationId = observations[ordinal].Observation.ObservationId
-            });
-        }
-        dbContext.CentralTransientAssessments.Add(assessmentRecord);
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        var appended = await versionAppender.AppendGeneratedAsync(record.CentralTransientEventId, previous =>
-        {
-            var versionCreatedUtc = descriptor.Assessment.CreatedUtc <= previous.VersionCreatedUtc
-                ? previous.VersionCreatedUtc.AddTicks(1)
-                : descriptor.Assessment.CreatedUtc;
-            return previous with
-            {
-                EventVersionId = Guid.NewGuid(),
-                Version = previous.Version + 1,
-                PreviousEventVersionId = previous.EventVersionId,
-                PreviousVersionCreatedUtc = previous.VersionCreatedUtc,
-                VersionCreatedUtc = versionCreatedUtc,
-                State = StateFor(descriptor.Assessment),
-                Assessments = previous.Assessments.Append(descriptor.Assessment).ToArray()
+                CreatedUtc = descriptor.Assessment.CreatedUtc,
+                Authority = descriptor.Assessment.Authority,
+                Classification = descriptor.Assessment.Classification,
+                MeteorSeverity = descriptor.Assessment.MeteorSeverity,
+                ConfidenceMillionths = descriptor.Assessment.ConfidenceMillionths,
+                SupersedesAssessmentId = descriptor.Assessment.SupersedesAssessmentId,
+                SupersedesAssessmentCreatedUtc = predecessor.CreatedUtc,
+                ProducerSchemaVersion = descriptor.Assessment.Producer.SchemaVersion,
+                ProducerKind = descriptor.Assessment.Producer.Kind,
+                ProducerName = descriptor.Assessment.Producer.Name,
+                ProducerVersion = descriptor.Assessment.Producer.Version,
+                RecipeIdentitySha256 = descriptor.Assessment.RecipeIdentitySha256,
+                ReceiptSchemaVersion = descriptor.SchemaVersion,
+                ExecutionIdentitySha256 = descriptor.ExecutionIdentitySha256,
+                OptionsIdentitySha256 = descriptor.OptionsIdentitySha256,
+                CanonicalReceiptJson = Encoding.UTF8.GetString(receipt),
+                CanonicalReceiptSha256 = ProcessingIdentity.ComputePayloadSha256(receipt),
+                CanonicalReceiptByteLength = receipt.Length
             };
-        }, resetReviewState: true, cancellationToken).ConfigureAwait(false);
-        mutable.CommittedUtc = appended.Event.VersionCreatedUtc;
-        mutable.ResultAssessmentId = assessmentId;
-        mutable.ResultEventVersionId = appended.Event.EventVersionId;
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.DisposeAsync().ConfigureAwait(false);
+            for (var ordinal = 0; ordinal < observations.Length; ordinal++)
+            {
+                assessmentRecord.EvidenceObservations.Add(new CentralTransientAssessmentObservation
+                {
+                    CentralTransientEventId = record.CentralTransientEventId,
+                    AssessmentId = assessmentId,
+                    Ordinal = ordinal,
+                    ObservationId = observations[ordinal].Observation.ObservationId
+                });
+            }
+            dbContext.CentralTransientAssessments.Add(assessmentRecord);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            appended = await versionAppender.AppendGeneratedAsync(record.CentralTransientEventId, previous =>
+            {
+                var versionCreatedUtc = descriptor.Assessment.CreatedUtc <= previous.VersionCreatedUtc
+                    ? previous.VersionCreatedUtc.AddTicks(1)
+                    : descriptor.Assessment.CreatedUtc;
+                return previous with
+                {
+                    EventVersionId = Guid.NewGuid(),
+                    Version = previous.Version + 1,
+                    PreviousEventVersionId = previous.EventVersionId,
+                    PreviousVersionCreatedUtc = previous.VersionCreatedUtc,
+                    VersionCreatedUtc = versionCreatedUtc,
+                    State = StateFor(descriptor.Assessment),
+                    Assessments = previous.Assessments.Append(descriptor.Assessment).ToArray()
+                };
+            }, resetReviewState: true, cancellationToken).ConfigureAwait(false);
+            mutable.CommittedUtc = appended.Event.VersionCreatedUtc;
+            mutable.ResultAssessmentId = assessmentId;
+            mutable.ResultEventVersionId = appended.Event.EventVersionId;
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
         await derivativeScheduler.EnsureScheduledAsync([appended.Event.EventVersionId], cancellationToken)
             .ConfigureAwait(false);
         return await CompleteAsync(lease, "transient-reprocessing.persisted", cancellationToken).ConfigureAwait(false);

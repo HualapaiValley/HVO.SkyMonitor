@@ -167,242 +167,239 @@ internal sealed class CentralTransientEventPersistence(
             }
             holdTargets = callerHoldTargets;
         }
-        await using var ownedScope = ownedHoldScope;
-        await using var ownedTransaction = dbContext.Database.CurrentTransaction is null
-            ? await dbContext.Database.BeginTransactionAsync(
-                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false)
-            : null;
-        if (await AcquireValidationJobLockAsync(request.CentralDerivativeJobId, cancellationToken).ConfigureAwait(false) != 1)
+        var ownsTransaction = dbContext.Database.CurrentTransaction is null;
+        CentralTransientPersistenceCommit result;
+        await using (var ownedScope = ownedHoldScope)
         {
-            throw Failure(CentralTransientPersistenceReasonCodes.JobNotFound, "Transient validation job was not found.");
-        }
-        var validationJob = await dbContext.CentralTransientValidationJobs
-            .Include(item => item.IdentitySlots)
-            .Include(item => item.ExtractionReceipt)
-            .SingleOrDefaultAsync(item => item.CentralDerivativeJobId == request.CentralDerivativeJobId, cancellationToken)
-            .ConfigureAwait(false)
-            ?? throw Failure(CentralTransientPersistenceReasonCodes.JobNotFound, "Transient validation job was not found.");
-        ValidateExecutionOptions(validationJob, extraction.Value, assessmentReceipts);
-        var persistedCandidates = ResolvePersistedCandidates(validationJob, extraction.Value);
-        var job = await dbContext.CentralDerivativeJobs
-            .Include(item => item.InputRequirements)
-            .Include(item => item.Inputs)
-            .Include(item => item.CanonicalInputs)
-            .SingleAsync(item => item.Id == request.CentralDerivativeJobId, cancellationToken).ConfigureAwait(false);
-        ValidateJobBinding(job, validationJob.AgentId, extraction.Value);
-        if (validationJob.CommittedAtUtc is not null || validationJob.ExtractionReceipt is not null)
-        {
-            var existing = await AdoptExistingCommitAsync(
-                validationJob, extraction, persistedCandidates, events, assessmentReceipts, cancellationToken)
-                .ConfigureAwait(false);
-            if (ownedTransaction is not null)
+            await using var ownedTransaction = ownsTransaction
+                ? await dbContext.Database.BeginTransactionAsync(
+                    IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false)
+                : null;
+            result = await PersistTransactionAsync().ConfigureAwait(false);
+
+            async Task<CentralTransientPersistenceCommit> PersistTransactionAsync()
             {
-                await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                await ownedTransaction.DisposeAsync().ConfigureAwait(false);
-                if (ownedHoldScope is not null)
+                if (await AcquireValidationJobLockAsync(request.CentralDerivativeJobId, cancellationToken).ConfigureAwait(false) != 1)
                 {
-                    await ownedHoldScope.DisposeAsync().ConfigureAwait(false);
+                    throw Failure(CentralTransientPersistenceReasonCodes.JobNotFound, "Transient validation job was not found.");
                 }
-                if (derivativeScheduler is not null)
+                var validationJob = await dbContext.CentralTransientValidationJobs
+                    .Include(item => item.IdentitySlots)
+                    .Include(item => item.ExtractionReceipt)
+                    .SingleOrDefaultAsync(item => item.CentralDerivativeJobId == request.CentralDerivativeJobId, cancellationToken)
+                    .ConfigureAwait(false)
+                    ?? throw Failure(CentralTransientPersistenceReasonCodes.JobNotFound, "Transient validation job was not found.");
+                ValidateExecutionOptions(validationJob, extraction.Value, assessmentReceipts);
+                var persistedCandidates = ResolvePersistedCandidates(validationJob, extraction.Value);
+                var job = await dbContext.CentralDerivativeJobs
+                    .Include(item => item.InputRequirements)
+                    .Include(item => item.Inputs)
+                    .Include(item => item.CanonicalInputs)
+                    .SingleAsync(item => item.Id == request.CentralDerivativeJobId, cancellationToken).ConfigureAwait(false);
+                ValidateJobBinding(job, validationJob.AgentId, extraction.Value);
+                if (validationJob.CommittedAtUtc is not null || validationJob.ExtractionReceipt is not null)
                 {
-                    await derivativeScheduler.EnsureScheduledAsync(
-                        existing.EventVersionIds, cancellationToken).ConfigureAwait(false);
+                    var existing = await AdoptExistingCommitAsync(
+                        validationJob, extraction, persistedCandidates, events, assessmentReceipts, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (ownedTransaction is not null)
+                    {
+                        await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    return existing;
                 }
-            }
-            return existing;
-        }
 
-        var slots = validationJob.IdentitySlots.OrderBy(item => item.Ordinal).ToArray();
-        await ValidateIdentityBindingsAsync(
-            validationJob, slots, extraction.Value, persistedCandidates, events, assessmentReceipts, cancellationToken)
-            .ConfigureAwait(false);
-        var artifacts = await ResolveAndLockArtifactsAsync(
-            validationJob.AgentId, job.Inputs, extraction.Value, events.Select(item => item.Value), cancellationToken)
-            .ConfigureAwait(false);
-        try
-        {
-            await CentralTransientPayloadHoldFence.ValidateAsync(
-                dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
-        }
-        catch (CentralTransientPayloadHoldRejectedException exception)
-        {
-            throw Failure(CentralTransientPersistenceReasonCodes.InvalidArtifactLineage, exception.Message);
-        }
-
-        var eventRecords = new Dictionary<Guid, CentralTransientEventRecord>();
-        var versionRecords = new List<CentralTransientEventVersionRecord>(events.Length);
-        var pendingAssessmentObservations = new List<CentralTransientAssessmentObservation>();
-        var assessmentPayloadById = assessmentReceipts.ToDictionary(item => item.Value.Assessment.AssessmentId);
-        var persistedEventEvidence = new List<PersistedEventEvidence>(events.Length);
-
-        foreach (var eventPayload in events)
-        {
-            var transientEvent = eventPayload.Value;
-            var eventRecord = await PrepareEventAsync(transientEvent, cancellationToken).ConfigureAwait(false);
-            var isNewEvent = dbContext.Entry(eventRecord).State == EntityState.Added;
-            if (!isNewEvent && await dbContext.CentralTransientPayloadReleases.AsNoTracking().AnyAsync(
-                    item => item.CentralTransientEventId == eventRecord.Id, cancellationToken).ConfigureAwait(false))
-            {
-                throw Failure(CentralTransientPersistenceReasonCodes.InvalidHistory,
-                    "Released transient events cannot accept new validation history.");
-            }
-            eventRecords.Add(transientEvent.EventId, eventRecord);
-            var committedReviewIds = isNewEvent
-                ? []
-                : await dbContext.CentralTransientReviews.AsNoTracking()
-                    .Where(item => item.CentralTransientEventId == eventRecord.Id)
-                    .Select(item => item.ReviewId)
-                    .ToArrayAsync(cancellationToken).ConfigureAwait(false);
-            if (transientEvent.Reviews.Any(review => !committedReviewIds.Contains(review.ReviewId)))
-            {
-                throw Failure(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding,
-                    "Validation workers cannot author human review history.");
-            }
-            var committedDerivativeIds = isNewEvent
-                ? []
-                : await dbContext.CentralTransientDerivatives.AsNoTracking()
-                    .Where(item => item.CentralTransientEventId == eventRecord.Id)
-                    .Select(item => item.DerivativeId)
-                    .ToArrayAsync(cancellationToken).ConfigureAwait(false);
-            if (transientEvent.Derivatives.Any(derivative => !committedDerivativeIds.Contains(derivative.DerivativeId)))
-            {
-                throw Failure(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding,
-                    "Validation workers cannot author event derivative history.");
-            }
-            var existingObservationIds = await dbContext.CentralTransientObservations.AsNoTracking()
-                .Where(item => item.CentralTransientEventId == eventRecord.Id)
-                .Select(item => item.ObservationId).ToHashSetAsync(cancellationToken).ConfigureAwait(false);
-            var existingAssessmentIds = await dbContext.CentralTransientAssessments.AsNoTracking()
-                .Where(item => item.CentralTransientEventId == eventRecord.Id)
-                .Select(item => item.AssessmentId).ToHashSetAsync(cancellationToken).ConfigureAwait(false);
-
-            foreach (var observation in transientEvent.Observations)
-            {
-                if (!existingObservationIds.Contains(observation.ObservationId))
+                var slots = validationJob.IdentitySlots.OrderBy(item => item.Ordinal).ToArray();
+                await ValidateIdentityBindingsAsync(
+                    validationJob, slots, extraction.Value, persistedCandidates, events, assessmentReceipts, cancellationToken)
+                    .ConfigureAwait(false);
+                var artifacts = await ResolveAndLockArtifactsAsync(
+                    validationJob.AgentId, job.Inputs, extraction.Value, events.Select(item => item.Value), cancellationToken)
+                    .ConfigureAwait(false);
+                try
                 {
-                    var sourceArtifact = GetArtifact(artifacts, observation.Source.Locator.Artifact.ArtifactId);
-                    var observationRecord = CreateObservation(eventRecord.Id, observation, extraction.Value, sourceArtifact,
-                        artifacts);
-                    dbContext.CentralTransientObservationSources.Add(observationRecord.Source!);
-                    dbContext.CentralTransientObservations.Add(observationRecord);
+                    await CentralTransientPayloadHoldFence.ValidateAsync(
+                        dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
                 }
-            }
-
-            var assessmentCreatedUtc = await dbContext.CentralTransientAssessments.AsNoTracking()
-                .Where(item => item.CentralTransientEventId == eventRecord.Id)
-                .ToDictionaryAsync(item => item.AssessmentId, item => item.CreatedUtc, cancellationToken)
-                .ConfigureAwait(false);
-            for (var assessmentOrdinal = 0; assessmentOrdinal < transientEvent.Assessments.Count; assessmentOrdinal++)
-            {
-                var assessment = transientEvent.Assessments[assessmentOrdinal];
-                if (!existingAssessmentIds.Contains(assessment.AssessmentId))
+                catch (CentralTransientPayloadHoldRejectedException exception)
                 {
-                    if (!assessmentPayloadById.TryGetValue(assessment.AssessmentId, out var receipt))
+                    throw Failure(CentralTransientPersistenceReasonCodes.InvalidArtifactLineage, exception.Message);
+                }
+
+                var eventRecords = new Dictionary<Guid, CentralTransientEventRecord>();
+                var versionRecords = new List<CentralTransientEventVersionRecord>(events.Length);
+                var pendingAssessmentObservations = new List<CentralTransientAssessmentObservation>();
+                var assessmentPayloadById = assessmentReceipts.ToDictionary(item => item.Value.Assessment.AssessmentId);
+                var persistedEventEvidence = new List<PersistedEventEvidence>(events.Length);
+
+                foreach (var eventPayload in events)
+                {
+                    var transientEvent = eventPayload.Value;
+                    var eventRecord = await PrepareEventAsync(transientEvent, cancellationToken).ConfigureAwait(false);
+                    var isNewEvent = dbContext.Entry(eventRecord).State == EntityState.Added;
+                    if (!isNewEvent && await dbContext.CentralTransientPayloadReleases.AsNoTracking().AnyAsync(
+                            item => item.CentralTransientEventId == eventRecord.Id, cancellationToken).ConfigureAwait(false))
+                    {
+                        throw Failure(CentralTransientPersistenceReasonCodes.InvalidHistory,
+                            "Released transient events cannot accept new validation history.");
+                    }
+                    eventRecords.Add(transientEvent.EventId, eventRecord);
+                    var committedReviewIds = isNewEvent
+                        ? []
+                        : await dbContext.CentralTransientReviews.AsNoTracking()
+                            .Where(item => item.CentralTransientEventId == eventRecord.Id)
+                            .Select(item => item.ReviewId)
+                            .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+                    if (transientEvent.Reviews.Any(review => !committedReviewIds.Contains(review.ReviewId)))
                     {
                         throw Failure(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding,
-                            "Every new assessment requires its exact canonical execution receipt.");
+                            "Validation workers cannot author human review history.");
                     }
-                    DateTimeOffset? supersededCreatedUtc = null;
-                    if (assessment.SupersedesAssessmentId is { } predecessor)
+                    var committedDerivativeIds = isNewEvent
+                        ? []
+                        : await dbContext.CentralTransientDerivatives.AsNoTracking()
+                            .Where(item => item.CentralTransientEventId == eventRecord.Id)
+                            .Select(item => item.DerivativeId)
+                            .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+                    if (transientEvent.Derivatives.Any(derivative => !committedDerivativeIds.Contains(derivative.DerivativeId)))
                     {
-                        if (!assessmentCreatedUtc.TryGetValue(predecessor, out var predecessorCreatedUtc))
+                        throw Failure(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding,
+                            "Validation workers cannot author event derivative history.");
+                    }
+                    var existingObservationIds = await dbContext.CentralTransientObservations.AsNoTracking()
+                        .Where(item => item.CentralTransientEventId == eventRecord.Id)
+                        .Select(item => item.ObservationId).ToHashSetAsync(cancellationToken).ConfigureAwait(false);
+                    var existingAssessmentIds = await dbContext.CentralTransientAssessments.AsNoTracking()
+                        .Where(item => item.CentralTransientEventId == eventRecord.Id)
+                        .Select(item => item.AssessmentId).ToHashSetAsync(cancellationToken).ConfigureAwait(false);
+
+                    foreach (var observation in transientEvent.Observations)
+                    {
+                        if (!existingObservationIds.Contains(observation.ObservationId))
                         {
-                            throw Failure(CentralTransientPersistenceReasonCodes.InvalidHistory,
-                                "Assessment predecessor was not committed earlier in the same event.");
+                            var sourceArtifact = GetArtifact(artifacts, observation.Source.Locator.Artifact.ArtifactId);
+                            var observationRecord = CreateObservation(eventRecord.Id, observation, extraction.Value, sourceArtifact,
+                                artifacts);
+                            dbContext.CentralTransientObservationSources.Add(observationRecord.Source!);
+                            dbContext.CentralTransientObservations.Add(observationRecord);
                         }
-                        supersededCreatedUtc = predecessorCreatedUtc;
                     }
-                    var assessmentRecord = CreateAssessment(eventRecord.Id, assessment, receipt, supersededCreatedUtc);
-                    dbContext.CentralTransientAssessments.Add(assessmentRecord);
-                    assessmentCreatedUtc.Add(assessment.AssessmentId, assessment.CreatedUtc);
-                    for (var ordinal = 0; ordinal < assessment.EvidenceObservationIds.Count; ordinal++)
+
+                    var assessmentCreatedUtc = await dbContext.CentralTransientAssessments.AsNoTracking()
+                        .Where(item => item.CentralTransientEventId == eventRecord.Id)
+                        .ToDictionaryAsync(item => item.AssessmentId, item => item.CreatedUtc, cancellationToken)
+                        .ConfigureAwait(false);
+                    for (var assessmentOrdinal = 0; assessmentOrdinal < transientEvent.Assessments.Count; assessmentOrdinal++)
                     {
-                        pendingAssessmentObservations.Add(new CentralTransientAssessmentObservation
+                        var assessment = transientEvent.Assessments[assessmentOrdinal];
+                        if (!existingAssessmentIds.Contains(assessment.AssessmentId))
                         {
-                            CentralTransientEventId = eventRecord.Id,
-                            AssessmentId = assessment.AssessmentId,
-                            Ordinal = ordinal,
-                            ObservationId = assessment.EvidenceObservationIds[ordinal]
-                        });
+                            if (!assessmentPayloadById.TryGetValue(assessment.AssessmentId, out var receipt))
+                            {
+                                throw Failure(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding,
+                                    "Every new assessment requires its exact canonical execution receipt.");
+                            }
+                            DateTimeOffset? supersededCreatedUtc = null;
+                            if (assessment.SupersedesAssessmentId is { } predecessor)
+                            {
+                                if (!assessmentCreatedUtc.TryGetValue(predecessor, out var predecessorCreatedUtc))
+                                {
+                                    throw Failure(CentralTransientPersistenceReasonCodes.InvalidHistory,
+                                        "Assessment predecessor was not committed earlier in the same event.");
+                                }
+                                supersededCreatedUtc = predecessorCreatedUtc;
+                            }
+                            var assessmentRecord = CreateAssessment(eventRecord.Id, assessment, receipt, supersededCreatedUtc);
+                            dbContext.CentralTransientAssessments.Add(assessmentRecord);
+                            assessmentCreatedUtc.Add(assessment.AssessmentId, assessment.CreatedUtc);
+                            for (var ordinal = 0; ordinal < assessment.EvidenceObservationIds.Count; ordinal++)
+                            {
+                                pendingAssessmentObservations.Add(new CentralTransientAssessmentObservation
+                                {
+                                    CentralTransientEventId = eventRecord.Id,
+                                    AssessmentId = assessment.AssessmentId,
+                                    Ordinal = ordinal,
+                                    ObservationId = assessment.EvidenceObservationIds[ordinal]
+                                });
+                            }
+                        }
                     }
+
+                    var appended = await versionAppender.AppendCanonicalAsync(new CentralTransientEventAppendRequest(
+                        eventRecord.Id,
+                        transientEvent,
+                        eventPayload.Json,
+                        eventPayload.Sha256,
+                        eventPayload.ByteLength,
+                        isNewEvent), cancellationToken).ConfigureAwait(false);
+                    versionRecords.Add(appended.Version);
+                    persistedEventEvidence.Add(new PersistedEventEvidence(
+                        transientEvent.EventId,
+                        transientEvent.EventVersionId,
+                        transientEvent.State,
+                        eventPayload.Sha256));
                 }
-            }
 
-            var appended = await versionAppender.AppendCanonicalAsync(new CentralTransientEventAppendRequest(
-                eventRecord.Id,
-                transientEvent,
-                eventPayload.Json,
-                eventPayload.Sha256,
-                eventPayload.ByteLength,
-                isNewEvent), cancellationToken).ConfigureAwait(false);
-            versionRecords.Add(appended.Version);
-            persistedEventEvidence.Add(new PersistedEventEvidence(
-                transientEvent.EventId,
-                transientEvent.EventVersionId,
-                transientEvent.State,
-                eventPayload.Sha256));
-        }
+                if (events.Length == 0 && extraction.Value.CenteredContextConverged &&
+                    validationJob.ProvisionalCentralDerivativeJobId.HasValue)
+                {
+                    await AppendCenteredNoCandidateRejectionsAsync(
+                        validationJob,
+                        extraction.Value,
+                        versionRecords,
+                        persistedEventEvidence,
+                        cancellationToken).ConfigureAwait(false);
+                }
 
-        if (events.Length == 0 && extraction.Value.CenteredContextConverged &&
-            validationJob.ProvisionalCentralDerivativeJobId.HasValue)
-        {
-            await AppendCenteredNoCandidateRejectionsAsync(
-                validationJob,
-                extraction.Value,
-                versionRecords,
-                persistedEventEvidence,
-                cancellationToken).ConfigureAwait(false);
-        }
+                var extractionRecord = CreateExtractionReceipt(validationJob.CentralDerivativeJobId, extraction, artifacts);
+                dbContext.CentralTransientExtractionReceipts.Add(extractionRecord);
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        var extractionRecord = CreateExtractionReceipt(validationJob.CentralDerivativeJobId, extraction, artifacts);
-        dbContext.CentralTransientExtractionReceipts.Add(extractionRecord);
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-
-        dbContext.AddRange(pendingAssessmentObservations);
-        var candidateCount = persistedCandidates.Count;
-        var activeCandidateIds = persistedCandidates.Select(item => item.CandidateId).ToHashSet();
-        foreach (var slot in slots)
-        {
-            if (!activeCandidateIds.Contains(slot.CandidateId))
-            {
-                slot.State = CentralTransientValidationIdentitySlotState.Unused;
-                continue;
-            }
-            var effectiveEventId = slot.AdoptedEventId ?? slot.SubmittedEventId;
-            var eventRecord = eventRecords[effectiveEventId];
-            var version = versionRecords.Single(item => item.CentralTransientEventId == eventRecord.Id);
-            slot.State = CentralTransientValidationIdentitySlotState.Committed;
-            slot.CentralTransientEventId = eventRecord.Id;
-            slot.PersistedEventId = effectiveEventId;
-            slot.PersistedEventVersionId = version.EventVersionId;
-            slot.PersistedObservationId = slot.ObservationId;
-            slot.PersistedAssessmentId = slot.AssessmentId;
-        }
-        validationJob.CommittedAtUtc = versionRecords.Count == 0
-            ? extraction.Value.OrderedSources.Max(item => item.Source.ObservationEndedUtc)
-            : versionRecords.Max(item => item.VersionCreatedUtc);
-        var outcomeState = ResolveOutcomeState(
-            events.Select(item => item.Value.State).ToArray(), extraction.Value.CenteredContextConverged);
-        var outcomeReason = events.Length == 0
-            ? TransientCandidateExtractionReasonCodes.NoCandidate
-            : CentralTransientRuntimeReasonCodes.Persisted;
-        var outcomeEvidence = CanonicalJson(new
-        {
-            schemaVersion = "central-transient-validation-outcome-v1",
-            state = outcomeState,
-            reasonCode = outcomeReason,
-            extractionIdentitySha256 = extraction.Value.ExtractionIdentitySha256,
-            extractionReceiptSha256 = extraction.Sha256,
-            events = persistedEventEvidence
-        });
-        validationJob.OutcomeState = outcomeState;
-        validationJob.OutcomeReasonCode = outcomeReason;
-        validationJob.OutcomeEvidenceJson = outcomeEvidence;
-        validationJob.OutcomeEvidenceIdentitySha256 = ProcessingIdentity.ComputePayloadSha256(
-            Encoding.UTF8.GetBytes(outcomeEvidence));
-        validationJob.OutcomeRecordedAtUtc = validationJob.CommittedAtUtc;
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        _ = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+                dbContext.AddRange(pendingAssessmentObservations);
+                var candidateCount = persistedCandidates.Count;
+                var activeCandidateIds = persistedCandidates.Select(item => item.CandidateId).ToHashSet();
+                foreach (var slot in slots)
+                {
+                    if (!activeCandidateIds.Contains(slot.CandidateId))
+                    {
+                        slot.State = CentralTransientValidationIdentitySlotState.Unused;
+                        continue;
+                    }
+                    var effectiveEventId = slot.AdoptedEventId ?? slot.SubmittedEventId;
+                    var eventRecord = eventRecords[effectiveEventId];
+                    var version = versionRecords.Single(item => item.CentralTransientEventId == eventRecord.Id);
+                    slot.State = CentralTransientValidationIdentitySlotState.Committed;
+                    slot.CentralTransientEventId = eventRecord.Id;
+                    slot.PersistedEventId = effectiveEventId;
+                    slot.PersistedEventVersionId = version.EventVersionId;
+                    slot.PersistedObservationId = slot.ObservationId;
+                    slot.PersistedAssessmentId = slot.AssessmentId;
+                }
+                validationJob.CommittedAtUtc = versionRecords.Count == 0
+                    ? extraction.Value.OrderedSources.Max(item => item.Source.ObservationEndedUtc)
+                    : versionRecords.Max(item => item.VersionCreatedUtc);
+                var outcomeState = ResolveOutcomeState(
+                    events.Select(item => item.Value.State).ToArray(), extraction.Value.CenteredContextConverged);
+                var outcomeReason = events.Length == 0
+                    ? TransientCandidateExtractionReasonCodes.NoCandidate
+                    : CentralTransientRuntimeReasonCodes.Persisted;
+                var outcomeEvidence = CanonicalJson(new
+                {
+                    schemaVersion = "central-transient-validation-outcome-v1",
+                    state = outcomeState,
+                    reasonCode = outcomeReason,
+                    extractionIdentitySha256 = extraction.Value.ExtractionIdentitySha256,
+                    extractionReceiptSha256 = extraction.Sha256,
+                    events = persistedEventEvidence
+                });
+                validationJob.OutcomeState = outcomeState;
+                validationJob.OutcomeReasonCode = outcomeReason;
+                validationJob.OutcomeEvidenceJson = outcomeEvidence;
+                validationJob.OutcomeEvidenceIdentitySha256 = ProcessingIdentity.ComputePayloadSha256(
+                    Encoding.UTF8.GetBytes(outcomeEvidence));
+                validationJob.OutcomeRecordedAtUtc = validationJob.CommittedAtUtc;
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                _ = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO [CentralTransientValidationOutcomeVersions]
                 ([Id], [CentralDerivativeJobId], [Version], [State], [ReasonCode], [EvidenceJson],
                  [EvidenceIdentitySha256], [RecordedAtUtc])
@@ -410,37 +407,32 @@ internal sealed class CentralTransientEventPersistence(
                     {outcomeReason}, {outcomeEvidence}, {validationJob.OutcomeEvidenceIdentitySha256},
                     {validationJob.OutcomeRecordedAtUtc.Value})
             """, cancellationToken).ConfigureAwait(false);
-        if (ownedTransaction is not null)
-        {
-            await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            await ownedTransaction.DisposeAsync().ConfigureAwait(false);
-        }
-
-        var committedSlots = persistedCandidates
-            .Select(candidate => slots.Single(slot => slot.CandidateId == candidate.CandidateId)).ToArray();
-        var commit = new CentralTransientPersistenceCommit(
-            validationJob.CentralDerivativeJobId,
-            candidateCount == 0
-                ? versionRecords.Select(item => item.EventVersionId).ToArray()
-                : committedSlots.Select(slot =>
+                if (ownedTransaction is not null)
                 {
-                    var eventRecordId = eventRecords[slot.AdoptedEventId ?? slot.SubmittedEventId].Id;
-                    return versionRecords.Single(item => item.CentralTransientEventId == eventRecordId).EventVersionId;
-                }).ToArray(),
-            committedSlots.Select(item => item.AssessmentId).ToArray());
-        if (ownedTransaction is not null)
-        {
-            if (ownedHoldScope is not null)
-            {
-                await ownedHoldScope.DisposeAsync().ConfigureAwait(false);
-            }
-            if (derivativeScheduler is not null)
-            {
-                await derivativeScheduler.EnsureScheduledAsync(
-                    commit.EventVersionIds, cancellationToken).ConfigureAwait(false);
+                    await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                var committedSlots = persistedCandidates
+                    .Select(candidate => slots.Single(slot => slot.CandidateId == candidate.CandidateId)).ToArray();
+                var commit = new CentralTransientPersistenceCommit(
+                    validationJob.CentralDerivativeJobId,
+                    candidateCount == 0
+                        ? versionRecords.Select(item => item.EventVersionId).ToArray()
+                        : committedSlots.Select(slot =>
+                        {
+                            var eventRecordId = eventRecords[slot.AdoptedEventId ?? slot.SubmittedEventId].Id;
+                            return versionRecords.Single(item => item.CentralTransientEventId == eventRecordId).EventVersionId;
+                        }).ToArray(),
+                    committedSlots.Select(item => item.AssessmentId).ToArray());
+                return commit;
             }
         }
-        return commit;
+        if (ownsTransaction && derivativeScheduler is not null)
+        {
+            await derivativeScheduler.EnsureScheduledAsync(
+                result.EventVersionIds, cancellationToken).ConfigureAwait(false);
+        }
+        return result;
     }
 
     private async Task AppendCenteredNoCandidateRejectionsAsync(
