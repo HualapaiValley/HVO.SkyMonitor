@@ -12,6 +12,8 @@ internal sealed class DeploymentLocationTelemetry : IDisposable
     private readonly Counter<long> operations;
     private readonly Histogram<double> duration;
     private readonly Counter<long> backfills;
+    private readonly Counter<long> reconciliationItems;
+    private readonly Histogram<double> reconciliationDuration;
     private long pendingCount;
     private double oldestPendingAgeSeconds;
 
@@ -20,6 +22,10 @@ internal sealed class DeploymentLocationTelemetry : IDisposable
         operations = meter.CreateCounter<long>("skymonitor.deployment_location.operations", "{operation}");
         duration = meter.CreateHistogram<double>("skymonitor.deployment_location.duration", "ms");
         backfills = meter.CreateCounter<long>("skymonitor.deployment_location.backfill", "{entity}");
+        reconciliationItems = meter.CreateCounter<long>(
+            "skymonitor.deployment_location.reconciliation.items", "{capture}");
+        reconciliationDuration = meter.CreateHistogram<double>(
+            "skymonitor.deployment_location.reconciliation.duration", "ms");
         meter.CreateObservableGauge(
             "skymonitor.deployment_location.pending",
             () => Interlocked.Read(ref pendingCount),
@@ -51,6 +57,17 @@ internal sealed class DeploymentLocationTelemetry : IDisposable
 
     public void RecordBackfill(int count)
         => backfills.Add(count, new KeyValuePair<string, object?>("entity", "observatory"));
+
+    public void RecordReconciliation(string phase, string outcome, long itemCount, TimeSpan elapsed)
+    {
+        var tags = new TagList
+        {
+            { "phase", phase },
+            { "outcome", outcome }
+        };
+        reconciliationItems.Add(itemCount, tags);
+        reconciliationDuration.Record(elapsed.TotalMilliseconds, tags);
+    }
 
     public void Dispose() => meter.Dispose();
 }

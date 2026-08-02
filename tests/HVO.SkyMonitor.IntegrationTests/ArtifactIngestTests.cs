@@ -600,6 +600,17 @@ public sealed class ArtifactIngestTests
             "integration-test").ConfigureAwait(false);
         acknowledgment.Status.Should().Be(DeploymentLocationResolutionStatus.Acknowledged);
         await db.SaveChangesAsync().ConfigureAwait(false);
+        for (var step = 0; step < 20; step++)
+        {
+            await using var processScope = fixture.Factory.Services.CreateAsyncScope();
+            var processed = await processScope.ServiceProvider
+                .GetRequiredService<IDeploymentLocationReconciliationProcessor>()
+                .ProcessNextAsync().ConfigureAwait(false);
+            if (!processed)
+            {
+                break;
+            }
+        }
         db.ChangeTracker.Clear();
         var reconciledFrame = await db.CentralFrames.Include(item => item.Location)
             .SingleAsync(item => item.Id == artifact.CentralFrameId).ConfigureAwait(false);
@@ -940,6 +951,16 @@ public sealed class ArtifactIngestTests
                 "owner-approved-current-observatory",
                 pendingToken).ConfigureAwait(false);
             resolved.Status.Should().Be(DeploymentLocationMutationStatus.Applied);
+        }
+        for (var step = 0; step < 30; step++)
+        {
+            await using var processScope = fixture.Factory.Services.CreateAsyncScope();
+            if (!await processScope.ServiceProvider
+                .GetRequiredService<IDeploymentLocationReconciliationProcessor>()
+                .ProcessNextAsync().ConfigureAwait(false))
+            {
+                break;
+            }
         }
 
         await using (var restoredScope = fixture.Factory.Services.CreateAsyncScope())

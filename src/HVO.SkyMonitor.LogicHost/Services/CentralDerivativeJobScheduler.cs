@@ -19,7 +19,15 @@ internal interface ICentralDerivativeJobScheduler
         Guid devicePublicId,
         Guid artifactId,
         DateTimeOffset now,
-        CancellationToken cancellationToken) => Task.CompletedTask;
+        CancellationToken cancellationToken) => throw new NotSupportedException(
+            "This scheduler does not support durable artifact-identity scheduling.");
+
+    Task ResolveAffectedWindowsAsync(
+        Guid devicePublicId,
+        Guid artifactId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken) => throw new NotSupportedException(
+            "This scheduler does not support durable window convergence.");
 
     Task<Guid?> EnsureTransientContextConvergenceAsync(
         Guid provisionalJobId,
@@ -64,6 +72,22 @@ internal sealed class CentralDerivativeJobScheduler(
             .SingleAsync(item => item.DevicePublicId == devicePublicId && item.ArtifactId == artifactId,
                 cancellationToken).ConfigureAwait(false);
         await EnsureRequiredJobsAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task ResolveAffectedWindowsAsync(
+        Guid devicePublicId,
+        Guid artifactId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var artifact = await dbContext.CentralArtifacts
+            .Include(item => item.Frame)
+            .SingleAsync(item => item.DevicePublicId == devicePublicId && item.ArtifactId == artifactId,
+                cancellationToken).ConfigureAwait(false);
+        if (artifact.Role == FrameArtifactRole.Raw && artifact.Frame?.CaptureSequence is not null)
+        {
+            await windowResolver.ResolveAffectedAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public CentralDerivativeJob CreateHybridTransientJob(

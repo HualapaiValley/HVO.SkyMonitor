@@ -92,6 +92,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<ObservatoryLocationVersion> ObservatoryLocationVersions => Set<ObservatoryLocationVersion>();
     internal DbSet<DeviceDeploymentLocationVersion> DeviceDeploymentLocationVersions => Set<DeviceDeploymentLocationVersion>();
     internal DbSet<DeploymentLocationResolutionAudit> DeploymentLocationResolutionAudits => Set<DeploymentLocationResolutionAudit>();
+    internal DbSet<DeploymentLocationReconciliationWork> DeploymentLocationReconciliationWork => Set<DeploymentLocationReconciliationWork>();
+    internal DbSet<DeploymentLocationReconciliationCapture> DeploymentLocationReconciliationCaptures => Set<DeploymentLocationReconciliationCapture>();
     internal DbSet<CentralCaptureLocation> CentralCaptureLocations => Set<CentralCaptureLocation>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

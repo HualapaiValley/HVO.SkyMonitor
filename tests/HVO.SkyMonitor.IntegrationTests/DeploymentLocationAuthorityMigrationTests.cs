@@ -43,18 +43,23 @@ public sealed class DeploymentLocationAuthorityMigrationTests
                 SELECT [name] AS [Value]
                 FROM [sys].[tables]
                 WHERE [name] IN (N'ObservatoryLocationVersions', N'DeviceDeploymentLocationVersions',
-                    N'DeploymentLocationResolutionAudits', N'CentralCaptureLocations')
+                    N'DeploymentLocationResolutionAudits', N'CentralCaptureLocations',
+                    N'DeploymentLocationReconciliationWork', N'DeploymentLocationReconciliationCaptures')
                 """).ToListAsync().ConfigureAwait(false);
             tables.Should().BeEquivalentTo(
                 "ObservatoryLocationVersions",
                 "DeviceDeploymentLocationVersions",
                 "DeploymentLocationResolutionAudits",
-                "CentralCaptureLocations");
+                "CentralCaptureLocations",
+                "DeploymentLocationReconciliationWork",
+                "DeploymentLocationReconciliationCaptures");
             var indexes = await database.Context.Database.SqlQuery<string>($"""
                 SELECT [name] AS [Value]
                 FROM [sys].[indexes]
                 WHERE [object_id] IN (OBJECT_ID(N'[ObservatoryLocationVersions]'),
                     OBJECT_ID(N'[DeviceDeploymentLocationVersions]'), OBJECT_ID(N'[CentralCaptureLocations]'),
+                    OBJECT_ID(N'[DeploymentLocationReconciliationWork]'),
+                    OBJECT_ID(N'[DeploymentLocationReconciliationCaptures]'),
                     OBJECT_ID(N'[CentralFrames]'))
                   AND [name] IS NOT NULL
                 """).ToListAsync().ConfigureAwait(false);
@@ -65,7 +70,12 @@ public sealed class DeploymentLocationAuthorityMigrationTests
                 "IX_DeviceDeploymentLocationVersions_RegistrationId_Status_ProposedAtUtc_Id",
                 "IX_DeviceDeploymentLocationVersions_RegistrationId_ProposedAtUtc_Id",
                 "IX_CentralCaptureLocations_LocationId_Version",
-                "IX_CentralFrames_RegistrationId"
+                "IX_DeploymentLocationReconciliationWork_DeviceDeploymentLocationVersionId",
+                "IX_DeploymentLocationReconciliationWork_Status_NextAttemptAtUtc_CreatedAtUtc_Id",
+                "IX_DeploymentLocationReconciliationWork_Status_LeaseExpiresAtUtc_CreatedAtUtc_Id",
+                "IX_DeploymentLocationReconciliationCaptures_Work_Generation_Cursor",
+                "IX_CentralFrames_RegistrationId",
+                "IX_CentralFrames_RegistrationId_FirstReceivedAtUtc_Id"
             ]);
             var indexShapes = await database.Context.Database.SqlQuery<IndexShape>($"""
                 SELECT indexes.[name] AS [Name], indexes.[is_unique] AS [IsUnique],
@@ -99,12 +109,13 @@ public sealed class DeploymentLocationAuthorityMigrationTests
                 WHERE [parent_object_id] IN (OBJECT_ID(N'[ObservatoryLocationVersions]'),
                     OBJECT_ID(N'[DeviceDeploymentLocationVersions]'),
                     OBJECT_ID(N'[DeploymentLocationResolutionAudits]'),
-                    OBJECT_ID(N'[CentralCaptureLocations]'))
+                    OBJECT_ID(N'[CentralCaptureLocations]'),
+                    OBJECT_ID(N'[DeploymentLocationReconciliationWork]'),
+                    OBJECT_ID(N'[DeploymentLocationReconciliationCaptures]'))
                 """).ToArrayAsync().ConfigureAwait(false);
-            foreignKeys.Should().HaveCount(6);
-            foreignKeys.Should().ContainSingle(item =>
-                item.DependentTable == "CentralCaptureLocations" && item.DeleteAction == "CASCADE");
-            foreignKeys.Count(item => item.DeleteAction == "NO_ACTION").Should().Be(5);
+            foreignKeys.Should().HaveCount(9);
+            foreignKeys.Count(item => item.DeleteAction == "CASCADE").Should().Be(2);
+            foreignKeys.Count(item => item.DeleteAction == "NO_ACTION").Should().Be(7);
             var checks = await database.Context.Database.SqlQuery<string>($"""
                 SELECT [name] AS [Value]
                 FROM [sys].[check_constraints]
@@ -121,6 +132,28 @@ public sealed class DeploymentLocationAuthorityMigrationTests
                 "CK_DeviceDeploymentLocationVersions_Interval",
                 "CK_CentralCaptureLocations_Interval"
             ]);
+            var workChecks = await database.Context.Database.SqlQuery<string>($"""
+                SELECT [name] AS [Value]
+                FROM [sys].[check_constraints]
+                WHERE [parent_object_id] = OBJECT_ID(N'[DeploymentLocationReconciliationWork]')
+                """).ToArrayAsync().ConfigureAwait(false);
+            workChecks.Should().BeEquivalentTo(
+                "CK_DeploymentLocationReconciliationWork_Status",
+                "CK_DeploymentLocationReconciliationWork_Counts",
+                "CK_DeploymentLocationReconciliationWork_Lease",
+                "CK_DeploymentLocationReconciliationWork_ActiveBatch",
+                "CK_DeploymentLocationReconciliationWork_Discovery",
+                "CK_DeploymentLocationReconciliationWork_DiscoveryCursor",
+                "CK_DeploymentLocationReconciliationWork_Cursor",
+                "CK_DeploymentLocationReconciliationWork_Timestamps",
+                "CK_DeploymentLocationReconciliationWork_State");
+            var rowVersion = await database.Context.Database.SqlQuery<string>($"""
+                SELECT TYPE_NAME([system_type_id]) AS [Value]
+                FROM [sys].[columns]
+                WHERE [object_id] = OBJECT_ID(N'[DeploymentLocationReconciliationWork]')
+                  AND [name] = N'RowVersion'
+                """).SingleAsync().ConfigureAwait(false);
+            rowVersion.Should().Be("timestamp");
         }
         finally
         {
@@ -181,6 +214,7 @@ public sealed class DeploymentLocationAuthorityMigrationTests
             frame.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.LegacyIncomplete);
             (await database.Context.CentralCaptureLocations.CountAsync().ConfigureAwait(false)).Should().Be(0);
             (await database.Context.DeviceDeploymentLocationVersions.CountAsync().ConfigureAwait(false)).Should().Be(0);
+            (await database.Context.DeploymentLocationReconciliationWork.CountAsync().ConfigureAwait(false)).Should().Be(0);
             observatory.CurrentLocationVersion.Should().BeNull();
 
             var backfilled = await ObservatoryLocationBackfill.RunAsync(

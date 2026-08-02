@@ -21,6 +21,7 @@ internal sealed class CentralFrameConfiguration : IEntityTypeConfiguration<Centr
             .HasDefaultValue(CentralCaptureLocationEvidenceState.LegacyIncomplete).IsRequired();
         builder.HasIndex(frame => frame.LocationEvidenceState);
         builder.HasIndex(frame => frame.RegistrationId);
+        builder.HasIndex(frame => new { frame.RegistrationId, frame.FirstReceivedAtUtc, frame.Id });
         builder.HasIndex(frame => frame.LogicalCameraInstallationId);
         builder.HasIndex(frame => new { frame.ObservatoryId, frame.CapturedAtUtc, frame.Id });
         builder.HasIndex(frame => new { frame.LogicalCameraInstallationId, frame.CapturedAtUtc, frame.Id });

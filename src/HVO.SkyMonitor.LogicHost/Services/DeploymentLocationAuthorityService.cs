@@ -46,7 +46,6 @@ internal interface IDeploymentLocationAuthorityService
 internal sealed partial class DeploymentLocationAuthorityService(
     ApplicationDbContext dbContext,
     TimeProvider timeProvider,
-    ICentralDerivativeJobScheduler? derivativeJobScheduler = null,
     DeploymentLocationTelemetry? telemetry = null,
     ILogger<DeploymentLocationAuthorityService>? logger = null) : IDeploymentLocationAuthorityService
 {
@@ -138,6 +137,7 @@ internal sealed partial class DeploymentLocationAuthorityService(
                 Reason = "deployment-version-superseded",
                 OccurredAtUtc = now
             });
+            await ReconcileAsync(superseded, cancellationToken).ConfigureAwait(false);
         }
         var existing = await dbContext.DeviceDeploymentLocationVersions
             .Include(item => item.ObservatoryLocationVersion)
@@ -151,7 +151,7 @@ internal sealed partial class DeploymentLocationAuthorityService(
         {
             existing.DevicePublicId ??= registration.DevicePublicId;
             await ApplyRegistrationStateIfCurrentAsync(registration, existing, cancellationToken).ConfigureAwait(false);
-            await ReconcileCaptureLocationsAsync(existing, cancellationToken).ConfigureAwait(false);
+            await ReconcileAsync(existing, cancellationToken).ConfigureAwait(false);
             if (!isRelational || transaction is not null)
             {
                 await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -208,7 +208,7 @@ internal sealed partial class DeploymentLocationAuthorityService(
         });
         dbContext.DeviceDeploymentLocationVersions.Add(entity);
         await ApplyRegistrationStateIfCurrentAsync(registration, entity, cancellationToken).ConfigureAwait(false);
-        await ReconcileCaptureLocationsAsync(entity, cancellationToken).ConfigureAwait(false);
+        await ReconcileAsync(entity, cancellationToken).ConfigureAwait(false);
         if (!isRelational || transaction is not null)
         {
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -385,6 +385,8 @@ internal sealed partial class DeploymentLocationAuthorityService(
         }
         if (entity.Status == status && string.Equals(entity.ReasonCode, reason, StringComparison.Ordinal))
         {
+            await ReconcileAsync(entity, cancellationToken).ConfigureAwait(false);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             if (transaction is not null)
             {
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -421,7 +423,7 @@ internal sealed partial class DeploymentLocationAuthorityService(
             OccurredAtUtc = now
         });
         await ApplyRegistrationStateIfCurrentAsync(registration, entity, cancellationToken).ConfigureAwait(false);
-        await ReconcileCaptureLocationsAsync(entity, cancellationToken).ConfigureAwait(false);
+        await ReconcileAsync(entity, cancellationToken).ConfigureAwait(false);
         try
         {
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -447,72 +449,50 @@ internal sealed partial class DeploymentLocationAuthorityService(
             ToProposal(entity));
     }
 
-    public Task ReconcileAsync(
+    public async Task ReconcileAsync(
         DeviceDeploymentLocationVersion deployment,
         CancellationToken cancellationToken = default)
-        => ReconcileCaptureLocationsAsync(deployment, cancellationToken);
-
-    private async Task ReconcileCaptureLocationsAsync(
-        DeviceDeploymentLocationVersion deployment,
-        CancellationToken cancellationToken)
     {
         var started = timeProvider.GetTimestamp();
         using var activity = DeploymentLocationTelemetry.ActivitySource.StartActivity(
-            "deployment-location.reconcile");
+            "deployment-location.reconciliation.queue");
         try
         {
-            var observatoryVersion = deployment.ObservatoryLocationVersion
-                ?? await dbContext.ObservatoryLocationVersions.SingleAsync(
-                    item => item.Id == deployment.ObservatoryLocationVersionId,
-                    cancellationToken).ConfigureAwait(false);
-            var captures = await dbContext.CentralCaptureLocations
-                .Include(item => item.CentralFrame)!.ThenInclude(frame => frame!.Artifacts)
-                .Where(item => item.CentralFrame!.RegistrationId == deployment.RegistrationId
-                    && item.LocationId == deployment.LocationId
-                    && item.Version == deployment.Version
-                    && item.CentralFrame.CapturedAtUtc >= observatoryVersion.EffectiveFromUtc
-                    && (observatoryVersion.SupersededAtUtc == null
-                        || item.CentralFrame.CapturedAtUtc < observatoryVersion.SupersededAtUtc))
-                .ToListAsync(cancellationToken).ConfigureAwait(false);
-            foreach (var capture in captures)
+            var work = deployment.ReconciliationWork
+                ?? dbContext.DeploymentLocationReconciliationWork.Local.SingleOrDefault(item =>
+                    item.DeviceDeploymentLocationVersionId == deployment.Id);
+            if (work is null)
             {
-                var exactMatch = AppliesAt(deployment, capture.CentralFrame!.CapturedAtUtc)
-                    && LocationMatches(deployment, capture);
-                capture.DeviceDeploymentLocationVersionId = exactMatch ? deployment.Id : null;
-                capture.DeploymentLocation = exactMatch ? deployment : null;
-                capture.CentralFrame!.LocationEvidenceState = exactMatch
-                    && deployment.Status == DeploymentLocationResolutionStatus.Acknowledged
-                        ? CentralCaptureLocationEvidenceState.ReportedResolved
-                        : CentralCaptureLocationEvidenceState.Mismatch;
-                if (derivativeJobScheduler is null)
-                {
-                    continue;
-                }
-                foreach (var artifact in capture.CentralFrame.Artifacts.Where(item =>
-                             item.ObjectState == CentralArtifactObjectState.Available
-                             && item.ReconstructionState == CentralReconstructionState.Complete))
-                {
-                    await derivativeJobScheduler.EnsureRequiredJobsAsync(
-                        artifact, timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
-                }
+                work = dbContext.Database.IsRelational() && dbContext.Database.CurrentTransaction is not null
+                    ? await dbContext.DeploymentLocationReconciliationWork.FromSqlInterpolated($"""
+                        SELECT * FROM [DeploymentLocationReconciliationWork] WITH (UPDLOCK, HOLDLOCK)
+                        WHERE [DeviceDeploymentLocationVersionId] = {deployment.Id}
+                        """).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+                    : await dbContext.DeploymentLocationReconciliationWork.SingleOrDefaultAsync(item =>
+                        item.DeviceDeploymentLocationVersionId == deployment.Id, cancellationToken).ConfigureAwait(false);
             }
-            var outcome = captures.Count == 0 ? "no-captures" : "reconciled";
-            var reason = deployment.Status == DeploymentLocationResolutionStatus.Pending
-                ? deployment.ReasonCode ?? ExistingReason(deployment)
-                : ResolutionReason(deployment.Status);
-            var versionRelation = VersionRelation(deployment);
-            activity?.SetTag("deployment.outcome", outcome);
-            activity?.SetTag("deployment.reason", reason);
-            activity?.SetTag("deployment.source_kind", deployment.SourceKind.ToString());
-            activity?.SetTag("deployment.status", deployment.Status.ToString());
-            activity?.SetTag("deployment.version_relation", versionRelation);
-            telemetry?.RecordOperation(
-                "reconcile", outcome, reason, "capture", timeProvider.GetElapsedTime(started));
-            if (logger is not null)
+            var now = timeProvider.GetUtcNow();
+            if (work is null)
             {
-                Log.ReconciliationCompleted(
-                    logger, outcome, reason, deployment.SourceKind.ToString(), versionRelation, captures.Count);
+                work = new DeploymentLocationReconciliationWork
+                {
+                    DeploymentLocation = deployment,
+                    DeviceDeploymentLocationVersionId = deployment.Id,
+                    AuthorityConcurrencyToken = deployment.ConcurrencyToken,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now,
+                    NextAttemptAtUtc = now,
+                    TraceParent = System.Diagnostics.Activity.Current?.Id,
+                    TraceState = System.Diagnostics.Activity.Current?.TraceStateString
+                };
+                deployment.ReconciliationWork = work;
+                dbContext.DeploymentLocationReconciliationWork.Add(work);
             }
+            else if (work.AuthorityConcurrencyToken != deployment.ConcurrencyToken)
+            {
+                ResetReconciliationWork(work, deployment.ConcurrencyToken, now);
+            }
+            activity?.SetTag("deployment.outcome", "staged");
         }
         catch (Exception exception) when (exception is not OperationCanceledException
             || !cancellationToken.IsCancellationRequested)
@@ -534,6 +514,41 @@ internal sealed partial class DeploymentLocationAuthorityService(
             }
             throw;
         }
+    }
+
+    private static void ResetReconciliationWork(
+        DeploymentLocationReconciliationWork work,
+        Guid authorityConcurrencyToken,
+        DateTimeOffset now)
+    {
+        work.AuthorityConcurrencyToken = authorityConcurrencyToken;
+        work.Status = DeploymentLocationReconciliationStatuses.Pending;
+        work.UpdatedAtUtc = now;
+        work.StartedAtUtc = null;
+        work.CompletedAtUtc = null;
+        work.AttemptCount = 0;
+        work.LastAttemptAtUtc = null;
+        work.NextAttemptAtUtc = now;
+        work.LastErrorCode = null;
+        work.LeaseToken = null;
+        work.LeaseOwner = null;
+        work.LeaseExpiresAtUtc = null;
+        work.CaptureCount = null;
+        work.DiscoveryCutoffUtc = null;
+        work.DiscoveredCaptureCount = 0;
+        work.DiscoveryCursorFirstReceivedAtUtc = null;
+        work.DiscoveryCursorCentralFrameId = null;
+        work.CompletedCaptureCount = 0;
+        work.ScheduledArtifactCount = 0;
+        work.LastCompletedFirstReceivedAtUtc = null;
+        work.LastCompletedCentralFrameId = null;
+        work.ActiveBatchUpperFirstReceivedAtUtc = null;
+        work.ActiveBatchUpperCentralFrameId = null;
+        work.ActiveBatchCaptureCount = 0;
+        work.SchedulingCentralFrameId = null;
+        work.SchedulingCentralArtifactId = null;
+        work.TraceParent = System.Diagnostics.Activity.Current?.Id;
+        work.TraceState = System.Diagnostics.Activity.Current?.TraceStateString;
     }
 
     private void RecordOperation(
@@ -573,16 +588,6 @@ internal sealed partial class DeploymentLocationAuthorityService(
 
     private static string VersionRelation(DeviceDeploymentLocationVersion deployment)
         => deployment.ObservatoryLocationVersion?.SupersededAtUtc is null ? "current" : "superseded";
-
-    private static bool LocationMatches(
-        DeviceDeploymentLocationVersion deployment,
-        CentralCaptureLocation capture)
-        => deployment.LocationId == capture.LocationId
-            && deployment.Version == capture.Version
-            && string.Equals(deployment.Source, capture.Source, StringComparison.Ordinal)
-            && deployment.HorizontalAccuracyMeters == capture.HorizontalAccuracyMeters
-            && deployment.EffectiveFromUtc == capture.EffectiveFromUtc
-            && deployment.EffectiveUntilUtc == capture.EffectiveUntilUtc;
 
     internal static bool AppliesAt(
         DeviceDeploymentLocationVersion deployment,

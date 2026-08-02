@@ -36,6 +36,7 @@ public sealed class DeploymentLocationTelemetryTests
         telemetry.RecordOperation(
             "operator-resolve", "applied", "owner-acknowledged", "deployment", TimeSpan.FromMilliseconds(3));
         telemetry.RecordBackfill(2);
+        telemetry.RecordReconciliation("state", "completed", 2, TimeSpan.FromMilliseconds(4));
         telemetry.RecordPendingSnapshot(4, 30);
         listener.RecordObservableInstruments();
 
@@ -43,10 +44,12 @@ public sealed class DeploymentLocationTelemetryTests
             "skymonitor.deployment_location.operations",
             "skymonitor.deployment_location.duration",
             "skymonitor.deployment_location.backfill",
+            "skymonitor.deployment_location.reconciliation.items",
+            "skymonitor.deployment_location.reconciliation.duration",
             "skymonitor.deployment_location.pending",
             "skymonitor.deployment_location.oldest_age"
         ]);
-        var allowed = new HashSet<string>(["operation", "outcome", "reason", "entity"], StringComparer.Ordinal);
+        var allowed = new HashSet<string>(["operation", "outcome", "reason", "entity", "phase"], StringComparer.Ordinal);
         observations.SelectMany(item => item.Keys).Should().OnlyContain(key => allowed.Contains(key));
     }
 
