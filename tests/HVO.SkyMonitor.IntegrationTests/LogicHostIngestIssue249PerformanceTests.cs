@@ -17,6 +17,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Minio;
 using Minio.DataModel.Args;
 
@@ -482,6 +483,7 @@ public sealed partial class LogicHostIngestPerformanceTests
         Issue249DelayedGetHandler handler)
         => fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
+            services.RemoveAll<IHostedService>();
             services.RemoveAll<DbContextOptions<ApplicationDbContext>>();
             services.RemoveAll<ApplicationDbContext>();
             services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(connectionString));
