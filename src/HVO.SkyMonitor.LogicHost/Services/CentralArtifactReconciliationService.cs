@@ -1899,17 +1899,19 @@ internal sealed partial class CentralArtifactReconciliationService(
                 .ConfigureAwait(false);
             return;
         }
-        if (retryFence?.ObjectVerificationToken != retry.ObjectVerificationToken)
+        if (retryFence is null
+            || retryFence.ObjectVerificationToken != retry.ObjectVerificationToken)
         {
             return;
         }
+        var expectedToken = retryFence.ObjectVerificationToken;
         var nextRetryCount = retry.ObjectVerificationRetryCount == int.MaxValue
             ? int.MaxValue
             : retry.ObjectVerificationRetryCount + 1;
         var retryAtUtc = timeProvider.GetUtcNow() + CalculateVerificationRetryDelay(nextRetryCount);
         _ = await db.CentralArtifacts
             .Where(artifact => artifact.Id == artifactId
-                && artifact.ObjectVerificationToken == retryFence.ObjectVerificationToken
+                && artifact.ObjectVerificationToken == expectedToken
                 && artifact.ObjectVerificationRetryCount == retry.ObjectVerificationRetryCount)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(artifact => artifact.ObjectVerificationRetryCount, nextRetryCount)
