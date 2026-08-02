@@ -286,7 +286,8 @@ public sealed partial class LogicHostIngestPerformanceTests
             {
                 ApplicationName = correlationApplicationName
             }.ConnectionString;
-            using var correlationHandler = new Issue249DelayedGetHandler(delay, expectedFirstWave: 4)
+            using var correlationHandler = new Issue249DelayedGetHandler(
+                delay, expectedFirstWave: 4, holdFirstWave: true)
             {
                 InnerHandler = new SocketsHttpHandler()
             };
@@ -312,10 +313,12 @@ public sealed partial class LogicHostIngestPerformanceTests
                     TimeSpan.FromSeconds(30), correlationCancellation.Token).ConfigureAwait(false);
                 await samplingCancellation.CancelAsync().ConfigureAwait(false);
                 sql = CreateIssue249SqlEvidence(await samplingTask.ConfigureAwait(false));
+                correlationHandler.ReleaseFirstWave();
                 await correlationDuplicates.ConfigureAwait(false);
             }
             finally
             {
+                correlationHandler.ReleaseFirstWave();
                 await samplingCancellation.CancelAsync().ConfigureAwait(false);
                 if (samplingTask is not null && !samplingTask.IsCompleted)
                 {
@@ -364,7 +367,8 @@ public sealed partial class LogicHostIngestPerformanceTests
         {
             ApplicationName = applicationName
         }.ConnectionString;
-        using var handler = new Issue249DelayedGetHandler(TimeSpan.FromSeconds(2), expectedFirstWave: 1)
+        using var handler = new Issue249DelayedGetHandler(
+            TimeSpan.FromSeconds(2), expectedFirstWave: 1, holdFirstWave: true)
         {
             InnerHandler = new SocketsHttpHandler()
         };
@@ -395,6 +399,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 TimeSpan.FromSeconds(30), operationCancellation.Token).ConfigureAwait(false);
             await samplingCancellation.CancelAsync().ConfigureAwait(false);
             var samples = await samplingTask.ConfigureAwait(false);
+            handler.ReleaseFirstWave();
             var writer = await writerTask.ConfigureAwait(false);
             var status = await statusTask.ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.Accepted, status.StatusCode, status.Body);
@@ -416,6 +421,7 @@ public sealed partial class LogicHostIngestPerformanceTests
         }
         finally
         {
+            handler.ReleaseFirstWave();
             await samplingCancellation.CancelAsync().ConfigureAwait(false);
             if (samplingTask is not null && !samplingTask.IsCompleted)
             {
@@ -836,10 +842,14 @@ public sealed partial class LogicHostIngestPerformanceTests
         }
     }
 
-    private sealed class Issue249DelayedGetHandler(TimeSpan delay, int expectedFirstWave) : DelegatingHandler
+    private sealed class Issue249DelayedGetHandler(
+        TimeSpan delay,
+        int expectedFirstWave,
+        bool holdFirstWave = false) : DelegatingHandler
     {
         private readonly TaskCompletionSource _firstWaveEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _firstWaveDelayCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _firstWaveRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _entered;
         private int _completed;
 
@@ -847,20 +857,32 @@ public sealed partial class LogicHostIngestPerformanceTests
 
         internal Task FirstWaveDelayCompleted => _firstWaveDelayCompleted.Task;
 
+        internal void ReleaseFirstWave() => _firstWaveRelease.TrySetResult();
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             if (request.Method == HttpMethod.Get)
             {
-                if (Interlocked.Increment(ref _entered) == expectedFirstWave)
+                var sequence = Interlocked.Increment(ref _entered);
+                if (sequence == expectedFirstWave)
                 {
                     _firstWaveEntered.TrySetResult();
                 }
+                if (holdFirstWave && sequence <= expectedFirstWave)
+                {
+                    await _firstWaveEntered.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
                 await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-                if (Interlocked.Increment(ref _completed) == expectedFirstWave)
+                if (sequence <= expectedFirstWave
+                    && Interlocked.Increment(ref _completed) == expectedFirstWave)
                 {
                     _firstWaveDelayCompleted.TrySetResult();
+                }
+                if (holdFirstWave && sequence <= expectedFirstWave)
+                {
+                    await _firstWaveRelease.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
                 }
             }
             return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
