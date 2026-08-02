@@ -482,6 +482,8 @@ internal sealed partial class ArtifactIngestService(
             registration.DevicePublicId!.Value,
             manifest.Descriptor?.Artifact.SourceArtifactIds.Append(manifest.ArtifactId) ?? [manifest.ArtifactId],
             cancellationToken).ConfigureAwait(false);
+        await AcquireFrameIdentityLockAsync(
+            registration.DevicePublicId.Value, manifest.FrameId, cancellationToken).ConfigureAwait(false);
         var existing = await dbContext.CentralArtifacts
             .Include(artifact => artifact.IngestIdentities)
             .Include(artifact => artifact.Frame)
@@ -767,15 +769,21 @@ internal sealed partial class ArtifactIngestService(
             IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
         try
         {
-            var existing = await LoadExistingArtifactAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
-            var verificationDevicePublicId = existing.DevicePublicId ?? compatibilityRegistration?.DevicePublicId;
+            var identity = await dbContext.CentralArtifacts.AsNoTracking()
+                .Where(artifact => artifact.Id == centralArtifactId)
+                .Select(artifact => new { artifact.DevicePublicId, artifact.Frame!.FrameId })
+                .SingleAsync(cancellationToken).ConfigureAwait(false);
+            var verificationDevicePublicId = identity.DevicePublicId ?? compatibilityRegistration?.DevicePublicId;
             if (verificationDevicePublicId.HasValue)
             {
                 await AcquireArtifactIdentityLocksAsync(
                     verificationDevicePublicId.Value,
                     manifest.Descriptor?.Artifact.SourceArtifactIds.Append(manifest.ArtifactId) ?? [manifest.ArtifactId],
                     cancellationToken).ConfigureAwait(false);
+                await AcquireFrameIdentityLockAsync(
+                    verificationDevicePublicId.Value, identity.FrameId, cancellationToken).ConfigureAwait(false);
             }
+            var existing = await LoadExistingArtifactAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(existing.StorageReference, lockedStorageReference, StringComparison.Ordinal))
             {
                 throw new ExistingArtifactVerificationStaleException();
@@ -1067,6 +1075,8 @@ internal sealed partial class ArtifactIngestService(
                     registration.DevicePublicId!.Value,
                     manifest.Descriptor?.Artifact.SourceArtifactIds.Append(manifest.ArtifactId) ?? [manifest.ArtifactId],
                     cancellationToken).ConfigureAwait(false);
+                await AcquireFrameIdentityLockAsync(
+                    registration.DevicePublicId.Value, manifest.FrameId, cancellationToken).ConfigureAwait(false);
                 await EnsureStorageReferenceNotRetiredAsync(storageReference, cancellationToken).ConfigureAwait(false);
                 var existing = await dbContext.CentralArtifacts
                     .Include(artifact => artifact.IngestIdentities)
@@ -1550,6 +1560,27 @@ internal sealed partial class ArtifactIngestService(
                 """, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    private async Task AcquireFrameIdentityLockAsync(
+        Guid devicePublicId,
+        Guid frameId,
+        CancellationToken cancellationToken)
+    {
+        var resource = CreateFrameIdentityLockResource(devicePublicId, frameId);
+        await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+            DECLARE @result int;
+            EXEC @result = sys.sp_getapplock
+                @Resource = {resource},
+                @LockMode = 'Exclusive',
+                @LockOwner = 'Transaction',
+                @LockTimeout = 10000;
+            IF @result < 0
+                THROW 51009, 'Could not acquire the central frame identity lock.', 1;
+            """, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static string CreateFrameIdentityLockResource(Guid devicePublicId, Guid frameId)
+        => $"hvo-central-frame-identity:{devicePublicId:N}:{frameId:N}";
 
     private static void EnsureCaptureFactsMatch(
         CentralFrame frame,

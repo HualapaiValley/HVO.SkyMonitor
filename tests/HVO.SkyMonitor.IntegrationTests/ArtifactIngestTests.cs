@@ -1023,6 +1023,128 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
+    public async Task MultipartIngestV2_ConcurrentEnrichmentOfOneFrameSerializesCaptureFacts()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("frame-enrichment-concurrency-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var captureId = Guid.NewGuid();
+        var source = CreateManifestV2(deviceId, rig, payload, 174);
+        var first = CreateManifestV2(deviceId, rig, payload, 175, captureId: captureId);
+        var conflict = CreateManifestV2(
+            deviceId,
+            rig,
+            payload,
+            176,
+            role: FrameArtifactRole.Preview,
+            sourceArtifactIds: [source.Descriptor.Artifact.ArtifactId],
+            captureId: captureId);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var sourceResponse = await PostAsync(client, source, payload).ConfigureAwait(false);
+        sourceResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        using var firstCompatibility = await PostAsync(
+            client, CreateCompatibilityManifest(first), payloadBytes: payload)
+            .ConfigureAwait(false);
+        using var conflictCompatibility = await PostAsync(
+            client, CreateCompatibilityManifest(conflict), payloadBytes: payload)
+            .ConfigureAwait(false);
+        firstCompatibility.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        conflictCompatibility.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        await using var lockScope = fixture.Factory.Services.CreateAsyncScope();
+        var lockDb = lockScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var devicePublicId = await lockDb.DeviceRegistrations.Where(item => item.Id == registrationId)
+            .Select(item => item.DevicePublicId!.Value)
+            .SingleAsync().ConfigureAwait(false);
+        await using var transaction = await lockDb.Database.BeginTransactionAsync().ConfigureAwait(false);
+        var holderSessionId = await lockDb.Database.SqlQueryRaw<int>("SELECT CAST(@@SPID AS int) AS [Value]")
+            .SingleAsync().ConfigureAwait(false);
+        var resource = ArtifactIngestService.CreateFrameIdentityLockResource(devicePublicId, captureId);
+        await lockDb.Database.ExecuteSqlInterpolatedAsync($"""
+            DECLARE @result int;
+            EXEC @result = sys.sp_getapplock
+                @Resource = {resource},
+                @LockMode = 'Exclusive',
+                @LockOwner = 'Transaction',
+                @LockTimeout = 10000;
+            IF @result < 0 THROW 51009, 'Could not acquire the test frame identity lock.', 1;
+            """).ConfigureAwait(false);
+
+        var requests = new[]
+        {
+            PostAsync(client, first, payload),
+            PostAsync(client, conflict, payload)
+        };
+        await using var observerScope = fixture.Factory.Services.CreateAsyncScope();
+        var observerDb = observerScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var blockedRequests = 0;
+        var lockReleased = false;
+        try
+        {
+            for (var attempt = 0; attempt < 50 && blockedRequests < requests.Length; attempt++)
+            {
+                var blockedRequestCounts = await observerDb.Database.SqlQuery<int>($"""
+                    WITH [Blocked] AS
+                    (
+                        SELECT [session_id]
+                        FROM sys.dm_exec_requests
+                        WHERE [blocking_session_id] = {holderSessionId}
+                        UNION ALL
+                        SELECT request.[session_id]
+                        FROM sys.dm_exec_requests AS request
+                        INNER JOIN [Blocked] AS blocked
+                            ON request.[blocking_session_id] = blocked.[session_id]
+                    )
+                    SELECT COUNT(*) AS [Value]
+                    FROM [Blocked]
+                    OPTION (MAXRECURSION 100)
+                    """).ToListAsync().ConfigureAwait(false);
+                blockedRequests = blockedRequestCounts.Single();
+                if (blockedRequests < requests.Length)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+                }
+            }
+            if (blockedRequests != requests.Length || requests.Any(request => request.IsCompleted))
+            {
+                Assert.Fail($"Expected both frame enrichments to wait in the held identity-lock chain; observed {blockedRequests} waiters.");
+            }
+            await transaction.CommitAsync().ConfigureAwait(false);
+            lockReleased = true;
+        }
+        finally
+        {
+            if (!lockReleased)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                var abandoned = await Task.WhenAll(requests).ConfigureAwait(false);
+                foreach (var response in abandoned)
+                {
+                    response.Dispose();
+                }
+            }
+        }
+        var responses = await Task.WhenAll(requests).ConfigureAwait(false);
+        using var firstResponse = responses[0];
+        using var conflictResponse = responses[1];
+
+        responses.Select(response => response.StatusCode).Should().BeEquivalentTo(
+            [HttpStatusCode.Accepted, HttpStatusCode.Conflict]);
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var frame = await assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+            .CentralFrames.Include(item => item.Artifacts)
+            .SingleAsync(item => item.FrameId == captureId).ConfigureAwait(false);
+        frame.CaptureSequence.Should().Be(
+            firstResponse.StatusCode == HttpStatusCode.Accepted ? 175 : 176,
+            "the accepted request must own the immutable capture facts");
+        frame.Artifacts.Should().HaveCount(2);
+    }
+
+    [TestMethod]
     public async Task MultipartIngestV2_AfterReassignmentFreezesDeploymentObservatoryForLateFrameArtifacts()
     {
         var fixture = AssemblyHooks.Fixture;
@@ -2996,7 +3118,37 @@ public sealed class ArtifactIngestTests
         thrown.Which.CancellationToken.Should().Be(cancellation.Token);
         metrics.Outcomes.Should().BeEmpty();
         logger.Entries.Should().NotContain(entry => entry.Level >= LogLevel.Error);
-        await QuarantineTestArtifactAsync(registrationId, manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
+        await using (var interruptedScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var interrupted = await interruptedScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .CentralArtifacts.AsNoTracking()
+                .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId
+                    && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
+            interrupted.ObjectState.Should().Be(CentralArtifactObjectState.Pending);
+            interrupted.ObjectVerificationToken.Should().NotBeNull();
+            interrupted.ObjectVerificationRequestedAtUtc.Should().NotBeNull();
+            interrupted.ObjectVerifiedAtUtc.Should().NotBeNull();
+        }
+
+        using (var restartTelemetry = new CentralIngestTelemetry())
+        {
+            var restarted = new CentralArtifactReconciliationService(
+                fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
+                TimeProvider.System,
+                restartTelemetry,
+                NullLogger<CentralArtifactReconciliationService>.Instance);
+            _ = await restarted.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        await using var recoveredScope = fixture.Factory.Services.CreateAsyncScope();
+        var recoveredDb = recoveredScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var recovered = await recoveredDb.CentralArtifacts.AsNoTracking()
+            .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId
+                && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
+        recovered.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        recovered.ObjectVerificationToken.Should().BeNull();
+        recovered.ObjectVerificationRequestedAtUtc.Should().BeNull();
+        (await recoveredDb.CentralDerivativeJobs.AnyAsync(job => job.SourceCentralArtifactId == recovered.Id)
+            .ConfigureAwait(false)).Should().BeTrue();
     }
 
     [TestMethod]

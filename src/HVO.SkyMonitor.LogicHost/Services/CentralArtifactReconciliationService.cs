@@ -1470,6 +1470,10 @@ internal sealed partial class CentralArtifactReconciliationService(
                 db, minio, objectReader, objectLock, artifact, reconciledAtUtc, recoveryGeneration, token, cancellationToken)
                 .ConfigureAwait(false);
             retryFence.CommittedVerifiedAtUtc = result.Outcome == "matched" ? artifact.ObjectVerifiedAtUtc : null;
+            if (result.Outcome == "matched")
+            {
+                CompleteMatchedVerificationReservation(artifact);
+            }
             await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
             verifiedThisAttempt = true;
             if (result.Outcome is "missing" or "corrupt")
@@ -1520,6 +1524,10 @@ internal sealed partial class CentralArtifactReconciliationService(
                     db, minio, objectReader, objectLock, artifact, reconciledAtUtc, recoveryGeneration, token, cancellationToken)
                     .ConfigureAwait(false);
                 retryFence.CommittedVerifiedAtUtc = result.Outcome == "matched" ? artifact.ObjectVerifiedAtUtc : null;
+                if (result.Outcome == "matched")
+                {
+                    CompleteMatchedVerificationReservation(artifact);
+                }
                 await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
                 if (result.Outcome is "missing" or "corrupt")
                 {
@@ -1693,14 +1701,6 @@ internal sealed partial class CentralArtifactReconciliationService(
             await CommitVerificationAsync(db, objectLock, transaction, cancellationToken).ConfigureAwait(false);
             return new RecoveryArtifactResult("corrupt", artifact.ByteLength, transitioned);
         }
-        if (artifact.ObjectState == CentralArtifactObjectState.Pending)
-        {
-            artifact.ObjectState = CentralArtifactObjectState.Available;
-        }
-        artifact.ObjectVerificationToken = null;
-        artifact.ObjectVerificationRequestedAtUtc = null;
-        artifact.ObjectVerificationRetryCount = 0;
-        artifact.ObjectVerificationRetryAtUtc = null;
         if (artifact.StateReasonCode?.StartsWith("object.", StringComparison.Ordinal) == true)
         {
             artifact.StateReasonCode = null;
@@ -1708,6 +1708,15 @@ internal sealed partial class CentralArtifactReconciliationService(
         telemetry.RecordRecoveryInventory("matched", 1, artifact.ByteLength);
         await CommitVerificationAsync(db, objectLock, transaction, cancellationToken).ConfigureAwait(false);
         return new RecoveryArtifactResult("matched", artifact.ByteLength);
+    }
+
+    private static void CompleteMatchedVerificationReservation(CentralArtifact artifact)
+    {
+        artifact.ObjectState = CentralArtifactObjectState.Available;
+        artifact.ObjectVerificationToken = null;
+        artifact.ObjectVerificationRequestedAtUtc = null;
+        artifact.ObjectVerificationRetryCount = 0;
+        artifact.ObjectVerificationRetryAtUtc = null;
     }
 
     private async Task EnsureVerificationReservationAsync(
