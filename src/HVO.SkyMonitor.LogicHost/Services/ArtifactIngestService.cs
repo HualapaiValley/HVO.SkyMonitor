@@ -478,6 +478,10 @@ internal sealed partial class ArtifactIngestService(
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        await AcquireArtifactIdentityLocksAsync(
+            registration.DevicePublicId!.Value,
+            manifest.Descriptor?.Artifact.SourceArtifactIds.Append(manifest.ArtifactId) ?? [manifest.ArtifactId],
+            cancellationToken).ConfigureAwait(false);
         var existing = await dbContext.CentralArtifacts
             .Include(artifact => artifact.IngestIdentities)
             .Include(artifact => artifact.Frame)
@@ -764,6 +768,14 @@ internal sealed partial class ArtifactIngestService(
         try
         {
             var existing = await LoadExistingArtifactAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
+            var verificationDevicePublicId = existing.DevicePublicId ?? compatibilityRegistration?.DevicePublicId;
+            if (verificationDevicePublicId.HasValue)
+            {
+                await AcquireArtifactIdentityLocksAsync(
+                    verificationDevicePublicId.Value,
+                    manifest.Descriptor?.Artifact.SourceArtifactIds.Append(manifest.ArtifactId) ?? [manifest.ArtifactId],
+                    cancellationToken).ConfigureAwait(false);
+            }
             if (!string.Equals(existing.StorageReference, lockedStorageReference, StringComparison.Ordinal))
             {
                 throw new ExistingArtifactVerificationStaleException();
@@ -904,11 +916,19 @@ internal sealed partial class ArtifactIngestService(
         }
         await objectLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
         var finalizeStarted = timeProvider.GetTimestamp();
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         var integrityFailure = verification.ReasonCode is not null;
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            integrityFailure
+                ? IsolationLevel.Serializable
+                : IsolationLevel.ReadCommitted,
+            cancellationToken).ConfigureAwait(false);
         try
         {
+            if (reservation.DevicePublicId.HasValue)
+            {
+                await AcquireArtifactIdentityLocksAsync(
+                    reservation.DevicePublicId.Value, [reservation.ArtifactId], cancellationToken).ConfigureAwait(false);
+            }
             dbContext.ChangeTracker.Clear();
             var existing = await LoadExistingArtifactAsync(reservation.CentralArtifactId, cancellationToken)
                 .ConfigureAwait(false);
@@ -1043,6 +1063,10 @@ internal sealed partial class ArtifactIngestService(
                 IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
             try
             {
+                await AcquireArtifactIdentityLocksAsync(
+                    registration.DevicePublicId!.Value,
+                    manifest.Descriptor?.Artifact.SourceArtifactIds.Append(manifest.ArtifactId) ?? [manifest.ArtifactId],
+                    cancellationToken).ConfigureAwait(false);
                 await EnsureStorageReferenceNotRetiredAsync(storageReference, cancellationToken).ConfigureAwait(false);
                 var existing = await dbContext.CentralArtifacts
                     .Include(artifact => artifact.IngestIdentities)
@@ -1432,12 +1456,12 @@ internal sealed partial class ArtifactIngestService(
             OptionsJson = JsonSerializer.Serialize(CaptureContractJson.Canonicalize(descriptor.Artifact.Recipe.Options)),
             OptionsSha256 = descriptor.Artifact.Recipe.OptionsSha256.ToUpperInvariant()
         };
+        await AcquireArtifactIdentityLocksAsync(
+            devicePublicId, descriptor.Artifact.SourceArtifactIds, cancellationToken).ConfigureAwait(false);
         for (var ordinal = artifact.Sources.Count; ordinal < descriptor.Artifact.SourceArtifactIds.Count; ordinal++)
         {
             var sourceArtifactId = descriptor.Artifact.SourceArtifactIds[ordinal];
-            var resolved = frame.Artifacts.FirstOrDefault(candidate => candidate.ArtifactId == sourceArtifactId
-                    && IsUsableLineageSource(candidate))
-                ?? await dbContext.CentralArtifacts.FirstOrDefaultAsync(candidate =>
+            var resolved = await dbContext.CentralArtifacts.FirstOrDefaultAsync(candidate =>
                     candidate.ArtifactId == sourceArtifactId
                     && candidate.DevicePublicId == devicePublicId
                     && candidate.ObjectState == CentralArtifactObjectState.Available
@@ -1502,6 +1526,28 @@ internal sealed partial class ArtifactIngestService(
                 waitingArtifact,
                 waitingArtifact.Frame!.DeviceRigProfileId.HasValue,
                 waitingArtifact.Sources.Any(source => source != waitingSource && source.ResolvedCentralArtifactId == null));
+            dbContext.Entry(waitingArtifact).Property(candidate => candidate.ReconciledAtUtc).IsModified = true;
+        }
+    }
+
+    private async Task AcquireArtifactIdentityLocksAsync(
+        Guid devicePublicId,
+        IEnumerable<Guid> artifactIds,
+        CancellationToken cancellationToken)
+    {
+        foreach (var artifactId in artifactIds.Distinct().Order())
+        {
+            var resource = $"hvo-central-artifact-identity:{devicePublicId:N}:{artifactId:N}";
+            await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+                DECLARE @result int;
+                EXEC @result = sys.sp_getapplock
+                    @Resource = {resource},
+                    @LockMode = 'Exclusive',
+                    @LockOwner = 'Transaction',
+                    @LockTimeout = 10000;
+                IF @result < 0
+                    THROW 51008, 'Could not acquire the central artifact identity lock.', 1;
+                """, cancellationToken).ConfigureAwait(false);
         }
     }
 
