@@ -63,15 +63,16 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private const int W3MCommandTimeoutSeconds = 120;
     private const int W3MPhaseTimeoutMinutes = 15;
     private const string TwoOutputFixtureName = "issue-250-two-output-release-fixture-v1";
-    private const string CompatibilityProtocolSchema = "issue-250-release-compatibility-v1";
+    private const string CompatibilityProtocolSchema = "issue-250-release-compatibility-v2";
+    private const string TrialPolicy = "single-authorized-trial-1";
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private static readonly int[] CanonicalConcurrency = [1, 4];
     private static readonly int[] CanonicalDelays = [0, 250, 2_000];
-    private static readonly int[] SmokeDelays = [250];
+    private static readonly int[] SmokeDelays = [0, 250];
     private static readonly string[] ExpectedDerivativeOutputKinds = ["Overlay", "Preview"];
     private static readonly string[] MinioBackedDerivativeKinds = ["Preview", "Overlay"];
     private static readonly string[] FixtureHolds = ["source ordinal 0", "Overlay ordinal 6"];
-    private static readonly string[] ProcessResourceCounters = ["Process.TotalProcessorTime", "GC.GetTotalAllocatedBytes(true)", "Process.WorkingSet64"];
+    private static readonly string[] ProcessResourceCounters = ["Process.TotalProcessorTime", "System.Runtime alloc-rate", "GC.GetTotalAllocatedBytes(true)", "Process.WorkingSet64"];
     private static readonly Issue250RequiredTrigger[] RequiredW3MTriggers =
     [
         new("TR_CentralFrames_InstallationImmutable", "CentralFrames",
@@ -164,7 +165,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     [
         "scripts/test-categories/Program.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/AssemblyHooks.cs",
-        "tests/HVO.SkyMonitor.IntegrationTests/CentralTransientPayloadReleaseIssue250PerformanceTests.cs"
+        "tests/HVO.SkyMonitor.IntegrationTests/CentralTransientPayloadReleaseIssue250PerformanceTests.cs",
+        "tests/HVO.SkyMonitor.IntegrationTests/Issue170AllocationSampler.cs"
     ];
 
     public TestContext TestContext { get; set; } = null!;
@@ -241,7 +243,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         }
 
         var delayed = new List<Issue250DelayEvidence>();
-        foreach (var delay in smoke ? new[] { 250 } : new[] { 0, 250, 2_000 })
+        foreach (var delay in smoke ? SmokeDelays : CanonicalDelays)
         {
             delayed.Add(await RunDelayScenarioAsync(
                 fixture,
@@ -292,7 +294,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
         var evidence = new
         {
-            Schema = "hvo-issue-250-central-transient-payload-release-evidence-v2",
+            Schema = "hvo-issue-250-central-transient-payload-release-evidence-v3",
             Issue = 250,
             Phase = phase,
             HarnessSha256 = harnessSha256,
@@ -301,13 +303,25 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             ProtocolSha256 = protocolSha256,
             CompatibilityProtocolSha256 = compatibilityProtocolSha256,
             EnvironmentSha256 = environmentSha256,
+            TrialPolicy,
             BaselineBinding = baselineBinding,
+            EvidencePolicy = new
+            {
+                Trial = trial,
+                TrialPolicy,
+                AuthorizedTrials = new[] { 1 },
+                RequiredTrialCount = 1,
+                TrialAuthority = "Issue #250 readiness authorizes HVO_EVIDENCE_TRIAL=1; general five-trial reporting guidance does not override this issue-specific protocol.",
+                SourceFingerprintScope = "Git revision, dirty diff, harness/production/support assemblies, and selected source files are fingerprinted before work and before write.",
+                SourceFingerprintLimitation = "Fingerprints prove byte identity of the recorded inputs; they do not independently prove compiler reproducibility, container image contents, or host firmware.",
+                Privacy = "Raw credentials, connection strings, repository paths, object keys, database names, actor identities, idempotency keys, and record identifiers are excluded or represented only by SHA-256. SQL and plan preimages are parameterized and scrubbed before serialization."
+            },
             Smoke = new
             {
                 Enabled = smoke,
                 Claimable = !smoke && phase is "baseline" or "after",
                 Reason = smoke
-                    ? "Reduced payloads, one measured release per concurrency level, one 250 ms exact hashed-lock probe, and fewer than ten W3M parents are mechanics-only."
+                    ? "Reduced payloads, one measured release per concurrency level, zero/250 ms contention probes, and fewer than ten W3M parents are mechanics-only."
                     : "N/A: canonical workload was selected."
             },
             ProductionRevision = resolvedProductionRevision,
@@ -335,7 +349,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 Preflight = preflight,
                 EnvironmentSha256 = environmentSha256
             },
-            Command = "HVO_ISSUE_250_EVIDENCE=1 DOTNET_gcServer=1 HVO_EVIDENCE_PHASE=<baseline|after> HVO_EVIDENCE_REVISION=<HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=<PRODUCTION_HEAD> HVO_EVIDENCE_TRIAL=<1-5> HVO_EVIDENCE_BASELINE_MANIFEST=<REQUIRED_FOR_AFTER_ONLY> dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~CentralTransientPayloadReleaseIssue250PerformanceTests.Release_W2W3MAndContention_RecordsEvidence",
+            Command = "HVO_ISSUE_250_EVIDENCE=1 DOTNET_gcServer=1 HVO_EVIDENCE_PHASE=<baseline|after> HVO_EVIDENCE_REVISION=<HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=<PRODUCTION_HEAD> HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_BASELINE_MANIFEST=<REQUIRED_FOR_AFTER_ONLY> dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~CentralTransientPayloadReleaseIssue250PerformanceTests.Release_W2W3MAndContention_RecordsEvidence",
             Workload = new
             {
                 Id = smoke ? "issue-250-smoke-unclaimable" : "W2/W3M/issue-250-baseline-v1",
@@ -388,7 +402,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 {
                     ReleasesPerDelay = 4,
                     Concurrency = 4,
-                    DelaysMilliseconds = smoke ? new[] { 250 } : new[] { 0, 250, 2_000 },
+                    DelaysMilliseconds = smoke ? SmokeDelays : CanonicalDelays,
                     SqlSamplingTargetMilliseconds = 10,
                     ExactWriterDeadlineMilliseconds = 1_000,
                     PublicFlow = "All four natural-delay releases and the separate exact-writer mechanism release enter through public ReleaseAsync with real request/item creation. No release parent/item is manually reserved.",
@@ -458,8 +472,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             {
                 Boundary = "CentralTransientPayloadReleaseService.ReleaseAsync through durable parent/item completion and MinIO DELETE.",
                 Latency = "Nearest-rank median/p95/p99/maximum over independent releases and DELETE item requests; warmups and all setup/checksum/cleanup work are excluded.",
-                Resources = "One continuous 10 ms process time series per scenario records cumulative Process.TotalProcessorTime, GC.GetTotalAllocatedBytes(true), and WorkingSet64. Exact start/end deltas, rate, RSS peak, and first/last sample uncertainty are reported; short scenarios always include explicit boundary samples.",
-                Sql = "Measured service DbContexts use EF command/transaction interceptors. Dedicated sp_getapplock/sp_releaseapplock commands bypass EF and are not inferred; exact transformed resource ownership is measured from attributed SQL sessions/transactions in 10 ms DMV samples without NOLOCK. DMV and W3M setup/plan commands are separately reported direct SQL.",
+                Resources = "One continuous process time series per scenario targets 10 ms and records Process.TotalProcessorTime, window-relative GC.GetTotalAllocatedBytes(true), and WorkingSet64. Observed precise-GC regressions fail closed. Raw 100 ms System.Runtime alloc-rate increments, exact GC deltas, normalized agreement or explicit short-window unclaimability, observed p50/maximum cadence, RSS peak, and first/last sample uncertainty are reported.",
+                Sql = "Measured service DbContexts use EF command/transaction interceptors. Dedicated sp_getapplock/sp_releaseapplock commands bypass EF and are not inferred. DMV sampling targets 10 ms and reports observed p50/maximum cadence and per-DELETE-window coverage. Baseline row blocking requires an exact waiting/granted KEY-resource match on CentralArtifacts.PK_CentralArtifacts, the release transaction/session/database/isolation attribution, and distinct dedicated application-lock fence sessions. Zero-delay lock duration is explicitly unclaimable when cadence cannot resolve it.",
                 ObjectStore = "The service MinIO client is isolated behind a request/DELETE duration and entity-byte collector; seed and correctness GET/STAT traffic uses a separate client.",
                 W3M = "Trigger/constraint-preserving setup uses one shared history frame and deterministic batches of at most 250 parents, reports setup timing separately, runs UPDATE STATISTICS FULLSCAN, drops session temp tables, and captures actual STATISTICS XML/IO over the normalized production pending-parent query."
             },
@@ -520,6 +534,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             ProtocolSha256 = protocolSha256,
             CompatibilityProtocolSha256 = compatibilityProtocolSha256,
             EnvironmentSha256 = environmentSha256,
+            TrialPolicy,
             Evidence = w0
         };
         var w0Bytes = JsonSerializer.SerializeToUtf8Bytes(w0Envelope, JsonOptions);
@@ -528,7 +543,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         await EvidenceSourceIdentity.WriteJsonAsync(w0Path, w0Envelope, JsonOptions).ConfigureAwait(false);
         var planEnvelope = new
         {
-            Schema = "hvo-issue-250-w3m-normalized-plan-evidence-v4",
+            Schema = "hvo-issue-250-w3m-normalized-plan-evidence-v5",
             Issue = 250,
             Phase = phase,
             SourceHead = source.Head,
@@ -538,6 +553,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             ProtocolSha256 = protocolSha256,
             CompatibilityProtocolSha256 = compatibilityProtocolSha256,
             EnvironmentSha256 = environmentSha256,
+            TrialPolicy,
             Evidence = w3m
         };
         var planBytes = JsonSerializer.SerializeToUtf8Bytes(planEnvelope, JsonOptions);
@@ -552,6 +568,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             SourceHead = source.Head,
             ProductionRevision = resolvedProductionRevision,
             Trial = trial,
+            TrialPolicy,
             HarnessSha256 = harnessSha256,
             WorkloadSha256 = workloadSha256,
             CompatibilityWorkloadSha256 = compatibilityWorkloadSha256,
@@ -690,7 +707,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             collector.Http.Configure(TimeSpan.FromMilliseconds(delayMilliseconds), origin);
             using var sampleCancellation = CancellationTokenSource.CreateLinkedTokenSource(scenarioCancellation);
             var sampleTask = SampleSqlAsync(
-                database.ConnectionString, applicationName, origin, cases, sampleCancellation.Token);
+                database.ConnectionString, applicationName, origin, cases, null, sampleCancellation.Token);
             Issue250MeasuredWave? measured = null;
             IReadOnlyList<Issue250SqlSample> naturalSamples;
             try
@@ -735,12 +752,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             contentionCancellation.CancelAfter(TimeSpan.FromMinutes(3));
             using var contentionSampleCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                 contentionCancellation.Token);
-            var contentionSamplesTask = SampleSqlAsync(
-                database.ConnectionString,
-                contentionApplicationName,
-                contentionOrigin,
-                [contentionCase],
-                contentionSampleCancellation.Token);
+            Task<IReadOnlyList<Issue250SqlSample>> contentionSamplesTask =
+                Task.FromResult<IReadOnlyList<Issue250SqlSample>>([]);
             Task<double[]>? releaseTask = null;
             Task<Issue250WriterEvidence>? writerTask = null;
             try
@@ -758,6 +771,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 var firstKey = collector.Http.FirstObjectKey
                     ?? throw new InvalidOperationException("The delayed DELETE did not expose its bounded test key.");
                 var writerRecordId = contentionCase.Objects.Single(item => item.Key == firstKey).RecordId;
+                contentionSamplesTask = SampleSqlAsync(
+                    database.ConnectionString,
+                    contentionApplicationName,
+                    contentionOrigin,
+                    [contentionCase],
+                    writerRecordId,
+                    contentionSampleCancellation.Token);
                 writerTask = ExecuteWriterAsync(
                     database.ConnectionString,
                     contentionApplicationName,
@@ -795,13 +815,19 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             if (phase == "baseline" && delayMilliseconds == 2_000)
             {
                 Assert.AreEqual("timeout", writer.Outcome);
+                Assert.AreEqual(writer.TargetRecordIdSha256, contentionSql.ExactRowBlockTargetRecordIdSha256);
                 Assert.IsGreaterThanOrEqualTo(delayMilliseconds - 100d, contentionSql.TransactionOverlapMilliseconds);
                 Assert.IsGreaterThanOrEqualTo(delayMilliseconds - 100d, contentionSql.ObjectLockWindowMilliseconds);
             }
             if (phase == "baseline" && delayMilliseconds == 250)
             {
                 Assert.AreEqual("completed", writer.Outcome);
+                Assert.AreEqual(writer.TargetRecordIdSha256, contentionSql.ExactRowBlockTargetRecordIdSha256);
                 Assert.IsLessThan(1_000d, writer.ElapsedMilliseconds);
+            }
+            if (phase == "development" && delayMilliseconds >= 250)
+            {
+                Assert.AreEqual(writer.TargetRecordIdSha256, contentionSql.ExactRowBlockTargetRecordIdSha256);
             }
             if (phase == "after" && delayMilliseconds >= 250)
             {
@@ -1450,16 +1476,18 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         Func<Task<double[]>> operation,
         CancellationToken cancellationToken)
     {
+        using var sampledAllocations = new Issue170AllocationSampler();
         using var process = Process.GetCurrentProcess();
         process.Refresh();
         var cpuStart = process.TotalProcessorTime;
         var allocationStart = GC.GetTotalAllocatedBytes(precise: true);
         var rssStart = process.WorkingSet64;
         var samples = new ConcurrentQueue<Issue250ProcessSample>();
+        sampledAllocations.Start();
         var started = Stopwatch.GetTimestamp();
-        samples.Enqueue(new(0, cpuStart.TotalMilliseconds, allocationStart, rssStart));
+        samples.Enqueue(new(0, cpuStart.TotalMilliseconds, 0, rssStart));
         using var sampleCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var sampleTask = SampleProcessAsync(started, samples, sampleCancellation.Token);
+        var sampleTask = SampleProcessAsync(started, allocationStart, samples, sampleCancellation.Token);
         double[] latencies;
         TimeSpan wall;
         double cpuMilliseconds;
@@ -1471,7 +1499,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             wall = Stopwatch.GetElapsedTime(started);
             process.Refresh();
             cpuMilliseconds = (process.TotalProcessorTime - cpuStart).TotalMilliseconds;
-            allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocationStart;
+            var allocationEnd = GC.GetTotalAllocatedBytes(precise: true);
+            allocatedBytes = RequireMonotonicAllocationTotal(allocationStart, allocationEnd) - allocationStart;
             rssEnd = process.WorkingSet64;
         }
         finally
@@ -1479,18 +1508,43 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             await sampleCancellation.CancelAsync().ConfigureAwait(false);
         }
         await sampleTask.ConfigureAwait(false);
+        var sampledAllocation = await sampledAllocations.StopAsync().ConfigureAwait(false);
         process.Refresh();
         var finalElapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        var finalAllocationTotal = GC.GetTotalAllocatedBytes(precise: true);
         samples.Enqueue(new(
             finalElapsed,
             process.TotalProcessorTime.TotalMilliseconds,
-            GC.GetTotalAllocatedBytes(precise: true),
+            RequireMonotonicAllocationTotal(allocationStart, finalAllocationTotal) - allocationStart,
             process.WorkingSet64));
         var series = samples.OrderBy(item => item.ElapsedMilliseconds).ToArray();
         Assert.IsGreaterThanOrEqualTo(2, series.Length);
+        if (series.Zip(series.Skip(1),
+                (first, second) => second.AllocatedBytesSinceWindowStart >= first.AllocatedBytesSinceWindowStart)
+            .Any(monotonic => !monotonic))
+        {
+            throw new InvalidDataException("GC.GetTotalAllocatedBytes(true) decreased during the measured window.");
+        }
         var intervals = series.Zip(series.Skip(1),
             (first, second) => second.ElapsedMilliseconds - first.ElapsedMilliseconds).ToArray();
-        var effectiveInterval = intervals.Length == 0 ? 0 : intervals.Order().ElementAt(intervals.Length / 2);
+        var orderedIntervals = intervals.Order().ToArray();
+        var effectiveInterval = orderedIntervals.Length == 0 ? 0 : Percentile(orderedIntervals, 0.50);
+        var maximumInterval = orderedIntervals.Length == 0 ? 0 : orderedIntervals[^1];
+        var exactAllocationRate = allocatedBytes / Math.Max(0.001, wall.TotalSeconds);
+        var allocationDifference = Math.Abs(allocatedBytes - sampledAllocation.SampledBytes);
+        var allocationDifferenceRatio = allocationDifference
+            / (double)Math.Max(1, Math.Max(allocatedBytes, sampledAllocation.SampledBytes));
+        var allocationBoundaryUncertaintyRatio =
+            2d * sampledAllocation.IntervalMilliseconds / Math.Max(1d, wall.TotalMilliseconds);
+        var allocationAgreementThreshold = allocationBoundaryUncertaintyRatio + 0.10d;
+        var allocationCrossCheckClaimable = allocationAgreementThreshold < 1d;
+        var allocationAgreement = allocationCrossCheckClaimable
+            && allocationDifferenceRatio <= allocationAgreementThreshold;
+        if (allocationCrossCheckClaimable)
+        {
+            Assert.IsTrue(allocationAgreement,
+                "System.Runtime alloc-rate and exact GC allocation deltas disagree beyond the normalized two-boundary uncertainty.");
+        }
         return new Issue250MeasuredWave(
             latencies,
             wall.TotalMilliseconds,
@@ -1498,8 +1552,23 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 cpuMilliseconds,
                 allocatedBytes,
                 series.Length,
+                10,
                 effectiveInterval,
-                allocatedBytes / Math.Max(0.001, wall.TotalSeconds),
+                maximumInterval,
+                exactAllocationRate,
+                new Issue250AllocationEvidence(
+                    sampledAllocation.SampledBytes,
+                    sampledAllocation.Samples,
+                    sampledAllocation.IntervalMilliseconds,
+                    allocationDifference,
+                    allocationDifferenceRatio,
+                    allocationBoundaryUncertaintyRatio,
+                    allocationCrossCheckClaimable,
+                    allocationCrossCheckClaimable
+                        ? "Claimable: normalized two-boundary uncertainty plus tolerance is below 100%."
+                        : "Unclaimable: normalized two-boundary uncertainty plus tolerance reaches or exceeds 100%.",
+                    allocationAgreement,
+                    sampledAllocation.RawSamples),
                 rssStart,
                 series.Max(item => item.RssBytes),
                 rssEnd,
@@ -1510,11 +1579,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
     private static async Task SampleProcessAsync(
         long origin,
+        long allocationStart,
         ConcurrentQueue<Issue250ProcessSample> samples,
         CancellationToken cancellationToken)
     {
         using var process = Process.GetCurrentProcess();
         var next = TimeSpan.FromMilliseconds(10);
+        var previousAllocationTotal = allocationStart;
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -1525,17 +1596,29 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     await Task.Delay(remaining, cancellationToken).ConfigureAwait(false);
                 }
                 process.Refresh();
+                var allocationTotal = GC.GetTotalAllocatedBytes(precise: true);
+                RequireMonotonicAllocationTotal(previousAllocationTotal, allocationTotal);
                 samples.Enqueue(new(
                     Stopwatch.GetElapsedTime(origin).TotalMilliseconds,
                     process.TotalProcessorTime.TotalMilliseconds,
-                    GC.GetTotalAllocatedBytes(precise: true),
+                    allocationTotal - allocationStart,
                     process.WorkingSet64));
+                previousAllocationTotal = allocationTotal;
                 next += TimeSpan.FromMilliseconds(10);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+    }
+
+    private static long RequireMonotonicAllocationTotal(long previous, long current)
+    {
+        if (current < previous)
+        {
+            throw new InvalidDataException("GC.GetTotalAllocatedBytes(true) decreased during the measured window.");
+        }
+        return current;
     }
 
     private static async Task<double[]> ExecuteReleaseWaveAsync(
@@ -2220,11 +2303,15 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 SentinelPostReleaseAbsenceStatRequests: 1,
                 QueryCapturedFromProductionProcessNextAsync: true,
                 Sha(pendingReleaseId.ToString("N")),
+                plan.NormalizedParameterizedQuery,
                 plan.NormalizedQuerySha256,
-                plan.PlanSha256,
+                plan.CanonicalPlanXml,
+                plan.CanonicalPlanSha256,
+                "ShowPlan XML serialized without formatting after Database, Server, and DatabaseContextSettingsId attribute values are replaced with [scrubbed].",
                 plan.LogicalReads,
                 plan.SelectedRows,
                 plan.IndexUsed,
+                plan.CanonicalPlanFactsJson,
                 plan.NormalizedPlanFactsSha256,
                 plan.Operators,
                 plan.Indexes,
@@ -3174,13 +3261,22 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             .Select(element => element.Attribute("Index")?.Value?.Trim('[', ']'))
             .Where(static value => !string.IsNullOrWhiteSpace(value))
             .Cast<string>().Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        foreach (var attribute in planDocument.Descendants().Attributes()
+                     .Where(attribute => attribute.Name.LocalName is "Database" or "Server" or "DatabaseContextSettingsId"))
+        {
+            attribute.Value = "[scrubbed]";
+        }
+        var canonicalPlanXml = planDocument.ToString(SaveOptions.DisableFormatting);
         var normalizedFacts = JsonSerializer.Serialize(new { operators, indexes, SelectedRows = selectedRows });
         return new Issue250PlanEvidence(
+            normalized,
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized))),
-            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(plan))),
+            canonicalPlanXml,
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalPlanXml))),
             logicalReads,
             selectedRows,
             plan.Contains("IX_CentralTransientPayloadReleases_State_CreatedUtc_ReleaseId", StringComparison.Ordinal),
+            normalizedFacts,
             Sha(normalizedFacts),
             operators,
             indexes);
@@ -3201,6 +3297,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         string applicationName,
         long origin,
         IReadOnlyList<Issue250ReleaseCase> cases,
+        Guid? writerTargetRecordId,
         CancellationToken cancellationToken)
     {
         var samples = new List<Issue250SqlSample>();
@@ -3215,6 +3312,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     connection,
                     applicationName,
                     cases,
+                    writerTargetRecordId,
                     Stopwatch.GetElapsedTime(origin).TotalMilliseconds,
                     cancellationToken).ConfigureAwait(false));
                 next += TimeSpan.FromMilliseconds(10);
@@ -3240,6 +3338,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         SqlConnection connection,
         string applicationName,
         IReadOnlyList<Issue250ReleaseCase> cases,
+        Guid? writerTargetRecordId,
         double elapsedMilliseconds,
         CancellationToken cancellationToken)
     {
@@ -3257,6 +3356,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         int? writerSessionId;
         int? blockerSessionId;
         long? blockerTransactionId;
+        Issue250RowBlockEvidence? rowBlock = null;
         long logBytes;
         var eventIds = cases.Select(item => item.EventId).ToArray();
         var releaseIds = new List<Guid>();
@@ -3313,6 +3413,64 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 WHERE [request_session_id] IN (SELECT [session_id] FROM @attributed)
                   AND [resource_type] = N'APPLICATION' AND [request_owner_type] = N'SESSION'
                   AND [request_status] = N'GRANT';
+                DECLARE @row_block TABLE
+                (
+                    [writer_session_id] smallint NOT NULL,
+                    [blocker_session_id] smallint NOT NULL,
+                    [blocker_transaction_id] bigint NOT NULL,
+                    [database_id] int NOT NULL,
+                    [writer_isolation_level] smallint NOT NULL,
+                    [blocker_isolation_level] smallint NOT NULL,
+                    [wait_type] nvarchar(60) NULL,
+                    [resource_type] nvarchar(60) NOT NULL,
+                    [resource_description] nvarchar(256) NOT NULL,
+                    [resource_associated_entity_id] bigint NOT NULL,
+                    [table_name] sysname NOT NULL,
+                    [index_name] sysname NOT NULL,
+                    [writer_request_mode] nvarchar(60) NOT NULL,
+                    [writer_request_status] nvarchar(60) NOT NULL,
+                    [writer_request_owner_type] nvarchar(60) NOT NULL,
+                    [blocker_request_mode] nvarchar(60) NOT NULL,
+                    [blocker_request_status] nvarchar(60) NOT NULL,
+                    [blocker_request_owner_type] nvarchar(60) NOT NULL
+                );
+                INSERT INTO @row_block
+                SELECT TOP(1)
+                    request.[session_id], request.[blocking_session_id], blocker_transaction.[transaction_id],
+                    waiting.[resource_database_id], writer.[transaction_isolation_level],
+                    blocker.[transaction_isolation_level], request.[wait_type], waiting.[resource_type],
+                    waiting.[resource_description], waiting.[resource_associated_entity_id],
+                    table_definition.[name], index_definition.[name], waiting.[request_mode],
+                    waiting.[request_status], waiting.[request_owner_type], granted.[request_mode],
+                    granted.[request_status], granted.[request_owner_type]
+                FROM [sys].[dm_exec_requests] AS request
+                INNER JOIN [sys].[dm_exec_sessions] AS writer ON writer.[session_id] = request.[session_id]
+                INNER JOIN [sys].[dm_exec_sessions] AS blocker ON blocker.[session_id] = request.[blocking_session_id]
+                INNER JOIN [sys].[dm_tran_locks] AS waiting ON waiting.[request_session_id] = request.[session_id]
+                    AND waiting.[request_status] = N'WAIT' AND waiting.[resource_type] = N'KEY'
+                    AND waiting.[request_owner_type] = N'TRANSACTION'
+                INNER JOIN [sys].[dm_tran_locks] AS granted ON granted.[request_session_id] = request.[blocking_session_id]
+                    AND granted.[request_status] = N'GRANT' AND granted.[resource_type] = waiting.[resource_type]
+                    AND granted.[request_owner_type] = N'TRANSACTION'
+                    AND granted.[resource_database_id] = waiting.[resource_database_id]
+                    AND granted.[resource_associated_entity_id] = waiting.[resource_associated_entity_id]
+                    AND granted.[resource_description] = waiting.[resource_description]
+                INNER JOIN [sys].[dm_tran_session_transactions] AS blocker_transaction
+                    ON blocker_transaction.[session_id] = blocker.[session_id]
+                    AND blocker_transaction.[transaction_id] = granted.[request_owner_id]
+                INNER JOIN [sys].[partitions] AS partition_definition
+                    ON partition_definition.[hobt_id] = waiting.[resource_associated_entity_id]
+                INNER JOIN [sys].[indexes] AS index_definition
+                    ON index_definition.[object_id] = partition_definition.[object_id]
+                    AND index_definition.[index_id] = partition_definition.[index_id]
+                INNER JOIN [sys].[tables] AS table_definition
+                    ON table_definition.[object_id] = partition_definition.[object_id]
+                WHERE writer.[program_name] = @writer_application_name
+                  AND blocker.[program_name] = @application_name
+                  AND waiting.[resource_database_id] = DB_ID()
+                  AND table_definition.[name] = N'CentralArtifacts'
+                  AND index_definition.[name] = N'PK_CentralArtifacts'
+                ORDER BY request.[session_id], blocker_transaction.[transaction_id];
                 SELECT
                     (SELECT COUNT(*) FROM @attributed),
                     (SELECT COUNT(*) FROM [sys].[dm_exec_requests]
@@ -3355,9 +3513,21 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                             ON session_transaction.[transaction_id] = database_transaction.[transaction_id]
                         WHERE session_transaction.[session_id] IN (SELECT [session_id] FROM @attributed)
                           AND database_transaction.[database_id] = DB_ID());
+                SELECT [writer_session_id], [blocker_session_id], [blocker_transaction_id], [database_id],
+                    [writer_isolation_level], [blocker_isolation_level], [wait_type], [resource_type],
+                    [resource_description], [resource_associated_entity_id], [table_name], [index_name],
+                    [writer_request_mode], [writer_request_status], [writer_request_owner_type],
+                    [blocker_request_mode], [blocker_request_status], [blocker_request_owner_type],
+                    (SELECT COUNT(*) FROM @application_locks AS application_lock
+                        WHERE application_lock.[request_session_id] = row_block.[blocker_session_id])
+                FROM @row_block AS row_block;
                 """;
             dmv.Parameters.AddWithValue("@application_name", applicationName);
-            dmv.Parameters.AddWithValue("@writer_application_name", applicationName + ".Writer");
+            dmv.Parameters.AddWithValue(
+                "@writer_application_name",
+                writerTargetRecordId.HasValue
+                    ? CreateWriterApplicationName(applicationName, writerTargetRecordId.Value)
+                    : applicationName + ".Writer.none");
             for (var index = 0; index < objectResources.Length; index++)
             {
                 dmv.Parameters.AddWithValue(objectNames[index], objectResources[index]);
@@ -3383,6 +3553,36 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             blockerSessionId = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt32(12);
             blockerTransactionId = await reader.IsDBNullAsync(13, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(13);
             logBytes = reader.GetInt64(14);
+            Assert.IsTrue(await reader.NextResultAsync(cancellationToken).ConfigureAwait(false));
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                Assert.IsTrue(writerTargetRecordId.HasValue);
+                rowBlock = new Issue250RowBlockEvidence(
+                    Sha(writerTargetRecordId.Value.ToString("N")),
+                    reader.GetInt16(0),
+                    reader.GetInt16(1),
+                    reader.GetInt64(2),
+                    reader.GetInt32(3),
+                    true,
+                    true,
+                    true,
+                    true,
+                    reader.GetInt16(4),
+                    reader.GetInt16(5),
+                    await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? "unknown" : reader.GetString(6),
+                    reader.GetString(7),
+                    reader.GetString(8),
+                    reader.GetInt64(9),
+                    reader.GetString(10),
+                    reader.GetString(11),
+                    reader.GetString(12),
+                    reader.GetString(13),
+                    reader.GetString(14),
+                    reader.GetString(15),
+                    reader.GetString(16),
+                    reader.GetString(17),
+                    reader.GetInt32(18) == 0);
+            }
         }
 
         Issue250Backlog? backlog = null;
@@ -3431,6 +3631,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             writerSessionId,
             blockerSessionId,
             blockerTransactionId,
+            rowBlock,
             logBytes,
             backlog?.PendingParents,
             backlog?.PendingItems,
@@ -3448,7 +3649,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     {
         var builder = new SqlConnectionStringBuilder(connectionString)
         {
-            ApplicationName = applicationName + ".Writer"
+            ApplicationName = CreateWriterApplicationName(applicationName, recordId)
         };
         await using var connection = new SqlConnection(builder.ConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -3461,17 +3662,23 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         try
         {
             var rows = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            return new Issue250WriterEvidence("completed", Stopwatch.GetElapsedTime(started).TotalMilliseconds, rows == 1, 1_000);
+            return new Issue250WriterEvidence("completed", Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                rows == 1, 1_000, Sha(recordId.ToString("N")));
         }
         catch (SqlException exception) when (exception.Number == -2)
         {
-            return new Issue250WriterEvidence("timeout", Stopwatch.GetElapsedTime(started).TotalMilliseconds, false, 1_000);
+            return new Issue250WriterEvidence("timeout", Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                false, 1_000, Sha(recordId.ToString("N")));
         }
         catch (SqlException exception) when (exception.Number == 1205)
         {
-            return new Issue250WriterEvidence("deadlock", Stopwatch.GetElapsedTime(started).TotalMilliseconds, false, 1_000);
+            return new Issue250WriterEvidence("deadlock", Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                false, 1_000, Sha(recordId.ToString("N")));
         }
     }
+
+    private static string CreateWriterApplicationName(string applicationName, Guid recordId)
+        => $"{applicationName}.Writer.{Sha(recordId.ToString("N"))[..16]}";
 
     private static Issue250ReleaseScenarioEvidence CreateReleaseScenarioEvidence(
         int concurrency,
@@ -3560,31 +3767,69 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     }
 
     private static Issue250ResourceAggregate CreateResourceAggregate(IReadOnlyList<Issue250ResourceEvidence> resources)
-        => new(
+    {
+        var exactAllocated = resources.Sum(item => item.AllocatedBytesDelta);
+        var sampledAllocated = resources.Sum(item => item.Allocation.SampledBytes);
+        var allocationDifference = Math.Abs(exactAllocated - sampledAllocated);
+        var allocationDifferenceRatio = allocationDifference
+            / (double)Math.Max(1, Math.Max(exactAllocated, sampledAllocated));
+        var boundaryUncertainty = resources.Count == 0
+            ? 1d
+            : resources.Sum(item => item.Allocation.BoundaryUncertaintyRatio);
+        var allocationAgreementThreshold = boundaryUncertainty + 0.10d;
+        var allocationCrossCheckClaimable = resources.Count > 0
+            && resources.All(item => item.Allocation.CrossCheckClaimable)
+            && allocationAgreementThreshold < 1d;
+        var allocationAgreement = allocationCrossCheckClaimable
+            && resources.All(item => item.Allocation.AgreementWithinBoundaryUncertainty)
+            && allocationDifferenceRatio <= allocationAgreementThreshold;
+        if (allocationCrossCheckClaimable)
+        {
+            Assert.IsTrue(allocationAgreement);
+        }
+        return new Issue250ResourceAggregate(
             resources.Sum(item => item.ProcessCpuMilliseconds),
-            resources.Sum(item => item.AllocatedBytesDelta),
+            exactAllocated,
             resources.Sum(item => item.ProcessSamples),
-            resources.Count == 0 ? 10 : resources.Average(item => item.EffectiveSamplingIntervalMilliseconds),
+            10,
+            resources.Count == 0 ? 0 : resources.Average(item => item.EffectiveSamplingIntervalMilliseconds),
+            resources.Count == 0 ? 0 : resources.Max(item => item.MaximumSamplingIntervalMilliseconds),
             resources.Count == 0 ? 0 : resources.Average(item => item.AllocatedBytesPerSecond),
+            new Issue250AllocationEvidence(
+                sampledAllocated,
+                resources.Sum(item => item.Allocation.Samples),
+                100,
+                allocationDifference,
+                allocationDifferenceRatio,
+                boundaryUncertainty,
+                allocationCrossCheckClaimable,
+                allocationCrossCheckClaimable
+                    ? "Claimable: all constituent windows are claimable and aggregate boundary uncertainty plus tolerance is below 100%."
+                    : "Unclaimable: a constituent window is unclaimable or aggregate boundary uncertainty plus tolerance reaches or exceeds 100%.",
+                allocationAgreement,
+                resources.SelectMany(item => item.Allocation.RawSamples).ToArray()),
             resources.Count == 0 ? 0 : resources[0].RssStartBytes,
             resources.Count == 0 ? 0 : resources.Max(item => item.RssPeakBytes),
             resources.Count == 0 ? 0 : resources[^1].RssEndBytes,
             resources.Count == 0 ? 0 : resources.Max(item => item.WindowStartUncertaintyMilliseconds),
             resources.Count == 0 ? 0 : resources.Max(item => item.WindowEndUncertaintyMilliseconds),
             resources.SelectMany(item => item.TimeSeries).ToArray());
+    }
 
     private static Issue250Latency Latency(IEnumerable<double> values)
     {
         var ordered = values.Order().ToArray();
         return ordered.Length == 0
-            ? new Issue250Latency(0, 0, 0, null, null, 0)
+            ? new Issue250Latency(0, 0, 0, null, null, 0, [], Sha("[]"))
             : new Issue250Latency(
                 ordered.Length,
                 ordered[0],
                 Percentile(ordered, 0.50),
                 ordered.Length >= 30 ? Percentile(ordered, 0.95) : null,
                 ordered.Length >= 30 ? Percentile(ordered, 0.99) : null,
-                ordered[^1]);
+                ordered[^1],
+                ordered,
+                Sha(JsonSerializer.Serialize(ordered)));
     }
 
     private static double Percentile(double[] ordered, double percentile)
@@ -3601,12 +3846,30 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 (previous, current) => current.ElapsedMilliseconds - previous.ElapsedMilliseconds)
             .Order().ToArray();
         var interval = intervals.Length == 0 ? 0 : Percentile(intervals, 0.50);
+        var maximumInterval = intervals.Length == 0 ? 0 : intervals[^1];
         var inDeleteWindow = samples.Where(sample => deleteWindows.Any(window =>
             sample.ElapsedMilliseconds >= window.EnteredMilliseconds
             && sample.ElapsedMilliseconds <= window.ExitedMilliseconds)).ToArray();
         var samplesPerWindow = deleteWindows.Select(window => samples.Count(sample =>
             sample.ElapsedMilliseconds >= window.EnteredMilliseconds
             && sample.ElapsedMilliseconds <= window.ExitedMilliseconds)).ToArray();
+        var windowsWithSamples = samplesPerWindow.Count(count => count > 0);
+        var deleteWindowCoverage = deleteWindows.Count == 0 ? 0 : windowsWithSamples / (double)deleteWindows.Count;
+        var lockDurationClaimable = configuredDelayMilliseconds > 0
+            && deleteWindows.Count > 0
+            && windowsWithSamples == deleteWindows.Count
+            && maximumInterval <= configuredDelayMilliseconds;
+        var lockDurationClaimability = lockDurationClaimable
+            ? "claimable: every DELETE window contains samples and observed maximum cadence is no larger than the configured delay"
+            : configuredDelayMilliseconds == 0
+                ? "unclaimable: a zero-delay lock interval is below the target DMV cadence"
+                : "unclaimable: sample coverage or observed maximum cadence cannot resolve every DELETE lock interval";
+        if (configuredDelayMilliseconds == 0)
+        {
+            Assert.IsFalse(lockDurationClaimable);
+            Assert.AreEqual("unclaimable: a zero-delay lock interval is below the target DMV cadence",
+                lockDurationClaimability);
+        }
         var transactionWindow = deleteWindows.Select(window => ObservedWindow(
             samples.Where(sample => sample.ElapsedMilliseconds >= window.EnteredMilliseconds
                 && sample.ElapsedMilliseconds <= window.ExitedMilliseconds).ToArray(),
@@ -3618,10 +3881,20 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             item => item.ObjectApplicationLocks > 0,
             interval)).DefaultIfEmpty().Max();
         var validBacklogSamples = samples.Count(item => !item.BacklogUnavailable);
-        Assert.IsGreaterThanOrEqualTo(
-            Math.Max(1, (int)Math.Ceiling(samples.Count * 0.80)),
-            validBacklogSamples,
-            "Attributed backlog sampling must retain at least 80% valid coverage.");
+        var requiredBacklogSamples = Math.Max(1, (int)Math.Ceiling(samples.Count * 0.80));
+        var backlogClaimable = configuredDelayMilliseconds > 0
+            && samples.Count > 0
+            && validBacklogSamples >= requiredBacklogSamples;
+        var backlogClaimability = backlogClaimable
+            ? "claimable: at least 80% of attributed DMV samples include a valid bounded backlog observation"
+            : configuredDelayMilliseconds == 0
+                ? "unclaimable: zero-delay execution completed within the DMV/backlog sampling uncertainty"
+                : "unclaimable: fewer than 80% of attributed DMV samples include a valid bounded backlog observation";
+        if (configuredDelayMilliseconds >= 250)
+        {
+            Assert.IsTrue(backlogClaimable,
+                "Attributed backlog sampling must retain at least 80% valid coverage for delayed windows.");
+        }
         Assert.AreEqual(0, samples.Sum(item => item.UnexpectedApplicationLocks));
         if (configuredDelayMilliseconds >= 250 && phase is "baseline" or "development")
         {
@@ -3635,11 +3908,41 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Assert.IsTrue(inDeleteWindow.Any(item => item.ParentLockOwnerSessionId.HasValue));
             if (contentionProbe)
             {
-                Assert.IsTrue(inDeleteWindow.Any(item =>
+                var exactRowBlocks = inDeleteWindow.Where(item =>
                     item.WriterSessionId.HasValue
                     && item.BlockerSessionId.HasValue
                     && item.BlockerTransactionId.HasValue
-                    && item.AttributedBlockedWriterRequests == 1));
+                    && item.AttributedBlockedWriterRequests == 1
+                    && item.ExactRowBlock is not null).ToArray();
+                Assert.IsNotEmpty(exactRowBlocks);
+                foreach (var sample in exactRowBlocks)
+                {
+                    var row = sample.ExactRowBlock!;
+                    Assert.AreEqual(sample.WriterSessionId, row.WriterSessionId);
+                    Assert.AreEqual(sample.BlockerSessionId, row.BlockerSessionId);
+                    Assert.AreEqual(sample.BlockerTransactionId, row.BlockerTransactionId);
+                    Assert.IsTrue(sample.ObjectLockOwnerSessionId.HasValue);
+                    Assert.IsTrue(sample.ParentLockOwnerSessionId.HasValue);
+                    Assert.AreNotEqual(row.BlockerSessionId, sample.ObjectLockOwnerSessionId);
+                    Assert.AreNotEqual(row.BlockerSessionId, sample.ParentLockOwnerSessionId);
+                    Assert.IsTrue(row.DatabaseIsCurrent);
+                    Assert.IsTrue(row.BlockerApplicationMatchesRelease);
+                    Assert.IsTrue(row.BlockerTransactionOwnsGrantedResource);
+                    Assert.IsTrue(row.WaitingAndGrantedResourceIdentityExact);
+                    Assert.AreEqual("KEY", row.ResourceType);
+                    Assert.AreEqual("CentralArtifacts", row.Table);
+                    Assert.AreEqual("PK_CentralArtifacts", row.Index);
+                    Assert.AreEqual("WAIT", row.WriterRequestStatus);
+                    Assert.AreEqual("U", row.WriterRequestMode);
+                    Assert.AreEqual("TRANSACTION", row.WriterRequestOwnerType);
+                    Assert.AreEqual("GRANT", row.BlockerRequestStatus);
+                    Assert.AreEqual("X", row.BlockerRequestMode);
+                    Assert.AreEqual("TRANSACTION", row.BlockerRequestOwnerType);
+                    Assert.AreEqual(2, row.WriterIsolationLevel);
+                    Assert.AreEqual(4, row.BlockerIsolationLevel);
+                    Assert.IsTrue(row.WaitType.StartsWith("LCK_M_", StringComparison.Ordinal));
+                    Assert.IsTrue(row.ApplicationLockFenceSessionsDistinctFromBlocker);
+                }
             }
         }
         if (configuredDelayMilliseconds >= 250 && phase == "after")
@@ -3647,11 +3950,17 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Assert.AreEqual(0d, transactionWindow);
             Assert.IsGreaterThanOrEqualTo(configuredDelayMilliseconds - 100d, objectLockWindow);
             Assert.IsTrue(inDeleteWindow.Any(item => item.ObjectLockOwnerSessionId.HasValue));
+            Assert.IsFalse(inDeleteWindow.Any(item => item.ExactRowBlock is not null));
         }
         return new Issue250SqlEvidence(
             samples.Count,
+            10,
             interval,
+            maximumInterval,
             deleteWindows.Count,
+            windowsWithSamples,
+            deleteWindowCoverage,
+            samplesPerWindow,
             inDeleteWindow.Length,
             inDeleteWindow.FirstOrDefault()?.ElapsedMilliseconds,
             inDeleteWindow.LastOrDefault()?.ElapsedMilliseconds,
@@ -3664,13 +3973,17 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             samples.Count == 0 ? 0 : samples.Max(item => item.BlockedWriterRequests),
             samples.Count == 0 ? 0 : samples.Max(item => item.AttributedBlockedWriterRequests),
             samples.Count == 0 ? 0 : samples.Max(item => item.UnexpectedApplicationLocks),
-            samples.Count(item => item.WriterSessionId.HasValue
-                && item.BlockerSessionId.HasValue
-                && item.BlockerTransactionId.HasValue),
+            samples.Count(item => item.ExactRowBlock is not null),
+            samples.Select(item => item.ExactRowBlock?.TargetRecordIdSha256)
+                .Where(static value => value is not null).Distinct(StringComparer.Ordinal).SingleOrDefault(),
             samples.Count == 0 ? 0 : samples.Max(item => item.ActiveTransactionLogBytes),
             transactionWindow,
             objectLockWindow,
             ObservedWindow(inDeleteWindow, item => item.ParentReleaseApplicationLocks > 0, interval),
+            lockDurationClaimable,
+            lockDurationClaimability,
+            backlogClaimable,
+            backlogClaimability,
             samples.Count(item => item.BacklogUnavailable),
             validBacklogSamples,
             samples.Count == 0 ? 0 : validBacklogSamples / (double)samples.Count,
@@ -4637,11 +4950,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private static string ComputeProtocolSha256()
         => Sha(JsonSerializer.Serialize(new
         {
-            Schema = "issue-250-public-release-protocol-v2",
+            Schema = "issue-250-public-release-protocol-v3",
             Boundary = "public ReleaseAsync including request/item creation, DELETE, finalize, replay",
             Percentiles = "nearest-rank",
             SqlSamplingMilliseconds = 10,
+            AllocationSamplingMilliseconds = 100,
             LockResource = "hvo-central-object:<uppercase SHA-256 of UTF-8 canonical reference>",
+            RowBlockAttribution = "exact matching waiting/granted KEY resource on CentralArtifacts.PK_CentralArtifacts with blocker transaction/session/database/isolation attribution",
             WriterDeadlineMilliseconds = 1_000,
             W3M = "actual ProcessNextAsync plus exact normalized baseline parent query plan",
             FaultManifest = CanonicalFaultManifest,
@@ -4652,6 +4967,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         => Sha(JsonSerializer.Serialize(new
         {
             Schema = CompatibilityProtocolSchema,
+            TrialPolicy,
             Boundary = "public ReleaseAsync through durable terminal parent/items and MinIO DELETE; replay outside measured window",
             WarmupAndSetupExcluded = true,
             MeasuredReleasesPerConcurrency = 30,
@@ -4663,13 +4979,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 IntervalMilliseconds = 10,
                 ContinuousScenarioWindow = true,
                 Cpu = "Process.TotalProcessorTime delta and sampled cumulative values",
-                Allocations = "GC.GetTotalAllocatedBytes(true) delta and sampled cumulative values",
+                Allocations = "monotonic window-relative GC.GetTotalAllocatedBytes(true) samples plus raw 100 ms System.Runtime alloc-rate increments and non-vacuous normalized agreement or explicit unclaimability",
                 Rss = "Process.WorkingSet64 start/peak/end and time series",
                 BoundaryUncertainty = "first and last sample each bounded by one observed sampling interval"
             },
             Latency = "nearest-rank median/p95/p99 only at >=30 samples; min/median/max below 30",
-            Contention = "exact attributed hashed parent/object resources and blocker session/transaction",
-            W3M = "actual intercepted ProcessNextAsync selection SQL replayed for STATISTICS XML/IO",
+            Contention = "exact attributed hashed parent/object application locks plus waiting/granted CentralArtifacts.PK_CentralArtifacts KEY-resource identity and blocker transaction/session/database/isolation",
+            W3M = "actual intercepted ProcessNextAsync selection SQL replayed for STATISTICS XML/IO with parameterized SQL, scrubbed canonical plan XML, and canonical plan-facts preimages",
             FaultManifest = CanonicalFaultManifest
         }));
 
@@ -4736,7 +5052,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         Assert.AreEqual(250, root.GetProperty("Issue").GetInt32());
         Assert.AreEqual("baseline", root.GetProperty("Phase").GetString());
         Assert.AreEqual(ProductionRevision, root.GetProperty("ProductionRevision").GetString());
-        Assert.IsTrue(root.GetProperty("Trial").GetInt32() is >= 1 and <= 5);
+        Assert.AreEqual(1, root.GetProperty("Trial").GetInt32());
+        Assert.AreEqual(TrialPolicy, root.GetProperty("TrialPolicy").GetString());
         Assert.AreEqual(compatibilityWorkloadSha256, root.GetProperty("WorkloadSha256").GetString());
         Assert.AreEqual(compatibilityWorkloadSha256,
             root.GetProperty("CompatibilityWorkloadSha256").GetString());
@@ -4781,6 +5098,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             var payloadRoot = payload.RootElement;
             Assert.AreEqual(250, payloadRoot.GetProperty("Issue").GetInt32());
             Assert.AreEqual("baseline", payloadRoot.GetProperty("Phase").GetString());
+            Assert.AreEqual(TrialPolicy, payloadRoot.GetProperty("TrialPolicy").GetString());
             Assert.AreEqual(manifestHarness, payloadRoot.GetProperty("HarnessSha256").GetString());
             Assert.AreEqual(root.GetProperty("WorkloadSha256").GetString(),
                 payloadRoot.GetProperty("WorkloadSha256").GetString());
@@ -4793,7 +5111,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             if (string.Equals(name, expectedFiles[0], StringComparison.Ordinal))
             {
                 evidenceSha = sha;
-                Assert.AreEqual("hvo-issue-250-central-transient-payload-release-evidence-v2",
+                Assert.AreEqual("hvo-issue-250-central-transient-payload-release-evidence-v3",
                     payloadRoot.GetProperty("Schema").GetString());
                 Assert.AreEqual(ProductionRevision, payloadRoot.GetProperty("ProductionRevision").GetString());
                 var source = payloadRoot.GetProperty("Source");
@@ -4808,7 +5126,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             {
                 Assert.AreEqual(name == expectedFiles[1]
                         ? "hvo-issue-250-w0-fault-runtime-evidence-v1"
-                        : "hvo-issue-250-w3m-normalized-plan-evidence-v4",
+                        : "hvo-issue-250-w3m-normalized-plan-evidence-v5",
                     payloadRoot.GetProperty("Schema").GetString());
             }
         }
@@ -4866,11 +5184,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         {
             return;
         }
-        if (source.Dirty || source.RequestedRevision is null || source.Trial is null
+        if (source.Dirty || source.RequestedRevision is null || source.Trial != 1
             || !string.Equals(source.Claimability, "clean-source-attributed-review-required", StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                "Baseline/after evidence requires exact HVO_EVIDENCE_REVISION, a clean committed HEAD, and HVO_EVIDENCE_TRIAL=1..5.");
+                "Baseline/after evidence requires exact HVO_EVIDENCE_REVISION, a clean committed HEAD, and the issue-authorized HVO_EVIDENCE_TRIAL=1.");
         }
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HVO_EVIDENCE_PRODUCTION_REVISION")))
         {
@@ -5749,8 +6067,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         double ProcessCpuMilliseconds,
         long AllocatedBytesDelta,
         int ProcessSamples,
+        int TargetSamplingIntervalMilliseconds,
         double EffectiveSamplingIntervalMilliseconds,
+        double MaximumSamplingIntervalMilliseconds,
         double AllocatedBytesPerSecond,
+        Issue250AllocationEvidence Allocation,
         long RssStartBytes,
         long RssPeakBytes,
         long RssEndBytes,
@@ -5762,8 +6083,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         double ProcessCpuMilliseconds,
         long AllocatedBytesDelta,
         int ProcessSamples,
+        int TargetSamplingIntervalMilliseconds,
         double EffectiveSamplingIntervalMilliseconds,
+        double MaximumSamplingIntervalMilliseconds,
         double AllocatedBytesPerSecond,
+        Issue250AllocationEvidence Allocation,
         long RssStartBytes,
         long RssPeakBytes,
         long RssEndBytes,
@@ -5774,8 +6098,20 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private sealed record Issue250ProcessSample(
         double ElapsedMilliseconds,
         double ProcessCpuTotalMilliseconds,
-        long TotalAllocatedBytes,
+        long AllocatedBytesSinceWindowStart,
         long RssBytes);
+
+    private sealed record Issue250AllocationEvidence(
+        long SampledBytes,
+        int Samples,
+        int IntervalMilliseconds,
+        long AbsoluteDifferenceFromExactGcBytes,
+        double DifferenceRatio,
+        double BoundaryUncertaintyRatio,
+        bool CrossCheckClaimable,
+        string CrossCheckClaimability,
+        bool AgreementWithinBoundaryUncertainty,
+        IReadOnlyList<Issue170AllocationSample> RawSamples);
 
     private sealed record Issue250Latency(
         int Samples,
@@ -5783,7 +6119,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         double MedianMilliseconds,
         double? P95Milliseconds,
         double? P99Milliseconds,
-        double MaximumMilliseconds);
+        double MaximumMilliseconds,
+        IReadOnlyList<double> OrderedSamplesMilliseconds,
+        string OrderedSamplesSha256);
 
     private sealed record Issue250ProtocolEvidence(
         long EfSqlCommands,
@@ -5869,7 +6207,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         string Outcome,
         double ElapsedMilliseconds,
         bool ExactRowUpdated,
-        int DeadlineMilliseconds);
+        int DeadlineMilliseconds,
+        string TargetRecordIdSha256);
 
     private sealed record Issue250Backlog(
         long PendingParents,
@@ -5893,6 +6232,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         int? WriterSessionId,
         int? BlockerSessionId,
         long? BlockerTransactionId,
+        Issue250RowBlockEvidence? ExactRowBlock,
         long ActiveTransactionLogBytes,
         long? PendingParents,
         long? PendingItems,
@@ -5900,10 +6240,41 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         long? OldestPendingAgeMilliseconds,
         bool BacklogUnavailable);
 
+    private sealed record Issue250RowBlockEvidence(
+        string TargetRecordIdSha256,
+        int WriterSessionId,
+        int BlockerSessionId,
+        long BlockerTransactionId,
+        int DatabaseId,
+        bool DatabaseIsCurrent,
+        bool BlockerApplicationMatchesRelease,
+        bool BlockerTransactionOwnsGrantedResource,
+        bool WaitingAndGrantedResourceIdentityExact,
+        int WriterIsolationLevel,
+        int BlockerIsolationLevel,
+        string WaitType,
+        string ResourceType,
+        string ResourceDescription,
+        long ResourceAssociatedEntityId,
+        string Table,
+        string Index,
+        string WriterRequestMode,
+        string WriterRequestStatus,
+        string WriterRequestOwnerType,
+        string BlockerRequestMode,
+        string BlockerRequestStatus,
+        string BlockerRequestOwnerType,
+        bool ApplicationLockFenceSessionsDistinctFromBlocker);
+
     private sealed record Issue250SqlEvidence(
         int Samples,
+        int TargetSamplingIntervalMilliseconds,
         double EffectiveSamplingIntervalMilliseconds,
+        double MaximumSamplingIntervalMilliseconds,
         int DeleteWindows,
+        int DeleteWindowsWithSamples,
+        double DeleteWindowCoverage,
+        IReadOnlyList<int> SamplesPerDeleteWindow,
         int SamplesInsideDeleteWindows,
         double? FirstDeleteWindowSampleMilliseconds,
         double? LastDeleteWindowSampleMilliseconds,
@@ -5917,10 +6288,15 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         int MaximumAttributedBlockedWriterRequests,
         int MaximumUnexpectedApplicationLocks,
         int ExactAttributedBlockerSamples,
+        string? ExactRowBlockTargetRecordIdSha256,
         long MaximumActiveTransactionLogBytes,
         double TransactionOverlapMilliseconds,
         double ObjectLockWindowMilliseconds,
         double ParentReleaseLockWindowMilliseconds,
+        bool LockDurationClaimable,
+        string LockDurationClaimability,
+        bool BacklogClaimable,
+        string BacklogClaimability,
         int BacklogUnavailableSamples,
         int ValidBacklogSamples,
         double BacklogSampleCoverage,
@@ -5938,11 +6314,14 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         int DistinctEvents);
 
     private sealed record Issue250PlanEvidence(
+        string NormalizedParameterizedQuery,
         string NormalizedQuerySha256,
-        string PlanSha256,
+        string CanonicalPlanXml,
+        string CanonicalPlanSha256,
         long LogicalReads,
         int SelectedRows,
         bool IndexUsed,
+        string CanonicalPlanFactsJson,
         string NormalizedPlanFactsSha256,
         IReadOnlyList<string> Operators,
         IReadOnlyList<string> Indexes);
@@ -6256,11 +6635,15 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         int SentinelPostReleaseAbsenceStatRequests,
         bool QueryCapturedFromProductionProcessNextAsync,
         string SelectedOldestReleaseIdentitySha256,
+        string NormalizedParameterizedProductionQuery,
         string NormalizedProductionQuerySha256,
-        string ActualPlanSha256,
+        string CanonicalActualPlanXml,
+        string CanonicalActualPlanSha256,
+        string CanonicalPlanTransformation,
         long LogicalReads,
         int SelectedRows,
         bool IndexUsed,
+        string CanonicalPlanFactsJson,
         string NormalizedPlanFactsSha256,
         IReadOnlyList<string> Operators,
         IReadOnlyList<string> Indexes,

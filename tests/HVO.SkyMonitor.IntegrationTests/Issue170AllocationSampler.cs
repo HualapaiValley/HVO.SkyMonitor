@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 
@@ -6,7 +8,10 @@ namespace HVO.SkyMonitor.IntegrationTests;
 internal sealed class Issue170AllocationSampler : EventListener
 {
     private const int IntervalMilliseconds = 100;
+    private readonly ConcurrentQueue<Issue170AllocationSample> _rawSamples = [];
+    private readonly object _gate = new();
     private long _sampledBytes;
+    private long _started;
     private int _samples;
     private int _active;
     private int _invalid;
@@ -22,21 +27,36 @@ internal sealed class Issue170AllocationSampler : EventListener
 
     internal void Start()
     {
-        Interlocked.Exchange(ref _sampledBytes, 0);
-        Interlocked.Exchange(ref _samples, 0);
-        Volatile.Write(ref _active, 1);
+        lock (_gate)
+        {
+            _rawSamples.Clear();
+            _sampledBytes = 0;
+            _samples = 0;
+            _invalid = 0;
+            _started = Stopwatch.GetTimestamp();
+            Volatile.Write(ref _active, 1);
+        }
     }
 
     internal Task<Issue170AllocationMeasurement> StopAsync()
     {
-        Volatile.Write(ref _active, 0);
-        var bytes = Interlocked.Read(ref _sampledBytes);
-        var samples = Volatile.Read(ref _samples);
-        if (Volatile.Read(ref _invalid) != 0 || bytes < 0 || samples == 0)
+        lock (_gate)
         {
-            throw new InvalidDataException("System.Runtime did not provide valid sampled allocation-rate increments.");
+            Volatile.Write(ref _active, 0);
+            var bytes = _sampledBytes;
+            var samples = _samples;
+            if (_invalid != 0 || bytes < 0 || samples == 0)
+            {
+                throw new InvalidDataException("System.Runtime did not provide valid sampled allocation-rate increments.");
+            }
+            var rawSamples = _rawSamples.OrderBy(item => item.ElapsedMilliseconds).ToArray();
+            if (rawSamples.Length != samples || rawSamples.Sum(item => item.AllocatedBytes) != bytes)
+            {
+                throw new InvalidDataException("System.Runtime allocation-rate raw samples do not reproduce the aggregate.");
+            }
+            return Task.FromResult(new Issue170AllocationMeasurement(
+                bytes, samples, IntervalMilliseconds, rawSamples));
         }
-        return Task.FromResult(new Issue170AllocationMeasurement(bytes, samples, IntervalMilliseconds));
     }
 
     protected override void OnEventSourceCreated(EventSource eventSource)
@@ -56,11 +76,26 @@ internal sealed class Issue170AllocationSampler : EventListener
         var value = Convert.ToDouble(increment, CultureInfo.InvariantCulture);
         if (!double.IsFinite(value) || value < 0 || value > long.MaxValue)
         {
-            Volatile.Write(ref _invalid, 1);
+            lock (_gate)
+            {
+                if (Volatile.Read(ref _active) != 0)
+                {
+                    _invalid = 1;
+                }
+            }
             return;
         }
-        Interlocked.Add(ref _sampledBytes, checked((long)Math.Round(value, MidpointRounding.AwayFromZero)));
-        Interlocked.Increment(ref _samples);
+        lock (_gate)
+        {
+            if (Volatile.Read(ref _active) == 0)
+            {
+                return;
+            }
+            var allocatedBytes = checked((long)Math.Round(value, MidpointRounding.AwayFromZero));
+            _sampledBytes += allocatedBytes;
+            _rawSamples.Enqueue(new(Stopwatch.GetElapsedTime(_started).TotalMilliseconds, allocatedBytes));
+            _samples++;
+        }
     }
 
     private void EnableRuntimeCounters(EventSource eventSource)
@@ -77,4 +112,10 @@ internal sealed class Issue170AllocationSampler : EventListener
     }
 }
 
-internal sealed record Issue170AllocationMeasurement(long SampledBytes, int Samples, int IntervalMilliseconds);
+internal sealed record Issue170AllocationMeasurement(
+    long SampledBytes,
+    int Samples,
+    int IntervalMilliseconds,
+    IReadOnlyList<Issue170AllocationSample> RawSamples);
+
+internal sealed record Issue170AllocationSample(double ElapsedMilliseconds, long AllocatedBytes);
