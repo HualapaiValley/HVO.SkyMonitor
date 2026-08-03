@@ -48,38 +48,47 @@ def low_metric($name; $baseline; $after; $limit):
 def apply_regression_disposition:
   . as $metric |
   ({
-    "c1-release-median-ms": {direction: "maximum", limit: 125},
+    "c1-release-median-ms": {direction: "maximum", limit: 175},
     "c1-release-p95-ms": {direction: "maximum", limit: 230},
     "c1-release-p99-ms": {direction: "maximum", limit: 260},
     "c1-release-maximum-ms": {direction: "maximum", limit: 260},
-    "c1-releases-per-second": {direction: "minimum", limit: 7},
+    "c1-releases-per-second": {direction: "minimum", limit: 5.5},
     "c1-cpu-ms": {direction: "maximum", limit: 3600},
     "c1-allocated-bytes": {direction: "maximum", limit: 282000000},
+    "c1-rss-growth-bytes": {direction: "maximum", limit: 201326592},
     "c4-release-median-ms": {direction: "maximum", limit: 125},
-    "c4-allocated-bytes": {direction: "maximum", limit: 245000000}
+    "c4-cpu-ms": {direction: "maximum", limit: 2800},
+    "c4-allocated-bytes": {direction: "maximum", limit: 320000000},
+    "c4-rss-growth-bytes": {direction: "maximum", limit: 134217728}
   }[$metric.name]) as $rule |
-  if $metric.passed then
-    $metric + {accepted: true, disposition: "comparative-budget-passed"}
-  elif $rule == null then
-    $metric + {accepted: false, disposition: "unaccepted-comparative-regression"}
-  elif (($metric.baseline | valid_measurement) and ($metric.after | valid_measurement) and
+  if $rule != null then
+    if (($metric.baseline | valid_measurement) and ($metric.after | valid_measurement) and
         (($rule.direction == "maximum" and $metric.after <= $rule.limit) or
          ($rule.direction == "minimum" and $metric.after >= $rule.limit))) then
-    $metric + {
-      accepted: true,
-      disposition: "operator-accepted-bounded-durable-correctness-cost",
-      acceptedAbsoluteDirection: $rule.direction,
-      acceptedAbsoluteLimit: $rule.limit,
-      authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5170885290"
-    }
+      $metric + {
+        accepted: true,
+        disposition: (if $metric.passed then
+          "comparative-budget-passed-within-absolute-cap"
+        else
+          "operator-accepted-bounded-durable-correctness-cost"
+        end),
+        acceptedAbsoluteDirection: $rule.direction,
+        acceptedAbsoluteLimit: $rule.limit,
+        authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5171614006"
+      }
+    else
+      $metric + {
+        accepted: false,
+        disposition: "outside-operator-accepted-absolute-bound",
+        acceptedAbsoluteDirection: $rule.direction,
+        acceptedAbsoluteLimit: $rule.limit,
+        authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5171614006"
+      }
+    end
+  elif $metric.passed then
+    $metric + {accepted: true, disposition: "comparative-budget-passed"}
   else
-    $metric + {
-      accepted: false,
-      disposition: "outside-operator-accepted-absolute-bound",
-      acceptedAbsoluteDirection: $rule.direction,
-      acceptedAbsoluteLimit: $rule.limit,
-      authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5170885290"
-    }
+    $metric + {accepted: false, disposition: "unaccepted-comparative-regression"}
   end;
 
 def protocol_counts:
