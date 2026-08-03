@@ -150,7 +150,7 @@ The same Dockerfile is verified on native Linux x64 and Raspberry Pi ARM64. The
 10.0.100 SDK and produced native image
 `sha256:792c9d89e282caa28113d626f4b50294b195a4c651eb39cf43acb273b2eb1266`.
 It mounted the separately hashed ARM64 SDK library and `/dev/bus/usb`, with only
-`c 189:* rmw` device-cgroup access rather than `--privileged`. Build and runtime
+`c 189:* rwm` device-cgroup access rather than `--privileged`. Build and runtime
 architecture were both `arm64`; no adapter or configuration branch changed by
 host architecture.
 
