@@ -1714,7 +1714,14 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     Assert.IsTrue(result.Status is CentralTransientPayloadReleaseStatus.Released
                         or CentralTransientPayloadReleaseStatus.Accepted);
                     Assert.IsNotNull(result.Response);
-                    CentralTransientPayloadRelease? recovered = null;
+                    var publicReleaseElapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                    if (result.Status == CentralTransientPayloadReleaseStatus.Released)
+                    {
+                        Assert.AreEqual(CentralTransientPayloadReleaseState.Completed, result.Response.State);
+                        Assert.AreEqual(5, result.Response.ReleasedPayloadCount);
+                        return measure ? publicReleaseElapsed : 0d;
+                    }
+
                     if (result.Status == CentralTransientPayloadReleaseStatus.Accepted)
                     {
                         if (!recoverPending)
@@ -1724,6 +1731,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                         }
                         collector.RecordAcceptedReleaseResponse();
                         Assert.AreEqual(CentralTransientPayloadReleaseState.Pending, result.Response.State);
+                        CentralTransientPayloadRelease? recovered = null;
                         for (var processorAttempt = 0; processorAttempt < 100; processorAttempt++)
                         {
                             retryStage = Issue250SqlRetryStage.Recovery;
@@ -1759,30 +1767,20 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                                 : TimeSpan.FromMilliseconds(recoverPending ? 100 : 10);
                             await Task.Delay(delay, cancellation.Token).ConfigureAwait(false);
                         }
+                        Assert.IsNotNull(recovered);
+                        Assert.AreEqual(
+                            CentralTransientPayloadReleaseState.Completed,
+                            recovered.State,
+                            string.Join(",", recovered.Items.OrderBy(value => value.Ordinal).Select(value =>
+                                $"{value.Ordinal}:{value.Outcome}:retry={value.RetryCount}:reserved={value.ReservationToken.HasValue}")));
+                        Assert.AreEqual(5, recovered.Items.Count(value =>
+                            value.Outcome == CentralTransientPayloadReleaseItemOutcome.Released));
+                        Assert.AreEqual(2, recovered.Items.Count(value =>
+                            value.Outcome == CentralTransientPayloadReleaseItemOutcome.PreservedHeld));
+                        var recoveredElapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                        return measure ? recoveredElapsed : 0d;
                     }
-                    else
-                    {
-                        retryStage = Issue250SqlRetryStage.Inspection;
-                        Assert.AreEqual(CentralTransientPayloadReleaseState.Completed, result.Response.State);
-                        Assert.AreEqual(5, result.Response.ReleasedPayloadCount);
-                        await using var releaseInspectDb = CreateContext(connectionString);
-                        recovered = await releaseInspectDb.CentralTransientPayloadReleases.AsNoTracking()
-                            .Include(value => value.Items)
-                            .SingleAsync(value => value.ReleaseId == result.Response.ReleaseId, cancellation.Token)
-                            .ConfigureAwait(false);
-                    }
-                    Assert.IsNotNull(recovered);
-                    Assert.AreEqual(
-                        CentralTransientPayloadReleaseState.Completed,
-                        recovered.State,
-                        string.Join(",", recovered.Items.OrderBy(value => value.Ordinal).Select(value =>
-                            $"{value.Ordinal}:{value.Outcome}:retry={value.RetryCount}:reserved={value.ReservationToken.HasValue}")));
-                    Assert.AreEqual(5, recovered.Items.Count(value =>
-                        value.Outcome == CentralTransientPayloadReleaseItemOutcome.Released));
-                    Assert.AreEqual(2, recovered.Items.Count(value =>
-                        value.Outcome == CentralTransientPayloadReleaseItemOutcome.PreservedHeld));
-                    var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-                    return measure ? elapsed : 0d;
+                    throw new InvalidOperationException("The release returned an unsupported measured status.");
                 }
                 catch (Exception exception) when (attempt < 9 && IsSqlDeadlock(exception))
                 {
