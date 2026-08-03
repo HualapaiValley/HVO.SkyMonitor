@@ -110,7 +110,8 @@ verify_issue250_manifest() {
           "w3m-normalized-plan-evidence.json"
         ] and
         all(.Files[];
-          (.ByteLength | type) == "number" and .ByteLength >= 0 and .ByteLength == floor and
+          (.ByteLength | type) == "number" and .ByteLength >= 0 and
+          (.ByteLength | . == floor) and
           (.Sha256 | test("^[0-9A-F]{64}$")))
     ' "$manifest" >/dev/null
     local entries
@@ -192,7 +193,8 @@ verify_issue257_manifest() {
         ([.artifacts[].path] | length) == ([.artifacts[].path] | unique | length) and
         all(.artifacts[];
           (.path | type) == "string" and
-          (.bytes | type) == "number" and .bytes >= 0 and .bytes == floor and
+          (.bytes | type) == "number" and .bytes >= 0 and
+          (.bytes | . == floor) and
           (.sha256 | test("^[0-9A-F]{64}$")))
     ' "$manifest" >/dev/null
     local entries
