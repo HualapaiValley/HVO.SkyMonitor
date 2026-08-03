@@ -15,6 +15,7 @@ readonly AGGREGATOR="$REPO_ROOT/scripts/issue-268-synthetic-aggregate.jq"
 readonly BASELINE_SOURCE_REVISION='2d8c99f1c745386587482f82628672a304557d90'
 readonly BASELINE_PRODUCTION_REVISION='89c3e5176417a70fcfc5c67d2b0adb233ee7a9e4'
 readonly BASELINE_MANIFEST_SHA256='0390D4A70CDF18A5F1714EAD17D5D1790B88A9BA6D7388D1C067B29913746F14'
+readonly AFTER_PROTOCOL_SHA256='E6EFA737D9838EFCFB43EC6DD47FB1CAB82A61655E37DAD711DA4FF1DBF9198E'
 readonly LANES_REVISION='4cb0cdcef7f1d9df2e0923ee9b993454e0252843'
 readonly LANES_MANIFEST_SHA256='0CDA35AEEA7B1AC5BC76B9C8751708CD398733F37B79914A6334A1E70426C035'
 readonly LANES_SUMMARY_SHA256='F98217EFD7858165071A1A44EF617D5A2DDFAB9B0E7C41C8E38CFADC5C6BC002'
@@ -101,9 +102,12 @@ verify_issue250_manifest() {
     jq --exit-status \
         --arg phase "$expected_phase" \
         --arg source "$expected_source" \
-        --arg production "$expected_production" '
+        --arg production "$expected_production" \
+        --arg afterProtocol "$AFTER_PROTOCOL_SHA256" '
         .Schema == "hvo-evidence-manifest-v1" and .Issue == 250 and .Trial == 1 and
         .Phase == $phase and .SourceHead == $source and .ProductionRevision == $production and
+        (.ProtocolSha256 | type == "string" and test("^[0-9A-F]{64}$")) and
+        (if $phase == "after" then .ProtocolSha256 == $afterProtocol else true end) and
         (.Files | map(.Name) | sort) == [
           "central-transient-payload-release-evidence.json",
           "w0-fault-runtime-evidence.json",
@@ -142,7 +146,11 @@ verify_issue250_manifest() {
         local source_expression
         case "$name" in
             central-transient-payload-release-evidence.json)
-                expected_schema='hvo-issue-250-central-transient-payload-release-evidence-v3'
+                if [[ "$expected_phase" == 'after' ]]; then
+                    expected_schema='hvo-issue-250-central-transient-payload-release-evidence-v4'
+                else
+                    expected_schema='hvo-issue-250-central-transient-payload-release-evidence-v3'
+                fi
                 source_expression='.Source.Head'
                 ;;
             w0-fault-runtime-evidence.json)
@@ -164,6 +172,7 @@ verify_issue250_manifest() {
             --arg phase "$expected_phase" \
             --arg source "$expected_source" \
             --arg production "$expected_production" \
+            --arg afterProtocol "$AFTER_PROTOCOL_SHA256" \
             --arg sourceExpression "$source_expression" '
             ($manifest[0]) as $m |
             .Schema == $schema and .Issue == 250 and .Phase == $phase and
@@ -172,6 +181,7 @@ verify_issue250_manifest() {
             .WorkloadSha256 == $m.WorkloadSha256 and
             .CompatibilityWorkloadSha256 == $m.CompatibilityWorkloadSha256 and
             .ProtocolSha256 == $m.ProtocolSha256 and
+            (if $phase == "after" then .ProtocolSha256 == $afterProtocol else true end) and
             .CompatibilityProtocolSha256 == $m.CompatibilityProtocolSha256 and
             .EnvironmentSha256 == $m.EnvironmentSha256 and
             (if $sourceExpression == ".Source.Head" then .ProductionRevision == $production else true end)
@@ -363,6 +373,7 @@ HVO_ISSUE_268_OUTPUT_ROOT="$AFTER_ROOT" \
 assert_source_unchanged
 verify_issue250_manifest "$AFTER_TRIAL/manifest.json" "$AFTER_TRIAL" after "$REVISION" "$REVISION"
 jq --exit-status --arg revision "$REVISION" '
+    .Schema == "hvo-issue-250-central-transient-payload-release-evidence-v4" and
     .Phase == "after" and .Source.Head == $revision and .ProductionRevision == $revision and
     .Source.Dirty == false and .BaselineBinding.Status == "reviewed-baseline-manifest-validated" and
     .BaselineBinding.BaselineManifestSha256 == "0390D4A70CDF18A5F1714EAD17D5D1790B88A9BA6D7388D1C067B29913746F14" and

@@ -229,6 +229,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             throw new InvalidOperationException(
                 "Issue #268 evidence requires DOTNET_GCDynamicAdaptationMode=0 to avoid the .NET 10 Server GC allocation-counter regression.");
         }
+        await ValidateHttpAccountingCollectorAsync().ConfigureAwait(false);
         var fixture = AssemblyHooks.Fixture;
         var preflight = await RunPreflightAsync(repositoryRoot, fixture, smoke, phase).ConfigureAwait(false);
         var resolvedProductionRevision = await ResolveRevisionAsync(
@@ -336,7 +337,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
         var evidence = new
         {
-            Schema = "hvo-issue-250-central-transient-payload-release-evidence-v3",
+            Schema = "hvo-issue-250-central-transient-payload-release-evidence-v4",
             Issue = 250,
             Phase = phase,
             HarnessSha256 = harnessSha256,
@@ -4019,6 +4020,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             CreateTransactionCountEvidence(protocol.RecoverySqlTransactions),
             protocol.ObjectStore.Requests,
             protocol.ObjectStore.Deletes,
+            protocol.ObjectStore.BucketHeadRequests,
+            protocol.ObjectStore.ObjectHeadRequests,
+            protocol.ObjectStore.OtherMethodRequests,
+            protocol.ObjectStore.UniqueDeleteTargets,
+            protocol.ObjectStore.DuplicateDeleteRequests,
+            protocol.ObjectStore.DeleteResponses,
+            protocol.ObjectStore.DeleteExceptions,
             protocol.ObjectStore.RequestEntityBytes,
             protocol.ObjectStore.ResponseEntityBytes,
             protocol.ObjectStore.UnknownRequestEntityLengths,
@@ -4073,8 +4081,20 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 recoveryTransactions.Committed + recoveryTransactions.RolledBack + recoveryTransactions.Failed);
             Assert.IsTrue(recoveryTransactions.StartAttempts <= recoveryAttempts * 20);
             Assert.AreEqual(recoveryRetries, recoveryTransactions.Failed);
-            Assert.AreEqual((long)releases * 5 + recoveryCompletions, protocol.ObjectStore.Requests);
-            Assert.AreEqual((long)releases * 5 + recoveryCompletions, protocol.ObjectStore.Deletes);
+            Assert.AreEqual(
+                protocol.ObjectStore.Deletes + protocol.ObjectStore.BucketHeadRequests
+                    + protocol.ObjectStore.ObjectHeadRequests + protocol.ObjectStore.OtherMethodRequests,
+                protocol.ObjectStore.Requests);
+            Assert.AreEqual(0L, protocol.ObjectStore.OtherMethodRequests);
+            Assert.AreEqual((long)releases * 5, protocol.ObjectStore.UniqueDeleteTargets);
+            Assert.AreEqual(
+                protocol.ObjectStore.UniqueDeleteTargets + protocol.ObjectStore.DuplicateDeleteRequests,
+                protocol.ObjectStore.Deletes);
+            Assert.AreEqual(protocol.ObjectStore.BucketHeadRequests, protocol.ObjectStore.ObjectHeadRequests);
+            Assert.AreEqual(
+                protocol.ObjectStore.DeleteResponses + protocol.ObjectStore.DeleteExceptions,
+                protocol.ObjectStore.Deletes);
+            Assert.AreEqual(0L, protocol.ObjectStore.DeleteExceptions);
             Assert.AreEqual(0L, protocol.ObjectStore.RequestEntityBytes);
             Assert.AreEqual(0L, protocol.ObjectStore.ResponseEntityBytes);
             Assert.AreEqual(0L, protocol.ObjectStore.UnknownRequestEntityLengths);
@@ -5397,7 +5417,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private static string ComputeProtocolSha256()
         => Sha(JsonSerializer.Serialize(new
         {
-            Schema = "issue-250-public-release-protocol-v3",
+            Schema = "issue-250-public-release-protocol-v4",
             Boundary = "public ReleaseAsync including request/item creation, DELETE, finalize, replay",
             Percentiles = "nearest-rank",
             SqlSamplingMilliseconds = 10,
@@ -5407,7 +5427,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             WriterDeadlineMilliseconds = 1_000,
             W3M = "actual ProcessNextAsync plus exact normalized baseline parent query plan",
             FaultManifest = CanonicalFaultManifest,
-            ProtocolCount = "EF commands are separate from scoped SqlClient application-lock command diagnostics and direct harness SQL"
+            ProtocolCount = "EF commands are separate from scoped SqlClient application-lock command diagnostics and direct harness SQL",
+            HttpAccounting = "Requests partition into DELETE, MinIO bucket HEAD, object HEAD, and other methods; DELETEs partition into unique and duplicate targets plus response and exception outcomes"
         }));
 
     private static string ComputeCompatibilityProtocolSha256()
@@ -6468,11 +6489,18 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     {
         private readonly ConcurrentQueue<double> durations = [];
         private readonly ConcurrentQueue<Issue250DeleteWindow> windows = [];
+        private readonly ConcurrentDictionary<string, byte> deleteTargets = new(StringComparer.Ordinal);
         private TaskCompletionSource firstEntered = NewSignal();
         private TimeSpan delay;
         private long origin;
         private long requests;
         private long deletes;
+        private long bucketHeadRequests;
+        private long objectHeadRequests;
+        private long otherMethodRequests;
+        private long duplicateDeleteRequests;
+        private long deleteResponses;
+        private long deleteExceptions;
         private long requestBytes;
         private long responseBytes;
         private long unknownRequestLengths;
@@ -6498,20 +6526,34 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         {
             Interlocked.Exchange(ref requests, 0);
             Interlocked.Exchange(ref deletes, 0);
+            Interlocked.Exchange(ref bucketHeadRequests, 0);
+            Interlocked.Exchange(ref objectHeadRequests, 0);
+            Interlocked.Exchange(ref otherMethodRequests, 0);
+            Interlocked.Exchange(ref duplicateDeleteRequests, 0);
+            Interlocked.Exchange(ref deleteResponses, 0);
+            Interlocked.Exchange(ref deleteExceptions, 0);
             Interlocked.Exchange(ref requestBytes, 0);
             Interlocked.Exchange(ref responseBytes, 0);
             Interlocked.Exchange(ref unknownRequestLengths, 0);
             Interlocked.Exchange(ref unknownResponseLengths, 0);
             durations.Clear();
             windows.Clear();
+            deleteTargets.Clear();
             firstEntered = NewSignal();
             firstObjectKey = null;
         }
 
-        internal Issue246ObjectProtocolSnapshot Snapshot()
+        internal Issue250ObjectProtocolSnapshot Snapshot()
             => new(
                 Interlocked.Read(ref requests),
                 Interlocked.Read(ref deletes),
+                Interlocked.Read(ref bucketHeadRequests),
+                Interlocked.Read(ref objectHeadRequests),
+                Interlocked.Read(ref otherMethodRequests),
+                deleteTargets.Count,
+                Interlocked.Read(ref duplicateDeleteRequests),
+                Interlocked.Read(ref deleteResponses),
+                Interlocked.Read(ref deleteExceptions),
                 Interlocked.Read(ref requestBytes),
                 Interlocked.Read(ref responseBytes),
                 Interlocked.Read(ref unknownRequestLengths),
@@ -6526,27 +6568,75 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             RecordLength(request.Content?.Headers.ContentLength, ref requestBytes, ref unknownRequestLengths,
                 request.Content is not null);
             var isDelete = request.Method == HttpMethod.Delete;
+            var isHead = request.Method == HttpMethod.Head;
+            if (isHead)
+            {
+                var path = GetRequestPath(request);
+                if (path is Bucket or Bucket + "/")
+                {
+                    Interlocked.Increment(ref bucketHeadRequests);
+                }
+                else if (path.StartsWith(Bucket + "/", StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref objectHeadRequests);
+                }
+                else
+                {
+                    Interlocked.Increment(ref otherMethodRequests);
+                }
+            }
+            else if (!isDelete)
+            {
+                Interlocked.Increment(ref otherMethodRequests);
+            }
             var started = isDelete ? Stopwatch.GetTimestamp() : 0;
             var entered = isDelete ? ElapsedMilliseconds(started) : 0;
             if (isDelete)
             {
                 Interlocked.Increment(ref deletes);
-                Interlocked.CompareExchange(ref firstObjectKey, GetObjectKey(request), null);
+                var objectKey = GetObjectKey(request);
+                if (!deleteTargets.TryAdd(objectKey, 0))
+                {
+                    Interlocked.Increment(ref duplicateDeleteRequests);
+                }
+                Interlocked.CompareExchange(ref firstObjectKey, objectKey, null);
                 firstEntered.TrySetResult();
-                if (delay > TimeSpan.Zero)
+            }
+            HttpResponseMessage response;
+            try
+            {
+                if (isDelete && delay > TimeSpan.Zero)
                 {
                     await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                 }
+                response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                if (isDelete)
+                {
+                    Interlocked.Increment(ref deleteResponses);
+                }
             }
-            var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode != HttpStatusCode.NoContent)
+            catch
+            {
+                if (isDelete)
+                {
+                    Interlocked.Increment(ref deleteExceptions);
+                }
+                throw;
+            }
+            finally
+            {
+                if (isDelete)
+                {
+                    durations.Enqueue(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                }
+            }
+            if (!isHead && response.StatusCode != HttpStatusCode.NoContent)
             {
                 RecordLength(response.Content.Headers.ContentLength, ref responseBytes, ref unknownResponseLengths, true);
             }
             if (isDelete)
             {
                 var exited = ElapsedMilliseconds(Stopwatch.GetTimestamp());
-                durations.Enqueue(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
                 var key = GetObjectKey(request);
                 windows.Enqueue(new Issue250DeleteWindow(
                     entered,
@@ -6564,8 +6654,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
         private static string GetObjectKey(HttpRequestMessage request)
         {
-            var path = request.RequestUri?.GetComponents(UriComponents.Path, UriFormat.Unescaped)
-                ?? throw new InvalidOperationException("MinIO DELETE URI is unavailable.");
+            var path = GetRequestPath(request);
             const string prefix = Bucket + "/";
             if (!path.StartsWith(prefix, StringComparison.Ordinal))
             {
@@ -6573,6 +6662,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             }
             return path[prefix.Length..];
         }
+
+        private static string GetRequestPath(HttpRequestMessage request)
+            => request.RequestUri?.GetComponents(UriComponents.Path, UriFormat.Unescaped)
+                ?? throw new InvalidOperationException("MinIO request URI is unavailable.");
 
         private static void RecordLength(long? value, ref long bytes, ref long unknown, bool present)
         {
@@ -6591,6 +6684,70 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         }
     }
 
+    private static async Task ValidateHttpAccountingCollectorAsync()
+    {
+        using var handler = new Issue250DeleteHandler { InnerHandler = new Issue250HttpAccountingStubHandler() };
+        using var client = new HttpClient(handler);
+        static HttpRequestMessage Request(HttpMethod method, string path)
+            => new(method, $"http://localhost/{path}");
+
+        using (await client.SendAsync(Request(HttpMethod.Delete, $"{Bucket}/first")).ConfigureAwait(false)) { }
+        using (await client.SendAsync(Request(HttpMethod.Delete, $"{Bucket}/first")).ConfigureAwait(false)) { }
+        using (await client.SendAsync(Request(HttpMethod.Head, Bucket)).ConfigureAwait(false)) { }
+        using (await client.SendAsync(Request(HttpMethod.Head, $"{Bucket}/first")).ConfigureAwait(false)) { }
+        using (await client.SendAsync(Request(HttpMethod.Get, $"{Bucket}/first")).ConfigureAwait(false)) { }
+        await Assert.ThrowsExactlyAsync<HttpRequestException>(async () =>
+            await client.SendAsync(Request(HttpMethod.Delete, $"{Bucket}/throws")).ConfigureAwait(false));
+
+        var snapshot = handler.Snapshot();
+        Assert.AreEqual(6L, snapshot.Requests);
+        Assert.AreEqual(3L, snapshot.Deletes);
+        Assert.AreEqual(1L, snapshot.BucketHeadRequests);
+        Assert.AreEqual(1L, snapshot.ObjectHeadRequests);
+        Assert.AreEqual(1L, snapshot.OtherMethodRequests);
+        Assert.AreEqual(2L, snapshot.UniqueDeleteTargets);
+        Assert.AreEqual(1L, snapshot.DuplicateDeleteRequests);
+        Assert.AreEqual(2L, snapshot.DeleteResponses);
+        Assert.AreEqual(1L, snapshot.DeleteExceptions);
+        Assert.AreEqual(3L, snapshot.ResponseEntityBytes);
+        Assert.AreEqual(3, snapshot.DeleteDurationMilliseconds.Count);
+
+        handler.Reset();
+        handler.Configure(TimeSpan.FromMinutes(1));
+        using var cancellation = new CancellationTokenSource();
+        var cancelledDelete = client.SendAsync(
+            Request(HttpMethod.Delete, $"{Bucket}/cancelled"), cancellation.Token);
+        await handler.FirstEntered.ConfigureAwait(false);
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<TaskCanceledException>(async () => await cancelledDelete.ConfigureAwait(false));
+        snapshot = handler.Snapshot();
+        Assert.AreEqual(1L, snapshot.Requests);
+        Assert.AreEqual(1L, snapshot.Deletes);
+        Assert.AreEqual(1L, snapshot.UniqueDeleteTargets);
+        Assert.AreEqual(1L, snapshot.DeleteExceptions);
+        Assert.AreEqual(1, snapshot.DeleteDurationMilliseconds.Count);
+    }
+
+    private sealed class Issue250HttpAccountingStubHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/throws", StringComparison.Ordinal) == true)
+            {
+                return Task.FromException<HttpResponseMessage>(new HttpRequestException("Injected collector preflight failure."));
+            }
+            var response = new HttpResponseMessage(
+                request.Method == HttpMethod.Delete ? HttpStatusCode.NoContent : HttpStatusCode.OK);
+            if (request.Method != HttpMethod.Delete)
+            {
+                response.Content = new ByteArrayContent([1, 2, 3]);
+            }
+            return Task.FromResult(response);
+        }
+    }
+
     private sealed record Issue250CollectorSnapshot(
         long EfCommands,
         long ExternalSqlDeadlockRetries,
@@ -6606,8 +6763,24 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         Issue246TransactionSnapshot SqlTransactions,
         Issue246TransactionSnapshot PrimarySqlTransactions,
         Issue246TransactionSnapshot RecoverySqlTransactions,
-        Issue246ObjectProtocolSnapshot ObjectStore,
+        Issue250ObjectProtocolSnapshot ObjectStore,
         Issue250ApplicationLockDiagnosticEvidence ApplicationLocks);
+
+    private sealed record Issue250ObjectProtocolSnapshot(
+        long Requests,
+        long Deletes,
+        long BucketHeadRequests,
+        long ObjectHeadRequests,
+        long OtherMethodRequests,
+        long UniqueDeleteTargets,
+        long DuplicateDeleteRequests,
+        long DeleteResponses,
+        long DeleteExceptions,
+        long RequestEntityBytes,
+        long ResponseEntityBytes,
+        long UnknownRequestEntityLengths,
+        long UnknownResponseEntityLengths,
+        IReadOnlyList<double> DeleteDurationMilliseconds);
 
     private enum Issue250SqlRetryStage
     {
@@ -6805,6 +6978,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         Issue250TransactionCountEvidence RecoveryTransactions,
         long MinioRequests,
         long MinioDeletes,
+        long MinioBucketHeadRequests,
+        long MinioObjectHeadRequests,
+        long MinioOtherMethodRequests,
+        long MinioUniqueDeleteTargets,
+        long MinioDuplicateDeleteRequests,
+        long MinioDeleteResponses,
+        long MinioDeleteExceptions,
         long MinioRequestEntityBytes,
         long MinioResponseEntityBytes,
         long MinioUnknownRequestEntityLengths,

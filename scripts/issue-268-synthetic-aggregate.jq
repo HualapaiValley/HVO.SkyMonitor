@@ -76,6 +76,13 @@ def protocol_counts:
     committedTransactionDurationSamples: .CommittedTransactionDuration.Samples,
     minioRequests: .MinioRequests,
     minioDeletes: .MinioDeletes,
+    minioBucketHeadRequests: .MinioBucketHeadRequests,
+    minioObjectHeadRequests: .MinioObjectHeadRequests,
+    minioOtherMethodRequests: .MinioOtherMethodRequests,
+    minioUniqueDeleteTargets: .MinioUniqueDeleteTargets,
+    minioDuplicateDeleteRequests: .MinioDuplicateDeleteRequests,
+    minioDeleteResponses: .MinioDeleteResponses,
+    minioDeleteExceptions: .MinioDeleteExceptions,
     minioRequestEntityBytes: .MinioRequestEntityBytes,
     minioResponseEntityBytes: .MinioResponseEntityBytes,
     minioUnknownRequestEntityLengths: .MinioUnknownRequestEntityLengths,
@@ -121,8 +128,11 @@ def protocol_comparison($name; $baseline; $after; $releases):
       recoveryEfSqlCommandRange: {minimum: $recoveryAttempts, maximum: ($recoveryAttempts * 170)},
       recoveryTransactionStartRange: {minimum: 0, maximum: ($recoveryAttempts * 20)},
       expectedApplicationLockStarts: {minimum: $minimumLocks, maximum: $maximumLocks},
-      commandScope: "Exact observed primary ReleaseAsync and recovery ProcessNextAsync counts are partitioned. Transaction terminals reconcile per partition; attempts and commands are bounded by recorded release/retry/recovery operations rather than DELETE timing. Unreleased application locks are bounded to unsuccessful recorded lock attempts.",
+      commandScope: "Exact observed primary ReleaseAsync and recovery ProcessNextAsync counts are partitioned. Transaction terminals reconcile per partition; attempts and commands are bounded by recorded release/retry/recovery operations rather than DELETE timing. HTTP requests partition by method and target class; DELETEs partition by unique/duplicate target and response/transport outcome without serializing keys. Unreleased application locks are bounded to unsuccessful recorded lock attempts.",
       passed: (
+        ((["MinioBucketHeadRequests", "MinioObjectHeadRequests", "MinioOtherMethodRequests",
+          "MinioUniqueDeleteTargets", "MinioDuplicateDeleteRequests", "MinioDeleteResponses",
+          "MinioDeleteExceptions"] - ($after | keys) | length) == 0) and
         ($candidate | to_entries | all(.[]; (.value | type == "number" and . >= 0 and . == floor))) and
         ($retries <= ($releases * 9)) and
         ($retries == ($primaryRetries + $recoveryRetries + $inspectionRetries)) and
@@ -163,13 +173,21 @@ def protocol_comparison($name; $baseline; $after; $releases):
         ($candidate.transactionsFailed ==
           ($candidate.primaryTransactionsFailed + $candidate.recoveryTransactionsFailed)) and
         ($candidate.committedTransactionDurationSamples == $candidate.transactionsCommitted) and
-        ($candidate.minioRequests == (($releases * 5) + $recoveryCompletions)) and
-        ($candidate.minioDeletes == (($releases * 5) + $recoveryCompletions)) and
+        ($candidate.minioRequests == ($candidate.minioDeletes + $candidate.minioBucketHeadRequests +
+          $candidate.minioObjectHeadRequests + $candidate.minioOtherMethodRequests)) and
+        ($candidate.minioOtherMethodRequests == 0) and
+        ($candidate.minioUniqueDeleteTargets == ($releases * 5)) and
+        ($candidate.minioDeletes ==
+          ($candidate.minioUniqueDeleteTargets + $candidate.minioDuplicateDeleteRequests)) and
+        ($candidate.minioBucketHeadRequests == $candidate.minioObjectHeadRequests) and
+        ($candidate.minioDeletes ==
+          ($candidate.minioDeleteResponses + $candidate.minioDeleteExceptions)) and
+        ($candidate.minioDeleteExceptions == 0) and
         ($candidate.minioRequestEntityBytes == 0) and
         ($candidate.minioResponseEntityBytes == 0) and
         ($candidate.minioUnknownRequestEntityLengths == 0) and
         ($candidate.minioUnknownResponseEntityLengths == 0) and
-        ($candidate.minioDeleteDurationSamples == (($releases * 5) + $recoveryCompletions)) and
+        ($candidate.minioDeleteDurationSamples == $candidate.minioDeletes) and
         ($candidate.getApplicationLockStarts >= $minimumLocks) and
         ($candidate.getApplicationLockStarts <= $maximumLocks) and
         ($candidate.getApplicationLockStarts == $candidate.getApplicationLockCompletions) and
@@ -276,7 +294,8 @@ def protocol_comparison($name; $baseline; $after; $releases):
       manifestSha256: "0390D4A70CDF18A5F1714EAD17D5D1790B88A9BA6D7388D1C067B29913746F14",
       authenticatedHistoricalWorkloadSha256: $b.CompatibilityWorkloadSha256,
       semanticWorkloadSha256: $a.BaselineBinding.BaselineSemanticWorkloadSha256,
-      protocolSha256: $b.CompatibilityProtocolSha256,
+      protocolSha256: $b.ProtocolSha256,
+      compatibilityProtocolSha256: $b.CompatibilityProtocolSha256,
       environmentSha256: $b.EnvironmentSha256
     },
     after: {
@@ -284,7 +303,8 @@ def protocol_comparison($name; $baseline; $after; $releases):
       productionRevision: $a.ProductionRevision,
       baselineBinding: $a.BaselineBinding,
       workloadSha256: $a.CompatibilityWorkloadSha256,
-      protocolSha256: $a.CompatibilityProtocolSha256,
+      protocolSha256: $a.ProtocolSha256,
+      compatibilityProtocolSha256: $a.CompatibilityProtocolSha256,
       environmentSha256: $a.EnvironmentSha256
     },
     comparisons: $comparisons,
@@ -352,7 +372,8 @@ def protocol_comparison($name; $baseline; $after; $releases):
       ($comparisons | length == 16) and ($protocolComparisons | length == 8)
     ),
     identities: (
-      ($a.Schema == "hvo-issue-250-central-transient-payload-release-evidence-v3") and
+      ($b.Schema == "hvo-issue-250-central-transient-payload-release-evidence-v3") and
+      ($a.Schema == "hvo-issue-250-central-transient-payload-release-evidence-v4") and
       ($a.Issue == 250) and ($a.Phase == "after") and
       ($a.Source.Head == $revision) and
       ($a.ProductionRevision == $revision) and
@@ -363,6 +384,7 @@ def protocol_comparison($name; $baseline; $after; $releases):
       ($a.CompatibilityWorkloadSha256 == $a.BaselineBinding.BaselineSemanticWorkloadSha256) and
       ($a.BaselineBinding.CurrentSemanticWorkloadSha256 == $a.BaselineBinding.BaselineSemanticWorkloadSha256) and
       ($a.CompatibilityProtocolSha256 == $b.CompatibilityProtocolSha256) and
+      ($a.ProtocolSha256 == "E6EFA737D9838EFCFB43EC6DD47FB1CAB82A61655E37DAD711DA4FF1DBF9198E") and
       ($a.EnvironmentSha256 == $b.EnvironmentSha256) and
       ($b.Environment.GcDynamicAdaptationMode == 0) and
       ($a.Environment.GcDynamicAdaptationMode == 0) and
