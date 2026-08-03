@@ -282,7 +282,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
         }
 
         var samples = new double[MeasuredCount];
-        var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+        var allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
         var cpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
         var rssBefore = Environment.WorkingSet;
         var measuredStarted = Stopwatch.GetTimestamp();
@@ -297,7 +297,8 @@ public sealed class DurableCaptureDistributionPerformanceTests
         }
         var measuredDuration = Stopwatch.GetElapsedTime(measuredStarted);
         var cpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds;
-        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
+        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore;
+        Assert.IsGreaterThanOrEqualTo(0L, allocatedBytes);
         var orderedSamples = samples.ToArray();
         Array.Sort(samples);
         var median = Percentile(samples, 0.50);
@@ -513,14 +514,15 @@ public sealed class DurableCaptureDistributionPerformanceTests
             laneFaultInjector: new NullCaptureLaneFaultInjector());
         var databaseBytesBefore = FileBytes(databasePath);
         var walBytesBefore = FileBytes(string.Concat(databasePath, "-wal"));
-        var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+        var allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
         var cpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
         var rssBefore = Environment.WorkingSet;
         var migrationStarted = Stopwatch.GetTimestamp();
         await journal.InitializeAsync(policy.Definitions, CancellationToken.None).ConfigureAwait(false);
         var migrationDuration = Stopwatch.GetElapsedTime(migrationStarted);
         var cpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds;
-        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
+        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore;
+        Assert.IsGreaterThanOrEqualTo(0L, allocatedBytes);
 
         using var connection = await OpenDatabaseAsync(root).ConfigureAwait(false);
         var rawRows = await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false);
@@ -552,7 +554,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
         var restartSamples = new double[5];
         var restartDiscoveredRows = new long[5];
         var restartCpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
-        var restartAllocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+        var restartAllocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
         for (var trial = 0; trial < restartSamples.Length; trial++)
         {
             var restarted = new SqliteRawCaptureJournal(
@@ -578,6 +580,8 @@ public sealed class DurableCaptureDistributionPerformanceTests
             Assert.AreEqual(W3MetadataCount * 3L, await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM capture_lane_work;").ConfigureAwait(false));
         }
         Array.Sort(restartSamples);
+        var restartAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - restartAllocatedBefore;
+        Assert.IsGreaterThanOrEqualTo(0L, restartAllocatedBytes);
 
         return new W3MetadataMeasurement(
             RawRows: rawRows,
@@ -619,7 +623,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
             RestartDiscoveryMaximumMilliseconds: restartSamples[^1],
             RestartDiscoveredRowsPerTrial: restartDiscoveredRows,
             RestartCpuMilliseconds: (Process.GetCurrentProcess().TotalProcessorTime - restartCpuBefore).TotalMilliseconds,
-            RestartAllocatedBytes: GC.GetTotalAllocatedBytes(precise: true) - restartAllocatedBefore,
+            RestartAllocatedBytes: restartAllocatedBytes,
             PayloadFiles: 0,
             PersistedPayloadCopyCount: 0);
     }
@@ -807,7 +811,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
             serviceStarted = true;
             var acceptSamples = new double[W3PayloadCount];
             var rssSamples = new List<long>(W3PayloadCount / 10);
-            var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+            var allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
             var cpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
             var rssBefore = Environment.WorkingSet;
             var burstStarted = Stopwatch.GetTimestamp();
@@ -835,7 +839,8 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 Assert.IsLessThanOrEqualTo(burstEnded, secondary.EnteredTimestamp);
             }
             var commitCpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds;
-            var commitAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
+            var commitAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore;
+            Assert.IsGreaterThanOrEqualTo(0L, commitAllocatedBytes);
             var orderedAcceptSamples = acceptSamples.ToArray();
             Array.Sort(acceptSamples);
 

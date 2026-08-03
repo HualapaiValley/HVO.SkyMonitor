@@ -164,7 +164,7 @@ public sealed class CaptureControlPerformanceTests
                 BaselineOperationsPerMeasurement,
                 AllocationOperations,
                 AllocationCounter = "GC.GetAllocatedBytesForCurrentThread",
-                RunnerAllocationCounter = "GC.GetTotalAllocatedBytes(precise: true), isolated by Manual category and DoNotParallelize",
+                RunnerAllocationCounter = "GC.GetTotalAllocatedBytes(precise: false), isolated by Manual category and DoNotParallelize; nonnegative delta required",
                 SamplingInterval = "One sample per capture cycle; p95 from 30 independent post-warmup captures",
                 PhysicalCounters = "Stopwatch activity/module durations, process TotalProcessorTime, WorkingSet64, and total managed allocations",
                 Concurrency = 1,
@@ -575,13 +575,14 @@ public sealed class CaptureControlPerformanceTests
         using var process = Process.GetCurrentProcess();
         process.Refresh();
         var rssBefore = process.WorkingSet64;
-        var allocationBefore = GC.GetTotalAllocatedBytes(precise: true);
+        var allocationBefore = GC.GetTotalAllocatedBytes(precise: false);
         var cpuBefore = process.TotalProcessorTime;
         var wallStarted = Stopwatch.GetTimestamp();
         await runner.RunAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
         var wallDuration = Stopwatch.GetElapsedTime(wallStarted);
         var cpuDuration = process.TotalProcessorTime - cpuBefore;
-        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocationBefore;
+        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - allocationBefore;
+        Assert.IsGreaterThanOrEqualTo(0L, allocatedBytes);
         process.Refresh();
         var rssAfter = process.WorkingSet64;
 
