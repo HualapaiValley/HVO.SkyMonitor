@@ -46,11 +46,11 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 {
     private const string ProductionRevision = "89c3e5176417a70fcfc5c67d2b0adb233ee7a9e4";
-    private const string AcceptedBaselineSourceRevision = "00db3348cb0a0a66bcc006af0c56cdc1a9359fb7";
-    private const string AcceptedBaselineManifestPath = "/var/lib/hvo-agent-state/issues/250/baseline-00db3348cb0a0a66bcc006af0c56cdc1a9359fb7/trial-1/manifest.json";
-    private const string AcceptedBaselineRelativePath = "issues/250/baseline-00db3348cb0a0a66bcc006af0c56cdc1a9359fb7/trial-1/manifest.json";
-    private const string AcceptedBaselineManifestSha256 = "2C49C4AFA8CD83FE469D0FFEC78AE17CE278006374DAC75B1A46CB1B438BCC3A";
-    private const string AcceptedBaselineHarnessSha256 = "82685C4CF10260991E11A079B9090B5CA48BD2EAE72D607281A903969F4F0990";
+    private const string AcceptedBaselineSourceRevision = "2d8c99f1c745386587482f82628672a304557d90";
+    private const string AcceptedBaselineManifestPath = "/var/lib/hvo-agent-state/issues/268/datas-off-baseline-2d8c99f1c745386587482f82628672a304557d90/trial-1/manifest.json";
+    private const string AcceptedBaselineRelativePath = "issues/268/datas-off-baseline-2d8c99f1c745386587482f82628672a304557d90/trial-1/manifest.json";
+    private const string AcceptedBaselineManifestSha256 = "0390D4A70CDF18A5F1714EAD17D5D1790B88A9BA6D7388D1C067B29913746F14";
+    private const string AcceptedBaselineHarnessSha256 = "E29FF6C91205CF689BAF07CB20C31A7DD269DE2ED745088FFF53C4B6C0C6E388";
     private const string AcceptedBaselineProtocolSha256 = "E773CE1FBD51377ECDE5948562B1A31112674B0476721C177F6DD0F12FE6DE3B";
     private const string AcceptedBaselineCompatibilityProtocolSha256 = "5C88E596C0802D624F7A5017416EFB5E7EE10DB4E03B2CB7651CB9EEA639811C";
     private const string AcceptedBaselineSemanticWorkloadSha256 = "F02F56D059143F6B1AC37AEAD5D027F438AE74BCB876AC7666E575320A04D02B";
@@ -221,6 +221,14 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         {
             throw new InvalidOperationException("Claimable issue #250 evidence requires DOTNET_gcServer=1.");
         }
+        var gcDynamicAdaptationMode = ReadGcDynamicAdaptationMode();
+        if (string.Equals(Environment.GetEnvironmentVariable("HVO_ISSUE_268_SYNTHETIC_EVIDENCE"), "1",
+                StringComparison.Ordinal)
+            && gcDynamicAdaptationMode != 0)
+        {
+            throw new InvalidOperationException(
+                "Issue #268 evidence requires DOTNET_GCDynamicAdaptationMode=0 to avoid the .NET 10 Server GC allocation-counter regression.");
+        }
         var fixture = AssemblyHooks.Fixture;
         var preflight = await RunPreflightAsync(repositoryRoot, fixture, smoke, phase).ConfigureAwait(false);
         var resolvedProductionRevision = await ResolveRevisionAsync(
@@ -242,7 +250,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             : ComputeWorkloadSha256(w0Fixture.Generator);
         var protocolSha256 = ComputeProtocolSha256();
         var compatibilityProtocolSha256 = ComputeCompatibilityProtocolSha256();
-        var environmentSha256 = ComputeEnvironmentSha256(preflight);
+        var environmentSha256 = ComputeEnvironmentSha256(preflight, gcDynamicAdaptationMode);
         var baselineBinding = await ValidateBaselineBindingAsync(
             repositoryRoot,
             phase,
@@ -374,6 +382,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 Architecture = RuntimeInformation.ProcessArchitecture.ToString(),
                 Configuration = "Release",
                 ServerGc = GCSettings.IsServerGC,
+                GcDynamicAdaptationMode = gcDynamicAdaptationMode,
                 CpuCount = Environment.ProcessorCount,
                 TotalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
                 PinnedSdk = ReadPinnedSdk(repositoryRoot),
@@ -383,7 +392,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 Preflight = preflight,
                 EnvironmentSha256 = environmentSha256
             },
-            Command = "HVO_ISSUE_250_EVIDENCE=1 DOTNET_gcServer=1 HVO_EVIDENCE_PHASE=<baseline|after> HVO_EVIDENCE_REVISION=<HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=<PRODUCTION_HEAD> HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_BASELINE_MANIFEST=<ACCEPTED_BASELINE_MANIFEST> [HVO_ISSUE_268_SYNTHETIC_EVIDENCE=1 HVO_ISSUE_268_OUTPUT_ROOT=<PERSISTENT_ROOT> | HVO_ISSUE_250_SMOKE=1 HVO_ISSUE_250_AFTER_SMOKE=1] dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~CentralTransientPayloadReleaseIssue250PerformanceTests.Release_W2W3MAndContention_RecordsEvidence",
+            Command = "HVO_ISSUE_250_EVIDENCE=1 DOTNET_gcServer=1 [DOTNET_GCDynamicAdaptationMode=0 for issue #268] HVO_EVIDENCE_PHASE=<baseline|after> HVO_EVIDENCE_REVISION=<HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=<PRODUCTION_HEAD> HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_BASELINE_MANIFEST=<ACCEPTED_BASELINE_MANIFEST> [HVO_ISSUE_268_SYNTHETIC_EVIDENCE=1 HVO_ISSUE_268_OUTPUT_ROOT=<PERSISTENT_ROOT> | HVO_ISSUE_250_SMOKE=1 HVO_ISSUE_250_AFTER_SMOKE=1] dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~CentralTransientPayloadReleaseIssue250PerformanceTests.Release_W2W3MAndContention_RecordsEvidence",
             Workload = new
             {
                 Id = smoke ? "issue-250-smoke-unclaimable" : "W2/W3M/issue-250-baseline-v1",
@@ -506,7 +515,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             {
                 Boundary = "CentralTransientPayloadReleaseService.ReleaseAsync through durable parent/item completion and MinIO DELETE.",
                 Latency = "Nearest-rank median/p95/p99/maximum over independent releases and DELETE item requests; warmups and all setup/checksum/cleanup work are excluded.",
-                Resources = "One continuous process time series per scenario targets 10 ms and records Process.TotalProcessorTime, window-relative GC.GetTotalAllocatedBytes(true), and WorkingSet64. Observed precise-GC regressions fail closed. Raw 100 ms System.Runtime alloc-rate increments, exact GC deltas, normalized agreement or explicit short-window unclaimability, observed p50/maximum cadence, RSS peak, and first/last sample uncertainty are reported.",
+                Resources = "One continuous process time series per scenario targets 10 ms and records Process.TotalProcessorTime, window-relative GC.GetTotalAllocatedBytes(true), and WorkingSet64. Issue #268 baseline/after runs disable .NET 10 Server GC DATAS because heap retirement can regress the allocation counter; observed precise-GC regressions still fail closed. Raw 100 ms System.Runtime alloc-rate increments, exact GC deltas, normalized agreement or explicit short-window unclaimability, observed p50/maximum cadence, RSS peak, and first/last sample uncertainty are reported.",
                 Sql = "Measured service DbContexts use EF command/transaction interceptors. Dedicated sp_getapplock/sp_releaseapplock commands bypass EF and are not inferred. DMV sampling targets 10 ms and reports observed p50/maximum cadence and per-DELETE-window coverage. Baseline row blocking requires an exact waiting/granted KEY-resource match on CentralArtifacts.PK_CentralArtifacts, the release transaction/session/database/isolation attribution, and distinct dedicated application-lock fence sessions. Zero-delay lock duration is explicitly unclaimable when cadence cannot resolve it.",
                 ObjectStore = "The service MinIO client is isolated behind a request/DELETE duration and entity-byte collector; seed and correctness GET/STAT traffic uses a separate client.",
                 W3M = "Trigger/constraint-preserving setup uses one shared history frame and deterministic batches of at most 250 parents, reports setup timing separately, runs UPDATE STATISTICS FULLSCAN, drops session temp tables, and captures actual STATISTICS XML/IO over the normalized production pending-parent query."
@@ -5425,7 +5434,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             FaultManifest = CanonicalFaultManifest
         }));
 
-    private static string ComputeEnvironmentSha256(Issue250Preflight preflight)
+    private static string ComputeEnvironmentSha256(Issue250Preflight preflight, long gcDynamicAdaptationMode)
         => Sha(JsonSerializer.Serialize(new
         {
             RuntimeInformation.OSDescription,
@@ -5445,9 +5454,20 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             preflight.PinnedSdk,
             preflight.ExecutingSdk,
             GCSettings.IsServerGC,
+            GcDynamicAdaptationMode = gcDynamicAdaptationMode,
             preflight.SqlServerImage,
             preflight.MinioImage
         }));
+
+    private static long ReadGcDynamicAdaptationMode()
+    {
+        var configuration = GC.GetConfigurationVariables();
+        if (!configuration.TryGetValue("GCDynamicAdaptationMode", out var value))
+        {
+            throw new InvalidOperationException("The runtime did not report GCDynamicAdaptationMode.");
+        }
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
 
     private static async Task<Issue250BaselineBinding> ValidateBaselineBindingAsync(
         string repositoryRoot,

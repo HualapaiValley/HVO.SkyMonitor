@@ -12,9 +12,9 @@ readonly REPO_ROOT
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"
 readonly FILTER='FullyQualifiedName~CentralTransientPayloadReleaseIssue250PerformanceTests.Release_W2W3MAndContention_RecordsEvidence'
 readonly AGGREGATOR="$REPO_ROOT/scripts/issue-268-synthetic-aggregate.jq"
-readonly BASELINE_SOURCE_REVISION='00db3348cb0a0a66bcc006af0c56cdc1a9359fb7'
+readonly BASELINE_SOURCE_REVISION='2d8c99f1c745386587482f82628672a304557d90'
 readonly BASELINE_PRODUCTION_REVISION='89c3e5176417a70fcfc5c67d2b0adb233ee7a9e4'
-readonly BASELINE_MANIFEST_SHA256='2C49C4AFA8CD83FE469D0FFEC78AE17CE278006374DAC75B1A46CB1B438BCC3A'
+readonly BASELINE_MANIFEST_SHA256='0390D4A70CDF18A5F1714EAD17D5D1790B88A9BA6D7388D1C067B29913746F14'
 readonly LANES_REVISION='4cb0cdcef7f1d9df2e0923ee9b993454e0252843'
 readonly LANES_MANIFEST_SHA256='0CDA35AEEA7B1AC5BC76B9C8751708CD398733F37B79914A6334A1E70426C035'
 readonly LANES_SUMMARY_SHA256='F98217EFD7858165071A1A44EF617D5A2DDFAB9B0E7C41C8E38CFADC5C6BC002'
@@ -39,7 +39,7 @@ if ! STATE_ROOT="$(realpath -e -- "$HVO_AGENT_STATE_ROOT")"; then
 fi
 readonly STATE_ROOT
 export HVO_AGENT_STATE_ROOT="$STATE_ROOT"
-readonly BASELINE_ROOT="$STATE_ROOT/issues/250/baseline-$BASELINE_SOURCE_REVISION/trial-1"
+readonly BASELINE_ROOT="$STATE_ROOT/issues/268/datas-off-baseline-$BASELINE_SOURCE_REVISION/trial-1"
 readonly BASELINE_MANIFEST="$BASELINE_ROOT/manifest.json"
 readonly LANES_ROOT="$STATE_ROOT/issues/257/$LANES_REVISION"
 readonly LANES_MANIFEST="$LANES_ROOT/manifest.json"
@@ -339,7 +339,7 @@ jq -n \
       schema: "hvo-issue-268-consumed-evidence-v1",
       issue: 268,
       revision: $revision,
-      issue250: {sourceRevision: "00db3348cb0a0a66bcc006af0c56cdc1a9359fb7", manifestSha256: $baselineManifestSha256, allEntriesVerified: true, immutableCampaignCopy: "aggregate/inputs/issue-250-baseline"},
+      issue250: {sourceRevision: "2d8c99f1c745386587482f82628672a304557d90", productionRevision: "89c3e5176417a70fcfc5c67d2b0adb233ee7a9e4", manifestSha256: $baselineManifestSha256, gcDynamicAdaptationMode: 0, reason: ".NET 10 Server GC DATAS can make GC.GetTotalAllocatedBytes decrease when an active heap is retired; baseline and after authenticate the same effective DATAS-disabled runtime mode so allocation deltas remain comparable.", allEntriesVerified: true, immutableCampaignCopy: "aggregate/inputs/issue-250-baseline"},
       issue257: {sourceRevision: "4cb0cdcef7f1d9df2e0923ee9b993454e0252843", manifestSha256: $lanesManifestSha256, summarySha256: $lanesSummarySha256, artifactCount: 26, allEntriesVerified: true, allEntriesCopied: true, immutableCampaignCopy: "aggregate/inputs/issue-257"},
       reuseDisposition: "Issue #257 measured paths, fixtures, profile, schema, and measurement logic are unchanged after its authenticated source; documentation and runner-only changes do not invalidate reuse."
     }' > "$SYNTHETIC_ROOT/consumed-evidence.json"
@@ -349,6 +349,7 @@ dotnet build "$PROJECT" --no-restore --configuration Release -warnaserror 8>&-
 assert_source_unchanged
 
 DOTNET_gcServer=1 \
+DOTNET_GCDynamicAdaptationMode=0 \
 HVO_ISSUE_250_EVIDENCE=1 \
 HVO_ISSUE_268_SYNTHETIC_EVIDENCE=1 \
 HVO_EVIDENCE_PHASE=after \
@@ -364,7 +365,8 @@ verify_issue250_manifest "$AFTER_TRIAL/manifest.json" "$AFTER_TRIAL" after "$REV
 jq --exit-status --arg revision "$REVISION" '
     .Phase == "after" and .Source.Head == $revision and .ProductionRevision == $revision and
     .Source.Dirty == false and .BaselineBinding.Status == "reviewed-baseline-manifest-validated" and
-    .BaselineBinding.BaselineManifestSha256 == "2C49C4AFA8CD83FE469D0FFEC78AE17CE278006374DAC75B1A46CB1B438BCC3A" and
+    .BaselineBinding.BaselineManifestSha256 == "0390D4A70CDF18A5F1714EAD17D5D1790B88A9BA6D7388D1C067B29913746F14" and
+    .Environment.GcDynamicAdaptationMode == 0 and
     (.SteadyState | map(.Concurrency)) == [1, 4] and
     (.DelayedDelete | map(.DeleteDelayMilliseconds)) == [0, 250, 2000] and
     all(.SteadyState[]; .Warmups == 5 and .MeasuredReleases == 30 and .ReleaseLatency.Samples == 30) and

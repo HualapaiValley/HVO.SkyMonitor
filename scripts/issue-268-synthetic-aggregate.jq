@@ -273,7 +273,7 @@ def protocol_comparison($name; $baseline; $after; $releases):
   issue250: {
     baseline: {
       sourceHead: $b.Source.Head,
-      manifestSha256: "2C49C4AFA8CD83FE469D0FFEC78AE17CE278006374DAC75B1A46CB1B438BCC3A",
+      manifestSha256: "0390D4A70CDF18A5F1714EAD17D5D1790B88A9BA6D7388D1C067B29913746F14",
       authenticatedHistoricalWorkloadSha256: $b.CompatibilityWorkloadSha256,
       semanticWorkloadSha256: $a.BaselineBinding.BaselineSemanticWorkloadSha256,
       protocolSha256: $b.CompatibilityProtocolSha256,
@@ -358,12 +358,14 @@ def protocol_comparison($name; $baseline; $after; $releases):
       ($a.ProductionRevision == $revision) and
       ($a.Source.Dirty == false) and
       ($a.BaselineBinding.Status == "reviewed-baseline-manifest-validated") and
-      ($a.BaselineBinding.BaselineManifestSha256 == "2C49C4AFA8CD83FE469D0FFEC78AE17CE278006374DAC75B1A46CB1B438BCC3A") and
+      ($a.BaselineBinding.BaselineManifestSha256 == "0390D4A70CDF18A5F1714EAD17D5D1790B88A9BA6D7388D1C067B29913746F14") and
       ($a.BaselineBinding.BaselineSemanticWorkloadSha256 == "F02F56D059143F6B1AC37AEAD5D027F438AE74BCB876AC7666E575320A04D02B") and
       ($a.CompatibilityWorkloadSha256 == $a.BaselineBinding.BaselineSemanticWorkloadSha256) and
       ($a.BaselineBinding.CurrentSemanticWorkloadSha256 == $a.BaselineBinding.BaselineSemanticWorkloadSha256) and
       ($a.CompatibilityProtocolSha256 == $b.CompatibilityProtocolSha256) and
       ($a.EnvironmentSha256 == $b.EnvironmentSha256) and
+      ($b.Environment.GcDynamicAdaptationMode == 0) and
+      ($a.Environment.GcDynamicAdaptationMode == 0) and
       ($a.SchemaCapabilities.CandidateHarnessImplemented == true) and
       ($a.SchemaCapabilities.RequiredAfterFaultHooks == [
         "reservation-committed-before-delete",
