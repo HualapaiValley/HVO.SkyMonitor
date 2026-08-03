@@ -124,6 +124,7 @@ CameraAgent-owned revisions. These ownership statements are tracked as
 | `HVO.SkyMonitor.Catalog.Sqlite` | Shared read-only SQLite catalog adapter | Shared SQL schema, mutable catalog state |
 | `HVO.SkyMonitor.Common` | Reusable ASP.NET security, identity, API, middleware, and observability infrastructure used by either host | Camera acquisition, recipes/image algorithms, central/edge workflow ownership, or shared domain persistence |
 | `HVO.SkyMonitor.CameraAgent.Common` | Edge acquisition orchestration, SQLite WAL journal, durable lanes, local storage, outbox, retention, telemetry, and configuration | LogicHost references or central persistence |
+| `HVO.SkyMonitor.CameraAgent.Modules.Zwo` | Linux ZWO ASI SDK interop and ASI676MC acquisition | Host orchestration, processing, persistence, vendor artifacts, or non-ZWO cameras |
 | `HVO.SkyMonitor.CameraAgent` | Local ASP.NET/Blazor host, local Identity, authenticated local APIs and composition | Central persistence or private processing algorithms |
 | `HVO.SkyMonitor.LogicHost` | Central SQL/Redis/MinIO services, durable jobs, workers, fleet state, history, retrieval, and central UI | CameraAgent references or host-private projection/image algorithms |
 
@@ -145,6 +146,8 @@ Astronomy --> Catalog.Sqlite
 AgentCore + Astronomy + Imaging + Processing
   +--> CameraAgent.Common --> CameraAgent
   +--> LogicHost
+
+AgentCore --> CameraAgent.Modules.Zwo --> CameraAgent
 
 Common --------------------> CameraAgent and LogicHost only
 Catalog.Sqlite ------------> CameraAgent and LogicHost composition roots

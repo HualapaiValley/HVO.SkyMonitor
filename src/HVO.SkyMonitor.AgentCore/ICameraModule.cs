@@ -18,6 +18,12 @@ public interface ICameraModule : IAsyncDisposable
     Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken);
 }
 
+/// <summary>Validates transport-neutral module configuration without acquiring hardware or native resources.</summary>
+public interface ICameraModuleConfigurationPreflight
+{
+    void ValidateConfiguration(CameraModuleConfig configuration);
+}
+
 /// <summary>Applies host-selected controls before the next acquisition begins.</summary>
 public interface ICameraSetpointController
 {

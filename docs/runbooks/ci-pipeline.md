@@ -9,8 +9,8 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
 | **Quality** | Pinned local tools, formatting, vulnerability audit, and exact reviewed deprecation allowlist. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. Skipped only in classified reduced mode. |
-| **Unit Tests** | 1653 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
-| **Integration Tests** | 469 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. Skipped only in classified reduced mode. |
+| **Unit Tests** | 1699 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
+| **Integration Tests** | 501 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases. Skipped only in classified reduced mode. |
 | **Architecture & Publish** | The remaining six Integration-category repository graph/MSBuild/publish cases plus retained host publish manifests. |
 | **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
 | **Coverage** | Exact source-path and branch merge of eleven expected reports, checked-in aggregate non-regression, and risk-file floors. |
@@ -20,9 +20,9 @@ Each test invocation owns a category/project-specific result directory and TRX n
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=1656`, `Integration=507`, `Manual=69`, `Soak=1`, `External=0`, and `Hardware=0`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=1699`, `Integration=507`, `Manual=69`, `Soak=1`, `External=0`, and `Hardware=1`.
 
-`External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. No Hardware check is published until real device tests and a suitable runner exist.
+`External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
 ## Local Validation
 

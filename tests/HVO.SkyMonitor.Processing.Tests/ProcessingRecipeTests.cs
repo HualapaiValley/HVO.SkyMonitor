@@ -1074,7 +1074,8 @@ public sealed class ProcessingRecipeTests
         foreach (var unsupportedTransform in new[]
         {
             FrameStoredCodeTransform.LeftShiftedV1,
-            FrameStoredCodeTransform.FullRangeScaledV1
+            FrameStoredCodeTransform.FullRangeScaledV1,
+            FrameStoredCodeTransform.OpaqueContainerV1
         })
         {
             var unsupportedLayout = lowerDepth with { StoredCodeTransform = unsupportedTransform };

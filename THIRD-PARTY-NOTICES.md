@@ -77,3 +77,18 @@ The included SQLite subset, its source rows, checksum, and reproducible
 derivation are documented in `tests/fixtures/catalog/SOURCE.md` and
 `docs/catalog/hyg-v42.md`. Modifications and redistributions of the catalog data
 remain subject to the same attribution and ShareAlike terms.
+
+## ZWO ASI Camera SDK
+
+The optional `HVO.SkyMonitor.CameraAgent.Modules.Zwo` adapter contains C ABI
+declarations derived from the official ZWO ASI Camera SDK V1.41
+`ASICamera2.h`. Copyright for the SDK, header, and binary belongs to ZWO /
+Suzhou ZWO Co., Ltd. Use and redistribution are subject to the license included
+with the official SDK distribution.
+
+No ZWO binary, header, udev rule, or SDK license file is distributed in this
+repository. Operators must obtain the SDK and license directly from ZWO. The
+reviewed V1.41 license file has SHA-256
+`98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2`.
+
+Source: https://www.zwoastro.com/software/product-sdk/
