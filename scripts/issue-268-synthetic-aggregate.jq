@@ -384,7 +384,7 @@ def protocol_comparison($name; $baseline; $after; $releases):
       ($a.CompatibilityWorkloadSha256 == $a.BaselineBinding.BaselineSemanticWorkloadSha256) and
       ($a.BaselineBinding.CurrentSemanticWorkloadSha256 == $a.BaselineBinding.BaselineSemanticWorkloadSha256) and
       ($a.CompatibilityProtocolSha256 == $b.CompatibilityProtocolSha256) and
-      ($a.ProtocolSha256 == "E6EFA737D9838EFCFB43EC6DD47FB1CAB82A61655E37DAD711DA4FF1DBF9198E") and
+      ($a.ProtocolSha256 == "CFA0132DE0CFAA0B205D5A4A3669BF8E1FD8042E25E8A21B7B70025C82ED00FA") and
       ($a.EnvironmentSha256 == $b.EnvironmentSha256) and
       ($b.Environment.GcDynamicAdaptationMode == 0) and
       ($a.Environment.GcDynamicAdaptationMode == 0) and
@@ -400,6 +400,10 @@ def protocol_comparison($name; $baseline; $after; $releases):
       ])
     ),
     issue250Correctness: (
+      all($a.SteadyState[].Protocol, $a.DelayedDelete[].NaturalProtocol;
+        .AcceptedReleaseResponses == 0 and .RecoveryProcessorAttempts == 0 and
+        .RecoveryProcessorCompletions == 0 and .MinioDuplicateDeleteRequests == 0 and
+        .MinioBucketHeadRequests == 0 and .MinioObjectHeadRequests == 0) and
       ($a.Correctness | keys | sort) == ([
         "BaselineHeldNormalization",
         "ExactPreReleaseLengthAndSha256ForAllSeven",

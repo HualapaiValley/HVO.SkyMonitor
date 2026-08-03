@@ -701,6 +701,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
             var protocol = collector.Snapshot();
             AssertProtocolAccounting(protocol, measurements, phase);
+            if (phase == "after")
+            {
+                AssertNoNaturalLeaseRecovery(protocol);
+            }
             Assert.AreEqual(
                 (long)measurements * 5 + protocol.RecoveryProcessorCompletions,
                 protocol.ObjectStore.Deletes);
@@ -775,6 +779,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Assert.IsNotNull(measured);
             var naturalProtocol = collector.Snapshot();
             AssertProtocolAccounting(naturalProtocol, 4, phase);
+            if (phase == "after")
+            {
+                AssertNoNaturalLeaseRecovery(naturalProtocol);
+            }
             var naturalSql = CreateSqlEvidence(
                 naturalSamples, collector.Http.Windows, delayMilliseconds, phase, contentionProbe: false);
             var correctness = new List<Issue250CaseCorrectness>();
@@ -1709,6 +1717,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     CentralTransientPayloadRelease? recovered = null;
                     if (result.Status == CentralTransientPayloadReleaseStatus.Accepted)
                     {
+                        if (!recoverPending)
+                        {
+                            throw new InvalidDataException(
+                                "Steady-state and natural-delay release unexpectedly required lease recovery.");
+                        }
                         collector.RecordAcceptedReleaseResponse();
                         Assert.AreEqual(CentralTransientPayloadReleaseState.Pending, result.Response.State);
                         for (var processorAttempt = 0; processorAttempt < 100; processorAttempt++)
@@ -4125,6 +4138,16 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         Assert.AreEqual("complete", diagnostics.CompletionCoverage);
     }
 
+    private static void AssertNoNaturalLeaseRecovery(Issue250CollectorSnapshot protocol)
+    {
+        Assert.AreEqual(0L, protocol.AcceptedReleaseResponses);
+        Assert.AreEqual(0L, protocol.RecoveryProcessorAttempts);
+        Assert.AreEqual(0L, protocol.RecoveryProcessorCompletions);
+        Assert.AreEqual(0L, protocol.ObjectStore.DuplicateDeleteRequests);
+        Assert.AreEqual(0L, protocol.ObjectStore.BucketHeadRequests);
+        Assert.AreEqual(0L, protocol.ObjectStore.ObjectHeadRequests);
+    }
+
     private static Issue250CorrectnessEvidence CreateCorrectnessEvidence(
         IReadOnlyList<Issue250CaseCorrectness> cases,
         Issue250Backlog finalBacklog)
@@ -5417,7 +5440,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private static string ComputeProtocolSha256()
         => Sha(JsonSerializer.Serialize(new
         {
-            Schema = "issue-250-public-release-protocol-v4",
+            Schema = "issue-250-public-release-protocol-v5",
             Boundary = "public ReleaseAsync including request/item creation, DELETE, finalize, replay",
             Percentiles = "nearest-rank",
             SqlSamplingMilliseconds = 10,
@@ -5428,7 +5451,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             W3M = "actual ProcessNextAsync plus exact normalized baseline parent query plan",
             FaultManifest = CanonicalFaultManifest,
             ProtocolCount = "EF commands are separate from scoped SqlClient application-lock command diagnostics and direct harness SQL",
-            HttpAccounting = "Requests partition into DELETE, MinIO bucket HEAD, object HEAD, and other methods; DELETEs partition into unique and duplicate targets plus response and exception outcomes"
+            HttpAccounting = "Requests partition into DELETE, MinIO bucket HEAD, object HEAD, and other methods; DELETEs partition into unique and duplicate targets plus response and exception outcomes",
+            NaturalRecovery = "Steady-state and natural-delay release fail if the public operation returns Accepted; lease recovery remains claimable only in the explicit contention and fault paths"
         }));
 
     private static string ComputeCompatibilityProtocolSha256()

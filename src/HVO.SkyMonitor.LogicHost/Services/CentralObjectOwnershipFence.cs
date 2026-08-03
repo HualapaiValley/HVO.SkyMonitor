@@ -80,6 +80,7 @@ internal static class CentralObjectOwnershipFence
                     UNION ALL
                     SELECT TOP(1) CAST(1 AS int) AS [Value]
                     FROM [CentralTransientDerivativeOutputIntents]
+                        WITH (INDEX([IX_CentralTransientDerivativeOutputIntents_StorageReferenceSha256]))
                     WHERE [StorageReferenceSha256] = {storageReferenceSha256}
                       AND [StorageReference] COLLATE Latin1_General_100_BIN2 = {storageReference}
                       AND [Id] != {excludedDerivativeIntentId}
