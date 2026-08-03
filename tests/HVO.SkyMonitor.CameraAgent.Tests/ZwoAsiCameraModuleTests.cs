@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -19,6 +20,13 @@ public sealed class ZwoAsiCameraModuleTests
     private const string SerialEnvironmentVariable = "HVO_ZWO_CAMERA_SERIAL";
     private const string PrivateLibraryPath = "/opt/zwo/private/libASICamera2.so.1.41";
     private static readonly byte[] PrivateSerial = Convert.FromHexString("0011223344556677");
+    private static readonly SupportedProfile Asi676Mc = new(
+        "asi676mc", "ASI676MC", 3552, 3552, 2.0, 12, 7104, 1, 600,
+        "BF774B9E01D4B46BE9441F22AD1EBD276CA86DF19A3B4F9715C1F806E5FABF30");
+    private static readonly SupportedProfile Asi178Mc = new(
+        "asi178mc", "ASI178MC", 3096, 2080, 2.4, 14, 6192, 10, 510,
+        "5E945964BE56D5743484C8FFD4EB7B5019C1D6D746CB3C0922B3B7C73E04C7FD");
+    private static readonly SupportedProfile[] SupportedProfiles = [Asi676Mc, Asi178Mc];
     private static readonly JsonSerializerOptions ConfigurationSerializerOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -28,7 +36,18 @@ public sealed class ZwoAsiCameraModuleTests
         "Open:7", "Serial:7", "Close:7", "Open:7", "Init:7", "Caps:7",
         "Set:Exposure:100000", "Get:Exposure", "Set:Gain:0", "Get:Gain",
         "Set:Offset:1", "Get:Offset", "Set:BandwidthOverload:40", "Get:BandwidthOverload",
-        "Roi:3552:3552:1:Raw16", "Position:0:0", "GetRoi", "GetPosition"
+        "Set:HighSpeedMode:0", "Get:HighSpeedMode", "Set:Flip:0", "Get:Flip",
+        "Set:MonoBin:0", "Get:MonoBin", "Roi:3552:3552:1:Raw16", "Position:0:0",
+        "Set:HardwareBin:0", "Get:HardwareBin", "GetRoi", "GetPosition"
+    ];
+    private static readonly string[] Asi178ExpectedInitializationCalls =
+    [
+        "Open:7", "Serial:7", "Close:7", "Open:7", "Init:7", "Caps:7",
+        "Set:Exposure:100000", "Get:Exposure", "Set:Gain:0", "Get:Gain",
+        "Set:Offset:10", "Get:Offset", "Set:BandwidthOverload:40", "Get:BandwidthOverload",
+        "Set:HighSpeedMode:0", "Get:HighSpeedMode", "Set:Flip:0", "Get:Flip",
+        "Set:MonoBin:0", "Get:MonoBin", "Roi:3096:2080:1:Raw16", "Position:0:0",
+        "Set:HardwareBin:0", "Get:HardwareBin", "GetRoi", "GetPosition"
     ];
 
     [TestMethod]
@@ -81,21 +100,95 @@ public sealed class ZwoAsiCameraModuleTests
             StringComparison.Ordinal)).RootElement.Clone();
         Assert.ThrowsExactly<NotSupportedException>(() => preflight.ValidateConfiguration(CreateConfig(monoOptions)));
 
-        var samplePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.zwo-asi676mc.sample.json");
-        var sample = JsonSerializer.Deserialize<CameraModuleDocument>(
-            File.ReadAllText(samplePath),
-            ConfigurationSerializerOptions)!;
-        preflight.ValidateConfiguration(new CameraModuleConfig(
-            new ObservatoryLocation(0, 0, 0, "UTC"),
-            sample.Module,
-            sample.Rig,
-            sample.ProcessingSteps,
-            sample.Pipeline,
-            sample.AgentId));
-        Assert.AreEqual(LibraryEnvironmentVariable,
-            sample.Module.Options!.Value.GetProperty("libraryPathEnvironmentVariable").GetString());
-        Assert.AreEqual(SerialEnvironmentVariable,
-            sample.Module.Options.Value.GetProperty("cameraSerialEnvironmentVariable").GetString());
+        foreach (var profile in SupportedProfiles)
+        {
+            var sample = LoadSample(profile);
+            preflight.ValidateConfiguration(CreateConfig(sample));
+            Assert.AreEqual(LibraryEnvironmentVariable,
+                sample.Module.Options!.Value.GetProperty("libraryPathEnvironmentVariable").GetString());
+            Assert.AreEqual(SerialEnvironmentVariable,
+                sample.Module.Options.Value.GetProperty("cameraSerialEnvironmentVariable").GetString());
+            Assert.AreEqual(SensorResponseMode.BayerRaw, sample.Rig.Sensor.ResponseMode);
+            Assert.IsNull(sample.Rig.Sensor.SimulationResponse);
+            Assert.IsNotNull(sample.Pipeline);
+            Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, sample.Pipeline.SchemaVersion);
+            Assert.AreEqual(CapturePipelineDependencyPolicy.RejectEnabledDependent,
+                sample.Pipeline.DependencyPolicy);
+            Assert.IsEmpty(sample.Pipeline.Steps);
+            if (profile == Asi178Mc)
+            {
+                Assert.IsTrue(sample.Rig.Optics.HorizontalFlip);
+                Assert.AreEqual(TimeSpan.FromTicks(320), sample.Rig.Pipeline.Envelope!.MinExposure);
+                Assert.AreEqual(TimeSpan.FromSeconds(1000), sample.Rig.Pipeline.Envelope.MaxExposure);
+                Assert.AreEqual(0d, sample.Rig.Pipeline.Envelope.MinGain);
+                Assert.AreEqual(510d, sample.Rig.Pipeline.Envelope.MaxGain);
+                Assert.AreEqual(CameraFeatureDirective.Disabled, sample.Rig.ControlPolicy!.AutoGain);
+                Assert.AreEqual(CameraFeatureDirective.Disabled, sample.Rig.ControlPolicy.AutoExposure);
+            }
+        }
+        Assert.AreEqual(0, factoryCalls);
+        Assert.AreEqual(0, resolverCalls);
+    }
+
+    [TestMethod]
+    [DataRow("RenderedRgb")]
+    [DataRow("Monochrome")]
+    [DataRow("SimulationResponse")]
+    [TestCategory("Unit")]
+    public void PhysicalProfilesRejectVirtualSensorResponseDeclarations(string mutation)
+    {
+        foreach (var profile in SupportedProfiles)
+        {
+            var config = CreateConfig(
+                OptionsJson(expectedModel: profile.Model, offset: profile.Offset),
+                profile: profile);
+            var sensor = mutation switch
+            {
+                "RenderedRgb" => config.Rig.Sensor with { ResponseMode = SensorResponseMode.RenderedRgb },
+                "Monochrome" => config.Rig.Sensor with { ResponseMode = SensorResponseMode.Monochrome },
+                "SimulationResponse" => config.Rig.Sensor with
+                {
+                    SimulationResponse = new ConfiguredSensorResponseProfile(
+                        "test-only", profile.SampleDepthBits, 0, profile.MaximumGain, 1, 100,
+                        10_000, [new SensorReadNoisePoint(0, 2)], 0, "test", "test-only")
+                },
+                _ => throw new AssertFailedException($"Unknown mutation {mutation}.")
+            };
+            var invalid = config with { Rig = config.Rig with { Sensor = sensor } };
+
+            Assert.ThrowsExactly<NotSupportedException>(() =>
+                ((ICameraModuleConfigurationPreflight)Module(new FakeAsiNativeApi(profile)))
+                    .ValidateConfiguration(invalid));
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void PreflightRejectsCrossPairedAndUnsupportedProfilesBeforeRuntimeAccess()
+    {
+        var factoryCalls = 0;
+        var resolverCalls = 0;
+        var module = new ZwoAsiCameraModule(
+            TimeProvider.System,
+            _ =>
+            {
+                factoryCalls++;
+                return new FakeAsiNativeApi();
+            },
+            _ =>
+            {
+                resolverCalls++;
+                return null;
+            });
+        var preflight = (ICameraModuleConfigurationPreflight)module;
+
+        Assert.ThrowsExactly<NotSupportedException>(() => preflight.ValidateConfiguration(
+            CreateConfig(OptionsJson(expectedModel: Asi178Mc.Model))));
+        Assert.ThrowsExactly<NotSupportedException>(() => preflight.ValidateConfiguration(
+            CreateConfig(OptionsJson(expectedModel: Asi676Mc.Model), profile: Asi178Mc)));
+        Assert.ThrowsExactly<NotSupportedException>(() => preflight.ValidateConfiguration(
+            CreateConfig(OptionsJson(expectedModel: "ASI120MM Mini"))));
+
         Assert.AreEqual(0, factoryCalls);
         Assert.AreEqual(0, resolverCalls);
     }
@@ -140,6 +233,14 @@ public sealed class ZwoAsiCameraModuleTests
         await using (var module = Module(accepted))
         {
             await module.InitializeAsync(CreateConfig(), CancellationToken.None);
+        }
+
+        var accepted178 = new FakeAsiNativeApi(Asi178Mc);
+        await using (var module = Module(accepted178))
+        {
+            await module.InitializeAsync(
+                CreateConfig(OptionsJson(expectedModel: Asi178Mc.Model, offset: Asi178Mc.Offset), profile: Asi178Mc),
+                CancellationToken.None);
         }
 
         var rejected = new FakeAsiNativeApi();
@@ -243,13 +344,23 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual("ZWO ASI676MC", native.Cameras[0].Info.Model);
         CollectionAssert.AreEqual(
             ExpectedInitializationCalls,
-            native.Calls.Where(call =>
-                call.StartsWith("Open", StringComparison.Ordinal) || call.StartsWith("Serial", StringComparison.Ordinal) ||
-                call.StartsWith("Close", StringComparison.Ordinal) || call.StartsWith("Init", StringComparison.Ordinal) ||
-                call.StartsWith("Caps", StringComparison.Ordinal) || call.StartsWith("Set", StringComparison.Ordinal) ||
-                call.StartsWith("Get:", StringComparison.Ordinal) || call.StartsWith("Roi", StringComparison.Ordinal) ||
-                call.StartsWith("Position", StringComparison.Ordinal) || call.StartsWith("GetRoi", StringComparison.Ordinal) ||
-                call.StartsWith("GetPosition", StringComparison.Ordinal)).ToArray());
+            InitializationCalls(native));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task Asi178InitializationOpensConfiguresAndReadsBackInOrder()
+    {
+        var native = new FakeAsiNativeApi(Asi178Mc);
+        await using var module = Module(native);
+
+        await module.InitializeAsync(
+            CreateConfig(OptionsJson(expectedModel: Asi178Mc.Model, offset: Asi178Mc.Offset), profile: Asi178Mc),
+            CancellationToken.None);
+
+        CollectionAssert.AreEqual(
+            Asi178ExpectedInitializationCalls,
+            InitializationCalls(native));
     }
 
     [TestMethod]
@@ -270,8 +381,7 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual(3552, frame.Height);
         Assert.AreEqual(CameraPixelFormat.BayerRggb16, frame.PixelFormat);
         Assert.AreEqual(25_233_408, frame.PixelData.Length);
-        Assert.AreEqual(0, frame.PixelData.Span[0]);
-        Assert.AreEqual((byte)((frame.PixelData.Length - 1) % 251), frame.PixelData.Span[^1]);
+        Assert.AreEqual(Asi676Mc.ExpectedSha256, Convert.ToHexString(SHA256.HashData(frame.PixelData.Span)));
         Assert.AreEqual(ColorFilterArrayPattern.Rggb, frame.Layout!.CfaPattern);
         Assert.AreEqual(FrameByteOrder.LittleEndian, frame.Layout.ByteOrder);
         Assert.AreEqual(12, frame.Layout.SampleDepthBits);
@@ -284,10 +394,54 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual(82d, frame.Metadata.Gain);
         Assert.AreEqual(21.5d, frame.Metadata.TemperatureC);
         Assert.AreEqual(1d, frame.Metadata.Offset);
-        Assert.IsTrue(result.AcquisitionTiming!.ExposureStartedUtc <= result.AcquisitionTiming.ExposureEndedUtc);
-        Assert.IsTrue(result.AcquisitionTiming.ExposureEndedUtc <= result.AcquisitionTiming.ReadoutCompletedUtc);
-        Assert.IsNotNull(result.AcquisitionTiming.SetpointAppliedUtc);
+        Assert.AreEqual("ZWO ASI676MC", frame.Metadata.SourceId);
+        AssertCaptureTiming(result);
         Assert.AreEqual(25_233_408, native.LastBufferSize);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task Asi178CapturePreservesExactFullFrameBytesLayoutAndMetadata()
+    {
+        var native = new FakeAsiNativeApi(Asi178Mc)
+        {
+            ExposureStatuses = new Queue<AsiExposureStatus>([AsiExposureStatus.Success])
+        };
+        await using var module = Module(native);
+        await module.InitializeAsync(
+            CreateConfig(OptionsJson(expectedModel: Asi178Mc.Model, offset: Asi178Mc.Offset), profile: Asi178Mc),
+            CancellationToken.None);
+
+        var result = await module.CaptureAsync(
+            new CaptureRequest(
+                DateTimeOffset.UtcNow,
+                TimeSpan.FromSeconds(1),
+                CaptureMode.Still,
+                new CaptureSetpoint(TimeSpan.FromMilliseconds(100), 150, null, null)),
+            CancellationToken.None);
+
+        var frame = result.Frame!;
+        Assert.AreEqual(3096, frame.Width);
+        Assert.AreEqual(2080, frame.Height);
+        Assert.AreEqual(6192, frame.StrideBytes);
+        Assert.AreEqual(CameraPixelFormat.BayerRggb16, frame.PixelFormat);
+        Assert.AreEqual(12_879_360, frame.PixelData.Length);
+        Assert.AreEqual(Asi178Mc.ExpectedSha256, Convert.ToHexString(SHA256.HashData(frame.PixelData.Span)));
+        Assert.AreEqual(ColorFilterArrayPattern.Rggb, frame.Layout!.CfaPattern);
+        Assert.AreEqual(FrameByteOrder.LittleEndian, frame.Layout.ByteOrder);
+        Assert.AreEqual(14, frame.Layout.SampleDepthBits);
+        Assert.AreEqual(16, frame.Layout.ContainerDepthBits);
+        Assert.AreEqual(FrameStoredCodeTransform.OpaqueContainerV1, frame.Layout.StoredCodeTransform);
+        Assert.AreEqual(FrameLevelCodeSpace.StoredContainer, frame.Layout.LevelCodeSpace);
+        Assert.AreEqual(0d, frame.Layout.BlackLevel);
+        Assert.AreEqual(65535d, frame.Layout.WhiteLevel);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(100), frame.Metadata.Exposure);
+        Assert.AreEqual(150d, frame.Metadata.Gain);
+        Assert.AreEqual(21.5d, frame.Metadata.TemperatureC);
+        Assert.AreEqual(10d, frame.Metadata.Offset);
+        Assert.AreEqual("ZWO ASI178MC", frame.Metadata.SourceId);
+        AssertCaptureTiming(result);
+        Assert.AreEqual(12_879_360, native.LastBufferSize);
     }
 
     [TestMethod]
@@ -482,6 +636,47 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
+    public async Task Asi178UsesDiscoveredExposureAndGainControlRanges()
+    {
+        var native = new FakeAsiNativeApi(Asi178Mc);
+        await using var module = Module(native);
+        var envelope = new ExposureEnvelope(
+            TimeSpan.FromTicks(320),
+            TimeSpan.FromSeconds(1000),
+            0,
+            510,
+            new ExposureDefaults(TimeSpan.FromMilliseconds(100), 0),
+            new ExposureDefaults(TimeSpan.FromSeconds(20), 150),
+            0.65);
+        var pipeline = new PipelineExposureProfile(
+            TimeSpan.FromSeconds(25),
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromSeconds(20),
+            0,
+            150,
+            envelope);
+        await module.InitializeAsync(
+            CreateConfig(
+                OptionsJson(expectedModel: Asi178Mc.Model, offset: Asi178Mc.Offset),
+                pipeline,
+                Asi178Mc),
+            CancellationToken.None);
+
+        await module.ApplySetpointAsync(
+            new CaptureSetpoint(TimeSpan.FromTicks(320), Asi178Mc.MaximumGain, null, null),
+            CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
+            await module.ApplySetpointAsync(
+                new CaptureSetpoint(TimeSpan.FromTicks(310), 0, null, null),
+                CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
+            await module.ApplySetpointAsync(
+                new CaptureSetpoint(TimeSpan.FromMilliseconds(100), Asi178Mc.MaximumGain + 1, null, null),
+                CancellationToken.None));
+    }
+
+    [TestMethod]
     [DataRow("dayExposure")]
     [DataRow("dayGain")]
     [DataRow("nightExposure")]
@@ -640,9 +835,12 @@ public sealed class ZwoAsiCameraModuleTests
         }
 
         await using var module = new ZwoAsiCameraModule(TimeProvider.System);
-        await module.InitializeAsync(
-            CreateConfig(OptionsJson(expectedModel: expectedModel!)),
-            CancellationToken.None);
+        var profile = SupportedProfiles.SingleOrDefault(
+            candidate => string.Equals(candidate.Model, expectedModel, StringComparison.Ordinal));
+        Assert.IsNotNull(profile, $"HVO_ZWO_EXPECTED_MODEL must be one of: {string.Join(", ", SupportedProfiles.Select(candidate => candidate.Model))}.");
+        var sample = LoadSample(profile);
+        Assert.AreEqual(expectedModel, sample.Module.Options!.Value.GetProperty("expectedModel").GetString());
+        await module.InitializeAsync(CreateConfig(sample), CancellationToken.None);
         var result = await module.CaptureAsync(
             new CaptureRequest(
                 DateTimeOffset.UtcNow,
@@ -651,42 +849,76 @@ public sealed class ZwoAsiCameraModuleTests
                 new CaptureSetpoint(TimeSpan.FromMilliseconds(100), 0, null, null)),
             CancellationToken.None);
 
-        Assert.AreEqual(25_233_408, result.Frame!.PixelData.Length);
-        Assert.AreEqual(CameraPixelFormat.BayerRggb16, result.Frame.PixelFormat);
+        var frame = result.Frame!;
+        Assert.AreEqual(profile.Width, frame.Width);
+        Assert.AreEqual(profile.Height, frame.Height);
+        Assert.AreEqual(profile.StrideBytes, frame.StrideBytes);
+        Assert.AreEqual(checked(profile.StrideBytes * profile.Height), frame.PixelData.Length);
+        Assert.AreEqual(CameraPixelFormat.BayerRggb16, frame.PixelFormat);
+        Assert.AreEqual(profile.SampleDepthBits, frame.Layout!.SampleDepthBits);
+        Assert.AreEqual(16, frame.Layout.ContainerDepthBits);
+        Assert.AreEqual(ColorFilterArrayPattern.Rggb, frame.Layout.CfaPattern);
+        Assert.AreEqual(FrameByteOrder.LittleEndian, frame.Layout.ByteOrder);
+        Assert.AreEqual(FrameStoredCodeTransform.OpaqueContainerV1, frame.Layout.StoredCodeTransform);
+        Assert.AreEqual(FrameLevelCodeSpace.StoredContainer, frame.Layout.LevelCodeSpace);
+        Assert.AreEqual(0d, frame.Layout.BlackLevel);
+        Assert.AreEqual(65535d, frame.Layout.WhiteLevel);
+        Assert.AreEqual($"ZWO {profile.Model}", frame.Metadata.SourceId);
     }
 
     private static ZwoAsiCameraModule Module(FakeAsiNativeApi native)
         => new(TimeProvider.System, _ => native, ResolveEnvironmentVariable);
 
+    private static CameraModuleDocument LoadSample(SupportedProfile profile)
+    {
+        var samplePath = Path.Combine(
+            AppContext.BaseDirectory,
+            $"cameraagent.zwo-{profile.Id}.sample.json");
+        return JsonSerializer.Deserialize<CameraModuleDocument>(
+            File.ReadAllText(samplePath),
+            ConfigurationSerializerOptions)!;
+    }
+
+    private static CameraModuleConfig CreateConfig(CameraModuleDocument document)
+        => new(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            document.Module,
+            document.Rig,
+            document.ProcessingSteps,
+            document.Pipeline,
+            document.AgentId);
+
     private static CameraModuleConfig CreateConfig(
         JsonElement? options = null,
-        PipelineExposureProfile? pipeline = null)
+        PipelineExposureProfile? pipeline = null,
+        SupportedProfile? profile = null)
     {
+        profile ??= Asi676Mc;
         var sensor = new SensorProfile(
-            "PhysicalAsi676Mc",
-            3552,
-            3552,
-            2.0,
+            $"Physical{profile.Model}",
+            profile.Width,
+            profile.Height,
+            profile.PixelSizeMicrons,
             SensorColorMode.Color,
             CameraPixelFormat.BayerRggb16,
             SensorResponseMode.BayerRaw,
-            7104,
+            profile.StrideBytes,
             SampleByteOrder.LittleEndian,
-            "asi676mc-physical-provisional-v1");
+            $"{profile.Id}-physical-provisional-v1");
         var readout = new SensorReadoutProfile(
-            new SensorCrop(0, 0, 3552, 3552),
+            new SensorCrop(0, 0, profile.Width, profile.Height),
             1,
             1,
             FrameBinningAlgorithm.IdentityV1,
             CameraPixelFormat.BayerRggb16,
-            12,
+            profile.SampleDepthBits,
             16,
             FrameSamplePacking.ByteAligned,
             FrameStoredCodeTransform.OpaqueContainerV1,
             FrameLevelCodeSpace.StoredContainer,
             0,
             65535,
-            7104,
+            profile.StrideBytes,
             SampleByteOrder.LittleEndian,
             ColorFilterArrayPattern.Rggb,
             0,
@@ -704,7 +936,7 @@ public sealed class ZwoAsiCameraModuleTests
                     TimeSpan.FromSeconds(1),
                     0,
                     82),
-                ProfileVersion: "physical-asi676mc-sample-v1",
+                ProfileVersion: $"physical-{profile.Id}-sample-v1",
                 Readout: readout));
     }
 
@@ -712,6 +944,7 @@ public sealed class ZwoAsiCameraModuleTests
         string libraryPathEnvironmentVariable = LibraryEnvironmentVariable,
         string cameraSerialEnvironmentVariable = SerialEnvironmentVariable,
         string expectedModel = "ASI676MC",
+        long offset = 1,
         string timeoutMargin = "00:00:01",
         string extra = "")
         => JsonDocument.Parse(
@@ -720,7 +953,7 @@ public sealed class ZwoAsiCameraModuleTests
                 "libraryPathEnvironmentVariable":"{{libraryPathEnvironmentVariable}}",
                 "cameraSerialEnvironmentVariable":"{{cameraSerialEnvironmentVariable}}",
                 "expectedModel":"{{expectedModel}}",
-                "offset":1,
+                "offset":{{offset}},
                 "usbBandwidth":40,
                 "pollInterval":"00:00:00.001",
                 "captureTimeoutMargin":"{{timeoutMargin}}",
@@ -729,20 +962,46 @@ public sealed class ZwoAsiCameraModuleTests
               }
               """).RootElement.Clone();
 
-    private static FakeCamera Camera(int id, string model, byte[] serial, bool color = true)
-        => new(
+    private static FakeCamera Camera(
+        int id,
+        string model,
+        byte[] serial,
+        bool color = true,
+        SupportedProfile? profile = null)
+    {
+        profile ??= Asi676Mc;
+        return new(
             new AsiCameraInfo(
                 id,
                 model,
-                3552,
-                3552,
+                profile.Width,
+                profile.Height,
                 color,
                 AsiBayerPattern.Rg,
                 [1, 2, 3, 4],
                 color ? [AsiImageType.Raw8, AsiImageType.Rgb24, AsiImageType.Y8, AsiImageType.Raw16] : [AsiImageType.Raw8, AsiImageType.Raw16],
-                2.0,
-                12),
+                profile.PixelSizeMicrons,
+                profile.SampleDepthBits),
             serial);
+    }
+
+    private static string[] InitializationCalls(FakeAsiNativeApi native)
+        => native.Calls.Where(call =>
+            call.StartsWith("Open", StringComparison.Ordinal) || call.StartsWith("Serial", StringComparison.Ordinal) ||
+            call.StartsWith("Close", StringComparison.Ordinal) || call.StartsWith("Init", StringComparison.Ordinal) ||
+            call.StartsWith("Caps", StringComparison.Ordinal) || call.StartsWith("Set", StringComparison.Ordinal) ||
+            call.StartsWith("Get:", StringComparison.Ordinal) || call.StartsWith("Roi", StringComparison.Ordinal) ||
+            call.StartsWith("Position", StringComparison.Ordinal) || call.StartsWith("GetRoi", StringComparison.Ordinal) ||
+            call.StartsWith("GetPosition", StringComparison.Ordinal)).ToArray();
+
+    private static void AssertCaptureTiming(CaptureResult result)
+    {
+        var timing = result.AcquisitionTiming!;
+        Assert.IsNotNull(timing.SetpointAppliedUtc);
+        Assert.IsTrue(timing.SetpointAppliedUtc <= timing.ExposureStartedUtc);
+        Assert.IsTrue(timing.ExposureStartedUtc <= timing.ExposureEndedUtc);
+        Assert.IsTrue(timing.ExposureEndedUtc <= timing.ReadoutCompletedUtc);
+    }
 
     private static string? ResolveEnvironmentVariable(string name)
         => name switch
@@ -767,23 +1026,42 @@ public sealed class ZwoAsiCameraModuleTests
 
     private sealed record FakeCamera(AsiCameraInfo Info, byte[] Serial);
 
+    private sealed record SupportedProfile(
+        string Id,
+        string Model,
+        int Width,
+        int Height,
+        double PixelSizeMicrons,
+        int SampleDepthBits,
+        int StrideBytes,
+        long Offset,
+        long MaximumGain,
+        string ExpectedSha256);
+
     private sealed class FakeAsiNativeApi : IAsiNativeApi
     {
-        private readonly Dictionary<AsiControlType, long> _values = new()
-        {
-            [AsiControlType.Exposure] = 100_000,
-            [AsiControlType.Gain] = 0,
-            [AsiControlType.Offset] = 1,
-            [AsiControlType.BandwidthOverload] = 40,
-            [AsiControlType.Temperature] = 215
-        };
+        private readonly Dictionary<AsiControlType, long> _values;
+        private readonly SupportedProfile _profile;
         private (int Width, int Height, int Bin, AsiImageType Type) _roi;
         private (int X, int Y) _position;
         private readonly Dictionary<int, int> _openCallsByCameraId = [];
 
-        internal FakeAsiNativeApi()
+        internal FakeAsiNativeApi(SupportedProfile? profile = null)
         {
-            Cameras.Add(Camera(7, "ZWO ASI676MC", PrivateSerial));
+            _profile = profile ?? Asi676Mc;
+            _values = new Dictionary<AsiControlType, long>
+            {
+                [AsiControlType.Exposure] = 100_000,
+                [AsiControlType.Gain] = 0,
+                [AsiControlType.Offset] = _profile.Offset,
+                [AsiControlType.BandwidthOverload] = 40,
+                [AsiControlType.Temperature] = 215,
+                [AsiControlType.HighSpeedMode] = 0,
+                [AsiControlType.Flip] = 0,
+                [AsiControlType.MonoBin] = 0,
+                [AsiControlType.HardwareBin] = 0
+            };
+            Cameras.Add(Camera(7, $"ZWO {_profile.Model}", PrivateSerial, profile: _profile));
         }
 
         internal List<FakeCamera> Cameras { get; } = [];
@@ -844,10 +1122,14 @@ public sealed class ZwoAsiCameraModuleTests
             return
             [
                 new(AsiControlType.Exposure, 32, 2_000_000_000, 100_000, false, true),
-                new(AsiControlType.Gain, 0, 600, 0, false, true),
-                new(AsiControlType.Offset, 0, 200, 1, false, true),
+                new(AsiControlType.Gain, 0, _profile.MaximumGain, 0, false, true),
+                new(AsiControlType.Offset, 0, 600, _profile.Offset, false, true),
                 new(AsiControlType.BandwidthOverload, 0, 100, 40, false, true),
-                new(AsiControlType.Temperature, -1000, 1000, 200, false, false)
+                new(AsiControlType.Temperature, -1000, 1000, 200, false, false),
+                new(AsiControlType.HighSpeedMode, 0, 1, 0, false, true),
+                new(AsiControlType.Flip, 0, 3, 0, false, true),
+                new(AsiControlType.MonoBin, 0, 1, 0, false, true),
+                new(AsiControlType.HardwareBin, 0, 1, 0, false, true)
             ];
         }
         public (long Value, bool Automatic) GetControlValue(int cameraId, AsiControlType type)
@@ -913,12 +1195,16 @@ public sealed class ZwoAsiCameraModuleTests
                 throw new InvalidOperationException("Injected ASI read error.");
             }
             LastBufferSize = checked((int)bufferSize);
-            var bytes = new byte[LastBufferSize];
-            for (var index = 0; index < bytes.Length; index++)
+            var bytes = new byte[Math.Min(64 * 1024, LastBufferSize)];
+            for (var offset = 0; offset < LastBufferSize; offset += bytes.Length)
             {
-                bytes[index] = (byte)(index % 251);
+                var length = Math.Min(bytes.Length, LastBufferSize - offset);
+                for (var index = 0; index < length; index++)
+                {
+                    bytes[index] = (byte)((offset + index) % 251);
+                }
+                Marshal.Copy(bytes, 0, IntPtr.Add(buffer, offset), length);
             }
-            Marshal.Copy(bytes, 0, buffer, bytes.Length);
         }
         public void Dispose() => DisposeCalls++;
     }
