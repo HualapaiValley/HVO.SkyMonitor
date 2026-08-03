@@ -48,10 +48,12 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private const string ProductionRevision = "89c3e5176417a70fcfc5c67d2b0adb233ee7a9e4";
     private const string AcceptedBaselineSourceRevision = "00db3348cb0a0a66bcc006af0c56cdc1a9359fb7";
     private const string AcceptedBaselineManifestPath = "/var/lib/hvo-agent-state/issues/250/baseline-00db3348cb0a0a66bcc006af0c56cdc1a9359fb7/trial-1/manifest.json";
+    private const string AcceptedBaselineRelativePath = "issues/250/baseline-00db3348cb0a0a66bcc006af0c56cdc1a9359fb7/trial-1/manifest.json";
     private const string AcceptedBaselineManifestSha256 = "2C49C4AFA8CD83FE469D0FFEC78AE17CE278006374DAC75B1A46CB1B438BCC3A";
     private const string AcceptedBaselineHarnessSha256 = "82685C4CF10260991E11A079B9090B5CA48BD2EAE72D607281A903969F4F0990";
     private const string AcceptedBaselineProtocolSha256 = "E773CE1FBD51377ECDE5948562B1A31112674B0476721C177F6DD0F12FE6DE3B";
     private const string AcceptedBaselineCompatibilityProtocolSha256 = "5C88E596C0802D624F7A5017416EFB5E7EE10DB4E03B2CB7651CB9EEA639811C";
+    private const string AcceptedBaselineSemanticWorkloadSha256 = "F02F56D059143F6B1AC37AEAD5D027F438AE74BCB876AC7666E575320A04D02B";
     private const string Bucket = "skymonitor-artifacts";
     private const string BucketPrefix = "minio://skymonitor-artifacts/";
     private const int FullWidth = 3_096;
@@ -88,7 +90,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         new("TR_CentralTransientPayloadReleases_Insert", "CentralTransientPayloadReleases",
             ["AFTER INSERT", "inserted", "State", "Pending", "THROW 51000"]),
         new("TR_CentralTransientPayloadReleases_Transition", "CentralTransientPayloadReleases",
-            ["AFTER UPDATE", "DELETE", "inserted", "deleted", "Pending", "Completed", "Failed", "CompletedUtc", "CentralTransientPayloadReleaseItems", "Outcome"]),
+            ["AFTER UPDATE", "DELETE", "inserted", "deleted", "Pending", "Completed", "Failed", "CentralTransientPayloadReleaseItems", "Outcome"]),
         new("TR_CentralTransientPayloadReleaseItems_Closed", "CentralTransientPayloadReleaseItems",
             ["AFTER INSERT", "inserted", "CentralTransientPayloadReleases", "State", "Outcome", "Pending", "THROW 51000"]),
         new("TR_CentralTransientPayloadReleaseItems_Transition", "CentralTransientPayloadReleaseItems",
@@ -199,14 +201,16 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Environment.GetEnvironmentVariable("HVO_ISSUE_250_SMOKE"), "1", StringComparison.Ordinal);
         var afterSmoke = smoke && phase == "after" && string.Equals(
             Environment.GetEnvironmentVariable("HVO_ISSUE_250_AFTER_SMOKE"), "1", StringComparison.Ordinal);
+        var issue268Evidence = !smoke && phase == "after" && string.Equals(
+            Environment.GetEnvironmentVariable("HVO_ISSUE_268_SYNTHETIC_EVIDENCE"), "1", StringComparison.Ordinal);
         if (!string.Equals(Environment.GetEnvironmentVariable("HVO_ISSUE_250_EVIDENCE"), "1", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Issue #250 evidence requires HVO_ISSUE_250_EVIDENCE=1 before test-host startup.");
         }
-        if (phase == "after" && !smoke)
+        if (phase == "after" && !smoke && !issue268Evidence)
         {
             throw new InvalidOperationException(
-                "Claimable issue #250 after performance evidence is deferred to the dedicated consolidation issue; only development mechanics smoke is available here.");
+                "Claimable issue #250 after evidence requires HVO_ISSUE_268_SYNTHETIC_EVIDENCE=1 from the dedicated consolidation campaign.");
         }
         if (smoke && phase != "development" && !afterSmoke)
         {
@@ -232,9 +236,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         using var w0GenerationTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var w0Fixture = await CreateW0FixtureAsync(repositoryRoot, w0GenerationTimeout.Token).ConfigureAwait(false);
         var harnessSha256 = ComputeHarnessSha256(repositoryRoot);
-        var compatibilityWorkloadSha256 = ComputeWorkloadSha256(w0Fixture.Generator);
-        var workloadSha256 = ComputeActualWorkloadSha256(
-            smoke, payloads, w0Fixture.Generator, compatibilityWorkloadSha256);
+        var compatibilityWorkloadSha256 = ComputeCompatibilityWorkloadSha256(w0Fixture.Generator);
+        var workloadSha256 = smoke
+            ? ComputeActualWorkloadSha256(payloads, w0Fixture.Generator, compatibilityWorkloadSha256)
+            : ComputeWorkloadSha256(w0Fixture.Generator);
         var protocolSha256 = ComputeProtocolSha256();
         var compatibilityProtocolSha256 = ComputeCompatibilityProtocolSha256();
         var environmentSha256 = ComputeEnvironmentSha256(preflight);
@@ -285,7 +290,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         var sourceAfter = await CaptureSourceAsync(repositoryRoot).ConfigureAwait(false);
         AssertSourceUnchanged(source, sourceAfter);
         var trial = source.Trial ?? 1;
-        var output = smoke
+        var output = issue268Evidence
+            ? ResolveIssue268OutputPath(trial)
+            : smoke
             ? Path.Combine(repositoryRoot, "TestResults", "issue-250",
                 afterSmoke ? "after-capability-smoke" : "development-smoke",
                 source.OutputDirectoryName, source.RunId)
@@ -376,7 +383,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 Preflight = preflight,
                 EnvironmentSha256 = environmentSha256
             },
-            Command = "HVO_ISSUE_250_EVIDENCE=1 DOTNET_gcServer=1 HVO_EVIDENCE_PHASE=<baseline|after> HVO_EVIDENCE_REVISION=<HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=<PRODUCTION_HEAD> HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_BASELINE_MANIFEST=<ACCEPTED_BASELINE_MANIFEST> [HVO_ISSUE_250_SMOKE=1 HVO_ISSUE_250_AFTER_SMOKE=1] dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~CentralTransientPayloadReleaseIssue250PerformanceTests.Release_W2W3MAndContention_RecordsEvidence",
+            Command = "HVO_ISSUE_250_EVIDENCE=1 DOTNET_gcServer=1 HVO_EVIDENCE_PHASE=<baseline|after> HVO_EVIDENCE_REVISION=<HEAD> HVO_EVIDENCE_PRODUCTION_REVISION=<PRODUCTION_HEAD> HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_BASELINE_MANIFEST=<ACCEPTED_BASELINE_MANIFEST> [HVO_ISSUE_268_SYNTHETIC_EVIDENCE=1 HVO_ISSUE_268_OUTPUT_ROOT=<PERSISTENT_ROOT> | HVO_ISSUE_250_SMOKE=1 HVO_ISSUE_250_AFTER_SMOKE=1] dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~CentralTransientPayloadReleaseIssue250PerformanceTests.Release_W2W3MAndContention_RecordsEvidence",
             Workload = new
             {
                 Id = smoke ? "issue-250-smoke-unclaimable" : "W2/W3M/issue-250-baseline-v1",
@@ -683,7 +690,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             await CleanupHeldObjectsAsync(rawMinio, measuredCases, cancellationToken).ConfigureAwait(false);
 
             var protocol = collector.Snapshot();
-            AssertApplicationLockCommands(protocol.ApplicationLocks, measurements, phase);
+            AssertProtocolAccounting(protocol, measurements, phase);
             Assert.AreEqual((long)measurements * 5, protocol.ObjectStore.Deletes);
             var finalBacklog = await ReadBacklogAsync(database.ConnectionString, cancellationToken).ConfigureAwait(false);
             Assert.AreEqual(0L, finalBacklog.PendingParents);
@@ -755,7 +762,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             }
             Assert.IsNotNull(measured);
             var naturalProtocol = collector.Snapshot();
-            AssertApplicationLockCommands(naturalProtocol.ApplicationLocks, 4, phase);
+            AssertProtocolAccounting(naturalProtocol, 4, phase);
             var naturalSql = CreateSqlEvidence(
                 naturalSamples, collector.Http.Windows, delayMilliseconds, phase, contentionProbe: false);
             var correctness = new List<Issue250CaseCorrectness>();
@@ -833,11 +840,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Assert.IsNotNull(writerTask);
             var writer = await writerTask.ConfigureAwait(false);
             var contentionProtocol = collector.Snapshot();
-            AssertApplicationLockCommands(
-                contentionProtocol.ApplicationLocks,
-                1,
-                phase,
-                candidateLocksPerRelease: delayMilliseconds >= 250 ? 10 : 8);
+            AssertProtocolAccounting(contentionProtocol, 1, phase);
             var contentionSql = CreateSqlEvidence(
                 contentionSamples, collector.Http.Windows, delayMilliseconds, phase, contentionProbe: true);
             var contentionCorrectness = await VerifyReleaseCaseAsync(
@@ -1675,6 +1678,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             var started = Stopwatch.GetTimestamp();
             for (var attempt = 0; ; attempt++)
             {
+                var retryStage = Issue250SqlRetryStage.Primary;
+                collector.RecordReleaseAttempt();
                 await using var db = CreateContext(
                     connectionString, CreateCaseApplicationName(applicationName, caseIndex), collector);
                 using var telemetry = new CentralTransientLifecycleTelemetry(Issue250DiscardLogger.Instance);
@@ -1692,16 +1697,25 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     CentralTransientPayloadRelease? recovered = null;
                     if (result.Status == CentralTransientPayloadReleaseStatus.Accepted)
                     {
+                        collector.RecordAcceptedReleaseResponse();
                         Assert.AreEqual(CentralTransientPayloadReleaseState.Pending, result.Response.State);
                         for (var processorAttempt = 0; processorAttempt < 100; processorAttempt++)
                         {
+                            retryStage = Issue250SqlRetryStage.Recovery;
+                            collector.RecordRecoveryProcessorAttempt();
                             await using var recoveryDb = CreateContext(
-                                connectionString, CreateCaseApplicationName(applicationName, caseIndex), collector);
+                                connectionString, CreateCaseApplicationName(applicationName, caseIndex), collector,
+                                recoveryProtocol: true);
                             using var recoveryTelemetry = new CentralTransientLifecycleTelemetry(Issue250DiscardLogger.Instance);
-                            _ = await CreateService(recoveryDb, minio, recoveryTelemetry)
+                            var processed = await CreateService(recoveryDb, minio, recoveryTelemetry)
                                 .ProcessNextAsync(cancellation.Token).ConfigureAwait(false);
-                            recoveryDb.ChangeTracker.Clear();
-                            recovered = await recoveryDb.CentralTransientPayloadReleases.AsNoTracking()
+                            if (processed)
+                            {
+                                collector.RecordRecoveryProcessorCompletion();
+                            }
+                            retryStage = Issue250SqlRetryStage.Inspection;
+                            await using var recoveryInspectDb = CreateContext(connectionString);
+                            recovered = await recoveryInspectDb.CentralTransientPayloadReleases.AsNoTracking()
                                 .Include(value => value.Items)
                                 .SingleAsync(value => value.ReleaseId == result.Response.ReleaseId, cancellation.Token)
                                 .ConfigureAwait(false);
@@ -1723,10 +1737,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     }
                     else
                     {
+                        retryStage = Issue250SqlRetryStage.Inspection;
                         Assert.AreEqual(CentralTransientPayloadReleaseState.Completed, result.Response.State);
                         Assert.AreEqual(5, result.Response.ReleasedPayloadCount);
-                        db.ChangeTracker.Clear();
-                        recovered = await db.CentralTransientPayloadReleases.AsNoTracking()
+                        await using var releaseInspectDb = CreateContext(connectionString);
+                        recovered = await releaseInspectDb.CentralTransientPayloadReleases.AsNoTracking()
                             .Include(value => value.Items)
                             .SingleAsync(value => value.ReleaseId == result.Response.ReleaseId, cancellation.Token)
                             .ConfigureAwait(false);
@@ -1746,7 +1761,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 }
                 catch (Exception exception) when (attempt < 9 && IsSqlDeadlock(exception))
                 {
-                    collector.RecordExternalDeadlockRetry();
+                    collector.RecordExternalDeadlockRetry(retryStage);
                     await Task.Delay(TimeSpan.FromMilliseconds(10 * (attempt + 1)), cancellation.Token)
                         .ConfigureAwait(false);
                 }
@@ -2206,7 +2221,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 PendingLaterOrdinalsBeforeRestart: pendingBeforeRestart,
                 FreshProcessorProcessNextRecoveredAndCompleted: restartCorrectness.ExactReplay,
                 BaselineRestartBoundary: "A failed service/DbContext is disposed; a fresh CentralTransientPayloadReleaseProcessor service instance recovers through ProcessNextAsync without public ReleaseAsync replay.",
-                FutureOnlyBoundaries: "N/A at baseline: no reservation-committed-before-DELETE, process-termination analogue, after-DELETE/before-finalize, stale rowversion/generation, late-hold, final-item/before-parent-completion, or bounded retry hook exists. After preflight fails explicitly until all hooks are implemented and authenticated.",
+                FutureOnlyBoundaries: phase == "after"
+                    ? "Candidate fault stages and schema are authenticated by preflight. This measured W0 exercises absent-object idempotency, retryable DELETE failure, prior-ordinal restart, recovery, and health transitions; remaining issue #250 fault stages stay in the merged functional suite."
+                    : "N/A at baseline: no reservation-committed-before-DELETE, process-termination analogue, after-DELETE/before-finalize, stale rowversion/generation, late-hold, final-item/before-parent-completion, or bounded retry hook exists.",
                 Runtime: new(absentRuntime, beforeDeleteFailureRuntime, beforeDeleteRecoveryRuntime,
                     ordinalFailureRuntime, restartRuntime),
                 Health: new(healthyFresh, degradedStale, healthyDrained),
@@ -3971,6 +3988,15 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         => new(
             protocol.EfCommands,
             protocol.ExternalSqlDeadlockRetries,
+            protocol.PrimarySqlDeadlockRetries,
+            protocol.RecoverySqlDeadlockRetries,
+            protocol.InspectionSqlDeadlockRetries,
+            protocol.ReleaseAttempts,
+            protocol.AcceptedReleaseResponses,
+            protocol.RecoveryProcessorAttempts,
+            protocol.RecoveryProcessorCompletions,
+            protocol.PrimaryEfCommands,
+            protocol.RecoveryEfCommands,
             protocol.ApplicationLocks,
             protocol.SqlTransactions.StartAttempts,
             protocol.SqlTransactions.SuccessfullyStarted,
@@ -3978,6 +4004,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             protocol.SqlTransactions.RolledBack,
             protocol.SqlTransactions.Failed,
             Latency(protocol.SqlTransactions.CommittedDurationMilliseconds),
+            CreateTransactionCountEvidence(protocol.PrimarySqlTransactions),
+            CreateTransactionCountEvidence(protocol.RecoverySqlTransactions),
             protocol.ObjectStore.Requests,
             protocol.ObjectStore.Deletes,
             protocol.ObjectStore.RequestEntityBytes,
@@ -3986,25 +4014,80 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             protocol.ObjectStore.UnknownResponseEntityLengths,
             Latency(protocol.ObjectStore.DeleteDurationMilliseconds));
 
-    private static void AssertApplicationLockCommands(
-        Issue250ApplicationLockDiagnosticEvidence diagnostics,
+    private static Issue250TransactionCountEvidence CreateTransactionCountEvidence(
+        Issue246TransactionSnapshot transactions)
+        => new(
+            transactions.StartAttempts,
+            transactions.SuccessfullyStarted,
+            transactions.Committed,
+            transactions.RolledBack,
+            transactions.Failed);
+
+    private static void AssertProtocolAccounting(
+        Issue250CollectorSnapshot protocol,
         int releases,
-        string phase,
-        int candidateLocksPerRelease = 8)
+        string phase)
     {
-        var locksPerRelease = phase == "baseline" ? 6 : candidateLocksPerRelease;
+        if (phase == "after")
+        {
+            var retries = protocol.ExternalSqlDeadlockRetries;
+            var primaryRetries = protocol.PrimarySqlDeadlockRetries;
+            var recoveryRetries = protocol.RecoverySqlDeadlockRetries;
+            var inspectionRetries = protocol.InspectionSqlDeadlockRetries;
+            var releaseAttempts = protocol.ReleaseAttempts;
+            var recoveryAttempts = protocol.RecoveryProcessorAttempts;
+            var recoveryCompletions = protocol.RecoveryProcessorCompletions;
+            var primaryTransactions = protocol.PrimarySqlTransactions;
+            var recoveryTransactions = protocol.RecoverySqlTransactions;
+            Assert.IsTrue(retries <= (long)releases * 9);
+            Assert.AreEqual(retries, primaryRetries + recoveryRetries + inspectionRetries);
+            Assert.AreEqual(releases + retries, releaseAttempts);
+            Assert.IsTrue(protocol.AcceptedReleaseResponses <= releases);
+            Assert.IsTrue(recoveryAttempts >= protocol.AcceptedReleaseResponses);
+            Assert.IsTrue(recoveryAttempts <= protocol.AcceptedReleaseResponses * 100);
+            Assert.IsTrue(recoveryCompletions <= recoveryAttempts);
+            Assert.IsTrue(protocol.PrimaryEfCommands >= releaseAttempts);
+            Assert.IsTrue(protocol.PrimaryEfCommands <= releaseAttempts * 170);
+            Assert.AreEqual(primaryTransactions.StartAttempts, primaryTransactions.SuccessfullyStarted);
+            Assert.AreEqual(primaryTransactions.StartAttempts,
+                primaryTransactions.Committed + primaryTransactions.RolledBack + primaryTransactions.Failed);
+            Assert.IsTrue(primaryTransactions.StartAttempts >= releases);
+            Assert.IsTrue(primaryTransactions.StartAttempts <= releaseAttempts * 20);
+            Assert.IsTrue(primaryTransactions.RolledBack <= protocol.AcceptedReleaseResponses);
+            Assert.AreEqual(primaryRetries, primaryTransactions.Failed);
+            Assert.IsTrue(protocol.RecoveryEfCommands >= recoveryAttempts);
+            Assert.IsTrue(protocol.RecoveryEfCommands <= recoveryAttempts * 170);
+            Assert.AreEqual(recoveryTransactions.StartAttempts, recoveryTransactions.SuccessfullyStarted);
+            Assert.AreEqual(recoveryTransactions.StartAttempts,
+                recoveryTransactions.Committed + recoveryTransactions.RolledBack + recoveryTransactions.Failed);
+            Assert.IsTrue(recoveryTransactions.StartAttempts <= recoveryAttempts * 20);
+            Assert.AreEqual(recoveryRetries, recoveryTransactions.Failed);
+            Assert.AreEqual((long)releases * 5 + recoveryCompletions, protocol.ObjectStore.Requests);
+            Assert.AreEqual((long)releases * 5 + recoveryCompletions, protocol.ObjectStore.Deletes);
+            Assert.AreEqual(0L, protocol.ObjectStore.RequestEntityBytes);
+            Assert.AreEqual(0L, protocol.ObjectStore.ResponseEntityBytes);
+            Assert.AreEqual(0L, protocol.ObjectStore.UnknownRequestEntityLengths);
+            Assert.AreEqual(0L, protocol.ObjectStore.UnknownResponseEntityLengths);
+        }
+
+        var diagnostics = protocol.ApplicationLocks;
+        var locksPerRelease = phase == "baseline" ? 6 : 8;
         var minimumLocks = (long)releases * locksPerRelease;
+        var maximumLocks = minimumLocks
+            + protocol.ExternalSqlDeadlockRetries * 8 + protocol.RecoveryProcessorAttempts * 23;
         if (phase == "baseline")
         {
             Assert.AreEqual(minimumLocks, diagnostics.GetApplicationLockStarts);
         }
         else
         {
-            Assert.IsGreaterThanOrEqualTo(minimumLocks, diagnostics.GetApplicationLockStarts);
+            Assert.IsTrue(diagnostics.GetApplicationLockStarts >= minimumLocks);
+            Assert.IsTrue(diagnostics.GetApplicationLockStarts <= maximumLocks,
+                "Every excess application-lock acquisition must be attributable to a recorded SQL deadlock retry.");
         }
-        Assert.IsGreaterThanOrEqualTo(minimumLocks, diagnostics.ReleaseApplicationLockStarts);
-        Assert.IsLessThanOrEqualTo(
-            diagnostics.GetApplicationLockStarts, diagnostics.ReleaseApplicationLockStarts);
+        Assert.IsTrue(diagnostics.ReleaseApplicationLockStarts <= diagnostics.GetApplicationLockStarts);
+        Assert.IsTrue(diagnostics.GetApplicationLockStarts - diagnostics.ReleaseApplicationLockStarts
+            <= protocol.AcceptedReleaseResponses + protocol.RecoveryProcessorAttempts * 16);
         Assert.AreEqual(diagnostics.TotalStarts,
             diagnostics.TotalCompletions + diagnostics.TotalErrors);
         Assert.AreEqual(0L, diagnostics.TotalErrors);
@@ -4860,6 +4943,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         string connectionString,
         string? applicationName = null,
         Issue250EvidenceCollector? collector = null,
+        bool recoveryProtocol = false,
         DbCommandInterceptor? additionalInterceptor = null)
     {
         var builder = new SqlConnectionStringBuilder(connectionString);
@@ -4872,7 +4956,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
         if (collector is not null)
         {
-            options.AddInterceptors(collector.Commands, collector.Transactions);
+            options.AddInterceptors(
+                recoveryProtocol ? collector.RecoveryCommands : collector.Commands,
+                recoveryProtocol ? collector.RecoveryTransactions : collector.Transactions);
         }
         if (additionalInterceptor is not null)
         {
@@ -5031,6 +5117,49 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             throw new InvalidOperationException("HVO_EVIDENCE_PHASE must be development, baseline, or after.");
         }
         return phase;
+    }
+
+    private static string ResolveIssue268OutputPath(int trial)
+    {
+        var stateRoot = Environment.GetEnvironmentVariable("HVO_AGENT_STATE_ROOT");
+        var outputRoot = Environment.GetEnvironmentVariable("HVO_ISSUE_268_OUTPUT_ROOT");
+        if (string.IsNullOrWhiteSpace(stateRoot) || string.IsNullOrWhiteSpace(outputRoot))
+        {
+            throw new InvalidOperationException(
+                "Issue #268 evidence requires HVO_AGENT_STATE_ROOT and HVO_ISSUE_268_OUTPUT_ROOT.");
+        }
+
+        var fullStateRoot = ResolveExistingDirectory(stateRoot);
+        var fullOutputRoot = ResolveExistingDirectory(outputRoot);
+        if (!Path.IsPathFullyQualified(outputRoot)
+            || !fullOutputRoot.StartsWith(fullStateRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Issue #268 output must be an absolute path beneath HVO_AGENT_STATE_ROOT.");
+        }
+
+        return Path.Combine(fullOutputRoot, $"trial-{trial}");
+    }
+
+    private static string ResolveExistingDirectory(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        if (!Directory.Exists(fullPath))
+        {
+            throw new DirectoryNotFoundException($"Evidence directory does not exist: {fullPath}");
+        }
+
+        var current = Path.GetPathRoot(fullPath)!;
+        foreach (var segment in Path.GetRelativePath(current, fullPath)
+                     .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, segment);
+            if (new DirectoryInfo(current).LinkTarget is not null)
+            {
+                throw new InvalidOperationException("Evidence paths must not traverse symbolic links.");
+            }
+        }
+        return current.TrimEnd(Path.DirectorySeparatorChar);
     }
 
     private static async Task<Issue250Preflight> RunPreflightAsync(
@@ -5217,17 +5346,17 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             FaultManifest = CanonicalFaultManifest
         }));
 
+    private static string ComputeCompatibilityWorkloadSha256(Issue250W0GeneratorEvidence w0)
+        => ComputeWorkloadSha256(w0 with
+        {
+            CameraAgentCommonAssemblySha256 = "revision-specific-provenance-excluded"
+        });
+
     private static string ComputeActualWorkloadSha256(
-        bool smoke,
         Issue250Payloads payloads,
         Issue250W0GeneratorEvidence w0,
         string compatibilityWorkloadSha256)
-    {
-        if (!smoke)
-        {
-            return compatibilityWorkloadSha256;
-        }
-        return Sha(JsonSerializer.Serialize(new
+        => Sha(JsonSerializer.Serialize(new
         {
             Schema = "issue-250-actual-development-smoke-workload-v2",
             CompatibilityWorkloadSha256 = compatibilityWorkloadSha256,
@@ -5253,7 +5382,6 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             W0 = w0,
             FaultManifest = CanonicalFaultManifest
         }));
-    }
 
     private static string ComputeProtocolSha256()
         => Sha(JsonSerializer.Serialize(new
@@ -5338,14 +5466,25 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 "N/A",
                 "N/A",
                 "N/A",
+                "N/A",
+                compatibilityWorkloadSha256,
                 Array.Empty<Issue250EvidenceFile>());
         }
         if (string.IsNullOrWhiteSpace(path))
         {
             throw new InvalidOperationException("After evidence requires HVO_EVIDENCE_BASELINE_MANIFEST.");
         }
-        var fullPath = Path.GetFullPath(path, repositoryRoot);
-        var acceptedPath = Path.GetFullPath(AcceptedBaselineManifestPath);
+        var requestedFullPath = Path.GetFullPath(path, repositoryRoot);
+        var fullPath = Path.Combine(
+            ResolveExistingDirectory(Path.GetDirectoryName(requestedFullPath)!),
+            Path.GetFileName(requestedFullPath));
+        var stateRoot = Environment.GetEnvironmentVariable("HVO_AGENT_STATE_ROOT");
+        var requestedAcceptedPath = string.IsNullOrWhiteSpace(stateRoot)
+            ? Path.GetFullPath(AcceptedBaselineManifestPath)
+            : Path.Combine(ResolveExistingDirectory(stateRoot), AcceptedBaselineRelativePath);
+        var acceptedPath = Path.Combine(
+            ResolveExistingDirectory(Path.GetDirectoryName(requestedAcceptedPath)!),
+            Path.GetFileName(requestedAcceptedPath));
         if (!string.Equals(fullPath, acceptedPath, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
@@ -5363,8 +5502,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         Assert.AreEqual(AcceptedBaselineSourceRevision, root.GetProperty("SourceHead").GetString());
         Assert.AreEqual(1, root.GetProperty("Trial").GetInt32());
         Assert.AreEqual(TrialPolicy, root.GetProperty("TrialPolicy").GetString());
-        Assert.AreEqual(compatibilityWorkloadSha256, root.GetProperty("WorkloadSha256").GetString());
-        Assert.AreEqual(compatibilityWorkloadSha256,
+        Assert.AreEqual(root.GetProperty("WorkloadSha256").GetString(),
             root.GetProperty("CompatibilityWorkloadSha256").GetString());
         Assert.AreEqual(compatibilityProtocolSha256, root.GetProperty("CompatibilityProtocolSha256").GetString());
         Assert.AreEqual(environmentSha256, root.GetProperty("EnvironmentSha256").GetString());
@@ -5389,6 +5527,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             manifestFiles.Select(file => file.GetProperty("Name").GetString()).ToArray());
         Assert.AreEqual(expectedFiles.Length, manifestFiles.Length);
         string? evidenceSha = null;
+        string? baselineSemanticWorkloadSha256 = null;
         var verifiedFiles = new List<Issue250EvidenceFile>();
         foreach (var file in manifestFiles)
         {
@@ -5415,7 +5554,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Assert.AreEqual(manifestHarness, payloadRoot.GetProperty("HarnessSha256").GetString());
             Assert.AreEqual(root.GetProperty("WorkloadSha256").GetString(),
                 payloadRoot.GetProperty("WorkloadSha256").GetString());
-            Assert.AreEqual(compatibilityWorkloadSha256,
+            Assert.AreEqual(root.GetProperty("CompatibilityWorkloadSha256").GetString(),
                 payloadRoot.GetProperty("CompatibilityWorkloadSha256").GetString());
             Assert.AreEqual(manifestProtocol, payloadRoot.GetProperty("ProtocolSha256").GetString());
             Assert.AreEqual(compatibilityProtocolSha256,
@@ -5434,6 +5573,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 Assert.AreEqual(root.GetProperty("SourceHead").GetString(), source.GetProperty("Head").GetString());
                 Assert.AreEqual(source.GetProperty("Head").GetString(), source.GetProperty("RequestedRevision").GetString());
                 Assert.AreEqual(root.GetProperty("Trial").GetInt32(), source.GetProperty("Trial").GetInt32());
+                baselineSemanticWorkloadSha256 = AcceptedBaselineSemanticWorkloadSha256;
+                Assert.AreEqual(compatibilityWorkloadSha256, baselineSemanticWorkloadSha256,
+                    "Current workload differs from the independently pinned accepted-baseline semantic identity after excluding only revision-specific assembly provenance.");
             }
             else
             {
@@ -5444,6 +5586,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             }
         }
         Assert.IsNotNull(evidenceSha);
+        Assert.IsNotNull(baselineSemanticWorkloadSha256);
         return new Issue250BaselineBinding(
             "reviewed-baseline-manifest-validated",
             Convert.ToHexString(SHA256.HashData(manifestBytes)),
@@ -5451,6 +5594,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             root.GetProperty("SourceHead").GetString() ?? "unknown",
             manifestHarness,
             manifestProtocol,
+            baselineSemanticWorkloadSha256,
+            compatibilityWorkloadSha256,
             verifiedFiles);
     }
 
@@ -5731,6 +5876,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private sealed class Issue250EvidenceCollector : IDisposable
     {
         private long externalDeadlockRetries;
+        private long primarySqlDeadlockRetries;
+        private long recoverySqlDeadlockRetries;
+        private long inspectionSqlDeadlockRetries;
+        private long releaseAttempts;
+        private long acceptedReleaseResponses;
+        private long recoveryProcessorAttempts;
+        private long recoveryProcessorCompletions;
         internal Issue250EvidenceCollector()
         {
             Http = new Issue250DeleteHandler { InnerHandler = new SocketsHttpHandler() };
@@ -5739,6 +5891,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
         internal CountingDbCommandInterceptor Commands { get; } = new();
         internal CountingDbTransactionInterceptor Transactions { get; } = new();
+        internal CountingDbCommandInterceptor RecoveryCommands { get; } = new();
+        internal CountingDbTransactionInterceptor RecoveryTransactions { get; } = new();
         internal Issue250DeleteHandler Http { get; }
         internal Issue250SqlClientApplicationLockCollector SqlLocks { get; }
 
@@ -5746,20 +5900,73 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         {
             Commands.Reset();
             Transactions.Reset();
+            RecoveryCommands.Reset();
+            RecoveryTransactions.Reset();
             Http.Reset();
             SqlLocks.Reset();
             Interlocked.Exchange(ref externalDeadlockRetries, 0);
+            Interlocked.Exchange(ref primarySqlDeadlockRetries, 0);
+            Interlocked.Exchange(ref recoverySqlDeadlockRetries, 0);
+            Interlocked.Exchange(ref inspectionSqlDeadlockRetries, 0);
+            Interlocked.Exchange(ref releaseAttempts, 0);
+            Interlocked.Exchange(ref acceptedReleaseResponses, 0);
+            Interlocked.Exchange(ref recoveryProcessorAttempts, 0);
+            Interlocked.Exchange(ref recoveryProcessorCompletions, 0);
         }
 
-        internal void RecordExternalDeadlockRetry() => Interlocked.Increment(ref externalDeadlockRetries);
+        internal void RecordExternalDeadlockRetry(Issue250SqlRetryStage stage)
+        {
+            Interlocked.Increment(ref externalDeadlockRetries);
+            switch (stage)
+            {
+                case Issue250SqlRetryStage.Primary:
+                    Interlocked.Increment(ref primarySqlDeadlockRetries);
+                    break;
+                case Issue250SqlRetryStage.Recovery:
+                    Interlocked.Increment(ref recoverySqlDeadlockRetries);
+                    break;
+                case Issue250SqlRetryStage.Inspection:
+                    Interlocked.Increment(ref inspectionSqlDeadlockRetries);
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(stage));
+            }
+        }
+        internal void RecordReleaseAttempt() => Interlocked.Increment(ref releaseAttempts);
+        internal void RecordAcceptedReleaseResponse() => Interlocked.Increment(ref acceptedReleaseResponses);
+        internal void RecordRecoveryProcessorAttempt() => Interlocked.Increment(ref recoveryProcessorAttempts);
+        internal void RecordRecoveryProcessorCompletion() => Interlocked.Increment(ref recoveryProcessorCompletions);
 
         internal Issue250CollectorSnapshot Snapshot()
-            => new(
-                Commands.Count,
+        {
+            var primaryTransactions = Transactions.Snapshot();
+            var recoveryTransactions = RecoveryTransactions.Snapshot();
+            var combinedTransactions = new Issue246TransactionSnapshot(
+                primaryTransactions.StartAttempts + recoveryTransactions.StartAttempts,
+                primaryTransactions.SuccessfullyStarted + recoveryTransactions.SuccessfullyStarted,
+                primaryTransactions.Committed + recoveryTransactions.Committed,
+                primaryTransactions.RolledBack + recoveryTransactions.RolledBack,
+                primaryTransactions.Failed + recoveryTransactions.Failed,
+                primaryTransactions.CommittedDurationMilliseconds
+                    .Concat(recoveryTransactions.CommittedDurationMilliseconds).ToArray());
+            return new(
+                Commands.Count + RecoveryCommands.Count,
                 Interlocked.Read(ref externalDeadlockRetries),
-                Transactions.Snapshot(),
+                Interlocked.Read(ref primarySqlDeadlockRetries),
+                Interlocked.Read(ref recoverySqlDeadlockRetries),
+                Interlocked.Read(ref inspectionSqlDeadlockRetries),
+                Interlocked.Read(ref releaseAttempts),
+                Interlocked.Read(ref acceptedReleaseResponses),
+                Interlocked.Read(ref recoveryProcessorAttempts),
+                Interlocked.Read(ref recoveryProcessorCompletions),
+                Commands.Count,
+                RecoveryCommands.Count,
+                combinedTransactions,
+                primaryTransactions,
+                recoveryTransactions,
                 Http.Snapshot(),
                 SqlLocks.Snapshot());
+        }
 
         public void Dispose()
         {
@@ -6365,9 +6572,27 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private sealed record Issue250CollectorSnapshot(
         long EfCommands,
         long ExternalSqlDeadlockRetries,
+        long PrimarySqlDeadlockRetries,
+        long RecoverySqlDeadlockRetries,
+        long InspectionSqlDeadlockRetries,
+        long ReleaseAttempts,
+        long AcceptedReleaseResponses,
+        long RecoveryProcessorAttempts,
+        long RecoveryProcessorCompletions,
+        long PrimaryEfCommands,
+        long RecoveryEfCommands,
         Issue246TransactionSnapshot SqlTransactions,
+        Issue246TransactionSnapshot PrimarySqlTransactions,
+        Issue246TransactionSnapshot RecoverySqlTransactions,
         Issue246ObjectProtocolSnapshot ObjectStore,
         Issue250ApplicationLockDiagnosticEvidence ApplicationLocks);
+
+    private enum Issue250SqlRetryStage
+    {
+        Primary,
+        Recovery,
+        Inspection
+    }
 
     private sealed record Issue250ApplicationLockDiagnosticEvidence(
         string Provider,
@@ -6538,6 +6763,15 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private sealed record Issue250ProtocolEvidence(
         long EfSqlCommands,
         long ExternalSqlDeadlockRetries,
+        long PrimarySqlDeadlockRetries,
+        long RecoverySqlDeadlockRetries,
+        long InspectionSqlDeadlockRetries,
+        long ReleaseAttempts,
+        long AcceptedReleaseResponses,
+        long RecoveryProcessorAttempts,
+        long RecoveryProcessorCompletions,
+        long PrimaryEfSqlCommands,
+        long RecoveryEfSqlCommands,
         Issue250ApplicationLockDiagnosticEvidence ApplicationLockCommands,
         long TransactionStartAttempts,
         long TransactionsStarted,
@@ -6545,6 +6779,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         long TransactionsRolledBack,
         long TransactionsFailed,
         Issue250Latency CommittedTransactionDuration,
+        Issue250TransactionCountEvidence PrimaryTransactions,
+        Issue250TransactionCountEvidence RecoveryTransactions,
         long MinioRequests,
         long MinioDeletes,
         long MinioRequestEntityBytes,
@@ -6552,6 +6788,13 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         long MinioUnknownRequestEntityLengths,
         long MinioUnknownResponseEntityLengths,
         Issue250Latency MinioDeleteDuration);
+
+    private sealed record Issue250TransactionCountEvidence(
+        long StartAttempts,
+        long SuccessfullyStarted,
+        long Committed,
+        long RolledBack,
+        long Failed);
 
     private sealed record Issue250ReleaseScenarioEvidence(
         int Concurrency,
@@ -7132,6 +7375,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         string BaselineSourceHead,
         string BaselineHarnessSha256,
         string BaselineProtocolSha256,
+        string BaselineSemanticWorkloadSha256,
+        string CurrentSemanticWorkloadSha256,
         IReadOnlyList<Issue250EvidenceFile> IndependentlyVerifiedPayloads);
 
     private sealed record Issue250EvidenceFile(string Name, long ByteLength, string Sha256);

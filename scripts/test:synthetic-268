@@ -1,0 +1,489 @@
+#!/usr/bin/env bash
+# Collect and authenticate the consolidated synthetic performance evidence for issue #268.
+
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
+readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"
+readonly FILTER='FullyQualifiedName~CentralTransientPayloadReleaseIssue250PerformanceTests.Release_W2W3MAndContention_RecordsEvidence'
+readonly AGGREGATOR="$REPO_ROOT/scripts/issue-268-synthetic-aggregate.jq"
+readonly BASELINE_SOURCE_REVISION='00db3348cb0a0a66bcc006af0c56cdc1a9359fb7'
+readonly BASELINE_PRODUCTION_REVISION='89c3e5176417a70fcfc5c67d2b0adb233ee7a9e4'
+readonly BASELINE_MANIFEST_SHA256='2C49C4AFA8CD83FE469D0FFEC78AE17CE278006374DAC75B1A46CB1B438BCC3A'
+readonly LANES_REVISION='4cb0cdcef7f1d9df2e0923ee9b993454e0252843'
+readonly LANES_MANIFEST_SHA256='0CDA35AEEA7B1AC5BC76B9C8751708CD398733F37B79914A6334A1E70426C035'
+readonly LANES_SUMMARY_SHA256='F98217EFD7858165071A1A44EF617D5A2DDFAB9B0E7C41C8E38CFADC5C6BC002'
+
+if [[ $# -ne 0 ]]; then
+    printf 'Usage: %s\n' "${0##*/}" >&2
+    exit 2
+fi
+for command in chmod cp cut dirname dotnet flock git jq mkdir realpath sha256sum stat tr; do
+    command -v "$command" >/dev/null 2>&1 || {
+        printf 'Required command is unavailable: %s\n' "$command" >&2
+        exit 2
+    }
+done
+if [[ -z "${HVO_AGENT_STATE_ROOT:-}" || ! -d "$HVO_AGENT_STATE_ROOT" ]]; then
+    printf 'HVO_AGENT_STATE_ROOT must identify the persistent agent-state directory.\n' >&2
+    exit 2
+fi
+if ! STATE_ROOT="$(realpath -e -- "$HVO_AGENT_STATE_ROOT")"; then
+    printf 'HVO_AGENT_STATE_ROOT could not be resolved.\n' >&2
+    exit 2
+fi
+readonly STATE_ROOT
+export HVO_AGENT_STATE_ROOT="$STATE_ROOT"
+readonly BASELINE_ROOT="$STATE_ROOT/issues/250/baseline-$BASELINE_SOURCE_REVISION/trial-1"
+readonly BASELINE_MANIFEST="$BASELINE_ROOT/manifest.json"
+readonly LANES_ROOT="$STATE_ROOT/issues/257/$LANES_REVISION"
+readonly LANES_MANIFEST="$LANES_ROOT/manifest.json"
+
+if ! REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"; then
+    printf 'Unable to resolve the issue #268 source revision.\n' >&2
+    exit 2
+fi
+readonly REVISION
+if ! STATUS="$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)"; then
+    printf 'Unable to inspect issue #268 source cleanliness.\n' >&2
+    exit 2
+fi
+readonly STATUS
+readonly OUTPUT_ROOT="$STATE_ROOT/issues/268/$REVISION"
+readonly SYNTHETIC_ROOT="$OUTPUT_ROOT/synthetic"
+readonly AFTER_ROOT="$SYNTHETIC_ROOT/issue-250-after"
+readonly AFTER_TRIAL="$AFTER_ROOT/trial-1"
+readonly AGGREGATE_ROOT="$SYNTHETIC_ROOT/aggregate"
+readonly INPUT_ROOT="$AGGREGATE_ROOT/inputs"
+readonly BASELINE_INPUT_ROOT="$INPUT_ROOT/issue-250-baseline"
+readonly AFTER_INPUT_ROOT="$INPUT_ROOT/issue-250-after"
+readonly LANES_INPUT_ROOT="$INPUT_ROOT/issue-257"
+if [[ ! "$REVISION" =~ ^[0-9a-f]{40}$ || -n "$STATUS" ]]; then
+    printf 'Issue #268 evidence requires an exact committed HEAD and clean worktree.\n' >&2
+    exit 2
+fi
+sha_upper() {
+    local output
+    local value
+    if ! output="$(sha256sum -- "$1")"; then
+        return 1
+    fi
+    value="$(cut -d ' ' -f 1 <<< "$output" | tr '[:lower:]' '[:upper:]')"
+    [[ "$value" =~ ^[0-9A-F]{64}$ ]] || return 1
+    printf '%s\n' "$value"
+}
+
+file_sha_upper() {
+    local value
+    if ! value="$(sha_upper "$1")"; then
+        printf 'Unable to hash evidence artifact: %s\n' "$1" >&2
+        return 1
+    fi
+    printf '%s\n' "$value"
+}
+
+verify_single_json_document() {
+    jq --slurp --exit-status 'length == 1 and (.[0] | type == "object")' "$1" >/dev/null
+}
+
+verify_issue250_manifest() {
+    local manifest="$1"
+    local root="$2"
+    local expected_phase="$3"
+    local expected_source="$4"
+    local expected_production="$5"
+    verify_single_json_document "$manifest"
+    jq --exit-status \
+        --arg phase "$expected_phase" \
+        --arg source "$expected_source" \
+        --arg production "$expected_production" '
+        .Schema == "hvo-evidence-manifest-v1" and .Issue == 250 and .Trial == 1 and
+        .Phase == $phase and .SourceHead == $source and .ProductionRevision == $production and
+        (.Files | map(.Name) | sort) == [
+          "central-transient-payload-release-evidence.json",
+          "w0-fault-runtime-evidence.json",
+          "w3m-normalized-plan-evidence.json"
+        ] and
+        all(.Files[];
+          (.ByteLength | type) == "number" and .ByteLength >= 0 and .ByteLength == floor and
+          (.Sha256 | test("^[0-9A-F]{64}$")))
+    ' "$manifest" >/dev/null
+    local entries
+    if ! entries="$(jq -er '.Files[] | [.Name, (.ByteLength | tostring), .Sha256] | @tsv' "$manifest")"; then
+        printf 'Issue #250 manifest entries are invalid: %s\n' "$manifest" >&2
+        return 1
+    fi
+    while IFS=$'\t' read -r name expected_bytes expected_sha256; do
+        local artifact="$root/$name"
+        local resolved_root
+        local resolved_artifact
+        local actual_bytes
+        local actual_sha256
+        [[ "$name" == "${name##*/}" && "$name" != *..* && -f "$artifact" ]] || return 1
+        if ! resolved_root="$(realpath -e -- "$root")" ||
+            ! resolved_artifact="$(realpath -e -- "$artifact")"; then
+            return 1
+        fi
+        [[ "$resolved_artifact" == "$resolved_root/"* ]] || return 1
+        if ! actual_bytes="$(stat -c %s -- "$artifact")" || ! actual_sha256="$(file_sha_upper "$artifact")"; then
+            return 1
+        fi
+        if [[ "$actual_bytes" != "$expected_bytes" || "$actual_sha256" != "$expected_sha256" ]]; then
+            printf 'Issue #250 manifest verification failed: %s\n' "$artifact" >&2
+            return 1
+        fi
+        local expected_schema
+        local source_expression
+        case "$name" in
+            central-transient-payload-release-evidence.json)
+                expected_schema='hvo-issue-250-central-transient-payload-release-evidence-v3'
+                source_expression='.Source.Head'
+                ;;
+            w0-fault-runtime-evidence.json)
+                expected_schema='hvo-issue-250-w0-fault-runtime-evidence-v1'
+                source_expression='.SourceHead'
+                ;;
+            w3m-normalized-plan-evidence.json)
+                expected_schema='hvo-issue-250-w3m-normalized-plan-evidence-v5'
+                source_expression='.SourceHead'
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+        verify_single_json_document "$artifact"
+        jq --exit-status \
+            --slurpfile manifest "$manifest" \
+            --arg schema "$expected_schema" \
+            --arg phase "$expected_phase" \
+            --arg source "$expected_source" \
+            --arg production "$expected_production" \
+            --arg sourceExpression "$source_expression" '
+            ($manifest[0]) as $m |
+            .Schema == $schema and .Issue == 250 and .Phase == $phase and
+            (if $sourceExpression == ".Source.Head" then .Source.Head else .SourceHead end) == $source and
+            .HarnessSha256 == $m.HarnessSha256 and
+            .WorkloadSha256 == $m.WorkloadSha256 and
+            .CompatibilityWorkloadSha256 == $m.CompatibilityWorkloadSha256 and
+            .ProtocolSha256 == $m.ProtocolSha256 and
+            .CompatibilityProtocolSha256 == $m.CompatibilityProtocolSha256 and
+            .EnvironmentSha256 == $m.EnvironmentSha256 and
+            (if $sourceExpression == ".Source.Head" then .ProductionRevision == $production else true end)
+        ' "$artifact" >/dev/null
+    done <<< "$entries"
+}
+
+verify_issue257_manifest() {
+    local manifest="$1"
+    local root="$2"
+    local resolved_root
+    if ! resolved_root="$(realpath -e -- "$root")"; then
+        return 1
+    fi
+    verify_single_json_document "$manifest"
+    jq --exit-status --arg revision "$LANES_REVISION" '
+        .schema == "hvo-issue-257-manifest-v1" and .issue == 257 and
+        .revision == $revision and (.artifacts | length) == 26 and
+        ([.artifacts[].path] | length) == ([.artifacts[].path] | unique | length) and
+        all(.artifacts[];
+          (.path | type) == "string" and
+          (.bytes | type) == "number" and .bytes >= 0 and .bytes == floor and
+          (.sha256 | test("^[0-9A-F]{64}$")))
+    ' "$manifest" >/dev/null
+    local entries
+    if ! entries="$(jq -er '.artifacts[] | [.path, (.bytes | tostring), .sha256] | @tsv' "$manifest")"; then
+        printf 'Issue #257 manifest entries are invalid.\n' >&2
+        return 1
+    fi
+    while IFS=$'\t' read -r path expected_bytes expected_sha256; do
+        local artifact="$root/$path"
+        local resolved_artifact
+        local actual_bytes
+        local actual_sha256
+        [[ -f "$artifact" ]] || return 1
+        if ! resolved_artifact="$(realpath -e -- "$artifact")"; then
+            return 1
+        fi
+        [[ "$resolved_artifact" == "$resolved_root/"* ]] || return 1
+        verify_single_json_document "$artifact"
+        if ! actual_bytes="$(stat -c %s -- "$artifact")" || ! actual_sha256="$(file_sha_upper "$artifact")"; then
+            return 1
+        fi
+        if [[ "$actual_bytes" != "$expected_bytes" || "$actual_sha256" != "$expected_sha256" ]]; then
+            printf 'Issue #257 manifest verification failed: %s\n' "$artifact" >&2
+            return 1
+        fi
+    done <<< "$entries"
+}
+
+verify_identical_issue250_bundles() {
+    local left="$1"
+    local right="$2"
+    local name
+    for name in manifest.json central-transient-payload-release-evidence.json \
+        w0-fault-runtime-evidence.json w3m-normalized-plan-evidence.json; do
+        local left_sha256
+        local right_sha256
+        if ! left_sha256="$(file_sha_upper "$left/$name")" ||
+            ! right_sha256="$(file_sha_upper "$right/$name")"; then
+            return 1
+        fi
+        if [[ "$left_sha256" != "$right_sha256" ]]; then
+            printf 'Issue #250 campaign copy differs from its source: %s\n' "$name" >&2
+            return 1
+        fi
+    done
+}
+
+assert_source_unchanged() {
+    local current_revision
+    local current_status
+    if ! current_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)" ||
+        ! current_status="$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)"; then
+        printf 'Unable to revalidate issue #268 source state.\n' >&2
+        exit 1
+    fi
+    if [[ "$current_revision" != "$REVISION" || -n "$current_status" ]]; then
+        printf 'Repository HEAD or cleanliness changed during issue #268 evidence.\n' >&2
+        exit 1
+    fi
+}
+
+BASELINE_MANIFEST_ACTUAL_SHA256="$(file_sha_upper "$BASELINE_MANIFEST")"
+readonly BASELINE_MANIFEST_ACTUAL_SHA256
+if [[ "$BASELINE_MANIFEST_ACTUAL_SHA256" != "$BASELINE_MANIFEST_SHA256" ]]; then
+    printf 'Accepted issue #250 baseline manifest is unavailable or changed.\n' >&2
+    exit 2
+fi
+LANES_MANIFEST_ACTUAL_SHA256="$(file_sha_upper "$LANES_MANIFEST")"
+readonly LANES_MANIFEST_ACTUAL_SHA256
+if [[ "$LANES_MANIFEST_ACTUAL_SHA256" != "$LANES_MANIFEST_SHA256" ]]; then
+    printf 'Accepted issue #257 manifest is unavailable or changed.\n' >&2
+    exit 2
+fi
+LANES_SUMMARY_ACTUAL_SHA256="$(file_sha_upper "$LANES_ROOT/five-trial-summary.json")"
+readonly LANES_SUMMARY_ACTUAL_SHA256
+if [[ "$LANES_SUMMARY_ACTUAL_SHA256" != "$LANES_SUMMARY_SHA256" ]]; then
+    printf 'Accepted issue #257 summary changed.\n' >&2
+    exit 2
+fi
+verify_issue250_manifest "$BASELINE_MANIFEST" "$BASELINE_ROOT" baseline \
+    "$BASELINE_SOURCE_REVISION" "$BASELINE_PRODUCTION_REVISION"
+verify_issue257_manifest "$LANES_MANIFEST" "$LANES_ROOT"
+
+mkdir -p -- "$STATE_ROOT/issues/268"
+ISSUE_268_ROOT="$(realpath -e -- "$STATE_ROOT/issues/268")"
+readonly ISSUE_268_ROOT
+if [[ "$ISSUE_268_ROOT" != "$STATE_ROOT/issues/268" ]]; then
+    printf 'Issue #268 state path must not traverse symbolic links.\n' >&2
+    exit 2
+fi
+exec 8> "$STATE_ROOT/.performance.lock"
+flock -n 8 || {
+    printf 'Another host performance campaign owns the shared evidence lock.\n' >&2
+    exit 2
+}
+if [[ -e "$OUTPUT_ROOT" ]]; then
+    printf 'Issue #268 output already exists and will not be overwritten: %s\n' "$OUTPUT_ROOT" >&2
+    exit 2
+fi
+mkdir -- "$OUTPUT_ROOT"
+if [[ "$(realpath -e -- "$OUTPUT_ROOT")" != "$OUTPUT_ROOT" ]]; then
+    printf 'Issue #268 output path must not traverse symbolic links.\n' >&2
+    exit 2
+fi
+mkdir -p -- "$AFTER_ROOT" "$BASELINE_INPUT_ROOT" "$LANES_INPUT_ROOT"
+cp -- "$BASELINE_MANIFEST" "$BASELINE_INPUT_ROOT/manifest.json"
+cp -- "$BASELINE_ROOT/central-transient-payload-release-evidence.json" "$BASELINE_INPUT_ROOT/central-transient-payload-release-evidence.json"
+cp -- "$BASELINE_ROOT/w0-fault-runtime-evidence.json" "$BASELINE_INPUT_ROOT/w0-fault-runtime-evidence.json"
+cp -- "$BASELINE_ROOT/w3m-normalized-plan-evidence.json" "$BASELINE_INPUT_ROOT/w3m-normalized-plan-evidence.json"
+cp -- "$LANES_MANIFEST" "$LANES_INPUT_ROOT/manifest.json"
+if [[ "$(file_sha_upper "$LANES_INPUT_ROOT/manifest.json")" != "$LANES_MANIFEST_SHA256" ]]; then
+    printf 'Campaign-local issue #257 manifest changed during copy.\n' >&2
+    exit 2
+fi
+if ! LANES_ARTIFACT_PATHS="$(jq -er '.artifacts[].path' "$LANES_INPUT_ROOT/manifest.json")"; then
+    printf 'Issue #257 artifact paths are invalid.\n' >&2
+    exit 2
+fi
+readonly LANES_ARTIFACT_PATHS
+while IFS= read -r path; do
+    destination="$LANES_INPUT_ROOT/$path"
+    mkdir -p -- "$(dirname -- "$destination")"
+    cp -- "$LANES_ROOT/$path" "$destination"
+done <<< "$LANES_ARTIFACT_PATHS"
+verify_issue250_manifest "$BASELINE_INPUT_ROOT/manifest.json" "$BASELINE_INPUT_ROOT" baseline \
+    "$BASELINE_SOURCE_REVISION" "$BASELINE_PRODUCTION_REVISION"
+verify_identical_issue250_bundles "$BASELINE_ROOT" "$BASELINE_INPUT_ROOT"
+verify_issue257_manifest "$LANES_INPUT_ROOT/manifest.json" "$LANES_INPUT_ROOT"
+if [[ "$(file_sha_upper "$LANES_INPUT_ROOT/manifest.json")" != "$LANES_MANIFEST_SHA256" ||
+    "$(file_sha_upper "$LANES_INPUT_ROOT/five-trial-summary.json")" != "$LANES_SUMMARY_SHA256" ]]; then
+    printf 'Campaign-local issue #257 inputs changed during copy.\n' >&2
+    exit 2
+fi
+chmod -R a-w -- "$BASELINE_INPUT_ROOT" "$LANES_INPUT_ROOT"
+
+jq -n \
+    --arg revision "$REVISION" \
+    --arg baselineManifestSha256 "$BASELINE_MANIFEST_SHA256" \
+    --arg lanesManifestSha256 "$LANES_MANIFEST_SHA256" \
+    --arg lanesSummarySha256 "$LANES_SUMMARY_SHA256" \
+    '{
+      schema: "hvo-issue-268-consumed-evidence-v1",
+      issue: 268,
+      revision: $revision,
+      issue250: {sourceRevision: "00db3348cb0a0a66bcc006af0c56cdc1a9359fb7", manifestSha256: $baselineManifestSha256, allEntriesVerified: true, immutableCampaignCopy: "aggregate/inputs/issue-250-baseline"},
+      issue257: {sourceRevision: "4cb0cdcef7f1d9df2e0923ee9b993454e0252843", manifestSha256: $lanesManifestSha256, summarySha256: $lanesSummarySha256, artifactCount: 26, allEntriesVerified: true, allEntriesCopied: true, immutableCampaignCopy: "aggregate/inputs/issue-257"},
+      reuseDisposition: "Issue #257 measured paths, fixtures, profile, schema, and measurement logic are unchanged after its authenticated source; documentation and runner-only changes do not invalidate reuse."
+    }' > "$SYNTHETIC_ROOT/consumed-evidence.json"
+
+dotnet restore "$PROJECT" 8>&-
+dotnet build "$PROJECT" --no-restore --configuration Release -warnaserror 8>&-
+assert_source_unchanged
+
+DOTNET_gcServer=1 \
+HVO_ISSUE_250_EVIDENCE=1 \
+HVO_ISSUE_268_SYNTHETIC_EVIDENCE=1 \
+HVO_EVIDENCE_PHASE=after \
+HVO_EVIDENCE_REVISION="$REVISION" \
+HVO_EVIDENCE_PRODUCTION_REVISION="$REVISION" \
+HVO_EVIDENCE_TRIAL=1 \
+HVO_EVIDENCE_BASELINE_MANIFEST="$BASELINE_MANIFEST" \
+HVO_ISSUE_268_OUTPUT_ROOT="$AFTER_ROOT" \
+    dotnet test "$PROJECT" --no-build --configuration Release --filter "$FILTER" 8>&-
+
+assert_source_unchanged
+verify_issue250_manifest "$AFTER_TRIAL/manifest.json" "$AFTER_TRIAL" after "$REVISION" "$REVISION"
+jq --exit-status --arg revision "$REVISION" '
+    .Phase == "after" and .Source.Head == $revision and .ProductionRevision == $revision and
+    .Source.Dirty == false and .BaselineBinding.Status == "reviewed-baseline-manifest-validated" and
+    .BaselineBinding.BaselineManifestSha256 == "2C49C4AFA8CD83FE469D0FFEC78AE17CE278006374DAC75B1A46CB1B438BCC3A" and
+    (.SteadyState | map(.Concurrency)) == [1, 4] and
+    (.DelayedDelete | map(.DeleteDelayMilliseconds)) == [0, 250, 2000] and
+    all(.SteadyState[]; .Warmups == 5 and .MeasuredReleases == 30 and .ReleaseLatency.Samples == 30) and
+    all(.DelayedDelete[]; .Releases == 4 and .NaturalCorrectness.Releases == 4 and .ContentionCorrectness.Releases == 1) and
+    all(.DelayedDelete[] | select(.DeleteDelayMilliseconds >= 250);
+      .NaturalSql.TransactionOverlapMilliseconds == 0 and
+      .ContentionSql.TransactionOverlapMilliseconds == 0 and
+      .NaturalSql.ObjectLockWindowMilliseconds >= (.DeleteDelayMilliseconds - 100) and
+      .ContentionSql.ObjectLockWindowMilliseconds >= (.DeleteDelayMilliseconds - 100) and
+      .ContentionSql.ExactAttributedBlockerSamples == 0 and
+      .ExactRowWriter.Outcome == "completed" and .ExactRowWriter.ElapsedMilliseconds < 1000)
+' "$AFTER_TRIAL/central-transient-payload-release-evidence.json" >/dev/null
+
+mkdir -- "$AFTER_INPUT_ROOT"
+cp -- "$AFTER_TRIAL/manifest.json" "$AFTER_INPUT_ROOT/manifest.json"
+cp -- "$AFTER_TRIAL/central-transient-payload-release-evidence.json" "$AFTER_INPUT_ROOT/central-transient-payload-release-evidence.json"
+cp -- "$AFTER_TRIAL/w0-fault-runtime-evidence.json" "$AFTER_INPUT_ROOT/w0-fault-runtime-evidence.json"
+cp -- "$AFTER_TRIAL/w3m-normalized-plan-evidence.json" "$AFTER_INPUT_ROOT/w3m-normalized-plan-evidence.json"
+verify_issue250_manifest "$AFTER_INPUT_ROOT/manifest.json" "$AFTER_INPUT_ROOT" after "$REVISION" "$REVISION"
+verify_identical_issue250_bundles "$AFTER_TRIAL" "$AFTER_INPUT_ROOT"
+chmod -R a-w -- "$AFTER_INPUT_ROOT"
+
+if ! BASELINE_W3M_LOGICAL_READS="$(jq -er '.Evidence.LogicalReads | select(type == "number" and . >= 0)' "$BASELINE_INPUT_ROOT/w3m-normalized-plan-evidence.json")"; then
+    printf 'Accepted issue #250 W3M logical reads are invalid.\n' >&2
+    exit 1
+fi
+readonly BASELINE_W3M_LOGICAL_READS
+BASELINE_EVIDENCE_SHA256="$(file_sha_upper "$BASELINE_INPUT_ROOT/central-transient-payload-release-evidence.json")"
+AFTER_EVIDENCE_SHA256="$(file_sha_upper "$AFTER_INPUT_ROOT/central-transient-payload-release-evidence.json")"
+AFTER_W0_SHA256="$(file_sha_upper "$AFTER_INPUT_ROOT/w0-fault-runtime-evidence.json")"
+AFTER_W3M_SHA256="$(file_sha_upper "$AFTER_INPUT_ROOT/w3m-normalized-plan-evidence.json")"
+readonly BASELINE_EVIDENCE_SHA256 AFTER_EVIDENCE_SHA256 AFTER_W0_SHA256 AFTER_W3M_SHA256
+jq -n \
+    --slurpfile baseline "$BASELINE_INPUT_ROOT/central-transient-payload-release-evidence.json" \
+    --slurpfile after "$AFTER_INPUT_ROOT/central-transient-payload-release-evidence.json" \
+    --slurpfile w0 "$AFTER_INPUT_ROOT/w0-fault-runtime-evidence.json" \
+    --slurpfile w3m "$AFTER_INPUT_ROOT/w3m-normalized-plan-evidence.json" \
+    --slurpfile lanes "$LANES_INPUT_ROOT/five-trial-summary.json" \
+    --arg revision "$REVISION" \
+    --arg baselineEvidenceSha256 "$BASELINE_EVIDENCE_SHA256" \
+    --arg afterEvidenceSha256 "$AFTER_EVIDENCE_SHA256" \
+    --arg afterW0Sha256 "$AFTER_W0_SHA256" \
+    --arg afterW3mSha256 "$AFTER_W3M_SHA256" \
+    --arg lanesSummarySha256 "$LANES_SUMMARY_SHA256" \
+    --argjson baselineW3mLogicalReads "$BASELINE_W3M_LOGICAL_READS" \
+    -f "$AGGREGATOR" > "$AGGREGATE_ROOT/synthetic-summary.json"
+jq '.issue250' "$AGGREGATE_ROOT/synthetic-summary.json" > "$AGGREGATE_ROOT/issue-250-baseline-after-comparison.json"
+jq --exit-status '.result.passed == true' "$AGGREGATE_ROOT/synthetic-summary.json" >/dev/null
+
+verify_issue250_manifest "$BASELINE_INPUT_ROOT/manifest.json" "$BASELINE_INPUT_ROOT" baseline \
+    "$BASELINE_SOURCE_REVISION" "$BASELINE_PRODUCTION_REVISION"
+verify_identical_issue250_bundles "$BASELINE_ROOT" "$BASELINE_INPUT_ROOT"
+verify_issue250_manifest "$AFTER_INPUT_ROOT/manifest.json" "$AFTER_INPUT_ROOT" after "$REVISION" "$REVISION"
+verify_issue250_manifest "$AFTER_TRIAL/manifest.json" "$AFTER_TRIAL" after "$REVISION" "$REVISION"
+verify_identical_issue250_bundles "$AFTER_TRIAL" "$AFTER_INPUT_ROOT"
+verify_issue257_manifest "$LANES_INPUT_ROOT/manifest.json" "$LANES_INPUT_ROOT"
+if [[ "$(file_sha_upper "$LANES_INPUT_ROOT/manifest.json")" != "$LANES_MANIFEST_SHA256" ||
+    "$(file_sha_upper "$LANES_INPUT_ROOT/five-trial-summary.json")" != "$LANES_SUMMARY_SHA256" ]]; then
+    printf 'Campaign-local issue #257 inputs changed before manifest creation.\n' >&2
+    exit 1
+fi
+
+artifacts=(
+    "$SYNTHETIC_ROOT/consumed-evidence.json"
+    "$AFTER_TRIAL/central-transient-payload-release-evidence.json"
+    "$AFTER_TRIAL/w0-fault-runtime-evidence.json"
+    "$AFTER_TRIAL/w3m-normalized-plan-evidence.json"
+    "$AFTER_TRIAL/manifest.json"
+    "$BASELINE_INPUT_ROOT/central-transient-payload-release-evidence.json"
+    "$BASELINE_INPUT_ROOT/w0-fault-runtime-evidence.json"
+    "$BASELINE_INPUT_ROOT/w3m-normalized-plan-evidence.json"
+    "$BASELINE_INPUT_ROOT/manifest.json"
+    "$AFTER_INPUT_ROOT/central-transient-payload-release-evidence.json"
+    "$AFTER_INPUT_ROOT/w0-fault-runtime-evidence.json"
+    "$AFTER_INPUT_ROOT/w3m-normalized-plan-evidence.json"
+    "$AFTER_INPUT_ROOT/manifest.json"
+    "$LANES_INPUT_ROOT/manifest.json"
+    "$AGGREGATE_ROOT/issue-250-baseline-after-comparison.json"
+    "$AGGREGATE_ROOT/synthetic-summary.json"
+)
+while IFS= read -r path; do
+    artifacts+=("$LANES_INPUT_ROOT/$path")
+done <<< "$LANES_ARTIFACT_PATHS"
+if [[ "${#artifacts[@]}" -ne 42 ]]; then
+    printf 'Synthetic artifact cardinality is invalid: %s\n' "${#artifacts[@]}" >&2
+    exit 1
+fi
+artifact_entries=()
+for artifact in "${artifacts[@]}"; do
+    resolved_artifact="$(realpath -e -- "$artifact")"
+    resolved_synthetic_root="$(realpath -e -- "$SYNTHETIC_ROOT")"
+    if [[ "$resolved_artifact" != "$resolved_synthetic_root/"* ]]; then
+        printf 'Synthetic artifact escaped its output root: %s\n' "$artifact" >&2
+        exit 1
+    fi
+    if ! artifact_sha256="$(file_sha_upper "$artifact")" ||
+        ! artifact_bytes="$(stat -c %s -- "$artifact")"; then
+        printf 'Unable to describe synthetic artifact: %s\n' "$artifact" >&2
+        exit 1
+    fi
+    if [[ ! "$artifact_bytes" =~ ^[0-9]+$ ]]; then
+        printf 'Invalid artifact byte count: %s\n' "$artifact" >&2
+        exit 1
+    fi
+    if ! artifact_entry="$(jq -n \
+        --arg path "${artifact#"$SYNTHETIC_ROOT"/}" \
+        --arg sha256 "$artifact_sha256" \
+        --argjson bytes "$artifact_bytes" \
+        '{path: $path, bytes: $bytes, sha256: $sha256}')"; then
+        printf 'Unable to serialize synthetic artifact entry: %s\n' "$artifact" >&2
+        exit 1
+    fi
+    artifact_entries+=("$artifact_entry")
+done
+printf '%s\n' "${artifact_entries[@]}" | jq -s --arg revision "$REVISION" '
+    {schema: "hvo-issue-268-synthetic-manifest-v1", issue: 268, revision: $revision, artifacts: sort_by(.path)}
+' > "$SYNTHETIC_ROOT/manifest.json"
+jq --exit-status '
+    (.artifacts | length) == 42 and
+    ([.artifacts[].path] | length) == ([.artifacts[].path] | unique | length)
+' "$SYNTHETIC_ROOT/manifest.json" >/dev/null
+
+assert_source_unchanged
+printf 'Issue #268 synthetic evidence completed: %s\n' "$SYNTHETIC_ROOT"
