@@ -59,7 +59,11 @@ def apply_regression_disposition:
     "c4-release-median-ms": {direction: "maximum", limit: 125},
     "c4-cpu-ms": {direction: "maximum", limit: 2800},
     "c4-allocated-bytes": {direction: "maximum", limit: 320000000},
-    "c4-rss-growth-bytes": {direction: "maximum", limit: 134217728}
+    "c4-rss-growth-bytes": {
+      direction: "maximum",
+      limit: 268435456,
+      authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5171821106"
+    }
   }[$metric.name]) as $rule |
   if $rule != null then
     if (($metric.baseline | valid_measurement) and ($metric.after | valid_measurement) and
@@ -74,7 +78,7 @@ def apply_regression_disposition:
         end),
         acceptedAbsoluteDirection: $rule.direction,
         acceptedAbsoluteLimit: $rule.limit,
-        authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5171614006"
+        authority: ($rule.authority // "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5171614006")
       }
     else
       $metric + {
@@ -82,7 +86,7 @@ def apply_regression_disposition:
         disposition: "outside-operator-accepted-absolute-bound",
         acceptedAbsoluteDirection: $rule.direction,
         acceptedAbsoluteLimit: $rule.limit,
-        authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5171614006"
+        authority: ($rule.authority // "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5171614006")
       }
     end
   elif $metric.passed then
