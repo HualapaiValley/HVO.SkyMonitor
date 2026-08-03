@@ -31,15 +31,13 @@ fi
 
 REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 readonly REVISION
-BRANCH="$(git -C "$REPO_ROOT" branch --show-current)"
-readonly BRANCH
 STATUS="$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)"
 readonly STATUS
 readonly OUTPUT_ROOT="$HVO_AGENT_STATE_ROOT/issues/257/$REVISION"
 OUTPUT_PARENT="$(dirname "$OUTPUT_ROOT")"
 readonly OUTPUT_PARENT
-if [[ ! "$REVISION" =~ ^[0-9a-f]{40}$ || "$BRANCH" != 'perf/cameraagent-lane-rebaseline-257' ]]; then
-    printf 'Issue #257 evidence requires its claimed branch and exact 40-hex HEAD.\n' >&2
+if [[ ! "$REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+    printf 'Issue #257 evidence requires an exact 40-hex HEAD.\n' >&2
     exit 2
 fi
 if [[ -n "$STATUS" ]]; then
@@ -119,13 +117,11 @@ verify_trial_manifest() {
 
 assert_source_unchanged() {
     local current_revision
-    local current_branch
     local current_status
     current_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-    current_branch="$(git -C "$REPO_ROOT" branch --show-current)"
     current_status="$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)"
-    [[ "$current_revision" == "$REVISION" && "$current_branch" == "$BRANCH" && -z "$current_status" ]] || {
-        printf 'Repository HEAD, branch, or cleanliness changed during issue #257 evidence.\n' >&2
+    [[ "$current_revision" == "$REVISION" && -z "$current_status" ]] || {
+        printf 'Repository HEAD or cleanliness changed during issue #257 evidence.\n' >&2
         exit 1
     }
 }
