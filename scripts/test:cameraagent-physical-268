@@ -413,11 +413,13 @@ readonly HARDWARE_TEST_ASSEMBLY_SHA256 ACCEPTANCE_TEST_ASSEMBLY_SHA256
 hardware_output="$(mktemp "$STATE_ROOT/issue-268-hardware-gate.XXXXXX")"
 HVO_ZWO_EXPECTED_MODEL="$CAMERA_MODEL" dotnet test "$HARDWARE_PROJECT" --no-build --configuration Release \
     --filter 'TestCategory=Hardware' --logger 'console;verbosity=normal' > "$hardware_output"
-rg 'Passed![[:space:]]+- Failed:[[:space:]]+0, Passed:[[:space:]]+1, Skipped:[[:space:]]+0, Total:[[:space:]]+1,' \
-    "$hardware_output" >/dev/null || {
+if ! rg '^Test Run Successful\.$' "$hardware_output" >/dev/null ||
+   ! rg '^Total tests: 1$' "$hardware_output" >/dev/null ||
+   ! rg '^[[:space:]]+Passed: 1$' "$hardware_output" >/dev/null ||
+   ! rg '^[[:space:]]*Passed OptInHardwareProfileCaptureCloseSmoke \[[^]]+\]$' "$hardware_output" >/dev/null; then
     printf 'The separately selected Hardware gate did not execute and pass exactly once.\n' >&2
     exit 1
-}
+fi
 jq -n --arg expectedModel "$CAMERA_MODEL" --arg assemblySha256 "${HARDWARE_TEST_ASSEMBLY_SHA256^^}" \
     '{schemaVersion:"issue-268-hardware-gate-summary-v1", selection:"TestCategory=Hardware",
       expectedModel:$expectedModel, assemblySha256:$assemblySha256,
