@@ -16,7 +16,7 @@ def stats:
         reason: "Issue #95 used a different profile identity and raw-ingress schema."
     },
     pairedLatencyDisposition: {
-        causalResult: "N/A: ingress p95 followed scenario position in all five trials, so blocked-vs-unblocked latency is order-confounded.",
+        causalResult: "N/A: mixed order-stratified results from a 3/2 scenario ordering are insufficient for causal blocked-vs-unblocked attribution.",
         sampleUnit: "five paired per-trial nearest-rank p95 values, reported without a causal pass or improvement claim",
         ingress: {
             unblockedMedianMilliseconds: ($lane | map(.blockedComparison.unblocked.acceptP95Milliseconds) | sort | .[2]),
