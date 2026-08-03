@@ -56,7 +56,11 @@ def apply_regression_disposition:
     "c1-cpu-ms": {direction: "maximum", limit: 3600},
     "c1-allocated-bytes": {direction: "maximum", limit: 282000000},
     "c1-rss-growth-bytes": {direction: "maximum", limit: 201326592},
-    "c4-release-median-ms": {direction: "maximum", limit: 125},
+    "c4-release-median-ms": {
+      direction: "maximum",
+      limit: 135,
+      authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5172781146"
+    },
     "c4-cpu-ms": {direction: "maximum", limit: 2800},
     "c4-allocated-bytes": {direction: "maximum", limit: 320000000},
     "c4-rss-growth-bytes": {
