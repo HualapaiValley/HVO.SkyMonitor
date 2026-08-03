@@ -700,7 +700,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
             var protocol = collector.Snapshot();
             AssertProtocolAccounting(protocol, measurements, phase);
-            Assert.AreEqual((long)measurements * 5, protocol.ObjectStore.Deletes);
+            Assert.AreEqual(
+                (long)measurements * 5 + protocol.RecoveryProcessorCompletions,
+                protocol.ObjectStore.Deletes);
             var finalBacklog = await ReadBacklogAsync(database.ConnectionString, cancellationToken).ConfigureAwait(false);
             Assert.AreEqual(0L, finalBacklog.PendingParents);
             Assert.AreEqual(0L, finalBacklog.PendingItems);
