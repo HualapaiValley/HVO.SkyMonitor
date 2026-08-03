@@ -34,6 +34,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.CameraAgent.Modules.Zwo\HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Catalog.Sqlite\HVO.SkyMonitor.Catalog.Sqlite.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Common\HVO.SkyMonitor.Common.csproj" />
   </ItemGroup>
@@ -52,6 +53,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="cameraagent.asi178mc-comparison.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="cameraagent.zwo-asi676mc.sample.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="virtual-asi174.full.json">

@@ -1391,6 +1391,31 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
+    public void ManifestV2_WithOpaqueContainerMapping_PreservesRawBytesAsComplete()
+    {
+        byte[] payload = [0x34, 0x12, 0xCD, 0xAB, 0x00, 0x00, 0xFF, 0xFF];
+        var original = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, payload);
+        var layout = original.Descriptor.Layout with
+        {
+            SampleDepthBits = 12,
+            BlackLevel = 0,
+            WhiteLevel = 65535,
+            StoredCodeTransform = FrameStoredCodeTransform.OpaqueContainerV1,
+            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+        };
+        var manifest = original with { Descriptor = original.Descriptor with { Layout = layout } };
+
+        var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest));
+        var result = FrameReconstructor.TryReconstruct(parsed.Document!.Manifest!.Descriptor, payload, out var frame);
+
+        Assert.IsTrue(parsed.IsValid);
+        Assert.AreEqual(CaptureManifestCompleteness.Complete, parsed.Document.Completeness);
+        Assert.IsTrue(result.IsValid);
+        Assert.AreEqual(FrameStoredCodeTransform.OpaqueContainerV1, frame!.Layout!.StoredCodeTransform);
+        CollectionAssert.AreEqual(payload, frame.PixelData.ToArray());
+    }
+
+    [TestMethod]
     public void ParseManifest_WithAmbiguousLowerDepthV2_PreservesBytesAsLegacyIncomplete()
     {
         var payload = new byte[8];
@@ -1435,6 +1460,16 @@ public sealed class ReconstructableCaptureContractTests
             (descriptor with { Layout = missingLevelSpace }).Validate().ReasonCode);
         Assert.AreEqual(CaptureContractReasonCodes.InvalidStoredCode,
             (descriptor with { Layout = invalidIdentity }).Validate().ReasonCode);
+        Assert.AreEqual(CaptureContractReasonCodes.InvalidSampleDepth,
+            (descriptor with
+            {
+                Layout = descriptor.Layout with
+                {
+                    SampleDepthBits = 17,
+                    StoredCodeTransform = FrameStoredCodeTransform.OpaqueContainerV1,
+                    LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+                }
+            }).Validate().ReasonCode);
     }
 
     [TestMethod]

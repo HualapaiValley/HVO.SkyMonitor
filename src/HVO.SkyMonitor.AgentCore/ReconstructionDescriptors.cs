@@ -28,7 +28,10 @@ public enum FrameStoredCodeTransform
     IdentityV1,
     RightAlignedV1,
     LeftShiftedV1,
-    FullRangeScaledV1
+    FullRangeScaledV1,
+
+    /// <summary>The stored container is untouched and the ADC-to-container mapping is unknown.</summary>
+    OpaqueContainerV1
 }
 
 /// <summary>Code space used by layout black and white levels.</summary>
@@ -69,8 +72,8 @@ public sealed record CaptureIdentityDescriptor(
     [property: JsonRequired] Guid CaptureId);
 
 /// <summary>
-/// UTC capture boundaries. Durable ingress is raw-payload atomic publication; the CameraAgent journal separately
-/// records completion of the full sidecar and SQLite handoff.
+/// UTC module command/status observation boundaries, not exact sensor timing. Durable ingress is raw-payload atomic
+/// publication; the CameraAgent journal separately records completion of the full sidecar and SQLite handoff.
 /// </summary>
 public sealed record CaptureTimingDescriptor(
     [property: JsonRequired] DateTimeOffset RequestedStartUtc,
@@ -619,6 +622,7 @@ internal static class ReconstructionDescriptorValidator
             FrameStoredCodeTransform.RightAlignedV1 => layout.SampleDepthBits <= layout.ContainerDepthBits,
             FrameStoredCodeTransform.LeftShiftedV1 or FrameStoredCodeTransform.FullRangeScaledV1 =>
                 layout.SampleDepthBits < layout.ContainerDepthBits,
+            FrameStoredCodeTransform.OpaqueContainerV1 => layout.SampleDepthBits <= layout.ContainerDepthBits,
             _ => false
         };
         return transformIsValid

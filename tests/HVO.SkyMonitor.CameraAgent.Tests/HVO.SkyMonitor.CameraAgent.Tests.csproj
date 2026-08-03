@@ -1,5 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="bunit" />
     <PackageReference Include="coverlet.collector">
@@ -23,6 +27,7 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent\HVO.SkyMonitor.CameraAgent.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Modules.Zwo\HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -39,6 +44,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.standalone-production-smoke.json" Link="cameraagent.standalone-production-smoke.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.zwo-asi676mc.sample.json" Link="cameraagent.zwo-asi676mc.sample.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi174.full.json" Link="virtual-asi174.full.json">
@@ -70,5 +78,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <Target Name="BuildAsiNativeApiTestShim" AfterTargets="Build" Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+    <Exec Command="cc -std=c11 -shared -fPIC -Wall -Wextra -Werror &quot;$(MSBuildProjectDirectory)/AsiNativeApiTestShim.c&quot; -o &quot;$(TargetDir)libhvo_asi_test_shim.so&quot;" />
+  </Target>
 
 </Project>

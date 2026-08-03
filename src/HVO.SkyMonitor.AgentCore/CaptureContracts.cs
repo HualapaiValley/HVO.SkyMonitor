@@ -17,7 +17,7 @@ public sealed record CaptureResult(
     bool RequiresImmediateUpload,
     FrameArtifactSet? Artifacts = null)
 {
-    /// <summary>Exact module-reported acquisition boundaries, when available.</summary>
+    /// <summary>Module-reported command/status observation boundaries, not exact sensor timing.</summary>
     public CaptureAcquisitionTiming? AcquisitionTiming { get; init; }
 }
 

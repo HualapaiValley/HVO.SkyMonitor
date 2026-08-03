@@ -1,0 +1,91 @@
+{
+  "agentId": "replace-with-registered-device-id",
+  "module": {
+    "type": "ZwoAsi",
+    "options": {
+      "libraryPathEnvironmentVariable": "HVO_ZWO_SDK_LIBRARY",
+      "cameraSerialEnvironmentVariable": "HVO_ZWO_CAMERA_SERIAL",
+      "expectedModel": "ASI676MC",
+      "offset": 1,
+      "usbBandwidth": 40,
+      "pollInterval": "00:00:00.005",
+      "captureTimeoutMargin": "00:00:10",
+      "monoBin": false,
+      "hardwareBin": false
+    }
+  },
+  "rig": {
+    "sensor": {
+      "name": "PhysicalAsi676McRggbRaw16Provisional",
+      "widthPixels": 3552,
+      "heightPixels": 3552,
+      "pixelSizeMicrons": 2.0,
+      "colorMode": "Color",
+      "pixelFormat": "BayerRggb16",
+      "responseMode": "BayerRaw",
+      "strideBytes": 7104,
+      "byteOrder": "LittleEndian",
+      "sensorRecipeVersion": "physical-asi676mc-sdk-v1.41-provisional-v1"
+    },
+    "readout": {
+      "roi": { "x": 0, "y": 0, "width": 3552, "height": 3552 },
+      "binX": 1,
+      "binY": 1,
+      "binningAlgorithm": "IdentityV1",
+      "pixelFormat": "BayerRggb16",
+      "sampleDepthBits": 12,
+      "containerDepthBits": 16,
+      "packing": "ByteAligned",
+      "storedCodeTransform": "OpaqueContainerV1",
+      "levelCodeSpace": "StoredContainer",
+      "blackLevel": 0.0,
+      "whiteLevel": 65535.0,
+      "strideBytes": 7104,
+      "byteOrder": "LittleEndian",
+      "cfaPattern": "Rggb",
+      "cfaOriginX": 0,
+      "cfaOriginY": 0
+    },
+    "optics": {
+      "projectionModel": "EquidistantFisheye",
+      "focalLengthMillimeters": 2.5,
+      "fieldOfViewDegrees": 170.0,
+      "rollDegrees": 0.0,
+      "lensKind": "Fisheye",
+      "principalPointX": 1776.0,
+      "principalPointY": 1776.0,
+      "imageCircleRadiusPixels": 1627.5,
+      "focalLengthXPixels": 1097.0456,
+      "focalLengthYPixels": 1097.0456,
+      "horizontalFlip": false,
+      "calibrationVersion": "asi676-supplied-2p5mm-equidistant-placeholder-v1"
+    },
+    "orientation": {
+      "boresightAltitudeDegrees": 90.0,
+      "boresightAzimuthDegrees": 0.0,
+      "rollAdjustmentDegrees": 0.0
+    },
+    "pipeline": {
+      "captureInterval": "00:00:25",
+      "dayExposure": "00:00:00.1000000",
+      "nightExposure": "00:00:20",
+      "dayGain": 0.0,
+      "nightGain": 82.0,
+      "envelope": {
+        "minExposure": "00:00:00.0000320",
+        "maxExposure": "00:33:20",
+        "minGain": 0.0,
+        "maxGain": 600.0,
+        "dayDefaults": { "exposure": "00:00:00.1000000", "gain": 0.0 },
+        "nightDefaults": { "exposure": "00:00:20", "gain": 82.0 },
+        "targetAduLevel": 0.65
+      }
+    },
+    "controlPolicy": {
+      "temperature": { "mode": "Disabled" },
+      "autoGain": "Disabled",
+      "autoExposure": "Disabled"
+    },
+    "profileVersion": "physical-asi676mc-fullframe-raw16-sample-provisional-v1"
+  }
+}

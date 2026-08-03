@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 using HVO.SkyMonitor.CameraAgent.Extensions;
 using HVO.SkyMonitor.CameraAgent.Components;
 using HVO.SkyMonitor.CameraAgent.Components.Account;
@@ -243,8 +244,7 @@ public class Program
         healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureAdmissionHealthCheck>("capture-admission", tags: ["dependency"]);
         healthChecks.AddCheck<CalibrationLibraryHealthCheck>("calibration-library", tags: ["dependency"]);
-        builder.Services.AddCameraModule<RandomImageCameraModule>("RandomImage");
-        builder.Services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
+        AddCameraModules(builder.Services);
 
         var app = builder.Build();
         _ = app.Services.GetRequiredService<CatalogSnapshotResult>();
@@ -326,6 +326,13 @@ public class Program
         }
 
         await app.RunAsync().ConfigureAwait(false);
+    }
+
+    internal static void AddCameraModules(IServiceCollection services)
+    {
+        services.AddCameraModule<RandomImageCameraModule>("RandomImage");
+        services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
+        services.AddCameraModule<ZwoAsiCameraModule>("ZwoAsi");
     }
 
     private static void RegisterAcceptanceCentralAttemptRecorder(WebApplicationBuilder builder)
