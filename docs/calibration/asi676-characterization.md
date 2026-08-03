@@ -191,3 +191,41 @@ complete RAW8, ROI alignment, controlled response, sustained throughput, or
 optical calibration.
 
 The native probe workflow is documented in `tools/asi-capture/README.md`.
+
+## Raspberry Pi ARM64 Functional Acceptance
+
+The 2026-08-03 ordinary-host acceptance used merged source
+`673d57535ceede9e27ee68f88bcf76c5930ddc16` on `allsky01`: Debian 13,
+kernel `6.18.34+rpt-rpi-2712`, native `aarch64`, Docker 29.6.2, and SDK V1.41.
+The operator-installed ARM64 library SHA-256 was
+`3ecf511979ed571131e7d7f4a467112aba21940b4dc91d63bd109b9683bf67c4`.
+ASI676MC, ASI676MM, and ASI120MM Mini were attached concurrently on separate
+USB buses. Private serial discovery examined the attached inventory; only the
+ASI676MC was selected, initialized, and retained for capture. The warning-clean
+production image was
+`sha256:792c9d89e282caa28113d626f4b50294b195a4c651eb39cf43acb273b2eb1266`.
+
+The standalone CameraAgent retained 73 contiguous full-frame RAW16 captures
+and v2 sidecars. Every payload was 25,233,408 bytes, all 73 SHA-256 values were
+distinct, and every sidecar checksum matched. Sidecars reported 3552 x 3552,
+7104-byte stride, RGGB at `(0,0)`, 12-bit samples in a 16-bit little-endian
+byte-aligned container, and `OpaqueContainerV1`/`StoredContainer`. A functional
+100 ms request was used with gain 0, offset 1, native flip/mono-bin/hardware-bin
+disabled, and a two-second minimum-start interval. SDK exposure completion was
+observed at 0.485-0.808 seconds, readout at 0.011-0.019 seconds, and durable
+ingress after readout at 0.374-0.460 seconds. These are diagnostics, not a
+performance baseline. The uncooled sensor reported 27.7-28.4 C.
+
+Process restart reconciled committed records before capturing again. A separate
+ten-second-exposure run cancelled the next active capture in 835 ms without a
+partial or quarantined artifact, and an independent SDK probe reopened the
+camera. USB unbind of only the ASI676MC produced bounded native control failures
+without adding a corrupt capture; rebind plus clean CameraAgent restart reopened
+the camera, reconciled 72 records, and retained capture 73. Final health was
+healthy, all 73 durable lane records were completed, central HTTP attempts were
+zero, and Prometheus plus OTLP logs, metrics, and capture/raw-ingress/lane/
+processing traces were observed without exposing the camera serial.
+
+This functional evidence does not complete the sustained frame-rate, thermal,
+USB saturation, drop, CPU, RSS, allocation, storage-throughput, or physical
+calibration requirements above. Those measurements remain owned by issue #268.
