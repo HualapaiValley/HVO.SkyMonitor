@@ -33,6 +33,17 @@ Sources:
 The current profile is intentionally provisional. Hardware and SDK evidence do
 not imply that the virtual response or installed optics are calibrated.
 
+The production physical declaration is
+`cameraagent.zwo-asi178mc.sample.json`: full-frame 3096 x 2080 bin-1 color RAW16,
+14-bit ADC depth in a 16-bit little-endian container, 6192-byte stride, RGGB at
+origin `(0,0)`, and `OpaqueContainerV1` with `StoredContainer` levels 0 through
+65535. It contains no `simulationResponse`. The committed candidate Fujinon
+optics remain provisional calibration metadata; `horizontalFlip: true` records
+that optical calibration while SDK/native flip remains disabled. This physical
+declaration does not alter `virtual-asi178mc.full.json`, whose
+`FullRangeScaledV1` mapping is a simulation model rather than a claim about
+native SDK container encoding.
+
 | Component | Status | Evidence |
 | --- | --- | --- |
 | SDK identity and capabilities | Hardware verified | SDK 1.41 profile probe on serial `350f500522000900` |
@@ -46,6 +57,36 @@ not imply that the virtual response or installed optics are calibrated.
 | Installed orientation | Provisional | Landmark observations without a synchronized multi-star fit |
 | Bias, dark, flat, and defect maps | Uncalibrated | Controlled datasets have not been collected |
 
+## Linux x64 Functional Acceptance
+
+The 2026-08-03 functional acceptance used SDK V1.41 on Ubuntu 24.04 x64 with
+the camera attached alone on a 5 Gbit/s USB 3 bus. The operator-installed x64
+library SHA-256 was
+`d1de4a5ab85c8cafbddfad9c593bbba515890d3adf20c1ca44dafcf15f2775ce`.
+The private runtime selected the camera by serial without placing that value in
+configuration, logs, telemetry, or committed evidence.
+
+The ordinary standalone CameraAgent path retained 25 contiguous full-frame
+RAW16 captures and v2 sidecars. Every payload was 12,879,360 bytes, all 25
+SHA-256 values were distinct, and every sidecar checksum matched its immutable
+payload. Sidecars reported 3096 x 2080, 6192-byte stride, RGGB at `(0,0)`,
+14-bit samples in a 16-bit little-endian byte-aligned container, and
+`OpaqueContainerV1`/`StoredContainer`. Observed SDK exposure completion was
+20.550-20.557 seconds, readout was 0.004-0.021 seconds, durable ingress after
+readout was 0.080-0.301 seconds, and the uncooled sensor reported
+30.3-32.8 C in uncontrolled indoor conditions.
+
+Graceful cancellation during an active exposure exited in 535 ms without a
+partial or quarantined artifact, and a separate SDK probe reopened the camera.
+Process restart reconciled all committed records before the next capture. USB
+unbind/rebind produced the expected failed-exposure status on the stale native
+session; a clean CameraAgent restart then reopened the device and captured
+successfully. Final health was healthy, every required local lane was drained,
+the durable journal contained 25 completed assignments, central HTTP attempts
+were zero, and OTLP logs, metrics, and capture/raw-ingress/lane/processing
+traces were observed. Sustained cadence, throughput, thermal, USB saturation,
+and resource characterization remain deferred to issue #268.
+
 The machine-readable SDK evidence is
 [`asi178mc-sdk-profile-v1.json`](asi178mc-sdk-profile-v1.json). The SDK-reported
 `ElecPerADU` value is retained as provenance but is not treated as a calibrated
@@ -57,7 +98,7 @@ cloudy session are recorded in
 
 ## RAW16 Mapping
 
-The physical sensor model uses:
+The virtual response model uses:
 
 ```text
 native_e_per_adu(gain) = 0.916 * 10^(-gain / 200)

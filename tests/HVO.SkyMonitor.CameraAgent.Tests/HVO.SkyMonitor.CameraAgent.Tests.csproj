@@ -49,6 +49,9 @@
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.zwo-asi676mc.sample.json" Link="cameraagent.zwo-asi676mc.sample.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.zwo-asi178mc.sample.json" Link="cameraagent.zwo-asi178mc.sample.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi174.full.json" Link="virtual-asi174.full.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

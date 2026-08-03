@@ -58,6 +58,9 @@
     <None Update="cameraagent.zwo-asi676mc.sample.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="cameraagent.zwo-asi178mc.sample.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="virtual-asi174.full.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

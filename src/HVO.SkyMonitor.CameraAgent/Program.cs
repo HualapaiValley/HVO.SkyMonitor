@@ -189,6 +189,10 @@ public class Program
                     .AddSource(EnvironmentalObservationDeliveryTelemetry.ActivitySourceName)
                     .AddSource(EnvironmentalAcquisitionTelemetry.InstrumentationName)
                     .AddSource(CameraAgentOperatorTelemetry.InstrumentationName)
+                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressTelemetry.ActivitySourceName)
+                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.ActivitySourceName)
+                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.CaptureLaneTelemetry.ActivitySourceName)
+                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.ActivitySourceName)
                     .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName);
             });
 

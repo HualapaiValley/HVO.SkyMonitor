@@ -5,8 +5,8 @@
     "options": {
       "libraryPathEnvironmentVariable": "HVO_ZWO_SDK_LIBRARY",
       "cameraSerialEnvironmentVariable": "HVO_ZWO_CAMERA_SERIAL",
-      "expectedModel": "ASI676MC",
-      "offset": 1,
+      "expectedModel": "ASI178MC",
+      "offset": 10,
       "usbBandwidth": 40,
       "pollInterval": "00:00:00.005",
       "captureTimeoutMargin": "00:00:10",
@@ -16,31 +16,31 @@
   },
   "rig": {
     "sensor": {
-      "name": "PhysicalAsi676McRggbRaw16Provisional",
-      "widthPixels": 3552,
-      "heightPixels": 3552,
-      "pixelSizeMicrons": 2.0,
+      "name": "PhysicalAsi178McRggbRaw16Provisional",
+      "widthPixels": 3096,
+      "heightPixels": 2080,
+      "pixelSizeMicrons": 2.4,
       "colorMode": "Color",
       "pixelFormat": "BayerRggb16",
       "responseMode": "BayerRaw",
-      "strideBytes": 7104,
+      "strideBytes": 6192,
       "byteOrder": "LittleEndian",
-      "sensorRecipeVersion": "physical-asi676mc-sdk-v1.41-provisional-v1"
+      "sensorRecipeVersion": "physical-asi178mc-sdk-v1.41-provisional-v1"
     },
     "readout": {
-      "roi": { "x": 0, "y": 0, "width": 3552, "height": 3552 },
+      "roi": { "x": 0, "y": 0, "width": 3096, "height": 2080 },
       "binX": 1,
       "binY": 1,
       "binningAlgorithm": "IdentityV1",
       "pixelFormat": "BayerRggb16",
-      "sampleDepthBits": 12,
+      "sampleDepthBits": 14,
       "containerDepthBits": 16,
       "packing": "ByteAligned",
       "storedCodeTransform": "OpaqueContainerV1",
       "levelCodeSpace": "StoredContainer",
       "blackLevel": 0.0,
       "whiteLevel": 65535.0,
-      "strideBytes": 7104,
+      "strideBytes": 6192,
       "byteOrder": "LittleEndian",
       "cfaPattern": "Rggb",
       "cfaOriginX": 0,
@@ -48,17 +48,17 @@
     },
     "optics": {
       "projectionModel": "EquidistantFisheye",
-      "focalLengthMillimeters": 2.5,
-      "fieldOfViewDegrees": 170.0,
+      "focalLengthMillimeters": 1.8,
+      "fieldOfViewDegrees": 185.0,
       "rollDegrees": 0.0,
       "lensKind": "Fisheye",
-      "principalPointX": 1776.0,
-      "principalPointY": 1776.0,
-      "imageCircleRadiusPixels": 1627.5,
-      "focalLengthXPixels": 1097.0456,
-      "focalLengthYPixels": 1097.0456,
-      "horizontalFlip": false,
-      "calibrationVersion": "asi676-supplied-2p5mm-equidistant-placeholder-v1"
+      "principalPointX": 1548.0,
+      "principalPointY": 1040.0,
+      "imageCircleRadiusPixels": 1187.5,
+      "focalLengthXPixels": 735.553926,
+      "focalLengthYPixels": 735.553926,
+      "horizontalFlip": true,
+      "calibrationVersion": "asi178-fujinon-fe185c057ha1-candidate-v4"
     },
     "orientation": {
       "boresightAltitudeDegrees": 90.0,
@@ -70,14 +70,14 @@
       "dayExposure": "00:00:00.1000000",
       "nightExposure": "00:00:20",
       "dayGain": 0.0,
-      "nightGain": 82.0,
+      "nightGain": 150.0,
       "envelope": {
         "minExposure": "00:00:00.0000320",
-        "maxExposure": "00:33:20",
+        "maxExposure": "00:16:40",
         "minGain": 0.0,
-        "maxGain": 600.0,
+        "maxGain": 510.0,
         "dayDefaults": { "exposure": "00:00:00.1000000", "gain": 0.0 },
-        "nightDefaults": { "exposure": "00:00:20", "gain": 82.0 },
+        "nightDefaults": { "exposure": "00:00:20", "gain": 150.0 },
         "targetAduLevel": 0.65
       }
     },
@@ -86,7 +86,7 @@
       "autoGain": "Disabled",
       "autoExposure": "Disabled"
     },
-    "profileVersion": "physical-asi676mc-fullframe-raw16-sample-provisional-v1"
+    "profileVersion": "physical-asi178mc-fullframe-raw16-sample-provisional-v1"
   },
   "pipeline": {
     "schemaVersion": "cameraagent-capture-pipeline-v2",
