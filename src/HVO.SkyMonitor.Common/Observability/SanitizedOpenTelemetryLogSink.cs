@@ -9,6 +9,8 @@ namespace HVO.SkyMonitor.Common.Observability;
 internal sealed partial class SanitizedOpenTelemetryLogSink(Serilog.ILogger logger) : ILogEventSink, IDisposable
 {
     private static readonly string[] AllowedPropertyNames = ["EventId", "EventName", "SourceContext"];
+    private static readonly HashSet<string> AllowedSqliteOperations = ["commit", "checkpoint"];
+    private static readonly HashSet<string> AllowedSqliteResults = ["success", "failure"];
     private static readonly MessageTemplate SanitizedTemplate =
         new MessageTemplateParser().Parse("{SanitizedMessage}");
 
@@ -33,6 +35,11 @@ internal sealed partial class SanitizedOpenTelemetryLogSink(Serilog.ILogger logg
                 properties.Add(new LogEventProperty(propertyName, value));
             }
         }
+        if (IsBoundedSqliteResult(logEvent, out var operation, out var result))
+        {
+            properties.Add(new LogEventProperty("Operation", operation));
+            properties.Add(new LogEventProperty("Result", result));
+        }
         return new LogEvent(
             logEvent.Timestamp,
             logEvent.Level,
@@ -41,6 +48,29 @@ internal sealed partial class SanitizedOpenTelemetryLogSink(Serilog.ILogger logg
             properties,
             logEvent.TraceId ?? default,
             logEvent.SpanId ?? default);
+    }
+
+    private static bool IsBoundedSqliteResult(
+        LogEvent logEvent,
+        out ScalarValue operation,
+        out ScalarValue result)
+    {
+        operation = null!;
+        result = null!;
+        if (logEvent.Properties.TryGetValue("EventId", out var eventId) &&
+            eventId is ScalarValue { Value: 2048 } &&
+            logEvent.Properties.TryGetValue("Operation", out var operationValue) &&
+            operationValue is ScalarValue { Value: string operationText } operationScalar &&
+            AllowedSqliteOperations.Contains(operationText) &&
+            logEvent.Properties.TryGetValue("Result", out var resultValue) &&
+            resultValue is ScalarValue { Value: string resultText } resultScalar &&
+            AllowedSqliteResults.Contains(resultText))
+        {
+            operation = operationScalar;
+            result = resultScalar;
+            return true;
+        }
+        return false;
     }
 
     internal static string SanitizeMessage(string message)

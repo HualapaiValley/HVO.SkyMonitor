@@ -295,7 +295,7 @@ public sealed class ZwoAsiCameraModule :
                 return;
             }
             _disposed = true;
-            CleanupNative();
+            CleanupNative(throwCloseFailure: true);
         }
         finally
         {
@@ -446,6 +446,10 @@ public sealed class ZwoAsiCameraModule :
             {
                 continue;
             }
+            if (!string.Equals(NormalizeNativeModel(camera.Model), expectedModel, StringComparison.Ordinal))
+            {
+                continue;
+            }
 
             var opened = false;
             var identityRead = false;
@@ -476,6 +480,11 @@ public sealed class ZwoAsiCameraModule :
                         // An entry that cannot close cleanly is not safe to select.
                     }
                 }
+            }
+
+            if (opened && !closed)
+            {
+                throw new InvalidOperationException("The configured ASI camera is not connected.");
             }
 
             if (identityRead && closed && serialMatches)
@@ -663,7 +672,7 @@ public sealed class ZwoAsiCameraModule :
         }
     }
 
-    private void CleanupNative(bool skipExposureStop = false)
+    private void CleanupNative(bool skipExposureStop = false, bool throwCloseFailure = false)
     {
         var native = _native;
         if (native is null)
@@ -682,6 +691,7 @@ public sealed class ZwoAsiCameraModule :
                 // Closing and unloading are still required after a failed stop.
             }
         }
+        Exception? closeException = null;
         try
         {
             if (_cameraOpen)
@@ -690,9 +700,10 @@ public sealed class ZwoAsiCameraModule :
                 _cameraOpen = false;
             }
         }
-        catch
+        catch (Exception exception)
         {
             // Native disposal and managed reset remain best-effort and idempotent.
+            closeException = exception;
         }
         try
         {
@@ -705,6 +716,10 @@ public sealed class ZwoAsiCameraModule :
         finally
         {
             ResetState();
+        }
+        if (throwCloseFailure && closeException is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(closeException).Throw();
         }
     }
 

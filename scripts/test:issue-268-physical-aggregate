@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
+readonly AGGREGATOR="$REPO_ROOT/scripts/issue-268-physical-aggregate.jq"
+readonly FIXTURE="$REPO_ROOT/deploy/acceptance/issue-268/aggregate-fixture.jq"
+readonly MANIFEST_VERIFIER="$REPO_ROOT/scripts/issue-268-verify-manifest"
+temporary="$(mktemp -d)"
+trap 'rm -rf -- "$temporary"' EXIT
+
+aggregate_trial() {
+    local fixture="$1" output="$2"
+    jq -n --arg mode trial \
+        --slurpfile acquisition <(jq -c '.acquisition[]' "$fixture") \
+        --slurpfile host <(jq -c '.host[]' "$fixture") \
+        --slurpfile resources <(jq -c '.resources[]' "$fixture") \
+        --slurpfile metrics <(jq -c '.metrics[]' "$fixture") \
+        --slurpfile traces <(jq -c '.traces[]' "$fixture") \
+        --slurpfile logs <(jq -c '.logs[]' "$fixture") \
+        --slurpfile dmesg <(jq -c '.dmesg[]' "$fixture") \
+        --slurpfile exportIo <(jq -c '.exportIo[]' "$fixture") \
+        --slurpfile execution <(jq -c '.execution[]' "$fixture") \
+        --slurpfile trialManifests <(jq -c '.trialManifests[]' "$fixture") \
+        --argjson trials '[]' --argjson campaignManifests '[]' \
+        -f "$AGGREGATOR" > "$output"
+}
+
+jq -n -f "$FIXTURE" > "$temporary/fixture.json"
+mkdir "$temporary/manifest-root"
+printf 'summary\n' > "$temporary/manifest-root/trial-summary.json"
+summary_sha="$(sha256sum "$temporary/manifest-root/trial-summary.json" | { read -r hash _; printf '%s' "${hash^^}"; })"
+summary_bytes="$(stat --format='%s' "$temporary/manifest-root/trial-summary.json")"
+jq -cS -n --arg sha "$summary_sha" --argjson bytes "$summary_bytes" '
+  {schemaVersion:"issue-268-post-summary-trial-manifest-v1",revision:"fixture",profile:"asi178mc",trial:"trial-1",
+   files:[{path:"trial-summary.json",bytes:$bytes,sha256:$sha}],fileCount:1,totalBytes:$bytes}' \
+  > "$temporary/manifest-input.json"
+manifest_identity="$(sha256sum "$temporary/manifest-input.json" | { read -r hash _; printf '%s' "${hash^^}"; })"
+jq --arg identity "$manifest_identity" '. + {evidenceIdentitySha256:$identity}' \
+  "$temporary/manifest-input.json" > "$temporary/authenticated-manifest.json"
+"$MANIFEST_VERIFIER" "$temporary/authenticated-manifest.json" "$temporary/manifest-root"
+jq '.trial = "forged-trial"' "$temporary/authenticated-manifest.json" > "$temporary/forged-authenticated-manifest.json"
+if "$MANIFEST_VERIFIER" "$temporary/forged-authenticated-manifest.json" "$temporary/manifest-root" 2>/dev/null; then
+    printf 'The runner manifest verifier accepted relabeled authenticated evidence.\n' >&2
+    exit 1
+fi
+aggregate_trial "$temporary/fixture.json" "$temporary/trial-summary.json"
+jq --exit-status '
+  .passed == true and
+  .telemetry.measuredWindowReconciliation.spans.laneClaim == 100 and
+  .telemetry.measuredWindowReconciliation.otlpCounters.laneClaims == 100 and
+  .resources.process.source == "bracketed OTLP process.cpu.time cpu.mode=user|system" and
+  .resources.phaseDeltas.reconciliation.passed == true and
+  (.telemetry.requiredSeriesExportCoverage | length) >= 28 and
+  all(.telemetry.requiredSeriesExportCoverage[]; .passed == true) and
+  ([.telemetry.authenticatedExpectedStartupWarnings[].eventId] | sort) == [15, 35] and
+  ([.resources.phaseDeltas.acquisition.raw, .resources.phaseDeltas.drain.raw,
+    .resources.phaseDeltas.total.raw] | all(has("processCpuSeconds") and has("processReadSyscalls") and
+      has("containerNetworkWriteBytes") and has("blockIoTimeMilliseconds") and
+      has("sqliteWalGrowthBytes") and has("ingressCommitted") and has("laneClaims") and has("processingGraphs")))
+' "$temporary/trial-summary.json" >/dev/null
+
+jq '.logs[0].resourceLogs[0].scopeLogs[0].logRecords += [{
+  timeUnixNano:"150000000000", severityNumber:13, severityText:"Warning",
+  body:{stringValue:"late startup warning"}, attributes:[{key:"EventId", value:{stringValue:"103"}}]
+}]' "$temporary/fixture.json" > "$temporary/late-startup.json"
+if aggregate_trial "$temporary/late-startup.json" "$temporary/invalid-startup-summary.json" 2>/dev/null; then
+    printf 'A measured-window event 103 warning was accepted.\n' >&2
+    exit 1
+fi
+
+jq '(.metrics[0].resourceMetrics[0].scopeMetrics[].metrics[] |
+  select(.name == "process.memory.working_set")).gauge.dataPoints |= .[0:2]' \
+  "$temporary/fixture.json" > "$temporary/missing-series-exports.json"
+if aggregate_trial "$temporary/missing-series-exports.json" "$temporary/invalid-series-coverage-summary.json" 2>/dev/null; then
+    printf 'A required OTLP series with insufficient export coverage was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.acquisition[0].boundarySnapshots.acquisitionEnd.completedUnixMilliseconds += 1000' \
+  "$temporary/fixture.json" > "$temporary/boundary-clock-step.json"
+if aggregate_trial "$temporary/boundary-clock-step.json" "$temporary/invalid-boundary-clock-summary.json" 2>/dev/null; then
+    printf 'A boundary wall/monotonic mismatch was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.host[0].mountAuthentication.shutdown.runtime.mount.Source = "forged-runtime"' \
+  "$temporary/fixture.json" > "$temporary/forged-runtime-mount.json"
+if aggregate_trial "$temporary/forged-runtime-mount.json" "$temporary/invalid-runtime-mount-summary.json" 2>/dev/null; then
+    printf 'A forged post-run runtime mount identity was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.acquisition[0].boundarySnapshots.acquisitionEnd.hostBlockDevice.name = "wrong-device"' \
+  "$temporary/fixture.json" > "$temporary/forged-boundary-device.json"
+if aggregate_trial "$temporary/forged-boundary-device.json" "$temporary/invalid-boundary-device-summary.json" 2>/dev/null; then
+    printf 'A boundary snapshot from the wrong block device was accepted.\n' >&2
+    exit 1
+fi
+
+jq '(.logs[0].resourceLogs[0].scopeLogs[0].logRecords[] |
+  select(any(.attributes[]?; .key == "EventId" and .value.stringValue == "35"))).body.stringValue = "unexpected"' \
+  "$temporary/fixture.json" > "$temporary/invalid-warning-body.json"
+if aggregate_trial "$temporary/invalid-warning-body.json" "$temporary/invalid-warning-body-summary.json" 2>/dev/null; then
+    printf 'An event 35 warning with an unexpected retained body was accepted.\n' >&2
+    exit 1
+fi
+
+jq '(.logs[0].resourceLogs[0].scopeLogs[0].logRecords[] |
+  select(any(.attributes[]?; .key == "EventId" and .value.stringValue == "15"))) |=
+  (.attributes |= map(if .key == "SourceContext" then .value.stringValue = "Untrusted.Source" else . end))' \
+  "$temporary/fixture.json" > "$temporary/invalid-warning-source.json"
+if aggregate_trial "$temporary/invalid-warning-source.json" "$temporary/invalid-warning-summary.json" 2>/dev/null; then
+    printf 'An event 15 warning from an untrusted source was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.resources[20].timestampUnixMilliseconds += 1000' "$temporary/fixture.json" > "$temporary/clock-step.json"
+if aggregate_trial "$temporary/clock-step.json" "$temporary/invalid-clock-summary.json" 2>/dev/null; then
+    printf 'A resource-sampling wall-clock step was accepted.\n' >&2
+    exit 1
+fi
+
+jq '(.logs[0].resourceLogs[0].scopeLogs[0].logRecords[] |
+  select(any(.attributes[]?; .key == "EventId" and .value.stringValue == "2048"))) |=
+  (.attributes |= map(if .key == "Result" then .value.stringValue = "failure" else . end) |
+   .body.stringValue = "Raw ingress SQLite operation commit completed with result failure")' \
+  "$temporary/fixture.json" > "$temporary/failed-sqlite-warning.json"
+if aggregate_trial "$temporary/failed-sqlite-warning.json" "$temporary/invalid-sqlite-summary.json" 2>/dev/null; then
+    printf 'A failure event 2048 warning was accepted.\n' >&2
+    exit 1
+fi
+
+jq -n --slurpfile trial "$temporary/trial-summary.json" \
+    '[range(0; 5) as $index | $trial[0] + {
+      trial: ("trial-" + (($index + 1) | tostring)),
+      trialInputIdentity: ("fixture-input-" + (($index + 1) | tostring)),
+      boundaries: ($trial[0].boundaries | with_entries(.value += ($index * 200000))),
+      resources: ($trial[0].resources | del(.samples))
+    }]' \
+    > "$temporary/trials.json"
+jq -n '[range(0; 5) as $index | {
+      schemaVersion:"issue-268-post-summary-trial-manifest-v1",
+      revision:"fixture", profile:"asi178mc", trial:("trial-" + (($index + 1) | tostring)),
+      evidenceIdentitySha256:(((["A", "B", "C", "D", "E"][$index])) * 64),
+      fileCount:1, totalBytes:1, files:[{path:"evidence/trial-summary.json",bytes:1,sha256:("A" * 64)}]
+    }]' > "$temporary/trial-manifests.json"
+jq -n --arg mode campaign \
+    --argjson acquisition '[]' --argjson host '[]' --argjson resources '[]' --argjson metrics '[]' \
+    --argjson traces '[]' --argjson logs '[]' --argjson dmesg '[]' --argjson exportIo '[]' \
+    --argjson execution '[]' --argjson trialManifests '[]' \
+    --slurpfile trials "$temporary/trials.json" \
+    --slurpfile campaignManifests "$temporary/trial-manifests.json" \
+    -f "$AGGREGATOR" > "$temporary/campaign-summary.json"
+jq --exit-status '.allPassed == true and .citable == true and .trialCount == 5 and
+  ([.trialStorageTopologies[].storage.runtime.path] | all(. == "runtime"))' \
+    "$temporary/campaign-summary.json" >/dev/null
+
+jq '.[1].trial = .[0].trial' "$temporary/trials.json" > "$temporary/duplicate-trial.json"
+if jq -n --arg mode campaign \
+    --argjson acquisition '[]' --argjson host '[]' --argjson resources '[]' --argjson metrics '[]' \
+    --argjson traces '[]' --argjson logs '[]' --argjson dmesg '[]' --argjson exportIo '[]' \
+    --argjson execution '[]' --argjson trialManifests '[]' \
+    --slurpfile trials "$temporary/duplicate-trial.json" \
+    --slurpfile campaignManifests "$temporary/trial-manifests.json" \
+    -f "$AGGREGATOR" > "$temporary/invalid-campaign-summary.json" 2>/dev/null; then
+    printf 'Duplicate trial identifiers were accepted.\n' >&2
+    exit 1
+fi
+
+jq '.[1].trial = "forged-trial"' "$temporary/trials.json" > "$temporary/duplicate-evidence.json"
+if jq -n --arg mode campaign \
+    --argjson acquisition '[]' --argjson host '[]' --argjson resources '[]' --argjson metrics '[]' \
+    --argjson traces '[]' --argjson logs '[]' --argjson dmesg '[]' --argjson exportIo '[]' \
+    --argjson execution '[]' --argjson trialManifests '[]' \
+    --slurpfile trials "$temporary/duplicate-evidence.json" \
+    --slurpfile campaignManifests "$temporary/trial-manifests.json" \
+    -f "$AGGREGATOR" > "$temporary/invalid-evidence-summary.json" 2>/dev/null; then
+    printf 'A relabeled trial summary was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.[1] = .[0]' "$temporary/trial-manifests.json" > "$temporary/duplicate-manifest.json"
+if jq -n --arg mode campaign \
+    --argjson acquisition '[]' --argjson host '[]' --argjson resources '[]' --argjson metrics '[]' \
+    --argjson traces '[]' --argjson logs '[]' --argjson dmesg '[]' --argjson exportIo '[]' \
+    --argjson execution '[]' --argjson trialManifests '[]' \
+    --slurpfile trials "$temporary/trials.json" \
+    --slurpfile campaignManifests "$temporary/duplicate-manifest.json" \
+    -f "$AGGREGATOR" > "$temporary/invalid-duplicate-manifest-summary.json" 2>/dev/null; then
+    printf 'A duplicate post-summary trial manifest was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.[1].trial = "relabeled-trial"' "$temporary/trial-manifests.json" > "$temporary/relabeled-manifest.json"
+if jq -n --arg mode campaign \
+    --argjson acquisition '[]' --argjson host '[]' --argjson resources '[]' --argjson metrics '[]' \
+    --argjson traces '[]' --argjson logs '[]' --argjson dmesg '[]' --argjson exportIo '[]' \
+    --argjson execution '[]' --argjson trialManifests '[]' \
+    --slurpfile trials "$temporary/trials.json" \
+    --slurpfile campaignManifests "$temporary/relabeled-manifest.json" \
+    -f "$AGGREGATOR" > "$temporary/invalid-relabel-summary.json" 2>/dev/null; then
+    printf 'A relabeled post-summary trial manifest was accepted.\n' >&2
+    exit 1
+fi
+
+printf 'Issue #268 physical aggregate trial, campaign, and duplicate-rejection fixtures passed.\n'

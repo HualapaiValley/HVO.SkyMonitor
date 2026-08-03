@@ -255,7 +255,7 @@ public sealed class ZwoAsiCameraModuleTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public async Task SelectionSkipsInaccessibleUnrelatedInventoryEntries()
+    public async Task SelectionDoesNotOpenUnrelatedInventoryEntries()
     {
         var native = new FakeAsiNativeApi();
         native.Cameras.Insert(0, Camera(1, "ZWO ASI120MM Mini", Convert.FromHexString("1011223344556677"), color: false));
@@ -263,13 +263,16 @@ public sealed class ZwoAsiCameraModuleTests
         native.Cameras.Insert(2, Camera(3, "ZWO ASI676MC", Convert.FromHexString("3011223344556677")));
         native.FailOpenCameraIds.Add(1);
         native.FailSerialCameraIds.Add(2);
-        native.FailCloseCameraIds.Add(3);
         await using var module = Module(native);
 
         await module.InitializeAsync(CreateConfig(), CancellationToken.None);
 
+        Assert.DoesNotContain("Open:1", native.Calls);
+        Assert.DoesNotContain("Open:2", native.Calls);
+        Assert.DoesNotContain("Serial:1", native.Calls);
+        Assert.DoesNotContain("Serial:2", native.Calls);
         Assert.Contains("Init:7", native.Calls);
-        Assert.AreEqual(3, native.CloseCameraCalls);
+        Assert.AreEqual(2, native.CloseCameraCalls);
     }
 
     [TestMethod]
@@ -551,7 +554,7 @@ public sealed class ZwoAsiCameraModuleTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public async Task DisposalCancelsAndStopsActiveExposure()
+    public async Task DisposalCancelsExposureAndPropagatesFinalCloseFailureAfterCleanup()
     {
         var native = new FakeAsiNativeApi { RepeatWorkingStatus = true };
         var module = Module(native);
@@ -560,11 +563,15 @@ public sealed class ZwoAsiCameraModuleTests
             new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still),
             CancellationToken.None);
         await native.ExposureStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        native.FailCloseCameraIds.Add(7);
 
-        await module.DisposeAsync();
+        var exception = await Assert.ThrowsExactlyAsync<AsiException>(() => module.DisposeAsync().AsTask());
 
+        Assert.AreEqual(AsiErrorCode.CameraRemoved, exception.ErrorCode);
         await Assert.ThrowsAsync<OperationCanceledException>(() => capture);
         Assert.AreEqual(1, native.StopExposureCalls);
+        Assert.AreEqual(1, native.DisposeCalls);
+        await module.DisposeAsync();
         Assert.AreEqual(1, native.DisposeCalls);
     }
 

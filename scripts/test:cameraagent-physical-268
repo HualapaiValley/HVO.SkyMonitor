@@ -1,0 +1,1304 @@
+#!/usr/bin/env bash
+# Run one of the two frozen issue #268 sustained physical acquisition strata.
+
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
+readonly COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/issue-268/compose.yml"
+readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/issue-268/otel-collector.yml"
+readonly AGGREGATOR="$REPO_ROOT/scripts/issue-268-physical-aggregate.jq"
+readonly MANIFEST_VERIFIER="$REPO_ROOT/scripts/issue-268-verify-manifest"
+readonly ACCEPTANCE_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
+readonly HARDWARE_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
+readonly COLLECTOR_DIGEST='sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6'
+readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b'
+readonly EXPECTED_HEADER_SHA256='af6ab82e66905b3a0f3313e1e82ccb4fedde272eaa64744588a1be8103f9cf0c'
+readonly EXPECTED_UDEV_SHA256='a64c24317f154d5b074e9fac9249f4a5d905153b22f1e74aac4c5f8fe1443f36'
+readonly EXPECTED_CATALOG_SHA256='b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2'
+readonly HEADER_PATH='/usr/local/include/ASICamera2.h'
+readonly UDEV_PATH='/etc/udev/rules.d/99-asi.rules'
+readonly HTTP_PORT="${HVO_ISSUE_268_HTTP_PORT:-52680}"
+readonly TRIAL_COUNT=5
+
+usage() {
+    printf 'Usage: HVO_AGENT_STATE_ROOT=... HVO_CATALOG_PERF_ROOT=... HVO_OTEL_COLLECTOR_IMAGE=IMAGE@sha256:DIGEST HVO_ZWO_SDK_LIBRARY=... HVO_ZWO_CAMERA_SERIAL=PRIVATE HVO_ISSUE_268_USB_SYSFS_PATH=/sys/bus/usb/devices/BUS-PORT %s --profile asi178mc --expected-host home-dev-01\n' "${0##*/}" >&2
+    printf '   or: ... %s --profile asi676mc --expected-host allsky01\n' "${0##*/}" >&2
+}
+
+if [[ $# -ne 4 || "$1" != '--profile' || "$3" != '--expected-host' ]]; then
+    usage
+    exit 2
+fi
+readonly PROFILE="$2"
+readonly EXPECTED_HOST="$4"
+
+case "$PROFILE:$EXPECTED_HOST" in
+    asi178mc:home-dev-01)
+        readonly CAMERA_MODEL='ASI178MC'
+        readonly PROFILE_FILE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.zwo-asi178mc.sample.json"
+        readonly EXPECTED_PROFILE_SHA256='f1213ee610d50a3634fec194908e18f9e12114e46ea687e5145c911aa6cf9ec7'
+        readonly EXPECTED_SDK_SHA256='d1de4a5ab85c8cafbddfad9c593bbba515890d3adf20c1ca44dafcf15f2775ce'
+        readonly EXPECTED_ARCH='x86_64'
+        readonly EXPECTED_KERNEL='6.8.0-136-generic'
+        readonly EXPECTED_LOGICAL_CPUS=8
+        readonly EXPECTED_MEMORY_BYTES=25199149056
+        readonly EXPECTED_IMAGE_ARCH='amd64'
+        readonly EXPECTED_USB_PRODUCT='178a'
+        readonly EXPECTED_RUNTIME_DEVICE='/dev/sda1'
+        readonly EXPECTED_RUNTIME_FS='ext4'
+        readonly EXPECTED_RUNTIME_MOUNT='/'
+        readonly MINIMUM_FREE_BYTES=$((32 * 1024 * 1024 * 1024))
+        ;;
+    asi676mc:allsky01)
+        readonly CAMERA_MODEL='ASI676MC'
+        readonly PROFILE_FILE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.zwo-asi676mc.sample.json"
+        readonly EXPECTED_PROFILE_SHA256='0d6c8118081204163e4895b75d0ae17b9366af9db51139981ccf8339a37063b5'
+        readonly EXPECTED_SDK_SHA256='3ecf511979ed571131e7d7f4a467112aba21940b4dc91d63bd109b9683bf67c4'
+        readonly EXPECTED_ARCH='aarch64'
+        readonly EXPECTED_KERNEL='6.18.34+rpt-rpi-2712'
+        readonly EXPECTED_LOGICAL_CPUS=4
+        readonly EXPECTED_MEMORY_BYTES=17006182400
+        readonly EXPECTED_IMAGE_ARCH='arm64'
+        readonly EXPECTED_USB_PRODUCT='676d'
+        readonly EXPECTED_RUNTIME_DEVICE='/dev/nvme0n1p1'
+        readonly EXPECTED_RUNTIME_FS='xfs'
+        readonly EXPECTED_RUNTIME_MOUNT='/var/lib/docker'
+        readonly MINIMUM_FREE_BYTES=$((40 * 1024 * 1024 * 1024))
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac
+
+for variable in HVO_AGENT_STATE_ROOT HVO_CATALOG_PERF_ROOT HVO_OTEL_COLLECTOR_IMAGE \
+    HVO_ZWO_SDK_LIBRARY HVO_ZWO_CAMERA_SERIAL HVO_ISSUE_268_USB_SYSFS_PATH; do
+    [[ -n "${!variable:-}" ]] || { printf '%s is required.\n' "$variable" >&2; exit 2; }
+done
+[[ "$HVO_AGENT_STATE_ROOT" == /* && "$HVO_CATALOG_PERF_ROOT" == /* &&
+   "$HVO_ZWO_SDK_LIBRARY" == /* && "$HVO_ISSUE_268_USB_SYSFS_PATH" == /sys/bus/usb/devices/* ]] || {
+    printf 'Agent state, catalog, SDK, and USB sysfs inputs must be absolute declared paths.\n' >&2
+    exit 2
+}
+[[ "$HVO_ZWO_CAMERA_SERIAL" =~ ^[0-9A-Fa-f]{16}$ ]] || { printf 'The private camera serial must be exactly 16 hexadecimal characters.\n' >&2; exit 2; }
+[[ "$HVO_OTEL_COLLECTOR_IMAGE" == *@"$COLLECTOR_DIGEST" ]] || { printf 'The collector must use reviewed digest %s.\n' "$COLLECTOR_DIGEST" >&2; exit 2; }
+
+for command in awk cat chmod cp curl cut date df dmesg docker dotnet du find findmnt flock fuser getconf git hostname id jq lsblk mkdir mv nproc openssl ps readlink realpath rg rm sha256sum shellcheck sleep sort stat strings tail timedatectl timeout tr uname wc; do
+    command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
+done
+if [[ "$PROFILE" == asi676mc ]]; then
+    command -v vcgencmd >/dev/null 2>&1 || { printf 'vcgencmd is required for ARM throttle evidence.\n' >&2; exit 2; }
+fi
+
+STATE_ROOT="$(realpath -m "$HVO_AGENT_STATE_ROOT")"
+readonly STATE_ROOT
+[[ "$STATE_ROOT" == /home/roys/hvo-agent-state ]] || {
+    printf 'Physical evidence state must remain at /home/roys/hvo-agent-state.\n' >&2
+    exit 2
+}
+mkdir -p "$STATE_ROOT"
+exec 8> "$STATE_ROOT/.performance.lock"
+flock -n 8 || { printf 'Another performance campaign owns %s/.performance.lock.\n' "$STATE_ROOT" >&2; exit 2; }
+
+compute_dirty_sha256() {
+    {
+        git -C "$REPO_ROOT" diff --binary HEAD
+        while IFS= read -r -d '' path; do
+            printf 'untracked\0%s\0' "$path"
+            git -C "$REPO_ROOT" hash-object -- "$path"
+        done < <(git -C "$REPO_ROOT" ls-files --others --exclude-standard -z)
+    } | sha256sum | { read -r hash _; printf '%s' "$hash"; }
+}
+
+REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+BRANCH="$(git -C "$REPO_ROOT" branch --show-current)"
+CLEAN_DIRTY_SHA256="$(printf '' | sha256sum | { read -r hash _; printf '%s' "$hash"; })"
+readonly REVISION BRANCH CLEAN_DIRTY_SHA256
+[[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$(compute_dirty_sha256)" == "$CLEAN_DIRTY_SHA256" ]] || {
+    printf 'Issue #268 requires one clean exact 40-hex committed HEAD.\n' >&2
+    exit 2
+}
+
+assert_source_unchanged() {
+    [[ "$(git -C "$REPO_ROOT" rev-parse HEAD)" == "$REVISION" && "$(compute_dirty_sha256)" == "$CLEAN_DIRTY_SHA256" ]] || {
+        printf 'Source moved or became dirty after issue #268 authentication.\n' >&2
+        return 1
+    }
+}
+
+readonly CAMPAIGN_ROOT="$STATE_ROOT/issues/268/$REVISION/physical/$PROFILE"
+if [[ -e "$CAMPAIGN_ROOT" ]]; then
+    printf 'Create-new physical evidence root already exists: %s\n' "$CAMPAIGN_ROOT" >&2
+    exit 2
+fi
+mkdir -p "$CAMPAIGN_ROOT"
+printf '%s\n' 'hvo-issue-268-evidence-v1' > "$CAMPAIGN_ROOT/.hvo-issue-268-owned"
+
+cleanup_project=''
+cleanup_env=''
+sampler_pid=''
+kernel_pid=''
+deadline_pid=''
+runtime_volume=''
+runtime_path=''
+runtime_kind=''
+active_control_root=''
+owner_password=''
+camera_container=''
+collector_container=''
+central_deny_container=''
+runtime_init_container=''
+sdk_probe_container=''
+hardware_output=''
+rerun_summary=''
+
+remove_trial_containers() {
+    local container cleanup_failed=0 network
+    if [[ -n "$cleanup_project" && -n "$cleanup_env" && -f "$cleanup_env" ]]; then
+        docker compose --env-file "$cleanup_env" --project-name "$cleanup_project" --file "$COMPOSE_FILE" \
+            down --remove-orphans >/dev/null 2>&1 || cleanup_failed=1
+    fi
+    for container in "$camera_container" "$collector_container" "$central_deny_container" "$runtime_init_container" "$sdk_probe_container"; do
+        [[ -n "$container" ]] || continue
+        if docker container inspect "$container" >/dev/null 2>&1; then
+            docker rm --force "$container" >/dev/null 2>&1 || cleanup_failed=1
+        fi
+        if docker container inspect "$container" >/dev/null 2>&1; then
+            printf 'Failed to remove sensitive issue #268 container metadata: %s\n' "$container" >&2
+            cleanup_failed=1
+        fi
+    done
+    if [[ -n "$cleanup_project" ]]; then
+        network="${cleanup_project}_isolated"
+        if docker network inspect "$network" >/dev/null 2>&1; then
+            docker network rm "$network" >/dev/null 2>&1 || cleanup_failed=1
+        fi
+    fi
+    return "$cleanup_failed"
+}
+
+remove_owned_runtime() {
+    local cleanup_failed=0 owner_label
+    if [[ -n "$runtime_volume" ]] && docker volume inspect "$runtime_volume" >/dev/null 2>&1; then
+        owner_label="$(docker volume inspect "$runtime_volume" --format '{{index .Labels "hvo.issue-268.owner"}}')"
+        if [[ "$owner_label" == "$REVISION:$PROFILE" ]]; then
+            docker volume rm --force "$runtime_volume" >/dev/null 2>&1 || cleanup_failed=1
+        else
+            printf 'Refusing to remove unowned issue #268 runtime volume: %s\n' "$runtime_volume" >&2
+            cleanup_failed=1
+        fi
+    fi
+    if [[ -n "$runtime_volume" ]] && docker volume inspect "$runtime_volume" >/dev/null 2>&1; then
+        printf 'Failed to remove issue #268 runtime volume: %s\n' "$runtime_volume" >&2
+        cleanup_failed=1
+    fi
+    if [[ "$runtime_kind" == bind-backed-docker-volume && -n "$runtime_path" && -e "$runtime_path" ]]; then
+        if [[ -f "$runtime_path/.hvo-issue-268-owned" &&
+              "$(<"$runtime_path/.hvo-issue-268-owned")" == 'hvo-issue-268-runtime-v1' ]]; then
+            rm -rf -- "$runtime_path" || cleanup_failed=1
+        else
+            printf 'Refusing to remove unowned issue #268 runtime path: %s\n' "$runtime_path" >&2
+            cleanup_failed=1
+        fi
+    fi
+    [[ -z "$runtime_path" || "$runtime_kind" != bind-backed-docker-volume || ! -e "$runtime_path" ]] || cleanup_failed=1
+    return "$cleanup_failed"
+}
+
+cleanup() {
+    local status=$?
+    local cleanup_failed=0
+    trap - EXIT INT TERM
+    if [[ -n "$sampler_pid" ]]; then kill "$sampler_pid" >/dev/null 2>&1 || true; wait "$sampler_pid" 2>/dev/null || true; fi
+    if [[ -n "$kernel_pid" ]]; then kill "$kernel_pid" >/dev/null 2>&1 || true; wait "$kernel_pid" 2>/dev/null || true; fi
+    if [[ -n "$deadline_pid" ]]; then kill "$deadline_pid" >/dev/null 2>&1 || true; wait "$deadline_pid" 2>/dev/null || true; fi
+    remove_trial_containers || cleanup_failed=1
+    remove_owned_runtime || cleanup_failed=1
+    if [[ -n "$active_control_root" && -d "$active_control_root" ]]; then
+        rm -rf -- "$active_control_root" || cleanup_failed=1
+    fi
+    if [[ -n "$hardware_output" ]]; then rm -f -- "$hardware_output" || cleanup_failed=1; fi
+    if [[ -n "$rerun_summary" ]]; then rm -f -- "$rerun_summary" || cleanup_failed=1; fi
+    unset owner_password HVO_ZWO_CAMERA_SERIAL
+    if ((cleanup_failed != 0)); then
+        printf 'Issue #268 cleanup could not prove removal of all sensitive metadata and owned runtime state.\n' >&2
+        status=1
+    fi
+    exit "$status"
+}
+trap cleanup EXIT INT TERM
+
+HOSTNAME_ACTUAL="$(hostname -s)"
+readonly HOSTNAME_ACTUAL
+[[ "$HOSTNAME_ACTUAL" == "$EXPECTED_HOST" ]] || { printf 'Expected host %s, found %s.\n' "$EXPECTED_HOST" "$HOSTNAME_ACTUAL" >&2; exit 2; }
+[[ "$(uname -m)" == "$EXPECTED_ARCH" ]] || { printf 'Expected architecture %s.\n' "$EXPECTED_ARCH" >&2; exit 2; }
+[[ "$(cat /sys/module/usbcore/parameters/usbfs_memory_mb)" == 200 ]] || { printf 'USBFS memory must be exactly 200 MB.\n' >&2; exit 2; }
+[[ -r "$HVO_ISSUE_268_USB_SYSFS_PATH/idVendor" && -r "$HVO_ISSUE_268_USB_SYSFS_PATH/idProduct" && -r "$HVO_ISSUE_268_USB_SYSFS_PATH/speed" ]] || {
+    printf 'Selected USB sysfs device is incomplete.\n' >&2
+    exit 2
+}
+[[ "$(<"$HVO_ISSUE_268_USB_SYSFS_PATH/idVendor")" == '03c3' && "$(<"$HVO_ISSUE_268_USB_SYSFS_PATH/idProduct")" == "$EXPECTED_USB_PRODUCT" ]] || {
+    printf 'Selected USB identity does not match %s.\n' "$CAMERA_MODEL" >&2
+    exit 2
+}
+[[ "$(<"$HVO_ISSUE_268_USB_SYSFS_PATH/speed")" == '5000' ]] || { printf 'Selected camera must enumerate at 5 Gbit/s.\n' >&2; exit 2; }
+if [[ "$PROFILE" == asi178mc &&
+      ("$(<"$HVO_ISSUE_268_USB_SYSFS_PATH/busnum")" != 10 || "$(<"$HVO_ISSUE_268_USB_SYSFS_PATH/devpath")" != 1) ]]; then
+    printf 'The x64 ASI178MC must remain on USB bus 010 port 1.\n' >&2
+    exit 2
+fi
+USB_BUS="$(printf '%03d' "$((10#$(<"$HVO_ISSUE_268_USB_SYSFS_PATH/busnum")))")"
+USB_DEVICE="$(printf '%03d' "$((10#$(<"$HVO_ISSUE_268_USB_SYSFS_PATH/devnum")))")"
+readonly USB_BUS USB_DEVICE
+readonly USB_DEVICE_NODE="/dev/bus/usb/$USB_BUS/$USB_DEVICE"
+[[ -c "$USB_DEVICE_NODE" ]] || { printf 'Selected USB device node is missing.\n' >&2; exit 2; }
+USB_DEVICE_GID="$(stat --format='%g' "$USB_DEVICE_NODE")"
+readonly USB_DEVICE_GID
+
+assert_usb_topology() {
+    local zwo_count=0 selected_count=0
+    local speeds=() buses=()
+    local vendor_file
+    for vendor_file in /sys/bus/usb/devices/*/idVendor; do
+        [[ -f "$vendor_file" ]] || continue
+        [[ "$(<"$vendor_file")" == '03c3' ]] || continue
+        local device_root="${vendor_file%/idVendor}"
+        zwo_count=$((zwo_count + 1))
+        speeds+=("$(<"$device_root/speed")")
+        buses+=("$(<"$device_root/busnum")")
+        [[ "$device_root" == "$HVO_ISSUE_268_USB_SYSFS_PATH" ]] && selected_count=$((selected_count + 1))
+    done
+    [[ "$selected_count" -eq 1 ]] || { printf 'Selected USB path is not unique in the ZWO topology.\n' >&2; return 1; }
+    if [[ "$PROFILE" == asi178mc ]]; then
+        [[ "$zwo_count" -eq 1 && "${speeds[0]}" == 5000 ]] || {
+            printf 'x64 topology must contain only the selected 5-Gbit/s ZWO camera.\n' >&2
+            return 1
+        }
+    else
+        [[ "$zwo_count" -eq 3 && "$(printf '%s\n' "${speeds[@]}" | sort -n | tr '\n' ' ')" == '480 5000 5000 ' &&
+           "$(printf '%s\n' "${buses[@]}" | sort -u | wc -l)" -eq 3 ]] || {
+            printf 'ARM topology must retain three ZWO cameras on separate buses at 480/5000/5000 Mbit/s.\n' >&2
+            return 1
+        }
+    fi
+}
+
+assert_host_runtime_identity() {
+    local blocks size evidence_blocks_current evidence_size_current
+    [[ "$(hostname -s)" == "$EXPECTED_HOST" && "$(uname -m)" == "$EXPECTED_ARCH" &&
+       "$(uname -r)" == "$EXPECTED_KERNEL" && "$(nproc)" -eq "$EXPECTED_LOGICAL_CPUS" &&
+       "$(awk '/^MemTotal:/ {printf "%.0f", $2 * 1024}' /proc/meminfo)" -eq "$EXPECTED_MEMORY_BYTES" ]] || return 1
+    [[ "$(<"$HVO_ISSUE_268_USB_SYSFS_PATH/idVendor")" == 03c3 &&
+       "$(<"$HVO_ISSUE_268_USB_SYSFS_PATH/idProduct")" == "$EXPECTED_USB_PRODUCT" &&
+       "$(<"$HVO_ISSUE_268_USB_SYSFS_PATH/speed")" == 5000 ]] || return 1
+    [[ "$(timedatectl show --property=NTPSynchronized --value)" == yes ]] || return 1
+    [[ "$(findmnt -n -o SOURCE --target "$EXPECTED_RUNTIME_MOUNT")" == "$EXPECTED_RUNTIME_DEVICE" &&
+       "$(findmnt -n -o FSTYPE --target "$EXPECTED_RUNTIME_MOUNT")" == "$EXPECTED_RUNTIME_FS" ]] || return 1
+    read -r blocks size < <(stat -f --format='%a %S' "$EXPECTED_RUNTIME_MOUNT")
+    read -r evidence_blocks_current evidence_size_current < <(stat -f --format='%a %S' "$STATE_ROOT")
+    ((blocks * size >= MINIMUM_FREE_BYTES && evidence_blocks_current * evidence_size_current >= MINIMUM_FREE_BYTES)) || return 1
+    [[ "$PROFILE" != asi676mc || "$(vcgencmd get_throttled | cut -d= -f2)" == 0x0 ]] || return 1
+    assert_usb_topology
+}
+
+assert_host_runtime_identity || { printf 'Host, clock, storage, or USB topology identity changed.\n' >&2; exit 2; }
+[[ -z "$(fuser "$USB_DEVICE_NODE" 2>/dev/null || true)" ]] || { printf 'A competing process owns the selected camera.\n' >&2; exit 2; }
+
+sha256_matches() {
+    local path="$1" expected="$2" actual
+    read -r actual _ < <(sha256sum "$path")
+    [[ "${actual,,}" == "${expected,,}" ]]
+}
+tree_sha256() {
+    local root="$1"
+    (
+        cd "$root"
+        find . -type f -exec sha256sum {} \; | sort
+    ) | sha256sum | { read -r hash _; printf '%s' "$hash"; }
+}
+assert_static_identities() {
+    sha256_matches "$PROFILE_FILE" "$EXPECTED_PROFILE_SHA256" &&
+        sha256_matches "$HVO_ZWO_SDK_LIBRARY" "$EXPECTED_SDK_SHA256" &&
+        sha256_matches "$HEADER_PATH" "$EXPECTED_HEADER_SHA256" &&
+        sha256_matches "$UDEV_PATH" "$EXPECTED_UDEV_SHA256"
+}
+assert_static_identities || { printf 'Profile, SDK, header, or udev identity changed.\n' >&2; exit 2; }
+assert_catalog_identity() {
+    local count=0 catalog_file
+    [[ -z "$(find "$HVO_CATALOG_PERF_ROOT" -mindepth 1 ! -type d ! -type f -print -quit)" ]] || return 1
+    while IFS= read -r -d '' catalog_file; do
+        if sha256_matches "$catalog_file" "$EXPECTED_CATALOG_SHA256"; then
+            count=$((count + 1))
+        fi
+    done < <(find "$HVO_CATALOG_PERF_ROOT" -type f -print0)
+    [[ "$count" -eq 1 ]] || return 1
+    [[ -z "${SOURCE_CATALOG_TREE_SHA256:-}" ||
+       "$(tree_sha256 "$HVO_CATALOG_PERF_ROOT")" == "$SOURCE_CATALOG_TREE_SHA256" ]]
+}
+assert_catalog_identity || { printf 'Production catalog root must contain exactly one reviewed database.\n' >&2; exit 2; }
+SOURCE_CATALOG_TREE_SHA256="$(tree_sha256 "$HVO_CATALOG_PERF_ROOT")"
+readonly SOURCE_CATALOG_TREE_SHA256
+
+DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
+initial_runtime_source="$(findmnt -n -o SOURCE --target "$EXPECTED_RUNTIME_MOUNT")"
+initial_runtime_fs="$(findmnt -n -o FSTYPE --target "$EXPECTED_RUNTIME_MOUNT")"
+readonly DOCKER_ROOT initial_runtime_source initial_runtime_fs
+[[ "$initial_runtime_source" == "$EXPECTED_RUNTIME_DEVICE" && "$initial_runtime_fs" == "$EXPECTED_RUNTIME_FS" ]] || {
+    printf 'Runtime storage identity changed: %s %s.\n' "$initial_runtime_source" "$initial_runtime_fs" >&2
+    exit 2
+}
+if [[ "$PROFILE" == asi676mc ]]; then
+    [[ "$DOCKER_ROOT" == /var/lib/docker ]] || { printf 'ARM Docker root must remain /var/lib/docker.\n' >&2; exit 2; }
+    [[ "$(findmnt -n -o SOURCE --target "$STATE_ROOT")" == /dev/mmcblk0p2 &&
+       "$(findmnt -n -o FSTYPE --target "$STATE_ROOT")" == ext4 ]] || {
+        printf 'ARM evidence export storage identity changed.\n' >&2
+        exit 2
+    }
+fi
+read -r available_blocks block_size < <(stat -f --format='%a %S' "$EXPECTED_RUNTIME_MOUNT")
+((available_blocks * block_size >= MINIMUM_FREE_BYTES)) || { printf 'Runtime storage is below the %s-byte floor.\n' "$MINIMUM_FREE_BYTES" >&2; exit 2; }
+read -r evidence_blocks evidence_block_size < <(stat -f --format='%a %S' "$STATE_ROOT")
+((evidence_blocks * evidence_block_size >= MINIMUM_FREE_BYTES)) || { printf 'Evidence storage is below the %s-byte floor.\n' "$MINIMUM_FREE_BYTES" >&2; exit 2; }
+readonly BLOCK_DEVICE="${EXPECTED_RUNTIME_DEVICE##*/}"
+BLOCK_LOGICAL_SIZE="$(lsblk -dn -o LOG-SEC "$EXPECTED_RUNTIME_DEVICE")"
+readonly BLOCK_LOGICAL_SIZE
+CLOCK_TICKS_PER_SECOND="$(getconf CLK_TCK)"
+readonly CLOCK_TICKS_PER_SECOND
+
+[[ "$(timedatectl show --property=NTPSynchronized --value)" == yes ]] || { printf 'NTP must be synchronized.\n' >&2; exit 2; }
+dmesg >/dev/null || { printf 'Kernel log access is required for USB fault evidence.\n' >&2; exit 2; }
+running_cameraagents="$(docker ps --format '{{.Names}} {{.Image}}' | rg -i 'cameraagent|hvo.*camera' || true)"
+[[ -z "$running_cameraagents" ]] || { printf 'Competing CameraAgent containers must be stopped:\n%s\n' "$running_cameraagents" >&2; exit 2; }
+[[ -z "$(docker ps -a --filter 'name=^/hvo268-' --format '{{.Names}}')" ]] || { printf 'Stale hvo268 containers must be removed.\n' >&2; exit 2; }
+
+DOTNET_SDK_VERSION="$(dotnet --version)"
+readonly DOTNET_SDK_VERSION
+[[ "$DOTNET_SDK_VERSION" == '10.0.100' ]] || { printf 'Pinned .NET SDK 10.0.100 is required.\n' >&2; exit 2; }
+DOCKER_VERSION="$(docker version --format '{{.Server.Version}}')"
+[[ "$DOCKER_VERSION" == '29.6.2' && "$DOCKER_ROOT" == /var/lib/docker ]] || {
+    printf 'Docker 29.6.2 with root /var/lib/docker is required.\n' >&2
+    exit 2
+}
+PROFILE_CONFIG_SHA256="$(sha256sum "$PROFILE_FILE" | { read -r hash _; printf '%s' "$hash"; })"
+COLLECTOR_CONFIG_SHA256="$(sha256sum "$COLLECTOR_CONFIG" | { read -r hash _; printf '%s' "$hash"; })"
+readonly DOCKER_VERSION PROFILE_CONFIG_SHA256 COLLECTOR_CONFIG_SHA256
+
+anonymous_docker_config="$STATE_ROOT/.docker-anonymous"
+mkdir -p "$anonymous_docker_config"
+printf '%s\n' '{"auths":{}}' > "$anonymous_docker_config/config.json"
+chmod 700 "$anonymous_docker_config"
+chmod 600 "$anonymous_docker_config/config.json"
+for image in "$HVO_OTEL_COLLECTOR_IMAGE" "$CENTRAL_DENY_IMAGE"; do
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        DOCKER_CONFIG="$anonymous_docker_config" docker pull "$image"
+    fi
+done
+docker run --rm --interactive "$HVO_OTEL_COLLECTOR_IMAGE" validate --config=/dev/stdin < "$COLLECTOR_CONFIG"
+COLLECTOR_IMAGE_ID="$(docker image inspect "$HVO_OTEL_COLLECTOR_IMAGE" --format '{{.Id}}')"
+CENTRAL_DENY_IMAGE_ID="$(docker image inspect "$CENTRAL_DENY_IMAGE" --format '{{.Id}}')"
+readonly COLLECTOR_IMAGE_ID CENTRAL_DENY_IMAGE_ID
+
+assert_source_unchanged
+dotnet build "$HARDWARE_PROJECT" --configuration Release -warnaserror
+dotnet build "$ACCEPTANCE_PROJECT" --configuration Release -warnaserror
+assert_source_unchanged
+HARDWARE_TEST_ASSEMBLY_SHA256="$(sha256sum "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Tests.dll" | { read -r hash _; printf '%s' "$hash"; })"
+ACCEPTANCE_TEST_ASSEMBLY_SHA256="$(sha256sum "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll" | { read -r hash _; printf '%s' "$hash"; })"
+readonly HARDWARE_TEST_ASSEMBLY_SHA256 ACCEPTANCE_TEST_ASSEMBLY_SHA256
+hardware_output="$(mktemp "$STATE_ROOT/issue-268-hardware-gate.XXXXXX")"
+HVO_ZWO_EXPECTED_MODEL="$CAMERA_MODEL" dotnet test "$HARDWARE_PROJECT" --no-build --configuration Release \
+    --filter 'TestCategory=Hardware' --logger 'console;verbosity=normal' > "$hardware_output"
+rg 'Passed![[:space:]]+- Failed:[[:space:]]+0, Passed:[[:space:]]+1, Skipped:[[:space:]]+0, Total:[[:space:]]+1,' \
+    "$hardware_output" >/dev/null || {
+    printf 'The separately selected Hardware gate did not execute and pass exactly once.\n' >&2
+    exit 1
+}
+jq -n --arg expectedModel "$CAMERA_MODEL" --arg assemblySha256 "${HARDWARE_TEST_ASSEMBLY_SHA256^^}" \
+    '{schemaVersion:"issue-268-hardware-gate-summary-v1", selection:"TestCategory=Hardware",
+      expectedModel:$expectedModel, assemblySha256:$assemblySha256,
+      executed:1, passed:1, failed:0, skipped:0, privacySanitized:true}' \
+    > "$CAMPAIGN_ROOT/hardware-gate-summary.json"
+rm -f "$hardware_output"
+assert_source_unchanged
+
+image_iid_file="$CAMPAIGN_ROOT/cameraagent-image-id"
+docker build --iidfile "$image_iid_file" -f "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT"
+CAMERA_AGENT_IMAGE="$(<"$image_iid_file")"
+readonly CAMERA_AGENT_IMAGE
+[[ "$CAMERA_AGENT_IMAGE" == sha256:* ]] || { printf 'CameraAgent image is not content addressed.\n' >&2; exit 1; }
+[[ "$(docker image inspect "$CAMERA_AGENT_IMAGE" --format '{{.Architecture}}')" == "$EXPECTED_IMAGE_ARCH" ]] || {
+    printf 'CameraAgent image architecture changed.\n' >&2
+    exit 1
+}
+CAMERA_ASSEMBLY_SHA256="$(docker run --rm --entrypoint sha256sum "$CAMERA_AGENT_IMAGE" /app/HVO.SkyMonitor.CameraAgent.dll | { read -r hash _; printf '%s' "$hash"; })"
+readonly CAMERA_ASSEMBLY_SHA256
+assert_source_unchanged
+
+assert_authenticated_execution_inputs() {
+    local actual
+    assert_source_unchanged && assert_static_identities && assert_catalog_identity || return 1
+    sha256_matches "$COLLECTOR_CONFIG" "$COLLECTOR_CONFIG_SHA256" || return 1
+    [[ "$(docker image inspect "$HVO_OTEL_COLLECTOR_IMAGE" --format '{{.Id}}')" == "$COLLECTOR_IMAGE_ID" ]] || return 1
+    [[ "$(docker image inspect "$CENTRAL_DENY_IMAGE" --format '{{.Id}}')" == "$CENTRAL_DENY_IMAGE_ID" ]] || return 1
+    sha256_matches "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Tests.dll" \
+        "$HARDWARE_TEST_ASSEMBLY_SHA256" || return 1
+    sha256_matches "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll" \
+        "$ACCEPTANCE_TEST_ASSEMBLY_SHA256" || return 1
+    [[ "$(docker image inspect "$CAMERA_AGENT_IMAGE" --format '{{.Id}} {{.Architecture}}')" == "$CAMERA_AGENT_IMAGE $EXPECTED_IMAGE_ARCH" ]] || return 1
+    actual="$(docker run --rm --entrypoint sha256sum "$CAMERA_AGENT_IMAGE" /app/HVO.SkyMonitor.CameraAgent.dll | { read -r hash _; printf '%s' "$hash"; })"
+    [[ "$actual" == "$CAMERA_ASSEMBLY_SHA256" ]]
+}
+
+remaining_trial_seconds() {
+    local remaining=$((trial_deadline_seconds - SECONDS))
+    ((remaining > 0)) || { printf 'The absolute 80-minute deadline expired.\n' >&2; return 1; }
+    printf '%s' "$remaining"
+}
+
+assert_before_trial_deadline() {
+    remaining_trial_seconds >/dev/null
+}
+
+container_tree_sha256() {
+    local container="$1" root="$2"
+    docker exec "$container" /bin/sh -c \
+        'cd "$1" && find . -type f -exec sha256sum {} \; | sort | sha256sum' -- "$root" |
+        { read -r hash _; printf '%s' "$hash"; }
+}
+
+mounted_source() {
+    local container="$1" destination="$2"
+    docker inspect "$container" --format '{{json .Mounts}}' |
+        jq --exit-status --raw-output --arg destination "$destination" \
+            '[.[] | select(.Destination == $destination) | .Source] | if length == 1 then .[0] else error("mount is not unique") end'
+}
+
+mounted_entry() {
+    local container="$1" destination="$2"
+    docker inspect "$container" --format '{{json .Mounts}}' |
+        jq --exit-status --arg destination "$destination" \
+            '[.[] | select(.Destination == $destination)] | if length == 1 then .[0] else error("mount is not unique") end'
+}
+
+write_host_manifest() {
+    local output="$1"
+    jq -n \
+        --arg commit "$REVISION" --arg branch "$BRANCH" --arg profile "$PROFILE" --arg model "$CAMERA_MODEL" \
+        --arg host "$HOSTNAME_ACTUAL" --arg kernel "$(uname -r)" --arg architecture "$EXPECTED_ARCH" \
+        --argjson memoryBytes "$EXPECTED_MEMORY_BYTES" \
+        --arg imageArchitecture "$EXPECTED_IMAGE_ARCH" --arg dotnetSdk "$DOTNET_SDK_VERSION" --arg dockerVersion "$DOCKER_VERSION" \
+        --arg cameraImage "$CAMERA_AGENT_IMAGE" --arg cameraAssemblySha256 "$CAMERA_ASSEMBLY_SHA256" \
+        --arg hardwareTestAssemblySha256 "$HARDWARE_TEST_ASSEMBLY_SHA256" --arg acceptanceTestAssemblySha256 "$ACCEPTANCE_TEST_ASSEMBLY_SHA256" \
+        --arg profileSha256 "$PROFILE_CONFIG_SHA256" --arg resolvedConfigSha256 "$effective_config_sha256" \
+        --arg sdkSha256 "$EXPECTED_SDK_SHA256" --arg headerSha256 "$EXPECTED_HEADER_SHA256" --arg udevSha256 "$EXPECTED_UDEV_SHA256" \
+        --arg catalogSha256 "$EXPECTED_CATALOG_SHA256" --arg sourceCatalogTreeSha256 "$SOURCE_CATALOG_TREE_SHA256" \
+        --arg copiedCatalogTreeSha256 "$effective_catalog_tree_sha256" \
+        --arg collectorImage "$HVO_OTEL_COLLECTOR_IMAGE" --arg collectorImageId "$COLLECTOR_IMAGE_ID" \
+        --arg collectorConfigSha256 "$effective_collector_config_sha256" \
+        --arg centralDenyImage "$CENTRAL_DENY_IMAGE" --arg centralDenyImageId "$CENTRAL_DENY_IMAGE_ID" \
+        --arg usbSysfsPath "$HVO_ISSUE_268_USB_SYSFS_PATH" --arg usbIdentity "03c3:$EXPECTED_USB_PRODUCT" \
+        --arg runtimeKind "$runtime_kind" --arg runtimePath "$runtime_path" --arg runtimeDevice "$runtime_mount_source" \
+        --arg runtimeFs "$runtime_mount_fs" --arg runtimeMount "$runtime_mount_target" --arg runtimeOptions "$runtime_mount_options" \
+        --arg runtimeVolumeName "$runtime_volume" --arg runtimeVolumeSource "$runtime_volume_source" \
+        --arg dockerRoot "$DOCKER_ROOT" --arg dockerDevice "$docker_mount_source" --arg dockerFs "$docker_mount_fs" \
+        --arg dockerMount "$docker_mount_target" --arg dockerOptions "$docker_mount_options" \
+        --arg evidencePath "$CAMPAIGN_ROOT" --arg evidenceDevice "$evidence_mount_source" --arg evidenceFs "$evidence_mount_fs" \
+        --arg evidenceMount "$evidence_mount_target" --arg evidenceOptions "$evidence_mount_options" \
+        --argjson volumeInspect "$(docker volume inspect "$runtime_volume")" \
+        --argjson runtimeFreeBytes "$runtime_free_bytes" --argjson dockerFreeBytes "$docker_free_bytes" \
+        --argjson evidenceFreeBytes "$evidence_free_bytes" \
+        --argjson logicalBlockSize "$BLOCK_LOGICAL_SIZE" '
+      {
+        schemaVersion: "issue-268-physical-host-manifest-v1",
+        revision: {commit: $commit, branch: $branch, clean: true},
+        host: {name: $host, kernel: $kernel, architecture: $architecture, imageArchitecture: $imageArchitecture,
+          logicalCpuCount: null, memoryBytes: $memoryBytes, dotnetSdk: $dotnetSdk,
+          dockerVersion: $dockerVersion, ntpSynchronized: true},
+        profile: {id: $profile, model: $model},
+        sourceIdentities: {cameraImage: $cameraImage, cameraAssemblySha256: $cameraAssemblySha256,
+          hardwareTestAssemblySha256: $hardwareTestAssemblySha256, acceptanceTestAssemblySha256: $acceptanceTestAssemblySha256,
+          committedProfileSha256: $profileSha256, resolvedConfigurationSha256: $resolvedConfigSha256,
+          sdkLibrarySha256: $sdkSha256, sdkHeaderSha256: $headerSha256, udevRuleSha256: $udevSha256,
+          catalogSha256: $catalogSha256, sourceCatalogTreeSha256: $sourceCatalogTreeSha256,
+          copiedCatalogTreeSha256: $copiedCatalogTreeSha256,
+          collectorImage: $collectorImage, collectorImageId: $collectorImageId,
+          collectorConfigurationSha256: $collectorConfigSha256,
+          centralDenyImage: $centralDenyImage, centralDenyImageId: $centralDenyImageId},
+        usb: {sysfsPath: $usbSysfsPath, identity: $usbIdentity, speedMegabits: 5000, usbfsMemoryMegabytes: 200,
+          privateSerialRetained: false},
+        storage: {runtime: {kind: $runtimeKind, path: $runtimePath, device: $runtimeDevice, filesystem: $runtimeFs,
+            mount: $runtimeMount, mountOptions: $runtimeOptions, freeBytes: $runtimeFreeBytes,
+            logicalBlockSize: $logicalBlockSize, volumeInspect: $volumeInspect,
+            containerMount: {type:"volume", source:$runtimeVolumeSource, name:$runtimeVolumeName,
+              destination:"/var/lib/hvo/data/agent"}},
+          evidence: {path: $evidencePath, device: $evidenceDevice, filesystem: $evidenceFs,
+            mount: $evidenceMount, mountOptions: $evidenceOptions, freeBytes: $evidenceFreeBytes},
+          docker: {path: $dockerRoot, device: $dockerDevice, filesystem: $dockerFs,
+            mount: $dockerMount, mountOptions: $dockerOptions, freeBytes: $dockerFreeBytes}}
+      }' > "$output"
+    jq --argjson cpus "$(nproc)" '.host.logicalCpuCount = $cpus' "$output" > "$output.tmp"
+    mv "$output.tmp" "$output"
+}
+
+metric_sum() {
+    local body="$1" family="$2"
+    awk -v family="$family" '$0 !~ /^#/ && ($1 == family || index($1, family "{") == 1) {sum += $NF} END {printf "%.17g", sum + 0}' <<< "$body"
+}
+
+sample_resources() {
+    local container="$1" central_deny="$2" output="$3"
+    local next_sample_milliseconds
+    next_sample_milliseconds="$(date +%s%3N)"
+    while docker inspect "$container" --format '{{.State.Running}}' 2>/dev/null | rg -x true >/dev/null; do
+        local now monotonic_milliseconds pid rss_bytes read_bytes write_bytes read_syscalls write_syscalls metrics docker_stats proc_stat cpu_ticks
+        local ingress lanes processing oldest combined throttled arm_temp host_temp
+        local metrics_available container_available central_deny_available health_status host_available_bytes database_bytes wal_bytes shm_bytes
+        local central_deny_state
+        now="$(date +%s%3N)"
+        monotonic_milliseconds="$(awk '{printf "%.0f", $1 * 1000}' /proc/uptime)"
+        pid="$(docker inspect "$container" --format '{{.State.Pid}}')"
+        rss_bytes=0 read_bytes=0 write_bytes=0 read_syscalls=0 write_syscalls=0 proc_stat='' cpu_ticks=0
+        if [[ -r "/proc/$pid/status" ]]; then
+            while IFS=':' read -r key value; do
+                case "$key" in VmRSS) read -r value _ <<< "$value"; rss_bytes=$((value * 1024));; esac
+            done < "/proc/$pid/status"
+            while IFS=':' read -r key value; do
+                case "$key" in
+                    read_bytes) read_bytes="${value//[[:space:]]/}" ;;
+                    write_bytes) write_bytes="${value//[[:space:]]/}" ;;
+                    syscr) read_syscalls="${value//[[:space:]]/}" ;;
+                    syscw) write_syscalls="${value//[[:space:]]/}" ;;
+                esac
+            done < "/proc/$pid/io"
+            proc_stat="$(<"/proc/$pid/stat")"
+            read -r -a proc_fields <<< "${proc_stat#*) }"
+            cpu_ticks=$((proc_fields[11] + proc_fields[12]))
+        fi
+        metrics="$(curl --fail --silent --max-time 2 "http://127.0.0.1:$HTTP_PORT/metrics" 2>/dev/null || true)"
+        metrics_available=false
+        [[ -n "$metrics" ]] && metrics_available=true
+        health_status="$(curl --fail --silent --max-time 2 "http://127.0.0.1:$HTTP_PORT/health" 2>/dev/null | jq -r '.status // "Unavailable"' 2>/dev/null || printf 'Unavailable')"
+        ingress="$(metric_sum "$metrics" 'camera_agent_ingress_pending')"
+        lanes="$(metric_sum "$metrics" 'camera_agent_lanes_pending')"
+        processing="$(metric_sum "$metrics" 'camera_agent_processing_pending')"
+        oldest="$(printf '%s\n%s\n%s\n' \
+            "$(metric_sum "$metrics" 'camera_agent_ingress_oldest_age_seconds')" \
+            "$(metric_sum "$metrics" 'camera_agent_lanes_oldest_age_seconds')" \
+            "$(metric_sum "$metrics" 'camera_agent_processing_oldest_age_seconds')" | sort -n | tail -n 1)"
+        combined="$(awk -v a="$ingress" -v b="$lanes" -v c="$processing" 'BEGIN {print a+b+c}')"
+        container_available=false
+        if docker_stats="$(docker stats --no-stream --format '{{json .}}' "$container" 2>/dev/null)" && [[ -n "$docker_stats" ]]; then
+            container_available=true
+        else
+            docker_stats='{}'
+        fi
+        central_deny_available=false
+        if central_deny_state="$(docker inspect "$central_deny" --format '{{json .State}}' 2>/dev/null)" &&
+           jq --exit-status '.Running == true and .Status == "running" and .OOMKilled == false and .Error == ""' \
+               <<< "$central_deny_state" >/dev/null; then
+            central_deny_available=true
+        else
+            central_deny_state='{}'
+        fi
+        throttled='N/A'
+        arm_temp='null'
+        if [[ "$PROFILE" == asi676mc ]]; then
+            throttled="$(vcgencmd get_throttled | cut -d= -f2)"
+            arm_temp="$(vcgencmd measure_temp | cut -d= -f2 | cut -d\' -f1)"
+        fi
+        host_temp='null'
+        if [[ -r /sys/class/thermal/thermal_zone0/temp ]]; then host_temp="$(awk '{print $1 / 1000}' /sys/class/thermal/thermal_zone0/temp)"; fi
+        host_available_bytes="$(awk '/^MemAvailable:/ {print $2 * 1024}' /proc/meminfo)"
+        read -r database_bytes wal_bytes shm_bytes <<< "$(docker exec "$container" /bin/sh -c '
+          for path in /var/lib/hvo/data/agent/journal/raw-ingress.db /var/lib/hvo/data/agent/journal/raw-ingress.db-wal /var/lib/hvo/data/agent/journal/raw-ingress.db-shm; do
+            if [ -e "$path" ]; then stat -c %s "$path"; else printf "0 "; fi
+          done' 2>/dev/null | tr '\n' ' ')"
+        database_bytes="${database_bytes:-0}"; wal_bytes="${wal_bytes:-0}"; shm_bytes="${shm_bytes:-0}"
+        jq -cn \
+            --argjson timestamp "$now" --argjson monotonicTimestamp "$monotonic_milliseconds" \
+            --argjson pid "$pid" --argjson rss "$rss_bytes" \
+            --argjson cpuTicks "$cpu_ticks" --argjson clockTicksPerSecond "$CLOCK_TICKS_PER_SECOND" \
+            --argjson readBytes "$read_bytes" --argjson writeBytes "$write_bytes" \
+            --argjson readSyscalls "$read_syscalls" --argjson writeSyscalls "$write_syscalls" \
+            --arg procStat "$proc_stat" --arg hostStat "$(< /proc/stat)" \
+            --arg memInfo "$(< /proc/meminfo)" --arg loadAverage "$(< /proc/loadavg)" \
+            --arg blockStat "$(<"/sys/class/block/$BLOCK_DEVICE/stat")" --argjson docker "$docker_stats" \
+            --argjson containerAvailable "$container_available" --argjson centralDenyAvailable "$central_deny_available" \
+            --argjson centralDenyState "$central_deny_state" --argjson metricsAvailable "$metrics_available" --arg healthStatus "$health_status" \
+            --argjson hostAvailableBytes "$host_available_bytes" --argjson databaseBytes "$database_bytes" \
+            --argjson walBytes "$wal_bytes" --argjson shmBytes "$shm_bytes" \
+            --argjson ingress "$ingress" --argjson lanes "$lanes" --argjson processing "$processing" \
+            --argjson oldest "$oldest" --argjson combined "$combined" \
+            --argjson usbPresent "$([[ -e "$HVO_ISSUE_268_USB_SYSFS_PATH" ]] && printf true || printf false)" \
+            --argjson usbSpeed "$([[ -r "$HVO_ISSUE_268_USB_SYSFS_PATH/speed" ]] && cat "$HVO_ISSUE_268_USB_SYSFS_PATH/speed" || printf 0)" \
+            --arg throttled "$throttled" --argjson armTemperature "$arm_temp" --argjson hostTemperature "$host_temp" '
+          {timestampUnixMilliseconds: $timestamp, monotonicTimestampMilliseconds: $monotonicTimestamp,
+           process: {available: ($pid > 0 and ($procStat | length) > 0), pid: $pid, rssBytes: $rss,
+             readBytes: $readBytes, writeBytes: $writeBytes, readSyscalls: $readSyscalls, writeSyscalls: $writeSyscalls,
+             cpuTicks: $cpuTicks, clockTicksPerSecond: $clockTicksPerSecond, stat: $procStat},
+           containerAvailable: $containerAvailable,
+           container: $docker,
+           centralDeny: {available: $centralDenyAvailable, state: $centralDenyState},
+           host: {stat: $hostStat, meminfo: $memInfo, loadAverage: $loadAverage,
+             blockDeviceStat: $blockStat, availableMemoryBytes: $hostAvailableBytes, temperatureC: $hostTemperature},
+           application: {metricsAvailable: $metricsAvailable, healthStatus: $healthStatus},
+           sqliteFiles: {databaseBytes: $databaseBytes, walBytes: $walBytes, shmBytes: $shmBytes},
+           backlog: {ingress: $ingress, lanes: $lanes, processing: $processing,
+             combined: $combined, oldestAgeSeconds: $oldest},
+           usb: {present: $usbPresent, speedMegabits: $usbSpeed},
+           arm: {throttled: $throttled, temperatureC: $armTemperature}}' >> "$output"
+        next_sample_milliseconds=$((next_sample_milliseconds + 2000))
+        local current_milliseconds delay_milliseconds
+        current_milliseconds="$(date +%s%3N)"
+        delay_milliseconds=$((next_sample_milliseconds - current_milliseconds))
+        if ((delay_milliseconds > 0)); then
+            sleep "$(awk -v milliseconds="$delay_milliseconds" 'BEGIN {printf "%.3f", milliseconds / 1000}')"
+        else
+            next_sample_milliseconds="$current_milliseconds"
+        fi
+    done
+}
+
+write_inventory() {
+    local root="$1" output="$2"
+    local rows="$root/.inventory.jsonl"
+    : > "$rows"
+    while IFS= read -r -d '' file; do
+        [[ "$file" != "$rows" && "$file" != "$output" ]] || continue
+        local relative sha bytes
+        relative="${file#"$root/"}"
+        read -r sha _ < <(sha256sum "$file")
+        bytes="$(stat --format='%s' "$file")"
+        jq -cn --arg path "$relative" --arg sha256 "${sha^^}" --argjson bytes "$bytes" \
+            '{path: $path, bytes: $bytes, sha256: $sha256}' >> "$rows"
+    done < <(find "$root" -type f -print0 | sort -z)
+    jq -s --arg commit "$REVISION" '{schemaVersion: "issue-268-evidence-manifest-v1", revision: $commit,
+      files: sort_by(.path), fileCount: length, totalBytes: (map(.bytes) | add // 0)}' "$rows" > "$output"
+    rm -f "$rows"
+}
+
+write_authenticated_trial_manifest() {
+    local root="$1" output="$2" schema="$3" include_summary="$4"
+    local rows="$root/.trial-authenticated-inventory.jsonl"
+    local file relative hash bytes identity
+    : > "$rows"
+    while IFS= read -r -d '' file; do
+        case "$file" in
+            "$rows"|"$output"|*/evidence-manifest.json|*.tmp) continue ;;
+        esac
+        if [[ "$include_summary" == false && "$file" == */trial-summary.json ]]; then continue; fi
+        relative="${file#"$root/"}"
+        read -r hash _ < <(sha256sum "$file")
+        bytes="$(stat --format='%s' "$file")"
+        jq -cn --arg path "$relative" --arg sha256 "${hash^^}" --argjson bytes "$bytes" \
+            '{path:$path, bytes:$bytes, sha256:$sha256}' >> "$rows"
+    done < <(find "$root" -type f -print0 | sort -z)
+    jq -cS -s --arg schema "$schema" --arg revision "$REVISION" --arg profile "$PROFILE" --arg trial "$trial" '
+      {schemaVersion:$schema, revision:$revision, profile:$profile, trial:$trial,
+       files:sort_by(.path), fileCount:length, totalBytes:(map(.bytes) | add // 0)}' "$rows" > "$output.input"
+    read -r identity _ < <(sha256sum "$output.input")
+    jq --arg identity "${identity^^}" '. + {evidenceIdentitySha256:$identity}' "$output.input" > "$output"
+    rm -f "$rows" "$output.input"
+}
+
+verify_authenticated_manifest() {
+    "$MANIFEST_VERIFIER" "$1" "$2"
+}
+
+aggregate_retained_trial() {
+    local evidence="$1" output="$2"
+    jq -n --arg mode trial \
+        --slurpfile acquisition "$evidence/capture-evidence.json" \
+        --slurpfile host "$evidence/host-manifest.json" \
+        --slurpfile resources "$evidence/resource-samples.jsonl" \
+        --slurpfile metrics "$evidence/telemetry/metrics.json" \
+        --slurpfile traces "$evidence/telemetry/traces.json" \
+        --slurpfile logs "$evidence/telemetry/logs.json" \
+        --slurpfile dmesg "$evidence/dmesg-status.json" \
+        --slurpfile exportIo "$evidence/export-io.json" \
+        --slurpfile execution "$evidence/trial-execution.json" \
+        --slurpfile trialManifests "$evidence/trial-input-manifest.json" \
+        --argjson trials '[]' --argjson campaignManifests '[]' \
+        -f "$AGGREGATOR" > "$output"
+}
+
+sanitize_text_file() {
+    local path="$1"
+    local temporary="$path.sanitized"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "${line,,}" == *"${HVO_ZWO_CAMERA_SERIAL,,}"* ]]; then
+            line='[REDACTED-CAMERA-SERIAL-LINE]'
+        fi
+        if [[ -n "$owner_password" && "$line" == *"$owner_password"* ]]; then
+            line='[REDACTED-CREDENTIAL-LINE]'
+        fi
+        line="${line//"$REPO_ROOT"/[REPOSITORY]}"
+        line="${line//"$STATE_ROOT"/[AGENT-STATE]}"
+        line="${line//"$HVO_ZWO_SDK_LIBRARY"/[SDK-LIBRARY]}"
+        if [[ -n "$runtime_path" ]]; then line="${line//"$runtime_path"/[RUNTIME-ROOT]}"; fi
+        if [[ "${line,,}" =~ authorization:|bearer[[:space:]]|set-cookie:|requestverificationtoken|token[=:]|actor[=:]|idempotency|checksum|storage[_-]?(reference|path|id)|[0-9a-f]{8}-[0-9a-f-]{27,}|(^|[^0-9a-f])[0-9a-f]{64}([^0-9a-f]|$)|/(home|workspaces|tmp|var/lib/hvo)/[^[:space:]]+ ]]; then
+            printf '%s\n' '[REDACTED-PRIVATE-LINE]'
+        else
+            printf '%s\n' "$line"
+        fi
+    done < "$path" > "$temporary"
+    mv "$temporary" "$path"
+}
+
+for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
+    assert_source_unchanged
+    assert_static_identities || { printf 'Static identity changed before trial %s.\n' "$trial_number" >&2; exit 1; }
+    assert_host_runtime_identity || { printf 'Host identity changed before trial %s.\n' "$trial_number" >&2; exit 1; }
+    trial="trial-$(printf '%02d' "$trial_number")"
+    trial_deadline_seconds=$((SECONDS + 4800))
+    trial_deadline_unix_seconds=$(($(date +%s) + 4800))
+    runner_pid=$$
+    (sleep 4800; kill -TERM "$runner_pid") &
+    deadline_pid=$!
+    trial_started_seconds="$(date +%s)"
+    trial_root="$CAMPAIGN_ROOT/$trial"
+    evidence_root="$trial_root/evidence"
+    control_root="$trial_root/control"
+    active_control_root="$control_root"
+    mkdir -p "$evidence_root/telemetry" "$control_root"/{config,dataprotection,secrets,catalog}
+    printf '%s\n' 'hvo-issue-268-trial-v1' > "$trial_root/.hvo-issue-268-owned"
+
+    [[ -z "$(fuser "$USB_DEVICE_NODE" 2>/dev/null || true)" ]] || { printf 'Camera was opened before %s idle.\n' "$trial" >&2; exit 1; }
+    idle_started="$(date +%s)"
+    timeout "$(remaining_trial_seconds)s" sleep 600
+    idle_elapsed=$(($(date +%s) - idle_started))
+    ((idle_elapsed >= 600)) || { printf '%s idle period was shorter than ten minutes.\n' "$trial" >&2; exit 1; }
+    assert_host_runtime_identity || { printf 'Host identity changed during %s idle.\n' "$trial" >&2; exit 1; }
+    [[ -z "$(fuser "$USB_DEVICE_NODE" 2>/dev/null || true)" ]] || { printf 'Camera was opened during %s idle.\n' "$trial" >&2; exit 1; }
+    assert_authenticated_execution_inputs || { printf 'Authenticated inputs changed after %s idle.\n' "$trial" >&2; exit 1; }
+
+    resolved_config="$control_root/config/cameraagent.json"
+    gain="$(jq -r '.rig.pipeline.nightGain' "$PROFILE_FILE")"
+    jq --argjson gain "$gain" '
+      .agentId = "cameraagent-physical-268" |
+      .rig.pipeline.dayExposure = "00:00:20" |
+      .rig.pipeline.nightExposure = "00:00:20" |
+      .rig.pipeline.dayGain = $gain |
+      .rig.pipeline.nightGain = $gain |
+      .rig.pipeline.envelope.dayDefaults.exposure = "00:00:20" |
+      .rig.pipeline.envelope.nightDefaults.exposure = "00:00:20" |
+      .rig.pipeline.envelope.dayDefaults.gain = $gain |
+      .rig.pipeline.envelope.nightDefaults.gain = $gain
+    ' "$PROFILE_FILE" > "$resolved_config"
+    cp -a "$HVO_CATALOG_PERF_ROOT/." "$control_root/catalog/"
+    cp "$COLLECTOR_CONFIG" "$control_root/config/otel-collector.yml"
+    owner_password="Aa!$(openssl rand -hex 32)"
+    printf '%s\n' "$owner_password" > "$control_root/secrets/owner-password"
+    cp "$resolved_config" "$evidence_root/resolved-config.sanitized.json"
+    assert_authenticated_execution_inputs || { printf 'Authenticated inputs changed before %s execution.\n' "$trial" >&2; exit 1; }
+
+    runtime_volume="hvo268-${PROFILE}-${REVISION:0:12}-${trial_number}"
+    if docker volume inspect "$runtime_volume" >/dev/null 2>&1; then
+        printf 'Create-new runtime volume already exists: %s\n' "$runtime_volume" >&2
+        exit 1
+    fi
+    runtime_kind='docker-named-volume'
+    runtime_path="/var/lib/docker/volumes/$runtime_volume/_data"
+    if [[ "$PROFILE" == asi178mc ]]; then
+        runtime_kind='bind-backed-docker-volume'
+        runtime_path="/home/roys/hvo-268-runtime/$REVISION/$trial"
+        [[ ! -e "$runtime_path" ]] || { printf 'Create-new x64 runtime path exists: %s\n' "$runtime_path" >&2; exit 1; }
+        mkdir -p "$runtime_path"
+        printf '%s\n' 'hvo-issue-268-runtime-v1' > "$runtime_path/.hvo-issue-268-owned"
+        docker volume create --label "hvo.issue-268.owner=$REVISION:$PROFILE" \
+            --driver local --opt type=none --opt o=bind --opt "device=$runtime_path" "$runtime_volume" >/dev/null
+    else
+        docker volume create --label "hvo.issue-268.owner=$REVISION:$PROFILE" "$runtime_volume" >/dev/null
+        runtime_init_container="hvo268-${REVISION:0:8}-${PROFILE}-${trial_number}-runtime-init"
+        docker run --rm --name "$runtime_init_container" --user 0:0 --volume "$runtime_volume:/runtime" \
+            --entrypoint /bin/sh "$CAMERA_AGENT_IMAGE" \
+            -c 'mkdir -p /runtime && printf "%s\n" hvo-issue-268-runtime-v1 > /runtime/.hvo-issue-268-owned && chown -R "$1:$2" /runtime' \
+            -- "$(id -u)" "$(id -g)"
+        runtime_init_container=''
+    fi
+
+    if [[ "$runtime_kind" == docker-named-volume ]]; then
+        runtime_storage_path="$(docker volume inspect "$runtime_volume" --format '{{.Mountpoint}}')"
+        runtime_path="$runtime_storage_path"
+    else
+        runtime_storage_path="$runtime_path"
+    fi
+    runtime_volume_source="$(docker volume inspect "$runtime_volume" --format '{{.Mountpoint}}')"
+    read -r runtime_mount_source runtime_mount_target runtime_mount_fs runtime_mount_options < <(
+        findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$runtime_storage_path")
+    read -r docker_mount_source docker_mount_target docker_mount_fs docker_mount_options < <(
+        findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$DOCKER_ROOT")
+    read -r evidence_mount_source evidence_mount_target evidence_mount_fs evidence_mount_options < <(
+        findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$evidence_root")
+    [[ "$runtime_mount_source" == "$EXPECTED_RUNTIME_DEVICE" && "$runtime_mount_fs" == "$EXPECTED_RUNTIME_FS" ]] || {
+        printf 'Per-trial runtime mount identity changed: %s %s.\n' "$runtime_mount_source" "$runtime_mount_fs" >&2
+        exit 1
+    }
+    if [[ "$PROFILE" == asi676mc ]]; then
+        [[ "$evidence_mount_source" == /dev/mmcblk0p2 && "$evidence_mount_fs" == ext4 ]] || {
+            printf 'Per-trial ARM evidence mount identity changed.\n' >&2
+            exit 1
+        }
+    fi
+    read -r free_blocks free_block_size < <(stat -f --format='%a %S' "$runtime_storage_path")
+    runtime_free_bytes=$((free_blocks * free_block_size))
+    read -r free_blocks free_block_size < <(stat -f --format='%a %S' "$DOCKER_ROOT")
+    docker_free_bytes=$((free_blocks * free_block_size))
+    read -r free_blocks free_block_size < <(stat -f --format='%a %S' "$evidence_root")
+    evidence_free_bytes=$((free_blocks * free_block_size))
+    ((runtime_free_bytes >= MINIMUM_FREE_BYTES && docker_free_bytes >= MINIMUM_FREE_BYTES && evidence_free_bytes >= MINIMUM_FREE_BYTES)) || {
+        printf 'A per-trial runtime, Docker, or evidence mount is below the free-space floor.\n' >&2
+        exit 1
+    }
+    EVIDENCE_BLOCK_DEVICE="${evidence_mount_source##*/}"
+
+    suffix="${REVISION:0:8}-${PROFILE}-${trial_number}"
+    cleanup_project="hvo268-$suffix"
+    camera_container="hvo268-$suffix-camera"
+    collector_container="hvo268-$suffix-collector"
+    central_deny_container="hvo268-$suffix-central-deny"
+    cleanup_env="$control_root/compose.env"
+    cat > "$cleanup_env" <<EOF
+CAMERA_AGENT_IMAGE=$CAMERA_AGENT_IMAGE
+CAMERA_AGENT_CONTAINER=$camera_container
+CAMERA_AGENT_HTTP_PORT=$HTTP_PORT
+CAMERA_AGENT_CONFIG_SOURCE=$resolved_config
+CAMERA_AGENT_DATA_PROTECTION_SOURCE=$control_root/dataprotection
+CAMERA_AGENT_CATALOG_SOURCE=$control_root/catalog
+CAMERA_AGENT_OWNER_PASSWORD_FILE=$control_root/secrets/owner-password
+CAMERA_RUNTIME_VOLUME=$runtime_volume
+HVO_ZWO_SDK_LIBRARY=$HVO_ZWO_SDK_LIBRARY
+HVO_ZWO_CAMERA_SERIAL=$HVO_ZWO_CAMERA_SERIAL
+SERVICE_INSTANCE_ID=physical-268-$PROFILE-$trial
+OTEL_COLLECTOR_IMAGE=$HVO_OTEL_COLLECTOR_IMAGE
+OTEL_COLLECTOR_CONTAINER=$collector_container
+OTEL_COLLECTOR_CONFIG_SOURCE=$control_root/config/otel-collector.yml
+OTEL_EVIDENCE_SOURCE=$evidence_root/telemetry
+CENTRAL_DENY_IMAGE=$CENTRAL_DENY_IMAGE
+CENTRAL_DENY_CONTAINER=$central_deny_container
+USB_DEVICE_GID=$USB_DEVICE_GID
+USB_DEVICE_NODE=$USB_DEVICE_NODE
+LOCAL_UID=$(id -u)
+LOCAL_GID=$(id -g)
+EOF
+    chmod 600 "$cleanup_env" "$control_root/secrets/owner-password"
+    effective_config_sha256="$(sha256sum "$resolved_config" | { read -r hash _; printf '%s' "$hash"; })"
+    effective_catalog_tree_sha256="$(tree_sha256 "$control_root/catalog")"
+    effective_collector_config_sha256="$(sha256sum "$control_root/config/otel-collector.yml" | { read -r hash _; printf '%s' "$hash"; })"
+    [[ "$effective_catalog_tree_sha256" == "$SOURCE_CATALOG_TREE_SHA256" ]] || {
+        printf 'Copied catalog tree differs from the authenticated source tree.\n' >&2
+        exit 1
+    }
+    write_host_manifest "$evidence_root/host-manifest.json"
+    jq --argjson idleSeconds "$idle_elapsed" '. + {idle: {cameraClosed: true, elapsedSeconds: $idleSeconds}}' \
+        "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+
+    docker compose --env-file "$cleanup_env" --project-name "$cleanup_project" --file "$COMPOSE_FILE" config --quiet
+    rendered_compose_sha256="$(docker compose --env-file "$cleanup_env" --project-name "$cleanup_project" --file "$COMPOSE_FILE" config | sha256sum | { read -r hash _; printf '%s' "$hash"; })"
+    jq --arg hash "$rendered_compose_sha256" '.sourceIdentities.renderedComposeSha256 = $hash' \
+        "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+
+    dmesg --follow-new --decode > "$control_root/kernel-live.raw" &
+    kernel_pid=$!
+    sleep 1
+    kill -0 "$kernel_pid" 2>/dev/null || { printf 'dmesg follow exited before CameraAgent startup.\n' >&2; exit 1; }
+    jq -n --argjson pid "$kernel_pid" --arg startedUtc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+        '{schemaVersion:"issue-268-dmesg-monitor-v1", pid:$pid, startedUtc:$startedUtc, liveBeforeCameraAgent:true}' \
+        > "$evidence_root/dmesg-status.json"
+
+    prestart_config_sha256="$(sha256sum "$resolved_config" | { read -r hash _; printf '%s' "$hash"; })"
+    prestart_catalog_tree_sha256="$(tree_sha256 "$control_root/catalog")"
+    prestart_collector_config_sha256="$(sha256sum "$control_root/config/otel-collector.yml" | { read -r hash _; printf '%s' "$hash"; })"
+    jq --arg capturedUtc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --arg configSha256 "$prestart_config_sha256" \
+        --arg catalogTreeSha256 "$prestart_catalog_tree_sha256" --arg collectorConfigSha256 "$prestart_collector_config_sha256" '
+      .mountAuthentication.prestart = {capturedUtc:$capturedUtc, configSha256:$configSha256,
+        catalogTreeSha256:$catalogTreeSha256, collectorConfigurationSha256:$collectorConfigSha256,
+        passed: ($configSha256 == .sourceIdentities.resolvedConfigurationSha256 and
+          $catalogTreeSha256 == .sourceIdentities.copiedCatalogTreeSha256 and
+          $collectorConfigSha256 == .sourceIdentities.collectorConfigurationSha256)}
+    ' "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+    jq --exit-status '.mountAuthentication.prestart.passed == true' "$evidence_root/host-manifest.json" >/dev/null
+    docker compose --env-file "$cleanup_env" --project-name "$cleanup_project" --file "$COMPOSE_FILE" up --detach
+    [[ "$(docker inspect "$camera_container" --format '{{.Image}}')" == "$CAMERA_AGENT_IMAGE" ]] || { printf 'Trial container image identity changed.\n' >&2; exit 1; }
+    [[ "$(docker inspect "$central_deny_container" --format '{{.Image}}')" == "$CENTRAL_DENY_IMAGE_ID" ]] || { printf 'Central deny image identity changed.\n' >&2; exit 1; }
+    central_startup_state="$(docker inspect "$central_deny_container" --format '{{json .State}}')"
+    jq --argjson state "$central_startup_state" \
+        '.centralTraffic = {mechanism:"isolated-socat-deny-recorder", startup:$state}' \
+        "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+    jq --exit-status '.centralTraffic.startup.Running == true and .centralTraffic.startup.Status == "running" and
+      .centralTraffic.startup.OOMKilled == false and .centralTraffic.startup.Error == ""' \
+        "$evidence_root/host-manifest.json" >/dev/null
+    device_exposure="$(docker inspect "$camera_container" --format '{{json .HostConfig.Devices}}')"
+    jq --exit-status --arg node "$USB_DEVICE_NODE" '
+      length == 1 and .[0].PathOnHost == $node and .[0].PathInContainer == $node and .[0].CgroupPermissions == "rwm"
+    ' <<< "$device_exposure" >/dev/null || {
+        printf 'Only-selected-camera Docker device exposure could not be proven.\n' >&2
+        exit 1
+    }
+    exposed_usb_nodes="$(docker exec "$camera_container" /bin/sh -c 'find /dev/bus/usb -type c -print 2>/dev/null | sort')"
+    [[ "$exposed_usb_nodes" == "$USB_DEVICE_NODE" ]] || {
+        printf 'Container USB exposure is not limited to the selected device; refusing physical collection.\n' >&2
+        exit 1
+    }
+
+    startup_config_source="$(mounted_source "$camera_container" /run/hvo/cameraagent.json)"
+    startup_catalog_source="$(mounted_source "$camera_container" /var/lib/hvo/data/catalog)"
+    startup_collector_source="$(mounted_source "$collector_container" /etc/otelcol/config.yml)"
+    startup_sdk_source="$(mounted_source "$camera_container" "$HVO_ZWO_SDK_LIBRARY")"
+    startup_runtime_mount="$(mounted_entry "$camera_container" /var/lib/hvo/data/agent)"
+    startup_runtime_writable=false
+    if docker exec "$camera_container" /bin/sh -c 'test -w /var/lib/hvo/data/agent'; then startup_runtime_writable=true; fi
+    startup_config_sha256="$(docker exec "$camera_container" sha256sum /run/hvo/cameraagent.json | { read -r hash _; printf '%s' "$hash"; })"
+    startup_catalog_tree_sha256="$(container_tree_sha256 "$camera_container" /var/lib/hvo/data/catalog)"
+    startup_collector_config_sha256="$(docker exec "$collector_container" sha256sum /etc/otelcol/config.yml | { read -r hash _; printf '%s' "$hash"; })"
+    startup_sdk_sha256="$(docker exec "$camera_container" sha256sum "$HVO_ZWO_SDK_LIBRARY" | { read -r hash _; printf '%s' "$hash"; })"
+    jq --arg configSource "$startup_config_source" --arg catalogSource "$startup_catalog_source" \
+        --arg collectorSource "$startup_collector_source" --arg sdkSource "$startup_sdk_source" \
+        --arg configSha256 "$startup_config_sha256" --arg sdkSha256 "$startup_sdk_sha256" \
+        --arg catalogTreeSha256 "$startup_catalog_tree_sha256" --arg collectorConfigSha256 "$startup_collector_config_sha256" \
+        --arg expectedConfigSource "$(realpath "$resolved_config")" --arg expectedCatalogSource "$(realpath "$control_root/catalog")" \
+        --arg expectedCollectorSource "$(realpath "$control_root/config/otel-collector.yml")" \
+        --arg expectedSdkSource "$(realpath "$HVO_ZWO_SDK_LIBRARY")" \
+        --argjson runtimeMount "$startup_runtime_mount" --argjson runtimeWritable "$startup_runtime_writable" \
+        --arg expectedRuntimeSource "$runtime_volume_source" --arg expectedRuntimeName "$runtime_volume" '
+      .mountAuthentication.startup = {
+        configSource:$configSource, catalogSource:$catalogSource, collectorSource:$collectorSource, sdkSource:$sdkSource,
+        configSha256:$configSha256, catalogTreeSha256:$catalogTreeSha256, sdkSha256:$sdkSha256,
+        collectorConfigurationSha256:$collectorConfigSha256,
+        runtime:{mount:$runtimeMount, writable:$runtimeWritable},
+        passed: ($configSource == $expectedConfigSource and $catalogSource == $expectedCatalogSource and
+          $collectorSource == $expectedCollectorSource and $sdkSource == $expectedSdkSource and
+          $configSha256 == .sourceIdentities.resolvedConfigurationSha256 and $sdkSha256 == .sourceIdentities.sdkLibrarySha256 and
+          $catalogTreeSha256 == .sourceIdentities.copiedCatalogTreeSha256 and
+          $collectorConfigSha256 == .sourceIdentities.collectorConfigurationSha256 and
+          $runtimeMount.Type == "volume" and $runtimeMount.Source == $expectedRuntimeSource and
+          $runtimeMount.Name == $expectedRuntimeName and $runtimeMount.Destination == "/var/lib/hvo/data/agent" and
+          $runtimeMount.RW == true and $runtimeWritable == true)
+      }' "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+    jq --exit-status '.mountAuthentication.startup.passed == true' "$evidence_root/host-manifest.json" >/dev/null
+
+    resource_samples="$evidence_root/resource-samples.jsonl"
+    : > "$resource_samples"
+    sample_resources "$camera_container" "$central_deny_container" "$resource_samples" &
+    sampler_pid=$!
+
+    acquisition_timeout_seconds="$(remaining_trial_seconds)"
+    ((acquisition_timeout_seconds <= 3900)) || acquisition_timeout_seconds=3900
+    HVO_ISSUE_268_PHYSICAL_EVIDENCE=1 HVO_ISSUE_268_PROFILE="$PROFILE" HVO_ISSUE_268_TRIAL="$trial" \
+    HVO_ISSUE_268_EVIDENCE_ROOT="$evidence_root" HVO_ISSUE_268_CAMERA_CONTAINER="$camera_container" \
+    HVO_ISSUE_268_BASE_URI="http://127.0.0.1:$HTTP_PORT" HVO_ISSUE_268_OWNER_PASSWORD_FILE="$control_root/secrets/owner-password" \
+    HVO_ISSUE_268_RESOLVED_CONFIG="$resolved_config" HVO_ISSUE_268_REVISION="$REVISION" \
+    HVO_ISSUE_268_BLOCK_DEVICE="$BLOCK_DEVICE" \
+    HVO_ISSUE_268_DEADLINE_UNIX_SECONDS="$trial_deadline_unix_seconds" \
+        timeout --signal=TERM --kill-after=30s "${acquisition_timeout_seconds}s" dotnet test "$ACCEPTANCE_PROJECT" --no-build --configuration Release \
+        --filter 'FullyQualifiedName~SustainedPhysicalEvidenceTests.AcquireSustainedPhysicalTrialAndStopAsync' \
+        --results-directory "$evidence_root" --logger 'trx;LogFileName=acquisition.trx' --logger 'console;verbosity=normal'
+
+    wait "$sampler_pid" 2>/dev/null || true
+    sampler_pid=''
+    dmesg_live_at_total_end=false
+    if kill -0 "$kernel_pid" 2>/dev/null; then dmesg_live_at_total_end=true; fi
+    [[ "$dmesg_live_at_total_end" == true ]] || { printf 'dmesg follow exited during the trial.\n' >&2; exit 1; }
+    jq --argjson live true --arg completedUtc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+        '. + {liveAtTotalEnd:$live, completedUtc:$completedUtc, passed:$live}' "$evidence_root/dmesg-status.json" \
+        > "$evidence_root/dmesg-status.json.tmp"
+    mv "$evidence_root/dmesg-status.json.tmp" "$evidence_root/dmesg-status.json"
+    kill "$kernel_pid" >/dev/null 2>&1 || true
+    wait "$kernel_pid" 2>/dev/null || true
+    kernel_pid=''
+    central_pre_stop_state="$(docker inspect "$central_deny_container" --format '{{json .State}}')"
+    jq --argjson state "$central_pre_stop_state" '.centralTraffic.preStop = $state' \
+        "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+    jq --exit-status '.centralTraffic.preStop.Running == true and .centralTraffic.preStop.Status == "running" and
+      .centralTraffic.preStop.OOMKilled == false and .centralTraffic.preStop.Error == ""' \
+        "$evidence_root/host-manifest.json" >/dev/null
+    docker stop --timeout 15 "$collector_container" "$central_deny_container" >/dev/null
+    for stopped_container in "$camera_container" "$collector_container" "$central_deny_container"; do
+        [[ "$(docker inspect "$stopped_container" --format '{{.State.Running}}')" == false ]] || {
+            printf 'Container did not stop before retained mount inspection: %s\n' "$stopped_container" >&2
+            exit 1
+        }
+    done
+    central_shutdown_state="$(docker inspect "$central_deny_container" --format '{{json .State}}')"
+    jq --argjson state "$central_shutdown_state" '.centralTraffic.shutdown = $state' \
+        "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+
+    shutdown_config_source="$(mounted_source "$camera_container" /run/hvo/cameraagent.json)"
+    shutdown_catalog_source="$(mounted_source "$camera_container" /var/lib/hvo/data/catalog)"
+    shutdown_collector_source="$(mounted_source "$collector_container" /etc/otelcol/config.yml)"
+    shutdown_sdk_source="$(mounted_source "$camera_container" "$HVO_ZWO_SDK_LIBRARY")"
+    shutdown_runtime_mount="$(mounted_entry "$camera_container" /var/lib/hvo/data/agent)"
+    shutdown_runtime_writable=false
+    if [[ -w "$runtime_storage_path" ]]; then shutdown_runtime_writable=true; fi
+    shutdown_config_sha256="$(sha256sum "$resolved_config" | { read -r hash _; printf '%s' "$hash"; })"
+    shutdown_catalog_tree_sha256="$(tree_sha256 "$control_root/catalog")"
+    shutdown_collector_config_sha256="$(sha256sum "$control_root/config/otel-collector.yml" | { read -r hash _; printf '%s' "$hash"; })"
+    sdk_probe_container="hvo268-$suffix-sdk-post-collection"
+    shutdown_sdk_sha256="$(docker run --rm --name "$sdk_probe_container" --volume "$HVO_ZWO_SDK_LIBRARY:$HVO_ZWO_SDK_LIBRARY:ro" \
+        --entrypoint sha256sum "$CAMERA_AGENT_IMAGE" "$HVO_ZWO_SDK_LIBRARY" | { read -r hash _; printf '%s' "$hash"; })"
+    sdk_probe_container=''
+    jq --arg configSource "$shutdown_config_source" --arg catalogSource "$shutdown_catalog_source" \
+        --arg collectorSource "$shutdown_collector_source" --arg sdkSource "$shutdown_sdk_source" \
+        --arg configSha256 "$shutdown_config_sha256" --arg sdkSha256 "$shutdown_sdk_sha256" \
+        --arg catalogTreeSha256 "$shutdown_catalog_tree_sha256" --arg collectorConfigSha256 "$shutdown_collector_config_sha256" \
+        --arg expectedConfigSource "$(realpath "$resolved_config")" --arg expectedCatalogSource "$(realpath "$control_root/catalog")" \
+        --arg expectedCollectorSource "$(realpath "$control_root/config/otel-collector.yml")" \
+        --arg expectedSdkSource "$(realpath "$HVO_ZWO_SDK_LIBRARY")" \
+        --argjson runtimeMount "$shutdown_runtime_mount" --argjson runtimeWritable "$shutdown_runtime_writable" \
+        --arg expectedRuntimeSource "$runtime_volume_source" --arg expectedRuntimeName "$runtime_volume" '
+      .mountAuthentication.shutdown = {
+        configSource:$configSource, catalogSource:$catalogSource, collectorSource:$collectorSource, sdkSource:$sdkSource,
+        configSha256:$configSha256, catalogTreeSha256:$catalogTreeSha256, sdkSha256:$sdkSha256,
+        collectorConfigurationSha256:$collectorConfigSha256,
+        runtime:{mount:$runtimeMount, writable:$runtimeWritable},
+        passed: ($configSource == $expectedConfigSource and $catalogSource == $expectedCatalogSource and
+          $collectorSource == $expectedCollectorSource and $sdkSource == $expectedSdkSource and
+          $configSha256 == .sourceIdentities.resolvedConfigurationSha256 and $sdkSha256 == .sourceIdentities.sdkLibrarySha256 and
+          $catalogTreeSha256 == .sourceIdentities.copiedCatalogTreeSha256 and
+          $collectorConfigSha256 == .sourceIdentities.collectorConfigurationSha256 and
+          $runtimeMount.Type == "volume" and $runtimeMount.Source == $expectedRuntimeSource and
+          $runtimeMount.Name == $expectedRuntimeName and $runtimeMount.Destination == "/var/lib/hvo/data/agent" and
+          $runtimeMount.RW == true and $runtimeWritable == true)
+      }' "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+    jq --exit-status '.mountAuthentication.shutdown.passed == true' "$evidence_root/host-manifest.json" >/dev/null
+
+    docker logs --timestamps "$central_deny_container" > "$evidence_root/central-deny.log" 2>&1
+    deny_status=0
+    central_attempt_count="$(rg --count-matches --fixed-strings 'HVO268_CENTRAL_DENY_HIT' "$evidence_root/central-deny.log")" || deny_status=$?
+    if ((deny_status > 1)); then
+        printf 'Unable to inspect retained central-deny evidence.\n' >&2
+        exit 1
+    fi
+    central_attempt_count="${central_attempt_count:-0}"
+    jq --argjson attempts "$central_attempt_count" --arg image "$CENTRAL_DENY_IMAGE" --arg imageId "$CENTRAL_DENY_IMAGE_ID" \
+        '.centralTraffic += {attemptCount:$attempts, image:$image, imageId:$imageId} |
+         .centralTraffic.passed = ($attempts == 0 and .centralTraffic.startup.Running == true and
+           .centralTraffic.preStop.Running == true and .centralTraffic.shutdown.Running == false and
+           .centralTraffic.shutdown.Status == "exited" and .centralTraffic.shutdown.OOMKilled == false and
+           .centralTraffic.shutdown.Error == "" and (.centralTraffic.shutdown.ExitCode | IN(0, 143)))' \
+        "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+    jq --exit-status '.centralTraffic.passed == true' "$evidence_root/host-manifest.json" >/dev/null
+
+    exported_runtime="$evidence_root/runtime"
+    mkdir -p "$exported_runtime/frames" "$exported_runtime/journal"
+    export_started_nanoseconds="$(date +%s%N)"
+    runtime_block_before="$(<"/sys/class/block/$BLOCK_DEVICE/stat")"
+    evidence_block_before="$(<"/sys/class/block/$EVIDENCE_BLOCK_DEVICE/stat")"
+    timeout --signal=TERM --kill-after=30s "$(remaining_trial_seconds)s" docker cp \
+        "$camera_container:/var/lib/hvo/data/agent/frames/." "$exported_runtime/frames/"
+    timeout --signal=TERM --kill-after=30s "$(remaining_trial_seconds)s" docker cp \
+        "$camera_container:/var/lib/hvo/data/agent/journal/raw-ingress.db" "$exported_runtime/journal/raw-ingress.db"
+    for sqlite_suffix in -wal -shm; do
+        timeout --signal=TERM --kill-after=10s "$(remaining_trial_seconds)s" docker cp \
+            "$camera_container:/var/lib/hvo/data/agent/journal/raw-ingress.db$sqlite_suffix" \
+            "$exported_runtime/journal/raw-ingress.db$sqlite_suffix" >/dev/null 2>&1 || true
+    done
+    export_completed_nanoseconds="$(date +%s%N)"
+    runtime_block_after="$(<"/sys/class/block/$BLOCK_DEVICE/stat")"
+    evidence_block_after="$(<"/sys/class/block/$EVIDENCE_BLOCK_DEVICE/stat")"
+    exported_bytes="$(du -sb "$exported_runtime" | cut -f1)"
+    jq -n --arg profile "$PROFILE" --arg runtimeDevice "$runtime_mount_source" --arg evidenceDevice "$evidence_mount_source" \
+        --arg runtimeBefore "$runtime_block_before" --arg runtimeAfter "$runtime_block_after" \
+        --arg evidenceBefore "$evidence_block_before" --arg evidenceAfter "$evidence_block_after" \
+        --argjson startedNanoseconds "$export_started_nanoseconds" --argjson completedNanoseconds "$export_completed_nanoseconds" \
+        --argjson exportedBytes "$exported_bytes" '
+      {schemaVersion:"issue-268-export-io-v1", profile:$profile, startedUnixNanoseconds:$startedNanoseconds,
+       completedUnixNanoseconds:$completedNanoseconds, durationNanoseconds:($completedNanoseconds-$startedNanoseconds),
+       exportedBytes:$exportedBytes, runtime:{device:$runtimeDevice, blockStatBefore:$runtimeBefore, blockStatAfter:$runtimeAfter},
+       evidence:{device:$evidenceDevice, blockStatBefore:$evidenceBefore, blockStatAfter:$evidenceAfter},
+       excludedFromTrialMeasurements:true,
+       armExportReportedSeparately:($profile=="asi676mc")}' > "$evidence_root/export-io.json"
+    while IFS= read -r -d '' exported_path; do
+        exported_relative="${exported_path#"$exported_runtime/"}"
+        case "$exported_relative" in
+            frames/*|journal/raw-ingress.db|journal/raw-ingress.db-wal|journal/raw-ingress.db-shm) ;;
+            *) printf 'Runtime export escaped the frames/raw-journal allowlist: %s\n' "$exported_relative" >&2; exit 1 ;;
+        esac
+    done < <(find "$exported_runtime" -type f -print0)
+    HVO_ISSUE_268_PHYSICAL_EVIDENCE=1 HVO_ISSUE_268_PROFILE="$PROFILE" HVO_ISSUE_268_TRIAL="$trial" \
+    HVO_ISSUE_268_EVIDENCE_ROOT="$evidence_root" HVO_ISSUE_268_EXPORTED_RUNTIME_ROOT="$exported_runtime" \
+        timeout --signal=TERM --kill-after=30s "$(remaining_trial_seconds)s" dotnet test "$ACCEPTANCE_PROJECT" --no-build --configuration Release \
+        --filter 'FullyQualifiedName~SustainedPhysicalEvidenceTests.InspectRetainedPhysicalTrialAsync' \
+        --results-directory "$evidence_root" --logger 'trx;LogFileName=inspection.trx' --logger 'console;verbosity=normal'
+
+    docker logs --timestamps "$camera_container" > "$evidence_root/cameraagent.sanitized.log" 2>&1
+    sanitize_text_file "$evidence_root/cameraagent.sanitized.log"
+    selected_usb_kernel_token="${HVO_ISSUE_268_USB_SYSFS_PATH##*/}"
+    while IFS= read -r line; do
+        if [[ "${line,,}" == *"usb ${selected_usb_kernel_token,,}:"* ||
+              "${line,,}" =~ oom|out[[:space:]]+of[[:space:]]+memory|killed[[:space:]]+process ]]; then
+            printf '%s\n' "$line"
+        fi
+    done < "$control_root/kernel-live.raw" > "$evidence_root/kernel-selected.sanitized.log"
+    kernel_oom_lines="$(rg --count-matches --ignore-case 'oom|out of memory|killed process' \
+        "$evidence_root/kernel-selected.sanitized.log" || true)"
+    kernel_oom_lines="${kernel_oom_lines:-0}"
+    sanitize_text_file "$evidence_root/kernel-selected.sanitized.log"
+    kernel_retained_lines="$(wc -l < "$evidence_root/kernel-selected.sanitized.log")"
+    jq --arg token "$selected_usb_kernel_token" --argjson retainedLines "$kernel_retained_lines" \
+        --argjson oomLines "$kernel_oom_lines" \
+        '. + {followMode:"follow-new", selectedUsbToken:$token, retainedLineCount:$retainedLines,
+          oomEvidenceLineCount:$oomLines, privacySanitized:true}' "$evidence_root/dmesg-status.json" \
+        > "$evidence_root/dmesg-status.json.tmp"
+    mv "$evidence_root/dmesg-status.json.tmp" "$evidence_root/dmesg-status.json"
+    ((kernel_oom_lines == 0)) || { printf 'OOM evidence was observed in the selected kernel stream.\n' >&2; exit 1; }
+    docker logs --timestamps "$collector_container" > "$evidence_root/collector.log" 2>&1
+    sanitize_text_file "$evidence_root/collector.log"
+    sanitize_text_file "$evidence_root/central-deny.log"
+    sanitize_text_file "$evidence_root/acquisition.trx"
+    sanitize_text_file "$evidence_root/inspection.trx"
+
+    remove_trial_containers
+    cleanup_project=''
+    cleanup_env=''
+    camera_container=''
+    collector_container=''
+    central_deny_container=''
+    runtime_init_container=''
+    rm -rf -- "$control_root"
+    active_control_root=''
+
+    for telemetry_file in "$evidence_root/telemetry/logs.json" "$evidence_root/telemetry/metrics.json" "$evidence_root/telemetry/traces.json"; do
+        [[ -s "$telemetry_file" ]] || { printf 'Missing OTLP signal file: %s\n' "$telemetry_file" >&2; exit 1; }
+        if rg --text --ignore-case --fixed-strings "$HVO_ZWO_CAMERA_SERIAL" "$telemetry_file" >/dev/null; then
+            printf 'Private camera serial leaked into OTLP evidence.\n' >&2
+            exit 1
+        fi
+    done
+    if rg --text --ignore-case --fixed-strings "$HVO_ZWO_CAMERA_SERIAL" "$evidence_root" >/dev/null; then
+        printf 'Retained binary or text evidence contains a camera serial variant.\n' >&2
+        exit 1
+    fi
+    if rg --text --fixed-strings "$owner_password" "$evidence_root" >/dev/null; then
+        printf 'Retained binary or text evidence contains the generated credential.\n' >&2
+        exit 1
+    fi
+    if rg --text --ignore-case '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|connection[_-]?string|owner[_-]?password)' "$evidence_root" >/dev/null; then
+        printf 'Retained evidence contains a forbidden credential pattern.\n' >&2
+        exit 1
+    fi
+    if rg --text --ignore-case 'usb.*(reset|disconnect|error|timeout)|oom|out of memory|killed process' \
+        "$evidence_root/kernel-selected.sanitized.log" "$evidence_root/cameraagent.sanitized.log" >/dev/null; then
+        printf 'USB, SDK, timeout, or OOM fault was observed.\n' >&2
+        exit 1
+    fi
+    if rg --text --ignore-case 'exporter.*(error|failed)|connection refused|retrying' "$evidence_root/collector.log" >/dev/null; then
+        printf 'The OTLP collector reported an exporter failure.\n' >&2
+        exit 1
+    fi
+    if [[ "$PROFILE" == asi676mc && "$(vcgencmd get_throttled | cut -d= -f2)" != 0x0 ]]; then
+        printf 'ARM throttle state changed.\n' >&2
+        exit 1
+    fi
+    privacy_scan_files=(
+        "$evidence_root/cameraagent.sanitized.log"
+        "$evidence_root/kernel-selected.sanitized.log"
+        "$evidence_root/collector.log"
+        "$evidence_root/central-deny.log"
+        "$evidence_root/acquisition.trx"
+        "$evidence_root/inspection.trx"
+    )
+    if rg --text --ignore-case \
+        'authorization:|bearer[[:space:]]|set-cookie:|requestverificationtoken|token[=:]|actor[=:]|idempotency|checksum|storage[_-]?(reference|path|id)|[0-9a-f]{8}-[0-9a-f-]{27,}|(^|[^0-9a-f])[0-9a-f]{64}([^0-9a-f]|$)|/(home|workspaces|tmp|var/lib/hvo)/[^[:space:]]+' \
+        "${privacy_scan_files[@]}" >/dev/null; then
+        printf 'A retained non-raw log contains a private path, identifier, checksum, actor, or credential.\n' >&2
+        exit 1
+    fi
+    jq --argjson scannedFileCount "${#privacy_scan_files[@]}" \
+        '.privacy = {policy:"all-retained-non-raw-logs", scannedFileCount:$scannedFileCount,
+          rawFramesAndAuthenticatedProvenanceExcluded:true, passed:true}' \
+        "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+
+    assert_before_trial_deadline
+    trial_elapsed=$(($(date +%s) - trial_started_seconds))
+    ((trial_elapsed <= 4800)) || { printf '%s exceeded the 80-minute whole-trial deadline.\n' "$trial" >&2; exit 1; }
+    jq -n --arg schemaVersion issue-268-trial-execution-v1 --arg revision "$REVISION" \
+        --arg profile "$PROFILE" --arg trial "$trial" --argjson wholeTrialElapsedSeconds "$trial_elapsed" \
+        '{schemaVersion:$schemaVersion, revision:$revision, profile:$profile, trial:$trial,
+          wholeTrialElapsedSeconds:$wholeTrialElapsedSeconds}' > "$evidence_root/trial-execution.json"
+    write_authenticated_trial_manifest "$trial_root" "$evidence_root/trial-input-manifest.json" \
+        issue-268-trial-input-manifest-v1 false
+    verify_authenticated_manifest "$evidence_root/trial-input-manifest.json" "$trial_root" || {
+        printf '%s trial input manifest authentication failed.\n' "$trial" >&2
+        exit 1
+    }
+    aggregate_retained_trial "$evidence_root" "$evidence_root/trial-summary.json"
+    jq --exit-status '.passed == true' "$evidence_root/trial-summary.json" >/dev/null
+    write_authenticated_trial_manifest "$trial_root" "$evidence_root/trial-manifest.json" \
+        issue-268-post-summary-trial-manifest-v1 true
+    verify_authenticated_manifest "$evidence_root/trial-manifest.json" "$trial_root" || {
+        printf '%s post-summary trial manifest authentication failed.\n' "$trial" >&2
+        exit 1
+    }
+    write_inventory "$trial_root" "$evidence_root/evidence-manifest.json"
+    assert_before_trial_deadline
+
+    remove_owned_runtime
+    runtime_volume=''
+    runtime_path=''
+    runtime_kind=''
+    unset owner_password
+    assert_before_trial_deadline
+    kill "$deadline_pid" >/dev/null 2>&1 || true
+    wait "$deadline_pid" 2>/dev/null || true
+    deadline_pid=''
+    assert_source_unchanged
+done
+
+for trial_manifest in "$CAMPAIGN_ROOT"/trial-*/evidence/trial-manifest.json; do
+    trial_manifest_root="${trial_manifest%/evidence/trial-manifest.json}"
+    trial_evidence_root="$trial_manifest_root/evidence"
+    verify_authenticated_manifest "$trial_evidence_root/trial-input-manifest.json" "$trial_manifest_root" || {
+        printf 'Campaign trial input manifest authentication failed: %s\n' "$trial_manifest" >&2
+        exit 1
+    }
+    verify_authenticated_manifest "$trial_manifest" "$trial_manifest_root" || {
+        printf 'Campaign post-summary trial manifest authentication failed: %s\n' "$trial_manifest" >&2
+        exit 1
+    }
+    rerun_summary="$(mktemp "$STATE_ROOT/issue-268-rerun-summary.XXXXXX")"
+    aggregate_retained_trial "$trial_evidence_root" "$rerun_summary"
+    retained_summary_sha="$(sha256sum "$trial_evidence_root/trial-summary.json" | { read -r hash _; printf '%s' "${hash^^}"; })"
+    rerun_summary_sha="$(sha256sum "$rerun_summary" | { read -r hash _; printf '%s' "${hash^^}"; })"
+    [[ "$retained_summary_sha" == "$rerun_summary_sha" ]] || {
+        printf 'Retained trial summary is not exactly reproducible: %s\n' "$trial_evidence_root/trial-summary.json" >&2
+        exit 1
+    }
+    rm -f -- "$rerun_summary"
+    rerun_summary=''
+done
+jq -n --arg mode campaign \
+    --argjson acquisition '[]' --argjson host '[]' --argjson resources '[]' --argjson metrics '[]' \
+    --argjson traces '[]' --argjson logs '[]' --argjson dmesg '[]' --argjson exportIo '[]' --argjson execution '[]' \
+    --argjson trialManifests '[]' \
+    --slurpfile trials <(jq -s '.' "$CAMPAIGN_ROOT"/trial-*/evidence/trial-summary.json) \
+    --slurpfile campaignManifests <(jq -s '.' "$CAMPAIGN_ROOT"/trial-*/evidence/trial-manifest.json) \
+    -f "$AGGREGATOR" > "$CAMPAIGN_ROOT/five-trial-summary.json"
+jq --exit-status '.citable == true and .allPassed == true' "$CAMPAIGN_ROOT/five-trial-summary.json" >/dev/null
+if rg --text --ignore-case --fixed-strings "$HVO_ZWO_CAMERA_SERIAL" "$CAMPAIGN_ROOT" >/dev/null; then
+    printf 'Campaign binary or text evidence contains a camera serial variant.\n' >&2
+    exit 1
+fi
+if rg --text --ignore-case '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|connection[_-]?string|owner[_-]?password)' "$CAMPAIGN_ROOT" >/dev/null; then
+    printf 'Campaign evidence contains a forbidden credential pattern.\n' >&2
+    exit 1
+fi
+write_inventory "$CAMPAIGN_ROOT" "$CAMPAIGN_ROOT/evidence-manifest.json"
+assert_source_unchanged
+trap - EXIT INT TERM
+printf 'Issue #268 %s physical evidence: %s\n' "$PROFILE" "$CAMPAIGN_ROOT"

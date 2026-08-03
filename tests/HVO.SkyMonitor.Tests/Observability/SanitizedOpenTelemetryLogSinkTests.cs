@@ -53,5 +53,36 @@ public sealed class SanitizedOpenTelemetryLogSinkTests
             new[] { "SanitizedMessage", "EventId", "EventName", "SourceContext" },
             sanitized.Properties.Keys.ToArray());
         Assert.AreEqual("[REDACTED]", sanitized.Properties["SanitizedMessage"].ToString().Trim('"'));
+
+        foreach (var (eventId, operation, result, retained) in new[]
+        {
+            (2048, "commit", "success", true),
+            (2048, "checkpoint", "failure", true),
+            (2048, "initialization", "success", false),
+            (2048, "commit", "unbounded", false),
+            (2042, "commit", "success", false)
+        })
+        {
+            var sqliteEvent = new LogEvent(
+                DateTimeOffset.UnixEpoch,
+                LogEventLevel.Warning,
+                exception: null,
+                new MessageTemplateParser().Parse("SQLite {Operation} {Result}"),
+                [
+                    new LogEventProperty("EventId", new ScalarValue(eventId)),
+                    new LogEventProperty("Operation", new ScalarValue(operation)),
+                    new LogEventProperty("Result", new ScalarValue(result))
+                ]);
+
+            var sanitizedSqliteEvent = SanitizedOpenTelemetryLogSink.CreateSanitizedEvent(sqliteEvent);
+
+            Assert.AreEqual(retained, sanitizedSqliteEvent.Properties.ContainsKey("Operation"));
+            Assert.AreEqual(retained, sanitizedSqliteEvent.Properties.ContainsKey("Result"));
+            if (retained)
+            {
+                Assert.AreEqual(operation, ((ScalarValue)sanitizedSqliteEvent.Properties["Operation"]).Value);
+                Assert.AreEqual(result, ((ScalarValue)sanitizedSqliteEvent.Properties["Result"]).Value);
+            }
+        }
     }
 }
