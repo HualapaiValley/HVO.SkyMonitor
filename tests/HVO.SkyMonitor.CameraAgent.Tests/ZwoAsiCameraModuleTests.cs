@@ -303,7 +303,7 @@ public sealed class ZwoAsiCameraModuleTests
         await native.ExposureStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
         await cancellation.CancelAsync();
 
-        await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => capture);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => capture);
         Assert.AreEqual(1, native.StopExposureCalls);
         Assert.AreEqual(0, native.DataCalls);
     }
@@ -409,7 +409,7 @@ public sealed class ZwoAsiCameraModuleTests
 
         await module.DisposeAsync();
 
-        await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => capture);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => capture);
         Assert.AreEqual(1, native.StopExposureCalls);
         Assert.AreEqual(1, native.DisposeCalls);
     }
