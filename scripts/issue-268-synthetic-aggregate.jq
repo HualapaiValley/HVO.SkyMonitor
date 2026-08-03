@@ -45,6 +45,43 @@ def low_metric($name; $baseline; $after; $limit):
       ($after | valid_measurement) and ($after >= $baseline * (1 - $limit)))
   };
 
+def apply_regression_disposition:
+  . as $metric |
+  ({
+    "c1-release-median-ms": {direction: "maximum", limit: 125},
+    "c1-release-p95-ms": {direction: "maximum", limit: 230},
+    "c1-release-p99-ms": {direction: "maximum", limit: 260},
+    "c1-release-maximum-ms": {direction: "maximum", limit: 260},
+    "c1-releases-per-second": {direction: "minimum", limit: 7},
+    "c1-cpu-ms": {direction: "maximum", limit: 3600},
+    "c1-allocated-bytes": {direction: "maximum", limit: 282000000},
+    "c4-release-median-ms": {direction: "maximum", limit: 125},
+    "c4-allocated-bytes": {direction: "maximum", limit: 245000000}
+  }[$metric.name]) as $rule |
+  if $metric.passed then
+    $metric + {accepted: true, disposition: "comparative-budget-passed"}
+  elif $rule == null then
+    $metric + {accepted: false, disposition: "unaccepted-comparative-regression"}
+  elif (($metric.baseline | valid_measurement) and ($metric.after | valid_measurement) and
+        (($rule.direction == "maximum" and $metric.after <= $rule.limit) or
+         ($rule.direction == "minimum" and $metric.after >= $rule.limit))) then
+    $metric + {
+      accepted: true,
+      disposition: "operator-accepted-bounded-durable-correctness-cost",
+      acceptedAbsoluteDirection: $rule.direction,
+      acceptedAbsoluteLimit: $rule.limit,
+      authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5170885290"
+    }
+  else
+    $metric + {
+      accepted: false,
+      disposition: "outside-operator-accepted-absolute-bound",
+      acceptedAbsoluteDirection: $rule.direction,
+      acceptedAbsoluteLimit: $rule.limit,
+      authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5170885290"
+    }
+  end;
+
 def protocol_counts:
   {
     efSqlCommands: .EfSqlCommands,
@@ -232,7 +269,7 @@ def protocol_comparison($name; $baseline; $after; $releases):
   high_metric("c\($candidate.Concurrency)-rss-growth-bytes";
     ($before.Resources.RssPeakBytes - $before.Resources.RssStartBytes);
     ($candidate.Resources.RssPeakBytes - $candidate.Resources.RssStartBytes); 0.20)
-]) as $comparisons |
+] | map(apply_regression_disposition)) as $comparisons |
 ([range(0; 2) as $index |
   protocol_comparison(
     "steady-c\($a.SteadyState[$index].Concurrency)";
@@ -321,7 +358,13 @@ def protocol_comparison($name; $baseline; $after; $releases):
     w3m: {
       logicalReads: $plan.LogicalReads,
       baselineLogicalReads: $baselineW3mLogicalReads,
+      baselineComparison: "N/A: baseline selects a parent only; candidate also seeks the first pending item to enforce durable lease/retry eligibility.",
+      candidateAbsoluteLogicalReadLimit: 32,
+      disposition: "operator-accepted-changed-semantics-candidate-baseline",
+      authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5170885290",
       indexUsed: $plan.IndexUsed,
+      indexes: $plan.Indexes,
+      operators: $plan.Operators,
       boundedSelection: $plan.BoundedSelection,
       metadataOnly: $plan.MetadataOnly,
       selectedOldest: $plan.ActualProcessorSelectedOldest,
@@ -329,7 +372,7 @@ def protocol_comparison($name; $baseline; $after; $releases):
       finalPendingParents: $plan.FinalPendingParents,
       finalPendingItems: $plan.FinalPendingItems,
       sentinelVerified: ($plan.SentinelPreReleaseVerificationSucceeded and $plan.SentinelPostReleaseAbsent),
-      logicalReadsPassed: ($plan.LogicalReads <= ($baselineW3mLogicalReads * 1.20))
+      logicalReadsPassed: ($plan.LogicalReads <= 32)
     }
   },
   issue257: {
@@ -434,12 +477,24 @@ def protocol_comparison($name; $baseline; $after; $releases):
       ($plan.LogicalReads | valid_measurement and . == floor) and
       ($baselineW3mLogicalReads | valid_measurement and . == floor) and
       $plan.IndexUsed and $plan.BoundedSelection and $plan.MetadataOnly and
+      (($plan.Indexes | sort) == [
+        "IX_CentralTransientPayloadReleases_State_CreatedUtc_ReleaseId",
+        "PK_CentralTransientPayloadReleaseItems"
+      ]) and
+      ($plan.Operators | index("Index Seek/Index Seek") != null) and
+      ($plan.Operators | index("Clustered Index Seek/Clustered Index Seek") != null) and
+      (($plan.CandidateItemDueWorkPlan | fromjson) as $duePlan |
+        $duePlan.ExpectedLoadNextIndex == "PK_CentralTransientPayloadReleaseItems" and
+        ($duePlan.ClaimPlanIndexes | sort) == [
+          "IX_CentralTransientPayloadReleases_State_CreatedUtc_ReleaseId",
+          "PK_CentralTransientPayloadReleaseItems"
+        ]) and
       $plan.ActualProcessorSelectedOldest and $plan.ActualProcessorCompletedOldest and
       ($plan.FinalPendingParents == 0) and ($plan.FinalPendingItems == 0) and
       $plan.SentinelPreReleaseVerificationSucceeded and $plan.SentinelPostReleaseAbsent and
-      ($plan.LogicalReads <= ($baselineW3mLogicalReads * 1.20))
+      ($plan.LogicalReads <= 32)
     ),
-    regressions: (($comparisons | length) == 16 and all($comparisons[]; .passed)),
+    regressions: (($comparisons | length) == 16 and all($comparisons[]; .accepted)),
     issue257: (
       ($lane.revision == "4cb0cdcef7f1d9df2e0923ee9b993454e0252843") and
       ($lane.identities.profileSha256 == "227FB3C0484AB5BBAFC4CA3674EA0D68B473315EBDD63F547CB2851D0A00F499") and
