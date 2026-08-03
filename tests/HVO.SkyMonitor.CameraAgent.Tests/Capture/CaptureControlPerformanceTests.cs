@@ -46,7 +46,10 @@ public sealed class CaptureControlPerformanceTests
     public async Task W1AndW2SparseMeteringWritesCaptureControlEvidence()
     {
         var repositoryRoot = GetRepositoryRoot();
-        var revision = GetEvidenceRevision();
+        var git = await ReadGitEvidenceAsync(repositoryRoot).ConfigureAwait(false);
+        var run = ReadEvidenceRun(git);
+        ValidateRunSequence(run);
+        var revision = run.Revision;
         var pinnedSdk = ReadPinnedSdkVersion(repositoryRoot);
         var actualSdk = (await RunProcessAsync(repositoryRoot, "dotnet", "--version").ConfigureAwait(false)).Trim();
         Assert.AreEqual(pinnedSdk, actualSdk, "The performance harness must run with the repository-pinned SDK.");
@@ -65,17 +68,18 @@ public sealed class CaptureControlPerformanceTests
                 repositoryRoot,
                 "W2",
                 "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json",
-                "4CDF8496A1F5A05D005CF101A594CEF2053BFF418C554AED14AB1563AA549308",
+                "227FB3C0484AB5BBAFC4CA3674EA0D68B473315EBDD63F547CB2851D0A00F499",
                 3096,
                 2080,
                 CameraPixelFormat.BayerRggb16).ConfigureAwait(false)
         };
-        var git = await ReadGitEvidenceAsync(repositoryRoot).ConfigureAwait(false);
-        var command = "DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=<revision> dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/" +
-            "HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --filter \"FullyQualifiedName~" +
+        var command = $"DOTNET_gcServer=1 HVO_ISSUE_257_EVIDENCE=1 HVO_EVIDENCE_REVISION={revision} HVO_EVIDENCE_TRIAL={run.Trial} HVO_ISSUE_257_OUTPUT_ROOT={run.OutputRoot} dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/" +
+            "HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter \"FullyQualifiedName~" +
             "HVO.SkyMonitor.CameraAgent.Tests.Capture.CaptureControlPerformanceTests." +
             "W1AndW2SparseMeteringWritesCaptureControlEvidence\"";
-        var durableLaneCommand = "DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=<revision> dotnet test " +
+        var durableOrder = run.Trial % 2 == 1 ? "UB" : "BU";
+        var durableLaneCommand = $"DOTNET_gcServer=1 HVO_ISSUE_257_EVIDENCE=1 HVO_EVIDENCE_REVISION={revision} " +
+            $"HVO_EVIDENCE_TRIAL={run.Trial} HVO_ISSUE_257_ORDER={durableOrder} HVO_ISSUE_257_OUTPUT_ROOT={run.OutputRoot} dotnet test " +
             "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build " +
             "--configuration Release --filter \"FullyQualifiedName~DurableCaptureDistributionPerformanceTests." +
             "W2W3MAndBlockedLane_DurableLaneEvidence\"";
@@ -87,8 +91,9 @@ public sealed class CaptureControlPerformanceTests
             "AcceleratedCameraAgentSoakTests.AcceleratedTwentyFourHours_ArtifactsAndBoundedOwnersRemainConsistent\"";
         var evidence = new
         {
-            Issue = 58,
-            Phase = 6,
+            Issue = 257,
+            SourceHarnessIssue = 58,
+            Trial = run.Trial,
             Revision = new
             {
                 EvidenceRevision = revision,
@@ -101,6 +106,12 @@ public sealed class CaptureControlPerformanceTests
                     : "Clean working tree"
             },
             GeneratedUtc = DateTimeOffset.UtcNow,
+            Provenance = new
+            {
+                Candidate = git,
+                TestAssembly = ReadAssemblyIdentity(typeof(CaptureControlPerformanceTests).Assembly, revision),
+                ProductionAssembly = ReadAssemblyIdentity(typeof(CameraModuleRunner).Assembly, revision)
+            },
             ExactCommand = command,
             ExactCommands = new
             {
@@ -267,11 +278,20 @@ public sealed class CaptureControlPerformanceTests
                 "samples and all Bayer photosites. Latencies are observations, not universal pass/fail budgets."
         };
 
-        var outputDirectory = Path.Combine(repositoryRoot, "TestResults", "issue-58", revision);
+        var outputDirectory = run.OutputDirectory;
         Directory.CreateDirectory(outputDirectory);
-        await File.WriteAllTextAsync(
-            Path.Combine(outputDirectory, "capture-control-performance.json"),
-            JsonSerializer.Serialize(evidence, EvidenceJsonOptions)).ConfigureAwait(false);
+        await WriteNewJsonAsync(
+            Path.Combine(outputDirectory, "capture-control-performance.json"), evidence).ConfigureAwait(false);
+        var evidenceIdentity = ReadFileIdentity(Path.Combine(outputDirectory, "capture-control-performance.json"));
+        await WriteNewJsonAsync(
+            Path.Combine(outputDirectory, "capture-control-manifest.json"),
+            new
+            {
+                Issue = 257,
+                Trial = run.Trial,
+                Revision = revision,
+                Artifacts = new[] { evidenceIdentity }
+            }).ConfigureAwait(false);
     }
 
     private static async Task<WorkloadEvidence> MeasureWorkloadAsync(
@@ -433,6 +453,8 @@ public sealed class CaptureControlPerformanceTests
         var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationBefore;
         GC.KeepAlive(sink);
         var totalWallMilliseconds = wallSamples.Sum() * CandidateOperationsPerMeasurement;
+        var orderedWallSamples = wallSamples.ToArray();
+        var orderedCpuSamples = cpuSamples.ToArray();
         Array.Sort(wallSamples);
         Array.Sort(cpuSamples);
         return new CandidateMeasurement(
@@ -441,8 +463,10 @@ public sealed class CaptureControlPerformanceTests
             CandidateOperationsPerMeasurement,
             Percentile(wallSamples, 0.50),
             Percentile(wallSamples, 0.95),
+            orderedWallSamples,
             Percentile(cpuSamples, 0.50),
             Percentile(cpuSamples, 0.95),
+            orderedCpuSamples,
             allocatedBytes,
             AllocationOperations,
             allocatedBytes / (double)AllocationOperations,
@@ -494,6 +518,8 @@ public sealed class CaptureControlPerformanceTests
         var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationBefore;
         GC.KeepAlive(sink);
         var totalWallMilliseconds = wallSamples.Sum() * BaselineOperationsPerMeasurement;
+        var orderedWallSamples = wallSamples.ToArray();
+        var orderedCpuSamples = cpuSamples.ToArray();
         Array.Sort(wallSamples);
         Array.Sort(cpuSamples);
         return new BaselineMeasurement(
@@ -503,8 +529,10 @@ public sealed class CaptureControlPerformanceTests
             BaselineOperationsPerMeasurement,
             Percentile(wallSamples, 0.50),
             Percentile(wallSamples, 0.95),
+            orderedWallSamples,
             Percentile(cpuSamples, 0.50),
             Percentile(cpuSamples, 0.95),
+            orderedCpuSamples,
             allocatedBytes,
             AllocationOperations,
             allocatedBytes / (double)AllocationOperations,
@@ -859,15 +887,112 @@ public sealed class CaptureControlPerformanceTests
 
     private static int DivideRoundUp(int value, int divisor) => (value + divisor - 1) / divisor;
 
-    private static string GetEvidenceRevision()
+    private static EvidenceRun ReadEvidenceRun(GitEvidence git)
     {
-        var revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION") ?? "working-tree";
-        if (string.IsNullOrWhiteSpace(revision) || Path.GetFileName(revision) != revision ||
-            revision is "." or "..")
+        if (!string.Equals(BuildConfiguration, "Release", StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("HVO_EVIDENCE_REVISION must be a single safe path segment.");
+            throw new InvalidOperationException("Issue #257 evidence requires a Release build.");
         }
-        return revision;
+        if (!string.Equals(Environment.GetEnvironmentVariable("HVO_ISSUE_257_EVIDENCE"), "1", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Set HVO_ISSUE_257_EVIDENCE=1 for a claimable run.");
+        }
+
+        var revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION");
+        if (revision is null || revision.Length != 40 || !revision.All(Uri.IsHexDigit) ||
+            !string.Equals(revision, git.Head, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("HVO_EVIDENCE_REVISION must equal the exact 40-hex candidate HEAD.");
+        }
+        if (git.Dirty)
+        {
+            throw new InvalidOperationException("Issue #257 evidence requires a clean working tree.");
+        }
+        if (!int.TryParse(
+                Environment.GetEnvironmentVariable("HVO_EVIDENCE_TRIAL"),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var trial) || trial is < 1 or > 5)
+        {
+            throw new InvalidOperationException("HVO_EVIDENCE_TRIAL must be an integer from 1 through 5.");
+        }
+        var outputRoot = Environment.GetEnvironmentVariable("HVO_ISSUE_257_OUTPUT_ROOT");
+        if (string.IsNullOrWhiteSpace(outputRoot) || !Path.IsPathFullyQualified(outputRoot))
+        {
+            throw new InvalidOperationException("HVO_ISSUE_257_OUTPUT_ROOT must be an absolute path.");
+        }
+        outputRoot = Path.GetFullPath(outputRoot);
+        if (!string.Equals(
+                Path.GetFileName(outputRoot.TrimEnd(Path.DirectorySeparatorChar)),
+                revision,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("HVO_ISSUE_257_OUTPUT_ROOT must end with the candidate HEAD.");
+        }
+        return new EvidenceRun(revision, trial, outputRoot, Path.Combine(outputRoot, $"trial-{trial:D2}"));
+    }
+
+    private static void ValidateRunSequence(EvidenceRun run)
+    {
+        var controlPath = Path.Combine(run.OutputDirectory, "capture-control-performance.json");
+        var controlManifestPath = Path.Combine(run.OutputDirectory, "capture-control-manifest.json");
+        if (File.Exists(controlPath) || File.Exists(controlManifestPath))
+        {
+            throw new InvalidOperationException("The capture-control output for this trial already exists.");
+        }
+
+        var lanePath = Path.Combine(run.OutputDirectory, "capture-lanes-performance.json");
+        var laneManifestPath = Path.Combine(run.OutputDirectory, "capture-lanes-manifest.json");
+        var runtimePath = Path.Combine(run.OutputDirectory, "runtime-signals.json");
+        if (run.Trial % 2 == 1)
+        {
+            if (Directory.Exists(run.OutputDirectory) && Directory.EnumerateFileSystemEntries(run.OutputDirectory).Any())
+            {
+                throw new InvalidOperationException("Odd issue #257 trials must start with capture-control in an empty trial directory.");
+            }
+        }
+        else if (!File.Exists(lanePath) || !File.Exists(laneManifestPath) || !File.Exists(runtimePath))
+        {
+            throw new InvalidOperationException("Even issue #257 trials require completed durable-lane evidence first.");
+        }
+    }
+
+    private static FileIdentity ReadAssemblyIdentity(System.Reflection.Assembly assembly, string revision)
+    {
+        var informationalVersion = assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), inherit: false)
+            .Cast<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .Single()
+            .InformationalVersion;
+        if (!informationalVersion.EndsWith($"+{revision}", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Assembly {assembly.GetName().Name} was not built from candidate HEAD {revision}.");
+        }
+        var file = ReadFileIdentity(assembly.Location);
+        return file with { InformationalVersion = informationalVersion };
+    }
+
+    private static FileIdentity ReadFileIdentity(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        return new FileIdentity(Path.GetFileName(path), bytes.LongLength, Convert.ToHexString(SHA256.HashData(bytes)));
+    }
+
+    private static async Task WriteNewJsonAsync<T>(string path, T value)
+    {
+        var stream = new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using (stream.ConfigureAwait(false))
+        {
+            await JsonSerializer.SerializeAsync(stream, value, EvidenceJsonOptions).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
+        }
     }
 
     private static string ReadPinnedSdkVersion(string repositoryRoot)
@@ -1322,6 +1447,10 @@ public sealed class CaptureControlPerformanceTests
         bool Dirty,
         string DirtyDiffSha256);
 
+    private sealed record EvidenceRun(string Revision, int Trial, string OutputRoot, string OutputDirectory);
+
+    private sealed record FileIdentity(string Name, long Bytes, string Sha256, string? InformationalVersion = null);
+
     private sealed record WorkloadEvidence(
         string Id,
         string CanonicalProfilePath,
@@ -1347,8 +1476,10 @@ public sealed class CaptureControlPerformanceTests
         int OperationsPerMeasurement,
         double WallMedianMilliseconds,
         double WallP95Milliseconds,
+        IReadOnlyList<double> OrderedWallSamplesMilliseconds,
         double CpuMedianMilliseconds,
         double CpuP95Milliseconds,
+        IReadOnlyList<double> OrderedCpuSamplesMilliseconds,
         long AllocatedBytesTotal,
         int AllocationOperations,
         double AllocatedBytesPerOperation,
@@ -1367,8 +1498,10 @@ public sealed class CaptureControlPerformanceTests
         int OperationsPerMeasurement,
         double WallMedianMilliseconds,
         double WallP95Milliseconds,
+        IReadOnlyList<double> OrderedWallSamplesMilliseconds,
         double CpuMedianMilliseconds,
         double CpuP95Milliseconds,
+        IReadOnlyList<double> OrderedCpuSamplesMilliseconds,
         long AllocatedBytesTotal,
         int AllocationOperations,
         double AllocatedBytesPerOperation,
@@ -1405,7 +1538,7 @@ public sealed class CaptureControlPerformanceTests
         int PayloadCopyCount,
         int DistinctPayloadOwners,
         string PayloadOwnershipInvariant,
-        [property: System.Text.Json.Serialization.JsonIgnore] CriticalTimelineSample[] Timeline);
+        CriticalTimelineSample[] Timeline);
 
     private sealed record ProductionMeteringEvidence(
         int MeteringEvidenceCount,

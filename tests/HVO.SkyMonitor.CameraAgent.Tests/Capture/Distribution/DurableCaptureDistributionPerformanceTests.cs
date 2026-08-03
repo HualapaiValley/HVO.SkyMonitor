@@ -40,25 +40,22 @@ public sealed class DurableCaptureDistributionPerformanceTests
     private const int W3PayloadCount = 100;
     private const long W3PayloadBytes = 1_287_936_000;
     private const int VirtualSkySeed = 2025;
-    private const double W2BaselineMedianMilliseconds = 33.3402;
-    private const double W2BaselineP95Milliseconds = 39.4532;
-    private const string ExpectedProfileSha256 = "4CDF8496A1F5A05D005CF101A594CEF2053BFF418C554AED14AB1563AA549308";
+    private const string ExpectedProfileSha256 = "227FB3C0484AB5BBAFC4CA3674EA0D68B473315EBDD63F547CB2851D0A00F499";
     private static readonly JsonSerializerOptions EvidenceOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly JsonSerializerOptions LaneContextOptions = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
     public async Task W2W3MAndBlockedLane_DurableLaneEvidence()
     {
-        var revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION") ?? "working-tree";
         var repositoryRoot = GetRepositoryRoot();
         var git = await ReadGitEvidenceAsync(repositoryRoot).ConfigureAwait(false);
-        var outputDirectory = Path.Combine(repositoryRoot, "TestResults", "issue-95", revision);
+        var run = ReadEvidenceRun(git);
+        ValidateRunSequence(run);
+        var revision = run.Revision;
+        var outputDirectory = run.OutputDirectory;
         var workRoot = Path.Combine(outputDirectory, "performance-work");
         Directory.CreateDirectory(outputDirectory);
-        if (Directory.Exists(workRoot))
-        {
-            Directory.Delete(workRoot, recursive: true);
-        }
+        Assert.IsFalse(Directory.Exists(workRoot), "A prior partial durable-lane run must not be overwritten.");
         Directory.CreateDirectory(workRoot);
 
         using var runtimeSignals = new RuntimeSignalCollector();
@@ -75,10 +72,22 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 Path.Combine(workRoot, "w2"), input, configuration, runtimeSignals).ConfigureAwait(false);
             var w3m = await MeasureW3MetadataAsync(
                 Path.Combine(workRoot, "w3m"), input, configuration).ConfigureAwait(false);
-            var unblocked = await MeasureLiveScenarioAsync(
-                Path.Combine(workRoot, "w3p-unblocked"), input, configuration, blocked: false, runtimeSignals).ConfigureAwait(false);
-            var blocked = await MeasureLiveScenarioAsync(
-                Path.Combine(workRoot, "w3p-blocked"), input, configuration, blocked: true, runtimeSignals).ConfigureAwait(false);
+            LiveScenarioMeasurement unblocked;
+            LiveScenarioMeasurement blocked;
+            if (run.Order == "UB")
+            {
+                unblocked = await MeasureLiveScenarioAsync(
+                    Path.Combine(workRoot, "w3p-unblocked"), input, configuration, blocked: false, runtimeSignals).ConfigureAwait(false);
+                blocked = await MeasureLiveScenarioAsync(
+                    Path.Combine(workRoot, "w3p-blocked"), input, configuration, blocked: true, runtimeSignals).ConfigureAwait(false);
+            }
+            else
+            {
+                blocked = await MeasureLiveScenarioAsync(
+                    Path.Combine(workRoot, "w3p-blocked"), input, configuration, blocked: true, runtimeSignals).ConfigureAwait(false);
+                unblocked = await MeasureLiveScenarioAsync(
+                    Path.Combine(workRoot, "w3p-unblocked"), input, configuration, blocked: false, runtimeSignals).ConfigureAwait(false);
+            }
 
             AssertRegressionWithinBudget(
                 unblocked.AcceptP95Milliseconds,
@@ -93,13 +102,21 @@ public sealed class DurableCaptureDistributionPerformanceTests
             var runtimeSnapshot = runtimeSignals.Snapshot();
             ValidateRuntimeSignals(runtimeSnapshot);
             Assert.IsFalse(runtimeSnapshot.EventIds.Contains(2059), "A lane service required forced shutdown.");
+            Assert.IsFalse(runtimeSnapshot.EventIds.Any(static eventId => eventId is >= 2060 and <= 2062),
+                "A claim, handler, or lease failure occurred during issue #257 evidence.");
             Assert.IsTrue(runtimeSnapshot.EventIds.Contains(2058), "Graceful lane drain was not observed.");
 
-            var medianBudget = Math.Max(W2BaselineMedianMilliseconds * 1.20, W2BaselineMedianMilliseconds + 5);
-            var p95Budget = Math.Max(W2BaselineP95Milliseconds * 1.20, W2BaselineP95Milliseconds + 5);
             var evidence = new
             {
+                Issue = 257,
+                Trial = run.Trial,
                 Revision = revision,
+                Provenance = new
+                {
+                    Candidate = git,
+                    TestAssembly = ReadAssemblyIdentity(typeof(DurableCaptureDistributionPerformanceTests).Assembly, revision),
+                    ProductionAssembly = ReadAssemblyIdentity(typeof(SqliteCaptureLaneStore).Assembly, revision)
+                },
                 Environment = new
                 {
                     OperatingSystem = RuntimeInformation.OSDescription,
@@ -114,8 +131,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
                     StorageFormat = new DriveInfo(Path.GetPathRoot(outputDirectory)!).DriveFormat,
                     ServerGc = System.Runtime.GCSettings.IsServerGC,
                     SqliteVersion = await ReadSqliteVersionAsync().ConfigureAwait(false),
-                    ExecutionCommand = "DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=<revision> dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter FullyQualifiedName~DurableCaptureDistributionPerformanceTests.W2W3MAndBlockedLane_DurableLaneEvidence",
-                    Candidate = git
+                    ExecutionCommand = $"DOTNET_gcServer=1 HVO_ISSUE_257_EVIDENCE=1 HVO_EVIDENCE_REVISION={revision} HVO_EVIDENCE_TRIAL={run.Trial} HVO_ISSUE_257_ORDER={run.Order} HVO_ISSUE_257_OUTPUT_ROOT={run.OutputRoot} dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter FullyQualifiedName~DurableCaptureDistributionPerformanceTests.W2W3MAndBlockedLane_DurableLaneEvidence"
                 },
                 Workload = new
                 {
@@ -140,23 +156,13 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 },
                 Baseline = new
                 {
-                    Source = "Issue #95 predeclared RawCaptureIngress reference path",
-                    Revision = "e39baf32c191b6e77393c18033e2c46bec5fa4cf",
-                    Command = "DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=e39baf32c191b6e77393c18033e2c46bec5fa4cf dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter FullyQualifiedName~RawCaptureIngressPerformanceTests.W2W3MAndW3P_DurableIngressEvidence",
-                    MedianMilliseconds = W2BaselineMedianMilliseconds,
-                    P95Milliseconds = W2BaselineP95Milliseconds,
-                    ThroughputPerSecond = 29.9878,
-                    W3MRecordsPerSecond = 1_995.4896,
-                    W3MRestartDiscoveryMilliseconds = 322.2411,
-                    W3PCommitCapturesPerSecond = 38.6147,
-                    W3PRecoveryCapturesPerSecond = 111.6578,
-                    RssMedianGrowthBytes = 3_584_000
+                    Comparison = "N/A",
+                    Reason = "Issue #95 used a different canonical profile identity and raw-ingress schema; its historical values are not regression gates.",
+                    Disposition = "This run establishes an absolute current-profile baseline for later equivalent comparisons."
                 },
                 Budgets = new
                 {
                     MinimumThroughputPerSecond = 1.0,
-                    W2MedianMilliseconds = medianBudget,
-                    W2P95Milliseconds = p95Budget,
                     BlockedRegression = "blocked <= unblocked + max(10%, 5 ms)",
                     MaximumRssMedianGrowthBytes = 64L * 1024 * 1024,
                     MinimumRequiredDrainCapturesPerSecond = 1.0,
@@ -166,7 +172,9 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 W3M = w3m,
                 BlockedComparison = new
                 {
-                    ExecutionOrder = new[] { "unblocked", "blocked" },
+                    ExecutionOrder = run.Order == "UB"
+                        ? new[] { "unblocked", "blocked" }
+                        : new[] { "blocked", "unblocked" },
                     Unblocked = unblocked,
                     Blocked = blocked,
                     AcceptP95RegressionMilliseconds = blocked.AcceptP95Milliseconds - unblocked.AcceptP95Milliseconds,
@@ -189,12 +197,13 @@ public sealed class DurableCaptureDistributionPerformanceTests
                     Result = "Checksums, manifest lineage, unique identities, indexed migration, reference-only fan-out, durable completion, optional isolation, restart discovery, and graceful drain were asserted."
                 }
             };
-            await File.WriteAllTextAsync(
-                Path.Combine(outputDirectory, "capture-lanes-performance.json"),
-                JsonSerializer.Serialize(evidence, EvidenceOptions)).ConfigureAwait(false);
+            await WriteNewJsonAsync(
+                Path.Combine(outputDirectory, "capture-lanes-performance.json"), evidence).ConfigureAwait(false);
 
             var runtimeEvidence = new
             {
+                Issue = 257,
+                Trial = run.Trial,
                 Revision = revision,
                 ExpectedLogEventRanges = new[]
                 {
@@ -238,9 +247,21 @@ public sealed class DurableCaptureDistributionPerformanceTests
                     ForcedShutdownObserved = runtimeSnapshot.EventIds.Contains(2059)
                 }
             };
-            await File.WriteAllTextAsync(
-                Path.Combine(outputDirectory, "runtime-signals.json"),
-                JsonSerializer.Serialize(runtimeEvidence, EvidenceOptions)).ConfigureAwait(false);
+            await WriteNewJsonAsync(
+                Path.Combine(outputDirectory, "runtime-signals.json"), runtimeEvidence).ConfigureAwait(false);
+            await WriteNewJsonAsync(
+                Path.Combine(outputDirectory, "capture-lanes-manifest.json"),
+                new
+                {
+                    Issue = 257,
+                    Trial = run.Trial,
+                    Revision = revision,
+                    Artifacts = new[]
+                    {
+                        ReadFileIdentity(Path.Combine(outputDirectory, "capture-lanes-performance.json")),
+                        ReadFileIdentity(Path.Combine(outputDirectory, "runtime-signals.json"))
+                    }
+                }).ConfigureAwait(false);
         }
         finally
         {
@@ -285,18 +306,19 @@ public sealed class DurableCaptureDistributionPerformanceTests
         var measuredDuration = Stopwatch.GetElapsedTime(measuredStarted);
         var cpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds;
         var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
+        var orderedSamples = samples.ToArray();
         Array.Sort(samples);
         var median = Percentile(samples, 0.50);
         var p95 = Percentile(samples, 0.95);
         var throughput = MeasuredCount / measuredDuration.TotalSeconds;
-        var medianBudget = Math.Max(W2BaselineMedianMilliseconds * 1.20, W2BaselineMedianMilliseconds + 5);
-        var p95Budget = Math.Max(W2BaselineP95Milliseconds * 1.20, W2BaselineP95Milliseconds + 5);
         Assert.IsGreaterThanOrEqualTo(1d, throughput);
-        Assert.IsLessThanOrEqualTo(medianBudget, median);
-        Assert.IsLessThanOrEqualTo(p95Budget, p95);
 
         var databasePath = DatabasePath(root);
         var correctness = await ValidateW2EvidenceAsync(root, receipts, input, configuration).ConfigureAwait(false);
+        var checkpoint = await ReadWalCheckpointAsync(root).ConfigureAwait(false);
+        Assert.AreEqual(0L, checkpoint.Busy);
+        Assert.AreEqual(0L, fixture.RawTelemetry.TransactionFailureCount);
+        Assert.AreEqual(0L, fixture.RawTelemetry.CheckpointFailureCount);
         runtimeSignals.RecordObservableInstruments();
         return new W2Measurement(
             TotalAcceptedCaptures: WarmupCount + MeasuredCount,
@@ -304,6 +326,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
             P95Milliseconds: p95,
             MinimumMilliseconds: samples[0],
             MaximumMilliseconds: samples[^1],
+            OrderedSamplesMilliseconds: orderedSamples,
             ThroughputPerSecond: throughput,
             CpuMilliseconds: cpuMilliseconds,
             AllocatedBytes: allocatedBytes,
@@ -316,6 +339,15 @@ public sealed class DurableCaptureDistributionPerformanceTests
             PayloadBytesOnDisk: correctness.PayloadBytes,
             LaneWorkRows: correctness.LaneWorkRows,
             LaneContextRows: correctness.ContextRows,
+            ObservedTransactions: fixture.RawTelemetry.TransactionCount,
+            TransactionFailures: fixture.RawTelemetry.TransactionFailureCount,
+            ObservedCheckpoints: fixture.RawTelemetry.CheckpointCount,
+            CheckpointFailures: fixture.RawTelemetry.CheckpointFailureCount,
+            FileFlushes: fixture.RawTelemetry.FileFlushCount,
+            DirectorySyncs: fixture.RawTelemetry.DirectorySyncCount,
+            WalCheckpointBusy: checkpoint.Busy,
+            WalCheckpointLogFrames: checkpoint.LogFrames,
+            WalCheckpointedFrames: checkpoint.CheckpointedFrames,
             ReferenceLaneRowsPerCapture: correctness.LaneWorkRows / (WarmupCount + MeasuredCount),
             UniqueCaptureIds: correctness.UniqueCaptureIds,
             UniqueArtifactIds: correctness.UniqueArtifactIds,
@@ -352,7 +384,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
             Assert.IsTrue(payloadPaths.Add(entry.PayloadRelativePath));
         }
 
-        foreach (var entry in new[] { entries[0], entries[^1] })
+        foreach (var entry in entries)
         {
             var payloadPath = Path.Combine(root, entry.PayloadRelativePath);
             var sidecarPath = Path.Combine(root, entry.SidecarRelativePath);
@@ -407,6 +439,55 @@ public sealed class DurableCaptureDistributionPerformanceTests
             sequences.Count);
     }
 
+    private static async Task ValidateLivePayloadEvidenceAsync(
+        string root,
+        W2Input input,
+        CameraModuleConfig configuration)
+    {
+        var expectedChecksum = PayloadChecksum.ComputeSha256(input.Payload);
+        var journal = new SqliteRawCaptureJournal(DatabasePath(root), busyTimeoutSeconds: 5);
+        var entries = await journal.ReadAllAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(W3PayloadCount, entries);
+        foreach (var entry in entries)
+        {
+            Assert.AreEqual(W2PayloadBytes, entry.PayloadLength);
+            Assert.AreEqual(expectedChecksum, entry.PayloadSha256);
+            var payloadPath = Path.Combine(root, entry.PayloadRelativePath);
+            var sidecarPath = Path.Combine(root, entry.SidecarRelativePath);
+            var sidecar = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            CollectionAssert.AreEqual(entry.ManifestJson, sidecar);
+            var parsed = CaptureContractJson.ParseManifest(sidecar);
+            Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
+            var manifest = parsed.Document!.Manifest!;
+            Assert.AreEqual(configuration.AgentId, manifest.Descriptor.Capture.AgentId);
+            Assert.AreEqual(entry.CaptureId, manifest.Descriptor.Capture.CaptureId);
+            Assert.AreEqual(entry.ArtifactId, manifest.Descriptor.Artifact.ArtifactId);
+            Assert.AreEqual(entry.CaptureSequence, manifest.Descriptor.Capture.CaptureSequence);
+            Assert.AreEqual(entry.DescriptorSha256, CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor));
+            Assert.AreEqual(entry.ManifestSha256, CaptureContractJson.ComputeManifestSha256(manifest));
+            Assert.AreEqual(configuration.Rig.ProfileVersion, manifest.Descriptor.Profiles.Rig.Version);
+            Assert.AreEqual(configuration.Rig.Sensor.SensorRecipeVersion, manifest.Descriptor.Profiles.Sensor.Version);
+            Assert.AreEqual(W2Width, manifest.Descriptor.Layout.Width);
+            Assert.AreEqual(W2Height, manifest.Descriptor.Layout.Height);
+            Assert.AreEqual(W2Stride, manifest.Descriptor.Layout.StrideBytes);
+            Assert.AreEqual(CameraPixelFormat.BayerRggb16, manifest.Descriptor.Layout.PixelFormat);
+            Assert.AreEqual(expectedChecksum, manifest.Descriptor.Artifact.ChecksumSha256);
+            var stream = new FileStream(
+                payloadPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                64 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await using (stream.ConfigureAwait(false))
+            {
+                Assert.AreEqual(
+                    expectedChecksum,
+                    await PayloadChecksum.ComputeSha256Async(stream, CancellationToken.None).ConfigureAwait(false));
+            }
+        }
+    }
+
     private static async Task<W3MetadataMeasurement> MeasureW3MetadataAsync(
         string root,
         W2Input input,
@@ -458,7 +539,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
         Assert.AreEqual(W3MetadataCount, rawRows);
         Assert.AreEqual(W3MetadataCount * 3L, laneRows);
         Assert.AreEqual(W3LegacyContextCount, contextRows);
-        Assert.AreEqual(7L, version);
+        Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion, version);
         Assert.AreEqual("ok", integrity);
         Assert.AreEqual(0L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures r WHERE (SELECT COUNT(*) FROM capture_lane_work w WHERE w.raw_capture_row_id = r.raw_capture_row_id) != 3;").ConfigureAwait(false));
         await AssertReferenceOnlyLaneWorkAsync(connection).ConfigureAwait(false);
@@ -467,7 +548,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
         var queryPlan = await ReadStringsAsync(connection, "EXPLAIN QUERY PLAN SELECT w.work_id FROM capture_lane_work w JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id LEFT JOIN capture_lane_contexts c ON c.raw_capture_row_id = r.raw_capture_row_id WHERE w.lane_name = 'standard' AND w.state NOT IN ('completed', 'abandoned') ORDER BY w.agent_id, w.capture_sequence LIMIT 1;").ConfigureAwait(false);
         Assert.IsTrue(queryPlan.Any(static detail =>
             detail.Contains("ix_capture_lane_work_ordered", StringComparison.OrdinalIgnoreCase)));
-        var orderedTraversalMilliseconds = await MeasureOrderedClaimTraversalAsync(connection).ConfigureAwait(false);
+        var syntheticTraversalMilliseconds = await MeasureSyntheticIndexedTraversalAsync(connection).ConfigureAwait(false);
         var paginationStarted = Stopwatch.GetTimestamp();
         var pagedRows = await ReadAllLaneWorkPagesAsync(connection, "standard").ConfigureAwait(false);
         var paginationMilliseconds = Stopwatch.GetElapsedTime(paginationStarted).TotalMilliseconds;
@@ -531,9 +612,10 @@ public sealed class DurableCaptureDistributionPerformanceTests
             WalBytesAfterMigration: walBytesAfter,
             QueryPlan: queryPlan,
             QueryPlanUsesIndex: true,
-            OrderedClaimTraversalRows: W3MetadataCount,
-            OrderedClaimTraversalMilliseconds: orderedTraversalMilliseconds,
-            OrderedClaimTraversalRowsPerSecond: W3MetadataCount / (orderedTraversalMilliseconds / 1000d),
+            SyntheticIndexedTraversalRows: W3MetadataCount,
+            SyntheticIndexedTraversalMilliseconds: syntheticTraversalMilliseconds,
+            SyntheticIndexedTraversalRowsPerSecond: W3MetadataCount / (syntheticTraversalMilliseconds / 1000d),
+            SyntheticIndexedTraversalLabel: "Direct test-owned SQL traversal; not production SqliteCaptureLaneStore.ClaimAsync latency.",
             PaginationPageSize: 257,
             PaginationRows: pagedRows,
             PaginationMilliseconds: paginationMilliseconds,
@@ -701,7 +783,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
     {
         Assert.IsFalse(Directory.Exists(root));
         Directory.CreateDirectory(root);
-        var configuration = canonicalConfiguration with { AgentId = blocked ? "agent-95-blocked" : "agent-95-unblocked" };
+        var configuration = canonicalConfiguration with { AgentId = blocked ? "agent-257-blocked" : "agent-257-unblocked" };
         using var laneDurations = new LaneDurationCollector();
         using var fixture = CreateIngressFixture(root, runtimeSignals);
         using var standard = new StandardCaptureLaneHandler(
@@ -762,6 +844,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
             }
             var commitCpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds;
             var commitAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
+            var orderedAcceptSamples = acceptSamples.ToArray();
             Array.Sort(acceptSamples);
 
             await WaitForCountAsync(
@@ -778,10 +861,22 @@ public sealed class DurableCaptureDistributionPerformanceTests
             Assert.HasCount(W3PayloadCount, standardCompletionLatencies);
             Assert.IsTrue(standardCompletionLatencies.All(static value => value >= 0));
             standardCompletionLatencies.Sort();
-            var standardClaimDurations = laneDurations.ReadMilliseconds("camera_agent.lanes.claim.duration", "standard");
-            var standardAckDurations = laneDurations.ReadMilliseconds("camera_agent.lanes.ack.duration", "standard");
-            Assert.HasCount(W3PayloadCount, standardClaimDurations);
-            Assert.HasCount(W3PayloadCount, standardAckDurations);
+            var allStandardClaimDurations = laneDurations.ReadMilliseconds("camera_agent.lanes.claim.duration", "standard");
+            var allStandardAckDurations = laneDurations.ReadMilliseconds("camera_agent.lanes.ack.duration", "standard");
+            Assert.HasCount(W3PayloadCount, allStandardClaimDurations);
+            Assert.HasCount(W3PayloadCount, allStandardAckDurations);
+            var orderedStandardClaimDurations = allStandardClaimDurations
+                .Skip(WarmupCount)
+                .Take(MeasuredCount)
+                .ToArray();
+            var orderedStandardAckDurations = allStandardAckDurations
+                .Skip(WarmupCount)
+                .Take(MeasuredCount)
+                .ToArray();
+            Assert.HasCount(MeasuredCount, orderedStandardClaimDurations);
+            Assert.HasCount(MeasuredCount, orderedStandardAckDurations);
+            var standardClaimDurations = orderedStandardClaimDurations.Order().ToArray();
+            var standardAckDurations = orderedStandardAckDurations.Order().ToArray();
 
             var rawRows = await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false);
             var rawBytes = await ScalarLongAtRootAsync(root, "SELECT COALESCE(SUM(payload_length), 0) FROM raw_captures;").ConfigureAwait(false);
@@ -851,6 +946,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
             var payloadBytesOnDisk = payloadFiles.Sum(static path => new FileInfo(path).Length);
             Assert.HasCount(W3PayloadCount, payloadFiles);
             Assert.AreEqual(W3PayloadBytes, payloadBytesOnDisk);
+            await ValidateLivePayloadEvidenceAsync(root, input, configuration).ConfigureAwait(false);
             Assert.AreEqual(W3PayloadCount, outbox.List(root, W3PayloadCount).Count);
             var firstHalfRssMedian = Median(rssSamples.Take(rssSamples.Count / 2));
             var finalHalfRssMedian = Median(rssSamples.Skip(rssSamples.Count / 2));
@@ -867,6 +963,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 AcceptP95Milliseconds: Percentile(acceptSamples, 0.95),
                 AcceptMinimumMilliseconds: acceptSamples[0],
                 AcceptMaximumMilliseconds: acceptSamples[^1],
+                OrderedAcceptSamplesMilliseconds: orderedAcceptSamples,
                 BurstMilliseconds: burstDuration.TotalMilliseconds,
                 BurstCapturesPerSecond: W3PayloadCount / burstDuration.TotalSeconds,
                 CommitCpuMilliseconds: commitCpuMilliseconds,
@@ -878,10 +975,16 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 RssMedianGrowthBytes: finalHalfRssMedian - firstHalfRssMedian,
                 RequiredDrainMilliseconds: requiredDrainDuration.TotalMilliseconds,
                 RequiredDrainCapturesPerSecond: requiredDrainRate,
+                ProductionClaimWarmupSamples: WarmupCount,
+                ProductionClaimMeasuredSamples: MeasuredCount,
+                ProductionClaimTotalObservedSamples: allStandardClaimDurations.Length,
                 StandardClaimMedianMilliseconds: Percentile(standardClaimDurations, 0.50),
                 StandardClaimP95Milliseconds: Percentile(standardClaimDurations, 0.95),
+                StandardClaimMaximumMilliseconds: standardClaimDurations[^1],
+                OrderedProductionClaimSamplesMilliseconds: orderedStandardClaimDurations,
                 StandardAckMedianMilliseconds: Percentile(standardAckDurations, 0.50),
                 StandardAckP95Milliseconds: Percentile(standardAckDurations, 0.95),
+                OrderedStandardAckSamplesMilliseconds: orderedStandardAckDurations,
                 StandardCompletionEndToEndMedianMilliseconds: Percentile(standardCompletionLatencies, 0.50),
                 StandardCompletionEndToEndP95Milliseconds: Percentile(standardCompletionLatencies, 0.95),
                 OptionalPendingOrLeasedBeforeRelease: optionalBeforeRelease,
@@ -1123,7 +1226,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
         }
     }
 
-    private static async Task<double> MeasureOrderedClaimTraversalAsync(SqliteConnection connection)
+    private static async Task<double> MeasureSyntheticIndexedTraversalAsync(SqliteConnection connection)
     {
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
         using var transaction = connection.BeginTransaction(deferred: false);
@@ -1202,6 +1305,16 @@ public sealed class DurableCaptureDistributionPerformanceTests
     {
         using var connection = await OpenDatabaseAsync(root).ConfigureAwait(false);
         return await ScalarLongAsync(connection, sql).ConfigureAwait(false);
+    }
+
+    private static async Task<WalCheckpoint> ReadWalCheckpointAsync(string root)
+    {
+        using var connection = await OpenDatabaseAsync(root).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA wal_checkpoint(PASSIVE);";
+        using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+        return new WalCheckpoint(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2));
     }
 
     private static async Task<SqliteConnection> OpenDatabaseAsync(string root)
@@ -1347,6 +1460,126 @@ public sealed class DurableCaptureDistributionPerformanceTests
             Convert.ToHexString(fingerprint.GetHashAndReset()));
     }
 
+    private static EvidenceRun ReadEvidenceRun(GitEvidence git)
+    {
+        if (!string.Equals(BuildConfiguration, "Release", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Issue #257 evidence requires a Release build.");
+        }
+        if (!string.Equals(Environment.GetEnvironmentVariable("HVO_ISSUE_257_EVIDENCE"), "1", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Set HVO_ISSUE_257_EVIDENCE=1 for a claimable run.");
+        }
+
+        var revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION");
+        if (revision is null || revision.Length != 40 || !revision.All(Uri.IsHexDigit) ||
+            !string.Equals(revision, git.Head, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("HVO_EVIDENCE_REVISION must equal the exact 40-hex candidate HEAD.");
+        }
+        if (git.Dirty)
+        {
+            throw new InvalidOperationException("Issue #257 evidence requires a clean working tree.");
+        }
+        if (!int.TryParse(
+                Environment.GetEnvironmentVariable("HVO_EVIDENCE_TRIAL"),
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var trial) || trial is < 1 or > 5)
+        {
+            throw new InvalidOperationException("HVO_EVIDENCE_TRIAL must be an integer from 1 through 5.");
+        }
+
+        var order = Environment.GetEnvironmentVariable("HVO_ISSUE_257_ORDER");
+        if (order is not ("UB" or "BU"))
+        {
+            throw new InvalidOperationException("HVO_ISSUE_257_ORDER must be UB or BU.");
+        }
+        var outputRoot = Environment.GetEnvironmentVariable("HVO_ISSUE_257_OUTPUT_ROOT");
+        if (string.IsNullOrWhiteSpace(outputRoot) || !Path.IsPathFullyQualified(outputRoot))
+        {
+            throw new InvalidOperationException("HVO_ISSUE_257_OUTPUT_ROOT must be an absolute path.");
+        }
+        outputRoot = Path.GetFullPath(outputRoot);
+        if (!string.Equals(
+                Path.GetFileName(outputRoot.TrimEnd(Path.DirectorySeparatorChar)),
+                revision,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("HVO_ISSUE_257_OUTPUT_ROOT must end with the candidate HEAD.");
+        }
+        var expectedOrder = trial % 2 == 1 ? "UB" : "BU";
+        if (!string.Equals(order, expectedOrder, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Issue #257 trial {trial} requires durable scenario order {expectedOrder}.");
+        }
+        return new EvidenceRun(revision, trial, order, outputRoot, Path.Combine(outputRoot, $"trial-{trial:D2}"));
+    }
+
+    private static void ValidateRunSequence(EvidenceRun run)
+    {
+        var lanePath = Path.Combine(run.OutputDirectory, "capture-lanes-performance.json");
+        var laneManifestPath = Path.Combine(run.OutputDirectory, "capture-lanes-manifest.json");
+        var runtimePath = Path.Combine(run.OutputDirectory, "runtime-signals.json");
+        var workRoot = Path.Combine(run.OutputDirectory, "performance-work");
+        if (File.Exists(lanePath) || File.Exists(laneManifestPath) || File.Exists(runtimePath) || Directory.Exists(workRoot))
+        {
+            throw new InvalidOperationException("The durable-lane output for this trial already exists.");
+        }
+
+        var controlPath = Path.Combine(run.OutputDirectory, "capture-control-performance.json");
+        var controlManifestPath = Path.Combine(run.OutputDirectory, "capture-control-manifest.json");
+        if (run.Trial % 2 == 0)
+        {
+            if (Directory.Exists(run.OutputDirectory) && Directory.EnumerateFileSystemEntries(run.OutputDirectory).Any())
+            {
+                throw new InvalidOperationException("Even issue #257 trials must start with durable-lane evidence in an empty trial directory.");
+            }
+        }
+        else if (!File.Exists(controlPath) || !File.Exists(controlManifestPath))
+        {
+            throw new InvalidOperationException("Odd issue #257 trials require completed capture-control evidence first.");
+        }
+    }
+
+    private static FileIdentity ReadAssemblyIdentity(System.Reflection.Assembly assembly, string revision)
+    {
+        var informationalVersion = assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), inherit: false)
+            .Cast<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .Single()
+            .InformationalVersion;
+        if (!informationalVersion.EndsWith($"+{revision}", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Assembly {assembly.GetName().Name} was not built from candidate HEAD {revision}.");
+        }
+        var file = ReadFileIdentity(assembly.Location);
+        return file with { InformationalVersion = informationalVersion };
+    }
+
+    private static FileIdentity ReadFileIdentity(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        return new FileIdentity(Path.GetFileName(path), bytes.LongLength, Convert.ToHexString(SHA256.HashData(bytes)));
+    }
+
+    private static async Task WriteNewJsonAsync<T>(string path, T value)
+    {
+        var stream = new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using (stream.ConfigureAwait(false))
+        {
+            await JsonSerializer.SerializeAsync(stream, value, EvidenceOptions).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
+        }
+    }
+
     private static async Task<string> RunGitAsync(string repositoryRoot, params string[] arguments)
     {
         var startInfo = new ProcessStartInfo("git")
@@ -1448,6 +1681,8 @@ public sealed class DurableCaptureDistributionPerformanceTests
     {
         public RawCaptureIngress Ingress { get; } = ingress;
 
+        public RawIngressTelemetry RawTelemetry { get; } = rawTelemetry;
+
         public CaptureLanePolicy Policy { get; } = policy;
 
         public CaptureLaneState LaneState { get; } = laneState;
@@ -1459,7 +1694,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
         public void Dispose()
         {
             Ingress.Dispose();
-            rawTelemetry.Dispose();
+            RawTelemetry.Dispose();
             LaneTelemetry.Dispose();
             SqliteConnection.ClearAllPools();
         }
@@ -1642,12 +1877,10 @@ public sealed class DurableCaptureDistributionPerformanceTests
         {
             lock (_gate)
             {
-                var values = _samples
+                return _samples
                     .Where(sample => sample.Instrument == instrument && sample.Lane == lane)
                     .Select(static sample => sample.Milliseconds)
-                    .Order()
                     .ToArray();
-                return values;
             }
         }
 
@@ -1671,6 +1904,10 @@ public sealed class DurableCaptureDistributionPerformanceTests
         bool Dirty,
         string WorkingTreeDiffSha256);
 
+    private sealed record EvidenceRun(string Revision, int Trial, string Order, string OutputRoot, string OutputDirectory);
+
+    private sealed record FileIdentity(string Name, long Bytes, string Sha256, string? InformationalVersion = null);
+
     private sealed record W2Correctness(
         int PayloadFiles,
         long PayloadBytes,
@@ -1686,6 +1923,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
         double P95Milliseconds,
         double MinimumMilliseconds,
         double MaximumMilliseconds,
+        IReadOnlyList<double> OrderedSamplesMilliseconds,
         double ThroughputPerSecond,
         double CpuMilliseconds,
         long AllocatedBytes,
@@ -1698,6 +1936,15 @@ public sealed class DurableCaptureDistributionPerformanceTests
         long PayloadBytesOnDisk,
         long LaneWorkRows,
         long LaneContextRows,
+        long ObservedTransactions,
+        long TransactionFailures,
+        long ObservedCheckpoints,
+        long CheckpointFailures,
+        long FileFlushes,
+        long DirectorySyncs,
+        long WalCheckpointBusy,
+        long WalCheckpointLogFrames,
+        long WalCheckpointedFrames,
         long ReferenceLaneRowsPerCapture,
         int UniqueCaptureIds,
         int UniqueArtifactIds,
@@ -1706,6 +1953,8 @@ public sealed class DurableCaptureDistributionPerformanceTests
         bool RepresentativeSceneLineageValidated,
         int PersistedPayloadCopyCount,
         bool LaneWorkContainsPayloadOrBlob);
+
+    private sealed record WalCheckpoint(long Busy, long LogFrames, long CheckpointedFrames);
 
     private sealed record V1InsertionMeasurement(double DurationMilliseconds, int StatementCount);
 
@@ -1734,9 +1983,10 @@ public sealed class DurableCaptureDistributionPerformanceTests
         long WalBytesAfterMigration,
         IReadOnlyList<string> QueryPlan,
         bool QueryPlanUsesIndex,
-        int OrderedClaimTraversalRows,
-        double OrderedClaimTraversalMilliseconds,
-        double OrderedClaimTraversalRowsPerSecond,
+        int SyntheticIndexedTraversalRows,
+        double SyntheticIndexedTraversalMilliseconds,
+        double SyntheticIndexedTraversalRowsPerSecond,
+        string SyntheticIndexedTraversalLabel,
         int PaginationPageSize,
         int PaginationRows,
         double PaginationMilliseconds,
@@ -1760,6 +2010,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
         double AcceptP95Milliseconds,
         double AcceptMinimumMilliseconds,
         double AcceptMaximumMilliseconds,
+        IReadOnlyList<double> OrderedAcceptSamplesMilliseconds,
         double BurstMilliseconds,
         double BurstCapturesPerSecond,
         double CommitCpuMilliseconds,
@@ -1771,10 +2022,16 @@ public sealed class DurableCaptureDistributionPerformanceTests
         long RssMedianGrowthBytes,
         double RequiredDrainMilliseconds,
         double RequiredDrainCapturesPerSecond,
+        int ProductionClaimWarmupSamples,
+        int ProductionClaimMeasuredSamples,
+        int ProductionClaimTotalObservedSamples,
         double StandardClaimMedianMilliseconds,
         double StandardClaimP95Milliseconds,
+        double StandardClaimMaximumMilliseconds,
+        IReadOnlyList<double> OrderedProductionClaimSamplesMilliseconds,
         double StandardAckMedianMilliseconds,
         double StandardAckP95Milliseconds,
+        IReadOnlyList<double> OrderedStandardAckSamplesMilliseconds,
         double StandardCompletionEndToEndMedianMilliseconds,
         double StandardCompletionEndToEndP95Milliseconds,
         long OptionalPendingOrLeasedBeforeRelease,
