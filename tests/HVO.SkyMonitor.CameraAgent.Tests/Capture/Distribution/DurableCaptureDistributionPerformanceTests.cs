@@ -154,7 +154,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 Budgets = new
                 {
                     MinimumThroughputPerSecond = 1.0,
-                    BlockedRegression = "blocked <= unblocked + max(10%, 5 ms)",
+                    BlockedLatencyCausalDisposition = "N/A: scenario-position effect confounds blocked-vs-unblocked latency; paired deltas are diagnostic only.",
                     MaximumRssMedianGrowthBytes = 64L * 1024 * 1024,
                     MinimumRequiredDrainCapturesPerSecond = 1.0,
                     MinimumOptionalRecoveryCapturesPerSecond = 1.0
@@ -168,10 +168,10 @@ public sealed class DurableCaptureDistributionPerformanceTests
                         : new[] { "blocked", "unblocked" },
                     Unblocked = unblocked,
                     Blocked = blocked,
-                    AcceptP95RegressionMilliseconds = blocked.AcceptP95Milliseconds - unblocked.AcceptP95Milliseconds,
-                    AcceptP95RegressionPercent = PercentChange(unblocked.AcceptP95Milliseconds, blocked.AcceptP95Milliseconds),
-                    StandardAckP95RegressionMilliseconds = blocked.StandardAckP95Milliseconds - unblocked.StandardAckP95Milliseconds,
-                    StandardAckP95RegressionPercent = PercentChange(
+                    AcceptP95PairedDeltaMilliseconds = blocked.AcceptP95Milliseconds - unblocked.AcceptP95Milliseconds,
+                    AcceptP95PairedDeltaPercent = PercentChange(unblocked.AcceptP95Milliseconds, blocked.AcceptP95Milliseconds),
+                    StandardAckP95PairedDeltaMilliseconds = blocked.StandardAckP95Milliseconds - unblocked.StandardAckP95Milliseconds,
+                    StandardAckP95PairedDeltaPercent = PercentChange(
                         unblocked.StandardAckP95Milliseconds, blocked.StandardAckP95Milliseconds),
                     AggregationPolicy = "Diagnostic pair; final disposition requires all five order-balanced per-trial p95 pairs."
                 },
@@ -811,7 +811,6 @@ public sealed class DurableCaptureDistributionPerformanceTests
             serviceStarted = true;
             var acceptSamples = new double[W3PayloadCount];
             var rssSamples = new List<long>(W3PayloadCount / 10);
-            var allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
             var cpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
             var rssBefore = Environment.WorkingSet;
             var burstStarted = Stopwatch.GetTimestamp();
@@ -839,8 +838,6 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 Assert.IsLessThanOrEqualTo(burstEnded, secondary.EnteredTimestamp);
             }
             var commitCpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds;
-            var commitAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore;
-            Assert.IsGreaterThanOrEqualTo(0L, commitAllocatedBytes);
             var orderedAcceptSamples = acceptSamples.ToArray();
             Array.Sort(acceptSamples);
 
@@ -934,10 +931,11 @@ public sealed class DurableCaptureDistributionPerformanceTests
             var finalCompleted = await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'completed';").ConfigureAwait(false);
             var finalPending = await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM capture_lane_work WHERE state IN ('pending', 'leased', 'retry_wait');").ConfigureAwait(false);
             var finalQuarantined = await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'quarantined';").ConfigureAwait(false);
+            var finalRetentionHeld = await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM raw_captures WHERE retention_hold != 0;").ConfigureAwait(false);
             Assert.AreEqual(W3PayloadCount * 3L, finalCompleted);
             Assert.AreEqual(0L, finalPending);
             Assert.AreEqual(0L, finalQuarantined);
-            Assert.AreEqual(0L, await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM raw_captures WHERE retention_hold != 0;").ConfigureAwait(false));
+            Assert.AreEqual(0L, finalRetentionHeld);
 
             var payloadFiles = Directory.EnumerateFiles(Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories).ToArray();
             var payloadBytesOnDisk = payloadFiles.Sum(static path => new FileInfo(path).Length);
@@ -964,7 +962,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 BurstMilliseconds: burstDuration.TotalMilliseconds,
                 BurstCapturesPerSecond: W3PayloadCount / burstDuration.TotalSeconds,
                 CommitCpuMilliseconds: commitCpuMilliseconds,
-                CommitAllocatedBytes: commitAllocatedBytes,
+                CommitAllocationDisposition: "N/A: process-wide allocation counters are not reliable across concurrent lane-worker windows; W2 and W3M retain bounded allocation evidence.",
                 RssBeforeBytes: rssBefore,
                 RssSamplesBytes: rssSamples,
                 FirstHalfRssMedianBytes: firstHalfRssMedian,
@@ -1004,6 +1002,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 FinalCompletedLaneRows: finalCompleted,
                 FinalPendingLaneRows: finalPending,
                 FinalQuarantinedLaneRows: finalQuarantined,
+                FinalRetentionHeldRows: finalRetentionHeld,
                 BeforeReleaseSnapshot: beforeReleaseSnapshot,
                 FinalSnapshot: fixture.LaneState.Snapshot,
                 GracefulStop: true);
@@ -2005,7 +2004,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
         double BurstMilliseconds,
         double BurstCapturesPerSecond,
         double CommitCpuMilliseconds,
-        long CommitAllocatedBytes,
+        string CommitAllocationDisposition,
         long RssBeforeBytes,
         IReadOnlyList<long> RssSamplesBytes,
         long FirstHalfRssMedianBytes,
@@ -2045,6 +2044,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
         long FinalCompletedLaneRows,
         long FinalPendingLaneRows,
         long FinalQuarantinedLaneRows,
+        long FinalRetentionHeldRows,
         CaptureLaneSnapshot BeforeReleaseSnapshot,
         CaptureLaneSnapshot FinalSnapshot,
         bool GracefulStop);

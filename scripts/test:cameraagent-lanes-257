@@ -179,12 +179,14 @@ assert_source_unchanged
 
 readonly LANES_TEMP="$OUTPUT_ROOT/.lanes.json"
 readonly CONTROLS_TEMP="$OUTPUT_ROOT/.controls.json"
+readonly RUNTIME_TEMP="$OUTPUT_ROOT/.runtime.json"
 set -o noclobber
 jq -s '.' "$OUTPUT_ROOT"/trial-*/capture-lanes-performance.json > "$LANES_TEMP"
 jq -s '.' "$OUTPUT_ROOT"/trial-*/capture-control-performance.json > "$CONTROLS_TEMP"
-jq -n --slurpfile lanes "$LANES_TEMP" --slurpfile controls "$CONTROLS_TEMP" \
+jq -s '.' "$OUTPUT_ROOT"/trial-*/runtime-signals.json > "$RUNTIME_TEMP"
+jq -n --slurpfile lanes "$LANES_TEMP" --slurpfile controls "$CONTROLS_TEMP" --slurpfile runtime "$RUNTIME_TEMP" \
     --arg revision "$REVISION" -f "$AGGREGATOR" > "$OUTPUT_ROOT/five-trial-summary.json"
-rm "$LANES_TEMP" "$CONTROLS_TEMP"
+rm "$LANES_TEMP" "$CONTROLS_TEMP" "$RUNTIME_TEMP"
 jq --exit-status '.result.passed == true' "$OUTPUT_ROOT/five-trial-summary.json" >/dev/null
 assert_source_unchanged
 

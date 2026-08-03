@@ -2,10 +2,9 @@ def stats:
     sort as $values |
     {minimum: $values[0], median: $values[2], maximum: $values[4],
      maximumToMinimumRatio: (if $values[0] > 0 then $values[4] / $values[0] else null end)};
-def within_blocked_budget($baseline; $candidate):
-    $candidate <= ($baseline + ([($baseline * 0.10), 5] | max));
 ($lanes[0]) as $lane |
 ($controls[0]) as $control |
+($runtime[0]) as $signals |
 {
     schema: "hvo-issue-257-five-trial-summary-v1",
     issue: 257,
@@ -17,15 +16,19 @@ def within_blocked_budget($baseline; $candidate):
         reason: "Issue #95 used a different profile identity and raw-ingress schema."
     },
     pairedLatencyDisposition: {
-        sampleUnit: "median of five per-trial nearest-rank p95 values",
-        budget: "blocked <= unblocked + max(10%, 5 ms)",
+        causalResult: "N/A: ingress p95 followed scenario position in all five trials, so blocked-vs-unblocked latency is order-confounded.",
+        sampleUnit: "five paired per-trial nearest-rank p95 values, reported without a causal pass or improvement claim",
         ingress: {
             unblockedMedianMilliseconds: ($lane | map(.blockedComparison.unblocked.acceptP95Milliseconds) | sort | .[2]),
-            blockedMedianMilliseconds: ($lane | map(.blockedComparison.blocked.acceptP95Milliseconds) | sort | .[2])
+            blockedMedianMilliseconds: ($lane | map(.blockedComparison.blocked.acceptP95Milliseconds) | sort | .[2]),
+            pairedBlockedMinusUnblockedMilliseconds: ($lane | map(.blockedComparison.blocked.acceptP95Milliseconds - .blockedComparison.unblocked.acceptP95Milliseconds) | stats),
+            unblockedThenBlockedDeltasMilliseconds: ($lane | map(select(.blockedComparison.executionOrder[0] == "unblocked") | .blockedComparison.blocked.acceptP95Milliseconds - .blockedComparison.unblocked.acceptP95Milliseconds)),
+            blockedThenUnblockedDeltasMilliseconds: ($lane | map(select(.blockedComparison.executionOrder[0] == "blocked") | .blockedComparison.blocked.acceptP95Milliseconds - .blockedComparison.unblocked.acceptP95Milliseconds))
         },
         standardAck: {
             unblockedMedianMilliseconds: ($lane | map(.blockedComparison.unblocked.standardAckP95Milliseconds) | sort | .[2]),
-            blockedMedianMilliseconds: ($lane | map(.blockedComparison.blocked.standardAckP95Milliseconds) | sort | .[2])
+            blockedMedianMilliseconds: ($lane | map(.blockedComparison.blocked.standardAckP95Milliseconds) | sort | .[2]),
+            pairedBlockedMinusUnblockedMilliseconds: ($lane | map(.blockedComparison.blocked.standardAckP95Milliseconds - .blockedComparison.unblocked.standardAckP95Milliseconds) | stats)
         }
     },
     identities: {
@@ -44,6 +47,7 @@ def within_blocked_budget($baseline; $candidate):
         w3MMigrationMilliseconds: ($lane | map(.w3M.migrationMilliseconds) | stats),
         w3MCpuMilliseconds: ($lane | map(.w3M.cpuMilliseconds) | stats),
         w3MAllocatedBytes: ($lane | map(.w3M.allocatedBytes) | stats),
+        w3MRestartAllocatedBytes: ($lane | map(.w3M.restartAllocatedBytes) | stats),
         w3MRestartDiscoveryMedianMilliseconds: ($lane | map(.w3M.restartDiscoveryMedianMilliseconds) | stats),
         syntheticIndexedTraversalMilliseconds: ($lane | map(.w3M.syntheticIndexedTraversalMilliseconds) | stats),
         unblockedProductionClaimP95Milliseconds: ($lane | map(.blockedComparison.unblocked.standardClaimP95Milliseconds) | stats),
@@ -56,8 +60,6 @@ def within_blocked_budget($baseline; $candidate):
         blockedIngressP95Milliseconds: ($lane | map(.blockedComparison.blocked.acceptP95Milliseconds) | stats),
         unblockedCommitCpuMilliseconds: ($lane | map(.blockedComparison.unblocked.commitCpuMilliseconds) | stats),
         blockedCommitCpuMilliseconds: ($lane | map(.blockedComparison.blocked.commitCpuMilliseconds) | stats),
-        unblockedCommitAllocatedBytes: ($lane | map(.blockedComparison.unblocked.commitAllocatedBytes) | stats),
-        blockedCommitAllocatedBytes: ($lane | map(.blockedComparison.blocked.commitAllocatedBytes) | stats),
         unblockedRssMedianGrowthBytes: ($lane | map(.blockedComparison.unblocked.rssMedianGrowthBytes) | stats),
         blockedRssMedianGrowthBytes: ($lane | map(.blockedComparison.blocked.rssMedianGrowthBytes) | stats),
         requiredDrainCapturesPerSecond: ($lane | map(.blockedComparison.blocked.requiredDrainCapturesPerSecond) | stats),
@@ -73,6 +75,14 @@ def within_blocked_budget($baseline; $candidate):
             .blockedComparison.blocked.finalPendingLaneRows == 0 and
             .blockedComparison.unblocked.finalQuarantinedLaneRows == 0 and
             .blockedComparison.blocked.finalQuarantinedLaneRows == 0 and
+            .blockedComparison.unblocked.finalRetentionHeldRows == 0 and
+            .blockedComparison.blocked.finalRetentionHeldRows == 0 and
+            .blockedComparison.unblocked.finalCompletedLaneRows == 300 and
+            .blockedComparison.blocked.finalCompletedLaneRows == 300 and
+            .blockedComparison.blocked.optionalPendingOrLeasedBeforeRelease == 100 and
+            .blockedComparison.blocked.requiredCompletedRowsBeforeOptionalRelease == 200 and
+            .blockedComparison.unblocked.gracefulStop == true and
+            .blockedComparison.blocked.gracefulStop == true and
             .blockedComparison.blocked.requiredDrainCapturesPerSecond >= 1 and
             .blockedComparison.blocked.optionalRecoveryCapturesPerSecond >= 1 and
             .blockedComparison.unblocked.rssMedianGrowthBytes <= 67108864 and
@@ -81,21 +91,18 @@ def within_blocked_budget($baseline; $candidate):
                 .finalAcquisitionBacklog == 0 and
                 .postReleaseOptionalBacklog == 0 and
                 .postReleaseCentralBacklog == 0] | all)),
-        aggregateBlockedIngressWithinBudget:
-            (($lane | map(.blockedComparison.unblocked.acceptP95Milliseconds) | sort | .[2]) as $unblocked |
-             ($lane | map(.blockedComparison.blocked.acceptP95Milliseconds) | sort | .[2]) as $blocked |
-             within_blocked_budget($unblocked; $blocked)),
-        aggregateBlockedAckWithinBudget:
-            (($lane | map(.blockedComparison.unblocked.standardAckP95Milliseconds) | sort | .[2]) as $unblocked |
-             ($lane | map(.blockedComparison.blocked.standardAckP95Milliseconds) | sort | .[2]) as $blocked |
-             within_blocked_budget($unblocked; $blocked)),
+        runtimeSignals: ([$signals[] |
+            .issue == 257 and .revision == $revision and
+            .finalDurableState.blockedPendingRows == 0 and
+            .finalDurableState.blockedQuarantinedRows == 0 and
+            .finalDurableState.forcedShutdownObserved == false and
+            ([.observedLogEvents[].eventId] | all(. < 2059 or . > 2062))] | all),
         rssGrowthWithinDeclaredAbsoluteBudget: ([$lane[] |
             .blockedComparison.unblocked.rssMedianGrowthBytes <= 67108864 and
             .blockedComparison.blocked.rssMedianGrowthBytes <= 67108864] | all),
+        blockedLatencyCausalDisposition: "N/A: order-confounded; functional optional-lane isolation remains a hard gate.",
         candidateOnlyTrialRanges: "Reported as min/median/max and maximumToMinimumRatio; no equivalent historical baseline exists, so range ratios are diagnostic rather than regression gates."
     }
 } |
-.pairedLatencyDisposition.ingress.passed = .gates.aggregateBlockedIngressWithinBudget |
-.pairedLatencyDisposition.standardAck.passed = .gates.aggregateBlockedAckWithinBudget |
-.result = {passed: (.gates.perTrialCorrectness and .gates.aggregateBlockedIngressWithinBudget and
-    .gates.aggregateBlockedAckWithinBudget and .gates.rssGrowthWithinDeclaredAbsoluteBudget)}
+.result = {passed: (.gates.perTrialCorrectness and .gates.runtimeSignals and .gates.rssGrowthWithinDeclaredAbsoluteBudget),
+    scope: "functional isolation, correctness, durability, runtime signals, and RSS bounds; latency causality is N/A"}
