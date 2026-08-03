@@ -59,8 +59,8 @@ flock -n 8 || {
 }
 mkdir "$OUTPUT_ROOT"
 
-dotnet restore "$PROJECT"
-dotnet build "$PROJECT" --no-restore --configuration Release -warnaserror
+dotnet restore "$PROJECT" 8>&-
+dotnet build "$PROJECT" --no-restore --configuration Release -warnaserror 8>&-
 
 run_control() {
     local trial="$1"
@@ -69,7 +69,7 @@ run_control() {
     HVO_EVIDENCE_REVISION="$REVISION" \
     HVO_EVIDENCE_TRIAL="$trial" \
     HVO_ISSUE_257_OUTPUT_ROOT="$OUTPUT_ROOT" \
-        dotnet test "$PROJECT" --no-build --configuration Release --filter "$CONTROL_FILTER"
+        dotnet test "$PROJECT" --no-build --configuration Release --filter "$CONTROL_FILTER" 8>&-
 }
 
 run_lanes() {
@@ -81,7 +81,7 @@ run_lanes() {
     HVO_EVIDENCE_TRIAL="$trial" \
     HVO_ISSUE_257_ORDER="$order" \
     HVO_ISSUE_257_OUTPUT_ROOT="$OUTPUT_ROOT" \
-        dotnet test "$PROJECT" --no-build --configuration Release --filter "$LANE_FILTER"
+        dotnet test "$PROJECT" --no-build --configuration Release --filter "$LANE_FILTER" 8>&-
 }
 
 verify_trial_manifest() {
