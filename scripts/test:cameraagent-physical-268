@@ -93,6 +93,12 @@ for command in awk cat chmod cp curl cut date df dmesg docker dotnet du find fin
 done
 if [[ "$PROFILE" == asi676mc ]]; then
     command -v vcgencmd >/dev/null 2>&1 || { printf 'vcgencmd is required for ARM throttle evidence.\n' >&2; exit 2; }
+    command -v sudo >/dev/null 2>&1 || { printf 'sudo is required for ARM Docker-volume metadata evidence.\n' >&2; exit 2; }
+    if ! sudo -n findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$EXPECTED_RUNTIME_MOUNT" >/dev/null ||
+       ! sudo -n stat -f --format='%a %S' "$EXPECTED_RUNTIME_MOUNT" >/dev/null; then
+        printf 'Non-interactive ARM Docker-volume metadata access is unavailable.\n' >&2
+        exit 2
+    fi
 fi
 
 STATE_ROOT="$(realpath -m "$HVO_AGENT_STATE_ROOT")"
@@ -153,6 +159,7 @@ camera_container=''
 collector_container=''
 central_deny_container=''
 runtime_init_container=''
+runtime_probe_container=''
 sdk_probe_container=''
 hardware_output=''
 rerun_summary=''
@@ -163,7 +170,7 @@ remove_trial_containers() {
         docker compose --env-file "$cleanup_env" --project-name "$cleanup_project" --file "$COMPOSE_FILE" \
             down --remove-orphans >/dev/null 2>&1 || cleanup_failed=1
     fi
-    for container in "$camera_container" "$collector_container" "$central_deny_container" "$runtime_init_container" "$sdk_probe_container"; do
+    for container in "$camera_container" "$collector_container" "$central_deny_container" "$runtime_init_container" "$runtime_probe_container" "$sdk_probe_container"; do
         [[ -n "$container" ]] || continue
         if docker container inspect "$container" >/dev/null 2>&1; then
             docker rm --force "$container" >/dev/null 2>&1 || cleanup_failed=1
@@ -872,8 +879,13 @@ for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
         runtime_storage_path="$runtime_path"
     fi
     runtime_volume_source="$(docker volume inspect "$runtime_volume" --format '{{.Mountpoint}}')"
-    read -r runtime_mount_source runtime_mount_target runtime_mount_fs runtime_mount_options < <(
-        findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$runtime_storage_path")
+    if [[ "$runtime_kind" == docker-named-volume ]]; then
+        read -r runtime_mount_source runtime_mount_target runtime_mount_fs runtime_mount_options < <(
+            sudo -n findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$runtime_storage_path")
+    else
+        read -r runtime_mount_source runtime_mount_target runtime_mount_fs runtime_mount_options < <(
+            findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$runtime_storage_path")
+    fi
     read -r docker_mount_source docker_mount_target docker_mount_fs docker_mount_options < <(
         findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$DOCKER_ROOT")
     read -r evidence_mount_source evidence_mount_target evidence_mount_fs evidence_mount_options < <(
@@ -888,7 +900,11 @@ for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
             exit 1
         }
     fi
-    read -r free_blocks free_block_size < <(stat -f --format='%a %S' "$runtime_storage_path")
+    if [[ "$runtime_kind" == docker-named-volume ]]; then
+        read -r free_blocks free_block_size < <(sudo -n stat -f --format='%a %S' "$runtime_storage_path")
+    else
+        read -r free_blocks free_block_size < <(stat -f --format='%a %S' "$runtime_storage_path")
+    fi
     runtime_free_bytes=$((free_blocks * free_block_size))
     read -r free_blocks free_block_size < <(stat -f --format='%a %S' "$DOCKER_ROOT")
     docker_free_bytes=$((free_blocks * free_block_size))
@@ -1084,7 +1100,16 @@ EOF
     shutdown_sdk_source="$(mounted_source "$camera_container" "$HVO_ZWO_SDK_LIBRARY")"
     shutdown_runtime_mount="$(mounted_entry "$camera_container" /var/lib/hvo/data/agent)"
     shutdown_runtime_writable=false
-    if [[ -w "$runtime_storage_path" ]]; then shutdown_runtime_writable=true; fi
+    if [[ "$runtime_kind" == docker-named-volume ]]; then
+        runtime_probe_container="hvo268-$suffix-runtime-writable"
+        if docker run --rm --name "$runtime_probe_container" --user "$(id -u):$(id -g)" \
+            --volume "$runtime_volume:/runtime" --entrypoint /bin/sh "$CAMERA_AGENT_IMAGE" -c 'test -w /runtime'; then
+            shutdown_runtime_writable=true
+        fi
+        runtime_probe_container=''
+    elif [[ -w "$runtime_storage_path" ]]; then
+        shutdown_runtime_writable=true
+    fi
     shutdown_config_sha256="$(sha256sum "$resolved_config" | { read -r hash _; printf '%s' "$hash"; })"
     shutdown_catalog_tree_sha256="$(tree_sha256 "$control_root/catalog")"
     shutdown_collector_config_sha256="$(sha256sum "$control_root/config/otel-collector.yml" | { read -r hash _; printf '%s' "$hash"; })"
