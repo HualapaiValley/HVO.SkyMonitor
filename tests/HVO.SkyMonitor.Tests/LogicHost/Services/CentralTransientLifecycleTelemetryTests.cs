@@ -100,7 +100,7 @@ public sealed class CentralTransientLifecycleTelemetryTests
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         for (var index = 0; index < tags.Length; index++)
         {
-            values.Add(tags[index].Key, tags[index].Value?.ToString());
+            values[tags[index].Key] = tags[index].Value?.ToString();
         }
         return values;
     }
