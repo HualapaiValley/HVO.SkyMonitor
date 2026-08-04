@@ -642,11 +642,15 @@ internal sealed class CentralTransientPayloadReleaseService(
             {
                 await NormalizePendingItemsAsync(releaseId, cancellationToken).ConfigureAwait(false);
             }
-            while (await IsReleasePendingAsync(releaseId, cancellationToken).ConfigureAwait(false))
+            while (true)
             {
                 var item = await LoadNextPendingItemAsync(releaseId, cancellationToken).ConfigureAwait(false);
                 if (item is null)
                 {
+                    if (!await IsReleasePendingAsync(releaseId, cancellationToken).ConfigureAwait(false))
+                    {
+                        return;
+                    }
                     await InvokeFaultAsync(
                         CentralTransientPayloadReleaseFaultStage.FinalItemBeforeParentCompletion,
                         releaseId,
@@ -1317,7 +1321,10 @@ internal sealed class CentralTransientPayloadReleaseService(
     private async Task<PendingItem?> LoadNextPendingItemAsync(Guid releaseId, CancellationToken cancellationToken)
         => await dbContext.CentralTransientPayloadReleaseItems.AsNoTracking()
             .Where(item => item.ReleaseId == releaseId &&
-                item.Outcome == CentralTransientPayloadReleaseItemOutcome.Pending)
+                item.Outcome == CentralTransientPayloadReleaseItemOutcome.Pending &&
+                dbContext.CentralTransientPayloadReleases.Any(release =>
+                    release.ReleaseId == item.ReleaseId &&
+                    release.State == CentralTransientPayloadReleaseState.Pending))
             .OrderBy(item => item.Ordinal)
             .Select(item => new PendingItem(
                 item.ReleaseId,
