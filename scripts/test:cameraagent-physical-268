@@ -154,6 +154,7 @@ runtime_volume=''
 runtime_path=''
 runtime_kind=''
 active_control_root=''
+evidence_root=''
 owner_password=''
 camera_container=''
 collector_container=''
@@ -163,6 +164,38 @@ runtime_probe_container=''
 sdk_probe_container=''
 hardware_output=''
 rerun_summary=''
+acquisition_started=false
+
+container_state_summary() {
+    docker inspect "$1" --format '{{json .State}}' |
+        jq '{Status, Running, Paused, Restarting, OOMKilled, Dead, ExitCode, ErrorEmpty:(.Error == "")}'
+}
+
+retain_preacquisition_failure() {
+    local camera_state='null' collector_state='null' central_state='null' container output raw state_output
+    [[ "$acquisition_started" == false && -n "$evidence_root" && -d "$evidence_root" ]] || return 0
+    [[ -n "$active_control_root" && -d "$active_control_root" ]] || return 1
+    for container in "$camera_container" "$collector_container" "$central_deny_container"; do
+        [[ -n "$container" ]] || continue
+        if docker container inspect "$container" >/dev/null 2>&1; then
+            case "$container" in
+                "$camera_container") camera_state="$(container_state_summary "$container")" || return 1 ;;
+                "$collector_container") collector_state="$(container_state_summary "$container")" || return 1 ;;
+                "$central_deny_container") central_state="$(container_state_summary "$container")" || return 1 ;;
+            esac
+            output="$evidence_root/${container##*-}-preacquisition.log"
+            raw="$active_control_root/${container##*-}-preacquisition.raw"
+            docker logs --timestamps "$container" > "$raw" 2>&1 || true
+            sanitize_text_file "$raw" || return 1
+            mv "$raw" "$output" || return 1
+        fi
+    done
+    state_output="$active_control_root/preacquisition-failure.json"
+    jq -n --argjson camera "$camera_state" --argjson collector "$collector_state" --argjson centralDeny "$central_state" \
+        '{schemaVersion:"issue-268-preacquisition-failure-v1", camera:$camera, collector:$collector, centralDeny:$centralDeny}' \
+        > "$state_output" || return 1
+    mv "$state_output" "$evidence_root/preacquisition-failure.json" || return 1
+}
 
 remove_trial_containers() {
     local container cleanup_failed=0 network
@@ -240,6 +273,9 @@ cleanup() {
     if [[ -n "$sampler_pid" ]]; then kill "$sampler_pid" >/dev/null 2>&1 || true; wait "$sampler_pid" 2>/dev/null || true; fi
     if [[ -n "$kernel_pid" ]]; then kill "$kernel_pid" >/dev/null 2>&1 || true; wait "$kernel_pid" 2>/dev/null || true; fi
     if [[ -n "$deadline_pid" ]]; then kill "$deadline_pid" >/dev/null 2>&1 || true; wait "$deadline_pid" 2>/dev/null || true; fi
+    if ((status != 0)); then
+        retain_preacquisition_failure || printf 'Pre-acquisition diagnostics could not be retained safely.\n' >&2
+    fi
     remove_trial_containers || cleanup_failed=1
     remove_owned_runtime || cleanup_failed=1
     remove_active_control || cleanup_failed=1
@@ -252,7 +288,9 @@ cleanup() {
     fi
     exit "$status"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 HOSTNAME_ACTUAL="$(hostname -s)"
 readonly HOSTNAME_ACTUAL
@@ -780,27 +818,33 @@ aggregate_retained_trial() {
 sanitize_text_file() {
     local path="$1"
     local temporary="$path.sanitized"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "${line,,}" == *"${HVO_ZWO_CAMERA_SERIAL,,}"* ]]; then
-            line='[REDACTED-CAMERA-SERIAL-LINE]'
-        fi
-        if [[ -n "$owner_password" && "$line" == *"$owner_password"* ]]; then
-            line='[REDACTED-CREDENTIAL-LINE]'
-        fi
-        line="${line//"$REPO_ROOT"/[REPOSITORY]}"
-        line="${line//"$STATE_ROOT"/[AGENT-STATE]}"
-        line="${line//"$HVO_ZWO_SDK_LIBRARY"/[SDK-LIBRARY]}"
-        if [[ -n "$runtime_path" ]]; then line="${line//"$runtime_path"/[RUNTIME-ROOT]}"; fi
-        if [[ "${line,,}" =~ authorization:|bearer[[:space:]]|set-cookie:|requestverificationtoken|token[=:]|actor[=:]|idempotency|checksum|storage[_-]?(reference|path|id)|[0-9a-f]{8}-[0-9a-f-]{27,}|(^|[^0-9a-f])[0-9a-f]{64}([^0-9a-f]|$)|/(home|workspaces|tmp|var/lib/hvo)/[^[:space:]]+ ]]; then
-            printf '%s\n' '[REDACTED-PRIVATE-LINE]'
-        else
-            printf '%s\n' "$line"
-        fi
-    done < "$path" > "$temporary"
+    if ! {
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "${line,,}" == *"${HVO_ZWO_CAMERA_SERIAL,,}"* ]]; then
+                line='[REDACTED-CAMERA-SERIAL-LINE]'
+            fi
+            if [[ -n "$owner_password" && "$line" == *"$owner_password"* ]]; then
+                line='[REDACTED-CREDENTIAL-LINE]'
+            fi
+            line="${line//"$REPO_ROOT"/[REPOSITORY]}"
+            line="${line//"$STATE_ROOT"/[AGENT-STATE]}"
+            line="${line//"$HVO_ZWO_SDK_LIBRARY"/[SDK-LIBRARY]}"
+            if [[ -n "$runtime_path" ]]; then line="${line//"$runtime_path"/[RUNTIME-ROOT]}"; fi
+            if [[ "${line,,}" =~ authorization:|bearer[[:space:]]|set-cookie:|requestverificationtoken|token[=:]|actor[=:]|idempotency|checksum|storage[_-]?(reference|path|id)|[0-9a-f]{8}-[0-9a-f-]{27,}|(^|[^0-9a-f])[0-9a-f]{64}([^0-9a-f]|$)|/(home|workspaces|tmp|var/lib/hvo)/[^[:space:]]+ ]]; then
+                printf '%s\n' '[REDACTED-PRIVATE-LINE]'
+            else
+                printf '%s\n' "$line"
+            fi
+        done < "$path" > "$temporary"
+    }; then
+        rm -f -- "$temporary"
+        return 1
+    fi
     mv "$temporary" "$path"
 }
 
 for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
+    acquisition_started=false
     assert_source_unchanged
     assert_static_identities || { printf 'Static identity changed before trial %s.\n' "$trial_number" >&2; exit 1; }
     assert_host_runtime_identity || { printf 'Host identity changed before trial %s.\n' "$trial_number" >&2; exit 1; }
@@ -988,6 +1032,15 @@ EOF
     docker compose --env-file "$cleanup_env" --project-name "$cleanup_project" --file "$COMPOSE_FILE" up --detach
     [[ "$(docker inspect "$camera_container" --format '{{.Image}}')" == "$CAMERA_AGENT_IMAGE" ]] || { printf 'Trial container image identity changed.\n' >&2; exit 1; }
     [[ "$(docker inspect "$central_deny_container" --format '{{.Image}}')" == "$CENTRAL_DENY_IMAGE_ID" ]] || { printf 'Central deny image identity changed.\n' >&2; exit 1; }
+    if ! camera_startup_state="$(docker inspect "$camera_container" --format '{{json .State}}')"; then
+        printf 'CameraAgent state could not be inspected after compose startup.\n' >&2
+        exit 1
+    fi
+    jq --exit-status '.Running == true and .Status == "running" and .OOMKilled == false and .Error == ""' \
+        <<< "$camera_startup_state" >/dev/null || {
+        printf 'CameraAgent exited before startup authentication.\n' >&2
+        exit 1
+    }
     central_startup_state="$(docker inspect "$central_deny_container" --format '{{json .State}}')"
     jq --argjson state "$central_startup_state" \
         '.centralTraffic = {mechanism:"isolated-socat-deny-recorder", startup:$state}' \
@@ -1003,23 +1056,32 @@ EOF
         printf 'Only-selected-camera Docker device exposure could not be proven.\n' >&2
         exit 1
     }
-    exposed_usb_nodes="$(docker exec "$camera_container" /bin/sh -c 'find /dev/bus/usb -type c -print 2>/dev/null | sort')"
+    if ! exposed_usb_nodes="$(docker exec "$camera_container" /bin/sh -c 'find /dev/bus/usb -type c -print 2>/dev/null | sort')"; then
+        printf 'CameraAgent exited before selected-device exposure could be inspected.\n' >&2
+        exit 1
+    fi
     [[ "$exposed_usb_nodes" == "$USB_DEVICE_NODE" ]] || {
         printf 'Container USB exposure is not limited to the selected device; refusing physical collection.\n' >&2
         exit 1
     }
 
-    startup_config_source="$(mounted_source "$camera_container" /run/hvo/cameraagent.json)"
-    startup_catalog_source="$(mounted_source "$camera_container" /var/lib/hvo/data/catalog)"
-    startup_collector_source="$(mounted_source "$collector_container" /etc/otelcol/config.yml)"
-    startup_sdk_source="$(mounted_source "$camera_container" "$HVO_ZWO_SDK_LIBRARY")"
-    startup_runtime_mount="$(mounted_entry "$camera_container" /var/lib/hvo/data/agent)"
+    if ! startup_config_source="$(mounted_source "$camera_container" /run/hvo/cameraagent.json)" ||
+       ! startup_catalog_source="$(mounted_source "$camera_container" /var/lib/hvo/data/catalog)" ||
+       ! startup_collector_source="$(mounted_source "$collector_container" /etc/otelcol/config.yml)" ||
+       ! startup_sdk_source="$(mounted_source "$camera_container" "$HVO_ZWO_SDK_LIBRARY")" ||
+       ! startup_runtime_mount="$(mounted_entry "$camera_container" /var/lib/hvo/data/agent)"; then
+        printf 'Container mounts could not be inspected during startup authentication.\n' >&2
+        exit 1
+    fi
     startup_runtime_writable=false
     if docker exec "$camera_container" /bin/sh -c 'test -w /var/lib/hvo/data/agent'; then startup_runtime_writable=true; fi
-    startup_config_sha256="$(docker exec "$camera_container" sha256sum /run/hvo/cameraagent.json | { read -r hash _; printf '%s' "$hash"; })"
-    startup_catalog_tree_sha256="$(container_tree_sha256 "$camera_container" /var/lib/hvo/data/catalog)"
-    startup_collector_config_sha256="$(docker exec "$collector_container" sha256sum /etc/otelcol/config.yml | { read -r hash _; printf '%s' "$hash"; })"
-    startup_sdk_sha256="$(docker exec "$camera_container" sha256sum "$HVO_ZWO_SDK_LIBRARY" | { read -r hash _; printf '%s' "$hash"; })"
+    if ! startup_config_sha256="$(docker exec "$camera_container" sha256sum /run/hvo/cameraagent.json | { read -r hash _; printf '%s' "$hash"; })" ||
+       ! startup_catalog_tree_sha256="$(container_tree_sha256 "$camera_container" /var/lib/hvo/data/catalog)" ||
+       ! startup_collector_config_sha256="$(docker exec "$collector_container" sha256sum /etc/otelcol/config.yml | { read -r hash _; printf '%s' "$hash"; })" ||
+       ! startup_sdk_sha256="$(docker exec "$camera_container" sha256sum "$HVO_ZWO_SDK_LIBRARY" | { read -r hash _; printf '%s' "$hash"; })"; then
+        printf 'Mounted input hashes could not be captured during startup authentication.\n' >&2
+        exit 1
+    fi
     jq --arg configSource "$startup_config_source" --arg catalogSource "$startup_catalog_source" \
         --arg collectorSource "$startup_collector_source" --arg sdkSource "$startup_sdk_source" \
         --arg configSha256 "$startup_config_sha256" --arg sdkSha256 "$startup_sdk_sha256" \
@@ -1053,6 +1115,7 @@ EOF
 
     acquisition_timeout_seconds="$(remaining_trial_seconds)"
     ((acquisition_timeout_seconds <= 3900)) || acquisition_timeout_seconds=3900
+    acquisition_started=true
     HVO_ISSUE_268_PHYSICAL_EVIDENCE=1 HVO_ISSUE_268_PROFILE="$PROFILE" HVO_ISSUE_268_TRIAL="$trial" \
     HVO_ISSUE_268_EVIDENCE_ROOT="$evidence_root" HVO_ISSUE_268_CAMERA_CONTAINER="$camera_container" \
     HVO_ISSUE_268_BASE_URI="http://127.0.0.1:$HTTP_PORT" HVO_ISSUE_268_OWNER_PASSWORD_FILE="$control_root/secrets/owner-password" \
