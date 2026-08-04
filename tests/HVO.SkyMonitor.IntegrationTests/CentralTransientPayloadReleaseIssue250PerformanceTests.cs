@@ -192,6 +192,31 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
+    public void EvidenceCollector_CreationConflictTelemetry_IsBoundedAndResettable()
+    {
+        using var collector = new Issue250EvidenceCollector();
+        using var telemetry = new CentralTransientLifecycleTelemetry(Issue250DiscardLogger.Instance);
+
+        telemetry.RecordRetentionCreationConflict("deadlock", "retry", 1);
+        telemetry.RecordRetentionCreationConflict("ambiguous-commit", "retry", 2);
+        telemetry.RecordRetentionCreationConflict("ambiguous-commit", "recovered", 3);
+        telemetry.RecordRetentionCreationConflict("deadlock", "exhausted", 4);
+
+        var snapshot = collector.Snapshot();
+        Assert.AreEqual(1L, snapshot.InternalCreationDeadlockRetries);
+        Assert.AreEqual(1L, snapshot.InternalCreationAmbiguousCommitRetries);
+        Assert.AreEqual(1L, snapshot.InternalCreationAmbiguousCommitRecoveries);
+        Assert.AreEqual(1L, snapshot.InternalCreationConflictExhaustions);
+
+        collector.Reset();
+        snapshot = collector.Snapshot();
+        Assert.AreEqual(0L, snapshot.InternalCreationDeadlockRetries);
+        Assert.AreEqual(0L, snapshot.InternalCreationAmbiguousCommitRetries);
+        Assert.AreEqual(0L, snapshot.InternalCreationAmbiguousCommitRecoveries);
+        Assert.AreEqual(0L, snapshot.InternalCreationConflictExhaustions);
+    }
+
+    [TestMethod]
     [Timeout(1_800_000)]
     public async Task Release_W2W3MAndContention_RecordsEvidence()
     {
@@ -337,7 +362,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
         var evidence = new
         {
-            Schema = "hvo-issue-250-central-transient-payload-release-evidence-v4",
+            Schema = "hvo-issue-250-central-transient-payload-release-evidence-v5",
             Issue = 250,
             Phase = phase,
             HarnessSha256 = harnessSha256,
@@ -1696,7 +1721,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         var tasks = cases.Select(async (item, caseIndex) =>
         {
             var started = Stopwatch.GetTimestamp();
-            for (var attempt = 0; ; attempt++)
+            while (true)
             {
                 var retryStage = Issue250SqlRetryStage.Primary;
                 collector.RecordReleaseAttempt();
@@ -1782,11 +1807,11 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     }
                     throw new InvalidOperationException("The release returned an unsupported measured status.");
                 }
-                catch (Exception exception) when (attempt < 9 && IsSqlDeadlock(exception))
+                catch (Exception exception) when (IsSqlDeadlock(exception))
                 {
                     collector.RecordExternalDeadlockRetry(retryStage);
-                    await Task.Delay(TimeSpan.FromMilliseconds(10 * (attempt + 1)), cancellation.Token)
-                        .ConfigureAwait(false);
+                    throw new InvalidOperationException(
+                        "A SQL deadlock escaped the public payload-release operation.", exception);
                 }
             }
         }).ToArray();
@@ -4014,6 +4039,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             protocol.PrimarySqlDeadlockRetries,
             protocol.RecoverySqlDeadlockRetries,
             protocol.InspectionSqlDeadlockRetries,
+            protocol.InternalCreationDeadlockRetries,
+            protocol.InternalCreationAmbiguousCommitRetries,
+            protocol.InternalCreationAmbiguousCommitRecoveries,
+            protocol.InternalCreationConflictExhaustions,
             protocol.ReleaseAttempts,
             protocol.AcceptedReleaseResponses,
             protocol.RecoveryProcessorAttempts,
@@ -4064,14 +4093,24 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             var primaryRetries = protocol.PrimarySqlDeadlockRetries;
             var recoveryRetries = protocol.RecoverySqlDeadlockRetries;
             var inspectionRetries = protocol.InspectionSqlDeadlockRetries;
+            var internalCreationRetries = protocol.InternalCreationDeadlockRetries
+                + protocol.InternalCreationAmbiguousCommitRetries;
+            var internalCreationConflictTerminals = internalCreationRetries
+                + protocol.InternalCreationAmbiguousCommitRecoveries;
             var releaseAttempts = protocol.ReleaseAttempts;
             var recoveryAttempts = protocol.RecoveryProcessorAttempts;
             var recoveryCompletions = protocol.RecoveryProcessorCompletions;
             var primaryTransactions = protocol.PrimarySqlTransactions;
             var recoveryTransactions = protocol.RecoverySqlTransactions;
-            Assert.IsTrue(retries <= (long)releases * 9);
+            Assert.AreEqual(0L, retries);
+            Assert.AreEqual(0L, primaryRetries);
+            Assert.AreEqual(0L, recoveryRetries);
+            Assert.AreEqual(0L, inspectionRetries);
             Assert.AreEqual(retries, primaryRetries + recoveryRetries + inspectionRetries);
-            Assert.AreEqual(releases + retries, releaseAttempts);
+            Assert.AreEqual(releases, releaseAttempts);
+            Assert.IsTrue(internalCreationRetries <= (long)releases * 3);
+            Assert.IsTrue(protocol.InternalCreationAmbiguousCommitRecoveries <= releases);
+            Assert.AreEqual(0L, protocol.InternalCreationConflictExhaustions);
             Assert.IsTrue(protocol.AcceptedReleaseResponses <= releases);
             Assert.IsTrue(recoveryAttempts >= protocol.AcceptedReleaseResponses);
             Assert.IsTrue(recoveryAttempts <= protocol.AcceptedReleaseResponses * 100);
@@ -4084,14 +4123,14 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Assert.IsTrue(primaryTransactions.StartAttempts >= releases);
             Assert.IsTrue(primaryTransactions.StartAttempts <= releaseAttempts * 20);
             Assert.IsTrue(primaryTransactions.RolledBack <= protocol.AcceptedReleaseResponses);
-            Assert.AreEqual(primaryRetries, primaryTransactions.Failed);
+            Assert.IsTrue(primaryTransactions.Failed <= internalCreationConflictTerminals);
             Assert.IsTrue(protocol.RecoveryEfCommands >= recoveryAttempts);
             Assert.IsTrue(protocol.RecoveryEfCommands <= recoveryAttempts * 170);
             Assert.AreEqual(recoveryTransactions.StartAttempts, recoveryTransactions.SuccessfullyStarted);
             Assert.AreEqual(recoveryTransactions.StartAttempts,
                 recoveryTransactions.Committed + recoveryTransactions.RolledBack + recoveryTransactions.Failed);
             Assert.IsTrue(recoveryTransactions.StartAttempts <= recoveryAttempts * 20);
-            Assert.AreEqual(recoveryRetries, recoveryTransactions.Failed);
+            Assert.AreEqual(0L, recoveryTransactions.Failed);
             Assert.AreEqual(
                 protocol.ObjectStore.Deletes + protocol.ObjectStore.BucketHeadRequests
                     + protocol.ObjectStore.ObjectHeadRequests + protocol.ObjectStore.OtherMethodRequests,
@@ -4116,7 +4155,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         var locksPerRelease = phase == "baseline" ? 6 : 8;
         var minimumLocks = (long)releases * locksPerRelease;
         var maximumLocks = minimumLocks
-            + protocol.ExternalSqlDeadlockRetries * 8 + protocol.RecoveryProcessorAttempts * 23;
+            + protocol.RecoveryProcessorAttempts * 23;
         if (phase == "baseline")
         {
             Assert.AreEqual(minimumLocks, diagnostics.GetApplicationLockStarts);
@@ -4125,7 +4164,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         {
             Assert.IsTrue(diagnostics.GetApplicationLockStarts >= minimumLocks);
             Assert.IsTrue(diagnostics.GetApplicationLockStarts <= maximumLocks,
-                "Every excess application-lock acquisition must be attributable to a recorded SQL deadlock retry.");
+                "Every excess application-lock acquisition must be attributable to a recorded recovery attempt.");
         }
         Assert.IsTrue(diagnostics.ReleaseApplicationLockStarts <= diagnostics.GetApplicationLockStarts);
         Assert.IsTrue(diagnostics.GetApplicationLockStarts - diagnostics.ReleaseApplicationLockStarts
@@ -5438,7 +5477,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private static string ComputeProtocolSha256()
         => Sha(JsonSerializer.Serialize(new
         {
-            Schema = "issue-250-public-release-protocol-v5",
+            Schema = "issue-250-public-release-protocol-v6",
             Boundary = "public ReleaseAsync including request/item creation, DELETE, finalize, replay",
             Percentiles = "nearest-rank",
             SqlSamplingMilliseconds = 10,
@@ -5450,7 +5489,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             FaultManifest = CanonicalFaultManifest,
             ProtocolCount = "EF commands are separate from scoped SqlClient application-lock command diagnostics and direct harness SQL",
             HttpAccounting = "Requests partition into DELETE, MinIO bucket HEAD, object HEAD, and other methods; DELETEs partition into unique and duplicate targets plus response and exception outcomes",
-            NaturalRecovery = "Steady-state and natural-delay release fail if the public operation returns Accepted; lease recovery remains claimable only in the explicit contention and fault paths"
+            NaturalRecovery = "Steady-state and natural-delay release fail if the public operation returns Accepted; lease recovery remains claimable only in the explicit contention and fault paths",
+            CreationConflictAccounting = "SQL creation deadlocks are retried inside one public ReleaseAsync and counted by bounded creation-conflict Meter telemetry; any SQL deadlock escaping the public operation fails the campaign"
         }));
 
     private static string ComputeCompatibilityProtocolSha256()
@@ -5944,14 +5984,30 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         private long primarySqlDeadlockRetries;
         private long recoverySqlDeadlockRetries;
         private long inspectionSqlDeadlockRetries;
+        private long internalCreationDeadlockRetries;
+        private long internalCreationAmbiguousCommitRetries;
+        private long internalCreationAmbiguousCommitRecoveries;
+        private long internalCreationConflictExhaustions;
         private long releaseAttempts;
         private long acceptedReleaseResponses;
         private long recoveryProcessorAttempts;
         private long recoveryProcessorCompletions;
+        private readonly MeterListener meterListener = new();
         internal Issue250EvidenceCollector()
         {
             Http = new Issue250DeleteHandler { InnerHandler = new SocketsHttpHandler() };
             SqlLocks = new Issue250SqlClientApplicationLockCollector();
+            meterListener.InstrumentPublished = (instrument, listener) =>
+            {
+                if (instrument.Meter.Name == CentralTransientLifecycleTelemetry.MeterName
+                    && instrument.Name == "skymonitor.central.transient.retention.creation.conflicts")
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            meterListener.SetMeasurementEventCallback<long>((_, measurement, tags, _) =>
+                RecordInternalCreationConflict(measurement, tags));
+            meterListener.Start();
         }
 
         internal CountingDbCommandInterceptor Commands { get; } = new();
@@ -5973,6 +6029,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Interlocked.Exchange(ref primarySqlDeadlockRetries, 0);
             Interlocked.Exchange(ref recoverySqlDeadlockRetries, 0);
             Interlocked.Exchange(ref inspectionSqlDeadlockRetries, 0);
+            Interlocked.Exchange(ref internalCreationDeadlockRetries, 0);
+            Interlocked.Exchange(ref internalCreationAmbiguousCommitRetries, 0);
+            Interlocked.Exchange(ref internalCreationAmbiguousCommitRecoveries, 0);
+            Interlocked.Exchange(ref internalCreationConflictExhaustions, 0);
             Interlocked.Exchange(ref releaseAttempts, 0);
             Interlocked.Exchange(ref acceptedReleaseResponses, 0);
             Interlocked.Exchange(ref recoveryProcessorAttempts, 0);
@@ -6002,6 +6062,55 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         internal void RecordRecoveryProcessorAttempt() => Interlocked.Increment(ref recoveryProcessorAttempts);
         internal void RecordRecoveryProcessorCompletion() => Interlocked.Increment(ref recoveryProcessorCompletions);
 
+        private void RecordInternalCreationConflict(
+            long measurement,
+            ReadOnlySpan<KeyValuePair<string, object?>> tags)
+        {
+            if (measurement != 1 || tags.Length != 2)
+            {
+                throw new InvalidDataException("Creation-conflict telemetry must emit one with two bounded tags.");
+            }
+
+            string? reason = null;
+            string? outcome = null;
+            foreach (var tag in tags)
+            {
+                switch (tag.Key)
+                {
+                    case "reason" when reason is null:
+                        reason = tag.Value?.ToString();
+                        break;
+                    case "outcome" when outcome is null:
+                        outcome = tag.Value?.ToString();
+                        break;
+                    default:
+                        throw new InvalidDataException("Creation-conflict telemetry emitted unsupported tags.");
+                }
+            }
+
+            if (outcome == "exhausted" && reason is ("deadlock" or "ambiguous-commit"))
+            {
+                Interlocked.Increment(ref internalCreationConflictExhaustions);
+            }
+            else if (reason == "deadlock" && outcome == "retry")
+            {
+                Interlocked.Increment(ref internalCreationDeadlockRetries);
+            }
+            else if (reason == "ambiguous-commit" && outcome == "retry")
+            {
+                Interlocked.Increment(ref internalCreationAmbiguousCommitRetries);
+            }
+            else if (reason == "ambiguous-commit" && outcome == "recovered")
+            {
+                Interlocked.Increment(ref internalCreationAmbiguousCommitRecoveries);
+            }
+            else
+            {
+                throw new InvalidDataException(
+                    $"Creation-conflict telemetry emitted unsupported values: {reason}/{outcome}.");
+            }
+        }
+
         internal Issue250CollectorSnapshot Snapshot()
         {
             var primaryTransactions = Transactions.Snapshot();
@@ -6020,6 +6129,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 Interlocked.Read(ref primarySqlDeadlockRetries),
                 Interlocked.Read(ref recoverySqlDeadlockRetries),
                 Interlocked.Read(ref inspectionSqlDeadlockRetries),
+                Interlocked.Read(ref internalCreationDeadlockRetries),
+                Interlocked.Read(ref internalCreationAmbiguousCommitRetries),
+                Interlocked.Read(ref internalCreationAmbiguousCommitRecoveries),
+                Interlocked.Read(ref internalCreationConflictExhaustions),
                 Interlocked.Read(ref releaseAttempts),
                 Interlocked.Read(ref acceptedReleaseResponses),
                 Interlocked.Read(ref recoveryProcessorAttempts),
@@ -6035,6 +6148,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
         public void Dispose()
         {
+            meterListener.Dispose();
             SqlLocks.Dispose();
             Http.Dispose();
         }
@@ -6776,6 +6890,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         long PrimarySqlDeadlockRetries,
         long RecoverySqlDeadlockRetries,
         long InspectionSqlDeadlockRetries,
+        long InternalCreationDeadlockRetries,
+        long InternalCreationAmbiguousCommitRetries,
+        long InternalCreationAmbiguousCommitRecoveries,
+        long InternalCreationConflictExhaustions,
         long ReleaseAttempts,
         long AcceptedReleaseResponses,
         long RecoveryProcessorAttempts,
@@ -6983,6 +7101,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         long PrimarySqlDeadlockRetries,
         long RecoverySqlDeadlockRetries,
         long InspectionSqlDeadlockRetries,
+        long InternalCreationDeadlockRetries,
+        long InternalCreationAmbiguousCommitRetries,
+        long InternalCreationAmbiguousCommitRecoveries,
+        long InternalCreationConflictExhaustions,
         long ReleaseAttempts,
         long AcceptedReleaseResponses,
         long RecoveryProcessorAttempts,

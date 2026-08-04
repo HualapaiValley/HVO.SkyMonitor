@@ -106,6 +106,10 @@ def protocol_counts:
     primarySqlDeadlockRetries: .PrimarySqlDeadlockRetries,
     recoverySqlDeadlockRetries: .RecoverySqlDeadlockRetries,
     inspectionSqlDeadlockRetries: .InspectionSqlDeadlockRetries,
+    internalCreationDeadlockRetries: .InternalCreationDeadlockRetries,
+    internalCreationAmbiguousCommitRetries: .InternalCreationAmbiguousCommitRetries,
+    internalCreationAmbiguousCommitRecoveries: .InternalCreationAmbiguousCommitRecoveries,
+    internalCreationConflictExhaustions: .InternalCreationConflictExhaustions,
     releaseAttempts: .ReleaseAttempts,
     acceptedReleaseResponses: .AcceptedReleaseResponses,
     recoveryProcessorAttempts: .RecoveryProcessorAttempts,
@@ -164,11 +168,15 @@ def protocol_comparison($name; $baseline; $after; $releases):
   ($candidate.primarySqlDeadlockRetries) as $primaryRetries |
   ($candidate.recoverySqlDeadlockRetries) as $recoveryRetries |
   ($candidate.inspectionSqlDeadlockRetries) as $inspectionRetries |
+  (($candidate.internalCreationDeadlockRetries) +
+    ($candidate.internalCreationAmbiguousCommitRetries)) as $internalCreationRetries |
+  ($internalCreationRetries +
+    ($candidate.internalCreationAmbiguousCommitRecoveries)) as $internalCreationConflictTerminals |
   ($candidate.releaseAttempts) as $releaseAttempts |
   ($candidate.recoveryProcessorAttempts) as $recoveryAttempts |
   ($candidate.recoveryProcessorCompletions) as $recoveryCompletions |
   ($releases * 8) as $minimumLocks |
-  ($minimumLocks + ($retries * 8) + ($recoveryAttempts * 23)) as $maximumLocks |
+  ($minimumLocks + ($recoveryAttempts * 23)) as $maximumLocks |
   {
     name: $name,
     releases: $releases,
@@ -176,7 +184,7 @@ def protocol_comparison($name; $baseline; $after; $releases):
     after: $candidate,
     delta: count_delta($before; $candidate),
     designAccounting: {
-      expectedReleaseAttempts: ($releases + $retries),
+      expectedReleaseAttempts: $releases,
       primaryEfSqlCommandRange: {minimum: $releaseAttempts, maximum: ($releaseAttempts * 170)},
       primaryTransactionStartRange: {minimum: $releases, maximum: ($releaseAttempts * 20)},
       recoveryEfSqlCommandRange: {minimum: $recoveryAttempts, maximum: ($recoveryAttempts * 170)},
@@ -188,9 +196,15 @@ def protocol_comparison($name; $baseline; $after; $releases):
           "MinioUniqueDeleteTargets", "MinioDuplicateDeleteRequests", "MinioDeleteResponses",
           "MinioDeleteExceptions"] - ($after | keys) | length) == 0) and
         ($candidate | to_entries | all(.[]; (.value | type == "number" and . >= 0 and . == floor))) and
-        ($retries <= ($releases * 9)) and
+        ($retries == 0) and
+        ($primaryRetries == 0) and
+        ($recoveryRetries == 0) and
+        ($inspectionRetries == 0) and
         ($retries == ($primaryRetries + $recoveryRetries + $inspectionRetries)) and
-        ($releaseAttempts == ($releases + $retries)) and
+        ($releaseAttempts == $releases) and
+        ($internalCreationRetries <= ($releases * 3)) and
+        ($candidate.internalCreationAmbiguousCommitRecoveries <= $releases) and
+        ($candidate.internalCreationConflictExhaustions == 0) and
         ($candidate.acceptedReleaseResponses <= $releases) and
         ($recoveryAttempts >= $candidate.acceptedReleaseResponses) and
         ($recoveryAttempts <= ($candidate.acceptedReleaseResponses * 100)) and
@@ -204,7 +218,7 @@ def protocol_comparison($name; $baseline; $after; $releases):
         ($candidate.primaryTransactionStartAttempts >= $releases) and
         ($candidate.primaryTransactionStartAttempts <= ($releaseAttempts * 20)) and
         ($candidate.primaryTransactionsRolledBack <= $candidate.acceptedReleaseResponses) and
-        ($candidate.primaryTransactionsFailed == $primaryRetries) and
+        ($candidate.primaryTransactionsFailed <= $internalCreationConflictTerminals) and
         ($candidate.recoveryEfSqlCommands >= $recoveryAttempts) and
         ($candidate.recoveryEfSqlCommands <= ($recoveryAttempts * 170)) and
         ($candidate.recoveryTransactionStartAttempts == $candidate.recoveryTransactionsStarted) and
@@ -212,7 +226,7 @@ def protocol_comparison($name; $baseline; $after; $releases):
           ($candidate.recoveryTransactionsCommitted + $candidate.recoveryTransactionsRolledBack +
             $candidate.recoveryTransactionsFailed)) and
         ($candidate.recoveryTransactionStartAttempts <= ($recoveryAttempts * 20)) and
-        ($candidate.recoveryTransactionsFailed == $recoveryRetries) and
+        ($candidate.recoveryTransactionsFailed == 0) and
         ($candidate.efSqlCommands ==
           ($candidate.primaryEfSqlCommands + $candidate.recoveryEfSqlCommands)) and
         ($candidate.transactionStartAttempts ==
@@ -433,7 +447,7 @@ def protocol_comparison($name; $baseline; $after; $releases):
     ),
     identities: (
       ($b.Schema == "hvo-issue-250-central-transient-payload-release-evidence-v3") and
-      ($a.Schema == "hvo-issue-250-central-transient-payload-release-evidence-v4") and
+      ($a.Schema == "hvo-issue-250-central-transient-payload-release-evidence-v5") and
       ($a.Issue == 250) and ($a.Phase == "after") and
       ($a.Source.Head == $revision) and
       ($a.ProductionRevision == $revision) and
@@ -444,7 +458,7 @@ def protocol_comparison($name; $baseline; $after; $releases):
       ($a.CompatibilityWorkloadSha256 == $a.BaselineBinding.BaselineSemanticWorkloadSha256) and
       ($a.BaselineBinding.CurrentSemanticWorkloadSha256 == $a.BaselineBinding.BaselineSemanticWorkloadSha256) and
       ($a.CompatibilityProtocolSha256 == $b.CompatibilityProtocolSha256) and
-      ($a.ProtocolSha256 == "CFA0132DE0CFAA0B205D5A4A3669BF8E1FD8042E25E8A21B7B70025C82ED00FA") and
+      ($a.ProtocolSha256 == "D5F8E016CAE81FFE9E2D4521EF3184EF04BBAD21E83D80930562E683278E2033") and
       ($a.EnvironmentSha256 == $b.EnvironmentSha256) and
       ($b.Environment.GcDynamicAdaptationMode == 0) and
       ($a.Environment.GcDynamicAdaptationMode == 0) and
