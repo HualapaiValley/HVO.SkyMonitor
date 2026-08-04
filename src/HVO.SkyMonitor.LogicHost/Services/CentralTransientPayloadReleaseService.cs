@@ -5,6 +5,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.LogicHost.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Minio;
@@ -110,6 +111,12 @@ internal enum CentralTransientPayloadReleaseFaultStage
     FinalItemBeforeParentCompletion
 }
 
+internal enum CentralTransientPayloadReleaseCreationFaultStage
+{
+    BeforeCommit,
+    AfterCommit
+}
+
 internal interface ICentralTransientPayloadReleaseFaultInjector
 {
     Task OnStageAsync(
@@ -131,6 +138,21 @@ internal sealed class CentralTransientPayloadReleaseService(
 {
     private const string Bucket = "skymonitor-artifacts";
     private const string BucketPrefix = "minio://skymonitor-artifacts/";
+    internal const int MaximumCreationConflictRetries = 3;
+
+    internal Func<int, Guid, CentralTransientPayloadReleaseCreationFaultStage, Exception?>? CreationFaultInjector
+    {
+        get;
+        set;
+    }
+
+    internal Func<Exception, bool>? CreationDeadlockClassifier { get; set; }
+
+    internal Func<Exception, bool>? CreationAmbiguousOutcomeClassifier { get; set; }
+
+    internal Func<Exception?>? CreationProbeFaultInjector { get; set; }
+
+    internal Func<int, Guid, CancellationToken, Task>? CreationConcurrencyHook { get; set; }
 
     public async Task<CentralTransientPayloadReleaseResult> ReleaseAsync(
         ClaimsPrincipal principal,
@@ -154,152 +176,20 @@ internal sealed class CentralTransientPayloadReleaseService(
         var requestSha = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n',
             "central-transient-payload-release-v1",
             centralTransientEventId.ToString("N")))));
-        CentralTransientPayloadRelease release;
-        var replayed = false;
-        byte[] resultRowVersion;
-        var fastReplay = await dbContext.CentralTransientPayloadReleases.AsNoTracking()
-            .SingleOrDefaultAsync(item => item.CentralTransientEventId == centralTransientEventId &&
-                item.ActorIdentity == actor && item.IdempotencyKey == idempotencyKey, cancellationToken)
-            .ConfigureAwait(false);
-        if (fastReplay is not null)
+        var creation = await CreateOrReplayWithRetryAsync(
+            centralTransientEventId,
+            expectedRowVersion,
+            actor,
+            idempotencyKey,
+            requestSha,
+            cancellationToken).ConfigureAwait(false);
+        if (creation.Status is not null)
         {
-            if (!string.Equals(fastReplay.CanonicalRequestSha256, requestSha, StringComparison.Ordinal))
-            {
-                return new(CentralTransientPayloadReleaseStatus.IdempotencyConflict);
-            }
-            replayed = true;
-            release = fastReplay;
-            resultRowVersion = await dbContext.CentralTransientEventCurrent.AsNoTracking()
-                .Where(item => item.CentralTransientEventId == centralTransientEventId)
-                .Select(item => item.RowVersion).SingleAsync(cancellationToken).ConfigureAwait(false);
+            return new(creation.Status.Value);
         }
-        else
-        {
-            await using var transaction = await dbContext.Database.BeginTransactionAsync(
-                IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
-            var acquired = await dbContext.Database.SqlQuery<int>(
-                    $"SELECT CAST(1 AS int) AS [Value] FROM [CentralTransientEvents] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = {centralTransientEventId}")
-                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-            if (acquired != 1)
-            {
-                return new(CentralTransientPayloadReleaseStatus.NotFound);
-            }
-            var existing = await dbContext.CentralTransientPayloadReleases.Include(item => item.Items)
-                .SingleOrDefaultAsync(item => item.CentralTransientEventId == centralTransientEventId &&
-                    item.ActorIdentity == actor && item.IdempotencyKey == idempotencyKey, cancellationToken)
-                .ConfigureAwait(false);
-            if (existing is not null)
-            {
-                if (!string.Equals(existing.CanonicalRequestSha256, requestSha, StringComparison.Ordinal))
-                {
-                    return new(CentralTransientPayloadReleaseStatus.IdempotencyConflict);
-                }
-                replayed = true;
-                release = existing;
-                resultRowVersion = await dbContext.CentralTransientEventCurrent.AsNoTracking()
-                    .Where(item => item.CentralTransientEventId == centralTransientEventId)
-                    .Select(item => item.RowVersion).SingleAsync(cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                if (await dbContext.CentralTransientPayloadReleases.AsNoTracking().AnyAsync(
-                        item => item.CentralTransientEventId == centralTransientEventId, cancellationToken)
-                    .ConfigureAwait(false))
-                {
-                    return new(CentralTransientPayloadReleaseStatus.Ineligible);
-                }
-                var current = await dbContext.CentralTransientEventCurrent.SingleOrDefaultAsync(
-                    item => item.CentralTransientEventId == centralTransientEventId, cancellationToken).ConfigureAwait(false);
-                if (current is null)
-                {
-                    return new(CentralTransientPayloadReleaseStatus.NotFound);
-                }
-                if (!current.RowVersion.AsSpan().SequenceEqual(expectedRowVersion))
-                {
-                    return new(CentralTransientPayloadReleaseStatus.PreconditionFailed);
-                }
-                var activeStates = new[]
-                {
-                    CentralDerivativeJobStatus.Waiting,
-                    CentralDerivativeJobStatus.Pending,
-                    CentralDerivativeJobStatus.Leased,
-                    CentralDerivativeJobStatus.RetryableFailure,
-                    CentralDerivativeJobStatus.CancelRequested
-                };
-                var blocked = current.ReviewState == CentralTransientReviewState.NeedsReview ||
-                    await dbContext.CentralTransientNotificationDispatches.AnyAsync(item =>
-                        item.CentralTransientEventId == centralTransientEventId &&
-                        (item.State == CentralTransientNotificationDispatchState.Pending ||
-                         item.State == CentralTransientNotificationDispatchState.Fenced), cancellationToken)
-                        .ConfigureAwait(false) ||
-                    await dbContext.CentralTransientDerivativeJobs.AnyAsync(item =>
-                        item.CentralTransientEventId == centralTransientEventId &&
-                        activeStates.Contains(item.Job!.Status), cancellationToken).ConfigureAwait(false) ||
-                    await dbContext.CentralTransientReprocessingJobs.AnyAsync(item =>
-                        item.CentralTransientEventId == centralTransientEventId &&
-                        activeStates.Contains(item.Job!.Status), cancellationToken).ConfigureAwait(false) ||
-                    await dbContext.CentralTransientValidationIdentitySlots.AnyAsync(item =>
-                        item.CentralTransientEventId == centralTransientEventId &&
-                        activeStates.Contains(item.ValidationJob!.Job!.Status), cancellationToken).ConfigureAwait(false) ||
-                    await dbContext.CentralTransientValidationJobs.AnyAsync(validation =>
-                        validation.ProvisionalCentralDerivativeJobId != null &&
-                        activeStates.Contains(validation.Job!.Status) &&
-                        dbContext.CentralTransientValidationIdentitySlots.Any(slot =>
-                            slot.CentralDerivativeJobId == validation.ProvisionalCentralDerivativeJobId &&
-                            slot.CentralTransientEventId == centralTransientEventId), cancellationToken)
-                        .ConfigureAwait(false);
-                if (blocked)
-                {
-                    return new(CentralTransientPayloadReleaseStatus.Ineligible);
-                }
-                var sourceIds = await dbContext.CentralTransientObservationSources.AsNoTracking()
-                    .Where(item => item.Observation!.CentralTransientEventId == centralTransientEventId)
-                    .Select(item => item.CentralArtifactId).Concat(
-                        dbContext.CentralTransientObservationBackgrounds.AsNoTracking()
-                            .Where(item => item.Observation!.CentralTransientEventId == centralTransientEventId)
-                            .Select(item => item.CentralArtifactId))
-                    .Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
-                var derivativeIds = await dbContext.CentralTransientDerivatives.AsNoTracking()
-                    .Where(item => item.CentralTransientEventId == centralTransientEventId)
-                    .Select(item => item.OutputIntentId).Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
-                release = new CentralTransientPayloadRelease
-                {
-                    CentralTransientEventId = centralTransientEventId,
-                    ActorIdentity = actor,
-                    IdempotencyKey = idempotencyKey,
-                    CanonicalRequestSha256 = requestSha,
-                    State = CentralTransientPayloadReleaseState.Pending,
-                    CreatedUtc = timeProvider.GetUtcNow()
-                };
-                var ordinal = 0;
-                foreach (var id in sourceIds.Order())
-                {
-                    release.Items.Add(new CentralTransientPayloadReleaseItem
-                    {
-                        ReleaseId = release.ReleaseId,
-                        Ordinal = ordinal++,
-                        Kind = CentralTransientPayloadReleaseItemKind.SourceArtifact,
-                        RecordId = id
-                    });
-                }
-                foreach (var id in derivativeIds.Order())
-                {
-                    release.Items.Add(new CentralTransientPayloadReleaseItem
-                    {
-                        ReleaseId = release.ReleaseId,
-                        Ordinal = ordinal++,
-                        Kind = CentralTransientPayloadReleaseItemKind.Derivative,
-                        RecordId = id
-                    });
-                }
-                dbContext.CentralTransientPayloadReleases.Add(release);
-                current.UpdatedUtc = release.CreatedUtc;
-                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                resultRowVersion = current.RowVersion.ToArray();
-            }
-        }
+        var release = creation.Release!;
+        var replayed = creation.Replayed;
+        var resultRowVersion = creation.EventRowVersion!;
 
         if (release.State == CentralTransientPayloadReleaseState.Pending)
         {
@@ -328,6 +218,370 @@ internal sealed class CentralTransientPayloadReleaseService(
             completed.Items.Count(item => item.Outcome == CentralTransientPayloadReleaseItemOutcome.Released),
             CentralTransientEventEtag.Create(resultRowVersion),
             replayed));
+    }
+
+    private async Task<CreationResult> CreateOrReplayWithRetryAsync(
+        Guid centralTransientEventId,
+        byte[] expectedRowVersion,
+        string actor,
+        string idempotencyKey,
+        string requestSha,
+        CancellationToken cancellationToken)
+    {
+        var releaseId = Guid.NewGuid();
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await CreateOrReplayAsync(
+                    releaseId,
+                    centralTransientEventId,
+                    expectedRowVersion,
+                    actor,
+                    idempotencyKey,
+                    requestSha,
+                    attempt,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (IsRetryableCreationConflict(exception))
+            {
+                dbContext.ChangeTracker.Clear();
+                var reason = IsCreationDeadlock(exception) ? "deadlock" : "ambiguous-commit";
+                if (attempt >= MaximumCreationConflictRetries)
+                {
+                    telemetry?.RecordRetentionCreationConflict(reason, "exhausted", attempt + 1);
+                    throw new InvalidOperationException(
+                        "Central transient payload release creation exhausted SQL conflict retries.",
+                        exception);
+                }
+                telemetry?.RecordRetentionCreationConflict(reason, "retry", attempt + 1);
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10 * (1 << attempt)),
+                    timeProvider,
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task<CreationResult> CreateOrReplayAsync(
+        Guid releaseId,
+        Guid centralTransientEventId,
+        byte[] expectedRowVersion,
+        string actor,
+        string idempotencyKey,
+        string requestSha,
+        int attempt,
+        CancellationToken cancellationToken)
+    {
+        dbContext.ChangeTracker.Clear();
+        var fastReplay = await dbContext.CentralTransientPayloadReleases.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.CentralTransientEventId == centralTransientEventId &&
+                item.ActorIdentity == actor && item.IdempotencyKey == idempotencyKey, cancellationToken)
+            .ConfigureAwait(false);
+        if (fastReplay is not null)
+        {
+            return await ReplayAsync(fastReplay, centralTransientEventId, requestSha, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        var acquired = await dbContext.Database.SqlQuery<int>(
+                $"SELECT CAST(1 AS int) AS [Value] FROM [CentralTransientEvents] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = {centralTransientEventId}")
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (acquired != 1)
+        {
+            return new(Status: CentralTransientPayloadReleaseStatus.NotFound);
+        }
+        if (CreationConcurrencyHook is not null)
+        {
+            await CreationConcurrencyHook(attempt, releaseId, cancellationToken).ConfigureAwait(false);
+        }
+        var existing = await dbContext.CentralTransientPayloadReleases.FromSqlInterpolated($"""
+                SELECT *
+                FROM [CentralTransientPayloadReleases]
+                    WITH (UPDLOCK, HOLDLOCK,
+                          INDEX([IX_CentralTransientPayloadReleases_CentralTransientEventId_ActorIdentity_IdempotencyKey]))
+                WHERE [CentralTransientEventId] = {centralTransientEventId}
+                  AND [ActorIdentity] = {actor}
+                  AND [IdempotencyKey] = {idempotencyKey}
+                """)
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            var replay = await ReplayAsync(existing, centralTransientEventId, requestSha, cancellationToken)
+                .ConfigureAwait(false);
+            if (replay.Status is null)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            return replay;
+        }
+        if (await dbContext.CentralTransientPayloadReleases.AsNoTracking().AnyAsync(
+                item => item.CentralTransientEventId == centralTransientEventId, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            return new(Status: CentralTransientPayloadReleaseStatus.Ineligible);
+        }
+        var current = await dbContext.CentralTransientEventCurrent.SingleOrDefaultAsync(
+            item => item.CentralTransientEventId == centralTransientEventId, cancellationToken).ConfigureAwait(false);
+        if (current is null)
+        {
+            return new(Status: CentralTransientPayloadReleaseStatus.NotFound);
+        }
+        if (!current.RowVersion.AsSpan().SequenceEqual(expectedRowVersion))
+        {
+            return new(Status: CentralTransientPayloadReleaseStatus.PreconditionFailed);
+        }
+        var activeStates = new[]
+        {
+            CentralDerivativeJobStatus.Waiting,
+            CentralDerivativeJobStatus.Pending,
+            CentralDerivativeJobStatus.Leased,
+            CentralDerivativeJobStatus.RetryableFailure,
+            CentralDerivativeJobStatus.CancelRequested
+        };
+        var blocked = current.ReviewState == CentralTransientReviewState.NeedsReview ||
+            await dbContext.CentralTransientNotificationDispatches.AnyAsync(item =>
+                item.CentralTransientEventId == centralTransientEventId &&
+                (item.State == CentralTransientNotificationDispatchState.Pending ||
+                 item.State == CentralTransientNotificationDispatchState.Fenced), cancellationToken)
+                .ConfigureAwait(false) ||
+            await dbContext.CentralTransientDerivativeJobs.AnyAsync(item =>
+                item.CentralTransientEventId == centralTransientEventId &&
+                activeStates.Contains(item.Job!.Status), cancellationToken).ConfigureAwait(false) ||
+            await dbContext.CentralTransientReprocessingJobs.AnyAsync(item =>
+                item.CentralTransientEventId == centralTransientEventId &&
+                activeStates.Contains(item.Job!.Status), cancellationToken).ConfigureAwait(false) ||
+            await dbContext.CentralTransientValidationIdentitySlots.AnyAsync(item =>
+                item.CentralTransientEventId == centralTransientEventId &&
+                activeStates.Contains(item.ValidationJob!.Job!.Status), cancellationToken).ConfigureAwait(false) ||
+            await dbContext.CentralTransientValidationJobs.AnyAsync(validation =>
+                validation.ProvisionalCentralDerivativeJobId != null &&
+                activeStates.Contains(validation.Job!.Status) &&
+                dbContext.CentralTransientValidationIdentitySlots.Any(slot =>
+                    slot.CentralDerivativeJobId == validation.ProvisionalCentralDerivativeJobId &&
+                    slot.CentralTransientEventId == centralTransientEventId), cancellationToken)
+                .ConfigureAwait(false);
+        if (blocked)
+        {
+            return new(Status: CentralTransientPayloadReleaseStatus.Ineligible);
+        }
+        var sourceIds = await dbContext.CentralTransientObservationSources.AsNoTracking()
+            .Where(item => item.Observation!.CentralTransientEventId == centralTransientEventId)
+            .Select(item => item.CentralArtifactId).Concat(
+                dbContext.CentralTransientObservationBackgrounds.AsNoTracking()
+                    .Where(item => item.Observation!.CentralTransientEventId == centralTransientEventId)
+                    .Select(item => item.CentralArtifactId))
+            .Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var derivativeIds = await dbContext.CentralTransientDerivatives.AsNoTracking()
+            .Where(item => item.CentralTransientEventId == centralTransientEventId)
+            .Select(item => item.OutputIntentId).Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var release = new CentralTransientPayloadRelease
+        {
+            ReleaseId = releaseId,
+            CentralTransientEventId = centralTransientEventId,
+            ActorIdentity = actor,
+            IdempotencyKey = idempotencyKey,
+            CanonicalRequestSha256 = requestSha,
+            State = CentralTransientPayloadReleaseState.Pending,
+            CreatedUtc = timeProvider.GetUtcNow()
+        };
+        var ordinal = 0;
+        foreach (var id in sourceIds.Order())
+        {
+            release.Items.Add(new CentralTransientPayloadReleaseItem
+            {
+                ReleaseId = release.ReleaseId,
+                Ordinal = ordinal++,
+                Kind = CentralTransientPayloadReleaseItemKind.SourceArtifact,
+                RecordId = id
+            });
+        }
+        foreach (var id in derivativeIds.Order())
+        {
+            release.Items.Add(new CentralTransientPayloadReleaseItem
+            {
+                ReleaseId = release.ReleaseId,
+                Ordinal = ordinal++,
+                Kind = CentralTransientPayloadReleaseItemKind.Derivative,
+                RecordId = id
+            });
+        }
+        dbContext.CentralTransientPayloadReleases.Add(release);
+        current.UpdatedUtc = release.CreatedUtc;
+        var injectedBeforeCommit = CreationFaultInjector?.Invoke(
+            attempt, releaseId, CentralTransientPayloadReleaseCreationFaultStage.BeforeCommit);
+        if (injectedBeforeCommit is not null)
+        {
+            throw injectedBeforeCommit;
+        }
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            var injectedAfterCommit = CreationFaultInjector?.Invoke(
+                attempt, releaseId, CentralTransientPayloadReleaseCreationFaultStage.AfterCommit);
+            if (injectedAfterCommit is not null)
+            {
+                throw injectedAfterCommit;
+            }
+        }
+        catch (Exception exception) when (!IsCreationDeadlock(exception) && IsCreationOutcomeAmbiguous(exception))
+        {
+            dbContext.ChangeTracker.Clear();
+            CreationResult? probed;
+            try
+            {
+                using var probeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5), timeProvider);
+                probed = await ProbeCreationAsync(
+                    releaseId,
+                    centralTransientEventId,
+                    actor,
+                    idempotencyKey,
+                    requestSha,
+                    probeTimeout.Token).ConfigureAwait(false);
+            }
+            catch (Exception probeException) when (probeException is DbException or OperationCanceledException)
+            {
+                throw new AmbiguousCreationOutcomeException(
+                    new AggregateException(exception, probeException));
+            }
+            if (probed is not null)
+            {
+                telemetry?.RecordRetentionCreationConflict("ambiguous-commit", "recovered", attempt + 1);
+                return probed;
+            }
+            throw new AmbiguousCreationOutcomeException(exception);
+        }
+        return new(release, current.RowVersion.ToArray(), Replayed: false);
+    }
+
+    private async Task<CreationResult> ReplayAsync(
+        CentralTransientPayloadRelease release,
+        Guid centralTransientEventId,
+        string requestSha,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(release.CanonicalRequestSha256, requestSha, StringComparison.Ordinal))
+        {
+            return new(Status: CentralTransientPayloadReleaseStatus.IdempotencyConflict);
+        }
+        var eventRowVersion = await dbContext.CentralTransientEventCurrent.AsNoTracking()
+            .Where(item => item.CentralTransientEventId == centralTransientEventId)
+            .Select(item => item.RowVersion).SingleAsync(cancellationToken).ConfigureAwait(false);
+        return new(release, eventRowVersion, Replayed: true);
+    }
+
+    private async Task<CreationResult?> ProbeCreationAsync(
+        Guid releaseId,
+        Guid centralTransientEventId,
+        string actor,
+        string idempotencyKey,
+        string requestSha,
+        CancellationToken cancellationToken)
+    {
+        await using var probe = CreateCreationProbeContext();
+        var injectedFault = CreationProbeFaultInjector?.Invoke();
+        if (injectedFault is not null)
+        {
+            throw injectedFault;
+        }
+        var release = await probe.CentralTransientPayloadReleases.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.ReleaseId == releaseId ||
+                (item.CentralTransientEventId == centralTransientEventId &&
+                 item.ActorIdentity == actor && item.IdempotencyKey == idempotencyKey),
+                cancellationToken).ConfigureAwait(false);
+        if (release is null)
+        {
+            return null;
+        }
+        if (!string.Equals(release.CanonicalRequestSha256, requestSha, StringComparison.Ordinal))
+        {
+            return new(Status: CentralTransientPayloadReleaseStatus.IdempotencyConflict);
+        }
+        var eventRowVersion = await probe.CentralTransientEventCurrent.AsNoTracking()
+            .Where(item => item.CentralTransientEventId == centralTransientEventId)
+            .Select(item => item.RowVersion).SingleAsync(cancellationToken).ConfigureAwait(false);
+        return new(release, eventRowVersion, Replayed: release.ReleaseId != releaseId);
+    }
+
+    private ApplicationDbContext CreateCreationProbeContext()
+    {
+        var connectionString = dbContext.Database.GetConnectionString()
+            ?? throw new InvalidOperationException("Transient payload release recovery requires SQL Server.");
+        return new ApplicationDbContext(
+            new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlServer(connectionString).Options);
+    }
+
+    private bool IsRetryableCreationConflict(Exception exception)
+        => IsCreationDeadlock(exception) || exception is AmbiguousCreationOutcomeException;
+
+    private bool IsCreationDeadlock(Exception exception)
+        => ContainsSqlError(exception, 1205) || CreationDeadlockClassifier?.Invoke(exception) == true;
+
+    private bool IsCreationOutcomeAmbiguous(Exception exception)
+        => CreationAmbiguousOutcomeClassifier?.Invoke(exception)
+           ?? exception is DbException or OperationCanceledException;
+
+    private static bool ContainsSqlError(Exception exception, int errorNumber)
+    {
+        var pending = new Stack<Exception>();
+        var visited = new HashSet<Exception>(ReferenceEqualityComparer.Instance);
+        pending.Push(exception);
+        while (pending.TryPop(out var current))
+        {
+            if (!visited.Add(current))
+            {
+                continue;
+            }
+            if (current is SqlException sqlException &&
+                (sqlException.Number == errorNumber ||
+                 sqlException.Errors.Cast<SqlError>().Any(error => error.Number == errorNumber)))
+            {
+                return true;
+            }
+            if (current is AggregateException aggregate)
+            {
+                foreach (var inner in aggregate.InnerExceptions)
+                {
+                    pending.Push(inner);
+                }
+            }
+            else if (current.InnerException is not null)
+            {
+                pending.Push(current.InnerException);
+            }
+        }
+        return false;
+    }
+
+    private sealed record CreationResult(
+        CentralTransientPayloadRelease? Release = null,
+        byte[]? EventRowVersion = null,
+        bool Replayed = false,
+        CentralTransientPayloadReleaseStatus? Status = null);
+
+    private sealed class AmbiguousCreationOutcomeException : Exception
+    {
+        public AmbiguousCreationOutcomeException()
+        {
+        }
+
+        public AmbiguousCreationOutcomeException(string message)
+            : base(message)
+        {
+        }
+
+        public AmbiguousCreationOutcomeException(string message, Exception innerException)
+            : base(message, innerException)
+        {
+        }
+
+        public AmbiguousCreationOutcomeException(Exception innerException)
+            : this("Central transient payload release creation commit outcome is ambiguous.", innerException)
+        {
+        }
     }
 
     public async Task<bool> ProcessNextAsync(CancellationToken cancellationToken)
