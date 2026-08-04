@@ -577,6 +577,7 @@ def trial:
     revision: $host_manifest.revision,
     sourceIdentities: $host_manifest.sourceIdentities,
     host: $host_manifest.host,
+    networkIsolation: $host_manifest.networkIsolation,
     storage: $host_manifest.storage,
     mountAuthentication: $host_manifest.mountAuthentication,
     startupReadiness: $host_manifest.startupReadiness,
@@ -796,6 +797,8 @@ def trial:
       $host_manifest.startupReadiness.terminalResult == "ready" and
       $host_manifest.startupReadiness.attempts > 0 and $host_manifest.startupReadiness.elapsedSeconds >= 0 and
       $host_manifest.startupReadiness.elapsedSeconds <= 122 and
+      $host_manifest.networkIsolation == {mode:"host-to-internal-container-ip", internal:true,
+        networkCount:1, publishedHostPorts:false, containerIpRetained:false} and
       $host_manifest.mountAuthentication.startup.runtime.mount.Type == $host_manifest.storage.runtime.containerMount.type and
       $host_manifest.mountAuthentication.startup.runtime.mount.Source == $host_manifest.storage.runtime.containerMount.source and
       $host_manifest.mountAuthentication.startup.runtime.mount.Name == $host_manifest.storage.runtime.containerMount.name and
@@ -963,7 +966,7 @@ def campaign:
     trials: ([$ordered[] as $trial |
       ($manifests[] | select(.trial == $trial.trial)) as $manifest |
       $trial | {trial, trialEvidenceIdentity: $manifest.evidenceIdentitySha256, trialInputIdentity,
-        boundaries, statistics, mountAuthentication, startupReadiness, centralTraffic,
+        boundaries, statistics, mountAuthentication, startupReadiness, networkIsolation, centralTraffic,
         resources: (.resources | del(.samples)), telemetry: (.telemetry | del(.privateValueFindings)), passed}]),
     crossCameraComparison: {
       permitted: false,

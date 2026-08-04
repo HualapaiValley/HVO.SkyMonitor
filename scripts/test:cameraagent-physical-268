@@ -22,7 +22,6 @@ readonly EXPECTED_UDEV_SHA256='a64c24317f154d5b074e9fac9249f4a5d905153b22f1e74aa
 readonly EXPECTED_CATALOG_SHA256='b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2'
 readonly HEADER_PATH='/usr/local/include/ASICamera2.h'
 readonly UDEV_PATH='/etc/udev/rules.d/99-asi.rules'
-readonly HTTP_PORT="${HVO_ISSUE_268_HTTP_PORT:-52680}"
 readonly TRIAL_COUNT=5
 
 usage() {
@@ -160,12 +159,29 @@ owner_password=''
 camera_container=''
 collector_container=''
 central_deny_container=''
+camera_base_uri=''
+camera_container_ip=''
 runtime_init_container=''
 runtime_probe_container=''
 sdk_probe_container=''
 hardware_output=''
 rerun_summary=''
 acquisition_started=false
+
+sanitize_failed_test_artifacts() {
+    local path raw
+    [[ -n "$active_control_root" && -d "$active_control_root" ]] || return 0
+    for path in "$evidence_root/acquisition.trx" "$evidence_root/inspection.trx"; do
+        [[ -f "$path" ]] || continue
+        raw="$active_control_root/${path##*/}.failure-raw"
+        if ! mv "$path" "$raw"; then
+            rm -f -- "$path" || return 1
+            return 1
+        fi
+        sanitize_text_file "$raw" || return 1
+        mv "$raw" "$path" || return 1
+    done
+}
 
 container_state_summary() {
     docker inspect "$1" --format '{{json .State}}' |
@@ -275,6 +291,7 @@ cleanup() {
     if [[ -n "$kernel_pid" ]]; then kill "$kernel_pid" >/dev/null 2>&1 || true; wait "$kernel_pid" 2>/dev/null || true; fi
     if [[ -n "$deadline_pid" ]]; then kill "$deadline_pid" >/dev/null 2>&1 || true; wait "$deadline_pid" 2>/dev/null || true; fi
     if ((status != 0)); then
+        sanitize_failed_test_artifacts || cleanup_failed=1
         retain_preacquisition_failure || printf 'Pre-acquisition diagnostics could not be retained safely.\n' >&2
     fi
     remove_trial_containers || cleanup_failed=1
@@ -283,6 +300,8 @@ cleanup() {
     if [[ -n "$hardware_output" ]]; then rm -f -- "$hardware_output" || cleanup_failed=1; fi
     if [[ -n "$rerun_summary" ]]; then rm -f -- "$rerun_summary" || cleanup_failed=1; fi
     unset owner_password HVO_ZWO_CAMERA_SERIAL
+    camera_container_ip=''
+    camera_base_uri=''
     if ((cleanup_failed != 0)); then
         printf 'Issue #268 cleanup could not prove removal of all sensitive metadata and owned runtime state.\n' >&2
         status=1
@@ -681,10 +700,10 @@ sample_resources() {
             read -r -a proc_fields <<< "${proc_stat#*) }"
             cpu_ticks=$((proc_fields[11] + proc_fields[12]))
         fi
-        metrics="$(curl --fail --silent --max-time 2 "http://127.0.0.1:$HTTP_PORT/metrics" 2>/dev/null || true)"
+        metrics="$(curl --fail --silent --max-time 2 "$camera_base_uri/metrics" 2>/dev/null || true)"
         metrics_available=false
         [[ -n "$metrics" ]] && metrics_available=true
-        health_status="$(curl --fail --silent --max-time 2 "http://127.0.0.1:$HTTP_PORT/health" 2>/dev/null | jq -r '.status // "Unavailable"' 2>/dev/null || printf 'Unavailable')"
+        health_status="$(curl --fail --silent --max-time 2 "$camera_base_uri/health" 2>/dev/null | jq -r '.status // "Unavailable"' 2>/dev/null || printf 'Unavailable')"
         ingress="$(metric_sum "$metrics" 'camera_agent_ingress_pending')"
         lanes="$(metric_sum "$metrics" 'camera_agent_lanes_pending')"
         processing="$(metric_sum "$metrics" 'camera_agent_processing_pending')"
@@ -844,6 +863,7 @@ sanitize_text_file() {
             line="${line//"$STATE_ROOT"/[AGENT-STATE]}"
             line="${line//"$HVO_ZWO_SDK_LIBRARY"/[SDK-LIBRARY]}"
             if [[ -n "$runtime_path" ]]; then line="${line//"$runtime_path"/[RUNTIME-ROOT]}"; fi
+            if [[ -n "$camera_container_ip" ]]; then line="${line//"$camera_container_ip"/[CONTAINER-IP]}"; fi
             if [[ "${line,,}" =~ authorization:|bearer[[:space:]]|set-cookie:|requestverificationtoken|token[=:]|actor[=:]|idempotency|checksum|storage[_-]?(reference|path|id)|[0-9a-f]{8}-[0-9a-f-]{27,}|(^|[^0-9a-f])[0-9a-f]{64}([^0-9a-f]|$)|/(home|workspaces|tmp|var/lib/hvo)/[^[:space:]]+ ]]; then
                 printf '%s\n' '[REDACTED-PRIVATE-LINE]'
             else
@@ -983,7 +1003,6 @@ for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
     cat > "$cleanup_env" <<EOF
 CAMERA_AGENT_IMAGE=$CAMERA_AGENT_IMAGE
 CAMERA_AGENT_CONTAINER=$camera_container
-CAMERA_AGENT_HTTP_PORT=$HTTP_PORT
 CAMERA_AGENT_CONFIG_SOURCE=$resolved_config
 CAMERA_AGENT_DATA_PROTECTION_SOURCE=$control_root/dataprotection
 CAMERA_AGENT_CATALOG_SOURCE=$control_root/catalog
@@ -1046,6 +1065,25 @@ EOF
     docker compose --env-file "$cleanup_env" --project-name "$cleanup_project" --file "$COMPOSE_FILE" up --detach
     [[ "$(docker inspect "$camera_container" --format '{{.Image}}')" == "$CAMERA_AGENT_IMAGE" ]] || { printf 'Trial container image identity changed.\n' >&2; exit 1; }
     [[ "$(docker inspect "$central_deny_container" --format '{{.Image}}')" == "$CENTRAL_DENY_IMAGE_ID" ]] || { printf 'Central deny image identity changed.\n' >&2; exit 1; }
+    isolated_network="${cleanup_project}_isolated"
+    camera_networks="$(docker inspect "$camera_container" --format '{{json .NetworkSettings.Networks}}')"
+    camera_container_ip="$(jq --exit-status --raw-output --arg network "$isolated_network" \
+        'if (keys == [$network]) and .[$network].IPAddress != "" then .[$network].IPAddress else error("unexpected network attachment") end' \
+        <<< "$camera_networks")"
+    [[ "$(docker network inspect "$isolated_network" --format '{{.Internal}}')" == true ]] || {
+        printf 'CameraAgent evidence network is not internal.\n' >&2
+        exit 1
+    }
+    published_ports="$(docker inspect "$camera_container" --format '{{json .NetworkSettings.Ports}}')"
+    jq --exit-status 'all(.[]; . == null)' <<< "$published_ports" >/dev/null || {
+        printf 'CameraAgent must not publish a host port from the internal evidence network.\n' >&2
+        exit 1
+    }
+    camera_base_uri="http://$camera_container_ip:8080"
+    jq '.networkIsolation = {mode:"host-to-internal-container-ip", internal:true, networkCount:1,
+          publishedHostPorts:false, containerIpRetained:false}' \
+        "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
     if ! camera_startup_state="$(docker inspect "$camera_container" --format '{{json .State}}')"; then
         printf 'CameraAgent state could not be inspected after compose startup.\n' >&2
         exit 1
@@ -1141,7 +1179,7 @@ EOF
     while ((SECONDS < startup_wait_deadline)); do
         startup_attempts=$((startup_attempts + 1))
         if curl --fail --silent --connect-timeout 1 --max-time 2 --output /dev/null \
-            "http://127.0.0.1:$HTTP_PORT/alive"; then
+            "$camera_base_uri/alive"; then
             startup_alive=true
             startup_terminal_result=ready
             break
@@ -1179,7 +1217,7 @@ EOF
     acquisition_started=true
     HVO_ISSUE_268_PHYSICAL_EVIDENCE=1 HVO_ISSUE_268_PROFILE="$PROFILE" HVO_ISSUE_268_TRIAL="$trial" \
     HVO_ISSUE_268_EVIDENCE_ROOT="$evidence_root" HVO_ISSUE_268_CAMERA_CONTAINER="$camera_container" \
-    HVO_ISSUE_268_BASE_URI="http://127.0.0.1:$HTTP_PORT" HVO_ISSUE_268_OWNER_PASSWORD_FILE="$control_root/secrets/owner-password" \
+    HVO_ISSUE_268_BASE_URI="$camera_base_uri" HVO_ISSUE_268_OWNER_PASSWORD_FILE="$control_root/secrets/owner-password" \
     HVO_ISSUE_268_RESOLVED_CONFIG="$resolved_config" HVO_ISSUE_268_REVISION="$REVISION" \
     HVO_ISSUE_268_BLOCK_DEVICE="$BLOCK_DEVICE" \
     HVO_ISSUE_268_DEADLINE_UNIX_SECONDS="$trial_deadline_unix_seconds" \
@@ -1407,6 +1445,11 @@ EOF
         'authorization:|bearer[[:space:]]|set-cookie:|requestverificationtoken|token[=:]|actor[=:]|idempotency|checksum|storage[_-]?(reference|path|id)|[0-9a-f]{8}-[0-9a-f-]{27,}|(^|[^0-9a-f])[0-9a-f]{64}([^0-9a-f]|$)|/(home|workspaces|tmp|var/lib/hvo)/[^[:space:]]+' \
         "${privacy_scan_files[@]}" >/dev/null; then
         printf 'A retained non-raw log contains a private path, identifier, checksum, actor, or credential.\n' >&2
+        exit 1
+    fi
+    if [[ -n "$camera_container_ip" ]] && rg --text --fixed-strings "$camera_container_ip" \
+        "${privacy_scan_files[@]}" >/dev/null; then
+        printf 'A retained non-raw log contains the private runtime container IP.\n' >&2
         exit 1
     fi
     jq --argjson scannedFileCount "${#privacy_scan_files[@]}" \
