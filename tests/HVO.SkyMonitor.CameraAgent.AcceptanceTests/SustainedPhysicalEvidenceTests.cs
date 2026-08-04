@@ -67,6 +67,7 @@ public sealed class SustainedPhysicalEvidenceTests
             client, pause: true, antiforgeryToken, "measured-boundary", deadline).ConfigureAwait(false);
         await WaitForDrainedAsync(client, deadline).ConfigureAwait(false);
         Assert.AreEqual(WarmupCount, await CountPayloadsAsync(container).ConfigureAwait(false));
+        await AssertWarmupPayloadsVaryAsync(container).ConfigureAwait(false);
         // Keep the admission barrier closed across a complete two-second OTLP export interval.
         await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
         EnsureBeforeDeadline(deadline);
@@ -619,6 +620,44 @@ public sealed class SustainedPhysicalEvidenceTests
         return destination;
     }
 
+    private static async Task AssertWarmupPayloadsVaryAsync(string container)
+    {
+        var output = await DockerAsync(
+            TimeSpan.FromSeconds(15),
+            "exec", container, "/bin/sh", "-c",
+            "find /var/lib/hvo/data/agent/frames -type f -name '*.json' | sort").ConfigureAwait(false);
+        var paths = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.HasCount(WarmupCount, paths);
+
+        var temporaryRoot = Path.Combine(Path.GetTempPath(), $"hvo-268-warmups-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryRoot);
+        try
+        {
+            var checksums = new string[WarmupCount];
+            for (var index = 0; index < paths.Length; index++)
+            {
+                var destination = Path.Combine(temporaryRoot, $"warmup-{index + 1}.json");
+                await DockerAsync(TimeSpan.FromSeconds(30), "cp", $"{container}:{paths[index]}", destination)
+                    .ConfigureAwait(false);
+                checksums[index] = ParseManifest(destination).Descriptor.Artifact.ChecksumSha256;
+            }
+            AssertWarmupChecksumsVary(checksums);
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    internal static void AssertWarmupChecksumsVary(IReadOnlyCollection<string> checksums)
+    {
+        Assert.HasCount(WarmupCount, checksums);
+        Assert.HasCount(
+            WarmupCount,
+            checksums.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            "Warmup payloads must vary before the measured physical window begins.");
+    }
+
     private static async Task WaitForPayloadCountAsync(string container, int expected, DateTimeOffset deadline)
     {
         while (DateTimeOffset.UtcNow < deadline)
@@ -907,7 +946,28 @@ public sealed class SustainedPhysicalEvidenceTests
         var output = process.StandardOutput.ReadToEndAsync();
         var error = process.StandardError.ReadToEndAsync();
         using var cancellation = new CancellationTokenSource(timeout);
-        await process.WaitForExitAsync(cancellation.Token).ConfigureAwait(false);
+        try
+        {
+            await process.WaitForExitAsync(cancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            var timeoutError = await error.ConfigureAwait(false);
+            _ = await output.ConfigureAwait(false);
+            throw new AssertFailedException(
+                $"docker {string.Join(' ', arguments)} timed out after {timeout}: {timeoutError}");
+        }
         var standardOutput = await output.ConfigureAwait(false);
         var standardError = await error.ConfigureAwait(false);
         Assert.AreEqual(0, process.ExitCode, $"docker {string.Join(' ', arguments)} failed: {standardError}");
@@ -1044,4 +1104,19 @@ public sealed class SustainedPhysicalEvidenceTests
                 var value => throw new AssertFailedException($"Unsupported issue #268 profile: {value}")
             };
     }
+}
+
+[TestClass]
+[TestCategory("Unit")]
+[SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
+public sealed class SustainedPhysicalEvidenceUnitTests
+{
+    [TestMethod]
+    public void WarmupPayloadVariationAcceptsDistinctChecksums()
+        => SustainedPhysicalEvidenceTests.AssertWarmupChecksumsVary(["A", "B", "C", "D", "E"]);
+
+    [TestMethod]
+    public void WarmupPayloadVariationRejectsDuplicateChecksums()
+        => Assert.ThrowsExactly<AssertFailedException>(() =>
+            SustainedPhysicalEvidenceTests.AssertWarmupChecksumsVary(["A", "B", "C", "D", "D"]));
 }
