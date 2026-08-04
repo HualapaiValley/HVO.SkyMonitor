@@ -53,6 +53,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                     "SELECT CAST(1 AS int) AS [Value] FROM [CentralArtifacts]",
                     "WITH (UPDLOCK, HOLDLOCK)")
                 .Should().Be(0);
+            commands.StandaloneEventIdLookups().Should().BeEmpty();
             handler.RequestCount.Should().Be(0);
         }
         finally
@@ -109,6 +110,12 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
 
         internal int CountContainingAll(params string[] values)
             => commands.Count(command => values.All(value => command.Contains(value, StringComparison.Ordinal)));
+
+        internal string[] StandaloneEventIdLookups()
+            => commands.Where(command =>
+                command.Contains("].[CentralTransientEventId]\nFROM", StringComparison.Ordinal) &&
+                command.Contains("FROM [CentralTransientPayloadReleases]", StringComparison.Ordinal) &&
+                !command.Contains("FROM [CentralTransientPayloadReleaseItems]", StringComparison.Ordinal)).ToArray();
 
         public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
             DbCommand command,

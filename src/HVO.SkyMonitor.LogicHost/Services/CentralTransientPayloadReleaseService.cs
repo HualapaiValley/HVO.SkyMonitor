@@ -891,7 +891,7 @@ internal sealed class CentralTransientPayloadReleaseService(
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return new(ReservationOutcome.Preserved, null, item.RetryCount);
         }
-        var held = await IsHeldAsync(item, cancellationToken).ConfigureAwait(false);
+        var held = await IsHeldAsync(item, itemKey.CentralTransientEventId, cancellationToken).ConfigureAwait(false);
         var hadPriorAttempt = item.RequestedAtUtc.HasValue;
         if (held)
         {
@@ -926,6 +926,7 @@ internal sealed class CentralTransientPayloadReleaseService(
                 item.Ordinal,
                 item.Kind,
                 item.RecordId,
+                itemKey.CentralTransientEventId,
                 item.ReservationToken!.Value,
                 item.RequestedAtUtc!.Value,
                 expectedStorageReference,
@@ -964,7 +965,7 @@ internal sealed class CentralTransientPayloadReleaseService(
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return PreDeleteOutcome.Preserved;
         }
-        if (await IsHeldAsync(item!, cancellationToken).ConfigureAwait(false))
+        if (await IsHeldAsync(item!, snapshot.CentralTransientEventId, cancellationToken).ConfigureAwait(false))
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             var failed = await FailReservedItemAsync(
@@ -994,7 +995,7 @@ internal sealed class CentralTransientPayloadReleaseService(
                 ? FinalizationOutcome.Failed
                 : FinalizationOutcome.Unavailable;
         }
-        if (await IsHeldAsync(item!, cancellationToken).ConfigureAwait(false))
+        if (await IsHeldAsync(item!, snapshot.CentralTransientEventId, cancellationToken).ConfigureAwait(false))
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             return await FailReservedItemAsync(
@@ -1241,16 +1242,13 @@ internal sealed class CentralTransientPayloadReleaseService(
 
     private async Task<bool> IsHeldAsync(
         CentralTransientPayloadReleaseItem item,
+        Guid centralTransientEventId,
         CancellationToken cancellationToken)
     {
         if (item.Kind == CentralTransientPayloadReleaseItemKind.SourceArtifact)
         {
-            var eventId = await dbContext.CentralTransientPayloadReleases.AsNoTracking()
-                .Where(value => value.ReleaseId == item.ReleaseId)
-                .Select(value => value.CentralTransientEventId)
-                .SingleAsync(cancellationToken).ConfigureAwait(false);
             return await retentionReferences.IsHeldOutsideTransientEventAsync(
-                item.RecordId, eventId, cancellationToken).ConfigureAwait(false);
+                item.RecordId, centralTransientEventId, cancellationToken).ConfigureAwait(false);
         }
         return await dbContext.CentralTransientDerivatives.AsNoTracking()
             .Where(value => value.OutputIntentId == item.RecordId)
@@ -1331,6 +1329,10 @@ internal sealed class CentralTransientPayloadReleaseService(
                 item.Ordinal,
                 item.Kind,
                 item.RecordId,
+                dbContext.CentralTransientPayloadReleases
+                    .Where(release => release.ReleaseId == item.ReleaseId)
+                    .Select(release => release.CentralTransientEventId)
+                    .Single(),
                 item.ReservationToken,
                 item.RequestedAtUtc,
                 item.RetryAtUtc,
@@ -1394,6 +1396,7 @@ internal sealed class CentralTransientPayloadReleaseService(
             item.Ordinal,
             item.Kind,
             item.RecordId,
+            Guid.Empty,
             item.ReservationToken,
             item.RequestedAtUtc,
             item.RetryAtUtc,
@@ -1538,6 +1541,7 @@ internal sealed class CentralTransientPayloadReleaseService(
         int Ordinal,
         CentralTransientPayloadReleaseItemKind Kind,
         Guid RecordId,
+        Guid CentralTransientEventId,
         Guid? ReservationToken,
         DateTimeOffset? RequestedAtUtc,
         DateTimeOffset? RetryAtUtc,
@@ -1551,6 +1555,7 @@ internal sealed class CentralTransientPayloadReleaseService(
         int Ordinal,
         CentralTransientPayloadReleaseItemKind Kind,
         Guid RecordId,
+        Guid CentralTransientEventId,
         Guid ReservationToken,
         DateTimeOffset RequestedAtUtc,
         string StorageReference,
