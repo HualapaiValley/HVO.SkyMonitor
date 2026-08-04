@@ -573,14 +573,6 @@ assert_before_trial_deadline() {
     remaining_trial_seconds >/dev/null
 }
 
-container_tree_sha256() {
-    local container="$1" root="$2"
-    docker exec "$container" /bin/sh -c \
-        'cd "$1" && { find . -type f -exec sha256sum {} \; ; find . -type l -exec sh -c '\''for path do printf "symlink %s -> %s\n" "$path" "$(readlink "$path")"; done'\'' sh {} +; } | sort | sha256sum' \
-        -- "$root" |
-        { read -r hash _; printf '%s' "$hash"; }
-}
-
 mounted_source() {
     local container="$1" destination="$2"
     docker inspect "$container" --format '{{json .Mounts}}' |
@@ -1098,8 +1090,8 @@ EOF
     startup_runtime_writable=false
     if docker exec "$camera_container" /bin/sh -c 'test -w /var/lib/hvo/data/agent'; then startup_runtime_writable=true; fi
     if ! startup_config_sha256="$(docker exec "$camera_container" sha256sum /run/hvo/cameraagent.json | { read -r hash _; printf '%s' "$hash"; })" ||
-       ! startup_catalog_tree_sha256="$(container_tree_sha256 "$camera_container" /var/lib/hvo/data/catalog)" ||
-       ! startup_collector_config_sha256="$(docker exec "$collector_container" sha256sum /etc/otelcol/config.yml | { read -r hash _; printf '%s' "$hash"; })" ||
+       ! startup_catalog_tree_sha256="$(tree_sha256 "$control_root/catalog")" ||
+       ! startup_collector_config_sha256="$(sha256sum "$control_root/config/otel-collector.yml" | { read -r hash _; printf '%s' "$hash"; })" ||
        ! startup_sdk_sha256="$(docker exec "$camera_container" sha256sum "$HVO_ZWO_SDK_LIBRARY" | { read -r hash _; printf '%s' "$hash"; })"; then
         printf 'Mounted input hashes could not be captured during startup authentication.\n' >&2
         exit 1
