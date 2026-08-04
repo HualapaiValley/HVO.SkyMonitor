@@ -457,17 +457,44 @@ assert_source_unchanged
 
 assert_authenticated_execution_inputs() {
     local actual
-    assert_source_unchanged && assert_static_identities && assert_catalog_identity || return 1
-    sha256_matches "$COLLECTOR_CONFIG" "$COLLECTOR_CONFIG_SHA256" || return 1
-    [[ "$(docker image inspect "$HVO_OTEL_COLLECTOR_IMAGE" --format '{{.Id}}')" == "$COLLECTOR_IMAGE_ID" ]] || return 1
-    [[ "$(docker image inspect "$CENTRAL_DENY_IMAGE" --format '{{.Id}}')" == "$CENTRAL_DENY_IMAGE_ID" ]] || return 1
+    assert_source_unchanged 2>/dev/null || { printf 'Source identity changed during physical preflight.\n' >&2; return 1; }
+    assert_static_identities 2>/dev/null || { printf 'Camera profile, SDK, header, or udev identity changed during physical preflight.\n' >&2; return 1; }
+    assert_catalog_identity 2>/dev/null || { printf 'Catalog identity changed during physical preflight.\n' >&2; return 1; }
+    sha256_matches "$COLLECTOR_CONFIG" "$COLLECTOR_CONFIG_SHA256" 2>/dev/null || {
+        printf 'Collector configuration identity changed during physical preflight.\n' >&2
+        return 1
+    }
+    [[ "$(docker image inspect "$HVO_OTEL_COLLECTOR_IMAGE" --format '{{.Id}}' 2>/dev/null)" == "$COLLECTOR_IMAGE_ID" ]] || {
+        printf 'Collector image identity changed during physical preflight.\n' >&2
+        return 1
+    }
+    [[ "$(docker image inspect "$CENTRAL_DENY_IMAGE" --format '{{.Id}}' 2>/dev/null)" == "$CENTRAL_DENY_IMAGE_ID" ]] || {
+        printf 'Central-deny image identity changed during physical preflight.\n' >&2
+        return 1
+    }
     sha256_matches "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Tests.dll" \
-        "$HARDWARE_TEST_ASSEMBLY_SHA256" || return 1
+        "$HARDWARE_TEST_ASSEMBLY_SHA256" 2>/dev/null || {
+        printf 'Hardware test assembly identity changed during physical preflight.\n' >&2
+        return 1
+    }
     sha256_matches "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll" \
-        "$ACCEPTANCE_TEST_ASSEMBLY_SHA256" || return 1
-    [[ "$(docker image inspect "$CAMERA_AGENT_IMAGE" --format '{{.Id}} {{.Architecture}}')" == "$CAMERA_AGENT_IMAGE $EXPECTED_IMAGE_ARCH" ]] || return 1
-    actual="$(docker run --rm --entrypoint sha256sum "$CAMERA_AGENT_IMAGE" /app/HVO.SkyMonitor.CameraAgent.dll | { read -r hash _; printf '%s' "$hash"; })"
-    [[ "$actual" == "$CAMERA_ASSEMBLY_SHA256" ]]
+        "$ACCEPTANCE_TEST_ASSEMBLY_SHA256" 2>/dev/null || {
+        printf 'Acceptance test assembly identity changed during physical preflight.\n' >&2
+        return 1
+    }
+    [[ "$(docker image inspect "$CAMERA_AGENT_IMAGE" --format '{{.Id}} {{.Architecture}}' 2>/dev/null)" == "$CAMERA_AGENT_IMAGE $EXPECTED_IMAGE_ARCH" ]] || {
+        printf 'CameraAgent image identity changed during physical preflight.\n' >&2
+        return 1
+    }
+    if ! actual="$(docker run --rm --entrypoint sha256sum "$CAMERA_AGENT_IMAGE" \
+        /app/HVO.SkyMonitor.CameraAgent.dll 2>/dev/null | { read -r hash _; printf '%s' "$hash"; })"; then
+        printf 'CameraAgent assembly identity could not be read during physical preflight.\n' >&2
+        return 1
+    fi
+    [[ "$actual" == "$CAMERA_ASSEMBLY_SHA256" ]] || {
+        printf 'CameraAgent assembly identity changed during physical preflight.\n' >&2
+        return 1
+    }
 }
 
 remaining_trial_seconds() {
