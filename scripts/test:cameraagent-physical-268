@@ -75,6 +75,7 @@ case "$PROFILE:$EXPECTED_HOST" in
         exit 2
         ;;
 esac
+readonly EXPECTED_CATALOG_PACKAGE_VERSION='hyg-v4.2-p3-s2-r1'
 
 for variable in HVO_AGENT_STATE_ROOT HVO_CATALOG_PERF_ROOT HVO_OTEL_COLLECTOR_IMAGE \
     HVO_ZWO_SDK_LIBRARY HVO_ZWO_CAMERA_SERIAL HVO_ISSUE_268_USB_SYSFS_PATH; do
@@ -377,7 +378,10 @@ tree_sha256() {
     local root="$1"
     (
         cd "$root"
-        find . -type f -exec sha256sum {} \; | sort
+        {
+            find . -type f -exec sha256sum {} \;
+            find . -type l -printf 'symlink %p -> %l\n'
+        } | sort
     ) | sha256sum | { read -r hash _; printf '%s' "$hash"; }
 }
 assert_static_identities() {
@@ -387,15 +391,32 @@ assert_static_identities() {
         sha256_matches "$UDEV_PATH" "$EXPECTED_UDEV_SHA256"
 }
 assert_static_identities || { printf 'Profile, SDK, header, or udev identity changed.\n' >&2; exit 2; }
+catalog_lock="$HVO_CATALOG_PERF_ROOT/.install.lock"
+[[ -f "$catalog_lock" && ! -L "$catalog_lock" ]] || {
+    printf 'Production catalog installer lock is missing or unsafe.\n' >&2
+    exit 2
+}
+catalog_lock_identity="$(stat -Lc '%d:%i' "$catalog_lock")"
+exec 7>> "$catalog_lock"
+flock -s 7
+[[ ! -L "$catalog_lock" && "$catalog_lock_identity" == "$(stat -Lc '%d:%i' "$catalog_lock")" &&
+   "$catalog_lock_identity" == "$(stat -Lc '%d:%i' /proc/$$/fd/7)" ]] || {
+    printf 'Production catalog installer lock changed while it was acquired.\n' >&2
+    exit 2
+}
 assert_catalog_identity() {
-    local count=0 catalog_file
-    [[ -z "$(find "$HVO_CATALOG_PERF_ROOT" -mindepth 1 ! -type d ! -type f -print -quit)" ]] || return 1
-    while IFS= read -r -d '' catalog_file; do
-        if sha256_matches "$catalog_file" "$EXPECTED_CATALOG_SHA256"; then
-            count=$((count + 1))
-        fi
-    done < <(find "$HVO_CATALOG_PERF_ROOT" -type f -print0)
-    [[ "$count" -eq 1 ]] || return 1
+    local catalog_file
+    local expected_target="versions/$EXPECTED_CATALOG_PACKAGE_VERSION"
+    [[ -L "$HVO_CATALOG_PERF_ROOT/current" &&
+       "$(readlink "$HVO_CATALOG_PERF_ROOT/current")" == "$expected_target" &&
+       -d "$HVO_CATALOG_PERF_ROOT/$expected_target" ]] || return 1
+    [[ -z "$(find "$HVO_CATALOG_PERF_ROOT" -mindepth 1 ! -type d ! -type f \
+        ! -path "$HVO_CATALOG_PERF_ROOT/current" -print -quit)" ]] || return 1
+    [[ "$(find "$HVO_CATALOG_PERF_ROOT" -type l -print)" == "$HVO_CATALOG_PERF_ROOT/current" ]] || return 1
+    catalog_file="$HVO_CATALOG_PERF_ROOT/$expected_target/hyg_v42.sqlite"
+    [[ -f "$catalog_file" && ! -L "$catalog_file" ]] || return 1
+    sha256_matches "$catalog_file" "$EXPECTED_CATALOG_SHA256" || return 1
+    [[ "$(find "$HVO_CATALOG_PERF_ROOT" -type f -name '*.sqlite' -print)" == "$catalog_file" ]] || return 1
     [[ -z "${SOURCE_CATALOG_TREE_SHA256:-}" ||
        "$(tree_sha256 "$HVO_CATALOG_PERF_ROOT")" == "$SOURCE_CATALOG_TREE_SHA256" ]]
 }
@@ -555,7 +576,8 @@ assert_before_trial_deadline() {
 container_tree_sha256() {
     local container="$1" root="$2"
     docker exec "$container" /bin/sh -c \
-        'cd "$1" && find . -type f -exec sha256sum {} \; | sort | sha256sum' -- "$root" |
+        'cd "$1" && { find . -type f -exec sha256sum {} \; ; find . -type l -exec sh -c '\''for path do printf "symlink %s -> %s\n" "$path" "$(readlink "$path")"; done'\'' sh {} +; } | sort | sha256sum' \
+        -- "$root" |
         { read -r hash _; printf '%s' "$hash"; }
 }
 
@@ -852,7 +874,7 @@ for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
     trial_deadline_seconds=$((SECONDS + 4800))
     trial_deadline_unix_seconds=$(($(date +%s) + 4800))
     runner_pid=$$
-    (exec 8>&-; sleep 4800; kill -TERM "$runner_pid") &
+    (exec 7>&- 8>&-; sleep 4800; kill -TERM "$runner_pid") &
     deadline_pid=$!
     trial_started_seconds="$(date +%s)"
     trial_root="$CAMPAIGN_ROOT/$trial"
@@ -1008,7 +1030,7 @@ EOF
         "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
     mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
 
-    dmesg --follow-new --decode 8>&- > "$control_root/kernel-live.raw" &
+    dmesg --follow-new --decode 7>&- 8>&- > "$control_root/kernel-live.raw" &
     kernel_pid=$!
     sleep 1
     kill -0 "$kernel_pid" 2>/dev/null || { printf 'dmesg follow exited before CameraAgent startup.\n' >&2; exit 1; }
@@ -1110,7 +1132,7 @@ EOF
 
     resource_samples="$evidence_root/resource-samples.jsonl"
     : > "$resource_samples"
-    sample_resources "$camera_container" "$central_deny_container" "$resource_samples" 8>&- &
+    sample_resources "$camera_container" "$central_deny_container" "$resource_samples" 7>&- 8>&- &
     sampler_pid=$!
 
     acquisition_timeout_seconds="$(remaining_trial_seconds)"
