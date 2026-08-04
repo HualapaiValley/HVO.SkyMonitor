@@ -1122,6 +1122,53 @@ EOF
     mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
     jq --exit-status '.mountAuthentication.startup.passed == true' "$evidence_root/host-manifest.json" >/dev/null
 
+    startup_wait_started="$(date +%s)"
+    startup_wait_deadline=$((SECONDS + 120))
+    startup_alive=false
+    startup_attempts=0
+    startup_terminal_result=insufficient-deadline
+    if (( $(remaining_trial_seconds) <= 122 )); then
+        jq --argjson elapsedSeconds 0 --argjson attempts 0 --argjson ready false \
+            --arg terminalResult "$startup_terminal_result" \
+            '.startupReadiness = {endpoint:"/alive", anonymous:true, ready:$ready, attempts:$attempts,
+              elapsedSeconds:$elapsedSeconds, terminalResult:$terminalResult}' \
+            "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+        mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+        printf 'Insufficient trial deadline remains for the startup readiness barrier.\n' >&2
+        exit 1
+    fi
+    startup_terminal_result=timeout
+    while ((SECONDS < startup_wait_deadline)); do
+        startup_attempts=$((startup_attempts + 1))
+        if curl --fail --silent --connect-timeout 1 --max-time 2 --output /dev/null \
+            "http://127.0.0.1:$HTTP_PORT/alive"; then
+            startup_alive=true
+            startup_terminal_result=ready
+            break
+        fi
+        ((SECONDS < startup_wait_deadline)) || break
+        if ! camera_running="$(timeout 2s docker inspect "$camera_container" --format '{{.State.Running}}')"; then
+            startup_terminal_result='container-inspection-failed'
+            break
+        fi
+        if [[ "$camera_running" != true ]]; then
+            startup_terminal_result='container-exited'
+            break
+        fi
+        ((SECONDS < startup_wait_deadline)) && sleep 1
+    done
+    startup_wait_elapsed=$(($(date +%s) - startup_wait_started))
+    jq --argjson elapsedSeconds "$startup_wait_elapsed" --argjson attempts "$startup_attempts" \
+        --argjson ready "$startup_alive" --arg terminalResult "$startup_terminal_result" \
+        '.startupReadiness = {endpoint:"/alive", anonymous:true, ready:$ready, attempts:$attempts,
+          elapsedSeconds:$elapsedSeconds, terminalResult:$terminalResult}' \
+        "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
+    mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
+    [[ "$startup_alive" == true ]] || {
+        printf 'CameraAgent startup readiness failed: %s.\n' "$startup_terminal_result" >&2
+        exit 1
+    }
+
     resource_samples="$evidence_root/resource-samples.jsonl"
     : > "$resource_samples"
     sample_resources "$camera_container" "$central_deny_container" "$resource_samples" 7>&- 8>&- &

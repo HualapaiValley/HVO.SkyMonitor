@@ -54,6 +54,8 @@ jq --exit-status '
   .telemetry.measuredWindowReconciliation.spans.laneClaim == 100 and
   .telemetry.measuredWindowReconciliation.otlpCounters.laneClaims == 100 and
   .resources.process.source == "bracketed OTLP process.cpu.time cpu.mode=user|system" and
+  .startupReadiness == {endpoint:"/alive", anonymous:true, ready:true, attempts:1,
+    elapsedSeconds:1, terminalResult:"ready"} and
   .resources.phaseDeltas.reconciliation.passed == true and
   (.telemetry.requiredSeriesExportCoverage | length) >= 28 and
   all(.telemetry.requiredSeriesExportCoverage[]; .passed == true) and
@@ -157,6 +159,7 @@ jq -n --arg mode campaign \
     --slurpfile campaignManifests "$temporary/trial-manifests.json" \
     -f "$AGGREGATOR" > "$temporary/campaign-summary.json"
 jq --exit-status '.allPassed == true and .citable == true and .trialCount == 5 and
+  all(.trials[].startupReadiness; .endpoint == "/alive" and .ready == true and .terminalResult == "ready") and
   ([.trialStorageTopologies[].storage.runtime.path] | all(. == "runtime"))' \
     "$temporary/campaign-summary.json" >/dev/null
 

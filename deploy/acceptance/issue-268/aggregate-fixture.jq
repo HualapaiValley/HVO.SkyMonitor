@@ -187,6 +187,8 @@ def logs:
         runtime: {writable: true, mount: {Type: "volume", Source: "runtime", Name: "fixture", Destination: "/var/lib/hvo/data/agent", RW: true}}},
       shutdown: {passed: true, sdkSha256: "fixture-sdk", sdkSource: "fixture-sdk-source",
         runtime: {writable: true, mount: {Type: "volume", Source: "runtime", Name: "fixture", Destination: "/var/lib/hvo/data/agent", RW: true}}}},
+    startupReadiness: {endpoint: "/alive", anonymous: true, ready: true, attempts: 1,
+      elapsedSeconds: 1, terminalResult: "ready"},
     centralTraffic: {passed: true, attemptCount: 0,
       startup: {Running: true, Status: "running", OOMKilled: false, Error: ""},
       preStop: {Running: true, Status: "running", OOMKilled: false, Error: ""},

@@ -579,6 +579,7 @@ def trial:
     host: $host_manifest.host,
     storage: $host_manifest.storage,
     mountAuthentication: $host_manifest.mountAuthentication,
+    startupReadiness: $host_manifest.startupReadiness,
     centralTraffic: $host_manifest.centralTraffic,
     privacy: $host_manifest.privacy,
     wholeTrialElapsedSeconds: $execution_evidence.wholeTrialElapsedSeconds,
@@ -790,6 +791,11 @@ def trial:
       $host_manifest.mountAuthentication.shutdown.passed == true and
       $host_manifest.mountAuthentication.startup.runtime.writable == true and
       $host_manifest.mountAuthentication.shutdown.runtime.writable == true and
+      $host_manifest.startupReadiness.endpoint == "/alive" and
+      $host_manifest.startupReadiness.anonymous == true and $host_manifest.startupReadiness.ready == true and
+      $host_manifest.startupReadiness.terminalResult == "ready" and
+      $host_manifest.startupReadiness.attempts > 0 and $host_manifest.startupReadiness.elapsedSeconds >= 0 and
+      $host_manifest.startupReadiness.elapsedSeconds <= 122 and
       $host_manifest.mountAuthentication.startup.runtime.mount.Type == $host_manifest.storage.runtime.containerMount.type and
       $host_manifest.mountAuthentication.startup.runtime.mount.Source == $host_manifest.storage.runtime.containerMount.source and
       $host_manifest.mountAuthentication.startup.runtime.mount.Name == $host_manifest.storage.runtime.containerMount.name and
@@ -957,7 +963,7 @@ def campaign:
     trials: ([$ordered[] as $trial |
       ($manifests[] | select(.trial == $trial.trial)) as $manifest |
       $trial | {trial, trialEvidenceIdentity: $manifest.evidenceIdentitySha256, trialInputIdentity,
-        boundaries, statistics, mountAuthentication, centralTraffic,
+        boundaries, statistics, mountAuthentication, startupReadiness, centralTraffic,
         resources: (.resources | del(.samples)), telemetry: (.telemetry | del(.privateValueFindings)), passed}]),
     crossCameraComparison: {
       permitted: false,
