@@ -390,6 +390,8 @@ def protocol_comparison($name; $baseline; $after; $releases):
       logicalReads: $plan.LogicalReads,
       baselineLogicalReads: $baselineW3mLogicalReads,
       baselineComparison: "N/A: baseline selects a parent only; candidate also seeks the first pending item to enforce durable lease/retry eligibility.",
+      measurementScope: "Normalized post-maintenance synthetic state; not representative of production queue aging.",
+      queueIndexNormalization: $plan.Setup.QueueIndexNormalization,
       candidateAbsoluteLogicalReadLimit: 32,
       disposition: "operator-accepted-changed-semantics-candidate-baseline",
       authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5170885290",
@@ -514,6 +516,17 @@ def protocol_comparison($name; $baseline; $after; $releases):
       ]) and
       ($plan.Operators | index("Index Seek/Index Seek") != null) and
       ($plan.Operators | index("Clustered Index Seek/Clustered Index Seek") != null) and
+      ($plan.Setup.QueueIndexNormalization as $normalization |
+        ($plan.Setup.StatisticsDurationMilliseconds == $normalization.DurationMilliseconds) and
+        ($normalization.Method == "Offline index rebuild with FILLFACTOR 100, PAD_INDEX OFF, SORT_IN_TEMPDB OFF, MAXDOP 1, followed by UPDATE STATISTICS FULLSCAN.") and
+        ($normalization.MeasurementScope == "Normalized post-maintenance synthetic state; not representative of production queue aging.") and
+        ($normalization.Before.PageCount > 0) and ($normalization.After.PageCount > 0) and
+        ($normalization.Before.IndexDepth > 0) and ($normalization.After.IndexDepth > 0) and
+        ($normalization.LogicalRecordCountBefore == ($plan.CompletedParents + 1)) and
+        ($normalization.LogicalRecordCountAfter == $normalization.LogicalRecordCountBefore) and
+        ($normalization.After.RecordCount == $normalization.LogicalRecordCountAfter) and
+        ($normalization.After.GhostRecordCount == 0) and
+        ($normalization.After.VersionGhostRecordCount == 0)) and
       (($plan.CandidateItemDueWorkPlan | fromjson) as $duePlan |
         $duePlan.ExpectedLoadNextIndex == "PK_CentralTransientPayloadReleaseItems" and
         ($duePlan.ClaimPlanIndexes | sort) == [

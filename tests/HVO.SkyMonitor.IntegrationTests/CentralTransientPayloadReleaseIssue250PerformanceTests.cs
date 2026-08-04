@@ -544,7 +544,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 Resources = "One continuous process time series per scenario targets 10 ms and records Process.TotalProcessorTime, window-relative GC.GetTotalAllocatedBytes(true), and WorkingSet64. Issue #268 baseline/after runs disable .NET 10 Server GC DATAS because heap retirement can regress the allocation counter; observed precise-GC regressions still fail closed. Raw 100 ms System.Runtime alloc-rate increments, exact GC deltas, normalized agreement or explicit short-window unclaimability, observed p50/maximum cadence, RSS peak, and first/last sample uncertainty are reported.",
                 Sql = "Measured service DbContexts use EF command/transaction interceptors. Dedicated sp_getapplock/sp_releaseapplock commands bypass EF and are not inferred. DMV sampling targets 10 ms and reports observed p50/maximum cadence and per-DELETE-window coverage. Baseline row blocking requires an exact waiting/granted KEY-resource match on CentralArtifacts.PK_CentralArtifacts, the release transaction/session/database/isolation attribution, and distinct dedicated application-lock fence sessions. Zero-delay lock duration is explicitly unclaimable when cadence cannot resolve it.",
                 ObjectStore = "The service MinIO client is isolated behind a request/DELETE duration and entity-byte collector; seed and correctness GET/STAT traffic uses a separate client.",
-                W3M = "Trigger/constraint-preserving setup uses one shared history frame and deterministic batches of at most 250 parents, reports setup timing separately, runs UPDATE STATISTICS FULLSCAN, drops session temp tables, and captures actual STATISTICS XML/IO over the normalized production pending-parent query."
+                W3M = "Trigger/constraint-preserving setup uses one shared history frame and deterministic batches of at most 250 parents, reports setup timing separately, single-thread rebuilds the measured queue index to remove setup-transition ghost records, runs UPDATE STATISTICS FULLSCAN, drops session temp tables, and captures actual STATISTICS XML/IO over the normalized production pending-parent query. Logical reads describe normalized post-maintenance synthetic state, not production queue aging."
             },
             SteadyState = steadyState,
             DelayedDelete = delayed,
@@ -2380,8 +2380,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     lastSequence,
                     cancellationToken).ConfigureAwait(false));
             }
-            var statisticsDurationMilliseconds = await UpdateW3MStatisticsAsync(
-                connection, cancellationToken).ConfigureAwait(false);
+            var queueIndexNormalization = await NormalizeW3MQueueIndexAsync(
+                connection, completedParents + 1L, cancellationToken).ConfigureAwait(false);
             var schemaIntegrity = await ReadW3MSchemaIntegrityAsync(
                 connection, cancellationToken).ConfigureAwait(false);
             var tempTableDropDurationMilliseconds = await DropW3MTempTablesAsync(
@@ -2429,8 +2429,9 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                     Math.Max(item.PhaseBDurationMilliseconds, item.PhaseCDurationMilliseconds))),
                 Math.Max(
                     Math.Max(tempTables.DurationMilliseconds, foundation.DurationMilliseconds),
-                    Math.Max(statisticsDurationMilliseconds, tempTableDropDurationMilliseconds)),
-                statisticsDurationMilliseconds,
+                    Math.Max(queueIndexNormalization.DurationMilliseconds, tempTableDropDurationMilliseconds)),
+                queueIndexNormalization.DurationMilliseconds,
+                queueIndexNormalization,
                 tempTableDropDurationMilliseconds,
                 W3MCommandTimeoutSeconds,
                 W3MPhaseTimeoutMinutes * 60,
@@ -2889,19 +2890,84 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             Stopwatch.GetElapsedTime(started).TotalMilliseconds);
     }
 
-    private static async Task<double> UpdateW3MStatisticsAsync(
+    private static async Task<Issue250W3MQueueIndexNormalizationEvidence> NormalizeW3MQueueIndexAsync(
         SqlConnection connection,
+        long expectedRecordCount,
         CancellationToken cancellationToken)
     {
+        var logicalRecordCountBefore = await ReadW3MReleaseRowCountAsync(connection, cancellationToken)
+            .ConfigureAwait(false);
+        var before = await ReadW3MQueueIndexPhysicalStateAsync(connection, cancellationToken).ConfigureAwait(false);
         var started = Stopwatch.GetTimestamp();
         await using var command = connection.CreateCommand();
         command.CommandTimeout = W3MCommandTimeoutSeconds;
         command.CommandText = """
+            ALTER INDEX [IX_CentralTransientPayloadReleases_State_CreatedUtc_ReleaseId]
+                ON [CentralTransientPayloadReleases]
+                REBUILD WITH (FILLFACTOR = 100, PAD_INDEX = OFF, SORT_IN_TEMPDB = OFF, MAXDOP = 1);
             UPDATE STATISTICS [CentralTransientPayloadReleases]
                 [IX_CentralTransientPayloadReleases_State_CreatedUtc_ReleaseId] WITH FULLSCAN;
             """;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        return Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        var durationMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        var after = await ReadW3MQueueIndexPhysicalStateAsync(connection, cancellationToken).ConfigureAwait(false);
+        var logicalRecordCountAfter = await ReadW3MReleaseRowCountAsync(connection, cancellationToken)
+            .ConfigureAwait(false);
+        Assert.AreEqual(0L, after.GhostRecordCount,
+            "The measured W3M queue index must not retain setup-transition ghost records after normalization.");
+        Assert.AreEqual(0L, after.VersionGhostRecordCount,
+            "The measured W3M queue index must not retain version ghost records after normalization.");
+        Assert.AreEqual(expectedRecordCount, logicalRecordCountBefore,
+            "W3M setup must create the expected logical release rows before queue-index normalization.");
+        Assert.AreEqual(logicalRecordCountBefore, logicalRecordCountAfter,
+            "Queue-index normalization must preserve every logical release row.");
+        Assert.AreEqual(logicalRecordCountAfter, after.RecordCount,
+            "The normalized queue index must contain exactly one physical leaf record per live release row.");
+        return new(durationMilliseconds, logicalRecordCountBefore, logicalRecordCountAfter, before, after,
+            "Offline index rebuild with FILLFACTOR 100, PAD_INDEX OFF, SORT_IN_TEMPDB OFF, MAXDOP 1, followed by UPDATE STATISTICS FULLSCAN.",
+            "Normalized post-maintenance synthetic state; not representative of production queue aging.");
+    }
+
+    private static async Task<long> ReadW3MReleaseRowCountAsync(
+        SqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = W3MCommandTimeoutSeconds;
+        command.CommandText = "SELECT COUNT_BIG(*) FROM [CentralTransientPayloadReleases];";
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+    }
+
+    private static async Task<Issue250W3MQueueIndexPhysicalState> ReadW3MQueueIndexPhysicalStateAsync(
+        SqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = W3MCommandTimeoutSeconds;
+        command.CommandText = """
+            SELECT COALESCE(CAST(SUM([page_count]) AS bigint), 0),
+                   COALESCE(CAST(SUM([record_count]) AS bigint), 0),
+                   COALESCE(CAST(SUM([ghost_record_count]) AS bigint), 0),
+                   COALESCE(CAST(SUM([version_ghost_record_count]) AS bigint), 0),
+                   COALESCE(MAX([index_depth]), 0)
+            FROM [sys].[dm_db_index_physical_stats](
+                DB_ID(),
+                OBJECT_ID(N'CentralTransientPayloadReleases'),
+                INDEXPROPERTY(
+                    OBJECT_ID(N'CentralTransientPayloadReleases'),
+                    N'IX_CentralTransientPayloadReleases_State_CreatedUtc_ReleaseId',
+                    N'IndexID'),
+                NULL,
+                N'DETAILED')
+            WHERE [index_level] = 0 AND [alloc_unit_type_desc] = N'IN_ROW_DATA';
+            """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        var state = new Issue250W3MQueueIndexPhysicalState(
+            reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt32(4));
+        Assert.IsTrue(state.PageCount > 0, "The measured W3M queue index must expose leaf-page diagnostics.");
+        Assert.IsTrue(state.IndexDepth > 0, "The measured W3M queue index must expose its physical depth.");
+        return state;
     }
 
     private static async Task<double> DropW3MTempTablesAsync(
@@ -7593,6 +7659,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         double MaximumBatchPhaseDurationMilliseconds,
         double MaximumNonBatchCommandDurationMilliseconds,
         double StatisticsDurationMilliseconds,
+        Issue250W3MQueueIndexNormalizationEvidence QueueIndexNormalization,
         double TempTableDropDurationMilliseconds,
         int CommandTimeoutSeconds,
         int PhaseTimeoutSeconds,
@@ -7601,6 +7668,22 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         bool SetupExcludedFromMeasuredClaims,
         Issue250W3MSchemaIntegrityEvidence SchemaIntegrity,
         IReadOnlyList<Issue250W3MSetupBatchEvidence> Batches);
+
+    private sealed record Issue250W3MQueueIndexNormalizationEvidence(
+        double DurationMilliseconds,
+        long LogicalRecordCountBefore,
+        long LogicalRecordCountAfter,
+        Issue250W3MQueueIndexPhysicalState Before,
+        Issue250W3MQueueIndexPhysicalState After,
+        string Method,
+        string MeasurementScope);
+
+    private sealed record Issue250W3MQueueIndexPhysicalState(
+        long PageCount,
+        long RecordCount,
+        long GhostRecordCount,
+        long VersionGhostRecordCount,
+        int IndexDepth);
 
     private sealed record Issue250W3MTopologyEvidence(
         long TotalFrames,
