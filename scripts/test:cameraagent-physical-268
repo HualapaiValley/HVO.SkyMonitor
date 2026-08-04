@@ -210,6 +210,22 @@ remove_owned_runtime() {
     return "$cleanup_failed"
 }
 
+remove_active_control() {
+    local cleanup_failed=0
+    if [[ -z "$active_control_root" || ! -d "$active_control_root" ]]; then
+        active_control_root=''
+        return 0
+    fi
+    chmod -R u+w -- "$active_control_root" || cleanup_failed=1
+    rm -rf -- "$active_control_root" || cleanup_failed=1
+    if [[ -e "$active_control_root" ]]; then
+        cleanup_failed=1
+    else
+        active_control_root=''
+    fi
+    return "$cleanup_failed"
+}
+
 cleanup() {
     local status=$?
     local cleanup_failed=0
@@ -219,9 +235,7 @@ cleanup() {
     if [[ -n "$deadline_pid" ]]; then kill "$deadline_pid" >/dev/null 2>&1 || true; wait "$deadline_pid" 2>/dev/null || true; fi
     remove_trial_containers || cleanup_failed=1
     remove_owned_runtime || cleanup_failed=1
-    if [[ -n "$active_control_root" && -d "$active_control_root" ]]; then
-        rm -rf -- "$active_control_root" || cleanup_failed=1
-    fi
+    remove_active_control || cleanup_failed=1
     if [[ -n "$hardware_output" ]]; then rm -f -- "$hardware_output" || cleanup_failed=1; fi
     if [[ -n "$rerun_summary" ]]; then rm -f -- "$rerun_summary" || cleanup_failed=1; fi
     unset owner_password HVO_ZWO_CAMERA_SERIAL
@@ -1171,8 +1185,7 @@ EOF
     collector_container=''
     central_deny_container=''
     runtime_init_container=''
-    rm -rf -- "$control_root"
-    active_control_root=''
+    remove_active_control
 
     for telemetry_file in "$evidence_root/telemetry/logs.json" "$evidence_root/telemetry/metrics.json" "$evidence_root/telemetry/traces.json"; do
         [[ -s "$telemetry_file" ]] || { printf 'Missing OTLP signal file: %s\n' "$telemetry_file" >&2; exit 1; }
